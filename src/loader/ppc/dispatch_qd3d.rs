@@ -806,6 +806,140 @@ pub(super) fn dispatch_q3_scene_import_fast(
     }
 }
 
+pub(super) struct PpcQ3ObjectRendererDispatchContext<'a> {
+    pub(super) target: &'a PpcImportDispatcherTarget,
+    pub(super) cpu: &'a PpcCpu,
+    pub(super) stores: PpcQ3ObjectStores<'a>,
+    pub(super) q3_error_state: &'a mut PpcQ3ErrorState,
+    pub(super) next_q3_object: &'a mut u32,
+}
+
+pub(super) fn dispatch_q3_object_renderer_import_fast(
+    context: PpcQ3ObjectRendererDispatchContext<'_>,
+) -> Option<PpcImportAction> {
+    let PpcQ3ObjectRendererDispatchContext {
+        target,
+        cpu,
+        mut stores,
+        q3_error_state,
+        next_q3_object,
+    } = context;
+    match target {
+        PpcImportDispatcherTarget::Q3ObjectDispose => {
+            let disposed = ppc_q3_object_release_reference(&mut stores, cpu.gpr[3]);
+            if !disposed {
+                q3_error_state.post(PPC_Q3_ERROR_INVALID_OBJECT_PARAMETER);
+            }
+            Some(PpcImportAction::Return(u32::from(disposed)))
+        }
+        PpcImportDispatcherTarget::Q3ObjectDuplicate => {
+            let object = cpu.gpr[3];
+            if ppc_q3_object_retain(stores.q3_objects, stores.q3_object_refs, object) {
+                Some(PpcImportAction::Return(object))
+            } else {
+                q3_error_state.post(PPC_Q3_ERROR_INVALID_OBJECT_PARAMETER);
+                Some(PpcImportAction::Return(0))
+            }
+        }
+        PpcImportDispatcherTarget::Q3SharedGetReference => {
+            let object = cpu.gpr[3];
+            let object_type = ppc_q3_object_type_for_handle(stores.q3_objects, object);
+            if ppc_q3_object_type_is_shared(object_type)
+                && ppc_q3_object_retain(stores.q3_objects, stores.q3_object_refs, object)
+            {
+                Some(PpcImportAction::Return(object))
+            } else {
+                q3_error_state.post(PPC_Q3_ERROR_INVALID_OBJECT_PARAMETER);
+                Some(PpcImportAction::Return(0))
+            }
+        }
+        PpcImportDispatcherTarget::Q3SharedIsReferenced => {
+            let object = cpu.gpr[3];
+            let object_type = ppc_q3_object_type_for_handle(stores.q3_objects, object);
+            if ppc_q3_object_type_is_shared(object_type) {
+                Some(PpcImportAction::Return(u32::from(
+                    ppc_q3_object_reference_count(stores.q3_objects, stores.q3_object_refs, object)
+                        .is_some_and(|ref_count| ref_count > 1),
+                )))
+            } else {
+                q3_error_state.post(PPC_Q3_ERROR_INVALID_OBJECT_PARAMETER);
+                Some(PpcImportAction::Return(0))
+            }
+        }
+        PpcImportDispatcherTarget::Q3SharedGetType => {
+            let shared_type = ppc_q3_shared_type_for_object_type(ppc_q3_object_type_for_handle(
+                stores.q3_objects,
+                cpu.gpr[3],
+            ));
+            if shared_type != PPC_Q3_TYPE_NONE {
+                Some(PpcImportAction::Return(shared_type))
+            } else {
+                q3_error_state.post(PPC_Q3_ERROR_INVALID_OBJECT_PARAMETER);
+                Some(PpcImportAction::Return(PPC_Q3_TYPE_NONE))
+            }
+        }
+        PpcImportDispatcherTarget::Q3ShapeGetType => {
+            let shape_type = ppc_q3_shape_type_for_object_type(ppc_q3_object_type_for_handle(
+                stores.q3_objects,
+                cpu.gpr[3],
+            ));
+            if shape_type != PPC_Q3_TYPE_NONE {
+                Some(PpcImportAction::Return(shape_type))
+            } else {
+                q3_error_state.post(PPC_Q3_ERROR_INVALID_OBJECT_PARAMETER);
+                Some(PpcImportAction::Return(PPC_Q3_TYPE_NONE))
+            }
+        }
+        PpcImportDispatcherTarget::Q3ShapeGetLeafType => {
+            let object_type = ppc_q3_object_type_for_handle(stores.q3_objects, cpu.gpr[3]);
+            if ppc_q3_shape_type_for_object_type(object_type) != PPC_Q3_TYPE_NONE {
+                Some(PpcImportAction::Return(object_type))
+            } else {
+                q3_error_state.post(PPC_Q3_ERROR_INVALID_OBJECT_PARAMETER);
+                Some(PpcImportAction::Return(PPC_Q3_TYPE_NONE))
+            }
+        }
+        PpcImportDispatcherTarget::Q3ObjectIsDrawable => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_object_is_drawable(cpu, stores.q3_objects, q3_error_state),
+        ))),
+        PpcImportDispatcherTarget::Q3ObjectIsType => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_object_is_type(cpu, stores.q3_objects, q3_error_state),
+        ))),
+        PpcImportDispatcherTarget::Q3ObjectGetType
+        | PpcImportDispatcherTarget::Q3ObjectGetLeafType => Some(PpcImportAction::Return(
+            ppc_q3_object_type(cpu, stores.q3_objects),
+        )),
+        PpcImportDispatcherTarget::Q3GeometryGetType => {
+            Some(PpcImportAction::Return(ppc_q3_class_object_type(
+                cpu,
+                stores.q3_objects,
+                q3_error_state,
+                ppc_q3_object_type_is_geometry,
+            )))
+        }
+        PpcImportDispatcherTarget::Q3GroupGetType => {
+            Some(PpcImportAction::Return(ppc_q3_class_object_type(
+                cpu,
+                stores.q3_objects,
+                q3_error_state,
+                ppc_q3_object_type_is_group,
+            )))
+        }
+        PpcImportDispatcherTarget::Q3RendererNewFromType => Some(PpcImportAction::Return(
+            ppc_q3_renderer_new_from_type(cpu, stores.q3_objects, q3_error_state, next_q3_object),
+        )),
+        PpcImportDispatcherTarget::Q3RendererGetType => Some(PpcImportAction::Return(
+            ppc_q3_renderer_get_type(cpu, stores.q3_objects, q3_error_state),
+        )),
+        PpcImportDispatcherTarget::Q3RendererSync | PpcImportDispatcherTarget::Q3RendererFlush => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_renderer_is_valid(cpu, stores.q3_objects, q3_error_state),
+            )))
+        }
+        _ => None,
+    }
+}
+
 pub(super) struct PpcQ3ObjectGroupDispatchContext<'a> {
     pub(super) target: &'a PpcImportDispatcherTarget,
     pub(super) cpu: &'a PpcCpu,
@@ -833,9 +967,6 @@ pub(super) fn dispatch_q3_object_group_import_fast(
         q3_error_state,
     } = context;
     match target {
-        PpcImportDispatcherTarget::Q3ObjectIsType => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_object_is_type(cpu, q3_objects, q3_error_state),
-        ))),
         PpcImportDispatcherTarget::Q3GroupGetFirstPosition => Some(PpcImportAction::Return(
             u32::from(ppc_q3_group_get_first_position(
                 cpu,
