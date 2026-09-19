@@ -18096,24 +18096,11 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::SetDepth => {
             unreachable!("graphics-device imports return through dispatch_graphics_device_import")
         }
-        // Inside Macintosh: Text (1993), p. 4-53: GetSysFont returns the
-        // system font ID. Systemless models the standard systemFont value.
-        PpcImportDispatcherTarget::GetSysFont => Some(PpcImportAction::Return(0)),
-        // Inside Macintosh: Text (1993), p. 4-54: GetAppFont returns ApFontID.
-        // The standard Roman application font is Geneva (family ID 3).
-        PpcImportDispatcherTarget::GetAppFont => Some(PpcImportAction::Return(3)),
-        // The same reference specifies that GetDefFontSize returns
-        // SysFontSize, using 12 points when that low-memory value is zero.
-        // Systemless currently models the default system font at 12 points.
-        PpcImportDispatcherTarget::GetDefFontSize => Some(PpcImportAction::Return(12)),
-        PpcImportDispatcherTarget::GetFontName => {
-            let font_id = cpu.gpr[3] as u16 as i16;
-            let name = font_name_for_id(font_id)
-                .map(str::to_owned)
-                .or_else(|| ppc_vfs_font_name_for_id(vfs_resources, font_id))
-                .unwrap_or_default();
-            let _ = ppc_write_pstring_bytes(memory, cpu.gpr[4], name.as_bytes());
-            Some(PpcImportAction::ReturnPreserve)
+        PpcImportDispatcherTarget::GetSysFont
+        | PpcImportDispatcherTarget::GetAppFont
+        | PpcImportDispatcherTarget::GetDefFontSize
+        | PpcImportDispatcherTarget::GetFontName => {
+            unreachable!("Font Manager imports return through dispatch_font_import")
         }
         PpcImportDispatcherTarget::GetMBarHeight => Some(PpcImportAction::Return(u32::from(
             memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20),
