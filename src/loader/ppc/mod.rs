@@ -16778,6 +16778,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             binding,
             cpu,
             memory,
+            gworlds,
             tick_count: *tick_count,
             current_gworld: *current_gworld,
             current_gdevice: *current_gdevice,
@@ -17650,7 +17651,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::GetIntlResource => {
             unreachable!("resource imports return through dispatch_resource_import")
         }
-        PpcImportDispatcherTarget::GetForeColor
+        PpcImportDispatcherTarget::InitGraf
+        | PpcImportDispatcherTarget::GetForeColor
         | PpcImportDispatcherTarget::GetBackColor
         | PpcImportDispatcherTarget::ForeColor
         | PpcImportDispatcherTarget::BackColor
@@ -19673,12 +19675,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::SetControlValue
         | PpcImportDispatcherTarget::HiliteControl => {
             unreachable!("control imports return through dispatch_control_import")
-        }
-        PpcImportDispatcherTarget::InitGraf => {
-            toolbox_startup.init_graf_count = toolbox_startup.init_graf_count.saturating_add(1);
-            toolbox_startup.init_graf_global_ptr = cpu.gpr[3];
-            let _ = ppc_init_graf(memory, gworlds, cpu.gpr[3]);
-            Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::InitFonts => {
             unreachable!("Font Manager imports return through dispatch_font_import")
