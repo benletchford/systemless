@@ -109,12 +109,51 @@ pub(super) fn dispatch_q3_submit_import_fast(
     ))))
 }
 
-pub(super) fn dispatch_q3_matrix_import_fast(
-    target: &PpcImportDispatcherTarget,
-    cpu: &PpcCpu,
-    memory: &mut PpcSectionMem,
+pub(super) struct PpcQ3MathDispatchContext<'a> {
+    pub(super) target: &'a PpcImportDispatcherTarget,
+    pub(super) cpu: &'a mut PpcCpu,
+    pub(super) memory: &'a mut PpcSectionMem,
+    pub(super) q3_objects: &'a mut Vec<PpcQ3ObjectRecord>,
+    pub(super) next_q3_object: &'a mut u32,
+    pub(super) q3_error_state: &'a mut PpcQ3ErrorState,
+}
+
+pub(super) fn dispatch_q3_math_import_fast(
+    context: PpcQ3MathDispatchContext<'_>,
 ) -> Option<PpcImportAction> {
+    let PpcQ3MathDispatchContext {
+        target,
+        cpu,
+        memory,
+        q3_objects,
+        next_q3_object,
+        q3_error_state,
+    } = context;
     match target {
+        PpcImportDispatcherTarget::Q3Vector3DNormalize => Some(PpcImportAction::Return(
+            ppc_q3_vector3d_normalize(cpu, memory, cpu.gpr[3], cpu.gpr[4]),
+        )),
+        PpcImportDispatcherTarget::Q3Vector2DNormalize => Some(PpcImportAction::Return(
+            ppc_q3_vector2d_normalize(memory, cpu.gpr[3], cpu.gpr[4]),
+        )),
+        PpcImportDispatcherTarget::Q3Vector3DCross => Some(PpcImportAction::Return(
+            ppc_q3_vector3d_cross(cpu, memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]),
+        )),
+        PpcImportDispatcherTarget::Q3Point2DDistance => {
+            cpu.fpr[1] =
+                f64::from(ppc_q3_point2d_distance(memory, cpu.gpr[3], cpu.gpr[4])).to_bits();
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::Q3Point3DDistance => {
+            cpu.fpr[1] =
+                f64::from(ppc_q3_point3d_distance(memory, cpu.gpr[3], cpu.gpr[4])).to_bits();
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::Q3Point3DCrossProductTri => {
+            Some(PpcImportAction::Return(ppc_q3_point3d_cross_product_tri(
+                memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6],
+            )))
+        }
         PpcImportDispatcherTarget::Q3Matrix3x3SetTranslate => {
             Some(PpcImportAction::Return(ppc_q3_matrix3x3_set_translate(
                 memory,
@@ -171,6 +210,33 @@ pub(super) fn dispatch_q3_matrix_import_fast(
         PpcImportDispatcherTarget::Q3Matrix4x4Invert => Some(PpcImportAction::Return(
             ppc_q3_matrix4x4_invert(memory, cpu.gpr[3], cpu.gpr[4]),
         )),
+        PpcImportDispatcherTarget::Q3Point3DTransform => Some(PpcImportAction::Return(
+            ppc_q3_point3d_transform(memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]),
+        )),
+        PpcImportDispatcherTarget::Q3Point3DTo3DTransformArray => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_point3d_transform_array(
+                memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6], cpu.gpr[7], cpu.gpr[8],
+                false,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3Point3DTo4DTransformArray => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_point3d_transform_array(
+                memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6], cpu.gpr[7], cpu.gpr[8],
+                true,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3Vector3DTransform => Some(PpcImportAction::Return(
+            ppc_q3_vector3d_transform(memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]),
+        )),
+        PpcImportDispatcherTarget::Q3MatrixTransformNew => Some(PpcImportAction::Return(
+            ppc_q3_matrix_transform_new(cpu, q3_objects, next_q3_object),
+        )),
+        PpcImportDispatcherTarget::Q3MatrixTransformSet => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_matrix_transform_set(cpu, q3_objects, q3_error_state)),
+        )),
+        PpcImportDispatcherTarget::Q3TransformGetMatrix => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_transform_get_matrix(cpu, memory, q3_objects, q3_error_state),
+        ))),
         _ => None,
     }
 }
