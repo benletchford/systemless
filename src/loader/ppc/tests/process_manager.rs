@@ -1,6 +1,63 @@
 use super::*;
 
 #[test]
+fn hle_import_runner_enumerates_the_single_process() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    let psn_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(psn_ptr, vec![0; 8]);
+    loaded.cpu.gpr[3] = psn_ptr;
+
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetNextProcess,
+        ),
+    );
+
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(
+        loaded.memory.read_u32_be(psn_ptr),
+        Some(ProcessSerialNumber::CURRENT.high)
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(psn_ptr + 4),
+        Some(ProcessSerialNumber::CURRENT.low)
+    );
+
+    loaded.cpu.gpr[3] = psn_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetNextProcess,
+        ),
+    );
+
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PROC_NOT_FOUND_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(psn_ptr + 4),
+        Some(ProcessSerialNumber::CURRENT.low)
+    );
+
+    loaded
+        .memory
+        .write_u32_be(psn_ptr + 4, ProcessSerialNumber::CURRENT.low + 1)
+        .unwrap();
+    loaded.cpu.gpr[3] = psn_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetNextProcess,
+        ),
+    );
+
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PROC_NOT_FOUND_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(psn_ptr + 4),
+        Some(ProcessSerialNumber::CURRENT.low + 1)
+    );
+}
+
+#[test]
 fn hle_import_runner_handles_get_current_process() {
     let pef = synthetic_pef_with_import(b"GetCurrentProcess");
     let mut loaded = load_pef_application(&pef).unwrap();
