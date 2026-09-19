@@ -18,6 +18,10 @@ Copyright 2013, 2014, 2015 by (URW)++ Design & Development.
 | London | C059 Bold |
 | Cairo | URW Gothic Demi |
 
+At 9 points, unresolved Application/Geneva printable ASCII uses the
+[Coppet optical-size substitute](../coppet/README.md). URW continues to supply
+the extended characters and baseline metrics, and all other sizes.
+
 These are substitutes, not recreations of Apple's designs. In particular,
 Core 35 provides neither a London blackletter equivalent nor Cairo pictograms.
 Unmapped families retain the existing fallback. Guest-visible family names

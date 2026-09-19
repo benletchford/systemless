@@ -29,13 +29,32 @@ pub(super) fn face(font_id: i16, size: i16) -> Option<Faces> {
     if let Some(faces) = cache.get(&(font_id, size)) {
         return Some(*faces);
     }
-    let faces = rasterize(
+    let mut faces = rasterize(
         font_id,
         size,
         bytes,
         super::compatibility::bundled_advances(font_id, size),
         super::compatibility::bundled_wid_max(font_id, size),
     )?;
+    // Coppet is an optical-size-specific ASCII substitute. Retain the
+    // established GetFontInfo metrics and extended Mac Roman fallback.
+    // Guest resources and explicit overrides are resolved before this path.
+    if size == 9 && matches!(font_id, FONT_APPLICATION | FONT_GENEVA) {
+        let (ascii, _) = rasterize(
+            font_id,
+            size,
+            include_bytes!("coppet/Coppet-Regular.ttf"),
+            super::compatibility::bundled_advances(font_id, size),
+            super::compatibility::bundled_wid_max(font_id, size),
+        )?;
+        faces.0 = Box::leak(Box::new(FontFace {
+            font_id,
+            size,
+            metrics: faces.0.metrics,
+            glyphs: ascii.glyphs,
+            data: ascii.data,
+        }));
+    }
     cache.insert((font_id, size), faces);
     Some(faces)
 }
@@ -414,6 +433,36 @@ mod tests {
     }
 
     #[test]
+    fn coppet9_keeps_guest_ink_and_retained_outline_sources() {
+        for family in [FONT_GENEVA, FONT_APPLICATION] {
+            let (face, _) = super::face(family, 9).unwrap();
+            for (index, glyph) in face.glyphs.iter().enumerate().skip(1) {
+                let count = usize::from(glyph.width) * usize::from(glyph.height);
+                assert!(
+                    face.data[glyph.data_offset..glyph.data_offset + count]
+                        .iter()
+                        .any(|&p| p == 255),
+                    "character {} lost its guest ink",
+                    index + 32
+                );
+                let high = presentation_glyph(glyph, face.data, 4)
+                    .expect("Coppet retains its own outline source");
+                assert!(high.pixels.iter().any(|&p| p > 0));
+            }
+            let i = &face.glyphs[usize::from(b'i' - b' ')];
+            let w = usize::from(i.width);
+            let pixels = &face.data[i.data_offset..i.data_offset + w * usize::from(i.height)];
+            let rows = pixels.chunks_exact(w).collect::<Vec<_>>();
+            assert!(rows[0].contains(&255), "i dot must survive");
+            assert!(rows[1].iter().all(|&p| p == 0), "i dot stays separate");
+            assert!(
+                rows[2].iter().filter(|&&p| p == 255).count() >= 2,
+                "i entry stroke must survive"
+            );
+        }
+    }
+
+    #[test]
     fn geneva9_apeiron_phrase_spans_match_recorded_origins() {
         const FIRST: &[u8] = b"This is your shooter.  There are many like it, ";
         const SECOND: &[u8] = b"but this one is yours.  Mind it well, cuz it is ";
@@ -444,15 +493,16 @@ mod tests {
     }
 
     #[test]
-    fn geneva9_compatibility_keeps_urw_raster_extended_metrics_and_wid_max() {
+    fn geneva9_coppet_preserves_extended_glyphs_and_font_metrics() {
         let bytes = super::bytes(FONT_GENEVA).expect("bundled Geneva bytes");
         let (raw, raw_extended) = super::rasterize(FONT_GENEVA, 9, bytes, None, None).unwrap();
         let (bundled, bundled_extended) = super::face(FONT_GENEVA, 9).unwrap();
 
-        assert_eq!(raw.data, bundled.data);
-        for (raw_glyph, bundled_glyph) in raw.glyphs.iter().zip(bundled.glyphs) {
-            assert_same_glyph_except_advance(raw_glyph, bundled_glyph);
-        }
+        assert_ne!(raw.data, bundled.data, "ASCII artwork uses Coppet");
+        assert_eq!(raw_extended.data, bundled_extended.data);
+        assert_eq!(raw.metrics.ascent, bundled.metrics.ascent);
+        assert_eq!(raw.metrics.descent, bundled.metrics.descent);
+        assert_eq!(raw.metrics.leading, bundled.metrics.leading);
         for (raw_glyph, bundled_glyph) in raw_extended.glyphs.iter().zip(bundled_extended.glyphs) {
             assert_eq!(raw_glyph.mac_code, bundled_glyph.mac_code);
             assert_same_glyph_except_advance(&raw_glyph.glyph, &bundled_glyph.glyph);
@@ -483,10 +533,8 @@ mod tests {
             }
             assert_eq!(raw_extended.data, bundled_extended.data);
             assert_eq!(raw_extended.glyphs.len(), bundled_extended.glyphs.len());
-            for (raw_glyph, bundled_glyph) in raw_extended
-                .glyphs
-                .iter()
-                .zip(bundled_extended.glyphs)
+            for (raw_glyph, bundled_glyph) in
+                raw_extended.glyphs.iter().zip(bundled_extended.glyphs)
             {
                 assert_eq!(raw_glyph.mac_code, bundled_glyph.mac_code);
                 assert_same_glyph_except_advance(&raw_glyph.glyph, &bundled_glyph.glyph);
@@ -513,6 +561,7 @@ mod tests {
             let bytes = super::bytes(font_id).unwrap();
             let (raw, _) = super::rasterize(font_id, size, bytes, None, None).unwrap();
             let (bundled, _) = super::face(font_id, size).unwrap();
+            assert_eq!(raw.data, bundled.data);
             assert_eq!(
                 raw.glyphs
                     .iter()
@@ -566,14 +615,15 @@ mod tests {
                 assert_eq!(face.glyphs.len(), 95);
                 assert_eq!(extended.glyphs.len(), 128);
                 assert!(face.data.iter().all(|&value| value == 0 || value == 255));
-                for glyph in face
-                    .glyphs
-                    .iter()
-                    .chain(extended.glyphs.iter().map(|entry| &entry.glyph))
-                {
+                for (glyph, data) in face.glyphs.iter().map(|g| (g, face.data)).chain(
+                    extended
+                        .glyphs
+                        .iter()
+                        .map(|entry| (&entry.glyph, extended.data)),
+                ) {
                     assert!(
                         glyph.data_offset + usize::from(glyph.width) * usize::from(glyph.height)
-                            <= face.data.len()
+                            <= data.len()
                     );
                 }
                 assert!(std::ptr::eq(face, super::face(family, size).unwrap().0));

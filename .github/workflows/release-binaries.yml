@@ -116,6 +116,8 @@ jobs:
                   "src/quickdraw/fonts/urw/README.md": "URW-README.md",
                   "src/quickdraw/fonts/noto/OFL.txt": "Noto-OFL.txt",
                   "src/quickdraw/fonts/noto/README.md": "Noto-README.md",
+                  "src/quickdraw/fonts/coppet/OFL.txt": "Coppet-OFL.txt",
+                  "src/quickdraw/fonts/coppet/README.md": "Coppet-README.md",
               }
               for source, destination in documents.items():
                   shutil.copy2(source, package / destination)

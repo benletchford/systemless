@@ -4,7 +4,7 @@ version = "0.41.12"
 edition = "2021"
 rust-version = "1.93"
 # Emulator code is GPL-3.0-or-later.
-# Bundled URW and Noto font assets are under OFL-1.1.
+# Bundled URW, Noto and Coppet font assets are under OFL-1.1.
 license = "GPL-3.0-or-later AND OFL-1.1"
 description = "High-Level Emulation for classic Macintosh applications"
 readme = "README.md"
