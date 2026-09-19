@@ -68,8 +68,10 @@ impl MacMemoryBus {
         output.width = width;
         output.height = p.height;
         output.scale = p.scale;
-        output.cells.clear();
-        output.cells.reserve(count);
+        // Reuse the initialized cell slice across frames. Every cell below is
+        // overwritten; retaining its length avoids per-pixel Vec::push capacity
+        // checks and length updates in the full-frame export loop.
+        output.cells.resize(count, 0);
         output.detail.clear();
         if p.depth == 8 {
             // SC2K's indexed framebuffer is the common case. Resolve its
@@ -79,17 +81,22 @@ impl MacMemoryBus {
             });
             let scale = p.scale as usize;
             let stride = width as usize * scale * 3;
-            for (cell, (&before, &after)) in guest.iter().zip(overlays).enumerate() {
+            for (cell, (((destination, &before), &after), (&text, &value))) in output
+                .cells
+                .iter_mut()
+                .zip(guest)
+                .zip(overlays)
+                .zip(p.text_cells.iter().zip(&p.guest_values))
+                .enumerate()
+            {
                 if before != after {
-                    output.cells.push(after & 0xffffff);
-                } else if !p.text_cells[cell] {
-                    output
-                        .cells
-                        .push(palette[p.guest_values[cell] as u8 as usize]);
+                    *destination = after & 0xffffff;
+                } else if !text {
+                    *destination = palette[value as u8 as usize];
                 } else {
                     let x = cell % width as usize;
                     let y = cell / width as usize;
-                    output.cells.push(0x80000000 | output.detail.len() as u32);
+                    *destination = 0x80000000 | output.detail.len() as u32;
                     for sy in 0..scale {
                         let start = (y * scale + sy) * stride + x * scale * 3;
                         for rgb in p.pixels[start..start + scale * 3].chunks_exact(3) {
@@ -110,16 +117,16 @@ impl MacMemoryBus {
                 let logical = y * width as usize + x;
                 let cell = y * p.width as usize + x * lanes;
                 if guest[logical] != overlays[logical] {
-                    output.cells.push(overlays[logical] & 0xffffff);
+                    output.cells[logical] = overlays[logical] & 0xffffff;
                 } else if p.text_cells[cell..cell + lanes].iter().any(|&v| v) {
-                    output.cells.push(0x80000000 | output.detail.len() as u32);
+                    output.cells[logical] = 0x80000000 | output.detail.len() as u32;
                     for sy in 0..p.scale as usize {
                         for sx in 0..p.scale as usize {
                             output.detail.push(p.compact_sample(x, y, sx, sy));
                         }
                     }
                 } else {
-                    output.cells.push(p.compact_sample(x, y, 0, 0));
+                    output.cells[logical] = p.compact_sample(x, y, 0, 0);
                 }
             }
         }
@@ -131,6 +138,51 @@ impl MacMemoryBus {
 mod tests {
     use super::*;
     use crate::memory::MemoryBus;
+
+    #[test]
+    fn reused_compact_cells_are_overwritten_after_size_and_depth_changes() {
+        let mut bus = super::super::tests::bus();
+        let mut compact = CompactPresentation::default();
+        for (width, height, depth, ink) in [
+            (8, 8, 8u16, true),
+            (4, 3, 8, false),
+            (12, 9, 8, true),
+            (5, 4, 16, false),
+            (9, 6, 32, true),
+        ] {
+            let lanes = u32::from(depth / 8);
+            bus.enable_outline_presentation(
+                (0x1000, width * lanes, width as u16, height as u16, depth),
+                std::array::from_fn(|i| [i as u8; 3]),
+                2,
+            );
+            if ink {
+                super::super::tests::paint_detail(&mut bus, 0x1000);
+            }
+            let guest = vec![0xff123456; (width * height) as usize];
+            let mut overlay = guest.clone();
+            *overlay.last_mut().unwrap() = 0xffabcdef;
+            assert!(bus.compact_presentation(&guest, &overlay, &mut compact));
+            assert_eq!(compact.cells.len(), guest.len());
+            if !ink {
+                assert!(compact.detail.is_empty());
+            }
+            let (w, h, expected) = bus.presented_argb(&guest, &overlay).unwrap();
+            let actual: Vec<_> = (0..h)
+                .flat_map(|y| (0..w).map(move |x| (x, y)))
+                .map(|(x, y)| {
+                    let cell = compact.cells[((y / 2) * width + x / 2) as usize];
+                    0xff000000 | if cell >> 31 == 0 {
+                        cell
+                    } else {
+                        compact.detail[(cell & 0x7fffffff) as usize
+                            + ((y % 2) * 2 + x % 2) as usize]
+                    }
+                })
+                .collect();
+            assert_eq!(actual, expected, "{width}x{height} depth={depth}");
+        }
+    }
 
     #[test]
     fn compact_transport_matches_full_retained_image_after_updates() {
