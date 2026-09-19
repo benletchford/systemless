@@ -138,6 +138,7 @@ mod dispatch_cfm;
 use dispatch_cfm::*;
 mod dispatch_apple_events;
 use dispatch_apple_events::*;
+mod dispatch_bit_transfers;
 mod dispatch_control;
 mod dispatch_cursor;
 mod dispatch_desk;
@@ -16799,6 +16800,25 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     ) {
         return Some(action);
     }
+    if let Some(action) = dispatch_bit_transfers::dispatch_bit_transfer_import(
+        dispatch_bit_transfers::PpcBitTransferDispatchContext {
+            binding,
+            cpu,
+            memory,
+            gworlds,
+            window_list,
+            current_gworld: *current_gworld,
+            current_gdevice: *current_gdevice,
+            quickdraw_op_colors,
+            color_manager_clut,
+            quickdraw_fore_color: *quickdraw_fore_color,
+            quickdraw_fore_index: quickdraw_fore_indices.get(current_gworld).copied(),
+            quickdraw_back_color: *quickdraw_back_color,
+            toolbox_startup,
+        },
+    ) {
+        return Some(action);
+    }
     if let Some(action) = dispatch_quickdraw::dispatch_quickdraw_import(
         dispatch_quickdraw::PpcQuickDrawDispatchContext {
             binding,
@@ -17881,48 +17901,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
         }
         PpcImportDispatcherTarget::CopyBits => {
-            if let Some((_, picture_gworld, _, commands)) = toolbox_startup.open_picture.as_mut() {
-                if *picture_gworld == *current_gworld {
-                    let _ = ppc_record_copy_bits(cpu, memory, gworlds, commands);
-                }
-            }
-            // Screen blits must not paint through windows above the current
-            // port. Preserve their structure pixels, including presentation
-            // detail, just as the Window Manager clips rear-window chrome.
-            let saved_front = if window_list.contains(current_gworld)
-                && ppc_resolve_pixmap_bits_with_provenance(memory, gworlds, cpu.gpr[4])
-                    .zip(ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD))
-                    .is_some_and(|(destination, front)| destination.bits.base_addr == front.base_addr)
-            {
-                ppc_front_window_occlusion_pixels(memory, gworlds, window_list, *current_gworld)
-            } else {
-                None
-            };
-            let op_color = ppc_current_op_color(memory, *current_gworld, quickdraw_op_colors);
-            let _ = ppc_copy_bits(
-                cpu,
-                memory,
-                gworlds,
-                *current_gworld,
-                *current_gdevice,
-                toolbox_startup,
-                color_manager_clut,
-                *quickdraw_fore_color,
-                quickdraw_fore_indices.get(current_gworld).copied(),
-                *quickdraw_back_color,
-                toolbox_startup
-                    .quickdraw_back_indices
-                    .get(current_gworld)
-                    .copied(),
-                op_color,
-            );
-            if let Some(saved) = saved_front {
-                for (index, (x, y, pixel)) in saved.pixels.iter().copied().enumerate() {
-                    let _ = ppc_quickdraw_write_raw_pixel(memory, saved.front_buffer, (x, y), pixel);
-                    ppc_restore_saved_detail(memory, saved.front_buffer, (x, y), &saved.pixels, index);
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
+            unreachable!("bit-transfer imports return through dispatch_bit_transfer_import")
         }
         PpcImportDispatcherTarget::OpenPoly
         | PpcImportDispatcherTarget::ClosePoly
@@ -21893,13 +21872,9 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        PpcQuickDrawCompatibilityOperation::CopyMask => {
-            let _ = ppc_copy_mask(cpu, memory, gworlds, color_manager_clut);
-            PpcImportAction::ReturnPreserve
-        }
-        PpcQuickDrawCompatibilityOperation::CopyDeepMask => {
-            let _ = ppc_copy_deep_mask(cpu, memory, gworlds, color_manager_clut);
-            PpcImportAction::ReturnPreserve
+        PpcQuickDrawCompatibilityOperation::CopyMask
+        | PpcQuickDrawCompatibilityOperation::CopyDeepMask => {
+            unreachable!("bit-transfer imports return through dispatch_bit_transfer_import")
         }
         PpcQuickDrawCompatibilityOperation::SetEntryColor => {
             // PaletteHandle, entry index, and RGBColor pointer. Inside Macintosh
