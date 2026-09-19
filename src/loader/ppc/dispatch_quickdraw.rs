@@ -15,6 +15,8 @@ pub(super) struct PpcQuickDrawDispatchContext<'a> {
     pub(super) quickdraw_fore_color: &'a mut PpcRgbColor,
     pub(super) quickdraw_fore_indices: &'a mut HashMap<u32, u8>,
     pub(super) quickdraw_back_color: &'a mut PpcRgbColor,
+    pub(super) quickdraw_pen_h: &'a mut i16,
+    pub(super) quickdraw_pen_v: &'a mut i16,
     pub(super) toolbox_startup: &'a mut PpcToolboxStartupState,
 }
 
@@ -36,6 +38,8 @@ pub(super) fn dispatch_quickdraw_import(
         quickdraw_fore_color,
         quickdraw_fore_indices,
         quickdraw_back_color,
+        quickdraw_pen_h,
+        quickdraw_pen_v,
         toolbox_startup,
     } = context;
 
@@ -477,6 +481,65 @@ pub(super) fn dispatch_quickdraw_import(
                     );
                 }
             }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::GetPen => {
+            if cpu.gpr[3] != 0 {
+                let _ = memory.write_u16_be(cpu.gpr[3], *quickdraw_pen_v as u16);
+                let _ = memory.write_u16_be(cpu.gpr[3] + 2, *quickdraw_pen_h as u16);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::HidePen | PpcImportDispatcherTarget::ShowPen => {
+            let address = current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_VIS_OFFSET);
+            let visibility = memory.read_u16_be(address).unwrap_or(0) as i16;
+            let visibility = if matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::HidePen
+            ) {
+                visibility.saturating_sub(1)
+            } else {
+                visibility.saturating_add(1).min(0)
+            };
+            let _ = memory.write_u16_be(address, visibility as u16);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::PenSize => {
+            ppc_set_pen_size(cpu, memory, current_gworld);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::PenMode => {
+            if ppc_memory_can_write_bytes(
+                memory,
+                current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_MODE_OFFSET),
+                2,
+            ) {
+                let _ = memory.write_u16_be(
+                    current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_MODE_OFFSET),
+                    cpu.gpr[3] as u16,
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::PenNormal => {
+            ppc_set_pen_normal(memory, current_gworld);
+            toolbox_startup.quickdraw_pen_pattern = [0xff; 8];
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::PenPixPat => {
+            // Imaging With QuickDraw (1994), 4-67 through 4-68: the PixPat
+            // handle is installed directly into the color port's pnPixPat.
+            if cpu.gpr[3] != 0 && current_gworld != 0 {
+                let _ = memory.write_u32_be(current_gworld.wrapping_add(58), cpu.gpr[3]);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::GetPenState => {
+            ppc_get_pen_state(memory, current_gworld, cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::SetPenState => {
+            ppc_set_pen_state(memory, current_gworld, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
         _ => None,
