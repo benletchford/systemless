@@ -668,6 +668,133 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::FrameOval
+        | PpcImportDispatcherTarget::PaintOval
+        | PpcImportDispatcherTarget::EraseOval => {
+            if toolbox_startup.open_region_port == current_gworld {
+                if binding.dispatcher_target == PpcImportDispatcherTarget::FrameOval {
+                    if let Some((top, left, bottom, right)) = ppc_read_rect(memory, cpu.gpr[3]) {
+                        let rows = TrapDispatcher::compute_oval_spans(
+                            right.saturating_sub(left),
+                            bottom.saturating_sub(top),
+                        )
+                        .into_iter()
+                        .map(|(row_left, row_right)| {
+                            vec![
+                                left.saturating_add(row_left),
+                                left.saturating_add(row_right),
+                            ]
+                        })
+                        .collect();
+                        ppc_open_region_include_rows(toolbox_startup, top, rows);
+                    }
+                } else {
+                    ppc_open_region_include_rect(toolbox_startup, memory, cpu.gpr[3]);
+                }
+            } else {
+                let color = if matches!(
+                    binding.dispatcher_target,
+                    PpcImportDispatcherTarget::EraseOval
+                ) {
+                    *quickdraw_back_color
+                } else {
+                    *quickdraw_fore_color
+                };
+                let _ = ppc_draw_oval(
+                    memory,
+                    gworlds,
+                    current_gworld,
+                    cpu.gpr[3],
+                    color,
+                    (!matches!(
+                        binding.dispatcher_target,
+                        PpcImportDispatcherTarget::EraseOval
+                    ))
+                    .then(|| quickdraw_fore_indices.get(&current_gworld).copied())
+                    .flatten(),
+                    matches!(
+                        binding.dispatcher_target,
+                        PpcImportDispatcherTarget::FrameOval
+                    ),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::PaintArc => {
+            if toolbox_startup.open_region_port == current_gworld {
+                ppc_open_region_include_rect(toolbox_startup, memory, cpu.gpr[3]);
+            } else {
+                let _ = ppc_paint_arc(
+                    memory,
+                    gworlds,
+                    current_gworld,
+                    cpu.gpr[3],
+                    cpu.gpr[4] as u16 as i16,
+                    cpu.gpr[5] as u16 as i16,
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(&current_gworld).copied(),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::FrameRoundRect | PpcImportDispatcherTarget::PaintRoundRect => {
+            let paint = matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::PaintRoundRect
+            );
+            if let (Some(commands), Some(rect)) = (
+                ppc_open_picture_commands(toolbox_startup, current_gworld),
+                ppc_read_rect(memory, cpu.gpr[3]),
+            ) {
+                pict::recording_push_round_rect(
+                    commands,
+                    if paint { 0x0041 } else { 0x0040 },
+                    rect,
+                    cpu.gpr[4] as u16 as i16,
+                    cpu.gpr[5] as u16 as i16,
+                );
+            } else if toolbox_startup.open_region_port == current_gworld {
+                if let Some((top, left, bottom, right)) = ppc_read_rect(memory, cpu.gpr[3]) {
+                    let rect = Rect {
+                        top,
+                        left,
+                        bottom,
+                        right,
+                    };
+                    let rows = TrapDispatcher::compute_rrect_spans(
+                        &rect,
+                        cpu.gpr[4] as u16 as i16,
+                        cpu.gpr[5] as u16 as i16,
+                    )
+                    .into_iter()
+                    .map(|(row_left, row_right)| vec![row_left, row_right])
+                    .collect();
+                    ppc_open_region_include_rows(toolbox_startup, top, rows);
+                }
+            } else {
+                let explicit_index = quickdraw_fore_indices.get(&current_gworld).copied();
+                if paint {
+                    let _ = ppc_paint_round_rect(
+                        cpu,
+                        memory,
+                        gworlds,
+                        current_gworld,
+                        *quickdraw_fore_color,
+                        explicit_index,
+                    );
+                } else {
+                    let _ = ppc_frame_round_rect(
+                        cpu,
+                        memory,
+                        gworlds,
+                        current_gworld,
+                        *quickdraw_fore_color,
+                        explicit_index,
+                    );
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetPen => {
             if cpu.gpr[3] != 0 {
                 let _ = memory.write_u16_be(cpu.gpr[3], *quickdraw_pen_v as u16);
