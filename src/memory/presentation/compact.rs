@@ -235,6 +235,73 @@ mod tests {
     }
 
     #[test]
+    fn switching_software_overlays_preserves_retained_image() {
+        use crate::display::{render_cursor_argb, render_debug_overlay_argb, CursorImage};
+
+        let (width, height) = (128u32, 48u32);
+        for depth in [8u16, 16, 32] {
+            let mut bus = MacMemoryBus::new(1024 * 1024);
+            bus.enable_outline_presentation(
+                (
+                    0x1000,
+                    width * u32::from(depth / 8),
+                    width as u16,
+                    height as u16,
+                    depth,
+                ),
+                std::array::from_fn(|i| [i as u8; 3]),
+                2,
+            );
+            super::super::tests::paint_detail(&mut bus, 0x1000);
+            let logical = vec![0xff123456; (width * height) as usize];
+            let cursor = CursorImage::mono([0x80; 32], [0xff; 32], 0, 0);
+            let mut compact = CompactPresentation::default();
+            for (cursor_visible, debug_visible) in [
+                (false, false),
+                (true, false),
+                (false, false),
+                (false, true),
+                (true, true),
+                (false, false),
+            ] {
+                let mut overlay = logical.clone();
+                if cursor_visible {
+                    render_cursor_argb(&mut overlay, width, height, &cursor, (-3, -2));
+                }
+                if debug_visible {
+                    render_debug_overlay_argb(&mut overlay, width, height, &["FPS 60".into()]);
+                }
+                if cursor_visible || debug_visible {
+                    assert_ne!(overlay, logical, "test overlay must affect pixels");
+                    assert!(bus.compact_presentation(&logical, &overlay, &mut compact));
+                } else {
+                    assert!(
+                        bus.compact_presentation_without_overlays((width, height), &mut compact)
+                    );
+                }
+                let (w, h, expected) = bus.presented_argb(&logical, &overlay).unwrap();
+                let mut actual = Vec::with_capacity((w * h) as usize);
+                for y in 0..h {
+                    for x in 0..w {
+                        let cell = compact.cells[((y / 2) * width + x / 2) as usize];
+                        let rgb = if cell >> 31 == 0 {
+                            cell
+                        } else {
+                            compact.detail
+                                [(cell & 0x7fffffff) as usize + ((y % 2) * 2 + x % 2) as usize]
+                        };
+                        actual.push(0xff000000 | rgb);
+                    }
+                }
+                assert_eq!(
+                    actual, expected,
+                    "depth={depth} cursor={cursor_visible} debug={debug_visible}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn reused_compact_cells_are_overwritten_after_size_and_depth_changes() {
         let mut bus = super::super::tests::bus();
         let mut compact = CompactPresentation::default();
