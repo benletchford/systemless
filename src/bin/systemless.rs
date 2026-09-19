@@ -14,6 +14,10 @@
 //! headless-only library and skip the `winit` / `softbuffer` / `cpal`
 //! link.
 
+#[cfg(target_os = "windows")]
+#[path = "desktop/d3d_present.rs"]
+mod d3d_present;
+
 #[path = "desktop/desktop_save_store.rs"]
 mod desktop_save_store;
 #[path = "desktop/headless_time.rs"]
@@ -796,7 +800,23 @@ impl HostMouseReleaseLatch {
     }
 }
 
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy)]
+struct PendingGpuFrame {
+    size: (u32, u32),
+    rect: (u32, u32, u32, u32),
+    guest_tick: u32,
+}
+
 struct App {
+    #[cfg(target_os = "windows")]
+    gpu: Option<d3d_present::D3dPresenter>,
+    #[cfg(target_os = "windows")]
+    gpu_wake: Option<winit::event_loop::EventLoopProxy<()>>,
+    #[cfg(target_os = "windows")]
+    gpu_frame: systemless::memory::CompactPresentation,
+    #[cfg(target_os = "windows")]
+    gpu_pending: Option<PendingGpuFrame>,
     window: Option<Rc<Window>>,
     #[cfg(target_os = "macos")]
     surface: Option<metal_present::MetalPresenter>,
@@ -967,6 +987,14 @@ impl App {
         }
         Self {
             window: None,
+            #[cfg(target_os = "windows")]
+            gpu: None,
+            #[cfg(target_os = "windows")]
+            gpu_wake: None,
+            #[cfg(target_os = "windows")]
+            gpu_frame: Default::default(),
+            #[cfg(target_os = "windows")]
+            gpu_pending: None,
             surface: None,
             #[cfg(not(target_os = "macos"))]
             surface_size: None,
@@ -1538,6 +1566,53 @@ impl App {
             || self.last_presented_guest_tick != Some(runner.guest_tick())
     }
 
+    #[cfg(target_os = "windows")]
+    fn retry_gpu_present(&mut self) {
+        let Some(pending) = self.gpu_pending else {
+            return;
+        };
+        let Some(gpu) = self.gpu.as_mut() else {
+            return;
+        };
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let size = window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            gpu.cancel_retry();
+            return;
+        }
+        if pending.size != (size.width, size.height) {
+            // The resize event prepares the new geometry. Never submit an
+            // old-size pending image into the replacement drawable.
+            gpu.cancel_retry();
+            self.force_next_render = true;
+            return;
+        }
+        let _timing = FramePhaseTimer::new("GPU readiness retry work");
+        match gpu.present(&self.gpu_frame, pending.size, pending.rect) {
+            Ok(true) => {
+                self.gpu_pending = None;
+                self.last_presented_guest_tick = Some(pending.guest_tick);
+            }
+            Ok(false) => {}
+            Err(message) => {
+                eprintln!("[GPU] {message}; switching to software presentation");
+                self.gpu = None;
+                self.gpu_pending = None;
+                let window = self.window.as_ref().unwrap().clone();
+                let context = softbuffer::Context::new(window.clone())
+                    .expect("Failed to create software context");
+                self.surface = Some(
+                    Surface::new(&context, window).expect("Failed to create software surface"),
+                );
+                self.surface_size = None;
+                self.force_next_render = true;
+                self.render_frame();
+            }
+        }
+    }
+
     fn render_frame(&mut self) {
         let _timing = FramePhaseTimer::new("render frame (main thread)");
         let render_start = std::time::Instant::now();
@@ -2022,6 +2097,72 @@ impl App {
                 })
                 .lines();
             display::render_debug_overlay_argb(&mut frame_argb, game_w, game_h, &lines);
+        }
+
+        #[cfg(target_os = "windows")]
+        if self.gpu.is_some() {
+            let exported = {
+                let _timing = FramePhaseTimer::new("GPU compact preparation");
+                if let Some(guest) = guest_frame.as_ref() {
+                    runner
+                        .bus()
+                        .compact_presentation(guest, &frame_argb, &mut self.gpu_frame)
+                } else {
+                    self.gpu_frame.width = game_w;
+                    self.gpu_frame.height = game_h;
+                    self.gpu_frame.scale = 1;
+                    self.gpu_frame.cells.clear();
+                    self.gpu_frame
+                        .cells
+                        .extend(frame_argb.iter().map(|p| p & 0xffffff));
+                    self.gpu_frame.detail.clear();
+                    true
+                }
+            };
+            // This is a single latest-image slot. Preparation can overlap
+            // display backpressure; a newer guest frame replaces an older
+            // pending one without queuing extra GPU frames.
+            self.gpu_pending = Some(PendingGpuFrame {
+                size: (buf_w, buf_h),
+                rect: aspect_fit_dimensions(game_w, game_h, buf_w, buf_h),
+                guest_tick: presented_tick,
+            });
+            let result = if exported {
+                self.gpu.as_mut().unwrap().present(
+                    &self.gpu_frame,
+                    (buf_w, buf_h),
+                    aspect_fit_dimensions(game_w, game_h, buf_w, buf_h),
+                )
+            } else {
+                Err("frame cannot use the opaque compact transport".into())
+            };
+            match result {
+                Ok(submitted) => {
+                    self.frame_argb = frame_argb;
+                    if submitted {
+                        self.gpu_pending = None;
+                        self.last_presented_guest_tick = Some(presented_tick);
+                    }
+                    // The prepared image satisfies this redraw request. A
+                    // readiness wake submits it without recompositing. Later
+                    // input/expose requests must survive that submission.
+                    self.force_next_render = false;
+                    self.render_headroom = Self::next_render_headroom(render_start.elapsed());
+                    return;
+                }
+                Err(message) => {
+                    eprintln!("[GPU] {message}; switching to software presentation");
+                    self.gpu = None;
+                    self.gpu_pending = None;
+                    let window = self.window.as_ref().unwrap().clone();
+                    let context = softbuffer::Context::new(window.clone())
+                        .expect("Failed to create software context");
+                    self.surface = Some(
+                        Surface::new(&context, window).expect("Failed to create software surface"),
+                    );
+                    self.surface_size = None;
+                }
+            }
         }
 
         let mut presented = std::mem::take(&mut self.presentation_argb);
@@ -2662,6 +2803,13 @@ impl App {
 }
 
 impl ApplicationHandler for App {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, (): ()) {
+        // Upload the latest prepared image. Do not execute the guest, change
+        // its clock, or redo CPU composition on this display readiness wake.
+        #[cfg(target_os = "windows")]
+        self.retry_gpu_present();
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
             #[cfg(target_os = "macos")]
@@ -2758,14 +2906,38 @@ impl ApplicationHandler for App {
             #[cfg(target_os = "macos")]
             let surface = metal_present::MetalPresenter::new(window.clone())
                 .expect("Failed to create Metal presenter");
+            #[cfg(target_os = "windows")]
+            if std::env::var_os("SYSTEMLESS_D3D11").as_deref() != Some(std::ffi::OsStr::new("0")) {
+                match d3d_present::D3dPresenter::new(
+                    window.clone(),
+                    self.gpu_wake.as_ref().unwrap().clone(),
+                ) {
+                    Ok(gpu) => {
+                        eprintln!("[GPU] D3D11 compact coverage enabled");
+                        self.gpu = Some(gpu);
+                    }
+                    Err(message) => eprintln!("[GPU] {message}; using software presentation"),
+                }
+            }
             #[cfg(not(target_os = "macos"))]
-            let context =
-                softbuffer::Context::new(window.clone()).expect("Failed to create context");
-            #[cfg(not(target_os = "macos"))]
-            let surface = Surface::new(&context, window.clone()).expect("Failed to create surface");
-
+            {
+                #[cfg(target_os = "windows")]
+                let software = self.gpu.is_none();
+                #[cfg(not(target_os = "windows"))]
+                let software = true;
+                if software {
+                    let context =
+                        softbuffer::Context::new(window.clone()).expect("Failed to create context");
+                    self.surface = Some(
+                        Surface::new(&context, window.clone()).expect("Failed to create surface"),
+                    );
+                }
+            }
+            #[cfg(target_os = "macos")]
+            {
+                self.surface = Some(surface);
+            }
             self.window = Some(window);
-            self.surface = Some(surface);
         }
     }
 
@@ -2905,7 +3077,23 @@ impl ApplicationHandler for App {
         let now = std::time::Instant::now();
         let next = self.next_frame_time.unwrap_or(now);
 
+        #[cfg(target_os = "windows")]
+        if self
+            .gpu
+            .as_ref()
+            .and_then(|gpu| gpu.retry_at())
+            .is_some_and(|at| now >= at)
+        {
+            self.retry_gpu_present();
+        }
+
         if now < next {
+            #[cfg(target_os = "windows")]
+            let next = self
+                .gpu
+                .as_ref()
+                .and_then(|gpu| gpu.retry_at())
+                .map_or(next, |at| next.min(at));
             event_loop.set_control_flow(ControlFlow::WaitUntil(next));
             return;
         }
@@ -2986,6 +3174,10 @@ impl ApplicationHandler for App {
             runner.finish_gui_frame();
         }
         self.frame_count += 1;
+        #[cfg(target_os = "windows")]
+        if let Some(at) = self.gpu.as_ref().and_then(|gpu| gpu.retry_at()) {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(next_target.min(at)));
+        }
     }
 }
 
@@ -3020,6 +3212,10 @@ fn run_gui(
         ui_theme,
         fullscreen,
     );
+    #[cfg(target_os = "windows")]
+    {
+        app.gpu_wake = Some(event_loop.create_proxy());
+    }
     if let Some(path) = debug_socket {
         match debug_server::DebugServer::bind(&path) {
             Ok(server) => app.debug_server = Some(server),

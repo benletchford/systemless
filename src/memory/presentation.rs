@@ -2,8 +2,10 @@
 //! Ordinary framebuffer writes replace enlarged pixels in drawing order; supported
 //! outline glyphs retain indexed coverage through snapshots and pixel transfers.
 //! Frontends consume the presentation at its physical dimensions.
+mod compact;
 mod controls;
 mod resample;
+pub use compact::CompactPresentation;
 
 use super::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{outline, Glyph};

@@ -63,6 +63,7 @@ gui = [
     "dep:objc2-app-kit",
     "dep:objc2-metal",
     "dep:objc2-quartz-core",
+    "dep:windows",
 ]
 # Compile hot 68K traces to native code. Embeddings constrained by executable-
 # memory policy can omit this feature and use m68k's portable trace executor.
@@ -75,6 +76,14 @@ test-support = []
 debug = []
 # Debugger socket transport (Unix-domain sockets). Implies `debug`.
 debug-server = ["debug"]
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.54", optional = true, features = [
+    "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc",
+    "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common",
+    "Win32_System_Threading", "Win32_Security",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.5.2", optional = true }
