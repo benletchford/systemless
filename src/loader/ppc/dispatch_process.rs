@@ -48,10 +48,10 @@ fn ppc_get_current_process(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
         return PPC_PARAM_ERR;
     }
     if memory
-        .write_u32_be(psn_ptr, PPC_CURRENT_PROCESS_PSN_HIGH)
+        .write_u32_be(psn_ptr, ProcessSerialNumber::CURRENT.high)
         .is_none()
         || memory
-            .write_u32_be(psn_ptr + 4, PPC_CURRENT_PROCESS_PSN_LOW)
+            .write_u32_be(psn_ptr + 4, ProcessSerialNumber::CURRENT.low)
             .is_none()
     {
         return PPC_PARAM_ERR;
@@ -77,7 +77,7 @@ fn ppc_wake_up_process(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
     let Some(psn_low) = memory.read_u32_be(psn_ptr + 4) else {
         return PPC_PARAM_ERR;
     };
-    if psn_high != PPC_CURRENT_PROCESS_PSN_HIGH || psn_low != PPC_CURRENT_PROCESS_PSN_LOW {
+    if !ProcessSerialNumber::new(psn_high, psn_low).is_current() {
         return PPC_PROC_NOT_FOUND_ERR;
     }
     PPC_NO_ERR
@@ -102,11 +102,10 @@ fn ppc_same_process(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
     let Some(second_low) = memory.read_u32_be(second + 4) else {
         return PPC_PARAM_ERR;
     };
+    let first = ProcessSerialNumber::new(first_high, first_low);
+    let second = ProcessSerialNumber::new(second_high, second_low);
     if memory
-        .write_u8(
-            result_ptr,
-            u8::from(first_high == second_high && first_low == second_low),
-        )
+        .write_u8(result_ptr, u8::from(first == second))
         .is_none()
     {
         return PPC_PARAM_ERR;
@@ -133,7 +132,7 @@ fn ppc_get_process_information(
     }
     let psn_high = memory.read_u32_be(psn_ptr).unwrap_or(u32::MAX);
     let psn_low = memory.read_u32_be(psn_ptr + 4).unwrap_or(u32::MAX);
-    if psn_high != PPC_CURRENT_PROCESS_PSN_HIGH || psn_low != PPC_CURRENT_PROCESS_PSN_LOW {
+    if !ProcessSerialNumber::new(psn_high, psn_low).is_current() {
         return PPC_PROC_NOT_FOUND_ERR;
     }
 
@@ -164,10 +163,10 @@ fn ppc_get_process_information(
     let process_size = PPC_STACK_TOP - PPC_CODE_BASE;
     let process_free_mem = process_size / 2;
     if memory
-        .write_u32_be(info_ptr + 8, PPC_CURRENT_PROCESS_PSN_HIGH)
+        .write_u32_be(info_ptr + 8, ProcessSerialNumber::CURRENT.high)
         .is_none()
         || memory
-            .write_u32_be(info_ptr + 12, PPC_CURRENT_PROCESS_PSN_LOW)
+            .write_u32_be(info_ptr + 12, ProcessSerialNumber::CURRENT.low)
             .is_none()
         || memory.write_u32_be(info_ptr + 16, app.file_type).is_none()
         || memory.write_u32_be(info_ptr + 20, app.creator).is_none()
