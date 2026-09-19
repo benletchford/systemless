@@ -5,7 +5,7 @@
 mod compact;
 mod controls;
 mod resample;
-pub use compact::CompactPresentation;
+pub use compact::{CompactPresentation, CompactPresentationCache};
 
 use super::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{outline, Glyph};
@@ -115,7 +115,7 @@ impl PresentationSlot {
                     .map(|(&key, _)| key)
                     .collect();
                 if !keys.is_empty() {
-                    p.revision = p.revision.wrapping_add(1);
+                    p.changed(false);
                 }
                 for key in keys {
                     p.offscreen.remove(&key);
@@ -375,8 +375,24 @@ impl Hasher for SampleOffsetHasher {
     }
 }
 
+// The owned identity prevents an old cache entry from matching a replacement
+// surface, including when its geometry and initial revision are identical.
+#[derive(Clone)]
+struct VisibleImageStamp {
+    identity: std::rc::Rc<()>,
+    revision: u64,
+}
+
+impl VisibleImageStamp {
+    fn matches(&self, other: &Self) -> bool {
+        self.revision == other.revision
+            && std::rc::Rc::ptr_eq(&self.identity, &other.identity)
+    }
+}
+
 pub(crate) struct Presentation {
     revision: u64,
+    visible_image: VisibleImageStamp,
     cpu_drawing: bool,
     cpu_recolor: Option<CpuRecolor>,
     cpu_copy: [Option<Arc<DetailCell>>; 4],
@@ -408,6 +424,17 @@ pub(crate) struct Presentation {
 }
 
 impl Presentation {
+    fn changed(&mut self, visible: bool) {
+        self.revision = self.revision.wrapping_add(1);
+        if self.revision == 0 {
+            // Even a wrapping counter cannot alias an older cached image.
+            self.visible_image.identity = std::rc::Rc::new(());
+        }
+        if visible {
+            self.visible_image.revision = self.revision;
+        }
+    }
+
     fn observe_cpu_recolor(&mut self, address: u32, old: u8, value: u8) {
         if self.depth != 8 {
             return;
@@ -845,8 +872,9 @@ impl Presentation {
         if self.matches_detail(address, Some(cell)) {
             return;
         }
-        self.revision = self.revision.wrapping_add(1);
-        let Some((x, y)) = self.position(address) else {
+        let position = self.position(address);
+        self.changed(position.is_some());
+        let Some((x, y)) = position else {
             self.include_offscreen_address(address);
             self.offscreen.insert(address, cell.clone());
             return;
@@ -918,7 +946,7 @@ impl Presentation {
                 return;
             }
             if self.offscreen.contains_key(&address) || self.glyph.is_some() {
-                self.revision = self.revision.wrapping_add(1);
+                self.changed(false);
             }
             if self.glyph.is_some() {
                 if let Some(cell) = self.offscreen.get_mut(&address) {
@@ -954,7 +982,7 @@ impl Presentation {
         }
         self.detail_cache.get_mut()[cell] = None;
         if self.glyph.is_some() {
-            self.revision = self.revision.wrapping_add(1);
+            self.changed(true);
             // The logical mask can extend beyond the native glyph bounds.
             // Such cells still need their current background preserved.
             self.prepare_text_cell(x, y);
@@ -964,7 +992,7 @@ impl Presentation {
         if self.guest_values[cell] == u16::from(value) && !self.text_cells[cell] {
             return;
         }
-        self.revision = self.revision.wrapping_add(1);
+        self.changed(true);
         self.guest_values[cell] = u16::from(value);
         if !self.text_cells[cell] {
             // Ordinary game pixels stay indexed until presentation. Expanding
@@ -996,8 +1024,9 @@ impl Presentation {
     /// Called for every visible glyph cell, including cells with zero 1x ink.
     /// QuickDraw has already applied both the visibility and clipping regions.
     pub fn glyph_pixel(&mut self, address: u32, x: i16, y: i16, foreground: u8, background: u8) {
-        self.revision = self.revision.wrapping_add(1);
-        let Some((px, py)) = self.position(address) else {
+        let position = self.position(address);
+        self.changed(position.is_some() && self.glyph.is_some());
+        let Some((px, py)) = position else {
             if self.glyph.is_none() {
                 return;
             }
@@ -1502,7 +1531,7 @@ impl MacMemoryBus {
             let mut guard = slot.as_mut().unwrap();
             let p = &mut *guard;
             if p.depth == 8 && p.palette != palette {
-                p.revision = p.revision.wrapping_add(1);
+                p.changed(true);
                 // Indexed pixels retain their CLUT indexes when the device's
                 // colors change (Imaging With QuickDraw, 1994, 4-5–4-6).
                 p.palette = palette;
@@ -1728,6 +1757,10 @@ impl MacMemoryBus {
         });
         let mut presentation = Presentation {
             revision: 0,
+            visible_image: VisibleImageStamp {
+                identity: std::rc::Rc::new(()),
+                revision: 0,
+            },
             cpu_drawing: false,
             cpu_recolor: None,
             cpu_copy: Default::default(),

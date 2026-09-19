@@ -814,7 +814,7 @@ struct App {
     #[cfg(target_os = "windows")]
     gpu_wake: Option<winit::event_loop::EventLoopProxy<()>>,
     #[cfg(target_os = "windows")]
-    gpu_frame: systemless::memory::CompactPresentation,
+    gpu_frame: systemless::memory::CompactPresentationCache,
     #[cfg(target_os = "windows")]
     gpu_pending: Option<PendingGpuFrame>,
     window: Option<Rc<Window>>,
@@ -1590,7 +1590,7 @@ impl App {
             return;
         }
         let _timing = FramePhaseTimer::new("GPU readiness retry work");
-        match gpu.present(&self.gpu_frame, pending.size, pending.rect) {
+        match gpu.present(self.gpu_frame.frame(), pending.size, pending.rect) {
             Ok(true) => {
                 self.gpu_pending = None;
                 self.last_presented_guest_tick = Some(pending.guest_tick);
@@ -2073,18 +2073,38 @@ impl App {
             }
         }
 
+        let has_outline_detail = runner.bus().has_visible_outline_detail();
+        let compact_ready = {
+            #[cfg(target_os = "windows")]
+            {
+                self.gpu.is_some()
+                    && has_outline_detail
+                    && cursor.is_none()
+                    && !self.debug_overlay_visible
+                    && {
+                        let _timing = FramePhaseTimer::new("GPU compact preparation");
+                        self.gpu_frame.prepare(runner.bus(), (game_w, game_h))
+                    }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                false
+            }
+        };
         let mut frame_argb = std::mem::take(&mut self.frame_argb);
-        display::render_screen_argb_with_gamma(
-            runner.bus(),
-            screen_mode,
-            &device_clut,
-            &device_gamma,
-            &mut frame_argb,
-        );
-        let guest_frame = runner
-            .bus()
-            .has_visible_outline_detail()
-            .then(|| frame_argb.clone());
+        #[allow(unused_mut)] // Windows may need to rebuild this on GPU failure.
+        let mut guest_frame = if compact_ready {
+            None
+        } else {
+            display::render_screen_argb_with_gamma(
+                runner.bus(),
+                screen_mode,
+                &device_clut,
+                &device_gamma,
+                &mut frame_argb,
+            );
+            has_outline_detail.then(|| frame_argb.clone())
+        };
         if let Some(cursor) = cursor.as_ref() {
             display::render_cursor_argb(&mut frame_argb, game_w, game_h, cursor, mouse_pos);
         }
@@ -2101,21 +2121,22 @@ impl App {
 
         #[cfg(target_os = "windows")]
         if self.gpu.is_some() {
-            let exported = {
+            let exported = if compact_ready {
+                true
+            } else {
                 let _timing = FramePhaseTimer::new("GPU compact preparation");
                 if let Some(guest) = guest_frame.as_ref() {
                     runner
                         .bus()
-                        .compact_presentation(guest, &frame_argb, &mut self.gpu_frame)
+                        .compact_presentation(guest, &frame_argb, self.gpu_frame.frame_mut())
                 } else {
-                    self.gpu_frame.width = game_w;
-                    self.gpu_frame.height = game_h;
-                    self.gpu_frame.scale = 1;
-                    self.gpu_frame.cells.clear();
-                    self.gpu_frame
-                        .cells
-                        .extend(frame_argb.iter().map(|p| p & 0xffffff));
-                    self.gpu_frame.detail.clear();
+                    let output = self.gpu_frame.frame_mut();
+                    output.width = game_w;
+                    output.height = game_h;
+                    output.scale = 1;
+                    output.cells.clear();
+                    output.cells.extend(frame_argb.iter().map(|p| p & 0xffffff));
+                    output.detail.clear();
                     true
                 }
             };
@@ -2129,7 +2150,7 @@ impl App {
             });
             let result = if exported {
                 self.gpu.as_mut().unwrap().present(
-                    &self.gpu_frame,
+                    self.gpu_frame.frame(),
                     (buf_w, buf_h),
                     aspect_fit_dimensions(game_w, game_h, buf_w, buf_h),
                 )
@@ -2161,6 +2182,20 @@ impl App {
                         Surface::new(&context, window).expect("Failed to create software surface"),
                     );
                     self.surface_size = None;
+                    if compact_ready {
+                        // The fast export skipped both logical images. Rebuild
+                        // them for this same frame before entering software
+                        // presentation; self.frame_argb may hold an older size
+                        // or screen, including after a resize/device failure.
+                        display::render_screen_argb_with_gamma(
+                            runner.bus(),
+                            screen_mode,
+                            &device_clut,
+                            &device_gamma,
+                            &mut frame_argb,
+                        );
+                        guest_frame = Some(frame_argb.clone());
+                    }
                 }
             }
         }
