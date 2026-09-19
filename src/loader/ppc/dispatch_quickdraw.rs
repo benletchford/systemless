@@ -4,6 +4,10 @@ pub(super) struct PpcQuickDrawDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
     pub(super) memory: &'a mut PpcSectionMem,
+    pub(super) process_memory_manager: &'a mut ProcessNativeMemoryManager,
+    pub(super) heap_cursor: &'a mut u32,
+    pub(super) last_mem_error: &'a mut i16,
+    pub(super) handles: &'a mut Vec<PpcHandleRecord>,
     pub(super) gworlds: &'a [PpcGWorldRecord],
     pub(super) tick_count: u32,
     pub(super) current_gworld: u32,
@@ -27,6 +31,10 @@ pub(super) fn dispatch_quickdraw_import(
         binding,
         cpu,
         memory,
+        process_memory_manager,
+        heap_cursor,
+        last_mem_error,
+        handles,
         gworlds,
         tick_count,
         current_gworld,
@@ -481,6 +489,94 @@ pub(super) fn dispatch_quickdraw_import(
                     );
                 }
             }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::MoveTo => {
+            *quickdraw_pen_h = cpu.gpr[3] as u16 as i16;
+            *quickdraw_pen_v = cpu.gpr[4] as u16 as i16;
+            if let Some(polygon) = ppc_open_polygon(memory, current_gworld) {
+                let _ = ppc_record_polygon_point(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    handles,
+                    polygon,
+                    *quickdraw_pen_h,
+                    *quickdraw_pen_v,
+                );
+            }
+            ppc_sync_gworld_pen(memory, current_gworld, *quickdraw_pen_h, *quickdraw_pen_v);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::Move => {
+            *quickdraw_pen_h = quickdraw_pen_h.wrapping_add(cpu.gpr[3] as u16 as i16);
+            *quickdraw_pen_v = quickdraw_pen_v.wrapping_add(cpu.gpr[4] as u16 as i16);
+            if let Some(polygon) = ppc_open_polygon(memory, current_gworld) {
+                let _ = ppc_record_polygon_point(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    handles,
+                    polygon,
+                    *quickdraw_pen_h,
+                    *quickdraw_pen_v,
+                );
+            }
+            ppc_sync_gworld_pen(memory, current_gworld, *quickdraw_pen_h, *quickdraw_pen_v);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::LineTo | PpcImportDispatcherTarget::Line => {
+            let relative = matches!(binding.dispatcher_target, PpcImportDispatcherTarget::Line);
+            let new_h = if relative {
+                quickdraw_pen_h.wrapping_add(cpu.gpr[3] as u16 as i16)
+            } else {
+                cpu.gpr[3] as u16 as i16
+            };
+            let new_v = if relative {
+                quickdraw_pen_v.wrapping_add(cpu.gpr[4] as u16 as i16)
+            } else {
+                cpu.gpr[4] as u16 as i16
+            };
+            if toolbox_startup.open_region_port == current_gworld {
+                ppc_open_region_include_point(toolbox_startup, *quickdraw_pen_h, *quickdraw_pen_v);
+                ppc_open_region_include_point(toolbox_startup, new_h, new_v);
+            } else if let Some(polygon) = ppc_open_polygon(memory, current_gworld) {
+                let _ = ppc_record_polygon_point(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    handles,
+                    polygon,
+                    *quickdraw_pen_h,
+                    *quickdraw_pen_v,
+                );
+                let _ = ppc_record_polygon_point(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    handles,
+                    polygon,
+                    new_h,
+                    new_v,
+                );
+            } else {
+                let _ = ppc_line_to(
+                    memory,
+                    gworlds,
+                    current_gworld,
+                    (*quickdraw_pen_h, *quickdraw_pen_v),
+                    (new_h, new_v),
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(&current_gworld).copied(),
+                );
+            }
+            *quickdraw_pen_h = new_h;
+            *quickdraw_pen_v = new_v;
+            ppc_sync_gworld_pen(memory, current_gworld, new_h, new_v);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetPen => {
