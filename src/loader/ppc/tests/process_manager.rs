@@ -15,11 +15,11 @@ fn hle_import_runner_handles_get_current_process() {
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     assert_eq!(
         loaded.memory.read_u32_be(psn_ptr),
-        Some(PPC_CURRENT_PROCESS_PSN_HIGH)
+        Some(ProcessSerialNumber::CURRENT.high)
     );
     assert_eq!(
         loaded.memory.read_u32_be(psn_ptr + 4),
-        Some(PPC_CURRENT_PROCESS_PSN_LOW)
+        Some(ProcessSerialNumber::CURRENT.low)
     );
 
     loaded.cpu.pc = loaded.entry_pc;
@@ -41,11 +41,11 @@ fn hle_import_runner_handles_wake_up_process() {
     loaded.memory.add_region(psn_ptr, vec![0; 8]);
     loaded
         .memory
-        .write_u32_be(psn_ptr, PPC_CURRENT_PROCESS_PSN_HIGH)
+        .write_u32_be(psn_ptr, ProcessSerialNumber::CURRENT.high)
         .unwrap();
     loaded
         .memory
-        .write_u32_be(psn_ptr + 4, PPC_CURRENT_PROCESS_PSN_LOW)
+        .write_u32_be(psn_ptr + 4, ProcessSerialNumber::CURRENT.low)
         .unwrap();
     loaded.cpu.gpr[3] = psn_ptr;
 
@@ -60,7 +60,7 @@ fn hle_import_runner_handles_wake_up_process() {
     loaded.cpu.gpr[3] = psn_ptr;
     loaded
         .memory
-        .write_u32_be(psn_ptr + 4, PPC_CURRENT_PROCESS_PSN_LOW + 1)
+        .write_u32_be(psn_ptr + 4, ProcessSerialNumber::CURRENT.low + 1)
         .unwrap();
 
     let probe = loaded.run_with_hle_imports(64);
@@ -101,11 +101,11 @@ fn hle_import_runner_handles_same_process() {
     for psn_ptr in [first_psn_ptr, second_psn_ptr] {
         loaded
             .memory
-            .write_u32_be(psn_ptr, PPC_CURRENT_PROCESS_PSN_HIGH)
+            .write_u32_be(psn_ptr, ProcessSerialNumber::CURRENT.high)
             .unwrap();
         loaded
             .memory
-            .write_u32_be(psn_ptr + 4, PPC_CURRENT_PROCESS_PSN_LOW)
+            .write_u32_be(psn_ptr + 4, ProcessSerialNumber::CURRENT.low)
             .unwrap();
     }
     loaded.cpu.gpr[3] = first_psn_ptr;
@@ -126,7 +126,7 @@ fn hle_import_runner_handles_same_process() {
     loaded.cpu.gpr[5] = result_ptr;
     loaded
         .memory
-        .write_u32_be(second_psn_ptr + 4, PPC_CURRENT_PROCESS_PSN_LOW + 1)
+        .write_u32_be(second_psn_ptr + 4, ProcessSerialNumber::CURRENT.low + 1)
         .unwrap();
 
     let probe = loaded.run_with_hle_imports(64);
@@ -186,11 +186,11 @@ fn hle_import_runner_handles_get_process_information() {
     loaded.memory.add_region(spec_ptr, vec![0xbb; 70]);
     loaded
         .memory
-        .write_u32_be(psn_ptr, PPC_CURRENT_PROCESS_PSN_HIGH)
+        .write_u32_be(psn_ptr, ProcessSerialNumber::CURRENT.high)
         .unwrap();
     loaded
         .memory
-        .write_u32_be(psn_ptr + 4, PPC_CURRENT_PROCESS_PSN_LOW)
+        .write_u32_be(psn_ptr + 4, ProcessSerialNumber::CURRENT.low)
         .unwrap();
     loaded.memory.write_u16_be(info_ptr, 60).unwrap();
     loaded.memory.write_u32_be(info_ptr + 4, name_ptr).unwrap();
@@ -208,11 +208,11 @@ fn hle_import_runner_handles_get_process_information() {
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     assert_eq!(
         loaded.memory.read_u32_be(info_ptr + 8),
-        Some(PPC_CURRENT_PROCESS_PSN_HIGH)
+        Some(ProcessSerialNumber::CURRENT.high)
     );
     assert_eq!(
         loaded.memory.read_u32_be(info_ptr + 12),
-        Some(PPC_CURRENT_PROCESS_PSN_LOW)
+        Some(ProcessSerialNumber::CURRENT.low)
     );
     assert_eq!(
         loaded.memory.read_u32_be(info_ptr + 16),
@@ -242,7 +242,7 @@ fn hle_import_runner_handles_get_process_information() {
     loaded.cpu.gpr[4] = info_ptr;
     loaded
         .memory
-        .write_u32_be(psn_ptr + 4, PPC_CURRENT_PROCESS_PSN_LOW + 1)
+        .write_u32_be(psn_ptr + 4, ProcessSerialNumber::CURRENT.low + 1)
         .unwrap();
 
     let probe = loaded.run_with_hle_imports(64);

@@ -104,6 +104,7 @@ use crate::process_context::{
     SharedProcessTickState, SharedProcessTimerTasks, SharedProcessValue, SharedProcessVblTasks,
     SharedProcessWindowList,
 };
+use crate::process_manager::ProcessSerialNumber;
 use crate::quickdraw::fonts::style::{
     get_italic_end_extend, get_italic_slant, get_italic_underline_extend_left,
 };
@@ -394,8 +395,6 @@ pub const PPC_INPUT_OUT_OF_BOUNDS_ERR: i16 = -190;
 pub const PPC_ADD_RES_FAILED: i16 = -194;
 pub const PPC_RMV_RES_FAILED: i16 = -196;
 pub const PPC_RES_ATTR_ERR: i16 = -198;
-const PPC_CURRENT_PROCESS_PSN_HIGH: u32 = 0;
-const PPC_CURRENT_PROCESS_PSN_LOW: u32 = 2;
 
 const BLR: u32 = 0x4e80_0020;
 const PPC_FIRST_FILE_REF_NUM: i16 = 128;
@@ -23148,13 +23147,13 @@ fn ppc_dispatch_system_compatibility(
         }
         PpcSystemCompatibilityOperation::GetNextProcess => {
             let psn = cpu.gpr[3];
-            let current = (
+            let current = ProcessSerialNumber::new(
                 memory.read_u32_be(psn).unwrap_or(u32::MAX),
                 memory.read_u32_be(psn + 4).unwrap_or(u32::MAX),
             );
-            if current == (0, 0) {
-                let _ = memory.write_u32_be(psn, PPC_CURRENT_PROCESS_PSN_HIGH);
-                let _ = memory.write_u32_be(psn + 4, PPC_CURRENT_PROCESS_PSN_LOW);
+            if current == ProcessSerialNumber::NONE {
+                let _ = memory.write_u32_be(psn, ProcessSerialNumber::CURRENT.high);
+                let _ = memory.write_u32_be(psn + 4, ProcessSerialNumber::CURRENT.low);
                 PpcImportAction::Return(0)
             } else {
                 PpcImportAction::Return(ppc_i16_result(PPC_PROC_NOT_FOUND_ERR))

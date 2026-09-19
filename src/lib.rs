@@ -81,6 +81,7 @@ mod menu_manager;
 pub mod menu_model;
 mod mixed_mode;
 mod process_context;
+mod process_manager;
 pub mod quickdraw;
 pub mod runner;
 /// Deterministic trap-interaction replays. This is internal test

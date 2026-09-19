@@ -7,6 +7,7 @@ use crate::managers::resource::ResourceFork;
 use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::process_context::ProcessVfsDirectory;
+use crate::process_manager::ProcessSerialNumber;
 use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy, read_fsspec_name};
 use crate::{Error, Result};
 
@@ -72,8 +73,6 @@ fn os_dispatch_operation_route(
     selector_operation_route(OS_DISPATCH_OPERATION_ROUTES, u32::from(selector))
 }
 
-const CURRENT_PROCESS_PSN_HIGH: u32 = 0;
-const CURRENT_PROCESS_PSN_LOW: u32 = 2;
 const BOOT_VOLUME_ALLOCATION_BLOCKS: u16 = 16_384;
 const BOOT_VOLUME_ALLOCATION_BLOCK_SIZE: u32 = 4 * 1024;
 const BOOT_VOLUME_FREE_BLOCKS: u16 = 16_384;
@@ -6391,8 +6390,8 @@ impl super::TrapDispatcher {
                         // FUNCTION GetCurrentProcess(VAR PSN: ProcessSerialNumber): OSErr;
                         // Processes 1994, p. 2-21
                         let psn_ptr = bus.read_long(sp);
-                        bus.write_long(psn_ptr, CURRENT_PROCESS_PSN_HIGH); // highLongOfPSN
-                        bus.write_long(psn_ptr + 4, CURRENT_PROCESS_PSN_LOW); // lowLongOfPSN = kCurrentProcess
+                        bus.write_long(psn_ptr, ProcessSerialNumber::CURRENT.high); // highLongOfPSN
+                        bus.write_long(psn_ptr + 4, ProcessSerialNumber::CURRENT.low); // lowLongOfPSN = kCurrentProcess
                         bus.write_word(sp + 4, 0); // noErr
                         cpu.write_reg(Register::A7, sp + 4);
                         Ok(())
@@ -6403,16 +6402,16 @@ impl super::TrapDispatcher {
                         // FUNCTION GetNextProcess(VAR PSN: ProcessSerialNumber): OSErr;
                         // Processes 1994, p. 2-22
                         let psn_ptr = bus.read_long(sp);
-                        let psn_high = bus.read_long(psn_ptr);
-                        let psn_low = bus.read_long(psn_ptr.wrapping_add(4));
-                        let err: i16 = if psn_high == 0 && psn_low == 0 {
-                            bus.write_long(psn_ptr, CURRENT_PROCESS_PSN_HIGH);
-                            bus.write_long(psn_ptr.wrapping_add(4), CURRENT_PROCESS_PSN_LOW);
+                        let psn = ProcessSerialNumber::new(
+                            bus.read_long(psn_ptr),
+                            bus.read_long(psn_ptr.wrapping_add(4)),
+                        );
+                        let err: i16 = if psn == ProcessSerialNumber::NONE {
+                            bus.write_long(psn_ptr, ProcessSerialNumber::CURRENT.high);
+                            bus.write_long(psn_ptr.wrapping_add(4), ProcessSerialNumber::CURRENT.low);
                             0
-                        } else if psn_high == CURRENT_PROCESS_PSN_HIGH
-                            && psn_low == CURRENT_PROCESS_PSN_LOW
-                        {
-                            bus.write_long(psn_ptr, CURRENT_PROCESS_PSN_HIGH);
+                        } else if psn.is_current() {
+                            bus.write_long(psn_ptr, ProcessSerialNumber::CURRENT.high);
                             bus.write_long(psn_ptr.wrapping_add(4), 0);
                             -600
                         } else {
@@ -6438,8 +6437,8 @@ impl super::TrapDispatcher {
                         // Write result word at sp+8; A7 = sp+8 so caller's MOVE.W (SP)+, D0
                         // consumes the result and restores the pre-call stack pointer.
                         let psn_ptr = bus.read_long(sp + 4);
-                        bus.write_long(psn_ptr, CURRENT_PROCESS_PSN_HIGH);
-                        bus.write_long(psn_ptr.wrapping_add(4), CURRENT_PROCESS_PSN_LOW);
+                        bus.write_long(psn_ptr, ProcessSerialNumber::CURRENT.high);
+                        bus.write_long(psn_ptr.wrapping_add(4), ProcessSerialNumber::CURRENT.low);
                         bus.write_word(sp + 8, 0);
                         cpu.write_reg(Register::A7, sp + 8);
                         Ok(())
@@ -6463,10 +6462,11 @@ impl super::TrapDispatcher {
 
                         let info_ptr = bus.read_long(sp);
                         let psn_ptr = bus.read_long(sp + 4);
-                        let psn_high = bus.read_long(psn_ptr);
-                        let psn_low = bus.read_long(psn_ptr + 4);
-                        let valid_psn = psn_high == CURRENT_PROCESS_PSN_HIGH
-                            && psn_low == CURRENT_PROCESS_PSN_LOW;
+                        let valid_psn = ProcessSerialNumber::new(
+                            bus.read_long(psn_ptr),
+                            bus.read_long(psn_ptr + 4),
+                        )
+                        .is_current();
 
                         if !valid_psn {
                             bus.write_word(sp + 8, (-600i16) as u16); // procNotFound
@@ -6511,8 +6511,8 @@ impl super::TrapDispatcher {
                             Self::write_pstring(bus, app_spec_ptr + 6, &app_name);
                         }
 
-                        bus.write_long(info_ptr + 8, CURRENT_PROCESS_PSN_HIGH); // processNumber.highLongOfPSN
-                        bus.write_long(info_ptr + 12, CURRENT_PROCESS_PSN_LOW); // processNumber.lowLongOfPSN
+                        bus.write_long(info_ptr + 8, ProcessSerialNumber::CURRENT.high); // processNumber.highLongOfPSN
+                        bus.write_long(info_ptr + 12, ProcessSerialNumber::CURRENT.low); // processNumber.lowLongOfPSN
                         bus.write_long(info_ptr + 16, app_type);
                         bus.write_long(info_ptr + 20, app_creator);
                         bus.write_long(info_ptr + 24, 0); // processMode
@@ -6565,11 +6565,15 @@ impl super::TrapDispatcher {
                         let result_ptr = bus.read_long(sp);
                         let psn2_ptr = bus.read_long(sp + 4);
                         let psn1_ptr = bus.read_long(sp + 8);
-                        let p1_high = bus.read_long(psn1_ptr);
-                        let p1_low = bus.read_long(psn1_ptr + 4);
-                        let p2_high = bus.read_long(psn2_ptr);
-                        let p2_low = bus.read_long(psn2_ptr + 4);
-                        let same = p1_high == p2_high && p1_low == p2_low;
+                        let psn1 = ProcessSerialNumber::new(
+                            bus.read_long(psn1_ptr),
+                            bus.read_long(psn1_ptr + 4),
+                        );
+                        let psn2 = ProcessSerialNumber::new(
+                            bus.read_long(psn2_ptr),
+                            bus.read_long(psn2_ptr + 4),
+                        );
+                        let same = psn1 == psn2;
                         if result_ptr != 0 {
                             bus.write_byte(result_ptr, if same { 1 } else { 0 });
                         }
