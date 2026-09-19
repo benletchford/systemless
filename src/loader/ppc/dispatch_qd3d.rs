@@ -806,6 +806,247 @@ pub(super) fn dispatch_q3_scene_import_fast(
     }
 }
 
+pub(super) struct PpcQ3StorageFileDispatchContext<'a> {
+    pub(super) target: &'a PpcImportDispatcherTarget,
+    pub(super) cpu: &'a PpcCpu,
+    pub(super) process_memory_manager: &'a mut ProcessNativeMemoryManager,
+    pub(super) memory: &'a mut PpcSectionMem,
+    pub(super) stores: PpcQ3ObjectStores<'a>,
+    pub(super) next_q3_object: &'a mut u32,
+    pub(super) q3_error_state: &'a mut PpcQ3ErrorState,
+    pub(super) heap_cursor: &'a mut u32,
+    pub(super) heap_limit: u32,
+    pub(super) last_mem_error: &'a mut i16,
+    pub(super) vfs_directories: &'a mut Vec<PpcVfsDirectory>,
+    pub(super) vfs_files: &'a mut ProcessVfsFileRecords,
+}
+
+pub(super) fn dispatch_q3_storage_file_import(
+    context: PpcQ3StorageFileDispatchContext<'_>,
+) -> Option<PpcImportAction> {
+    let PpcQ3StorageFileDispatchContext {
+        target,
+        cpu,
+        process_memory_manager,
+        memory,
+        stores,
+        next_q3_object,
+        q3_error_state,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        vfs_directories,
+        vfs_files,
+    } = context;
+    match target {
+        PpcImportDispatcherTarget::Q3MemoryStorageNew => {
+            Some(PpcImportAction::Return(ppc_q3_memory_storage_new(
+                cpu,
+                process_memory_manager,
+                memory,
+                stores.q3_objects,
+                next_q3_object,
+                stores.q3_memory_storages,
+                heap_cursor,
+                last_mem_error,
+            )))
+        }
+        PpcImportDispatcherTarget::Q3MemoryStorageNewBuffer => {
+            Some(PpcImportAction::Return(ppc_q3_memory_storage_new_buffer(
+                cpu,
+                process_memory_manager,
+                memory,
+                stores.q3_objects,
+                next_q3_object,
+                stores.q3_memory_storages,
+                heap_cursor,
+                last_mem_error,
+            )))
+        }
+        PpcImportDispatcherTarget::Q3FSSpecStorageNew => {
+            Some(PpcImportAction::Return(ppc_q3_fsspec_storage_new(
+                cpu,
+                process_memory_manager,
+                memory,
+                stores.q3_objects,
+                next_q3_object,
+                vfs_directories,
+                vfs_files,
+                heap_cursor,
+                last_mem_error,
+            )))
+        }
+        PpcImportDispatcherTarget::Q3FileNew => Some(PpcImportAction::Return(ppc_q3_file_new(
+            stores.q3_objects,
+            next_q3_object,
+            stores.q3_files,
+        ))),
+        PpcImportDispatcherTarget::Q3StorageGetType => Some(PpcImportAction::Return(
+            ppc_q3_storage_get_type(cpu, stores.q3_objects, q3_error_state),
+        )),
+        PpcImportDispatcherTarget::Q3MemoryStorageSet => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_memory_storage_set(
+                cpu,
+                process_memory_manager,
+                memory,
+                stores.q3_objects,
+                q3_error_state,
+                stores.q3_memory_storages,
+                stores.q3_files,
+                heap_cursor,
+                last_mem_error,
+            ),
+        ))),
+        PpcImportDispatcherTarget::Q3MemoryStorageGetBuffer => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_memory_storage_get_buffer(
+                cpu,
+                memory,
+                stores.q3_objects,
+                q3_error_state,
+                stores.q3_memory_storages,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3MemoryStorageSetBuffer => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_memory_storage_set_buffer(
+                cpu,
+                process_memory_manager,
+                memory,
+                stores.q3_objects,
+                q3_error_state,
+                stores.q3_memory_storages,
+                stores.q3_files,
+                heap_cursor,
+                last_mem_error,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3MemoryStorageGetType => {
+            Some(PpcImportAction::Return(ppc_q3_memory_storage_get_type(
+                cpu,
+                stores.q3_objects,
+                q3_error_state,
+                stores.q3_memory_storages,
+            )))
+        }
+        PpcImportDispatcherTarget::Q3StorageGetSize => {
+            Some(PpcImportAction::Return(u32::from(ppc_q3_storage_get_size(
+                memory,
+                stores.q3_objects,
+                q3_error_state,
+                stores.q3_memory_storages,
+                cpu.gpr[3],
+                cpu.gpr[4],
+            ))))
+        }
+        PpcImportDispatcherTarget::Q3StorageGetData => {
+            Some(PpcImportAction::Return(u32::from(ppc_q3_storage_get_data(
+                memory,
+                stores.q3_objects,
+                q3_error_state,
+                stores.q3_memory_storages,
+                cpu.gpr[3],
+                cpu.gpr[4],
+                cpu.gpr[5],
+                cpu.gpr[6],
+                cpu.gpr[7],
+            ))))
+        }
+        PpcImportDispatcherTarget::Q3StorageSetData => {
+            Some(PpcImportAction::Return(u32::from(ppc_q3_storage_set_data(
+                process_memory_manager,
+                memory,
+                stores.q3_objects,
+                q3_error_state,
+                stores.q3_memory_storages,
+                cpu.gpr[3],
+                cpu.gpr[4],
+                cpu.gpr[5],
+                cpu.gpr[6],
+                cpu.gpr[7],
+                heap_cursor,
+                last_mem_error,
+            ))))
+        }
+        PpcImportDispatcherTarget::Q3FileSetStorage => {
+            Some(PpcImportAction::Return(u32::from(ppc_q3_file_set_storage(
+                cpu,
+                stores.q3_files,
+                stores.q3_objects,
+                q3_error_state,
+                stores.q3_object_refs,
+                stores.q3_renderer_preferences,
+                stores.q3_group_memberships,
+                stores.q3_file_groups,
+                stores.q3_views,
+                stores.q3_submissions,
+                stores.q3_view_transforms,
+                stores.q3_submission_transforms,
+                stores.q3_view_materials,
+                stores.q3_submission_materials,
+                stores.q3_submission_lights,
+                stores.q3_view_state_stack,
+                stores.q3_completed_frames,
+                stores.q3_retained_frames,
+                stores.q3_fog_styles,
+                stores.q3_memory_storages,
+                stores.q3_attributes,
+                stores.q3_shader_uv_transforms,
+                stores.q3_shader_boundaries,
+                stores.q3_mipmap_textures,
+                stores.q3_texture_shaders,
+                stores.q3_draw_contexts,
+                stores.q3_trimeshes,
+                stores.q3_styles,
+                stores.q3_cameras,
+                stores.q3_lights,
+            ))))
+        }
+        PpcImportDispatcherTarget::Q3FileOpenRead => {
+            Some(PpcImportAction::Return(u32::from(ppc_q3_file_open_read(
+                cpu,
+                memory,
+                stores.q3_objects,
+                q3_error_state,
+                stores.q3_files,
+            ))))
+        }
+        PpcImportDispatcherTarget::Q3FileReadObject => {
+            Some(PpcImportAction::Return(ppc_q3_file_read_object(
+                cpu,
+                process_memory_manager,
+                memory,
+                stores.q3_objects,
+                next_q3_object,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                q3_error_state,
+                stores.q3_files,
+                stores.q3_memory_storages,
+                stores.q3_group_memberships,
+                stores.q3_file_groups,
+                stores.q3_attributes,
+                stores.q3_trimeshes,
+                stores.q3_mipmap_textures,
+                stores.q3_texture_shaders,
+                stores.q3_styles,
+            )))
+        }
+        PpcImportDispatcherTarget::Q3FileIsEndOfFile => {
+            Some(PpcImportAction::Return(ppc_q3_file_is_end_of_file(
+                cpu,
+                memory,
+                stores.q3_objects,
+                q3_error_state,
+                stores.q3_files,
+            )))
+        }
+        PpcImportDispatcherTarget::Q3FileClose => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_file_close(cpu, stores.q3_objects, q3_error_state, stores.q3_files),
+        ))),
+        _ => None,
+    }
+}
+
 pub(super) struct PpcQ3ObjectRendererDispatchContext<'a> {
     pub(super) target: &'a PpcImportDispatcherTarget,
     pub(super) cpu: &'a PpcCpu,

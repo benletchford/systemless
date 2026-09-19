@@ -16760,6 +16760,54 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         q3_error_state.clear();
     }
 
+    if let Some(action) = dispatch_qd3d::dispatch_q3_storage_file_import(
+        dispatch_qd3d::PpcQ3StorageFileDispatchContext {
+            target: &binding.dispatcher_target,
+            cpu,
+            process_memory_manager,
+            memory,
+            stores: PpcQ3ObjectStores {
+                q3_objects,
+                q3_object_refs,
+                q3_renderer_preferences,
+                q3_files,
+                q3_group_memberships,
+                q3_file_groups,
+                q3_views,
+                q3_submissions,
+                q3_view_transforms,
+                q3_submission_transforms,
+                q3_view_materials,
+                q3_submission_materials,
+                q3_submission_lights,
+                q3_view_state_stack,
+                q3_completed_frames,
+                q3_retained_frames,
+                q3_fog_styles,
+                q3_memory_storages,
+                q3_attributes,
+                q3_shader_uv_transforms,
+                q3_shader_boundaries,
+                q3_mipmap_textures,
+                q3_texture_shaders,
+                q3_draw_contexts,
+                q3_trimeshes,
+                q3_styles,
+                q3_cameras,
+                q3_lights,
+            },
+            next_q3_object,
+            q3_error_state,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            vfs_directories,
+            vfs_files,
+        },
+    ) {
+        return Some(action);
+    }
+
     let mut current_menu_list = ppc_current_menu_list(memory);
     if let Some(action) = dispatch_cfm::dispatch_cfm_import(dispatch_cfm::PpcCfmDispatchContext {
         binding,
@@ -18388,42 +18436,10 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             q3_lifecycle.initialized_depth = q3_lifecycle.initialized_depth.saturating_sub(1);
             Some(PpcImportAction::Return(1))
         }
-        PpcImportDispatcherTarget::Q3MemoryStorageNew => {
-            Some(PpcImportAction::Return(ppc_q3_memory_storage_new(
-                cpu,
-                process_memory_manager,
-                memory,
-                q3_objects,
-                next_q3_object,
-                q3_memory_storages,
-                heap_cursor,
-                last_mem_error,
-            )))
-        }
-        PpcImportDispatcherTarget::Q3MemoryStorageNewBuffer => {
-            Some(PpcImportAction::Return(ppc_q3_memory_storage_new_buffer(
-                cpu,
-                process_memory_manager,
-                memory,
-                q3_objects,
-                next_q3_object,
-                q3_memory_storages,
-                heap_cursor,
-                last_mem_error,
-            )))
-        }
-        PpcImportDispatcherTarget::Q3FSSpecStorageNew => {
-            Some(PpcImportAction::Return(ppc_q3_fsspec_storage_new(
-                cpu,
-                process_memory_manager,
-                memory,
-                q3_objects,
-                next_q3_object,
-                vfs_directories,
-                vfs_files,
-                heap_cursor,
-                last_mem_error,
-            )))
+        PpcImportDispatcherTarget::Q3MemoryStorageNew
+        | PpcImportDispatcherTarget::Q3MemoryStorageNewBuffer
+        | PpcImportDispatcherTarget::Q3FSSpecStorageNew => {
+            unreachable!("QuickDraw 3D storage imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3NewObject => {
             Some(PpcImportAction::Return(ppc_q3_alloc_object(
@@ -18435,11 +18451,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 0,
             )))
         }
-        PpcImportDispatcherTarget::Q3FileNew => Some(PpcImportAction::Return(ppc_q3_file_new(
-            q3_objects,
-            next_q3_object,
-            q3_files,
-        ))),
+        PpcImportDispatcherTarget::Q3FileNew => {
+            unreachable!("QuickDraw 3D file imports return through typed dispatch")
+        }
         PpcImportDispatcherTarget::Q3ViewNew => Some(PpcImportAction::Return(ppc_q3_view_new(
             q3_objects,
             next_q3_object,
@@ -18559,47 +18573,13 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 "QuickDraw 3D shader imports return through dispatch_q3_shader_style_import_fast"
             )
         }
-        PpcImportDispatcherTarget::Q3StorageGetType => Some(PpcImportAction::Return(
-            ppc_q3_storage_get_type(cpu, q3_objects, q3_error_state),
-        )),
-        PpcImportDispatcherTarget::Q3MemoryStorageSet => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_memory_storage_set(
-                cpu,
-                process_memory_manager,
-                memory,
-                q3_objects,
-                q3_error_state,
-                q3_memory_storages,
-                q3_files,
-                heap_cursor,
-                last_mem_error,
-            ),
-        ))),
-        PpcImportDispatcherTarget::Q3MemoryStorageGetBuffer => Some(PpcImportAction::Return(
-            u32::from(ppc_q3_memory_storage_get_buffer(
-                cpu,
-                memory,
-                q3_objects,
-                q3_error_state,
-                q3_memory_storages,
-            )),
-        )),
-        PpcImportDispatcherTarget::Q3MemoryStorageSetBuffer => Some(PpcImportAction::Return(
-            u32::from(ppc_q3_memory_storage_set_buffer(
-                cpu,
-                process_memory_manager,
-                memory,
-                q3_objects,
-                q3_error_state,
-                q3_memory_storages,
-                q3_files,
-                heap_cursor,
-                last_mem_error,
-            )),
-        )),
-        PpcImportDispatcherTarget::Q3MemoryStorageGetType => Some(PpcImportAction::Return(
-            ppc_q3_memory_storage_get_type(cpu, q3_objects, q3_error_state, q3_memory_storages),
-        )),
+        PpcImportDispatcherTarget::Q3StorageGetType
+        | PpcImportDispatcherTarget::Q3MemoryStorageSet
+        | PpcImportDispatcherTarget::Q3MemoryStorageGetBuffer
+        | PpcImportDispatcherTarget::Q3MemoryStorageSetBuffer
+        | PpcImportDispatcherTarget::Q3MemoryStorageGetType => {
+            unreachable!("QuickDraw 3D storage imports return through typed dispatch")
+        }
         PpcImportDispatcherTarget::Q3ViewAngleAspectCameraNew
         | PpcImportDispatcherTarget::Q3OrthographicCameraNew
         | PpcImportDispatcherTarget::Q3ViewPlaneCameraNew
@@ -18858,47 +18838,10 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 q3_attributes,
             ))),
         ),
-        PpcImportDispatcherTarget::Q3StorageGetSize => {
-            let storage = cpu.gpr[3];
-            let size_out_ptr = cpu.gpr[4];
-            let ok = ppc_q3_storage_get_size(
-                memory,
-                q3_objects,
-                q3_error_state,
-                q3_memory_storages,
-                storage,
-                size_out_ptr,
-            );
-            Some(PpcImportAction::Return(u32::from(ok)))
-        }
-        PpcImportDispatcherTarget::Q3StorageGetData => {
-            Some(PpcImportAction::Return(u32::from(ppc_q3_storage_get_data(
-                memory,
-                q3_objects,
-                q3_error_state,
-                q3_memory_storages,
-                cpu.gpr[3],
-                cpu.gpr[4],
-                cpu.gpr[5],
-                cpu.gpr[6],
-                cpu.gpr[7],
-            ))))
-        }
-        PpcImportDispatcherTarget::Q3StorageSetData => {
-            Some(PpcImportAction::Return(u32::from(ppc_q3_storage_set_data(
-                process_memory_manager,
-                memory,
-                q3_objects,
-                q3_error_state,
-                q3_memory_storages,
-                cpu.gpr[3],
-                cpu.gpr[4],
-                cpu.gpr[5],
-                cpu.gpr[6],
-                cpu.gpr[7],
-                heap_cursor,
-                last_mem_error,
-            ))))
+        PpcImportDispatcherTarget::Q3StorageGetSize
+        | PpcImportDispatcherTarget::Q3StorageGetData
+        | PpcImportDispatcherTarget::Q3StorageSetData => {
+            unreachable!("QuickDraw 3D storage imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3PixmapDrawContextNew => {
             Some(PpcImportAction::Return(ppc_q3_draw_context_new(
@@ -18958,71 +18901,13 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::Q3TransformGetMatrix => {
             unreachable!("QuickDraw 3D math imports return through dispatch_q3_math_import_fast")
         }
-        PpcImportDispatcherTarget::Q3FileSetStorage => {
-            Some(PpcImportAction::Return(u32::from(ppc_q3_file_set_storage(
-                cpu,
-                q3_files,
-                q3_objects,
-                q3_error_state,
-                q3_object_refs,
-                q3_renderer_preferences,
-                q3_group_memberships,
-                q3_file_groups,
-                q3_views,
-                q3_submissions,
-                q3_view_transforms,
-                q3_submission_transforms,
-                q3_view_materials,
-                q3_submission_materials,
-                q3_submission_lights,
-                q3_view_state_stack,
-                q3_completed_frames,
-                q3_retained_frames,
-                q3_fog_styles,
-                q3_memory_storages,
-                q3_attributes,
-                q3_shader_uv_transforms,
-                q3_shader_boundaries,
-                q3_mipmap_textures,
-                q3_texture_shaders,
-                q3_draw_contexts,
-                q3_trimeshes,
-                q3_styles,
-                q3_cameras,
-                q3_lights,
-            ))))
+        PpcImportDispatcherTarget::Q3FileSetStorage
+        | PpcImportDispatcherTarget::Q3FileOpenRead
+        | PpcImportDispatcherTarget::Q3FileReadObject
+        | PpcImportDispatcherTarget::Q3FileIsEndOfFile
+        | PpcImportDispatcherTarget::Q3FileClose => {
+            unreachable!("QuickDraw 3D file imports return through typed dispatch")
         }
-        PpcImportDispatcherTarget::Q3FileOpenRead => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_file_open_read(cpu, memory, q3_objects, q3_error_state, q3_files),
-        ))),
-        PpcImportDispatcherTarget::Q3FileReadObject => {
-            Some(PpcImportAction::Return(ppc_q3_file_read_object(
-                cpu,
-                process_memory_manager,
-                memory,
-                q3_objects,
-                next_q3_object,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                q3_error_state,
-                q3_files,
-                q3_memory_storages,
-                q3_group_memberships,
-                q3_file_groups,
-                q3_attributes,
-                q3_trimeshes,
-                q3_mipmap_textures,
-                q3_texture_shaders,
-                q3_styles,
-            )))
-        }
-        PpcImportDispatcherTarget::Q3FileIsEndOfFile => Some(PpcImportAction::Return(
-            ppc_q3_file_is_end_of_file(cpu, memory, q3_objects, q3_error_state, q3_files),
-        )),
-        PpcImportDispatcherTarget::Q3FileClose => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_file_close(cpu, q3_objects, q3_error_state, q3_files),
-        ))),
         PpcImportDispatcherTarget::Q3GroupAddObject => {
             Some(PpcImportAction::Return(ppc_q3_group_add_object(
                 cpu.gpr[3],
