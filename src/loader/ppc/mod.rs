@@ -162,6 +162,7 @@ mod dispatch_process;
 mod dispatch_qd3d;
 mod dispatch_quickdraw;
 mod dispatch_quicktime;
+mod dispatch_regions;
 mod dispatch_resources;
 mod dispatch_scrap;
 mod dispatch_sound;
@@ -16762,6 +16763,22 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     ) {
         return Some(action);
     }
+    if let Some(action) = dispatch_regions::dispatch_region_import(
+        dispatch_regions::PpcRegionDispatchContext {
+            binding,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            current_gworld: *current_gworld,
+            toolbox_startup,
+        },
+    ) {
+        return Some(action);
+    }
     if let Some(action) = dispatch_quickdraw::dispatch_quickdraw_import(
         dispatch_quickdraw::PpcQuickDrawDispatchContext {
             binding,
@@ -17810,49 +17827,27 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::EndUpdate => {
             unreachable!("window imports return through dispatch_window_import")
         }
-        PpcImportDispatcherTarget::ClipRect => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            ppc_clip_rect(
-                cpu,
-                Some(&mut allocator),
-                memory,
-                *current_gworld,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetClip | PpcImportDispatcherTarget::SetClip => {
-            let clip_rgn = memory
-                .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
-                .unwrap_or(0);
-            let (source, destination) = if matches!(
-                binding.dispatcher_target,
-                PpcImportDispatcherTarget::GetClip
-            ) {
-                (clip_rgn, cpu.gpr[3])
-            } else {
-                (cpu.gpr[3], clip_rgn)
-            };
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_copy_rgn(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                source,
-                destination,
-            );
-            *last_mem_error = result;
-            Some(PpcImportAction::ReturnPreserve)
+        PpcImportDispatcherTarget::ClipRect
+        | PpcImportDispatcherTarget::GetClip
+        | PpcImportDispatcherTarget::SetClip
+        | PpcImportDispatcherTarget::BitMapToRegion
+        | PpcImportDispatcherTarget::NewRgn
+        | PpcImportDispatcherTarget::DisposeRgn
+        | PpcImportDispatcherTarget::CopyRgn
+        | PpcImportDispatcherTarget::OpenRgn
+        | PpcImportDispatcherTarget::CloseRgn
+        | PpcImportDispatcherTarget::SectRgn
+        | PpcImportDispatcherTarget::UnionRgn
+        | PpcImportDispatcherTarget::DiffRgn
+        | PpcImportDispatcherTarget::XorRgn
+        | PpcImportDispatcherTarget::SetEmptyRgn
+        | PpcImportDispatcherTarget::SetRectRgn
+        | PpcImportDispatcherTarget::RectRgn
+        | PpcImportDispatcherTarget::OffsetRgn
+        | PpcImportDispatcherTarget::EmptyRgn
+        | PpcImportDispatcherTarget::PtInRgn
+        | PpcImportDispatcherTarget::RectInRgn => {
+            unreachable!("Region Manager imports return through dispatch_region_import")
         }
         PpcImportDispatcherTarget::GetPen
         | PpcImportDispatcherTarget::HidePen
@@ -17909,164 +17904,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::BitMapToRegion => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_bitmap_to_region(
-                    cpu,
-                    Some(&mut allocator),
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                ),
-            )))
-        }
-        PpcImportDispatcherTarget::NewRgn => Some(PpcImportAction::Return(ppc_process_new_rgn(
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            last_mem_error,
-            handles,
-        ))),
-        PpcImportDispatcherTarget::DisposeRgn => {
-            let _ = ppc_dispose_process_native_handle(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                cpu.gpr[3],
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::CopyRgn => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            *last_mem_error = ppc_copy_rgn(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                cpu.gpr[3],
-                cpu.gpr[4],
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::OpenRgn => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            ppc_open_rgn(
-                Some(&mut allocator),
-                memory,
-                *current_gworld,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                None,
-                toolbox_startup,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::CloseRgn => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            ppc_close_rgn(
-                Some(&mut allocator),
-                memory,
-                cpu.gpr[3],
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                None,
-                toolbox_startup,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::SectRgn
-        | PpcImportDispatcherTarget::UnionRgn
-        | PpcImportDispatcherTarget::DiffRgn
-        | PpcImportDispatcherTarget::XorRgn => {
-            let operation = match binding.dispatcher_target {
-                PpcImportDispatcherTarget::SectRgn => PpcRegionBooleanOp::Intersection,
-                PpcImportDispatcherTarget::UnionRgn => PpcRegionBooleanOp::Union,
-                PpcImportDispatcherTarget::DiffRgn => PpcRegionBooleanOp::Difference,
-                PpcImportDispatcherTarget::XorRgn => PpcRegionBooleanOp::Xor,
-                _ => unreachable!(),
-            };
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            *last_mem_error = ppc_region_boolean_op(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                cpu.gpr[3],
-                cpu.gpr[4],
-                cpu.gpr[5],
-                operation,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::SetEmptyRgn => {
-            let _ = ppc_set_empty_rgn(memory, cpu.gpr[3]);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::SetRectRgn => {
-            let _ = ppc_set_rect_rgn(
-                memory,
-                cpu.gpr[3],
-                cpu.gpr[4] as u16 as i16,
-                cpu.gpr[5] as u16 as i16,
-                cpu.gpr[6] as u16 as i16,
-                cpu.gpr[7] as u16 as i16,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::RectRgn => {
-            let _ = ppc_rect_rgn(memory, cpu.gpr[3], cpu.gpr[4]);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::OffsetRgn => {
-            *last_mem_error = ppc_offset_rgn(
-                memory,
-                cpu.gpr[3],
-                cpu.gpr[4] as u16 as i16,
-                cpu.gpr[5] as u16 as i16,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::EmptyRgn => Some(PpcImportAction::Return(
-            if ppc_empty_rgn(memory, cpu.gpr[3]) {
-                1
-            } else {
-                0
-            },
-        )),
-        PpcImportDispatcherTarget::PtInRgn => {
-            let v = (cpu.gpr[3] >> 16) as u16 as i16;
-            let h = cpu.gpr[3] as u16 as i16;
-            Some(PpcImportAction::Return(u32::from(ppc_point_in_region(
-                memory, cpu.gpr[4], v, h,
-            ))))
-        }
-        PpcImportDispatcherTarget::RectInRgn => Some(PpcImportAction::Return(u32::from(
-            ppc_rect_in_region(memory, cpu.gpr[3], cpu.gpr[4]),
-        ))),
         PpcImportDispatcherTarget::OpenPoly => Some(PpcImportAction::Return(ppc_open_poly(
             process_memory_manager,
             memory,
