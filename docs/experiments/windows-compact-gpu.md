@@ -102,3 +102,21 @@ Build with `cargo build --release --features gui --target x86_64-pc-windows-gnu`
 `SYSTEMLESS_GPU_VERIFY=1` enables synchronous GPU readback and a full CPU oracle. Use it only for correctness checks; it materially changes timings. `SYSTEMLESS_GPU_CAPTURE_DIR` can name an existing directory for verified output images.
 
 This was validated on one integrated AMD GPU. Actual driver removal/reset, other GPU vendors, multi-monitor/DPI transitions and live macOS behavior have not been validated here. Reported D3D errors fall back to software for the rest of the run. Active-city refresh misses and simulation-dependent input tails remain follow-up work. The backend changes Windows presentation only; shared compact export is unused by the existing macOS/Linux presenters.
+
+## Compact export CPU follow-up (September 2026)
+
+A later native Windows GUI sample identified CPU work in the indexed compact-export loop, including a capacity check and vector-length update for each ordinary pixel. Export now keeps the reusable cell vector at the current frame length and assigns through zipped destination/metadata slices. Every cell is overwritten on success; resize, palette resolution, detail-tile order, overlays, validation, GPU submission and guest timing retain their previous behavior.
+
+The following is a **controlled hidden replay**, separate from the displayed-window measurements above. Two pairs ran in before/after/after/before order, each executing the same 2,500 frames including a city and Fire. The harness includes logical ARGB conversion, its overlay-reference copy, and actual compact transport generation. Phase figures are mean elapsed time per frame; whole-process figures are Windows CPU time, including startup and checkpoint overhead.
+
+| Measurement | Before | After | Reduction |
+| --- | ---: | ---: | ---: |
+| Ordinary-city compact export, frames 850–999 | 1.612 ms | 1.345 ms | 16.6% |
+| Fire compact export, frames 1300–2499 | 1.659 ms | 1.347 ms | 18.8% |
+| Whole-process CPU, mean per 2,500-frame replay | 17.383 s | 16.578 s | 4.6% |
+
+Both pairs improved total CPU (6.9% and 2.2%). Untouched phases varied, so these data do not establish improvements to guest execution or composition. All 2,500 non-timing frame records matched across all four runs. At four checkpoints, full 128 MiB guest RAM hashes, CPU state, rendered PNG bytes, and complete compact cell/detail bytes were identical. A regression also covers reuse across shrinking/growing frames, 8/16/32-bit color, overlays, and appearing/disappearing retained detail.
+
+The comparison used the same combined performance stack on both sides, including the still-independent tracked-memory JIT, title cache, scalar-write routing, snapshot hashing, and #2086. Those patches are not included in this PR. The export change is independently applied to the GPU PR on master `6304dd7` (0.41.12); its library suite passed 5,515 tests (three ignored). The replay has no displayed GPU submission or live audio device; **4.6% is not a measured reduction in live GUI CPU, input latency, or a claim to meet the 7%-of-one-core target**. The shader and submitted bytes are unchanged. Prior displayed-window and GPU-oracle results above remain evidence for the presenter, rather than new measurements of this export loop.
+
+See [compact-export-results.json](windows-compact-gpu/compact-export-results.json) for pair timings and equivalence results.
