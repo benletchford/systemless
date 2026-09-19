@@ -116,6 +116,12 @@ with the [`ppc`](https://crates.io/crates/ppc) crate. Native builds enable
 m68k's Cranelift JIT for eligible hot traces, while WebAssembly uses its
 portable trace executor.
 
+Native memory traces can read stable RAM directly while routing stores through
+the memory bus to preserve high-resolution text coverage and write protection.
+For diagnostic comparisons, setting `SYSTEMLESS_DISABLE_TRACKED_JIT=1` before
+launch disables this tracked-memory capability; ordinary raw-memory traces are
+unaffected. Omit the variable for normal use.
+
 68K and PowerPC are execution formats, not separate Macintosh platforms. Both
 participate in one coherent Macintosh world containing the guest memory map,
 system services, processes, tasks, and Toolbox state. Architecture-specific

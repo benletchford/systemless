@@ -2358,6 +2358,29 @@ impl MacMemoryBus {
         Some((ptr, self.ram_size))
     }
 
+    /// Stable plain RAM can be read directly while stores retain all existing
+    /// presentation, write-probe, and protection hooks. Shared/foreign mappings
+    /// and per-access tracing still use the ordinary bus path.
+    pub(crate) fn tracked_mem_window(&mut self) -> Option<(*const u8, u32)> {
+        static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *DISABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_DISABLE_TRACKED_JIT").is_some())
+            || !self.addressing_32_bit
+            || self.foreign_address_space.is_some()
+            || fb_write_trace_range().is_some()
+            || mem_read_trace_active()
+            || mem_write_trace_active()
+            || watchpoint_armed()
+        {
+            return None;
+        }
+        let ptr = match &mut self.ram {
+            RamStorage::Owned(v) => v.as_ptr(),
+            RamStorage::Shared(_) => return None,
+            RamStorage::External(ptr, _) => *ptr as *const u8,
+        };
+        Some((ptr, self.ram_size))
+    }
+
     /// Dump stack contents around the given SP for debugging
     pub fn dump_stack(&self, sp: u32, label: &str) {
         eprintln!("[STACK DUMP] {} (SP=${:08X})", label, sp);
@@ -3484,6 +3507,35 @@ mod tests {
         bus.begin_write_probe();
         bus.fill_bytes_strided(0x105, 16, 4, 0xEE);
         assert!(bus.finish_write_probe_unchanged(), "same bytes: unchanged");
+    }
+
+    #[test]
+    fn hot_cpu_stores_preserve_write_probes_and_protection() {
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        bus.set_addressing_32_bit(true);
+        // MOVE.L D1,(A1); DBRA D0,loop.
+        for (i, word) in [0x2281, 0x51c8, 0xfffc].into_iter().enumerate() {
+            bus.write_word(0x200 + i as u32 * 2, word);
+        }
+        let mut cpu = m68k::CpuCore::new();
+        cpu.set_cpu_type(m68k::CpuType::M68040);
+        cpu.set_a(1, 0x1000);
+        let run = |cpu: &mut m68k::CpuCore, bus: &mut MacMemoryBus, value| {
+            bus.begin_write_probe();
+            assert!(bus.fast_mem_window().is_none());
+            assert!(bus.tracked_mem_window().is_some());
+            cpu.set_d(0, 1023);
+            cpu.set_d(1, value);
+            cpu.pc = 0x200;
+            assert_eq!(cpu.run_batch(bus, 2048, &[0x206]).instructions, 2048);
+            bus.finish_write_probe_unchanged()
+        };
+        assert!(!run(&mut cpu, &mut bus, 0x12345678));
+        assert_eq!(bus.read_long(0x1000), 0x12345678);
+        assert!(run(&mut cpu, &mut bus, 0x12345678));
+        bus.protect_readonly_code(0x1000, 4);
+        assert!(run(&mut cpu, &mut bus, 0xdeadbeef));
+        assert_eq!(bus.read_long(0x1000), 0x12345678);
     }
 
     #[test]
