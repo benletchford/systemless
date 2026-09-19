@@ -128,6 +128,28 @@ pub(crate) struct MenuBarCache {
     pixels: crate::memory::SavedPixels,
 }
 
+// Bound retained title coverage even when applications repeatedly rename windows.
+const WINDOW_TITLE_CACHE_ENTRIES: usize = 8;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WindowTitleCacheKey {
+    screen: (u32, u32, i16, i16, u16),
+    bounds: (i16, i16, i16, i16),
+    menu_height: i16,
+    title: String,
+    proc_id: i16,
+    active: bool,
+    go_away: bool,
+    colors: u64,
+    outline_scale: Option<u32>,
+}
+
+pub(crate) struct WindowTitleCache {
+    key: WindowTitleCacheKey,
+    rect: (i16, i16, i16, i16),
+    pixels: crate::memory::SavedPixels,
+}
+
 /// Which piece of themed chrome a cached rendering is, with the inputs its
 /// artwork depends on.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4897,204 +4919,250 @@ impl super::TrapDispatcher {
             return;
         }
 
-        // Fill title bar with white (exclusive bottom)
-        Self::fb_fill_rect(
-            bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-            tb_top,
-            tb_left,
-            tb_bottom + 1,
-            tb_right,
-            false,
-        );
+        // Cache only the fully painted indexed title rectangle. Window content,
+        // borders, menu-bar exclusion and ClipAbove remain on their usual paths.
+        // Replaying SavedPixels repairs both guest bytes and retained outline
+        // coverage when the application has drawn over otherwise unchanged chrome.
+        let title_key = (pixel_size == 8).then(|| WindowTitleCacheKey {
+            screen: self.get_screen_params(),
+            bounds: self.window_bounds,
+            menu_height: menu_bar_height,
+            title: self.window_title.clone(),
+            proc_id: self.window_proc_id,
+            active,
+            go_away: self.go_away_flag,
+            colors: self.with_color_mirror(bus, |mirror| mirror.digest),
+            outline_scale: bus.outline_presentation_scale(),
+        });
+        let replayed = title_key.as_ref().is_some_and(|key| {
+            let mut cache = self.window_title_cache.borrow_mut();
+            let Some(index) = cache.iter().position(|entry| &entry.key == key) else {
+                return false;
+            };
+            // Preserve the native-drawing boundary even when no pixels differ.
+            bus.end_cpu_drawing(true);
+            let entry = cache.remove(index);
+            let (top, left, width, height) = entry.rect;
+            self.restore_screen_rect_pixels(bus, top, left, width, height, &entry.pixels);
+            cache.push(entry);
+            true
+        });
+        if !replayed {
+            // Fill title bar with white (exclusive bottom)
+            Self::fb_fill_rect(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                tb_top,
+                tb_left,
+                tb_bottom + 1,
+                tb_right,
+                false,
+            );
 
-        let is_movable_modal = self.window_proc_id == 5;
-        let has_go_away =
-            active && Self::window_is_document_proc(self.window_proc_id) && self.go_away_flag;
+            let is_movable_modal = self.window_proc_id == 5;
+            let has_go_away =
+                active && Self::window_is_document_proc(self.window_proc_id) && self.go_away_flag;
 
-        // The title bar is part of the standard Window Manager frame and is
-        // enclosed by the window outline. Macintosh Toolbox Essentials
-        // (1992), Figure 4-2, pp. 4-5--4-6.
-        Self::fb_hline(
-            bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-            tb_top,
-            tb_left,
-            tb_right,
-            true,
-        );
-        Self::fb_hline(
-            bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-            tb_bottom,
-            tb_left,
-            tb_right,
-            true,
-        );
-        // Left and right border of title bar
-        Self::fb_vline(bus, screen, tb_left, tb_top, tb_bottom + 1, true);
-        Self::fb_vline(bus, screen, tb_right - 1, tb_top, tb_bottom + 1, true);
+            // The title bar is part of the standard Window Manager frame and is
+            // enclosed by the window outline. Macintosh Toolbox Essentials
+            // (1992), Figure 4-2, pp. 4-5--4-6.
+            Self::fb_hline(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                tb_top,
+                tb_left,
+                tb_right,
+                true,
+            );
+            Self::fb_hline(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                tb_bottom,
+                tb_left,
+                tb_right,
+                true,
+            );
+            // Left and right border of title bar
+            Self::fb_vline(bus, screen, tb_left, tb_top, tb_bottom + 1, true);
+            Self::fb_vline(bus, screen, tb_right - 1, tb_top, tb_bottom + 1, true);
 
-        let title_clear_left = if !self.window_title.is_empty() {
-            let text_x = chrome.title_h;
-            text_x - 8
-        } else {
-            tb_right // No clear area
-        };
+            let title_clear_left = if !self.window_title.is_empty() {
+                let text_x = chrome.title_h;
+                text_x - 8
+            } else {
+                tb_right // No clear area
+            };
 
-        let _close_box_width = if has_go_away { 15i16 } else { 0 };
+            let _close_box_width = if has_go_away { 15i16 } else { 0 };
 
-        if is_movable_modal && !active {
-            // Inactive movableDBoxProc: plain title bar, no stripes
-            // Just draw the title text centered
-            if !self.window_title.is_empty() {
-                let text_x = title_clear_left + 8;
-                Self::fb_draw_string_clipped(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    text_x,
-                    chrome.title_baseline,
-                    &self.window_title,
-                    font_id,
-                    font_size,
-                    (tb_top, tb_left, tb_bottom - 2, tb_right),
-                );
+            if is_movable_modal && !active {
+                // Inactive movableDBoxProc: plain title bar, no stripes
+                // Just draw the title text centered
+                if !self.window_title.is_empty() {
+                    let text_x = title_clear_left + 8;
+                    Self::fb_draw_string_clipped(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        text_x,
+                        chrome.title_baseline,
+                        &self.window_title,
+                        font_id,
+                        font_size,
+                        (tb_top, tb_left, tb_bottom - 2, tb_right),
+                    );
+                }
+            } else {
+                // documentProc/noGrowDocProc: stripes + optional close box
+
+                // Draw close box if goAwayFlag is set.
+                //
+                // Classic Mac System 7.5.3 close-box graphic per BasiliskII reference
+                // (window_goaway): NOT a clean FrameRect. The WDEF draws an 11×11
+                // bounding region split into two shapes:
+                //   * top-left  L-shape — top horizontal (11 wide) + left vertical
+                //                         (11 tall), painting the 3D-highlight edge
+                //   * bottom-right Γ-shape — right vertical (8 tall, inset 2 from
+                //                            top + 1 from bottom) + bottom
+                //                            horizontal (8 wide, inset 2 from left
+                //                            + 1 from right), painting the inner
+                //                            close-box outline
+                // The 1-pixel gap between the two shapes gives the close box its
+                // characteristic 3D-button appearance.
+                // Inside Macintosh Volume V, V-188 figure 5-3.
+                if has_go_away {
+                    let cb_size: i16 = 11;
+                    let interior_top = tb_top + 1;
+                    let interior_height = tb_bottom - interior_top;
+                    let cb_top = interior_top + (interior_height - cb_size) / 2;
+                    let cb_left = tb_left + 9; // 1px border + 8px padding
+
+                    // Top-left L: full 11-wide top edge + full 11-tall left edge
+                    Self::fb_hline(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        cb_top,
+                        cb_left,
+                        cb_left + cb_size,
+                        true,
+                    );
+                    Self::fb_vline(bus, screen, cb_left, cb_top, cb_top + cb_size, true);
+
+                    // Bottom-right Γ: 8-tall right edge + 8-wide bottom edge,
+                    // inset 2 from the top-left and 1 from the bottom-right.
+                    let inner_right = cb_left + cb_size - 2; // x=cb_left+9
+                    let inner_bottom = cb_top + cb_size - 2; // y=cb_top+9
+                    Self::fb_vline(
+                        bus,
+                        screen,
+                        inner_right,
+                        cb_top + 2,
+                        cb_top + cb_size - 1,
+                        true,
+                    );
+                    Self::fb_hline(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        inner_bottom,
+                        cb_left + 2,
+                        cb_left + cb_size - 1,
+                        true,
+                    );
+                }
+
+                for (top, left, bottom, right) in chrome.zoom_ink.iter().copied() {
+                    Self::fb_fill_rect(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        top,
+                        left,
+                        bottom,
+                        right,
+                        true,
+                    );
+                }
+
+                // Use the same WDEF pinstripe geometry as PowerPC and themed
+                // frames. Macintosh Toolbox Essentials (1992), Figure 4-2.
+                for (top, left, bottom, right) in chrome.stripe_ink.iter().copied() {
+                    Self::fb_fill_rect(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        top,
+                        left,
+                        bottom,
+                        right,
+                        true,
+                    );
+                }
+
+                // Draw title text centered in title bar. Active windows get
+                // stripes and a close box; inactive windows keep the title text
+                // over a plain title bar.
+                if !self.window_title.is_empty() {
+                    let text_x = title_clear_left + 8;
+                    Self::fb_draw_string_clipped(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        text_x,
+                        chrome.title_baseline,
+                        &self.window_title,
+                        font_id,
+                        font_size,
+                        (tb_top, tb_left, tb_bottom - 2, tb_right),
+                    );
+                }
             }
-        } else {
-            // documentProc/noGrowDocProc: stripes + optional close box
 
-            // Draw close box if goAwayFlag is set.
-            //
-            // Classic Mac System 7.5.3 close-box graphic per BasiliskII reference
-            // (window_goaway): NOT a clean FrameRect. The WDEF draws an 11×11
-            // bounding region split into two shapes:
-            //   * top-left  L-shape — top horizontal (11 wide) + left vertical
-            //                         (11 tall), painting the 3D-highlight edge
-            //   * bottom-right Γ-shape — right vertical (8 tall, inset 2 from
-            //                            top + 1 from bottom) + bottom
-            //                            horizontal (8 wide, inset 2 from left
-            //                            + 1 from right), painting the inner
-            //                            close-box outline
-            // The 1-pixel gap between the two shapes gives the close box its
-            // characteristic 3D-button appearance.
-            // Inside Macintosh Volume V, V-188 figure 5-3.
-            if has_go_away {
-                let cb_size: i16 = 11;
-                let interior_top = tb_top + 1;
-                let interior_height = tb_bottom - interior_top;
-                let cb_top = interior_top + (interior_height - cb_size) / 2;
-                let cb_left = tb_left + 9; // 1px border + 8px padding
-
-                // Top-left L: full 11-wide top edge + full 11-tall left edge
-                Self::fb_hline(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    cb_top,
-                    cb_left,
-                    cb_left + cb_size,
-                    true,
-                );
-                Self::fb_vline(bus, screen, cb_left, cb_top, cb_top + cb_size, true);
-
-                // Bottom-right Γ: 8-tall right edge + 8-wide bottom edge,
-                // inset 2 from the top-left and 1 from the bottom-right.
-                let inner_right = cb_left + cb_size - 2; // x=cb_left+9
-                let inner_bottom = cb_top + cb_size - 2; // y=cb_top+9
-                Self::fb_vline(
-                    bus,
-                    screen,
-                    inner_right,
-                    cb_top + 2,
-                    cb_top + cb_size - 1,
-                    true,
-                );
-                Self::fb_hline(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    inner_bottom,
-                    cb_left + 2,
-                    cb_left + cb_size - 1,
-                    true,
-                );
-            }
-
-            for (top, left, bottom, right) in chrome.zoom_ink.iter().copied() {
-                Self::fb_fill_rect(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    top,
-                    left,
-                    bottom,
-                    right,
-                    true,
-                );
-            }
-
-            // Use the same WDEF pinstripe geometry as PowerPC and themed
-            // frames. Macintosh Toolbox Essentials (1992), Figure 4-2.
-            for (top, left, bottom, right) in chrome.stripe_ink.iter().copied() {
-                Self::fb_fill_rect(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    top,
-                    left,
-                    bottom,
-                    right,
-                    true,
-                );
-            }
-
-            // Draw title text centered in title bar. Active windows get
-            // stripes and a close box; inactive windows keep the title text
-            // over a plain title bar.
-            if !self.window_title.is_empty() {
-                let text_x = title_clear_left + 8;
-                Self::fb_draw_string_clipped(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    text_x,
-                    chrome.title_baseline,
-                    &self.window_title,
-                    font_id,
-                    font_size,
-                    (tb_top, tb_left, tb_bottom - 2, tb_right),
-                );
+            if let Some(key) = title_key {
+                if let Some((top, left, width, height, pixels)) =
+                    self.save_screen_rect_pixels(bus, chrome.background)
+                {
+                    let mut cache = self.window_title_cache.borrow_mut();
+                    if cache.len() == WINDOW_TITLE_CACHE_ENTRIES {
+                        cache.remove(0);
+                    }
+                    cache.push(WindowTitleCache {
+                        key,
+                        rect: (top, left, width, height),
+                        pixels,
+                    });
+                }
             }
         }
 
@@ -6267,6 +6335,107 @@ mod redraw_chrome_tests {
             "the live popup's white interior should remain above the black stage"
         );
         assert_eq!(screen_width, 800, "test fixture assumes an 800px screen");
+    }
+
+    #[test]
+    fn cached_title_repairs_pixels_and_outline_detail_like_a_fresh_paint() {
+        let fixture = || {
+            let (mut disp, _cpu, mut bus) = setup_with_port();
+            disp.set_ui_theme_id(crate::ui_theme::UiThemeId::ClassicSystem7);
+            let base = bus.alloc(256 * 96);
+            disp.set_screen_mode_for_test(base, 256, 256, 96, 8);
+            let main = disp.ensure_main_gdevice(&mut bus);
+            bus.write_long(0x08A4, main);
+            bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+            bus.prepare_outline_presentation(
+                disp.screen_mode,
+                std::array::from_fn(|i| [255 - i as u8; 3]),
+            );
+            disp.window_bounds = (40, 8, 88, 248);
+            disp.window_proc_id = 0;
+            disp.window_title = "SimCity 2000".into();
+            disp.go_away_flag = true;
+            (disp, bus, base)
+        };
+        let (mut cached, mut actual, base) = fixture();
+        let (mut fresh, mut expected, expected_base) = fixture();
+        assert_eq!(base, expected_base);
+        cached.draw_window_chrome(&mut actual, true);
+        fresh.draw_window_chrome(&mut expected, true);
+        let original = actual.save_pixel_bytes(base, 256 * 96);
+        assert_ne!(
+            original,
+            crate::memory::SavedPixels::from(original.clone().into_vec()),
+            "the title must exercise retained outlines, not only the guest bitmap"
+        );
+        for state in 0..9 {
+            // Exercise an unchanged title first, then each visual input while
+            // repairing both ordinary overwrites and different subpixel ink.
+            for (disp, bus) in [(&mut cached, &mut actual), (&mut fresh, &mut expected)] {
+                match state {
+                    1 => disp.window_title = "Jun 1900 - Changed City".into(),
+                    3 => disp.go_away_flag = false,
+                    4 => disp.window_proc_id = 8,
+                    5 => disp.window_bounds = (36, 4, 84, 236),
+                    6 => bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 24),
+                    7 => {
+                        // Change the live colour-table bytes without changing
+                        // its seed; the cache must observe the actual colours.
+                        let ctab = TrapDispatcher::active_gdevice_ctab(bus).unwrap();
+                        for (index, level) in [(1, 0xFFFF), (255, 0xFFFF), (37, 0)] {
+                            for component in 0..3 {
+                                bus.write_word(ctab + 8 + index * 8 + 2 + component * 2, level);
+                            }
+                        }
+                    }
+                    8 => bus.enable_outline_presentation(
+                        disp.screen_mode,
+                        std::array::from_fn(|i| [255 - i as u8; 3]),
+                        2,
+                    ),
+                    _ => {}
+                }
+                bus.fill_bytes(base + 24 * 256 + 12, 48, 37);
+                TrapDispatcher::fb_draw_string(
+                    bus,
+                    base,
+                    256,
+                    8,
+                    256,
+                    96,
+                    32,
+                    33,
+                    "Overwritten",
+                    0,
+                    12,
+                );
+            }
+            fresh.window_title_cache.borrow_mut().clear();
+            cached.draw_window_chrome(&mut actual, state != 2);
+            fresh.draw_window_chrome(&mut expected, state != 2);
+            assert_eq!(
+                actual.save_pixel_bytes(base, 256 * 96),
+                expected.save_pixel_bytes(base, 256 * 96),
+                "cached title differs from fresh rendering in state {state}"
+            );
+            let (width, height, rgb, _) = actual.outline_presentation_rgb().unwrap();
+            let (fresh_width, fresh_height, fresh_rgb, _) =
+                expected.outline_presentation_rgb().unwrap();
+            assert_eq!((width, height), (fresh_width, fresh_height));
+            assert!(rgb == fresh_rgb, "outline pixels differ in state {state}");
+        }
+        // Reusing a title near the menu bar must keep its newly drawn pixels.
+        for bus in [&mut actual, &mut expected] {
+            bus.fill_bytes(base, 24 * 256, 29);
+        }
+        fresh.window_title_cache.borrow_mut().clear();
+        cached.draw_window_chrome(&mut actual, true);
+        fresh.draw_window_chrome(&mut expected, true);
+        assert_eq!(
+            actual.save_pixel_bytes(base, 256 * 96),
+            expected.save_pixel_bytes(base, 256 * 96)
+        );
+        assert_eq!(actual.read_byte(base + 20 * 256 + 100), 29);
     }
 
     #[test]

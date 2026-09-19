@@ -1960,6 +1960,8 @@ pub struct TrapDispatcher {
     pub(crate) palette_device_indices: HashMap<(u32, u16), u8>,
     /// Saved menu-bar pixels and retained text coverage for unchanged chrome.
     pub(crate) menu_bar_cache: std::cell::RefCell<Option<super::framebuffer::MenuBarCache>>,
+    /// Recently painted classic indexed title bars, including outline coverage.
+    pub(crate) window_title_cache: std::cell::RefCell<Vec<super::framebuffer::WindowTitleCache>>,
     /// The menu mark's device indices for the current main-device colour
     /// table; see `MenuMarkIndexCache`.
     pub(crate) menu_mark_indices: std::cell::Cell<Option<super::framebuffer::MenuMarkIndexCache>>,
@@ -3688,6 +3690,7 @@ impl TrapDispatcher {
             palette_updates: HashMap::new(),
             palette_device_indices: HashMap::new(),
             menu_bar_cache: std::cell::RefCell::new(None),
+            window_title_cache: std::cell::RefCell::new(Vec::new()),
             menu_mark_indices: std::cell::Cell::new(None),
             color_mirror: std::cell::RefCell::new(Default::default()),
             color_mirror_fresh: std::cell::Cell::new(false),
