@@ -16808,6 +16808,52 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         return Some(action);
     }
 
+    if let Some(action) = dispatch_qd3d::dispatch_q3_group_view_import(
+        dispatch_qd3d::PpcQ3GroupViewDispatchContext {
+            target: &binding.dispatcher_target,
+            cpu,
+            memory,
+            stores: PpcQ3ObjectStores {
+                q3_objects,
+                q3_object_refs,
+                q3_renderer_preferences,
+                q3_files,
+                q3_group_memberships,
+                q3_file_groups,
+                q3_views,
+                q3_submissions,
+                q3_view_transforms,
+                q3_submission_transforms,
+                q3_view_materials,
+                q3_submission_materials,
+                q3_submission_lights,
+                q3_view_state_stack,
+                q3_completed_frames,
+                q3_retained_frames,
+                q3_fog_styles,
+                q3_memory_storages,
+                q3_attributes,
+                q3_shader_uv_transforms,
+                q3_shader_boundaries,
+                q3_mipmap_textures,
+                q3_texture_shaders,
+                q3_draw_contexts,
+                q3_trimeshes,
+                q3_styles,
+                q3_cameras,
+                q3_lights,
+            },
+            next_q3_object,
+            q3_state_only_completed_frame_batches,
+            gworlds,
+            current_gworld: *current_gworld,
+            q3_error_state,
+            input_idle: input.is_idle(),
+        },
+    ) {
+        return Some(action);
+    }
+
     let mut current_menu_list = ppc_current_menu_list(memory);
     if let Some(action) = dispatch_cfm::dispatch_cfm_import(dispatch_cfm::PpcCfmDispatchContext {
         binding,
@@ -18454,14 +18500,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::Q3FileNew => {
             unreachable!("QuickDraw 3D file imports return through typed dispatch")
         }
-        PpcImportDispatcherTarget::Q3ViewNew => Some(PpcImportAction::Return(ppc_q3_view_new(
-            q3_objects,
-            next_q3_object,
-            q3_views,
-        ))),
-        PpcImportDispatcherTarget::Q3DisplayGroupNew => Some(PpcImportAction::Return(
-            ppc_q3_display_group_new(q3_objects, next_q3_object),
-        )),
+        PpcImportDispatcherTarget::Q3ViewNew | PpcImportDispatcherTarget::Q3DisplayGroupNew => {
+            unreachable!("QuickDraw 3D group/view imports return through typed dispatch")
+        }
         PpcImportDispatcherTarget::Q3ErrorGet => {
             let first_error_ptr = cpu.gpr[3];
             if first_error_ptr != 0 && !ppc_memory_can_write_bytes(memory, first_error_ptr, 4) {
@@ -18908,370 +18949,31 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::Q3FileClose => {
             unreachable!("QuickDraw 3D file imports return through typed dispatch")
         }
-        PpcImportDispatcherTarget::Q3GroupAddObject => {
-            Some(PpcImportAction::Return(ppc_q3_group_add_object(
-                cpu.gpr[3],
-                cpu.gpr[4],
-                None,
-                q3_group_memberships,
-                q3_objects,
-                q3_object_refs,
-                q3_lights,
-                q3_error_state,
-            )))
+        PpcImportDispatcherTarget::Q3GroupAddObject
+        | PpcImportDispatcherTarget::Q3GroupAddObjectBefore
+        | PpcImportDispatcherTarget::Q3GroupCountObjects
+        | PpcImportDispatcherTarget::Q3GroupGetFirstPosition
+        | PpcImportDispatcherTarget::Q3GroupGetNextPosition
+        | PpcImportDispatcherTarget::Q3GroupGetFirstPositionOfType
+        | PpcImportDispatcherTarget::Q3GroupGetPositionObject
+        | PpcImportDispatcherTarget::Q3GroupRemovePosition
+        | PpcImportDispatcherTarget::Q3LightGroupNew => {
+            unreachable!("QuickDraw 3D group imports return through typed dispatch")
         }
-        PpcImportDispatcherTarget::Q3GroupAddObjectBefore => {
-            Some(PpcImportAction::Return(ppc_q3_group_add_object(
-                cpu.gpr[3],
-                cpu.gpr[5],
-                Some(cpu.gpr[4]),
-                q3_group_memberships,
-                q3_objects,
-                q3_object_refs,
-                q3_lights,
-                q3_error_state,
-            )))
-        }
-        PpcImportDispatcherTarget::Q3GroupCountObjects => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_group_count_objects(
-                cpu,
-                memory,
-                q3_group_memberships,
-                q3_objects,
-                q3_file_groups,
-                q3_error_state,
-            ),
-        ))),
-        PpcImportDispatcherTarget::Q3GroupGetFirstPosition => Some(PpcImportAction::Return(
-            u32::from(ppc_q3_group_get_first_position(
-                cpu,
-                memory,
-                q3_group_memberships,
-                q3_objects,
-                q3_file_groups,
-                q3_error_state,
-            )),
-        )),
-        PpcImportDispatcherTarget::Q3GroupGetNextPosition => Some(PpcImportAction::Return(
-            u32::from(ppc_q3_group_get_next_position(
-                cpu,
-                memory,
-                q3_group_memberships,
-                q3_objects,
-                q3_file_groups,
-                q3_error_state,
-            )),
-        )),
-        PpcImportDispatcherTarget::Q3GroupGetFirstPositionOfType => Some(PpcImportAction::Return(
-            u32::from(ppc_q3_group_get_first_position_of_type(
-                cpu,
-                memory,
-                q3_group_memberships,
-                q3_objects,
-                q3_file_groups,
-                q3_error_state,
-            )),
-        )),
-        PpcImportDispatcherTarget::Q3GroupGetPositionObject => Some(PpcImportAction::Return(
-            u32::from(ppc_q3_group_get_position_object(
-                cpu,
-                memory,
-                q3_group_memberships,
-                q3_objects,
-                q3_file_groups,
-                q3_object_refs,
-                q3_lights,
-                &[],
-                q3_error_state,
-            )),
-        )),
-        PpcImportDispatcherTarget::Q3GroupRemovePosition => {
-            let removed_object =
-                ppc_q3_group_remove_position(cpu, q3_group_memberships, q3_objects, q3_error_state);
-            if let Some(object) = removed_object {
-                let mut stores = PpcQ3ObjectStores {
-                    q3_objects,
-                    q3_object_refs,
-                    q3_renderer_preferences,
-                    q3_files,
-                    q3_group_memberships,
-                    q3_file_groups,
-                    q3_views,
-                    q3_submissions,
-                    q3_view_transforms,
-                    q3_submission_transforms,
-                    q3_view_materials,
-                    q3_submission_materials,
-                    q3_submission_lights,
-                    q3_view_state_stack,
-                    q3_completed_frames,
-                    q3_retained_frames,
-                    q3_fog_styles,
-                    q3_memory_storages,
-                    q3_attributes,
-                    q3_shader_uv_transforms,
-                    q3_shader_boundaries,
-                    q3_mipmap_textures,
-                    q3_texture_shaders,
-                    q3_draw_contexts,
-                    q3_trimeshes,
-                    q3_styles,
-                    q3_cameras,
-                    q3_lights,
-                };
-                let _ = ppc_q3_object_release_reference(&mut stores, object);
-            }
-            Some(PpcImportAction::Return(u32::from(removed_object.is_some())))
-        }
-        PpcImportDispatcherTarget::Q3LightGroupNew => Some(PpcImportAction::Return(
-            ppc_q3_light_group_new(q3_objects, next_q3_object),
-        )),
-        PpcImportDispatcherTarget::Q3ViewSetRenderer => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_view_set_owned_slot(
-                cpu,
-                q3_views,
-                q3_objects,
-                q3_object_refs,
-                q3_renderer_preferences,
-                q3_files,
-                q3_group_memberships,
-                q3_file_groups,
-                q3_submissions,
-                q3_view_transforms,
-                q3_submission_transforms,
-                q3_view_materials,
-                q3_submission_materials,
-                q3_submission_lights,
-                q3_view_state_stack,
-                q3_completed_frames,
-                q3_retained_frames,
-                q3_fog_styles,
-                q3_memory_storages,
-                q3_attributes,
-                q3_shader_uv_transforms,
-                q3_shader_boundaries,
-                q3_mipmap_textures,
-                q3_texture_shaders,
-                q3_draw_contexts,
-                q3_trimeshes,
-                q3_styles,
-                q3_cameras,
-                q3_lights,
-                PpcQ3ViewSlot::Renderer,
-                q3_error_state,
-            ),
-        ))),
-        PpcImportDispatcherTarget::Q3ViewGetRenderer => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_view_get_owned_slot(
-                cpu,
-                memory,
-                q3_views,
-                q3_objects,
-                q3_object_refs,
-                PpcQ3ViewSlot::Renderer,
-                q3_error_state,
-            ),
-        ))),
-        PpcImportDispatcherTarget::Q3ViewSetLightGroup => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_view_set_light_group(
-                cpu,
-                q3_views,
-                q3_objects,
-                q3_object_refs,
-                q3_renderer_preferences,
-                q3_files,
-                q3_group_memberships,
-                q3_file_groups,
-                q3_submissions,
-                q3_view_transforms,
-                q3_submission_transforms,
-                q3_view_materials,
-                q3_submission_materials,
-                q3_submission_lights,
-                q3_view_state_stack,
-                q3_completed_frames,
-                q3_retained_frames,
-                q3_fog_styles,
-                q3_memory_storages,
-                q3_attributes,
-                q3_shader_uv_transforms,
-                q3_shader_boundaries,
-                q3_mipmap_textures,
-                q3_texture_shaders,
-                q3_draw_contexts,
-                q3_trimeshes,
-                q3_styles,
-                q3_cameras,
-                q3_lights,
-                q3_error_state,
-            ),
-        ))),
-        PpcImportDispatcherTarget::Q3ViewGetLightGroup => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_view_get_owned_slot(
-                cpu,
-                memory,
-                q3_views,
-                q3_objects,
-                q3_object_refs,
-                PpcQ3ViewSlot::LightGroup,
-                q3_error_state,
-            ),
-        ))),
-        PpcImportDispatcherTarget::Q3ViewSetDrawContext => Some(PpcImportAction::Return(
-            u32::from(ppc_q3_view_set_owned_slot(
-                cpu,
-                q3_views,
-                q3_objects,
-                q3_object_refs,
-                q3_renderer_preferences,
-                q3_files,
-                q3_group_memberships,
-                q3_file_groups,
-                q3_submissions,
-                q3_view_transforms,
-                q3_submission_transforms,
-                q3_view_materials,
-                q3_submission_materials,
-                q3_submission_lights,
-                q3_view_state_stack,
-                q3_completed_frames,
-                q3_retained_frames,
-                q3_fog_styles,
-                q3_memory_storages,
-                q3_attributes,
-                q3_shader_uv_transforms,
-                q3_shader_boundaries,
-                q3_mipmap_textures,
-                q3_texture_shaders,
-                q3_draw_contexts,
-                q3_trimeshes,
-                q3_styles,
-                q3_cameras,
-                q3_lights,
-                PpcQ3ViewSlot::DrawContext,
-                q3_error_state,
-            )),
-        )),
-        PpcImportDispatcherTarget::Q3ViewGetDrawContext => Some(PpcImportAction::Return(
-            u32::from(ppc_q3_view_get_owned_slot(
-                cpu,
-                memory,
-                q3_views,
-                q3_objects,
-                q3_object_refs,
-                PpcQ3ViewSlot::DrawContext,
-                q3_error_state,
-            )),
-        )),
-        PpcImportDispatcherTarget::Q3ViewSetCamera => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_view_set_owned_slot(
-                cpu,
-                q3_views,
-                q3_objects,
-                q3_object_refs,
-                q3_renderer_preferences,
-                q3_files,
-                q3_group_memberships,
-                q3_file_groups,
-                q3_submissions,
-                q3_view_transforms,
-                q3_submission_transforms,
-                q3_view_materials,
-                q3_submission_materials,
-                q3_submission_lights,
-                q3_view_state_stack,
-                q3_completed_frames,
-                q3_retained_frames,
-                q3_fog_styles,
-                q3_memory_storages,
-                q3_attributes,
-                q3_shader_uv_transforms,
-                q3_shader_boundaries,
-                q3_mipmap_textures,
-                q3_texture_shaders,
-                q3_draw_contexts,
-                q3_trimeshes,
-                q3_styles,
-                q3_cameras,
-                q3_lights,
-                PpcQ3ViewSlot::Camera,
-                q3_error_state,
-            ),
-        ))),
-        PpcImportDispatcherTarget::Q3ViewGetCamera => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_view_get_owned_slot(
-                cpu,
-                memory,
-                q3_views,
-                q3_objects,
-                q3_object_refs,
-                PpcQ3ViewSlot::Camera,
-                q3_error_state,
-            ),
-        ))),
-        PpcImportDispatcherTarget::Q3ViewStartRendering => Some(PpcImportAction::Return(
-            u32::from(ppc_q3_view_start_rendering(
-                cpu,
-                q3_views,
-                q3_objects,
-                q3_submissions,
-                q3_submission_transforms,
-                q3_submission_materials,
-                q3_submission_lights,
-                q3_error_state,
-            )),
-        )),
-        PpcImportDispatcherTarget::Q3ViewEndRendering => {
-            Some(dispatch_q3_view_end_rendering_import(
-                cpu,
-                q3_views,
-                q3_objects,
-                q3_submissions,
-                q3_submission_transforms,
-                q3_submission_materials,
-                q3_submission_lights,
-                q3_completed_frames,
-                q3_retained_frames,
-                q3_state_only_completed_frame_batches,
-                q3_draw_contexts,
-                q3_trimeshes,
-                gworlds,
-                *current_gworld,
-                q3_error_state,
-                input.is_idle(),
-            ))
-        }
-        PpcImportDispatcherTarget::Q3ViewStartBoundingBox => {
-            Some(PpcImportAction::Return(u32::from(
-                ppc_q3_view_start_bounding_box(cpu, q3_views, q3_objects, q3_error_state),
-            )))
-        }
-        PpcImportDispatcherTarget::Q3ViewEndBoundingBox => {
-            Some(PpcImportAction::Return(ppc_q3_view_end_bounding_box(
-                cpu,
-                memory,
-                q3_views,
-                q3_objects,
-                q3_submissions,
-                q3_submission_transforms,
-                q3_submission_materials,
-                q3_submission_lights,
-                q3_retained_frames,
-                q3_trimeshes,
-                q3_error_state,
-            )))
-        }
-        PpcImportDispatcherTarget::Q3ViewCancel => {
-            Some(PpcImportAction::Return(u32::from(ppc_q3_view_cancel(
-                cpu,
-                q3_views,
-                q3_objects,
-                q3_submissions,
-                q3_submission_transforms,
-                q3_submission_materials,
-                q3_submission_lights,
-                q3_error_state,
-            ))))
+        PpcImportDispatcherTarget::Q3ViewSetRenderer
+        | PpcImportDispatcherTarget::Q3ViewGetRenderer
+        | PpcImportDispatcherTarget::Q3ViewSetLightGroup
+        | PpcImportDispatcherTarget::Q3ViewGetLightGroup
+        | PpcImportDispatcherTarget::Q3ViewSetDrawContext
+        | PpcImportDispatcherTarget::Q3ViewGetDrawContext
+        | PpcImportDispatcherTarget::Q3ViewSetCamera
+        | PpcImportDispatcherTarget::Q3ViewGetCamera
+        | PpcImportDispatcherTarget::Q3ViewStartRendering
+        | PpcImportDispatcherTarget::Q3ViewEndRendering
+        | PpcImportDispatcherTarget::Q3ViewStartBoundingBox
+        | PpcImportDispatcherTarget::Q3ViewEndBoundingBox
+        | PpcImportDispatcherTarget::Q3ViewCancel => {
+            unreachable!("QuickDraw 3D view imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3ShaderSubmit => {
             Some(PpcImportAction::Return(u32::from(ppc_q3_submit(
