@@ -795,6 +795,40 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::FrameRgn => {
+            if toolbox_startup.open_region_port == current_gworld {
+                ppc_open_region_include_region(toolbox_startup, memory, cpu.gpr[3]);
+            } else {
+                let _ = ppc_frame_region(
+                    memory,
+                    gworlds,
+                    current_gworld,
+                    cpu.gpr[3],
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(&current_gworld).copied(),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::PaintRgn | PpcImportDispatcherTarget::FillRgn => {
+            if toolbox_startup.open_region_port == current_gworld {
+                ppc_open_region_include_region(toolbox_startup, memory, cpu.gpr[3]);
+            } else {
+                let _ = ppc_paint_region(
+                    memory,
+                    gworlds,
+                    current_gworld,
+                    cpu.gpr[3],
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(&current_gworld).copied(),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::InvertRgn => {
+            let _ = ppc_invert_region(memory, gworlds, current_gworld, cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetPen => {
             if cpu.gpr[3] != 0 {
                 let _ = memory.write_u16_be(cpu.gpr[3], *quickdraw_pen_v as u16);

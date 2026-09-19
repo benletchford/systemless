@@ -17795,39 +17795,11 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::PaintArc => {
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
         }
-        PpcImportDispatcherTarget::FrameRgn => {
-            if toolbox_startup.open_region_port == *current_gworld {
-                ppc_open_region_include_region(toolbox_startup, memory, cpu.gpr[3]);
-            } else {
-                let _ = ppc_frame_region(
-                    memory,
-                    gworlds,
-                    *current_gworld,
-                    cpu.gpr[3],
-                    *quickdraw_fore_color,
-                    quickdraw_fore_indices.get(current_gworld).copied(),
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::PaintRgn | PpcImportDispatcherTarget::FillRgn => {
-            if toolbox_startup.open_region_port == *current_gworld {
-                ppc_open_region_include_region(toolbox_startup, memory, cpu.gpr[3]);
-            } else {
-                let _ = ppc_paint_region(
-                    memory,
-                    gworlds,
-                    *current_gworld,
-                    cpu.gpr[3],
-                    *quickdraw_fore_color,
-                    quickdraw_fore_indices.get(current_gworld).copied(),
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::InvertRgn => {
-            let _ = ppc_invert_region(memory, gworlds, *current_gworld, cpu.gpr[3]);
-            Some(PpcImportAction::ReturnPreserve)
+        PpcImportDispatcherTarget::FrameRgn
+        | PpcImportDispatcherTarget::PaintRgn
+        | PpcImportDispatcherTarget::FillRgn
+        | PpcImportDispatcherTarget::InvertRgn => {
+            unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
         }
         PpcImportDispatcherTarget::FrameRoundRect | PpcImportDispatcherTarget::PaintRoundRect => {
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
