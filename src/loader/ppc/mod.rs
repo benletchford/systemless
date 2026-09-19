@@ -30,10 +30,10 @@ use crate::event_queue::{
 use crate::guest_call::{
     format_ppc_import_action, install_powerpc_call_arguments, ExecutionMenuViews,
     GuestCallContinuation, GuestCallEffect, GuestCallRequest, GuestCallTarget, MenuTrackingCall,
-    MenuTrackingOrigin, NativeRetirement, NativeThreadContext, SharedGuestCallStack, ThreadStorage,
+    MenuTrackingOrigin, NativeRetirement, SharedGuestCallStack,
 };
 use crate::guest_procedure::{
-    resolve_guest_procedure, resolve_same_isa_thread_entry, GuestIsa, GuestProcedure,
+    resolve_guest_procedure, GuestIsa, GuestProcedure,
     ROUTINE_DESCRIPTOR_HEADER_SIZE as PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE,
     ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP as PPC_MIXED_MODE_TRAP,
     ROUTINE_DESCRIPTOR_VERSION as PPC_ROUTINE_DESCRIPTOR_VERSION,
@@ -123,7 +123,7 @@ use crate::trap::manager::{
 };
 use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy, Rect};
 use crate::trap::{pict, TrapDispatcher};
-use crate::thread_manager::{NewThreadCreationEdge, RetiredThreadStorageEdge, ThreadManager};
+use crate::thread_manager::{RetiredThreadStorageEdge, ThreadManager};
 use crate::ui_theme::{render_scrollbar_bitmap, Rgb8, ThemeBitmap, UiThemeId};
 use ppc::{
     PpcAlignmentPolicy, PpcCpu, PpcException, PpcExecutionContext, PpcFetchHistogram,
@@ -134,19 +134,48 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
 
+mod dispatch_control;
+mod dispatch_dialog;
+mod dispatch_drawsprocket;
 mod dispatch_event;
 mod dispatch_files;
+mod dispatch_inputsprocket;
+mod dispatch_list;
 mod dispatch_low_memory;
 mod dispatch_math;
+mod dispatch_memory;
+mod dispatch_menu;
 mod dispatch_qd3d;
 mod dispatch_quickdraw;
+mod dispatch_quicktime;
+mod dispatch_resources;
 mod dispatch_sound;
+mod dispatch_standard_file;
+mod dispatch_textedit;
+mod dispatch_threads;
+mod dispatch_time;
+mod dispatch_stdc;
+mod dispatch_window;
+use dispatch_control::*;
+pub(crate) use dispatch_dialog::PpcDialogCallbackState;
+use dispatch_dialog::*;
+pub(crate) use dispatch_stdc::{PpcQsortState, PpcStdSignalState};
+pub(super) use dispatch_stdc::*;
+pub(super) use dispatch_window::*;
+#[cfg(test)]
+use dispatch_list::*;
+use dispatch_standard_file::*;
 mod pef_dump;
 mod theme;
 #[cfg(test)]
 use pef_dump::format_pef_dump_json;
 use pef_dump::{maybe_write, PefDumpContext};
 use theme::*;
+use dispatch_time::ppc_sync_vbl_task_links;
+#[cfg(test)]
+pub(crate) use dispatch_time::{
+    ppc_install_time_task, ppc_install_vbl_task, ppc_remove_time_task, ppc_remove_vbl_task,
+};
 
 use dispatch_event::{
     dispatch_button_import, dispatch_getkeys_import, dispatch_microseconds_import,
@@ -261,30 +290,6 @@ const PPC_IMPORT_STD_FLT_MIN: u32 = PPC_IMPORT_DATA_BASE + 0x440;
 const PPC_IMPORT_STD_ERRNO: u32 = PPC_IMPORT_DATA_BASE + 0x444;
 const PPC_IMPORT_STD_MAC_OS_ERR: u32 = PPC_IMPORT_DATA_BASE + 0x448;
 const PPC_IMPORT_CTYPE_TABLE: u32 = PPC_IMPORT_DATA_BASE + 0x500;
-// Universal Interfaces 3.4 ctype.h defines these C-locale table flags.
-const PPC_CTYPE_UPP: u8 = 0x01;
-const PPC_CTYPE_LOW: u8 = 0x02;
-const PPC_CTYPE_DIG: u8 = 0x04;
-const PPC_CTYPE_WSP: u8 = 0x08;
-const PPC_CTYPE_PUN: u8 = 0x10;
-const PPC_CTYPE_CTL: u8 = 0x20;
-const PPC_CTYPE_BLA: u8 = 0x40;
-const PPC_CTYPE_HEX: u8 = 0x80;
-
-const fn ppc_ctype_entry(byte: u8) -> u8 {
-    match byte {
-        b'0'..=b'9' => PPC_CTYPE_DIG | PPC_CTYPE_HEX,
-        b'A'..=b'F' => PPC_CTYPE_UPP | PPC_CTYPE_HEX,
-        b'G'..=b'Z' => PPC_CTYPE_UPP,
-        b'a'..=b'f' => PPC_CTYPE_LOW | PPC_CTYPE_HEX,
-        b'g'..=b'z' => PPC_CTYPE_LOW,
-        b' ' => PPC_CTYPE_BLA | PPC_CTYPE_WSP,
-        b'\t' | b'\n' | 0x0b | 0x0c | b'\r' => PPC_CTYPE_CTL | PPC_CTYPE_WSP,
-        0x00..=0x08 | 0x0e..=0x1f | 0x7f => PPC_CTYPE_CTL,
-        b'!'..=b'/' | b':'..=b'@' | b'['..=b'`' | b'{'..=b'~' => PPC_CTYPE_PUN,
-        _ => 0,
-    }
-}
 const PPC_IMPORT_CUR_AP_NAME: u32 = PPC_IMPORT_DATA_BASE + 0x900;
 // Metrowerks StdCLib exposes `_iob` as the three 24-byte FILE records used
 // for stdin, stdout, and stderr. Keep this zero-initialized storage in the
@@ -386,7 +391,8 @@ const PPC_IMPORT_CAPACITY: u32 = 4096;
 // does not reduce the 4,096 application/CFM binding capacity.
 const PPC_IMPORT_SLOT_COUNT: u32 = PPC_IMPORT_CAPACITY + 2;
 const PPC_THREAD_RETURN_IMPORT_INDEX: u32 = PPC_IMPORT_CAPACITY + 1;
-const PPC_THREAD_RETURN_PC: u32 = PPC_IMPORT_TRAP_BASE + PPC_THREAD_RETURN_IMPORT_INDEX * 4;
+pub(super) const PPC_THREAD_RETURN_PC: u32 =
+    PPC_IMPORT_TRAP_BASE + PPC_THREAD_RETURN_IMPORT_INDEX * 4;
 const PPC_GUEST_CALL_RETURN_IMPORT_INDEX: u32 = PPC_IMPORT_CAPACITY;
 const PPC_FIRST_CFM_CONNECTION_ID: u32 = 1;
 const PPC_CFM_FIND_LIB: u32 = 2;
@@ -395,14 +401,14 @@ const PPC_CFM_LOAD_NEW_COPY: u32 = 5;
 const PPC_CFM_POWERPC_ARCH: u32 = u32::from_be_bytes(*b"pwpc");
 #[cfg(test)]
 use crate::cfm::CFM_INIT_BLOCK_SIZE as PPC_CFM_INIT_BLOCK_SIZE;
-const PPC_INITIAL_STACK_FRAME_SIZE: u32 = 64;
+pub(super) const PPC_INITIAL_STACK_FRAME_SIZE: u32 = 64;
 const PPC_INTERRUPT_RED_ZONE_SIZE: u32 = 224;
 const PPC_PARAMETER_AREA_OFFSET: u32 = 24;
 const PPC_LINKAGE_BACK_CHAIN_OFFSET: u32 = 0;
 const PPC_LINKAGE_SAVED_CR_OFFSET: u32 = 4;
 const PPC_LINKAGE_SAVED_LR_OFFSET: u32 = 8;
 const PPC_LINKAGE_SAVED_RTOC_OFFSET: u32 = 20;
-const PPC_GUEST_CALL_RETURN_PC: u32 = PPC_IMPORT_TRAP_BASE + PPC_GUEST_CALL_RETURN_IMPORT_INDEX * 4;
+pub(super) const PPC_GUEST_CALL_RETURN_PC: u32 = PPC_IMPORT_TRAP_BASE + PPC_GUEST_CALL_RETURN_IMPORT_INDEX * 4;
 const PPC_APPLICATION_INIT_RETURN_PC: u32 = PPC_IMPORT_TRAP_BASE - 0x100;
 const PPC_EXCEPTION_INFORMATION_SIZE: u32 = 24;
 const PPC_EXCEPTION_MACHINE_INFORMATION_SIZE: u32 = 64;
@@ -472,7 +478,7 @@ const PPC_CALL_UNIVERSAL_PROC_FIXED_WORD_PARAMETERS: usize = 2;
 const PPC_CALL_UNIVERSAL_PROC_REGISTER_VARARGS: usize = 6;
 const PPC_NATIVE_PARAMETER_GPR_COUNT: usize = 8;
 const PPC_MAX_STACK_SIZE: u32 = PPC_STACK_TOP - PPC_HEAP_BASE;
-const PPC_RAND_SEED_ADDR: u32 = 0x0000_0156;
+pub(super) const PPC_RAND_SEED_ADDR: u32 = 0x0000_0156;
 const PPC_GRAY_RGN_ADDR: u32 = 0x0000_09ee;
 // TheMenu identifies the menu owning the selected item. For a hierarchical
 // choice this is the submenu ID even though its originating regular title is
@@ -563,7 +569,7 @@ const PPC_ZONE_STORAGE_SIZE: usize = 64;
 const PPC_ZONE_HEAP_TYPE_OFFSET: u32 = 30;
 const PPC_ZONE_32_BIT_HEAP: u8 = 1;
 const PPC_ZONE_NEW_STYLE_HEAP: u8 = 2;
-const PPC_MAIN_SCREEN_BASE: u32 = 0x02f1_0000;
+pub(super) const PPC_MAIN_SCREEN_BASE: u32 = 0x02f1_0000;
 const PPC_DSP_BACK_PIXMAP_HANDLE: u32 = 0x0501_0300;
 const PPC_DSP_BACK_PIXMAP: u32 = 0x0501_0400;
 const PPC_DSP_BACK_VIS_RGN_HANDLE: u32 = 0x0501_0500;
@@ -654,41 +660,8 @@ struct PpcTeStyleRun {
     style_index: usize,
     style: PpcTeResolvedStyle,
 }
-// Inside Macintosh: More Macintosh Toolbox (1993), pp. 4-106--4-108.
-const PPC_LIST_VIEW_OFFSET: u32 = 0;
-const PPC_LIST_PORT_OFFSET: u32 = 8;
-const PPC_LIST_INDENT_OFFSET: u32 = 12;
-const PPC_LIST_CELL_SIZE_OFFSET: u32 = 16;
-const PPC_LIST_VISIBLE_OFFSET: u32 = 20;
-const PPC_LIST_VSCROLL_OFFSET: u32 = 28;
-const PPC_LIST_HSCROLL_OFFSET: u32 = 32;
-const PPC_LIST_SEL_FLAGS_OFFSET: u32 = 36;
-const PPC_LIST_ACTIVE_OFFSET: u32 = 37;
-const PPC_LIST_FLAGS_OFFSET: u32 = 39;
-const PPC_LIST_CLICK_TIME_OFFSET: u32 = 40;
-const PPC_LIST_CLICK_LOC_OFFSET: u32 = 44;
-const PPC_LIST_MOUSE_LOC_OFFSET: u32 = 48;
-const PPC_LIST_LAST_CLICK_OFFSET: u32 = 56;
-const PPC_LIST_DATA_BOUNDS_OFFSET: u32 = 72;
-const PPC_LIST_CELLS_OFFSET: u32 = 80;
-const PPC_LIST_MAX_INDEX_OFFSET: u32 = 84;
-const PPC_LIST_CELL_ARRAY_OFFSET: u32 = 86;
-const PPC_LIST_REC_MIN_SIZE: u32 = 88;
-const PPC_CWINDOW_WINDOW_KIND_OFFSET: u32 = 108;
-const PPC_CWINDOW_VISIBLE_OFFSET: u32 = 110;
-const PPC_CWINDOW_HILITED_OFFSET: u32 = 111;
-const PPC_CWINDOW_GO_AWAY_OFFSET: u32 = 112;
-const PPC_CWINDOW_STRUCTURE_RGN_OFFSET: u32 = 114;
-const PPC_CWINDOW_CONTENT_RGN_OFFSET: u32 = 118;
-const PPC_CWINDOW_UPDATE_RGN_OFFSET: u32 = 122;
-const PPC_CWINDOW_DEF_PROC_OFFSET: u32 = 126;
-const PPC_CWINDOW_STATE_HANDLE_OFFSET: u32 = 130;
-const PPC_CWINDOW_TITLE_HANDLE_OFFSET: u32 = 134;
-const PPC_CWINDOW_TITLE_WIDTH_OFFSET: u32 = 138;
-const PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET: u32 = 152;
 const PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET: u32 = 156;
 const PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET: u32 = 160;
-const PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET: u32 = 164;
 const PPC_GRAF_PORT_SIZE: u32 = 108;
 const PPC_DM_MODE_LIST_SIZE: u32 = 0x320;
 const PPC_DM_MODE_LIST_MAGIC: u32 = u32::from_be_bytes(*b"DML1");
@@ -996,27 +969,6 @@ const PPC_KEY_NUMPAD_LEFT: u8 = 0x56;
 const PPC_KEY_NUMPAD_DOWN: u8 = 0x57;
 const PPC_KEY_NUMPAD_RIGHT: u8 = 0x58;
 const PPC_KEY_NUMPAD_UP: u8 = 0x5b;
-const PPC_DIALOG_RECORD_SIZE: u32 = 256;
-const PPC_DIALOG_ITEMS_OFFSET: u32 = 156;
-const PPC_DIALOG_TEXT_HANDLE_OFFSET: u32 = 160;
-const PPC_DIALOG_EDIT_FIELD_OFFSET: u32 = 164;
-const PPC_DIALOG_EDIT_OPEN_OFFSET: u32 = 166;
-const PPC_DIALOG_DEFAULT_ITEM_OFFSET: u32 = 168;
-const PPC_DIALOG_RESOURCE_ID_OFFSET: u32 = 170;
-// Host-private Dialog Manager state follows the documented DialogRecord. The
-// System 7 cancel-item API has no canonical public record field.
-const PPC_DIALOG_CANCEL_ITEM_HLE_OFFSET: u32 = 172;
-const PPC_DIALOG_ALERT_HIT_HLE_OFFSET: u32 = 174;
-const PPC_DIALOG_ITEM_DISABLED: u8 = 0x80;
-const PPC_DIALOG_ITEM_USER_ITEM: u8 = 0;
-const PPC_DIALOG_ITEM_BUTTON: u8 = 4;
-const PPC_DIALOG_ITEM_CHECKBOX: u8 = 5;
-const PPC_DIALOG_ITEM_RADIO: u8 = 6;
-const PPC_DIALOG_ITEM_RESOURCE_CONTROL: u8 = 7;
-const PPC_DIALOG_ITEM_STATIC_TEXT: u8 = 8;
-const PPC_DIALOG_ITEM_EDIT_TEXT: u8 = 16;
-const PPC_DIALOG_ITEM_ICON: u8 = 32;
-const PPC_DIALOG_ITEM_PICTURE: u8 = 64;
 const PPC_CONTROL_RECORD_SIZE: u32 = 296;
 const PPC_CONTROL_NEXT_OFFSET: u32 = 0;
 const PPC_CONTROL_OWNER_OFFSET: u32 = 4;
@@ -1028,7 +980,6 @@ const PPC_CONTROL_MIN_OFFSET: u32 = 20;
 const PPC_CONTROL_MAX_OFFSET: u32 = 22;
 const PPC_CONTROL_REF_CON_OFFSET: u32 = 36;
 const PPC_CONTROL_TITLE_OFFSET: u32 = 40;
-const PPC_CWINDOW_CONTROL_LIST_OFFSET: u32 = 140;
 const PPC_KEY_MAP_SIZE: u32 = 16;
 const PPC_GETKEYS_IDLE_POLL_FAST_FORWARD_THRESHOLD: u32 = 4;
 const PPC_GETKEYS_IDLE_POLL_EXTRA_CYCLES: u64 = 7_296;
@@ -1923,6 +1874,11 @@ pub enum PpcImportDispatcherTarget {
     DSpContextSetClutEntries,
     DSpContextGetDisplayID,
     DSpContextGetAttributes,
+    DSpContextSetVblProc,
+    DSpContextIsBusy,
+    DSpAltBufferDispose,
+    DSpContextInvalBackBufferRect,
+    DSpContextSetUnderlayAltBuffer,
     DMGetDisplayIDByGDevice,
     DMGetGDeviceByDisplayID,
     GetNewDialog,
@@ -2132,6 +2088,7 @@ pub enum PpcImportDispatcherTarget {
     ExitToShell,
     MathCeil,
     MathSqrt,
+    MathExp,
     MathSin,
     MathCos,
     MathAsin,
@@ -2391,6 +2348,9 @@ pub enum PpcImportDispatcherTarget {
     QtDisposeMovie,
     QtIsMovieDone,
     QtGoToBeginningOfMovie,
+    QtGoToEndOfMovie,
+    QtGetMovieDuration,
+    QtLoadMovieIntoRam,
     QtCloseMovieFile,
     CloseComponent,
     NewRoutineDescriptor,
@@ -2569,11 +2529,11 @@ fn ppc_trace_regs_r3_filter() -> Option<u32> {
     })
 }
 
-fn ppc_hle_trace_enabled() -> bool {
+pub(super) fn ppc_hle_trace_enabled() -> bool {
     *PPC_HLE_TRACE_ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_PPC_HLE_TRACE").is_some())
 }
 
-fn ppc_gworld_trace_enabled() -> bool {
+pub(super) fn ppc_gworld_trace_enabled() -> bool {
     *PPC_GWORLD_TRACE_ENABLED
         .get_or_init(|| std::env::var_os("SYSTEMLESS_PPC_GWORLD_TRACE").is_some())
 }
@@ -2836,6 +2796,7 @@ fn ppc_import_extra_cycles_for_target(target: &PpcImportDispatcherTarget) -> u64
         PpcImportDispatcherTarget::Q3ViewEndRendering => 0,
         PpcImportDispatcherTarget::MathCeil
         | PpcImportDispatcherTarget::MathSqrt
+        | PpcImportDispatcherTarget::MathExp
         | PpcImportDispatcherTarget::MathSin
         | PpcImportDispatcherTarget::MathCos
         | PpcImportDispatcherTarget::MathAsin
@@ -3227,47 +3188,13 @@ fn format_ppc_watch_write(record: PpcWatchWriteRecord) -> String {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PpcCallbackTarget {
-    entry: u32,
-    rtoc: u32,
-    proc_info: u32,
-    routine_flags: u16,
+pub(super) struct PpcCallbackTarget {
+    pub(super) entry: u32,
+    pub(super) rtoc: u32,
+    pub(super) proc_info: u32,
+    pub(super) routine_flags: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PpcQsortState {
-    base: u32,
-    width: u32,
-    comparator: PpcCallbackTarget,
-    final_pc: u32,
-    restore_rtoc: u32,
-    pass_end: u32,
-    index: u32,
-    swapped: bool,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct PpcStdSignalState {
-    handlers: [u32; 32],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PpcDialogCallbackCompletion {
-    ReturnPreserve,
-    Return(u32),
-    Yield,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PpcDialogCallbackState {
-    import_pc: u32,
-    dialog: u32,
-    callbacks: Vec<(PpcCallbackTarget, u32)>,
-    next_callback: usize,
-    final_pc: u32,
-    restore_rtoc: u32,
-    completion: PpcDialogCallbackCompletion,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PpcNativeExceptionCause {
@@ -3304,123 +3231,6 @@ pub(crate) struct PpcAppleEventState {
 
 type PpcMenuTracking = ProcessMenuTrackingState;
 type PpcSubmenuTracking = ProcessTrackedMenuPane;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PpcGoAwayCall {
-    window: u32,
-    start_point: u32,
-    stack_pointer: u32,
-    return_address: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PpcGoAwayTrackingState {
-    call: PpcGoAwayCall,
-    surface: PpcQuickDrawSurface,
-    saved_pixels: crate::memory::SavedPixels<u16>,
-    highlighted: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PpcDragWindowCall {
-    window: u32,
-    start_point: u32,
-    bounds_ptr: u32,
-    stack_pointer: u32,
-    return_address: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PpcDragWindowTrackingState {
-    call: PpcDragWindowCall,
-    front_buffer: PpcFrontBuffer,
-    original_content: (i16, i16, i16, i16),
-    original_structure: (i16, i16, i16, i16),
-    bounds: (i16, i16, i16, i16),
-    outline: (i16, i16, i16, i16),
-    saved_pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PpcGrowWindowCall {
-    window: u32,
-    start_point: u32,
-    size_rect_ptr: u32,
-    stack_pointer: u32,
-    return_address: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PpcGrowWindowTrackingState {
-    call: PpcGrowWindowCall,
-    front_buffer: PpcFrontBuffer,
-    original_content: (i16, i16, i16, i16),
-    size_limits: (i16, i16, i16, i16),
-    outline: (i16, i16, i16, i16),
-    saved_pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PpcStandardFileMode {
-    GetModern,
-    GetLegacy,
-    PutModern,
-    PutLegacy,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PpcStandardFileCall {
-    mode: PpcStandardFileMode,
-    reply: u32,
-    return_address: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PpcStandardFileEntry {
-    name: Vec<u8>,
-    path: String,
-    dir_id: u32,
-    file_type: u32,
-    finder_flags: u16,
-    is_directory: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PpcStandardFileGetTrackingState {
-    call: PpcStandardFileCall,
-    entries: Vec<PpcStandardFileEntry>,
-    current_dir_id: u32,
-    file_types: Option<Vec<u32>>,
-    selected: usize,
-    bounds: (i16, i16, i16, i16),
-    front_buffer: PpcFrontBuffer,
-    saved_pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PpcStandardFileFilteringState {
-    import_pc: u32,
-    restore_rtoc: u32,
-    callback: PpcCallbackTarget,
-    callback_with_data: bool,
-    tracking: PpcStandardFileGetTrackingState,
-    next_entry: usize,
-    filter_pb: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PpcStandardFilePutTrackingState {
-    call: PpcStandardFileCall,
-    vref: i16,
-    dir_id: u32,
-    prompt: Vec<u8>,
-    name: Vec<u8>,
-    sel_start: usize,
-    sel_end: usize,
-    bounds: (i16, i16, i16, i16),
-    front_buffer: PpcFrontBuffer,
-    saved_pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PpcPaletteAllocation {
@@ -3757,16 +3567,16 @@ impl PpcQ3SoftwareFrontBufferSurface {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PpcPixMapBits {
-    base_addr: u32,
-    row_bytes: u32,
-    top: i16,
-    left: i16,
-    bottom: i16,
-    right: i16,
-    width: u32,
-    height: u32,
-    depth: u32,
+pub(super) struct PpcPixMapBits {
+    pub(super) base_addr: u32,
+    pub(super) row_bytes: u32,
+    pub(super) top: i16,
+    pub(super) left: i16,
+    pub(super) bottom: i16,
+    pub(super) right: i16,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) depth: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4132,7 +3942,7 @@ fn push_ppc_hle_import_trace_entry(
     trace.push(entry);
 }
 
-fn ppc_set_current_resource_refnum(
+pub(super) fn ppc_set_current_resource_refnum(
     memory: &mut PpcSectionMem,
     current_resource_refnum: &mut i16,
     refnum: i16,
@@ -7842,7 +7652,12 @@ impl PpcLoadedApp {
     ) -> Vec<PpcVblCallbackProbe> {
         self.assert_cfm_execution_owner(process_cfm.as_deref());
         let mut probes = Vec::new();
-        if elapsed_ticks == 0 || self.vbl_tasks.is_empty() || max_callbacks == 0 {
+        let has_dsp_vbl = self.draw_sprocket.vbl_proc.is_some()
+            && self.draw_sprocket.context_state == PpcDspContextPlayState::Active;
+        if elapsed_ticks == 0
+            || (self.vbl_tasks.is_empty() && !has_dsp_vbl)
+            || max_callbacks == 0
+        {
             return probes;
         }
         for tick_offset in 0..elapsed_ticks {
@@ -7852,6 +7667,26 @@ impl PpcLoadedApp {
             self.callback_scheduling.with_mut(|scheduling| {
                 scheduling.current_subtick = u64::from(current_tick) * 1_000_000;
             });
+            if let (Some(context), Some(vbl_proc)) = (
+                self.draw_sprocket.active_context,
+                self.draw_sprocket.vbl_proc,
+            ) {
+                if self.draw_sprocket.context_state == PpcDspContextPlayState::Active {
+                    let refcon = self.draw_sprocket.vbl_refcon.unwrap_or(0);
+                    if probes.len() < max_callbacks {
+                        probes.push(self.run_draw_sprocket_vbl_callback(
+                            context,
+                            refcon,
+                            vbl_proc,
+                            max_cycles,
+                            trace_imports,
+                            trace_fetches,
+                            process_memory_manager.as_deref_mut(),
+                            process_cfm.as_deref_mut(),
+                        ));
+                    }
+                }
+            }
             let tasks = (*self.vbl_tasks).clone();
             for task in tasks {
                 if task.architecture != CallbackTaskArchitecture::PowerPc {
@@ -7959,6 +7794,79 @@ impl PpcLoadedApp {
         PpcVblCallbackProbe {
             invocation: PpcVblCallbackInvocationRecord {
                 task_ptr,
+                callback,
+                callback_entry: target.entry,
+                callback_rtoc: target.rtoc,
+                tick: self.current_tick(),
+                cycles,
+                end_pc,
+                end_sp,
+                end_r3,
+                result: probe.result,
+                unsupported_import_index: probe.unsupported_import_index,
+            },
+            import_trace: probe.import_trace,
+            fetch_histogram: probe.fetch_histogram,
+        }
+    }
+
+    fn run_draw_sprocket_vbl_callback(
+        &mut self,
+        context: u32,
+        refcon: u32,
+        callback: u32,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        process_memory_manager: Option<&mut ProcessMemoryManager>,
+        mut process_cfm: Option<&mut PpcCfmState>,
+    ) -> PpcVblCallbackProbe {
+        self.assert_cfm_execution_owner(process_cfm.as_deref());
+        let saved_context = self.cpu.capture_execution_context();
+        let saved_current_resource_refnum = self.current_resource_refnum();
+        let default_rtoc = if saved_context.architectural().gpr[2] != 0 {
+            saved_context.architectural().gpr[2]
+        } else {
+            self.rtoc
+        };
+        let target = ppc_resolve_callback_target(&mut self.memory, callback, default_rtoc, None)
+            .unwrap_or(PpcCallbackTarget {
+                entry: callback,
+                rtoc: default_rtoc,
+                proc_info: 0,
+                routine_flags: 0,
+            });
+        let mut entered = false;
+        let probe = if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
+            self.cpu.invalidate_reservation();
+            entered = true;
+            self.cpu.pc = target.entry;
+            self.cpu.lr = self.halt_pc;
+            self.cpu.gpr[1] = callback_sp;
+            self.cpu.gpr[2] = target.rtoc;
+            let _ = install_powerpc_call_arguments(&mut self.cpu, &mut self.memory, &[context, refcon]);
+            self.run_with_hle_imports_with_trace(
+                max_cycles,
+                trace_imports,
+                trace_fetches,
+                process_memory_manager,
+                process_cfm.as_deref_mut(),
+            )
+        } else {
+            self.interrupt_callback_stack_fault()
+        };
+        let end_pc = self.cpu.pc;
+        let end_sp = self.cpu.gpr[1];
+        let end_r3 = self.cpu.gpr[3];
+        let cycles = ppc_run_result_cycles(probe.result);
+        if entered {
+            self.cpu.install_execution_context(saved_context);
+        }
+        self.set_current_resource_refnum(saved_current_resource_refnum);
+
+        PpcVblCallbackProbe {
+            invocation: PpcVblCallbackInvocationRecord {
+                task_ptr: 0,
                 callback,
                 callback_entry: target.entry,
                 callback_rtoc: target.rtoc,
@@ -11533,7 +11441,7 @@ fn ppc_q3_software_projected_vertex_interpolate(
     }
 }
 
-fn ppc_front_buffer_for_gworld(gworlds: &[PpcGWorldRecord], gworld: u32) -> Option<PpcFrontBuffer> {
+pub(super) fn ppc_front_buffer_for_gworld(gworlds: &[PpcGWorldRecord], gworld: u32) -> Option<PpcFrontBuffer> {
     gworlds
         .iter()
         .find(|record| record.port == gworld)
@@ -11546,7 +11454,7 @@ fn ppc_front_buffer_for_gworld(gworlds: &[PpcGWorldRecord], gworld: u32) -> Opti
         })
 }
 
-fn ppc_live_front_buffer_for_gworld(
+pub(super) fn ppc_live_front_buffer_for_gworld(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     gworld: u32,
@@ -11554,7 +11462,7 @@ fn ppc_live_front_buffer_for_gworld(
     ppc_live_quickdraw_surface(memory, gworlds, gworld).map(|surface| surface.front_buffer)
 }
 
-fn ppc_live_quickdraw_surface(
+pub(super) fn ppc_live_quickdraw_surface(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     gworld: u32,
@@ -11927,11 +11835,11 @@ fn ppc_rgb_color_to_8bpp_index_in_clut(color: PpcRgbColor, clut: &[[u16; 3]; 256
     ppc_rgb555_to_clut_index(ppc_rgb_color_to_rgb555(color), clut)
 }
 
-fn ppc_indexed_depth_entry_count(depth: u32) -> Option<usize> {
+pub(super) fn ppc_indexed_depth_entry_count(depth: u32) -> Option<usize> {
     matches!(depth, 1 | 2 | 4 | 8).then(|| 1usize << depth)
 }
 
-fn ppc_rgb_color_to_index_in_clut(
+pub(super) fn ppc_rgb_color_to_index_in_clut(
     color: PpcRgbColor,
     clut: &[[u16; 3]; 256],
     entry_count: usize,
@@ -12060,7 +11968,7 @@ fn ppc_quickdraw_surface_fore_pixel(
     ppc_quickdraw_surface_color_pixel(memory, surface, color)
 }
 
-fn ppc_quickdraw_write_pixel(
+pub(super) fn ppc_quickdraw_write_pixel(
     memory: &mut PpcSectionMem,
     front_buffer: PpcFrontBuffer,
     point: (i32, i32),
@@ -12090,7 +11998,7 @@ fn ppc_quickdraw_write_pixel(
     }
 }
 
-fn ppc_quickdraw_read_pixel(
+pub(super) fn ppc_quickdraw_read_pixel(
     memory: &mut PpcSectionMem,
     front_buffer: PpcFrontBuffer,
     point: (i32, i32),
@@ -12126,7 +12034,7 @@ fn ppc_quickdraw_read_pixel(
     }
 }
 
-fn ppc_quickdraw_write_raw_pixel(
+pub(super) fn ppc_quickdraw_write_raw_pixel(
     memory: &mut PpcSectionMem,
     front_buffer: PpcFrontBuffer,
     point: (i32, i32),
@@ -14581,6 +14489,7 @@ fn dispatcher_target_for_import(
         }
         ("MathLib", "ceil") => PpcImportDispatcherTarget::MathCeil,
         ("MathLib", "sqrt") => PpcImportDispatcherTarget::MathSqrt,
+        ("MathLib", "exp") => PpcImportDispatcherTarget::MathExp,
         ("MathLib", "sin") => PpcImportDispatcherTarget::MathSin,
         ("MathLib", "cos") => PpcImportDispatcherTarget::MathCos,
         ("MathLib", "asin") => PpcImportDispatcherTarget::MathAsin,
@@ -14895,6 +14804,21 @@ fn dispatcher_target_for_import(
         ("DrawSprocketLib", "DSpContext_GetAttributes") => {
             PpcImportDispatcherTarget::DSpContextGetAttributes
         }
+        ("DrawSprocketLib", "DSpContext_SetVBLProc") => {
+            PpcImportDispatcherTarget::DSpContextSetVblProc
+        }
+        ("DrawSprocketLib", "DSpContext_IsBusy") => {
+            PpcImportDispatcherTarget::DSpContextIsBusy
+        }
+        ("DrawSprocketLib", "DSpAltBuffer_Dispose") => {
+            PpcImportDispatcherTarget::DSpAltBufferDispose
+        }
+        ("DrawSprocketLib", "DSpContext_InvalBackBufferRect") => {
+            PpcImportDispatcherTarget::DSpContextInvalBackBufferRect
+        }
+        ("DrawSprocketLib", "DSpContext_SetUnderlayAltBuffer") => {
+            PpcImportDispatcherTarget::DSpContextSetUnderlayAltBuffer
+        }
         ("InputSprocketLib", "ISpElement_NewVirtualFromNeeds") => {
             PpcImportDispatcherTarget::ISpElementNewVirtualFromNeeds
         }
@@ -14997,7 +14921,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "ResError") => PpcImportDispatcherTarget::ResError,
         ("InterfaceLib", "SetResLoad") => PpcImportDispatcherTarget::SetResLoad,
         ("InterfaceLib", "LoadResource") => PpcImportDispatcherTarget::LoadResource,
-        ("InterfaceLib", "GetIndString") => PpcImportDispatcherTarget::GetIndString,
+        ("InterfaceLib", "GetIndString") | ("InterfaceLib", "getindstring") => {
+            PpcImportDispatcherTarget::GetIndString
+        }
         ("InterfaceLib", "GetString") => PpcImportDispatcherTarget::GetString,
         ("InterfaceLib", "GetResource") => PpcImportDispatcherTarget::GetResource,
         ("InterfaceLib", "Get1Resource") => PpcImportDispatcherTarget::Get1Resource,
@@ -15522,8 +15448,12 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "SetDialogItem") | ("InterfaceLib", "SetDItem") => {
             PpcImportDispatcherTarget::SetDialogItem
         }
-        ("InterfaceLib", "GetDialogItemText") => PpcImportDispatcherTarget::GetDialogItemText,
-        ("InterfaceLib", "SetDialogItemText") => PpcImportDispatcherTarget::SetDialogItemText,
+        ("InterfaceLib", "GetDialogItemText") | ("InterfaceLib", "getdialogitemtext") => {
+            PpcImportDispatcherTarget::GetDialogItemText
+        }
+        ("InterfaceLib", "SetDialogItemText") | ("InterfaceLib", "setdialogitemtext") => {
+            PpcImportDispatcherTarget::SetDialogItemText
+        }
         ("InterfaceLib", "SetDialogDefaultItem") => PpcImportDispatcherTarget::SetDialogDefaultItem,
         ("InterfaceLib" | "AppearanceLib", "SetDialogCancelItem") => {
             PpcImportDispatcherTarget::SetDialogCancelItem
@@ -15798,6 +15728,9 @@ fn dispatcher_target_for_import(
         ("QuickTimeLib", "GoToBeginningOfMovie") => {
             PpcImportDispatcherTarget::QtGoToBeginningOfMovie
         }
+        ("QuickTimeLib", "GoToEndOfMovie") => PpcImportDispatcherTarget::QtGoToEndOfMovie,
+        ("QuickTimeLib", "GetMovieDuration") => PpcImportDispatcherTarget::QtGetMovieDuration,
+        ("QuickTimeLib", "LoadMovieIntoRam") => PpcImportDispatcherTarget::QtLoadMovieIntoRam,
         ("QuickTimeLib", "CloseMovieFile") => PpcImportDispatcherTarget::QtCloseMovieFile,
         ("QuickTimeLib", "EnterMovies") => PpcImportDispatcherTarget::QtEnterMovies,
         ("QuickTimeLib", "ExitMovies") => PpcImportDispatcherTarget::QtExitMovies,
@@ -16440,7 +16373,7 @@ fn ppc_process_handle_state_bits(handle_states: &[PpcHandleStateRecord], handle:
     bits
 }
 
-fn ppc_apply_process_native_allocator(
+pub(super) fn ppc_apply_process_native_allocator(
     memory_manager: &ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -16457,118 +16390,6 @@ fn ppc_apply_process_native_allocator(
     // Memory (1992), pp. 2-83--2-85.
     let allocation_limit = memory_manager.native_allocation_limit(heap.heap_limit);
     ppc_update_zone_free_bytes(memory, *heap_cursor, allocation_limit);
-}
-
-struct PpcNewThreadEdge<'a> {
-    memory: &'a mut PpcSectionMem,
-    memory_manager: &'a mut ProcessNativeMemoryManager,
-    heap_cursor: &'a mut u32,
-    last_mem_error: &'a mut i16,
-    msr: u32,
-    entry_pointer: u32,
-    default_rtoc: u32,
-    parameter: u32,
-    result_destination: u32,
-    thread_made: u32,
-    target: Option<GuestProcedure>,
-}
-
-impl NewThreadCreationEdge for PpcNewThreadEdge<'_> {
-    fn preflight(&mut self, _size: u32) -> std::result::Result<(), i16> {
-        if self.thread_made == 0 || !ppc_memory_can_write_bytes(self.memory, self.thread_made, 4) {
-            return Err(PPC_PARAM_ERR);
-        }
-        self.target = resolve_same_isa_thread_entry(
-            self.memory,
-            self.entry_pointer,
-            self.default_rtoc,
-            GuestIsa::PowerPc,
-        );
-        if self.target.is_some() {
-            Ok(())
-        } else {
-            Err(PPC_PARAM_ERR)
-        }
-    }
-
-    fn allocate_fresh(&mut self, size: u32) -> std::result::Result<ThreadStorage, i16> {
-        let stack = self.memory_manager.new_native_ptr(self.memory, size, true);
-        ppc_apply_process_native_allocator(
-            self.memory_manager,
-            self.memory,
-            self.heap_cursor,
-            self.last_mem_error,
-        );
-        if stack == 0 {
-            return Err(PPC_MEM_FULL_ERR);
-        }
-        let Some(stack_limit) = stack.checked_add(size) else {
-            self.memory_manager.dispose_native_ptr(stack);
-            ppc_apply_process_native_allocator(
-                self.memory_manager,
-                self.memory,
-                self.heap_cursor,
-                self.last_mem_error,
-            );
-            return Err(PPC_MEM_FULL_ERR);
-        };
-        Ok(ThreadStorage {
-            result_destination: self.result_destination,
-            stack_base: stack,
-            stack_limit,
-            managed_pointer: true,
-        })
-    }
-
-    fn prepare_and_publish(
-        &mut self,
-        execution: &SharedGuestCallStack,
-        mut storage: ThreadStorage,
-        suspended: bool,
-    ) -> std::result::Result<Option<crate::guest_call::ExecutionTaskId>, i16> {
-        let target = self.target.expect("successful preflight resolves a target");
-        storage.result_destination = self.result_destination;
-        storage.managed_pointer = true;
-        let Some(stack_pointer) =
-            (storage.stack_limit & !15).checked_sub(PPC_INITIAL_STACK_FRAME_SIZE)
-        else {
-            return Err(PPC_MEM_FULL_ERR);
-        };
-        if stack_pointer < storage.stack_base {
-            return Err(PPC_MEM_FULL_ERR);
-        }
-        let mut context = PpcExecutionContext::fresh();
-        let state = context.architectural_mut();
-        state.msr = self.msr;
-        state.pc = target.entry;
-        state.lr = PPC_THREAD_RETURN_PC;
-        state.gpr[1] = stack_pointer;
-        state.gpr[2] = target.rtoc;
-        state.gpr[3] = self.parameter;
-        Ok(execution.create_native_thread(
-            NativeThreadContext { context },
-            storage,
-            suspended,
-            |task| {
-                self.memory
-                    .write_u32_be(self.thread_made, task.thread_id())
-                    .is_some()
-            },
-        ))
-    }
-
-    fn release_fresh(&mut self, storage: ThreadStorage) {
-        self.memory_manager.dispose_native_ptr(storage.stack_base);
-    }
-
-    fn finish_publication_attempt(&mut self) {
-        ppc_apply_process_native_allocator(
-            self.memory_manager,
-            self.memory,
-            self.heap_cursor,
-            self.last_mem_error,
-        );
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -16596,7 +16417,7 @@ fn ppc_dispose_process_native_handle(
     disposed
 }
 
-fn ppc_apply_process_native_handle(
+pub(super) fn ppc_apply_process_native_handle(
     memory_manager: &ProcessNativeMemoryManager,
     handles: &mut Vec<PpcHandleRecord>,
     handle: u32,
@@ -16879,10 +16700,16 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             binding,
             cpu,
             memory,
+            process_memory_manager,
+            heap_cursor,
+            last_mem_error,
+            handles,
+            aliases,
             files,
             writable_refnums,
             vfs_files,
             vfs_directories,
+            next_vfs_dir_id,
             deleted_vfs_file_paths,
             vfs_resource_files,
             resource_files,
@@ -16891,6 +16718,46 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             current_resource_refnum,
             last_resource_error,
             default_dir_id,
+            launched_app_path,
+            vfs_volumes,
+            working_directories,
+            next_working_directory_ref_num,
+            application_working_directory_ref_num,
+        },
+    ) {
+        return Some(action);
+    }
+    if let Some(action) = dispatch_resources::dispatch_resource_import(
+        dispatch_resources::PpcResourceDispatchContext {
+            binding,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            resource_files,
+            vfs_resource_files,
+            vfs_resources,
+            current_resource_refnum,
+            resource_policy,
+            last_resource_error,
+        },
+    ) {
+        return Some(action);
+    }
+
+    if let Some(action) = dispatch_stdc::dispatch_stdc_import(
+        dispatch_stdc::PpcStdCDispatchContext {
+            binding,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            last_mem_error,
+            stdc_qsort_stack,
+            stdc_signal_state: &mut toolbox_startup.stdc_signal_state,
         },
     ) {
         return Some(action);
@@ -16974,6 +16841,298 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     ) {
         return Some(action);
     }
+    if let Some(action) =
+        dispatch_math::dispatch_math_import(&binding.dispatcher_target, cpu, memory)
+    {
+        return Some(action);
+    }
+    if let Some(action) = dispatch_memory::dispatch_memory_import(
+        dispatch_memory::PpcMemoryDispatchContext {
+            binding,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            native_heap_ceiling,
+            last_mem_error,
+            handles,
+            aliases,
+            vfs_resources,
+            toolbox_startup,
+        },
+    ) {
+        return Some(action);
+    }
+    if let Some(action) = dispatch_menu::dispatch_menu_import(
+        dispatch_menu::PpcMenuDispatchContext {
+            binding,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            last_resource_error,
+            handles,
+            vfs_resources,
+            current_resource_refnum: *current_resource_refnum,
+            resource_policy,
+            toolbox_startup,
+            current_menu_list: &mut current_menu_list,
+            gworlds,
+            screen_clut,
+            current_gworld,
+            current_gdevice,
+            event_queue,
+            input,
+        },
+    ) {
+        return Some(action);
+    }
+    if let Some(action) = dispatch_threads::dispatch_thread_import(
+        dispatch_threads::PpcThreadDispatchContext {
+            binding,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            toolbox_startup,
+        },
+    ) {
+        return Some(action);
+    }
+    if let Some(action) = dispatch_textedit::dispatch_textedit_import(
+        dispatch_textedit::PpcTextEditDispatchContext {
+            binding,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            toolbox_startup,
+            current_gworld: *current_gworld,
+            tick_count: *tick_count,
+            quickdraw_text_mode: *quickdraw_text_mode,
+            quickdraw_text_size: *quickdraw_text_size,
+            quickdraw_fore_color,
+            quickdraw_back_color,
+            quickdraw_fore_indices,
+            scrap,
+            gworlds,
+            input,
+            event_queue,
+        },
+    ) {
+        return Some(action);
+    }
+    if let Some(action) = dispatch_drawsprocket::dispatch_drawsprocket_import(
+        dispatch_drawsprocket::PpcDrawSprocketDispatchContext {
+            binding,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            gworlds,
+            gworld_allocations: &mut toolbox_startup.gworld_allocations,
+            current_gdevice: *current_gdevice,
+            draw_sprocket,
+            input,
+            screen_clut,
+        },
+    ) {
+        return Some(action);
+    }
+    if let Some(action) = dispatch_inputsprocket::dispatch_inputsprocket_import(
+        dispatch_inputsprocket::PpcInputSprocketDispatchContext {
+            binding,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            input_sprocket,
+            input_sprocket_virtual_elements,
+            input,
+            tick_count: *tick_count,
+        },
+    ) {
+        return Some(action);
+    }
+    if let Some(action) = dispatch_quicktime::dispatch_quicktime_import(
+        dispatch_quicktime::PpcQuickTimeDispatchContext {
+            binding,
+            cpu,
+            memory,
+            vfs_directories,
+            vfs_files,
+            vfs_resource_files,
+            vfs_resources,
+            gworlds,
+            current_gworld: *current_gworld,
+            quicktime,
+            sound,
+        },
+    ) {
+        return Some(action);
+    }
+
+    if let Some(action) = dispatch_time::dispatch_time_import(
+        dispatch_time::PpcTimeDispatchContext {
+            binding,
+            cpu,
+            memory,
+            timer_tasks,
+            vbl_tasks,
+            callback_scheduling,
+            tick_count: *tick_count,
+        },
+    ) {
+        return Some(action);
+    }
+
+    if let Some(action) = dispatch_standard_file::dispatch_standard_file_import(
+        dispatch_standard_file::PpcStandardFileDispatchContext {
+            binding,
+            cpu,
+            memory,
+            startup: toolbox_startup,
+            process_memory_manager,
+            heap_cursor,
+            last_mem_error,
+            gworlds,
+            vfs_directories,
+            vfs_files,
+            vfs_resource_files,
+            vfs_volumes,
+            default_dir_id,
+            working_directories,
+            next_working_directory_ref_num,
+            event_queue,
+        },
+    ) {
+        return Some(action);
+    }
+
+    if let Some(action) = dispatch_control::dispatch_control_import(
+        dispatch_control::PpcControlDispatchContext {
+            binding,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            controls,
+            gworlds,
+            screen_clut,
+            current_gworld: *current_gworld,
+            toolbox_startup,
+            input,
+            vfs_resources,
+            current_resource_refnum: *current_resource_refnum,
+            last_resource_error,
+        },
+    ) {
+        return Some(action);
+    }
+
+    if let Some(action) = dispatch_list::dispatch_list_import(
+        dispatch_list::PpcListDispatchContext {
+            binding,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            controls,
+            list_manager,
+            gworlds,
+            vfs_resources,
+            current_resource_refnum: *current_resource_refnum,
+            tick_count: *tick_count,
+        },
+    ) {
+        return Some(action);
+    }
+
+    if let Some(action) = dispatch_dialog::dispatch_dialog_import(
+        dispatch_dialog::PpcDialogDispatchContext {
+            binding,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            controls,
+            gworlds,
+            screen_clut,
+            color_manager_clut,
+            current_gworld,
+            current_gdevice,
+            window_list,
+            toolbox_startup,
+            event_queue,
+            dialog_callback_stack,
+            vfs_resources,
+            current_resource_refnum: *current_resource_refnum,
+            last_resource_error,
+            param_text,
+            tick_count: *tick_count,
+            input,
+            quickdraw_text_mode: *quickdraw_text_mode,
+            quickdraw_text_size: *quickdraw_text_size,
+            quickdraw_fore_color,
+            quickdraw_back_color,
+            quickdraw_fore_indices,
+        },
+    ) {
+        return Some(action);
+    }
+
+    if let Some(action) = dispatch_window::dispatch_window_import(
+        dispatch_window::PpcWindowDispatchContext {
+            binding,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            controls,
+            gworlds,
+            window_list,
+            current_gworld,
+            current_gdevice,
+            quickdraw_fore_color,
+            quickdraw_fore_indices,
+            quickdraw_back_color,
+            screen_clut,
+            color_manager_clut,
+            toolbox_startup,
+            input,
+            tick_count: *tick_count,
+            event_queue,
+            vfs_resources,
+            current_resource_refnum: *current_resource_refnum,
+            last_resource_error,
+        },
+    ) {
+        return Some(action);
+    }
 
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::InstallExceptionHandler => {
@@ -16985,1646 +17144,231 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             let previous = native_exception_handler.replace(cpu.gpr[3]);
             Some(PpcImportAction::Return(previous))
         }
-        PpcImportDispatcherTarget::NewPtr { clear } => {
-            let size = cpu.gpr[3];
-            let ptr = process_memory_manager.new_native_ptr(memory, size, clear);
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
-            if ppc_hle_trace_enabled() {
-                eprintln!(
-                    "[PPC-TRACE] {} size={} -> ${:08X} heap=${:08X}..${:08X} err={}",
-                    binding.symbol_name, size, ptr, *heap_cursor, heap_limit, *last_mem_error
-                );
-            }
-            Some(PpcImportAction::Return(ptr))
-        }
-        PpcImportDispatcherTarget::DisposePtr => {
-            let ptr = cpu.gpr[3];
-            if process_memory_manager.dispose_native_ptr(ptr).is_none() {
-                process_memory_manager.dispose_classic_ptr_from_native_import(ptr);
-            }
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetPtrSize => {
-            let size = process_memory_manager.process_ptr_size_for_native_import(cpu.gpr[3]);
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
-            Some(PpcImportAction::Return(size))
-        }
-        PpcImportDispatcherTarget::SetPtrSize => {
-            *last_mem_error = process_memory_manager.set_process_ptr_size_for_native_import(
-                memory, cpu.gpr[3], cpu.gpr[4],
-            );
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::RecoverHandle => {
-            let handle = process_memory_manager
-                .recover_handle_from_master_pointer(cpu.gpr[3], |handle| {
-                    PpcMemory::read_u32_be(memory, handle)
-                })
-                .unwrap_or(0);
-            if handle != 0 {
-                ppc_apply_process_native_handle(
-                    process_memory_manager,
-                    handles,
-                    handle,
-                );
-            }
-            Some(PpcImportAction::Return(handle))
-        }
-        PpcImportDispatcherTarget::BlockMove => {
-            if ppc_hle_trace_enabled()
-                && cpu.gpr[4] < PPC_MAIN_CTABLE + PPC_MAIN_CTABLE_SIZE
-                && cpu.gpr[4].saturating_add(cpu.gpr[5]) > PPC_MAIN_CTABLE
-            {
-                eprintln!(
-                    "[PPC-TRACE] BlockMove main-ctable src=${:08X} dst=${:08X} size={}",
-                    cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]
-                );
-            }
-            ppc_block_move(cpu, memory);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::PtrToHand => {
-            let source_ptr = cpu.gpr[3];
-            let destination_handle_ptr = cpu.gpr[4];
-            let size = cpu.gpr[5];
-            let result = if destination_handle_ptr == 0
-                || !ppc_memory_can_write_bytes(memory, destination_handle_ptr, 4)
-            {
-                PPC_PARAM_ERR
-            } else if let Some(bytes) = ppc_memory_read_bytes(memory, source_ptr, size) {
-                let handle = process_memory_manager.copy_bytes_to_new_native_handle(memory, &bytes);
-                ppc_apply_process_native_allocator(
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    last_mem_error,
-                );
-                ppc_apply_process_native_handle(
-                    process_memory_manager,
-                    handles,
-                    handle,
-                );
-                if handle == 0 {
-                    let _ = memory.write_u32_be(destination_handle_ptr, 0);
-                    *last_mem_error
-                } else if memory
-                    .write_u32_be(destination_handle_ptr, handle)
-                    .is_none()
-                {
-                    process_memory_manager.set_native_mem_error(PPC_PARAM_ERR);
-                    PPC_PARAM_ERR
-                } else {
-                    PPC_NO_ERR
-                }
-            } else {
-                let _ = memory.write_u32_be(destination_handle_ptr, 0);
-                PPC_PARAM_ERR
-            };
-            process_memory_manager.set_native_mem_error(result);
-            *last_mem_error = result;
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        PpcImportDispatcherTarget::HandToHand => {
-            let result = {
-                let handle_variable = cpu.gpr[3];
-                let result = if handle_variable == 0
-                    || !ppc_memory_can_write_bytes(memory, handle_variable, 4)
-                {
-                    PPC_PARAM_ERR
-                } else if let Some(source_handle) = memory.read_u32_be(handle_variable) {
-                    // Inside Macintosh: Memory (1992), pp. 2-62--2-64: resolve
-                    // process-owned handles through the canonical manager so
-                    // HandToHand has identical semantics across CPU adapters.
-                    match process_memory_manager
-                        .copy_process_handle_from_native_import(memory, source_handle)
-                    {
-                        Ok(copy) => {
-                            // The caller range was preflighted above. Process
-                            // allocation may append writable mappings, but it
-                            // cannot remove or downgrade one while this
-                            // serialized import runs, so publication cannot
-                            // fail after the copy has been committed.
-                            memory
-                                .write_u32_be(handle_variable, copy)
-                                .expect("preflighted Handle variable remains writable");
-                            ppc_apply_process_native_allocator(
-                                process_memory_manager,
-                                memory,
-                                heap_cursor,
-                                last_mem_error,
-                            );
-                            ppc_apply_process_native_handle(
-                                process_memory_manager,
-                                handles,
-                                copy,
-                            );
-                            PPC_NO_ERR
-                        }
-                        Err(error) if source_handle == PPC_MAIN_CTABLE_HANDLE => {
-                            if let Some(source) = ppc_system_handle_record(memory, source_handle) {
-                                if let Some(bytes) =
-                                    ppc_memory_read_bytes(memory, source.ptr, source.size)
-                                {
-                                    let copy = process_memory_manager
-                                        .copy_bytes_to_new_native_handle(memory, &bytes);
-                                    if copy == 0 {
-                                        process_memory_manager
-                                            .native_heap_state()
-                                            .map(|heap| heap.last_mem_error)
-                                            .unwrap_or(PPC_MEM_FULL_ERR)
-                                    } else {
-                                        memory
-                                            .write_u32_be(handle_variable, copy)
-                                            .expect("preflighted Handle variable remains writable");
-                                        ppc_apply_process_native_allocator(
-                                            process_memory_manager,
-                                            memory,
-                                            heap_cursor,
-                                            last_mem_error,
-                                        );
-                                        ppc_apply_process_native_handle(
-                                            process_memory_manager,
-                                            handles,
-                                            copy,
-                                        );
-                                        PPC_NO_ERR
-                                    }
-                                } else {
-                                    PPC_PARAM_ERR
-                                }
-                            } else {
-                                error
-                            }
-                        }
-                        Err(error) => error,
-                    }
-                } else {
-                    PPC_PARAM_ERR
-                };
-                process_memory_manager.set_native_mem_error(result);
-                result
-            };
-            *last_mem_error = result;
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        PpcImportDispatcherTarget::HandAndHand => {
-            let result = {
-                let source_handle = cpu.gpr[3];
-                let destination_handle = cpu.gpr[4];
-                let source = handles
-                    .iter()
-                    .find(|record| record.handle == source_handle)
-                    .copied()
-                    .or_else(|| ppc_system_handle_record(memory, source_handle));
-                let result = if let Some(source) = source {
-                    if let Some(bytes) = ppc_memory_read_bytes(memory, source.ptr, source.size) {
-                        let result = process_memory_manager.append_bytes_to_native_handle(
-                            memory,
-                            destination_handle,
-                            &bytes,
-                        );
-                        ppc_apply_process_native_allocator(
-                            process_memory_manager,
-                            memory,
-                            heap_cursor,
-                            last_mem_error,
-                        );
-                        ppc_apply_process_native_handle(
-                            process_memory_manager,
-                            handles,
-                            destination_handle,
-                        );
-                        result
-                    } else {
-                        PPC_PARAM_ERR
-                    }
-                } else {
-                    PPC_NIL_HANDLE_ERR
-                };
-                process_memory_manager.set_native_mem_error(result);
-                result
-            };
-            *last_mem_error = result;
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        PpcImportDispatcherTarget::NewHandle { clear } => {
-            let size = cpu.gpr[3];
-            let result = process_memory_manager.new_handle(
-                ProcessNewHandleRequest::new(size as i32, clear, ProcessHandleHeap::Current),
-                ProcessNewHandleBackend::Native(memory),
-            );
-            *last_mem_error = result.error;
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
-            if result.succeeded() {
-                if let Some(record) = process_memory_manager.native_allocation(result.handle) {
-                    handles.push(record);
-                }
-            }
-            if ppc_hle_trace_enabled() {
-                eprintln!(
-                    "[PPC-TRACE] NewHandle size={} clear={} lr=${:08X} -> ${:08X} heap=${:08X}..${:08X} err={}",
-                    size,
-                    clear,
-                    cpu.lr,
-                    result.handle,
-                    *heap_cursor,
-                    heap_limit,
-                    *last_mem_error
-                );
-            }
-            Some(PpcImportAction::Return(result.handle))
-        }
-        PpcImportDispatcherTarget::TempNewHandle => {
-            // TempNewHandle is deliberately separate from the ordinary
-            // NewHandle request/result service: its second argument is a
-            // caller-owned result-code pointer and its allocation has
-            // temporary-lifetime semantics. Inside Macintosh: Memory (1992),
-            // pp. 2-67--2-68.
-            let result_code_ptr = cpu.gpr[4];
-            if result_code_ptr != 0 && memory.read_u16_be(result_code_ptr).is_none() {
-                process_memory_manager.set_native_mem_error(PPC_PARAM_ERR);
-                *last_mem_error = PPC_PARAM_ERR;
-                return Some(PpcImportAction::Return(0));
-            }
-            let handle = process_memory_manager.new_native_handle(memory, cpu.gpr[3], false);
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
-            if let Some(record) = process_memory_manager.native_allocation(handle) {
-                handles.push(record);
-            }
-            if result_code_ptr != 0
-                && memory
-                    .write_u16_be(result_code_ptr, *last_mem_error as u16)
-                    .is_none()
-            {
-                process_memory_manager.set_native_mem_error(PPC_PARAM_ERR);
-                *last_mem_error = PPC_PARAM_ERR;
-                return Some(PpcImportAction::Return(0));
-            }
-            Some(PpcImportAction::Return(handle))
-        }
-        PpcImportDispatcherTarget::DisposeHandle => {
-            let handle = cpu.gpr[3];
-            let disposed = process_memory_manager
-                .dispose_process_handle_from_native_import(memory, handle);
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
-            if disposed {
-                handles.retain(|record| record.handle != handle);
-            }
-            if disposed {
-                toolbox_startup
-                    .indexed_screen_ctables
-                    .retain(|pixmap_handle, ctable_handle| {
-                        *pixmap_handle != handle && *ctable_handle != handle
-                    });
-                aliases.retain(|record| record.handle != handle);
-                for resource in vfs_resources
-                    .iter_mut()
-                    .filter(|record| record.handle == handle)
-                {
-                    resource.handle = 0;
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::EmptyHandle => {
-            let handle = cpu.gpr[3];
-            *last_mem_error = process_memory_manager
-                .empty_process_handle_from_native_import(memory, handle);
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
-            ppc_apply_process_native_handle(process_memory_manager, handles, handle);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::HLock => {
-            let handle = cpu.gpr[3];
-            if ppc_is_valid_handle(memory, handles, handle) {
-                process_memory_manager.lock_process_handle(handle, false);
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::HLockHi => {
-            let handle = cpu.gpr[3];
-            if ppc_is_valid_handle(memory, handles, handle) {
-                process_memory_manager.lock_process_handle(handle, true);
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::HGetState => Some(PpcImportAction::Return({
-            let handle = cpu.gpr[3];
-            let valid = ppc_is_valid_handle(memory, handles, handle);
-            let value = if valid {
-                let mut value = process_memory_manager
-                    .state_for_handle(handle)
-                    .unwrap_or(0x40);
-                if vfs_resources.iter().any(|record| record.handle == handle) {
-                    value |= 0x20;
-                }
-                value
-            } else {
-                0
-            };
-            if ppc_hle_trace_enabled() {
-                let ptr = memory.read_u32_be(handle).unwrap_or(0);
-                eprintln!(
-                        "[PPC-TRACE] HGetState pc=${:08X} lr=${:08X} handle=${:08X} ptr=${:08X} value=${:02X} tracked={}",
-                        cpu.pc,
-                        cpu.lr,
-                        handle,
-                        ptr,
-                        value,
-                        handles.iter().any(|record| record.handle == handle)
-                    );
-            }
-            u32::from(value)
-        })),
-        PpcImportDispatcherTarget::HSetState => {
-            let handle = cpu.gpr[3];
-            let ok = ppc_is_valid_handle(memory, handles, handle);
-            if ok {
-                process_memory_manager.restore_process_handle_state(handle, cpu.gpr[4] as u8);
-            }
-            if ppc_hle_trace_enabled() {
-                let ptr = memory.read_u32_be(handle).unwrap_or(0);
-                eprintln!(
-                    "[PPC-TRACE] HSetState pc=${:08X} lr=${:08X} handle=${:08X} ptr=${:08X} value=${:02X} ok={}",
-                    cpu.pc,
-                    cpu.lr,
-                    handle,
-                    ptr,
-                    cpu.gpr[4] as u8,
-                    ok
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::HUnlock => {
-            let handle = cpu.gpr[3];
-            if ppc_is_valid_handle(memory, handles, handle) {
-                process_memory_manager.unlock_process_handle(handle);
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::MoveHHi => Some(PpcImportAction::ReturnPreserve),
-        PpcImportDispatcherTarget::HNoPurge => {
-            let handle = cpu.gpr[3];
-            if ppc_is_valid_handle(memory, handles, handle) {
-                process_memory_manager.set_process_handle_purgeable(handle, false);
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::HPurge => {
-            let handle = cpu.gpr[3];
-            if ppc_is_valid_handle(memory, handles, handle) {
-                process_memory_manager.set_process_handle_purgeable(handle, true);
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetZone => Some(PpcImportAction::Return(
-            memory
-                .read_u32_be(PPC_THE_ZONE_ADDR)
-                .unwrap_or(PPC_APPLICATION_ZONE),
-        )),
-        PpcImportDispatcherTarget::SystemZone => Some(PpcImportAction::Return(PPC_SYSTEM_ZONE)),
-        PpcImportDispatcherTarget::ApplicationZone => {
-            Some(PpcImportAction::Return(PPC_APPLICATION_ZONE))
-        }
-        PpcImportDispatcherTarget::SetZone => {
-            let _ = memory.write_u32_be(PPC_THE_ZONE_ADDR, cpu.gpr[3]);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::InitZone => {
-            // Inside Macintosh: Memory (1992), pp. 2-86--2-87. The native
-            // PowerPC ABI passes pGrowZone, cMoreMasters, limitPtr, and
-            // startPtr in r3-r6. Initialize the caller-visible Zone header
-            // even though allocations continue to use Systemless's flat heap.
-            ppc_init_zone_header(
-                memory,
-                cpu.gpr[6],
-                cpu.gpr[5],
-                cpu.gpr[4] as u16,
-                cpu.gpr[3],
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetHandleSize => {
-            let handle = cpu.gpr[3];
-            let ptr = memory.read_u32_be(handle).unwrap_or(0);
-            let size = process_memory_manager
-                .process_handle_size_from_master_pointer(handle, ptr)
-                .or_else(|| ppc_system_handle_record(memory, handle).map(|record| record.size));
-            if size.is_some() {
-                process_memory_manager.set_native_mem_error(PPC_NO_ERR);
-            }
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
-            if size.is_some() {
-                ppc_apply_process_native_handle(
-                    process_memory_manager,
-                    handles,
-                    handle,
-                );
-            }
-            if ppc_hle_trace_enabled() {
-                eprintln!(
-                    "[PPC-TRACE] GetHandleSize handle=${handle:08X} lr=${:08X} -> {} err={}",
-                    cpu.lr,
-                    size.unwrap_or(0),
-                    *last_mem_error
-                );
-            }
-            Some(PpcImportAction::Return(size.unwrap_or(0)))
-        }
-        PpcImportDispatcherTarget::SetHandleSize => {
-            let handle = cpu.gpr[3];
-            let size = cpu.gpr[4];
-            *last_mem_error = process_memory_manager
-                .set_process_handle_size_from_native_import(memory, handle, size);
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
-            if let Some(updated) = process_memory_manager.native_allocation(handle) {
-                if let Some(record) = handles.iter_mut().find(|record| record.handle == handle) {
-                    *record = updated;
-                }
-            }
-            if ppc_hle_trace_enabled() {
-                eprintln!(
-                    "[PPC-TRACE] SetHandleSize handle=${handle:08X} size={size} err={} ptr=${:08X}",
-                    *last_mem_error,
-                    memory.read_u32_be(handle).unwrap_or(0)
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::MaxApplZone => {
-            process_memory_manager.maximize_native_heap();
-            *last_mem_error = PPC_NO_ERR;
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::MoreMasters => {
-            process_memory_manager.request_native_master_pointers();
-            *last_mem_error = PPC_NO_ERR;
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetApplLimit => {
-            // Inside Macintosh: Memory (1992), 2-84: the returned pointer is
-            // the first byte beyond the expandable application heap.
-            Some(PpcImportAction::Return(
-                process_memory_manager.application_heap_limit(heap_limit),
-            ))
-        }
-        PpcImportDispatcherTarget::SetApplLimit => {
-            // The heap cannot be contracted below its current extent or
-            // expanded into the fixed native stack mapping.
-            let requested = cpu.gpr[3];
-            let current_heap_cursor = process_memory_manager
-                .native_heap_state()
-                .map_or(*heap_cursor, |heap| heap.heap_cursor);
-            if requested >= current_heap_cursor && requested <= native_heap_ceiling {
-                process_memory_manager.set_application_heap_limit(requested);
-                // Keep the classic low-memory slot as a projection of the
-                // process value when the adapters share the process mapping.
-                // Inside Macintosh: Memory (1992), pp. 2-83--2-85.
-                let _ = memory.write_u32_be(
-                    crate::memory::globals::addr::APPL_LIMIT,
-                    requested,
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::HeapFreeBytes => Some(PpcImportAction::Return(
-            ppc_heap_free_capacity(memory, *heap_cursor, heap_limit).0,
-        )),
-        PpcImportDispatcherTarget::MaxMem => {
-            let free_ptr_blocks = process_memory_manager.native_free_ptr_blocks();
-            let free = ppc_largest_free_ptr_block(
-                memory,
-                *heap_cursor,
-                heap_limit,
-                free_ptr_blocks,
-            );
-            let grow_ptr = cpu.gpr[3];
-            if grow_ptr != 0 {
-                let _ = memory.write_u32_be(grow_ptr, 0);
-            }
-            Some(PpcImportAction::Return(free))
-        }
-        PpcImportDispatcherTarget::PurgeMem | PpcImportDispatcherTarget::PurgeMemSys => {
-            let free_ptr_blocks = process_memory_manager.native_free_ptr_blocks();
-            let free = ppc_largest_free_ptr_block(
-                memory,
-                *heap_cursor,
-                heap_limit,
-                free_ptr_blocks,
-            );
-            *last_mem_error = if cpu.gpr[3] <= free {
-                PPC_NO_ERR
-            } else {
-                PPC_MEM_FULL_ERR
-            };
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::MemError => {
-            Some(PpcImportAction::Return(ppc_i16_result(*last_mem_error)))
-        }
-        PpcImportDispatcherTarget::CurResFile => Some(PpcImportAction::Return(ppc_i16_result(
-            *current_resource_refnum,
-        ))),
-        PpcImportDispatcherTarget::UseResFile => {
-            ppc_set_current_resource_refnum(
-                memory,
-                current_resource_refnum,
-                cpu.gpr[3] as u16 as i16,
-            );
-            *last_resource_error = 0;
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::CloseResFile => {
-            ppc_close_res_file(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                resource_files,
-                vfs_resource_files,
-                vfs_resources,
-                current_resource_refnum,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::OpenResFile => Some(PpcImportAction::Return(ppc_open_res_file(
-            cpu,
-            memory,
-            vfs_files,
-            vfs_resource_files,
-            resource_files,
-            vfs_resources,
-            next_file_ref_num,
-            current_resource_refnum,
-            last_resource_error,
-            launched_app_path,
-        ) as u16
-            as u32)),
-        PpcImportDispatcherTarget::HOpenResFile => {
-            Some(PpcImportAction::Return(ppc_h_open_res_file(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                resource_files,
-                vfs_resources,
-                next_file_ref_num,
-                current_resource_refnum,
-                last_resource_error,
-                default_dir_id,
-            ) as u16 as u32))
-        }
-        PpcImportDispatcherTarget::ResError => Some(PpcImportAction::Return(ppc_i16_result(
-            *last_resource_error,
-        ))),
-        PpcImportDispatcherTarget::SetResLoad => {
-            // Inside Macintosh Volume I (1985), I-118: SetResLoad controls
-            // whether subsequent Resource Manager lookups load resource data.
-            resource_policy.set_res_load(cpu.gpr[3] != 0);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LoadResource => {
-            // Inside Macintosh Volume I (1985), I-120: LoadResource fills an
-            // empty resource handle and reports resNotFound for other handles.
-            let handle = cpu.gpr[3];
-            if let Some(index) = vfs_resources
-                .iter()
-                .position(|resource| resource.handle == handle)
-            {
-                let _ = ppc_materialize_vfs_resource_handle(
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                    vfs_resources,
-                    index,
-                    true,
-                    last_resource_error,
-                );
-            } else {
-                *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetIndString => {
-            ppc_get_ind_string(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        // FUNCTION GetString (stringID: Integer): StringHandle;
-        // Inside Macintosh: Text (1993), 5-49 (lines 15621-15642).
-        // GetString is the Text Utilities wrapper around
-        // GetResource('STR ', stringID), including its NIL-on-miss behavior.
-        PpcImportDispatcherTarget::GetString => {
-            let string_id = cpu.gpr[3];
-            cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
-            cpu.gpr[4] = string_id;
-            Some(PpcImportAction::Return(ppc_get_resource(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                false,
-                resource_policy.res_load(),
-                last_resource_error,
-            )))
-        }
-        PpcImportDispatcherTarget::GetResource => {
-            if ppc_hle_trace_enabled() {
-                eprintln!(
-                    "[PPC-TRACE] GetResource type='{}' id={} current_refnum={}",
-                    format_ppc_fourcc(cpu.gpr[3]),
-                    cpu.gpr[4] as i16,
-                    *current_resource_refnum
-                );
-            }
-            Some(PpcImportAction::Return(ppc_get_resource(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                false,
-                resource_policy.res_load(),
-                last_resource_error,
-            )))
-        }
-        PpcImportDispatcherTarget::Get1Resource => {
-            if ppc_hle_trace_enabled() {
-                eprintln!(
-                    "[PPC-TRACE] Get1Resource type='{}' id={} current_refnum={}",
-                    format_ppc_fourcc(cpu.gpr[3]),
-                    cpu.gpr[4] as i16,
-                    *current_resource_refnum
-                );
-            }
-            Some(PpcImportAction::Return(ppc_get_resource(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                true,
-                resource_policy.res_load(),
-                last_resource_error,
-            )))
-        }
-        PpcImportDispatcherTarget::GetNamedResource
-        | PpcImportDispatcherTarget::Get1NamedResource => {
-            let current_only = matches!(
-                binding.dispatcher_target,
-                PpcImportDispatcherTarget::Get1NamedResource
-            );
-            Some(PpcImportAction::Return(ppc_get_named_resource(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                current_only,
-                resource_policy.res_load(),
-                last_resource_error,
-            )))
-        }
-        PpcImportDispatcherTarget::NewMenu => {
-            let menu_proc = ppc_menu_definition_handle(
-                0,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                last_resource_error,
-            );
-            let menu = if menu_proc == 0 {
-                0
-            } else {
-                let mut allocator = PpcProcessAllocatorView {
-                    memory_manager: process_memory_manager,
-                };
-                ppc_alloc_new_menu(
-                    Some(&mut allocator),
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                    menu_proc,
-                    cpu.gpr[3] as u16 as i16,
-                    cpu.gpr[4],
-                )
-            };
-            *last_mem_error = if menu == 0 {
-                PPC_MEM_FULL_ERR
-            } else {
-                PPC_NO_ERR
-            };
-            Some(PpcImportAction::Return(menu))
-        }
-        PpcImportDispatcherTarget::DisposeMenu => {
-            let menu_handle = cpu.gpr[3];
-            for resource in vfs_resources
-                .iter_mut()
-                .filter(|resource| resource.handle == menu_handle)
-            {
-                resource.handle = 0;
-            }
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let _ = allocator.dispose_handle(
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                menu_handle,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetMenu => {
-            let menu_handle = ppc_load_menu_resource(
-                cpu.gpr[3] as u16 as i16,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                last_resource_error,
-            );
-            if menu_handle != 0 {
-                // A custom definition owns the initial dimensions of a newly
-                // created MenuRecord. Macintosh Toolbox Essentials (1992),
-                // pp. 3-148--3-151.
-                if let Some(action) = ppc_dispatch_native_menu_definition_with_return(
-                    cpu,
-                    Some(process_memory_manager),
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    vfs_resources,
-                    toolbox_startup,
-                    MenuDefinitionInvocation::size(menu_handle),
-                    cpu.lr,
-                    PpcNativeReturnGpr3::Set(menu_handle),
-                ) {
-                    return Some(action);
-                }
-                ppc_calc_menu_size_with_resources(
-                    memory,
-                    menu_handle,
-                    vfs_resources,
-                    *current_resource_refnum,
-                );
-            }
-            Some(PpcImportAction::Return(menu_handle))
-        }
-        PpcImportDispatcherTarget::GetItemCmd => {
-            ppc_get_item_cmd(cpu, memory);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::SetItemCmd => {
-            if crate::trap::dispatch::trace_input_enabled() {
-                eprintln!(
-                    "[INPUT] PPC SetItemCmd menu=${:08X} item={} command=${:02X}",
-                    cpu.gpr[3], cpu.gpr[4] as u16 as i16, cpu.gpr[5] as u8
-                );
-            }
-            ppc_set_item_cmd(cpu, memory, handles);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetItemMark => {
-            ppc_get_item_mark(cpu, memory);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::CountMItems => Some(PpcImportAction::Return(u32::from(
-            ppc_count_menu_items(memory, cpu.gpr[3]),
-        ))),
-        PpcImportDispatcherTarget::GetMenuItemText => {
-            ppc_get_menu_item_text(cpu, memory);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::SetMenuItemText => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_set_menu_item_text_with_allocator(
-                cpu,
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            *last_mem_error = result;
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::DeleteMenuItem => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_delete_menu_item_with_allocator(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                cpu.gpr[3],
-                cpu.gpr[4] as u16 as i16,
-            );
-            *last_mem_error = result;
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::CalcMenuSize => Some(ppc_dispatch_calc_menu_size(
-            cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            vfs_resources,
-            *current_resource_refnum,
-            toolbox_startup,
-        )),
-        PpcImportDispatcherTarget::PopUpMenuSelect => ppc_step_menu_tracking(
-            cpu, process_memory_manager, memory, heap_cursor, heap_limit, gworlds, screen_clut, toolbox_startup, current_gworld, current_gdevice, input, vfs_resources, *current_resource_refnum,
-        ),
-        PpcImportDispatcherTarget::InsertMenu => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_insert_menu_with_allocator(
-                Some(&mut allocator),
-                None,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                cpu.gpr[3],
-                cpu.gpr[4] as u16 as i16,
-            );
-            *last_mem_error = result;
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::DeleteMenu => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_delete_menu_with_allocator(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                current_menu_list,
-                cpu.gpr[3] as u16 as i16,
-            );
-            *last_mem_error = result;
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::AppendMenu => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_insert_menu_items_with_allocator(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                cpu.gpr[3],
-                cpu.gpr[4],
-                i16::MAX,
-            );
-            *last_mem_error = result;
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::InsertMenuItem => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_insert_menu_items_with_allocator(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                cpu.gpr[3],
-                cpu.gpr[4],
-                cpu.gpr[5] as u16 as i16,
-            );
-            *last_mem_error = result;
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::AppendResMenu => {
-            // AppendResMenu
-            // Appends the alphabetized names of matching resources.
-            // PROCEDURE AppendResMenu(theMenu: MenuHandle; theType: ResType);
-            // Macintosh Toolbox Essentials (1992), pp. 3-101--3-102.
-            let result = ppc_insert_resource_menu(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                resource_policy,
-                last_resource_error,
-                cpu.gpr[3],
-                cpu.gpr[4],
-                i16::MAX,
-            );
-            *last_mem_error = result;
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::InsertResMenu => {
-            // InsertResMenu
-            // Inserts alphabetized matching resource names after one item.
-            // PROCEDURE InsertResMenu(theMenu: MenuHandle; theType: ResType;
-            //                         afterItem: Integer);
-            // Macintosh Toolbox Essentials (1992), pp. 3-103--3-104.
-            let result = ppc_insert_resource_menu(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                resource_policy,
-                last_resource_error,
-                cpu.gpr[3],
-                cpu.gpr[4],
-                cpu.gpr[5] as u16 as i16,
-            );
-            *last_mem_error = result;
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::EnableMenuItem => {
-            ppc_set_menu_item_enabled(memory, handles, cpu.gpr[3], cpu.gpr[4] as u16 as i16, true);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::DisableMenuItem => {
-            ppc_set_menu_item_enabled(memory, handles, cpu.gpr[3], cpu.gpr[4] as u16 as i16, false);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::SetItemMark => {
-            ppc_set_item_mark(cpu, memory, handles);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::CheckItem => {
-            ppc_check_menu_item(cpu, memory, handles);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetMenuBar => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            Some(PpcImportAction::Return(ppc_get_menu_bar_with_allocator(
-                current_menu_list,
-                Some(&mut allocator),
-                None,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            )))
-        }
-        PpcImportDispatcherTarget::GetNewMBar => {
-            let result_handle = ppc_get_new_mbar(
-                cpu.gpr[3] as u16 as i16,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                last_resource_error,
-            );
-            if result_handle == 0 {
-                return Some(PpcImportAction::Return(0));
-            }
-            let menu_handles = ppc_menu_list_definition(memory, result_handle)
-                .map(|menu_list| menu_list.handles().collect())
-                .unwrap_or_default();
-            if toolbox_startup.execution.calls().begin_menu_bar_build(
-                MenuBarBuild::new(result_handle, menu_handles),
-                MenuBarCallOrigin::PowerPc { return_address: cpu.lr },
-            ).is_none() {
-                return Some(PpcImportAction::Return(0));
-            }
-            Some(ppc_continue_menu_bar_build(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                toolbox_startup,
-                vfs_resources,
-                *current_resource_refnum,
-            ))
-        }
-        PpcImportDispatcherTarget::ClearMenuBar => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            // Macintosh Toolbox Essentials (1992), p. 3-110: ClearMenuBar
-            // removes every menu from the current list without disposing the
-            // menu records themselves. Preserve the current list Handle when
-            // one exists, matching the manager-owned MenuList identity.
-            if current_menu_list != 0 {
-                let mut menu_list =
-                    ppc_menu_list_definition(memory, current_menu_list).unwrap_or_default();
-                menu_list.clear_entries();
-                let result = ppc_replace_menu_list_definition_with_allocator(
-                    Some(&mut allocator),
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                    current_menu_list,
-                    &menu_list,
-                );
-                *last_mem_error = result;
-                if *last_mem_error == PPC_NO_ERR {
-                    let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
-                }
-            }
-            // ClearMenuBar also deletes every entry from the application
-            // MenuCInfo table without disposing its stable handle. Macintosh
-            // Toolbox Essentials (1992), p. 3-110.
-            ppc_clear_menu_color_table_with_allocator(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::SetMenuBar => {
-            let source = cpu.gpr[3];
-            let Some(menu_list) = ppc_menu_list_definition(memory, source) else {
-                *last_mem_error = PPC_PARAM_ERR;
-                return Some(PpcImportAction::ReturnPreserve);
-            };
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let installation =
-                install_menu_list_copy(current_menu_list, &menu_list, |request| match request {
-                    MenuListInstallRequest::Allocate { bytes } => {
-                        let handle = allocator.allocate_handle_with_bytes(
-                            memory,
-                            heap_cursor,
-                            last_mem_error,
-                            handles,
-                            bytes,
-                        );
-                        (handle != 0).then_some(handle).ok_or(PPC_MEM_FULL_ERR)
-                    }
-                    MenuListInstallRequest::Replace { handle, bytes } => {
-                        let result = ppc_replace_menu_bytes_with_allocator(
-                            Some(&mut allocator),
-                            memory,
-                            heap_cursor,
-                            heap_limit,
-                            last_mem_error,
-                            handles,
-                            handle,
-                            bytes,
-                        );
-                        (result == PPC_NO_ERR).then_some(handle).ok_or(result)
-                    }
-                });
-            match installation {
-                Ok(installation) => {
-                    current_menu_list = installation.handle;
-                    if installation.allocated {
-                        ppc_set_current_menu_list(memory, current_menu_list);
-                    }
-                    *last_mem_error = PPC_NO_ERR;
-                }
-                Err(error) => *last_mem_error = error,
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetMenuHandle => Some(PpcImportAction::Return(
-            ppc_get_menu_handle(memory, current_menu_list, cpu.gpr[3] as u16 as i16),
-        )),
-        PpcImportDispatcherTarget::DrawMenuBar => {
-            // An explicit draw satisfies any earlier deferred request.
-            event_queue.take_menu_bar_invalidation();
-            toolbox_startup.menu_bar_draw_count =
-                toolbox_startup.menu_bar_draw_count.saturating_add(1);
-            if !toolbox_startup.host_menu_bar_hidden {
-                let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
-                let _ = ppc_draw_menu_bar_with_colors(
-                    memory,
-                    gworlds,
-                    current_menu_list,
-                    screen_clut,
-                    MenuColorTable::new(&menu_color_bytes),
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::InvalMenuBar => {
-            // InvalMenuBar
-            // Marks the menu bar for one redraw during the next Toolbox
-            // Event Manager scan; repeated calls coalesce.
-            // PROCEDURE InvalMenuBar;
-            // Macintosh Toolbox Essentials (1992), pp. 3-93 and 3-114.
-            event_queue.invalidate_menu_bar();
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::FlashMenuBar => {
-            // FlashMenuBar
-            // Inverts the requested regular menu title, or the entire menu
-            // bar when the ID is zero or does not identify a regular title.
-            // PROCEDURE FlashMenuBar (menuID: INTEGER);
-            // Macintosh Toolbox Essentials (1992), pp. 3-141--3-142.
-            let requested_menu_id = cpu.gpr[3] as u16 as i16;
-            let requested_is_regular = requested_menu_id != 0
-                && ppc_regular_menu_contains_id(memory, current_menu_list, requested_menu_id);
-            let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
-            let menu_colors = MenuColorTable::new(&menu_color_bytes);
-            if requested_is_regular {
-                let selected_menu_id = memory.read_u16_be(PPC_THE_MENU_ADDR).unwrap_or(0) as i16;
-                let selected_root_menu_id =
-                    ppc_root_menu_id_for_selection(memory, current_menu_list, selected_menu_id);
-                ppc_set_menu_title_highlight_with_colors(
-                    memory,
-                    gworlds,
-                    current_menu_list,
-                    if selected_root_menu_id == requested_menu_id {
-                        0
-                    } else {
-                        requested_menu_id
-                    },
-                    screen_clut,
-                    menu_colors,
-                    toolbox_startup.host_menu_bar_hidden,
-                );
-            } else if !toolbox_startup.host_menu_bar_hidden {
-                let _ = ppc_flash_entire_menu_bar_with_colors(
-                    memory,
-                    gworlds,
-                    screen_clut,
-                    menu_colors,
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::HMGetHelpMenuHandle => {
-            // Systemless does not expose Balloon Help. Match the established
-            // 68k Pack14 fallback: clear the output MenuHandle and report that
-            // the Help Manager has not been initialized.
-            if cpu.gpr[3] != 0 {
-                let _ = memory.write_u32_be(cpu.gpr[3], 0);
-            }
-            Some(PpcImportAction::Return(ppc_i16_result(
-                PPC_HM_HELP_MANAGER_NOT_INITED,
-            )))
-        }
-        PpcImportDispatcherTarget::HiliteMenu => {
-            // HiliteMenu first restores the currently highlighted title, then
-            // highlights the requested title; zero or an unknown menu ID
-            // leaves every title normal. Macintosh Toolbox Essentials
-            // (1992), p. 3-119.
-            let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
-            ppc_set_menu_title_highlight_with_colors(
-                memory,
-                gworlds,
-                current_menu_list,
-                cpu.gpr[3] as u16 as i16,
-                screen_clut,
-                MenuColorTable::new(&menu_color_bytes),
-                toolbox_startup.host_menu_bar_hidden,
-            );
-            Some(PpcImportAction::ReturnPreserve)
+        PpcImportDispatcherTarget::NewPtr { .. }
+        | PpcImportDispatcherTarget::DisposePtr
+        | PpcImportDispatcherTarget::GetPtrSize
+        | PpcImportDispatcherTarget::SetPtrSize
+        | PpcImportDispatcherTarget::RecoverHandle
+        | PpcImportDispatcherTarget::BlockMove
+        | PpcImportDispatcherTarget::PtrToHand
+        | PpcImportDispatcherTarget::HandToHand
+        | PpcImportDispatcherTarget::HandAndHand
+        | PpcImportDispatcherTarget::NewHandle { .. }
+        | PpcImportDispatcherTarget::TempNewHandle
+        | PpcImportDispatcherTarget::DisposeHandle
+        | PpcImportDispatcherTarget::EmptyHandle
+        | PpcImportDispatcherTarget::GetHandleSize
+        | PpcImportDispatcherTarget::SetHandleSize
+        | PpcImportDispatcherTarget::HLock
+        | PpcImportDispatcherTarget::HLockHi
+        | PpcImportDispatcherTarget::HGetState
+        | PpcImportDispatcherTarget::HSetState
+        | PpcImportDispatcherTarget::HUnlock
+        | PpcImportDispatcherTarget::MoveHHi
+        | PpcImportDispatcherTarget::HNoPurge
+        | PpcImportDispatcherTarget::HPurge
+        | PpcImportDispatcherTarget::GetZone
+        | PpcImportDispatcherTarget::SetZone
+        | PpcImportDispatcherTarget::InitZone
+        | PpcImportDispatcherTarget::SystemZone
+        | PpcImportDispatcherTarget::ApplicationZone
+        | PpcImportDispatcherTarget::MaxApplZone
+        | PpcImportDispatcherTarget::MoreMasters
+        | PpcImportDispatcherTarget::GetApplLimit
+        | PpcImportDispatcherTarget::SetApplLimit
+        | PpcImportDispatcherTarget::HeapFreeBytes
+        | PpcImportDispatcherTarget::MaxMem
+        | PpcImportDispatcherTarget::PurgeMem
+        | PpcImportDispatcherTarget::PurgeMemSys
+        | PpcImportDispatcherTarget::MemError => {
+            unreachable!("memory imports return through dispatch_memory_import")
+        }
+        PpcImportDispatcherTarget::NewMenu
+        | PpcImportDispatcherTarget::DisposeMenu
+        | PpcImportDispatcherTarget::GetMenu
+        | PpcImportDispatcherTarget::GetItemCmd
+        | PpcImportDispatcherTarget::SetItemCmd
+        | PpcImportDispatcherTarget::GetItemMark
+        | PpcImportDispatcherTarget::CountMItems
+        | PpcImportDispatcherTarget::GetMenuItemText
+        | PpcImportDispatcherTarget::SetMenuItemText
+        | PpcImportDispatcherTarget::DeleteMenuItem
+        | PpcImportDispatcherTarget::CalcMenuSize
+        | PpcImportDispatcherTarget::PopUpMenuSelect
+        | PpcImportDispatcherTarget::InsertMenu
+        | PpcImportDispatcherTarget::DeleteMenu
+        | PpcImportDispatcherTarget::AppendMenu
+        | PpcImportDispatcherTarget::InsertMenuItem
+        | PpcImportDispatcherTarget::AppendResMenu
+        | PpcImportDispatcherTarget::InsertResMenu
+        | PpcImportDispatcherTarget::EnableMenuItem
+        | PpcImportDispatcherTarget::DisableMenuItem
+        | PpcImportDispatcherTarget::SetItemMark
+        | PpcImportDispatcherTarget::CheckItem
+        | PpcImportDispatcherTarget::GetMenuBar
+        | PpcImportDispatcherTarget::GetNewMBar
+        | PpcImportDispatcherTarget::ClearMenuBar
+        | PpcImportDispatcherTarget::SetMenuBar
+        | PpcImportDispatcherTarget::GetMenuHandle
+        | PpcImportDispatcherTarget::DrawMenuBar
+        | PpcImportDispatcherTarget::InvalMenuBar
+        | PpcImportDispatcherTarget::FlashMenuBar
+        | PpcImportDispatcherTarget::HMGetHelpMenuHandle
+        | PpcImportDispatcherTarget::HiliteMenu
+        | PpcImportDispatcherTarget::MenuNoop
+        | PpcImportDispatcherTarget::MenuKey
+        | PpcImportDispatcherTarget::MenuEvent
+        | PpcImportDispatcherTarget::MenuChoice
+        | PpcImportDispatcherTarget::MenuSelect => {
+            unreachable!("menu imports return through dispatch_menu_import")
+        }
+        PpcImportDispatcherTarget::GetCurrentThread
+        | PpcImportDispatcherTarget::GetThreadState
+        | PpcImportDispatcherTarget::GetThreadCurrentTaskRef
+        | PpcImportDispatcherTarget::GetThreadStateGivenTaskRef
+        | PpcImportDispatcherTarget::SetThreadReadyGivenTaskRef
+        | PpcImportDispatcherTarget::SetThreadState
+        | PpcImportDispatcherTarget::SetThreadStateEndCritical
+        | PpcImportDispatcherTarget::CreateThreadPool
+        | PpcImportDispatcherTarget::GetFreeThreadCount
+        | PpcImportDispatcherTarget::GetSpecificFreeThreadCount
+        | PpcImportDispatcherTarget::GetDefaultThreadStackSize
+        | PpcImportDispatcherTarget::ThreadCurrentStackSpace
+        | PpcImportDispatcherTarget::NewThread
+        | PpcImportDispatcherTarget::YieldToThread
+        | PpcImportDispatcherTarget::YieldToAnyThread
+        | PpcImportDispatcherTarget::DisposeThread
+        | PpcImportDispatcherTarget::ThreadBeginCritical
+        | PpcImportDispatcherTarget::ThreadEndCritical => {
+            unreachable!("thread imports return through dispatch_thread_import")
+        }
+        PpcImportDispatcherTarget::TEInit
+        | PpcImportDispatcherTarget::TENew
+        | PpcImportDispatcherTarget::TEStyleNew
+        | PpcImportDispatcherTarget::TESetStyle
+        | PpcImportDispatcherTarget::TEUseStyleScrap
+        | PpcImportDispatcherTarget::TEContinuousStyle
+        | PpcImportDispatcherTarget::TEGetText
+        | PpcImportDispatcherTarget::TEDispose
+        | PpcImportDispatcherTarget::TEActivate { .. }
+        | PpcImportDispatcherTarget::TESetSelect
+        | PpcImportDispatcherTarget::TESetText
+        | PpcImportDispatcherTarget::TECalText
+        | PpcImportDispatcherTarget::TEInsert { .. }
+        | PpcImportDispatcherTarget::TEDelete
+        | PpcImportDispatcherTarget::TEKey
+        | PpcImportDispatcherTarget::TEClick
+        | PpcImportDispatcherTarget::TEIdle
+        | PpcImportDispatcherTarget::TEUpdate
+        | PpcImportDispatcherTarget::TETextBox
+        | PpcImportDispatcherTarget::TESetAlignment
+        | PpcImportDispatcherTarget::TEGetHeight
+        | PpcImportDispatcherTarget::TEGetPoint
+        | PpcImportDispatcherTarget::TEScroll { .. }
+        | PpcImportDispatcherTarget::TEAutoView
+        | PpcImportDispatcherTarget::TECopy { .. }
+        | PpcImportDispatcherTarget::TEPaste { .. }
+        | PpcImportDispatcherTarget::TETransferScrap { .. }
+        | PpcImportDispatcherTarget::TEScrapHandle
+        | PpcImportDispatcherTarget::TEScrapLength { .. } => {
+            unreachable!("textedit imports return through dispatch_textedit_import")
+        }
+        PpcImportDispatcherTarget::DSpStartup
+        | PpcImportDispatcherTarget::DSpShutdown
+        | PpcImportDispatcherTarget::DSpGetFirstContext
+        | PpcImportDispatcherTarget::DSpGetNextContext
+        | PpcImportDispatcherTarget::DSpProcessEvent
+        | PpcImportDispatcherTarget::DSpCanUserSelectContext
+        | PpcImportDispatcherTarget::DSpGetMouse
+        | PpcImportDispatcherTarget::DSpFindContextFromPoint
+        | PpcImportDispatcherTarget::DSpContextGlobalToLocal
+        | PpcImportDispatcherTarget::DSpFindBestContext
+        | PpcImportDispatcherTarget::DSpUserSelectContext
+        | PpcImportDispatcherTarget::DSpSetBlankingColor
+        | PpcImportDispatcherTarget::DSpAltBufferNew
+        | PpcImportDispatcherTarget::DSpAltBufferGetCGrafPtr
+        | PpcImportDispatcherTarget::DSpContextReserve
+        | PpcImportDispatcherTarget::DSpContextRelease
+        | PpcImportDispatcherTarget::DSpContextSetState
+        | PpcImportDispatcherTarget::DSpContextFadeGamma
+        | PpcImportDispatcherTarget::DSpContextFadeGammaIn
+        | PpcImportDispatcherTarget::DSpContextFadeGammaOut
+        | PpcImportDispatcherTarget::DSpContextGetFrontBuffer
+        | PpcImportDispatcherTarget::DSpContextGetBackBuffer
+        | PpcImportDispatcherTarget::DSpContextSwapBuffers
+        | PpcImportDispatcherTarget::DSpContextSetClutEntries
+        | PpcImportDispatcherTarget::DSpContextGetDisplayID
+        | PpcImportDispatcherTarget::DSpContextGetAttributes
+        | PpcImportDispatcherTarget::DSpContextSetVblProc
+        | PpcImportDispatcherTarget::DSpContextIsBusy
+        | PpcImportDispatcherTarget::DSpAltBufferDispose
+        | PpcImportDispatcherTarget::DSpContextInvalBackBufferRect
+        | PpcImportDispatcherTarget::DSpContextSetUnderlayAltBuffer => {
+            unreachable!("drawsprocket imports return through dispatch_drawsprocket_import")
+        }
+        PpcImportDispatcherTarget::ISpElementNewVirtualFromNeeds
+        | PpcImportDispatcherTarget::ISpElementListNew
+        | PpcImportDispatcherTarget::ISpElementListAddElements
+        | PpcImportDispatcherTarget::ISpElementListGetNextEvent
+        | PpcImportDispatcherTarget::ISpElementListFlush
+        | PpcImportDispatcherTarget::ISpDevicesExtract
+        | PpcImportDispatcherTarget::ISpDevicesExtractByClass
+        | PpcImportDispatcherTarget::ISpDeviceGetDefinition
+        | PpcImportDispatcherTarget::ISpDeviceGetElementList
+        | PpcImportDispatcherTarget::ISpElementListExtract
+        | PpcImportDispatcherTarget::ISpElementGetInfo
+        | PpcImportDispatcherTarget::ISpElementGetSimpleState
+        | PpcImportDispatcherTarget::ISpGetVersion
+        | PpcImportDispatcherTarget::ISpStartup
+        | PpcImportDispatcherTarget::ISpShutdown
+        | PpcImportDispatcherTarget::ISpInit
+        | PpcImportDispatcherTarget::ISpStop
+        | PpcImportDispatcherTarget::ISpSuspend
+        | PpcImportDispatcherTarget::ISpResume
+        | PpcImportDispatcherTarget::ISpDevicesActivate
+        | PpcImportDispatcherTarget::ISpDevicesDeactivate
+        | PpcImportDispatcherTarget::ISpConfigure => {
+            unreachable!("inputsprocket imports return through dispatch_inputsprocket_import")
+        }
+        PpcImportDispatcherTarget::QtEnterMovies
+        | PpcImportDispatcherTarget::QtExitMovies
+        | PpcImportDispatcherTarget::QtGetMoviesError
+        | PpcImportDispatcherTarget::QtGetMoviesStickyError
+        | PpcImportDispatcherTarget::QtClearMoviesStickyError
+        | PpcImportDispatcherTarget::QtGetGraphicsImporterForFile
+        | PpcImportDispatcherTarget::QtGraphicsImportGetBoundsRect
+        | PpcImportDispatcherTarget::QtGraphicsImportSetGWorld
+        | PpcImportDispatcherTarget::QtGraphicsImportDraw
+        | PpcImportDispatcherTarget::QtOpenMovieFile
+        | PpcImportDispatcherTarget::QtNewMovieFromFile
+        | PpcImportDispatcherTarget::QtGetMovieBox
+        | PpcImportDispatcherTarget::QtSetMovieBox
+        | PpcImportDispatcherTarget::QtSetMovieGWorld
+        | PpcImportDispatcherTarget::QtStartMovie
+        | PpcImportDispatcherTarget::QtStopMovie
+        | PpcImportDispatcherTarget::QtMoviesTask
+        | PpcImportDispatcherTarget::QtDisposeMovie
+        | PpcImportDispatcherTarget::QtIsMovieDone
+        | PpcImportDispatcherTarget::QtGoToBeginningOfMovie
+        | PpcImportDispatcherTarget::QtGoToEndOfMovie
+        | PpcImportDispatcherTarget::QtGetMovieDuration
+        | PpcImportDispatcherTarget::QtLoadMovieIntoRam
+        | PpcImportDispatcherTarget::QtCloseMovieFile => {
+            unreachable!("quicktime imports return through dispatch_quicktime_import")
+        }
+        PpcImportDispatcherTarget::InsTime
+        | PpcImportDispatcherTarget::InsXTime
+        | PpcImportDispatcherTarget::PrimeTime
+        | PpcImportDispatcherTarget::RmvTime
+        | PpcImportDispatcherTarget::VInstall
+        | PpcImportDispatcherTarget::VRemove
+        | PpcImportDispatcherTarget::SlotVInstall
+        | PpcImportDispatcherTarget::SlotVRemove => {
+            unreachable!("time and vbl imports return through dispatch_time_import")
         }
         PpcImportDispatcherTarget::DrawGrowIcon => {
-            ppc_draw_grow_icon(memory, gworlds, window_list, cpu.gpr[3]);
-            Some(PpcImportAction::ReturnPreserve)
+            unreachable!("window imports return through dispatch_window_import")
         }
-        PpcImportDispatcherTarget::MenuNoop => Some(PpcImportAction::ReturnPreserve),
-        PpcImportDispatcherTarget::MenuKey => {
-            let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
-            let menu_colors = MenuColorTable::new(&menu_color_bytes);
-            let selection = ppc_menu_key(memory, current_menu_list, cpu.gpr[3] as u8);
-            let result = selection.map_or(0, MenuKeySelection::packed_result);
-            let root_menu_id = selection
-                .and_then(|selection| selection.owner_handle)
-                .and_then(|owner_handle| memory.read_u32_be(owner_handle))
-                .filter(|menu| *menu != 0)
-                .and_then(|menu| memory.read_u16_be(menu))
-                .map_or(0, |menu_id| menu_id as i16);
-            ppc_set_menu_command_highlight_with_colors(
-                memory,
-                gworlds,
-                current_menu_list,
-                result,
-                Some(root_menu_id),
-                screen_clut,
-                menu_colors,
-                toolbox_startup.host_menu_bar_hidden,
-            );
-            if crate::trap::dispatch::trace_input_enabled() {
-                eprintln!(
-                    "[INPUT] PPC MenuKey menu_list=${:08X} key=${:02X} -> ${result:08X}",
-                    current_menu_list, cpu.gpr[3] as u8
-                );
-            }
-            Some(PpcImportAction::Return(result))
-        }
-        PpcImportDispatcherTarget::MenuEvent => {
-            // Menus.h: MenuEvent examines a classic EventRecord and returns
-            // the MenuKey-style packed result for command-key keyboard
-            // events, or zero when the event has no menu equivalent.
-            let event = cpu.gpr[3];
-            let what = memory.read_u16_be(event).unwrap_or(0);
-            let message = memory.read_u32_be(event + 2).unwrap_or(0);
-            let modifiers = memory.read_u16_be(event + 14).unwrap_or(0);
-            let result = if matches!(what, 3 | 5) && modifiers & 0x0100 != 0 {
-                ppc_menu_key(memory, current_menu_list, message as u8)
-                    .map_or(0, MenuKeySelection::packed_result)
-            } else {
-                0
-            };
-            Some(PpcImportAction::Return(result))
-        }
-        PpcImportDispatcherTarget::MenuChoice => {
-            // MenuChoice is a parameterless C function that returns the
-            // standard MDEF's packed MenuDisable low-memory value unchanged.
-            // Macintosh Toolbox Essentials (1992), pp. 3-118--3-119.
-            Some(PpcImportAction::Return(
-                memory
-                    .read_u32_be(crate::memory::globals::addr::MENU_DISABLE)
-                    .unwrap_or(0),
-            ))
-        }
-        PpcImportDispatcherTarget::MenuSelect => ppc_step_menu_tracking(
-            cpu, process_memory_manager, memory, heap_cursor, heap_limit, gworlds, screen_clut, toolbox_startup, current_gworld, current_gdevice, input, vfs_resources, *current_resource_refnum,
-        ),
-        PpcImportDispatcherTarget::GetIndResource | PpcImportDispatcherTarget::Get1IndResource => {
-            let current_only = matches!(
-                binding.dispatcher_target,
-                PpcImportDispatcherTarget::Get1IndResource
-            );
-            Some(PpcImportAction::Return(ppc_get_ind_resource(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                current_only,
-                resource_policy.res_load(),
-                last_resource_error,
-            )))
-        }
-        PpcImportDispatcherTarget::GetResAttrs => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_get_res_attrs(cpu, vfs_resources, last_resource_error),
-        ))),
-        PpcImportDispatcherTarget::SetResAttrs => {
-            ppc_set_res_attrs(cpu, vfs_resource_files, vfs_resources, last_resource_error);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetResInfo => {
-            ppc_get_res_info(cpu, memory, vfs_resources, last_resource_error);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetResourceSizeOnDisk => {
-            // More Macintosh Toolbox (1993), 1-105: this reports the exact
-            // on-disk resource size even when SetResLoad left its handle empty.
-            let size = vfs_resources
-                .iter()
-                .find(|resource| resource.handle == cpu.gpr[3])
-                .and_then(|resource| i32::try_from(resource.data.len()).ok());
-            if let Some(size) = size {
-                *last_resource_error = PPC_NO_ERR;
-                Some(PpcImportAction::Return(size as u32))
-            } else {
-                *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-                Some(PpcImportAction::Return(u32::MAX))
-            }
-        }
-        PpcImportDispatcherTarget::SetResInfo => {
-            ppc_set_res_info(
-                cpu,
-                memory,
-                vfs_resource_files,
-                vfs_resources,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::HomeResFile => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_home_res_file(cpu, vfs_resources, last_resource_error),
-        ))),
-        PpcImportDispatcherTarget::CountResources => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_count_resources(
-                cpu,
-                vfs_resources,
-                *current_resource_refnum,
-                false,
-                last_resource_error,
-            ),
-        ))),
-        PpcImportDispatcherTarget::Count1Resources => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_count_resources(
-                cpu,
-                vfs_resources,
-                *current_resource_refnum,
-                true,
-                last_resource_error,
-            )),
-        )),
-        PpcImportDispatcherTarget::UniqueID => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_unique_id(
-                cpu,
-                vfs_resources,
-                *current_resource_refnum,
-                false,
-                last_resource_error,
-            ))))
-        }
-        PpcImportDispatcherTarget::Unique1ID => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_unique_id(
-                cpu,
-                vfs_resources,
-                *current_resource_refnum,
-                true,
-                last_resource_error,
-            ))))
-        }
-        PpcImportDispatcherTarget::UpdateResFile => {
-            ppc_update_res_file(
-                cpu,
-                memory,
-                handles,
-                resource_files,
-                vfs_resource_files,
-                vfs_resources,
-                *current_resource_refnum,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::AddResource => {
-            *last_resource_error = ppc_add_resource(
-                cpu,
-                process_memory_manager,
-                memory,
-                handles,
-                resource_files,
-                vfs_resource_files,
-                vfs_resources,
-                *current_resource_refnum,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::ChangedResource => {
-            ppc_changed_resource(cpu, vfs_resource_files, vfs_resources, last_resource_error);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::WriteResource => {
-            ppc_write_resource(
-                cpu,
-                memory,
-                handles,
-                vfs_resource_files,
-                vfs_resources,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::RemoveResource => {
-            ppc_remove_resource(
-                cpu,
-                process_memory_manager,
-                vfs_resource_files,
-                vfs_resources,
-                *current_resource_refnum,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::ReleaseResource => {
-            ppc_release_resource(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::DetachResource => {
-            ppc_detach_resource(
-                cpu,
-                process_memory_manager,
-                vfs_resources,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::ReadPartialResource => {
-            ppc_read_partial_resource(cpu, memory, vfs_resources, last_resource_error);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetPicture => {
-            let picture = ppc_get_picture(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                last_resource_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-            );
-            Some(PpcImportAction::Return(picture))
-        }
-        PpcImportDispatcherTarget::GetIconSuite => {
-            let result = ppc_get_icon_suite(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                resource_policy.res_load(),
-                last_resource_error,
-            );
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        PpcImportDispatcherTarget::GetIcon | PpcImportDispatcherTarget::GetPattern => {
-            let resource_id = cpu.gpr[3];
-            cpu.gpr[3] = if matches!(
-                binding.dispatcher_target,
-                PpcImportDispatcherTarget::GetIcon
-            ) {
-                u32::from_be_bytes(*b"ICON")
-            } else {
-                u32::from_be_bytes(*b"PAT ")
-            };
-            cpu.gpr[4] = resource_id;
-            Some(PpcImportAction::Return(ppc_get_resource(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                false,
-                resource_policy.res_load(),
-                last_resource_error,
-            )))
-        }
-        PpcImportDispatcherTarget::GetIndPattern => {
-            ppc_get_ind_pattern(
-                cpu,
-                memory,
-                vfs_resources,
-                *current_resource_refnum,
-                last_resource_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetPixPat => Some(PpcImportAction::Return(ppc_get_pix_pat(
-            cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            last_mem_error,
-            handles,
-            vfs_resources,
-            *current_resource_refnum,
-            last_resource_error,
-        ))),
         PpcImportDispatcherTarget::GetPictInfo => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_get_pict_info(cpu, memory),
         ))),
@@ -18773,8 +17517,79 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::FSpOpenResFile
         | PpcImportDispatcherTarget::FSpOpenDF
         | PpcImportDispatcherTarget::HOpen
-        | PpcImportDispatcherTarget::PBHOpenDF => {
+        | PpcImportDispatcherTarget::PBHOpenDF
+        | PpcImportDispatcherTarget::CurResFile
+        | PpcImportDispatcherTarget::UseResFile
+        | PpcImportDispatcherTarget::OpenResFile
+        | PpcImportDispatcherTarget::HOpenResFile
+        | PpcImportDispatcherTarget::ResError
+        | PpcImportDispatcherTarget::GetVol
+        | PpcImportDispatcherTarget::GetWDInfo
+        | PpcImportDispatcherTarget::HGetVol
+        | PpcImportDispatcherTarget::HSetVol
+        | PpcImportDispatcherTarget::FlushVol
+        | PpcImportDispatcherTarget::PBFlushVol
+        | PpcImportDispatcherTarget::PBHGetVInfo
+        | PpcImportDispatcherTarget::PBGetFInfo
+        | PpcImportDispatcherTarget::PBHGetFInfo
+        | PpcImportDispatcherTarget::PBSetFInfo
+        | PpcImportDispatcherTarget::PBHSetFInfo
+        | PpcImportDispatcherTarget::FSpGetFInfo
+        | PpcImportDispatcherTarget::GetFInfo
+        | PpcImportDispatcherTarget::HGetFInfo
+        | PpcImportDispatcherTarget::FSpSetFInfo
+        | PpcImportDispatcherTarget::HSetFInfo
+        | PpcImportDispatcherTarget::PBGetCatInfo
+        | PpcImportDispatcherTarget::PBSetCatInfo
+        | PpcImportDispatcherTarget::DirCreate
+        | PpcImportDispatcherTarget::FSpDirCreate
+        | PpcImportDispatcherTarget::FSMakeFSSpec
+        | PpcImportDispatcherTarget::PBGetFCBInfo
+        | PpcImportDispatcherTarget::FindFolder
+        | PpcImportDispatcherTarget::ResolveAliasFile
+        | PpcImportDispatcherTarget::ResolveAlias
+        | PpcImportDispatcherTarget::UpdateAlias
+        | PpcImportDispatcherTarget::NewAlias
+        | PpcImportDispatcherTarget::FileCompatibility(_) => {
             unreachable!("file imports return through dispatch_file_import")
+        }
+        PpcImportDispatcherTarget::SetResLoad
+        | PpcImportDispatcherTarget::LoadResource
+        | PpcImportDispatcherTarget::GetResource
+        | PpcImportDispatcherTarget::Get1Resource
+        | PpcImportDispatcherTarget::GetNamedResource
+        | PpcImportDispatcherTarget::Get1NamedResource
+        | PpcImportDispatcherTarget::GetIndResource
+        | PpcImportDispatcherTarget::Get1IndResource
+        | PpcImportDispatcherTarget::CountResources
+        | PpcImportDispatcherTarget::Count1Resources
+        | PpcImportDispatcherTarget::UniqueID
+        | PpcImportDispatcherTarget::Unique1ID
+        | PpcImportDispatcherTarget::ReleaseResource
+        | PpcImportDispatcherTarget::DetachResource
+        | PpcImportDispatcherTarget::GetIndString
+        | PpcImportDispatcherTarget::GetString
+        | PpcImportDispatcherTarget::GetResAttrs
+        | PpcImportDispatcherTarget::SetResAttrs
+        | PpcImportDispatcherTarget::GetResInfo
+        | PpcImportDispatcherTarget::GetResourceSizeOnDisk
+        | PpcImportDispatcherTarget::SetResInfo
+        | PpcImportDispatcherTarget::HomeResFile
+        | PpcImportDispatcherTarget::UpdateResFile
+        | PpcImportDispatcherTarget::AddResource
+        | PpcImportDispatcherTarget::ChangedResource
+        | PpcImportDispatcherTarget::WriteResource
+        | PpcImportDispatcherTarget::RemoveResource
+        | PpcImportDispatcherTarget::ReadPartialResource
+        | PpcImportDispatcherTarget::CloseResFile
+        | PpcImportDispatcherTarget::GetPicture
+        | PpcImportDispatcherTarget::GetIconSuite
+        | PpcImportDispatcherTarget::GetIcon
+        | PpcImportDispatcherTarget::GetPattern
+        | PpcImportDispatcherTarget::GetIndPattern
+        | PpcImportDispatcherTarget::GetPixPat
+        | PpcImportDispatcherTarget::GetIntlResource => {
+            unreachable!("resource imports return through dispatch_resource_import")
         }
         PpcImportDispatcherTarget::GetForeColor
         | PpcImportDispatcherTarget::GetBackColor
@@ -18808,95 +17623,48 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::InsetRect => {
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
         }
-        PpcImportDispatcherTarget::FixRatio => Some(PpcImportAction::Return(ppc_fix_ratio(
-            cpu.gpr[3] as u16 as i16,
-            cpu.gpr[4] as u16 as i16,
-        ) as u32)),
-        PpcImportDispatcherTarget::FixMul => Some(PpcImportAction::Return(ppc_fix_mul(
-            cpu.gpr[3] as i32,
-            cpu.gpr[4] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::FixDiv => Some(PpcImportAction::Return(ppc_fix_div(
-            cpu.gpr[3] as i32,
-            cpu.gpr[4] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::Long2Fix => Some(PpcImportAction::Return(ppc_long_to_fix(
-            cpu.gpr[3] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::Fix2Long => Some(PpcImportAction::Return(ppc_fix_to_long(
-            cpu.gpr[3] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::FixRound => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fix_round(cpu.gpr[3] as i32),
-        ))),
-        PpcImportDispatcherTarget::Fix2Frac => Some(PpcImportAction::Return(ppc_fix_to_frac(
-            cpu.gpr[3] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::Frac2Fix => Some(PpcImportAction::Return(ppc_frac_to_fix(
-            cpu.gpr[3] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::Frac2X => {
-            let frac = cpu.gpr[3] as i32;
-            cpu.fpr[1] = (f64::from(frac) / 1_073_741_824.0).to_bits();
-            Some(PpcImportAction::ReturnPreserve)
+        PpcImportDispatcherTarget::MathCeil
+        | PpcImportDispatcherTarget::MathSqrt
+        | PpcImportDispatcherTarget::MathExp
+        | PpcImportDispatcherTarget::MathSin
+        | PpcImportDispatcherTarget::MathCos
+        | PpcImportDispatcherTarget::MathAsin
+        | PpcImportDispatcherTarget::MathTan
+        | PpcImportDispatcherTarget::MathAtan
+        | PpcImportDispatcherTarget::MathAtan2
+        | PpcImportDispatcherTarget::MathPow
+        | PpcImportDispatcherTarget::MathFmod
+        | PpcImportDispatcherTarget::MathLog
+        | PpcImportDispatcherTarget::MathLog10
+        | PpcImportDispatcherTarget::MathDtox80
+        | PpcImportDispatcherTarget::X2Fix
+        | PpcImportDispatcherTarget::FixRatio
+        | PpcImportDispatcherTarget::FixMul
+        | PpcImportDispatcherTarget::FixDiv
+        | PpcImportDispatcherTarget::Long2Fix
+        | PpcImportDispatcherTarget::Fix2Long
+        | PpcImportDispatcherTarget::FixRound
+        | PpcImportDispatcherTarget::Fix2Frac
+        | PpcImportDispatcherTarget::Frac2Fix
+        | PpcImportDispatcherTarget::Frac2X
+        | PpcImportDispatcherTarget::X2Frac
+        | PpcImportDispatcherTarget::FracSin
+        | PpcImportDispatcherTarget::FracCos
+        | PpcImportDispatcherTarget::FracSqrt
+        | PpcImportDispatcherTarget::FracMul
+        | PpcImportDispatcherTarget::FracDiv
+        | PpcImportDispatcherTarget::FixATan2
+        | PpcImportDispatcherTarget::WideAdd
+        | PpcImportDispatcherTarget::WideSubtract
+        | PpcImportDispatcherTarget::WideNegate
+        | PpcImportDispatcherTarget::WideShift
+        | PpcImportDispatcherTarget::WideMultiply
+        | PpcImportDispatcherTarget::WideDivide
+        | PpcImportDispatcherTarget::WideWideDivide
+        | PpcImportDispatcherTarget::WideCompare
+        | PpcImportDispatcherTarget::WideSquareRoot => {
+            unreachable!("math imports return through dispatch_math_import")
         }
-        PpcImportDispatcherTarget::X2Frac => {
-            let value = f64::from_bits(cpu.fpr[1]);
-            Some(PpcImportAction::Return(ppc_f64_to_frac(value)))
-        }
-        PpcImportDispatcherTarget::FracSin => Some(PpcImportAction::Return(ppc_frac_sin(
-            cpu.gpr[3] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::FracCos => Some(PpcImportAction::Return(ppc_frac_cos(
-            cpu.gpr[3] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::FracSqrt => {
-            Some(PpcImportAction::Return(ppc_frac_sqrt(cpu.gpr[3])))
-        }
-        PpcImportDispatcherTarget::FracMul => Some(PpcImportAction::Return(ppc_frac_mul(
-            cpu.gpr[3] as i32,
-            cpu.gpr[4] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::FracDiv => Some(PpcImportAction::Return(ppc_frac_div(
-            cpu.gpr[3] as i32,
-            cpu.gpr[4] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::FixATan2 => Some(PpcImportAction::Return(ppc_fix_atan2(
-            cpu.gpr[3] as i32,
-            cpu.gpr[4] as i32,
-        ) as u32)),
-        PpcImportDispatcherTarget::WideAdd => Some(PpcImportAction::Return(ppc_wide_add(
-            memory, cpu.gpr[3], cpu.gpr[4],
-        ))),
-        PpcImportDispatcherTarget::WideSubtract => Some(PpcImportAction::Return(
-            ppc_wide_subtract(memory, cpu.gpr[3], cpu.gpr[4]),
-        )),
-        PpcImportDispatcherTarget::WideNegate => {
-            Some(PpcImportAction::Return(ppc_wide_negate(memory, cpu.gpr[3])))
-        }
-        PpcImportDispatcherTarget::WideShift => Some(PpcImportAction::Return(ppc_wide_shift(
-            memory,
-            cpu.gpr[3],
-            cpu.gpr[4] as i32,
-        ))),
-        PpcImportDispatcherTarget::WideMultiply => Some(PpcImportAction::Return(
-            ppc_wide_multiply(memory, cpu.gpr[3] as i32, cpu.gpr[4] as i32, cpu.gpr[5]),
-        )),
-        PpcImportDispatcherTarget::WideDivide => Some(PpcImportAction::Return(ppc_wide_divide(
-            memory,
-            cpu.gpr[3],
-            cpu.gpr[4] as i32,
-            cpu.gpr[5],
-        ) as u32)),
-        PpcImportDispatcherTarget::WideWideDivide => Some(PpcImportAction::Return(
-            ppc_wide_wide_divide(memory, cpu.gpr[3], cpu.gpr[4] as i32, cpu.gpr[5]),
-        )),
-        PpcImportDispatcherTarget::WideSquareRoot => Some(PpcImportAction::Return(
-            ppc_wide_square_root(memory, cpu.gpr[3]),
-        )),
-        PpcImportDispatcherTarget::WideCompare => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_wide_compare(memory, cpu.gpr[3], cpu.gpr[4]),
-        ))),
         PpcImportDispatcherTarget::MoveTo => {
             *quickdraw_pen_h = cpu.gpr[3] as u16 as i16;
             *quickdraw_pen_v = cpu.gpr[4] as u16 as i16;
@@ -19435,57 +18203,11 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::InvalRect => {
-            // Macintosh Toolbox Essentials 1992, 4-107: InvalRect adds a
-            // local rectangle to the current window's update region. Keep the
-            // region live until the matching EndUpdate, just as the classic
-            // Window Manager does, and post one coalesced updateEvt.
-            let window = *current_gworld;
-            if window != PPC_MAIN_GWORLD {
-                if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
-                    ppc_invalidate_window_local_rect(memory, window, rect);
-                    ppc_enqueue_window_update_event(event_queue, window, *tick_count, input);
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::ValidRect => {
-            // ValidRect removes a local rectangle from the current window's
-            // update region. The HLE stores a bounding box, so only clear it
-            // when the caller validates the complete pending box; partial
-            // validation conservatively keeps the pending invalidation.
-            let window = *current_gworld;
-            if window != PPC_MAIN_GWORLD {
-                if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
-                    ppc_validate_window_local_rect(memory, window, rect);
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::BeginUpdate => {
-            // BeginUpdate makes the supplied window the current drawing port
-            // while preserving its pending update region for guest drawing.
-            let window = cpu.gpr[3];
-            if window != 0 && gworlds.iter().any(|record| record.port == window) {
-                *current_gworld = window;
-                *current_gdevice =
-                    ppc_gworld_device(gworlds, window).unwrap_or(*current_gdevice);
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::EndUpdate => {
-            // EndUpdate commits the guest's redraw and makes the region
-            // valid. Clearing it here makes updateRgn observable and prevents
-            // stale updateEvt delivery after a successful repaint.
-            let window = cpu.gpr[3];
-            if window != 0 {
-                let update_rgn = memory
-                    .read_u32_be(window.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
-                    .unwrap_or(0);
-                let _ = ppc_set_empty_rgn(memory, update_rgn);
-                event_queue.retain(|event| !(event.what == 6 && event.message == window));
-            }
-            Some(PpcImportAction::ReturnPreserve)
+        PpcImportDispatcherTarget::InvalRect
+        | PpcImportDispatcherTarget::ValidRect
+        | PpcImportDispatcherTarget::BeginUpdate
+        | PpcImportDispatcherTarget::EndUpdate => {
+            unreachable!("window imports return through dispatch_window_import")
         }
         PpcImportDispatcherTarget::ClipRect => {
             let mut allocator = PpcProcessAllocatorView {
@@ -19854,614 +18576,29 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::NewCWindow => {
-            let previous_front = ppc_front_visible_process_window(memory, window_list);
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let window = ppc_new_window_from_cpu(
-                cpu,
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                gworlds,
-                window_list,
-                *current_gdevice,
-                toolbox_startup.host_menu_bar_hidden,
-            );
-            if window != 0 {
-                ppc_recalculate_window_vis_regions(
-                    process_memory_manager,
-                    memory,
-                    window_list,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                );
-                quickdraw_fore_indices.remove(&window);
-                *current_gworld = window;
-                *current_gdevice =
-                    ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
-                ppc_restore_port_colors(
-                    memory,
-                    *current_gworld,
-                    quickdraw_fore_color,
-                    quickdraw_back_color,
-                );
-                let next_front = ppc_front_visible_process_window(memory, window_list);
-                ppc_enqueue_window_activation_transition(
-                    memory,
-                    event_queue,
-                    previous_front,
-                    next_front,
-                    *tick_count,
-                );
-                if next_front != previous_front {
-                    let _ = ppc_activate_front_window_palette(
-                        memory,
-                        gworlds,
-                        *current_gdevice,
-                        screen_clut,
-                        color_manager_clut,
-                        toolbox_startup,
-                    );
-                }
-            }
-            Some(PpcImportAction::Return(window))
+        PpcImportDispatcherTarget::NewCWindow
+        | PpcImportDispatcherTarget::GetNewCWindow
+        | PpcImportDispatcherTarget::GetWRefCon
+        | PpcImportDispatcherTarget::SetWRefCon
+        | PpcImportDispatcherTarget::SizeWindow
+        | PpcImportDispatcherTarget::MoveWindow => {
+            unreachable!("window imports return through dispatch_window_import")
         }
-        PpcImportDispatcherTarget::GetNewCWindow => {
-            let previous_front = ppc_front_visible_process_window(memory, window_list);
-            let window = ppc_get_new_cwindow(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                gworlds,
-                window_list,
-                *current_gdevice,
-                vfs_resources,
-                *current_resource_refnum,
-                last_resource_error,
-                toolbox_startup.host_menu_bar_hidden,
-            );
-            if window != 0 {
-                ppc_recalculate_window_vis_regions(
-                    process_memory_manager,
-                    memory,
-                    window_list,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                );
-                quickdraw_fore_indices.remove(&window);
-                *current_gworld = window;
-                *current_gdevice =
-                    ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
-                ppc_restore_port_colors(
-                    memory,
-                    *current_gworld,
-                    quickdraw_fore_color,
-                    quickdraw_back_color,
-                );
-                let next_front = ppc_front_visible_process_window(memory, window_list);
-                ppc_enqueue_window_activation_transition(
-                    memory,
-                    event_queue,
-                    previous_front,
-                    next_front,
-                    *tick_count,
-                );
-                if next_front != previous_front {
-                    let _ = ppc_activate_front_window_palette(
-                        memory,
-                        gworlds,
-                        *current_gdevice,
-                        screen_clut,
-                        color_manager_clut,
-                        toolbox_startup,
-                    );
-                }
-            }
-            Some(PpcImportAction::Return(window))
+        PpcImportDispatcherTarget::ShowWindow
+        | PpcImportDispatcherTarget::HideWindow
+        | PpcImportDispatcherTarget::ShowHide
+        | PpcImportDispatcherTarget::CloseWindow => {
+            unreachable!("window imports return through dispatch_window_import")
         }
-        PpcImportDispatcherTarget::GetWRefCon => Some(PpcImportAction::Return(
-            memory
-                .read_u32_be(cpu.gpr[3].wrapping_add(PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET))
-                .unwrap_or(0),
-        )),
-        PpcImportDispatcherTarget::SetWRefCon => {
-            let window_ptr = cpu.gpr[3];
-            let ref_con = cpu.gpr[4];
-            if ppc_memory_can_write_bytes(
-                memory,
-                window_ptr.wrapping_add(PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET),
-                4,
-            ) {
-                let _ = memory.write_u32_be(
-                    window_ptr.wrapping_add(PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET),
-                    ref_con,
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
+        PpcImportDispatcherTarget::DisposeDialog => {
+            unreachable!("dialog imports return through dispatch_dialog_import")
         }
-        PpcImportDispatcherTarget::SizeWindow => {
-            let window = cpu.gpr[3];
-            let was_visible = ppc_window_is_visible(memory, window);
-            let previous_structure =
-                ppc_window_global_structure_bounds(memory, gworlds, window);
-            if ppc_size_window(cpu, memory, gworlds).is_some() {
-                ppc_recalculate_window_vis_regions(
-                    process_memory_manager,
-                    memory,
-                    window_list,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                );
-                let next_structure =
-                    ppc_window_global_structure_bounds(memory, gworlds, window);
-                ppc_repaint_window_geometry_transition(
-                    memory,
-                    gworlds,
-                    window_list,
-                    window,
-                    was_visible,
-                    previous_structure,
-                    next_structure,
-                    toolbox_startup.host_menu_bar_hidden,
-                    event_queue,
-                    *tick_count,
-                    input,
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::MoveWindow => {
-            let window = cpu.gpr[3];
-            let was_visible = ppc_window_is_visible(memory, window);
-            let previous_front = ppc_front_visible_process_window(memory, window_list);
-            let bring_to_front = cpu.gpr[6] != 0;
-            let previous_structure =
-                ppc_window_global_structure_bounds(memory, gworlds, window);
-            if ppc_move_window(cpu, memory, gworlds).is_some() {
-                if bring_to_front {
-                    ppc_reorder_window(gworlds, window_list, window, 0, true);
-                }
-                ppc_recalculate_window_vis_regions(
-                    process_memory_manager,
-                    memory,
-                    window_list,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                );
-                let next_structure =
-                    ppc_window_global_structure_bounds(memory, gworlds, window);
-                ppc_repaint_window_geometry_transition(
-                    memory,
-                    gworlds,
-                    window_list,
-                    window,
-                    was_visible,
-                    previous_structure,
-                    next_structure,
-                    toolbox_startup.host_menu_bar_hidden,
-                    event_queue,
-                    *tick_count,
-                    input,
-                );
-                ppc_transition_front_window_chrome(
-                    memory,
-                    gworlds,
-                    window_list,
-                    previous_front,
-                    toolbox_startup.host_menu_bar_hidden,
-                );
-                let next_front = ppc_front_visible_process_window(memory, window_list);
-                if bring_to_front && next_front == Some(window) {
-                    *current_gworld = window;
-                    *current_gdevice =
-                        ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
-                    ppc_register_gdevice(toolbox_startup, *current_gdevice);
-                    ppc_restore_port_colors(
-                        memory,
-                        *current_gworld,
-                        quickdraw_fore_color,
-                        quickdraw_back_color,
-                    );
-                    let _ = ppc_set_window_hilited(memory, window, true);
-                }
-                if next_front != previous_front {
-                    let _ = ppc_activate_front_window_palette(
-                        memory,
-                        gworlds,
-                        *current_gdevice,
-                        screen_clut,
-                        color_manager_clut,
-                        toolbox_startup,
-                    );
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::ShowWindow => {
-            let window = cpu.gpr[3];
-            let previous_front = ppc_front_visible_process_window(memory, window_list);
-            let was_visible = ppc_window_is_visible(memory, window);
-            let _ = ppc_set_window_visible(memory, window, true);
-            ppc_recalculate_window_vis_regions(
-                process_memory_manager,
-                memory,
-                window_list,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            ppc_transition_front_window_chrome(
-                memory,
-                gworlds,
-                window_list,
-                previous_front,
-                toolbox_startup.host_menu_bar_hidden,
-            );
-            if !was_visible {
-                if ppc_front_visible_process_window(memory, window_list) != Some(window) {
-                    ppc_draw_existing_window_frame(
-                        memory,
-                        gworlds,
-                        window_list,
-                        window,
-                        toolbox_startup.host_menu_bar_hidden,
-                    );
-                }
-                ppc_enqueue_window_update_event(event_queue, window, *tick_count, input);
-            }
-            if ppc_front_visible_process_window(memory, window_list) != previous_front {
-                let _ = ppc_activate_front_window_palette(
-                    memory,
-                    gworlds,
-                    *current_gdevice,
-                    screen_clut,
-                    color_manager_clut,
-                    toolbox_startup,
-                );
-            }
-            if ppc_gworld_trace_enabled() {
-                eprintln!(
-                    "[PPC-GWORLD-TRACE] ShowWindow window=${:08X} current=${:08X}",
-                    window, *current_gworld
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::HideWindow => {
-            let window = cpu.gpr[3];
-            let previous_front = ppc_front_visible_process_window(memory, window_list);
-            let _ = ppc_set_window_visible(memory, window, false);
-            let _ = ppc_set_window_hilited(memory, window, false);
-            ppc_recalculate_window_vis_regions(
-                process_memory_manager,
-                memory,
-                window_list,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            let next_front = ppc_front_visible_process_window(memory, window_list);
-            ppc_transition_front_window_chrome(
-                memory,
-                gworlds,
-                window_list,
-                previous_front,
-                toolbox_startup.host_menu_bar_hidden,
-            );
-            if next_front != previous_front {
-                let _ = ppc_activate_front_window_palette(
-                    memory,
-                    gworlds,
-                    *current_gdevice,
-                    screen_clut,
-                    color_manager_clut,
-                    toolbox_startup,
-                );
-            }
-            if ppc_gworld_trace_enabled() {
-                eprintln!(
-                    "[PPC-GWORLD-TRACE] HideWindow window=${:08X} current=${:08X}",
-                    window, *current_gworld
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::ShowHide => {
-            let window = cpu.gpr[3];
-            let visible = cpu.gpr[4] != 0;
-            let previous_front = ppc_front_visible_process_window(memory, window_list);
-            let was_visible = ppc_window_is_visible(memory, window);
-            let _ = ppc_set_window_visible(memory, window, visible);
-            ppc_recalculate_window_vis_regions(
-                process_memory_manager,
-                memory,
-                window_list,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            ppc_transition_front_window_chrome(
-                memory,
-                gworlds,
-                window_list,
-                previous_front,
-                toolbox_startup.host_menu_bar_hidden,
-            );
-            if visible && !was_visible {
-                if ppc_front_visible_process_window(memory, window_list) != Some(window) {
-                    ppc_draw_existing_window_frame(
-                        memory,
-                        gworlds,
-                        window_list,
-                        window,
-                        toolbox_startup.host_menu_bar_hidden,
-                    );
-                }
-            }
-            if ppc_front_visible_process_window(memory, window_list) != previous_front {
-                let _ = ppc_activate_front_window_palette(
-                    memory,
-                    gworlds,
-                    *current_gdevice,
-                    screen_clut,
-                    color_manager_clut,
-                    toolbox_startup,
-                );
-            }
-            if ppc_gworld_trace_enabled() {
-                eprintln!(
-                    "[PPC-GWORLD-TRACE] ShowHide window=${:08X} visible={} current=${:08X}",
-                    window, visible, *current_gworld
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::CloseWindow | PpcImportDispatcherTarget::DisposeDialog => {
-            let window = cpu.gpr[3];
-            if matches!(
-                binding.dispatcher_target,
-                PpcImportDispatcherTarget::DisposeDialog
-            ) {
-                toolbox_startup.dispose_dialog_count =
-                    toolbox_startup.dispose_dialog_count.saturating_add(1);
-                toolbox_startup.last_disposed_dialog = window;
-            }
-            let previous_front = ppc_front_visible_process_window(memory, window_list);
-            let was_visible = ppc_window_is_visible(memory, window);
-            let exposed = was_visible
-                .then(|| {
-                    memory
-                        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
-                        .and_then(|region| ppc_read_rgn_bbox(memory, region))
-                })
-                .flatten();
-            if window != 0 {
-                let closed_palette = memory
-                    .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-                    .unwrap_or(0);
-                let closed_pixmap_handle = gworlds
-                    .iter()
-                    .find(|gworld| {
-                        gworld.port == window
-                            && !matches!(gworld.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
-                    })
-                    .map(|gworld| gworld.pixmap_handle);
-                let was_current = *current_gworld == window;
-                gworlds.retain(|gworld| {
-                    gworld.port == PPC_MAIN_GWORLD
-                        || gworld.port == PPC_DSP_BACK_GWORLD
-                        || gworld.port != window
-                });
-                window_list
-                    .with_mut(|windows| windows.retain(|candidate| *candidate != window));
-                ppc_recalculate_window_vis_regions(
-                    process_memory_manager,
-                    memory,
-                    window_list,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                );
-                ppc_transition_front_window_chrome(
-                    memory,
-                    gworlds,
-                    window_list,
-                    previous_front,
-                    toolbox_startup.host_menu_bar_hidden,
-                );
-                if *current_gworld == window {
-                    *current_gworld = ppc_front_visible_process_window(memory, window_list)
-                        .unwrap_or(PPC_MAIN_GWORLD);
-                    *current_gdevice =
-                        ppc_gworld_device(gworlds, *current_gworld).unwrap_or(PPC_MAIN_GDEVICE);
-                    if *current_gworld != PPC_MAIN_GWORLD {
-                        ppc_enqueue_window_update_event(event_queue, *current_gworld, *tick_count, input);
-                    }
-                }
-                ppc_restore_window_removal_exposure(
-                    memory,
-                    gworlds,
-                    window_list,
-                    exposed,
-                    toolbox_startup.host_menu_bar_hidden,
-                    event_queue,
-                    *tick_count,
-                    input,
-                );
-                if let Some(pixmap_handle) = closed_pixmap_handle {
-                    toolbox_startup
-                        .indexed_screen_ctables
-                        .remove(&pixmap_handle);
-                    quickdraw_fore_indices.remove(&window);
-                    let still_associated = toolbox_startup.application_palette == closed_palette
-                        || gworlds.iter().any(|record| {
-                            memory
-                                .read_u32_be(
-                                    record
-                                        .port
-                                        .wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET),
-                                )
-                                .unwrap_or(0)
-                                == closed_palette
-                        });
-                    if closed_palette != 0 && !still_associated {
-                        ppc_release_palette_allocations_and_restore(
-                            memory,
-                            toolbox_startup,
-                            closed_palette,
-                            *current_gdevice,
-                            screen_clut,
-                            color_manager_clut,
-                        );
-                    }
-                }
-                if was_current && *current_gworld != window {
-                    ppc_restore_port_colors(
-                        memory,
-                        *current_gworld,
-                        quickdraw_fore_color,
-                        quickdraw_back_color,
-                    );
-                }
-                if ppc_front_visible_process_window(memory, window_list) != previous_front {
-                    let _ = ppc_activate_front_window_palette(
-                        memory,
-                        gworlds,
-                        *current_gdevice,
-                        screen_clut,
-                        color_manager_clut,
-                        toolbox_startup,
-                    );
-                }
-            }
-            if ppc_gworld_trace_enabled() {
-                eprintln!(
-                    "[PPC-GWORLD-TRACE] CloseWindow window=${:08X} current=${:08X} remaining_gworlds={}",
-                    window,
-                    *current_gworld,
-                    gworlds.len()
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::FrontWindow => {
-            let window = ppc_front_visible_process_window(memory, window_list).unwrap_or(0);
-            Some(PpcImportAction::Return(window))
-        }
-        PpcImportDispatcherTarget::SetWinColor => {
-            // Macintosh Toolbox Essentials (1992), pp. 4-114--4-115:
-            // SetWinColor records the table, applies its content background,
-            // and invalidates the window so its new colors are redrawn.
-            let window = cpu.gpr[3];
-            let color_table = cpu.gpr[4];
-            if color_table != 0 {
-                let storage = if window == 0 { PPC_MAIN_GWORLD } else { window };
-                let _ = memory.write_u32_be(
-                    storage.wrapping_add(PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET),
-                    color_table,
-                );
-                if window != 0 {
-                    if let Some(content_color) = ppc_window_content_color(memory, color_table) {
-                        if window == *current_gworld {
-                            *quickdraw_back_color = content_color;
-                            let _ = ppc_write_port_rgb_color(
-                                memory,
-                                *current_gworld,
-                                PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET,
-                                content_color,
-                            );
-                        }
-                        if ppc_window_is_visible(memory, window) {
-                            if let Some(bounds) = ppc_read_rect(memory, window.wrapping_add(16)) {
-                                let _ = ppc_paint_rect_bounds(
-                                    memory,
-                                    gworlds,
-                                    window,
-                                    bounds,
-                                    content_color,
-                                    None,
-                                );
-                            }
-                        }
-                    }
-                    ppc_enqueue_window_update_event(event_queue, window, *tick_count, input);
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::PaintOne => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            ppc_paint_one(
-                Some(&mut allocator),
-                memory,
-                gworlds,
-                cpu.gpr[3],
-                cpu.gpr[4],
-                toolbox_startup.host_menu_bar_hidden,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::PaintBehind => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            ppc_paint_behind(
-                Some(&mut allocator),
-                memory,
-                gworlds,
-                cpu.gpr[3],
-                cpu.gpr[4],
-                toolbox_startup.host_menu_bar_hidden,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::CalcVisBehind => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            ppc_calc_vis_behind(
-                Some(&mut allocator),
-                memory,
-                gworlds,
-                cpu.gpr[3],
-                cpu.gpr[4],
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            Some(PpcImportAction::ReturnPreserve)
+        PpcImportDispatcherTarget::FrontWindow
+        | PpcImportDispatcherTarget::SetWinColor
+        | PpcImportDispatcherTarget::PaintOne
+        | PpcImportDispatcherTarget::PaintBehind
+        | PpcImportDispatcherTarget::CalcVisBehind => {
+            unreachable!("window imports return through dispatch_window_import")
         }
         PpcImportDispatcherTarget::GetMouse => {
             let point_ptr = cpu.gpr[3];
@@ -20488,59 +18625,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SelectWindow => {
-            if cpu.gpr[3] != 0 {
-                let previous_front = ppc_front_visible_process_window(memory, window_list);
-                ppc_reorder_window(gworlds, window_list, cpu.gpr[3], 0, true);
-                ppc_recalculate_window_vis_regions(
-                    process_memory_manager,
-                    memory,
-                    window_list,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                );
-                // Macintosh Toolbox Essentials (1992), p. 4-87:
-                // selecting an already-active window has no effect. In
-                // particular, do not repaint a dialog over its contents.
-                if previous_front != Some(cpu.gpr[3]) {
-                    ppc_transition_front_window_chrome(
-                        memory,
-                        gworlds,
-                        window_list,
-                        previous_front,
-                        toolbox_startup.host_menu_bar_hidden,
-                    );
-                }
-                *current_gworld = cpu.gpr[3];
-                *current_gdevice =
-                    ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
-                ppc_register_gdevice(toolbox_startup, *current_gdevice);
-                ppc_restore_port_colors(
-                    memory,
-                    *current_gworld,
-                    quickdraw_fore_color,
-                    quickdraw_back_color,
-                );
-                let _ = ppc_set_window_hilited(memory, *current_gworld, true);
-                if ppc_front_visible_process_window(memory, window_list) != previous_front {
-                    let _ = ppc_activate_front_window_palette(
-                        memory,
-                        gworlds,
-                        *current_gdevice,
-                        screen_clut,
-                        color_manager_clut,
-                        toolbox_startup,
-                    );
-                }
-            }
-            if ppc_gworld_trace_enabled() {
-                eprintln!(
-                    "[PPC-GWORLD-TRACE] SelectWindow window=${:08X} current=${:08X} gdevice=${:08X}",
-                    cpu.gpr[3], *current_gworld, *current_gdevice
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
+            unreachable!("window imports return through dispatch_window_import")
         }
         PpcImportDispatcherTarget::ActivatePalette => {
             let window_ptr = cpu.gpr[3];
@@ -20695,13 +18780,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetWMgrPort => {
-            let port_ptr = cpu.gpr[3];
-            // Macintosh Toolbox Essentials (1992), pp. 4-18 and 4-114: the
-            // color Window Manager port occupies the entire main screen.
-            if port_ptr != 0 && ppc_memory_can_write_bytes(memory, port_ptr, 4) {
-                let _ = memory.write_u32_be(port_ptr, PPC_MAIN_GWORLD);
-            }
-            Some(PpcImportAction::ReturnPreserve)
+            unreachable!("window imports return through dispatch_window_import")
         }
         PpcImportDispatcherTarget::SetPort => {
             *current_gworld = cpu.gpr[3];
@@ -21438,36 +19517,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::FindWindow => {
-            let v = (cpu.gpr[3] >> 16) as u16 as i16;
-            let h = cpu.gpr[3] as u16 as i16;
-            let window_out = cpu.gpr[4];
-            let front = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD);
-            let screen_width = front
-                .map(|front| ppc_u32_to_i16_saturating(front.width))
-                .unwrap_or(PPC_MAIN_SCREEN_WIDTH as i16);
-            let screen_height = front
-                .map(|front| ppc_u32_to_i16_saturating(front.height))
-                .unwrap_or(PPC_MAIN_SCREEN_HEIGHT as i16);
-            let menu_bar_height = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16;
-            let in_screen = (0..screen_height).contains(&v) && (0..screen_width).contains(&h);
-            let in_menu_bar = in_screen && v < menu_bar_height.max(0).min(screen_height);
-            let (part, window) = if in_menu_bar {
-                (1, 0)
-            } else if in_screen {
-                ppc_find_window_at_point(memory, gworlds, window_list, v, h, menu_bar_height)
-            } else {
-                (0, 0)
-            };
-            if window_out != 0 && ppc_memory_can_write_bytes(memory, window_out, 4) {
-                let _ = memory.write_u32_be(window_out, window);
-            }
-            // FindWindow returns inMenuBar with whichWindow = NIL for points
-            // accepted by the menu bar definition procedure's live hit
-            // region. Inside Macintosh Volume V (1986), p. V-207.
-            // Window hits come from the Window Manager's front-to-back list,
-            // not the current GrafPort, which may be the desktop or an
-            // offscreen GWorld. Macintosh Toolbox Essentials (1992), p. 4-91.
-            Some(PpcImportAction::Return(part as u32))
+            unreachable!("window imports return through dispatch_window_import")
         }
         PpcImportDispatcherTarget::GetDCtlEntry => {
             Some(PpcImportAction::Return(if cpu.gpr[3] as u16 as i16 == 0 {
@@ -21606,224 +19656,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             next_cfm_connection_id,
             import_run_state,
         )),
-        PpcImportDispatcherTarget::FindFolder => {
-            let folder_type = cpu.gpr[4];
-            let found_vref_ptr = cpu.gpr[6];
-            let found_dir_id_ptr = cpu.gpr[7];
-            let found_dir_id = ppc_find_folder_dir_id(folder_type);
-            if found_vref_ptr == 0
-                || found_dir_id_ptr == 0
-                || !ppc_memory_can_write_bytes(memory, found_vref_ptr, 2)
-                || !ppc_memory_can_write_bytes(memory, found_dir_id_ptr, 4)
-            {
-                Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)))
-            } else {
-                let _ = memory.write_u16_be(found_vref_ptr, PPC_BOOT_VOLUME_REF_NUM as u16);
-                let _ = memory.write_u32_be(found_dir_id_ptr, found_dir_id);
-                Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
-            }
-        }
-        PpcImportDispatcherTarget::ResolveAliasFile => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_resolve_alias_file(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                vfs_resources,
-            )),
-        )),
-        PpcImportDispatcherTarget::ResolveAlias => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_resolve_alias(cpu, memory, vfs_directories, handles, aliases),
-        ))),
-        PpcImportDispatcherTarget::UpdateAlias => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_update_alias(
-                cpu,
-                memory,
-                last_mem_error,
-                vfs_directories,
-                handles,
-                aliases,
-            ))))
-        }
-        PpcImportDispatcherTarget::NewAlias => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_new_alias(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-                handles,
-                aliases,
-            ))))
-        }
-        PpcImportDispatcherTarget::DirCreate => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_dir_create(
-                cpu,
-                memory,
-                vfs_directories,
-                next_vfs_dir_id,
-                default_dir_id,
-            ))))
-        }
-        PpcImportDispatcherTarget::FSpDirCreate => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_fsp_dir_create(
-                cpu,
-                memory,
-                vfs_directories,
-                next_vfs_dir_id,
-                default_dir_id,
-            ))))
-        }
-        PpcImportDispatcherTarget::FSMakeFSSpec => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_fs_make_fsspec(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                default_dir_id,
-            ))))
-        }
-        PpcImportDispatcherTarget::PBGetFInfo => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_get_finfo(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                vfs_resources,
-                default_dir_id,
-                false,
-            ))))
-        }
-        PpcImportDispatcherTarget::PBHGetFInfo => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_get_finfo(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                vfs_resources,
-                default_dir_id,
-                true,
-            ))))
-        }
-        PpcImportDispatcherTarget::PBSetFInfo => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_set_finfo(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                default_dir_id,
-                false,
-            ))))
-        }
-        PpcImportDispatcherTarget::PBHSetFInfo => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_set_finfo(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                default_dir_id,
-                true,
-            ))))
-        }
-        PpcImportDispatcherTarget::PBGetCatInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_get_cat_info(
-                cpu,
-                memory,
-                vfs_volumes,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                vfs_resources,
-                default_dir_id,
-            ),
-        ))),
-        PpcImportDispatcherTarget::PBSetCatInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_set_cat_info(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                default_dir_id,
-            ),
-        ))),
-        PpcImportDispatcherTarget::PBHGetVInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pbh_get_v_info(cpu, memory, vfs_volumes),
-        ))),
-        PpcImportDispatcherTarget::PBGetFCBInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_get_fcb_info(
-                cpu,
-                memory,
-                files,
-                resource_files,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                vfs_resources,
-                launched_app_path,
-            ),
-        ))),
-        PpcImportDispatcherTarget::FSpGetFInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fsp_get_finfo(cpu, memory, vfs_directories, vfs_files, vfs_resource_files),
-        ))),
-        PpcImportDispatcherTarget::GetFInfo => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_get_finfo(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                default_dir_id,
-            ))))
-        }
-        PpcImportDispatcherTarget::HGetFInfo => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_h_get_finfo(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                default_dir_id,
-            ))))
-        }
-        PpcImportDispatcherTarget::FSpSetFInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fsp_set_finfo(cpu, memory, vfs_directories, vfs_files, vfs_resource_files),
-        ))),
-        PpcImportDispatcherTarget::HSetFInfo => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_h_set_finfo(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                default_dir_id,
-            ))))
-        }
         PpcImportDispatcherTarget::StandardGetFile => {
-            Some(ppc_dispatch_standard_file(
-                PpcStandardFileOperation::StandardGetFile,
-                cpu,
-                memory,
-                toolbox_startup,
-                process_memory_manager,
-                heap_cursor,
-                last_mem_error,
-                gworlds,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                vfs_volumes,
-                default_dir_id,
-                working_directories,
-                next_working_directory_ref_num,
-                event_queue,
-            ))
+            unreachable!("standard file imports return through dispatch_standard_file_import")
         }
         PpcImportDispatcherTarget::GetScrap => {
             // Inside Macintosh: More Macintosh Toolbox (1993), pp. 2-38--2-40:
@@ -22005,382 +19839,26 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::DMEndConfigureDisplays => {
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
-        PpcImportDispatcherTarget::GetNewDialog => {
-            if ppc_hle_trace_enabled() {
-                eprintln!(
-                    "[PPC-TRACE] GetNewDialog id={} storage=${:08X} behind=${:08X} lr=${:08X}",
-                    cpu.gpr[3] as u16 as i16, cpu.gpr[4], cpu.gpr[5], cpu.lr
-                );
-            }
-            let dialog = ppc_get_new_dialog(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                controls,
-                gworlds,
-                window_list,
-                *current_gdevice,
-                vfs_resources,
-                *current_resource_refnum,
-                last_resource_error,
-                param_text,
-            );
-            if dialog != 0 {
-                *current_gworld = dialog;
-                *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
-                if ppc_window_is_visible(memory, dialog) {
-                    ppc_enqueue_window_update_event(event_queue, dialog, *tick_count, input);
-                }
-            }
-            Some(PpcImportAction::Return(dialog))
-        }
-        PpcImportDispatcherTarget::NewDialog => {
-            let dialog = ppc_new_dialog(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                gworlds,
-                window_list,
-                *current_gdevice,
-            );
-            let dialog = if dialog != 0
-                && !ppc_initialize_dialog_items(
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                    controls,
-                    param_text,
-                    dialog,
-                    vfs_resources,
-                    *current_resource_refnum,
-                    last_resource_error,
-                ) {
-                0
-            } else {
-                dialog
-            };
-            if dialog != 0 {
-                *current_gworld = dialog;
-                *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
-                if ppc_window_is_visible(memory, dialog) {
-                    ppc_enqueue_window_update_event(event_queue, dialog, *tick_count, input);
-                }
-            }
-            Some(PpcImportAction::Return(dialog))
-        }
-        PpcImportDispatcherTarget::NewFeaturesDialog => {
-            // Universal Interfaces 3.4.1 Dialogs.h declares the first nine
-            // arguments identically to NewDialog and appends an Appearance
-            // flags word. PPC native ABI therefore already leaves the DITL
-            // handle in parameter-area slot 8, exactly where ppc_new_dialog
-            // reads it; Systemless renders the standard non-themed dialog.
-            let dialog = ppc_new_dialog(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                gworlds,
-                window_list,
-                *current_gdevice,
-            );
-            let dialog = if dialog != 0
-                && !ppc_initialize_dialog_items(
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                    controls,
-                    param_text,
-                    dialog,
-                    vfs_resources,
-                    *current_resource_refnum,
-                    last_resource_error,
-                ) {
-                0
-            } else {
-                dialog
-            };
-            if dialog != 0 {
-                *current_gworld = dialog;
-                *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
-                if ppc_window_is_visible(memory, dialog) {
-                    ppc_enqueue_window_update_event(event_queue, dialog, *tick_count, input);
-                }
-            }
-            Some(PpcImportAction::Return(dialog))
-        }
-        PpcImportDispatcherTarget::GetDialogItem => {
-            ppc_get_dialog_item(cpu, memory, handles);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::SetDialogItem => {
-            ppc_set_dialog_item(cpu, memory, handles);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetDialogItemText => {
-            // Macintosh Toolbox Essentials 1992, 6-130 through 6-131:
-            // GetDialogItemText returns at most 255 bytes from the text-item
-            // handle in its Str255 output parameter.
-            let item_handle = cpu.gpr[3];
-            let text_out_ptr = cpu.gpr[4];
-            if text_out_ptr != 0 {
-                let bytes = ppc_handle_bytes(memory, handles, item_handle).unwrap_or_default();
-                let len = bytes.len().min(255);
-                if ppc_memory_can_write_bytes(memory, text_out_ptr, len as u32 + 1) {
-                    let _ = memory.write_u8(text_out_ptr, len as u8);
-                    for (offset, byte) in bytes.iter().copied().take(len).enumerate() {
-                        let _ = memory.write_u8(text_out_ptr + 1 + offset as u32, byte);
-                    }
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::SetDialogItemText => {
-            // Macintosh Toolbox Essentials 1992, 6-131: SetDialogItemText
-            // replaces the contents of a statText/editText item handle with
-            // the supplied Str255. Drawing is handled by the PPC game's own
-            // dialog/window rendering path; preserve this routine's void ABI.
-            let item_handle = cpu.gpr[3];
-            let text_ptr = cpu.gpr[4];
-            let text = ppc_read_pstring_bytes(memory, text_ptr).unwrap_or_default();
-            if ppc_hle_trace_enabled() {
-                eprintln!(
-                    "[PPC-TRACE] SetDialogItemText handle=${item_handle:08X} text={:?}",
-                    decode_mac_roman(&text)
-                );
-            }
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = allocator.resize_handle(
-                memory,
-                heap_cursor,
-                last_mem_error,
-                handles,
-                item_handle,
-                text.len() as u32,
-            );
-            *last_mem_error = result;
-            if *last_mem_error == PPC_NO_ERR {
-                if let Some(ptr) = memory.read_u32_be(item_handle) {
-                    for (offset, byte) in text.iter().copied().enumerate() {
-                        let _ = memory.write_u8(ptr + offset as u32, byte);
-                    }
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::SetDialogDefaultItem => {
-            // Appearance Manager 1.0 SetDialogDefaultItem records which item
-            // Return activates and reports an OSErr.
-            let dialog = cpu.gpr[3];
-            let item = cpu.gpr[4] as u16;
-            let result = if dialog != 0
-                && memory
-                    .write_u16_be(dialog + PPC_DIALOG_DEFAULT_ITEM_OFFSET, item)
-                    .is_some()
-            {
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
-            };
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        PpcImportDispatcherTarget::SetDialogCancelItem => {
-            // Macintosh Toolbox Essentials (1992), p. 6-165: the System 7
-            // cancel item is Dialog Manager state rather than a public
-            // DialogRecord field. Keep it in the HLE tail of our allocation.
-            let dialog = cpu.gpr[3];
-            let item = cpu.gpr[4] as u16;
-            let result = if dialog != 0
-                && memory
-                    .write_u16_be(dialog + PPC_DIALOG_CANCEL_ITEM_HLE_OFFSET, item)
-                    .is_some()
-            {
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
-            };
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        PpcImportDispatcherTarget::DrawDialog => {
-            if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
-                return Some(action);
-            }
-            let dialog = cpu.gpr[3];
-            *current_gworld = dialog;
-            *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
-            let bounds = ppc_dialog_global_bounds(memory, gworlds, dialog);
-            let items = ppc_dialog_items_for_dialog(memory, handles, dialog);
-            let _ = ppc_draw_dialog(
-                memory,
-                handles,
-                controls,
-                gworlds,
-                screen_clut,
-                vfs_resources,
-                *current_resource_refnum,
-                dialog,
-            );
-            Some(match (bounds, items) {
-                (Some(bounds), Some(items)) => ppc_begin_dialog_callbacks(
-                    cpu,
-                    memory,
-                    dialog_callback_stack,
-                    dialog,
-                    &items,
-                    bounds,
-                    PpcDialogCallbackCompletion::ReturnPreserve,
-                ),
-                _ => PpcImportAction::ReturnPreserve,
-            })
+        PpcImportDispatcherTarget::GetNewDialog
+        | PpcImportDispatcherTarget::NewDialog
+        | PpcImportDispatcherTarget::NewFeaturesDialog
+        | PpcImportDispatcherTarget::GetDialogItem
+        | PpcImportDispatcherTarget::SetDialogItem
+        | PpcImportDispatcherTarget::GetDialogItemText
+        | PpcImportDispatcherTarget::SetDialogItemText
+        | PpcImportDispatcherTarget::SetDialogDefaultItem
+        | PpcImportDispatcherTarget::SetDialogCancelItem
+        | PpcImportDispatcherTarget::DrawDialog
+        | PpcImportDispatcherTarget::ModalDialog => {
+            unreachable!("dialog imports return through dispatch_dialog_import")
         }
         PpcImportDispatcherTarget::DrawControls => {
-            let window = cpu.gpr[3];
-            if memory.read_u16_be(window + PPC_CWINDOW_WINDOW_KIND_OFFSET) == Some(2) {
-                // Dialog controls are represented by the live DITL, whose
-                // renderer also translates dialog-local item coordinates.
-                let _ = ppc_draw_dialog(
-                    memory,
-                    handles,
-                    controls,
-                    gworlds,
-                    screen_clut,
-                    vfs_resources,
-                    *current_resource_refnum,
-                    window,
-                );
-            } else {
-                let _ = ppc_draw_window_controls(
-                    memory,
-                    handles,
-                    controls,
-                    gworlds,
-                    vfs_resources,
-                    *current_resource_refnum,
-                    window,
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
+            unreachable!("control imports return through dispatch_control_import")
         }
-        PpcImportDispatcherTarget::ModalDialog => Some(ppc_modal_dialog(
-            cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            controls,
-            gworlds,
-            current_gworld,
-            current_gdevice,
-            screen_clut,
-            *quickdraw_fore_color,
-            quickdraw_fore_indices,
-            input,
-            event_queue,
-            dialog_callback_stack,
-            vfs_resources,
-            *current_resource_refnum,
-        )),
-        PpcImportDispatcherTarget::SetControlTitle => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            ppc_set_control_title(
-                cpu,
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::SetControlValue => {
-            let control_handle = cpu.gpr[3];
-            if let Some(control) = memory
-                .read_u32_be(control_handle)
-                .filter(|control| *control != 0)
-            {
-                let _ = memory.write_u16_be(
-                    control.wrapping_add(PPC_CONTROL_VALUE_OFFSET),
-                    cpu.gpr[4] as u16,
-                );
-                // Popup CDEF records repurpose contrlMin for the menu ID and
-                // contrlMax for the title width (MTE, pp. 5-25--5-27), so
-                // applying the ordinary range clamp would turn a valid item
-                // value into a menu ID/title-width value.
-                let is_popup = controls.iter().any(|record| {
-                    record.handle == control_handle
-                        && (1008..=1023).contains(&(record.proc_id & 0x0fff))
-                });
-                if !is_popup {
-                    ppc_clamp_control_value(memory, control);
-                }
-                let _ = ppc_draw_control(
-                    memory,
-                    handles,
-                    controls,
-                    gworlds,
-                    vfs_resources,
-                    *current_resource_refnum,
-                    control_handle,
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::HiliteControl => {
-            let control_handle = cpu.gpr[3];
-            if let Some(control) = memory
-                .read_u32_be(control_handle)
-                .filter(|control| *control != 0)
-            {
-                // Macintosh Toolbox Essentials (1992), p. 5-98: byte 17 of
-                // ControlRecord is contrlHilite; 255 means inactive.
-                let _ = memory.write_u8(control + 17, cpu.gpr[4] as u8);
-                let owner = memory.read_u32_be(control + 4).unwrap_or(0);
-                let dialog = if owner != 0 { owner } else { *current_gworld };
-                if !ppc_draw_control(
-                    memory,
-                    handles,
-                    controls,
-                    gworlds,
-                    vfs_resources,
-                    *current_resource_refnum,
-                    control_handle,
-                ) {
-                    let _ = ppc_draw_dialog(
-                        memory,
-                        handles,
-                        controls,
-                        gworlds,
-                        screen_clut,
-                        vfs_resources,
-                        *current_resource_refnum,
-                        dialog,
-                    );
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
+        PpcImportDispatcherTarget::SetControlTitle
+        | PpcImportDispatcherTarget::SetControlValue
+        | PpcImportDispatcherTarget::HiliteControl => {
+            unreachable!("control imports return through dispatch_control_import")
         }
         PpcImportDispatcherTarget::InitGraf => {
             toolbox_startup.init_graf_count = toolbox_startup.init_graf_count.saturating_add(1);
@@ -22393,8 +19871,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::InitWindows => {
-            toolbox_startup.windows_initialized = true;
-            Some(PpcImportAction::ReturnPreserve)
+            unreachable!("window imports return through dispatch_window_import")
         }
         PpcImportDispatcherTarget::InitMenus => {
             toolbox_startup.menus_initialized = true;
@@ -22478,229 +19955,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::TEInit => {
-            toolbox_startup.text_edit_initialized = true;
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let handle = ppc_te_scrap_handle(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            *last_mem_error = if handle == 0 {
-                PPC_MEM_FULL_ERR
-            } else {
-                PPC_NO_ERR
-            };
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TENew | PpcImportDispatcherTarget::TEStyleNew => {
-            // Universal Interfaces exposes both constructors as native C
-            // functions taking pointers to the destination and view Rects.
-            // Inside Macintosh: Text (1993), pp. 2-78 and 2-85 through 2-86.
-            let styled = matches!(
-                binding.dispatcher_target,
-                PpcImportDispatcherTarget::TEStyleNew
-            );
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let te_handle = ppc_te_initialize_record(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                cpu.gpr[3],
-                cpu.gpr[4],
-                *current_gworld,
-                *tick_count,
-                *quickdraw_text_mode,
-                *quickdraw_text_size,
-                *quickdraw_fore_color,
-                styled,
-            );
-            scrap.text_edit.register(te_handle);
-            *last_mem_error = if te_handle == 0 {
-                PPC_MEM_FULL_ERR
-            } else {
-                PPC_NO_ERR
-            };
-            Some(PpcImportAction::Return(te_handle))
-        }
-        PpcImportDispatcherTarget::TESetStyle => {
-            // Universal Interfaces TextEdit.h: TESetStyle's native PPC ABI
-            // is (short mode, const TextStyle *, Boolean redraw, TEHandle).
-            let te_handle = cpu.gpr[6];
-            let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
-                return Some(PpcImportAction::ReturnPreserve);
-            };
-            let mut start = usize::from(
-                memory
-                    .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
-                    .unwrap_or(0),
-            );
-            let mut end = usize::from(
-                memory
-                    .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
-                    .unwrap_or(0),
-            );
-            if end < start {
-                std::mem::swap(&mut start, &mut end);
-            }
-            let insertion_point = start == end;
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let style_result = if insertion_point {
-                ppc_te_set_null_style(memory, te_handle, cpu.gpr[3] as u16, cpu.gpr[4])
-            } else {
-                ppc_te_set_style_for_range(
-                    Some(&mut allocator),
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                    te_handle,
-                    start,
-                    end,
-                    cpu.gpr[3] as u16,
-                    cpu.gpr[4],
-                )
-            };
-            if style_result && !insertion_point && cpu.gpr[5] != 0 {
-                let _ = ppc_te_recalculate_layout(
-                    Some(&mut allocator),
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                    te_handle,
-                );
-                ppc_te_draw(
-                    memory,
-                    handles,
-                    gworlds,
-                    te_handle,
-                    *current_gworld,
-                    *quickdraw_fore_color,
-                    quickdraw_fore_indices,
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TEUseStyleScrap => {
-            // TextEdit.h exposes the native PPC ABI as (rangeStart, rangeEnd,
-            // StScrpHandle, redraw, TEHandle). A style scrap may describe
-            // several relative runs; preserve its first complete style for
-            // the requested range until multi-run scrap application is
-            // represented by the native TextEdit model.
-            let range_start = cpu.gpr[3] as i32;
-            let range_end = cpu.gpr[4] as i32;
-            let scrap_handle = cpu.gpr[5];
-            let redraw = cpu.gpr[6] != 0;
-            let te_handle = cpu.gpr[7];
-            let scrap_ptr = memory
-                .read_u32_be(scrap_handle)
-                .filter(|ptr| *ptr != 0)
-                .unwrap_or(0);
-            let has_style = scrap_ptr != 0
-                && memory
-                    .read_u16_be(scrap_ptr + PPC_TE_SCRAP_N_STYLES_OFFSET)
-                    .unwrap_or(0)
-                    != 0;
-            if has_style {
-                let source = scrap_ptr + PPC_TE_SCRAP_STYLE_TAB_OFFSET;
-                let text_style_ptr = ppc_process_heap_alloc(
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    12,
-                    true,
-                );
-                if text_style_ptr != 0 {
-                    let font = memory
-                        .read_u16_be(source + PPC_TE_SCRAP_STYLE_FONT_OFFSET)
-                        .unwrap_or(0);
-                    let face = memory
-                        .read_u8(source + PPC_TE_SCRAP_STYLE_FACE_OFFSET)
-                        .unwrap_or(0);
-                    let size = memory
-                        .read_u16_be(source + PPC_TE_SCRAP_STYLE_SIZE_OFFSET)
-                        .unwrap_or(0);
-                    let _ = memory.write_u16_be(text_style_ptr, font);
-                    let _ = memory.write_u8(text_style_ptr + 2, face);
-                    let _ = memory.write_u16_be(text_style_ptr + 4, size);
-                    for offset in [0u32, 2, 4] {
-                        let component = memory
-                            .read_u16_be(source + PPC_TE_SCRAP_STYLE_COLOR_OFFSET + offset)
-                            .unwrap_or(0);
-                        let _ = memory.write_u16_be(
-                            text_style_ptr + 6 + offset,
-                            component,
-                        );
-                    }
-                    let (start, end) = if range_end < range_start {
-                        (range_end, range_start)
-                    } else {
-                        (range_start, range_end)
-                    };
-                    let mut allocator = PpcProcessAllocatorView {
-                        memory_manager: process_memory_manager,
-                    };
-                    if ppc_te_set_style_for_range(
-                        Some(&mut allocator),
-                        memory,
-                        heap_cursor,
-                        heap_limit,
-                        last_mem_error,
-                        handles,
-                        te_handle,
-                        start.max(0) as usize,
-                        end.max(0) as usize,
-                        0x000f,
-                        text_style_ptr,
-                    ) {
-                        let _ = ppc_te_recalculate_layout(
-                            Some(&mut allocator),
-                            memory,
-                            heap_cursor,
-                            heap_limit,
-                            last_mem_error,
-                            handles,
-                            te_handle,
-                        );
-                        if redraw {
-                            ppc_te_draw(
-                                memory,
-                                handles,
-                                gworlds,
-                                te_handle,
-                                *current_gworld,
-                                *quickdraw_fore_color,
-                                quickdraw_fore_indices,
-                            );
-                        }
-                    }
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TEContinuousStyle => {
-            // TextEdit stores mode and TextStyle as caller-owned out
-            // parameters. Return true only when every requested attribute is
-            // continuous across the current selection.
-            let result =
-                ppc_te_continuous_style(memory, handles, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]);
-            Some(PpcImportAction::Return(u32::from(result)))
-        }
         PpcImportDispatcherTarget::MeasureText => {
             let count = cpu.gpr[3] as u16 as i16;
             let text_font = ppc_current_text_font(memory, *current_gworld);
@@ -22724,611 +19978,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                     && get_font_face(font, ppc_te_font_lookup_size(size)).is_some(),
             )))
         }
-        PpcImportDispatcherTarget::TEGetText => {
-            // Inside Macintosh: Text (1993), p. 2-83: TEGetText returns the
-            // CharsHandle stored in TERec.hText.
-            let text_handle = memory
-                .read_u32_be(cpu.gpr[3])
-                .filter(|ptr| *ptr != 0)
-                .and_then(|ptr| memory.read_u32_be(ptr + PPC_TE_HTEXT_OFFSET))
-                .unwrap_or(0);
-            Some(PpcImportAction::Return(text_handle))
-        }
-        PpcImportDispatcherTarget::TEDispose => {
-            // Inside Macintosh: Text (1993), p. 2-79: dispose the TERec, its
-            // text handle, and every auxiliary handle owned by a styled TERec.
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            ppc_te_dispose(
-                Some(&mut allocator),
-                None,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                cpu.gpr[3],
-            );
-            scrap.text_edit.remove(&cpu.gpr[3]);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TEActivate { active } => {
-            // Inside Macintosh: Text (1993), pp. 2-49–2-50: activation changes
-            // the TERec's active state; selection/caret drawing is refreshed by
-            // TEUpdate and TEIdle.
-            if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[3]) {
-                let _ =
-                    memory.write_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET, if active { 1 } else { 0 });
-                let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, *tick_count);
-                let _ = memory.write_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET, 0);
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TESetSelect => {
-            // Text (1993), pp. 2-51–2-52: native parameters are start, end,
-            // TEHandle; the public TERec stores the clamped offsets as words.
-            if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[5]) {
-                let length = u32::from(
-                    memory
-                        .read_u16_be(te_ptr + PPC_TE_LENGTH_OFFSET)
-                        .unwrap_or(0),
-                );
-                let start = cpu.gpr[3].min(i16::MAX as u32).min(length);
-                let end = cpu.gpr[4].min(i16::MAX as u32).min(length);
-                let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, start as u16);
-                let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, end as u16);
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TESetText => {
-            // Text (1993), pp. 2-50–2-51: copy the caller's byte range into
-            // hText, resize it, recalculate lineStarts, and place the insertion
-            // point after the copied text.
-            let bytes = ppc_memory_read_bytes(memory, cpu.gpr[3], cpu.gpr[4]).unwrap_or_default();
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_te_set_text(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                cpu.gpr[5],
-                &bytes,
-            );
-            *last_mem_error = result;
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TECalText => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_te_recalculate_layout(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                cpu.gpr[3],
-            );
-            *last_mem_error = result;
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TEInsert { styled } => {
-            // Text (1993), pp. 2-58 and 2-82: both forms replace the current
-            // selection with a copy of the byte range. The styled form's hST
-            // precedes the final TEHandle argument in the native ABI.
-            let te_handle = if styled { cpu.gpr[6] } else { cpu.gpr[5] };
-            let bytes = ppc_memory_read_bytes(memory, cpu.gpr[3], cpu.gpr[4]).unwrap_or_default();
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_te_replace_selection(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                te_handle,
-                &bytes,
-            );
-            *last_mem_error = result;
-            ppc_te_draw(
-                memory,
-                handles,
-                gworlds,
-                te_handle,
-                *current_gworld,
-                *quickdraw_fore_color,
-                quickdraw_fore_indices,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TEDelete => {
-            // Text (1993), p. 2-58: deleting is selection replacement with an
-            // empty byte sequence and does not alter either scrap.
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_te_replace_selection(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                cpu.gpr[3],
-                &[],
-            );
-            *last_mem_error = result;
-            ppc_te_draw(
-                memory,
-                handles,
-                gworlds,
-                cpu.gpr[3],
-                *current_gworld,
-                *quickdraw_fore_color,
-                quickdraw_fore_indices,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TEKey => {
-            // Inside Macintosh: Text (1993), pp. 2-81--2-82: TEKey replaces
-            // the selection, with Backspace deleting either that selection or
-            // the preceding character, and moves the insertion point.
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_te_key(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                cpu.gpr[4],
-                cpu.gpr[3] as u8,
-            );
-            *last_mem_error = result;
-            ppc_te_draw(
-                memory,
-                handles,
-                gworlds,
-                cpu.gpr[4],
-                *current_gworld,
-                *quickdraw_fore_color,
-                quickdraw_fore_indices,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TEClick => {
-            // Inside Macintosh: Text (1993), p. 2-85: retain mouse ownership
-            // until release, expanding or shortening the selection as it moves.
-            let te_handle = cpu.gpr[5];
-            let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
-                scrap.text_edit.clear_click_tracking();
-                return Some(PpcImportAction::ReturnPreserve);
-            };
-            let previous_selection = (
-                memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET),
-                memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET),
-            );
-            let tracking = if let Some(mut tracking) = scrap.text_edit.take_click_tracking() {
-                let port = memory
-                    .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
-                    .unwrap_or(0);
-                let bounds = memory
-                    .read_u32_be(port + 2)
-                    .and_then(|handle| memory.read_u32_be(handle))
-                    .and_then(|pixmap| ppc_read_rect(memory, pixmap + 6))
-                    .unwrap_or((0, 0, 0, 0));
-                let v = input.mouse_v.wrapping_add(bounds.0);
-                let h = input.mouse_h.wrapping_add(bounds.1);
-                let offset = ppc_te_point_to_offset(memory, handles, te_handle, v, h).unwrap_or(0);
-                if tracking.last_point != (v, h) {
-                    let _ = memory.write_u16_be(
-                        te_ptr + PPC_TE_SEL_START_OFFSET,
-                        tracking.anchor.min(offset) as u16,
-                    );
-                    let _ = memory.write_u16_be(
-                        te_ptr + PPC_TE_SEL_END_OFFSET,
-                        tracking.anchor.max(offset) as u16,
-                    );
-                    tracking.last_point = (v, h);
-                }
-                tracking
-            } else {
-                let v = (cpu.gpr[3] >> 16) as i16;
-                let h = cpu.gpr[3] as i16;
-                let offset = ppc_te_point_to_offset(memory, handles, te_handle, v, h).unwrap_or(0);
-                let old_start = memory
-                    .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
-                    .unwrap_or(0) as usize;
-                let old_end = memory
-                    .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
-                    .unwrap_or(0) as usize;
-                let anchor = if cpu.gpr[4] != 0 {
-                    if offset < old_start {
-                        old_end
-                    } else {
-                        old_start
-                    }
-                } else {
-                    offset
-                };
-                ppc_te_click(
-                    memory,
-                    handles,
-                    te_handle,
-                    v,
-                    h,
-                    cpu.gpr[4] != 0,
-                    *tick_count,
-                );
-                crate::text_edit::TextEditClickTracking {
-                    handle: te_handle,
-                    anchor,
-                    native: true,
-                    last_point: (v, h),
-                }
-            };
-            if previous_selection
-                != (
-                    memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET),
-                    memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET),
-                )
-            {
-                let port = memory
-                    .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
-                    .unwrap_or(*current_gworld);
-                if let Some(view) = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET) {
-                    let background = ppc_port_rgb_colors(memory, port)
-                        .map_or(*quickdraw_back_color, |colors| colors.1);
-                    ppc_paint_rect_bounds(memory, gworlds, port, view, background, None);
-                }
-                ppc_te_draw(
-                    memory,
-                    handles,
-                    gworlds,
-                    te_handle,
-                    *current_gworld,
-                    *quickdraw_fore_color,
-                    quickdraw_fore_indices,
-                );
-            }
-            if input.mouse_button {
-                scrap.text_edit.retain_click_tracking(tracking);
-                Some(PpcImportAction::Yield(u64::MAX))
-            } else {
-                if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
-                    event_queue.remove(index);
-                }
-                Some(PpcImportAction::ReturnPreserve)
-            }
-        }
-        PpcImportDispatcherTarget::TEIdle => {
-            // Text (1993), p. 2-51: TEIdle only blinks an insertion-point
-            // caret in an active record. Keep its public timing/state fields
-            // coherent even though the framebuffer redraw stays deterministic.
-            if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[3]) {
-                let active = memory
-                    .read_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET)
-                    .unwrap_or(0)
-                    != 0;
-                let start = memory
-                    .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
-                    .unwrap_or(0);
-                let end = memory
-                    .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
-                    .unwrap_or(0);
-                let previous = memory
-                    .read_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET)
-                    .unwrap_or(0);
-                if active && start == end && tick_count.wrapping_sub(previous) >= 32 {
-                    let caret = memory
-                        .read_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET)
-                        .unwrap_or(0);
-                    let _ = memory.write_u16_be(
-                        te_ptr + PPC_TE_CARET_STATE_OFFSET,
-                        if caret == 0 { 1 } else { 0 },
-                    );
-                    let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, *tick_count);
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TEUpdate => {
-            // Text (1993), p. 2-88: redraw the edit record within the caller's
-            // update rectangle. The existing QuickDraw target clips writes to
-            // its framebuffer; line layout comes from TECalText/TESetText.
-            ppc_te_draw(
-                memory,
-                handles,
-                gworlds,
-                cpu.gpr[4],
-                *current_gworld,
-                *quickdraw_fore_color,
-                quickdraw_fore_indices,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TETextBox => {
-            // Inside Macintosh: Text (1993), pp. 2-88--2-89: TETextBox uses
-            // the current port's text state, wraps within the supplied local
-            // rectangle, and honors the four public alignment constants.
-            let bytes = if (cpu.gpr[4] as i32) < 0 {
-                Vec::new()
-            } else {
-                ppc_memory_read_bytes(memory, cpu.gpr[3], cpu.gpr[4]).unwrap_or_default()
-            };
-            // TextBox clears its box before drawing, including empty text.
-            // Imaging With QuickDraw (1994), Printing Hints, explicitly
-            // describes TextBox calling EraseRect; Text (1993), pp. 2-88--2-89.
-            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[5]) {
-                let _ = ppc_paint_rect_bounds(
-                    memory,
-                    gworlds,
-                    *current_gworld,
-                    rect,
-                    *quickdraw_back_color,
-                    toolbox_startup
-                        .quickdraw_back_indices
-                        .get(current_gworld)
-                        .copied(),
-                );
-            }
-            ppc_te_draw_text_box(
-                memory,
-                gworlds,
-                *current_gworld,
-                &bytes,
-                cpu.gpr[5],
-                cpu.gpr[6] as u16 as i16,
-                *quickdraw_text_mode,
-                *quickdraw_text_size,
-                *quickdraw_fore_color,
-                quickdraw_fore_indices.get(current_gworld).copied(),
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TESetAlignment => {
-            if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[4]) {
-                let _ = memory.write_u16_be(te_ptr + PPC_TE_JUST_OFFSET, cpu.gpr[3] as u16);
-                ppc_te_draw(
-                    memory,
-                    handles,
-                    gworlds,
-                    cpu.gpr[4],
-                    *current_gworld,
-                    *quickdraw_fore_color,
-                    quickdraw_fore_indices,
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TEGetHeight => Some(PpcImportAction::Return(ppc_te_get_height(
-            memory,
-            cpu.gpr[5],
-            cpu.gpr[4] as i32,
-            cpu.gpr[3] as i32,
-        ))),
-        PpcImportDispatcherTarget::TEGetPoint => Some(PpcImportAction::Return(ppc_te_get_point(
-            memory,
-            handles,
-            cpu.gpr[4],
-            cpu.gpr[3] as u16,
-        ))),
-        PpcImportDispatcherTarget::TEScroll { pinned } => {
-            ppc_te_scroll(
-                memory,
-                cpu.gpr[5],
-                cpu.gpr[3] as u16 as i16,
-                cpu.gpr[4] as u16 as i16,
-                pinned,
-            );
-            ppc_te_draw(
-                memory,
-                handles,
-                gworlds,
-                cpu.gpr[5],
-                *current_gworld,
-                *quickdraw_fore_color,
-                quickdraw_fore_indices,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TEAutoView => {
-            // Inside Macintosh: Text (1993), pp. 2-90--2-91: TEAutoView
-            // changes private feature state rather than a public TERec field.
-            scrap
-                .text_edit
-                .set_feature_bit(cpu.gpr[4], 0, cpu.gpr[3] != 0);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TECopy { cut, dialog } => {
-            let te_handle = if dialog {
-                memory
-                    .read_u32_be(cpu.gpr[3].wrapping_add(PPC_DIALOG_TEXT_HANDLE_OFFSET))
-                    .unwrap_or(0)
-            } else {
-                cpu.gpr[3]
-            };
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_te_copy_or_cut(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                te_handle,
-                cut,
-            );
-            *last_mem_error = result;
-            ppc_te_draw(
-                memory,
-                handles,
-                gworlds,
-                te_handle,
-                *current_gworld,
-                *quickdraw_fore_color,
-                quickdraw_fore_indices,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TEPaste { dialog } => {
-            let te_handle = if dialog {
-                memory
-                    .read_u32_be(cpu.gpr[3].wrapping_add(PPC_DIALOG_TEXT_HANDLE_OFFSET))
-                    .unwrap_or(0)
-            } else {
-                cpu.gpr[3]
-            };
-            let bytes = ppc_te_scrap_bytes(memory);
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = ppc_te_replace_selection(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                te_handle,
-                &bytes,
-            );
-            *last_mem_error = result;
-            ppc_te_draw(
-                memory,
-                handles,
-                gworlds,
-                te_handle,
-                *current_gworld,
-                *quickdraw_fore_color,
-                quickdraw_fore_indices,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::TETransferScrap { from_desktop } => {
-            // Inside Macintosh: Text (1993), pp. 2-95--2-96: these functions
-            // copy the TEXT flavor between TextEdit's private scrap and the
-            // Scrap Manager's desktop scrap and return an OSErr.
-            let result = if from_desktop {
-                let bytes = scrap
-                    .desktop
-                    .entries
-                    .iter()
-                    .find(|(flavor, _)| *flavor == *b"TEXT")
-                    .map(|(_, bytes)| bytes.clone());
-                if let Some(bytes) = bytes {
-                    let mut allocator = PpcProcessAllocatorView {
-                        memory_manager: process_memory_manager,
-                    };
-                    ppc_te_set_scrap_bytes(
-                        Some(&mut allocator),
-                        memory,
-                        heap_cursor,
-                        heap_limit,
-                        last_mem_error,
-                        handles,
-                        &bytes,
-                    )
-                } else {
-                    PPC_NO_TYPE_ERR
-                }
-            } else {
-                let bytes = ppc_te_scrap_bytes(memory);
-                scrap
-                    .desktop
-                    .initialize_and_append_entry(*b"TEXT", bytes);
-                PPC_NO_ERR
-            };
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        PpcImportDispatcherTarget::TEScrapHandle => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let handle = ppc_te_scrap_handle(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            *last_mem_error = if handle == 0 {
-                PPC_MEM_FULL_ERR
-            } else {
-                PPC_NO_ERR
-            };
-            Some(PpcImportAction::Return(handle))
-        }
-        PpcImportDispatcherTarget::TEScrapLength { set } => {
-            if set {
-                let requested = cpu.gpr[3] as i32;
-                let existing = ppc_te_scrap_bytes(memory);
-                *last_mem_error = if requested < 0 {
-                    PPC_PARAM_ERR
-                } else {
-                    let mut resized = existing;
-                    resized.resize((requested as usize).min(i16::MAX as usize), 0);
-                    let mut allocator = PpcProcessAllocatorView {
-                        memory_manager: process_memory_manager,
-                    };
-                    ppc_te_set_scrap_bytes(
-                        Some(&mut allocator),
-                        memory,
-                        heap_cursor,
-                        heap_limit,
-                        last_mem_error,
-                        handles,
-                        &resized,
-                    )
-                };
-                Some(PpcImportAction::ReturnPreserve)
-            } else {
-                let length = memory
-                    .read_u16_be(crate::memory::globals::addr::TE_SCRP_LENGTH)
-                    .unwrap_or(0);
-                Some(PpcImportAction::Return(u32::from(length)))
-            }
-        }
-        PpcImportDispatcherTarget::SelectDialogItemText => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            ppc_select_dialog_item_text(
-                Some(&mut allocator),
-                None,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                cpu.gpr[3],
-                cpu.gpr[4] as u16 as usize,
-                cpu.gpr[5] as u16,
-                cpu.gpr[6] as u16,
-                *tick_count,
-                *quickdraw_text_mode,
-                *quickdraw_text_size,
-                *quickdraw_fore_color,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::InitDialogs => {
-            toolbox_startup.dialogs_initialized = true;
-            toolbox_startup.dialog_resume_proc = cpu.gpr[3];
-            Some(PpcImportAction::ReturnPreserve)
+        PpcImportDispatcherTarget::SelectDialogItemText
+        | PpcImportDispatcherTarget::InitDialogs => {
+            unreachable!("dialog imports return through dispatch_dialog_import")
         }
         PpcImportDispatcherTarget::SystemTask | PpcImportDispatcherTarget::SystemClick => {
             // Macintosh Toolbox Essentials (1992), pp. 2-94--2-95: these
@@ -23361,666 +20013,23 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 guest_call_depth,
             ))
         }
-        PpcImportDispatcherTarget::LNew => {
-            // Inside Macintosh: More Macintosh Toolbox (1993), pp. 4-70--4-72:
-            // construct the public ListRec, cell-data handle, bounds, default
-            // cell dimensions, and variable cell-offset array.
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let list = ppc_list_new(
-                cpu,
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                controls,
-                list_manager,
-            );
-            *last_mem_error = if list == 0 {
-                PPC_MEM_FULL_ERR
-            } else {
-                PPC_NO_ERR
-            };
-            if let Some(record) = list_manager.get(&list) {
-                if record.draw_enabled {
-                    ppc_list_redraw(
-                        memory,
-                        handles,
-                        controls,
-                        gworlds,
-                        vfs_resources,
-                        *current_resource_refnum,
-                        record,
-                    );
-                }
-            }
-            Some(PpcImportAction::Return(list))
-        }
-        PpcImportDispatcherTarget::LDispose => {
-            if let Some(record) = list_manager.remove(&cpu.gpr[3]) {
-                let mut allocator = PpcProcessAllocatorView {
-                    memory_manager: process_memory_manager,
-                };
-                let list_ptr = memory.read_u32_be(record.handle).unwrap_or(0);
-                let control_handles = if list_ptr != 0 {
-                    [
-                        memory
-                            .read_u32_be(list_ptr + PPC_LIST_VSCROLL_OFFSET)
-                            .unwrap_or(0),
-                        memory
-                            .read_u32_be(list_ptr + PPC_LIST_HSCROLL_OFFSET)
-                            .unwrap_or(0),
-                    ]
-                } else {
-                    [0, 0]
-                };
-                for control_handle in control_handles {
-                    if control_handle != 0 {
-                        ppc_dispose_control(
-                            Some(&mut allocator),
-                            None,
-                            memory,
-                            heap_cursor,
-                            heap_limit,
-                            last_mem_error,
-                            handles,
-                            controls,
-                            control_handle,
-                        );
-                    }
-                }
-                let _ = allocator.dispose_handle(
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                    record.cells_handle,
-                );
-                let _ = allocator.dispose_handle(
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                    record.handle,
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LAddRow => {
-            let count = cpu.gpr[3] as u16 as i16;
-            let requested_row = cpu.gpr[4] as u16 as i16;
-            let mut added_row = requested_row;
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
-                let row = requested_row.clamp(record.data_bounds.0, record.data_bounds.2);
-                added_row = row;
-                if count > 0 {
-                    record.cells = record
-                        .cells
-                        .drain()
-                        .map(|((cell_row, cell_column), bytes)| {
-                            let cell_row = if cell_row >= row {
-                                cell_row.saturating_add(count)
-                            } else {
-                                cell_row
-                            };
-                            ((cell_row, cell_column), bytes)
-                        })
-                        .collect();
-                    record.selected = record
-                        .selected
-                        .iter()
-                        .map(|&(cell_row, cell_column)| {
-                            let cell_row = if cell_row >= row {
-                                cell_row.saturating_add(count)
-                            } else {
-                                cell_row
-                            };
-                            (cell_row, cell_column)
-                        })
-                        .collect();
-                    record.data_bounds.2 = record.data_bounds.2.saturating_add(count);
-                    ppc_list_recompute_visible(record);
-                    let mut allocator = PpcProcessAllocatorView {
-                        memory_manager: process_memory_manager,
-                    };
-                    let result = ppc_list_sync_guest_storage(
-                        Some(&mut allocator),
-                        memory,
-                        heap_cursor,
-                        heap_limit,
-                        last_mem_error,
-                        handles,
-                        record,
-                    );
-                    *last_mem_error = result;
-                    if record.draw_enabled {
-                        ppc_list_redraw(
-                            memory,
-                            handles,
-                            controls,
-                            gworlds,
-                            vfs_resources,
-                            *current_resource_refnum,
-                            record,
-                        );
-                    }
-                }
-            }
-            Some(PpcImportAction::Return(ppc_i16_result(added_row)))
-        }
-        PpcImportDispatcherTarget::LDelRow => {
-            let count = cpu.gpr[3] as u16 as i16;
-            let row = cpu.gpr[4] as u16 as i16;
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
-                let (_, rows) = ppc_list_dimensions(record.data_bounds);
-                if count == 0 || (row >= record.data_bounds.0 && row < record.data_bounds.2) {
-                    // More Macintosh Toolbox (1993), p. 4-91: zero removes
-                    // every row, independent of the supplied row number.
-                    let (first_row, delete_rows) = if count == 0 {
-                        (0, rows)
-                    } else {
-                        let first_row = usize::try_from(row - record.data_bounds.0).unwrap_or(0);
-                        let delete_rows = usize::try_from(count.max(0))
-                            .unwrap_or(0)
-                            .min(rows - first_row);
-                        (first_row, delete_rows)
-                    };
-                    let first_row = record.data_bounds.0.saturating_add(first_row as i16);
-                    let after_rows = first_row.saturating_add(delete_rows as i16);
-                    record.cells = record
-                        .cells
-                        .drain()
-                        .filter_map(|((cell_row, cell_column), bytes)| {
-                            if (first_row..after_rows).contains(&cell_row) {
-                                None
-                            } else {
-                                let cell_row = if cell_row >= after_rows {
-                                    cell_row.saturating_sub(delete_rows as i16)
-                                } else {
-                                    cell_row
-                                };
-                                Some(((cell_row, cell_column), bytes))
-                            }
-                        })
-                        .collect();
-                    record.selected = record
-                        .selected
-                        .iter()
-                        .filter_map(|&(cell_row, cell_column)| {
-                            if (first_row..after_rows).contains(&cell_row) {
-                                None
-                            } else {
-                                let cell_row = if cell_row >= after_rows {
-                                    cell_row.saturating_sub(delete_rows as i16)
-                                } else {
-                                    cell_row
-                                };
-                                Some((cell_row, cell_column))
-                            }
-                        })
-                        .collect();
-                    record.data_bounds.2 = record
-                        .data_bounds
-                        .2
-                        .saturating_sub(delete_rows.min(i16::MAX as usize) as i16);
-                    ppc_list_recompute_visible(record);
-                    let mut allocator = PpcProcessAllocatorView {
-                        memory_manager: process_memory_manager,
-                    };
-                    let result = ppc_list_sync_guest_storage(
-                        Some(&mut allocator),
-                        memory,
-                        heap_cursor,
-                        heap_limit,
-                        last_mem_error,
-                        handles,
-                        record,
-                    );
-                    *last_mem_error = result;
-                    if record.draw_enabled {
-                        ppc_list_redraw(
-                            memory,
-                            handles,
-                            controls,
-                            gworlds,
-                            vfs_resources,
-                            *current_resource_refnum,
-                            record,
-                        );
-                    }
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LGetSelect => {
-            let next = cpu.gpr[3] != 0;
-            let cell_ptr = cpu.gpr[4];
-            let result = list_manager
-                .get(&cpu.gpr[5])
-                .and_then(|record| {
-                    let v = memory.read_u16_be(cell_ptr)? as i16;
-                    let h = memory.read_u16_be(cell_ptr + 2)? as i16;
-                    let found = if next {
-                        ppc_list_cell_index(record, v, h)?;
-                        record.selected.range((v, h)..).next().copied()
-                    } else {
-                        ppc_list_cell_index(record, v, h)?;
-                        record.selected.contains(&(v, h)).then_some((v, h))
-                    }?;
-                    let (v, h) = found;
-                    if next {
-                        let _ = memory.write_u16_be(cell_ptr, v as u16);
-                        let _ = memory.write_u16_be(cell_ptr + 2, h as u16);
-                    }
-                    Some(1)
-                })
-                .unwrap_or(0);
-            Some(PpcImportAction::Return(result))
-        }
-        PpcImportDispatcherTarget::LSetSelect => {
-            let v = (cpu.gpr[4] >> 16) as u16 as i16;
-            let h = cpu.gpr[4] as u16 as i16;
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
-                if ppc_list_cell_index(record, v, h).is_some() {
-                    if cpu.gpr[3] != 0 {
-                        record.selected.insert((v, h));
-                    } else {
-                        record.selected.remove(&(v, h));
-                    }
-                    let mut allocator = PpcProcessAllocatorView {
-                        memory_manager: process_memory_manager,
-                    };
-                    let result = ppc_list_sync_guest_storage(
-                        Some(&mut allocator),
-                        memory,
-                        heap_cursor,
-                        heap_limit,
-                        last_mem_error,
-                        handles,
-                        record,
-                    );
-                    *last_mem_error = result;
-                    if record.draw_enabled {
-                        ppc_list_redraw(
-                            memory,
-                            handles,
-                            controls,
-                            gworlds,
-                            vfs_resources,
-                            *current_resource_refnum,
-                            record,
-                        );
-                    }
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LSetCell => {
-            let length = usize::from(cpu.gpr[4] as u16);
-            let bytes = ppc_memory_read_bytes(memory, cpu.gpr[3], length as u32);
-            let v = (cpu.gpr[5] >> 16) as u16 as i16;
-            let h = cpu.gpr[5] as u16 as i16;
-            if let (Some(bytes), Some(record)) = (bytes, list_manager.get_mut(&cpu.gpr[6])) {
-                if ppc_list_cell_index(record, v, h).is_some() {
-                    record.cells.insert((v, h), bytes);
-                    let mut allocator = PpcProcessAllocatorView {
-                        memory_manager: process_memory_manager,
-                    };
-                    let result = ppc_list_sync_guest_storage(
-                        Some(&mut allocator),
-                        memory,
-                        heap_cursor,
-                        heap_limit,
-                        last_mem_error,
-                        handles,
-                        record,
-                    );
-                    *last_mem_error = result;
-                    if record.draw_enabled {
-                        ppc_list_redraw(
-                            memory,
-                            handles,
-                            controls,
-                            gworlds,
-                            vfs_resources,
-                            *current_resource_refnum,
-                            record,
-                        );
-                    }
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LGetCell => {
-            let length_ptr = cpu.gpr[4];
-            let requested = usize::from(memory.read_u16_be(length_ptr).unwrap_or(0));
-            let v = (cpu.gpr[5] >> 16) as u16 as i16;
-            let h = cpu.gpr[5] as u16 as i16;
-            if let Some(bytes) = list_manager.get(&cpu.gpr[6]).and_then(|record| {
-                ppc_list_cell_index(record, v, h)?;
-                Some(record.cells.get(&(v, h)).map(Vec::as_slice).unwrap_or(&[]))
-            }) {
-                // More Macintosh Toolbox (1993), pp. 4-82--4-83: dataLen is
-                // an in/out buffer capacity.  A short buffer is left
-                // untouched, including its original capacity, rather than
-                // receiving a truncated cell.
-                if bytes.len() <= requested
-                    && (bytes.is_empty() || memory.write_bytes(cpu.gpr[3], bytes).is_some())
-            {
-                    let _ = memory.write_u16_be(length_ptr, bytes.len() as u16);
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LClick => {
-            let v = (cpu.gpr[3] >> 16) as u16 as i16;
-            let h = cpu.gpr[3] as u16 as i16;
-            let modifiers = cpu.gpr[4] as u16;
-            let mut double_click = false;
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
-                if let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) {
-                    let active = memory
-                        .read_u8(list_ptr + PPC_LIST_ACTIVE_OFFSET)
-                        .unwrap_or(1)
-                        != 0;
-                    if let Some(view) = ppc_read_rect(memory, list_ptr + PPC_LIST_VIEW_OFFSET)
-                        .filter(|view| {
-                            active && v >= view.0 && v < view.2 && h >= view.1 && h < view.3
-                        })
-                    {
-                    let visible = ppc_read_rect(memory, list_ptr + PPC_LIST_VISIBLE_OFFSET)
-                        .unwrap_or(record.data_bounds);
-                    let cell_v = memory
-                        .read_u16_be(list_ptr + PPC_LIST_CELL_SIZE_OFFSET)
-                        .unwrap_or(1) as i16;
-                    let cell_h = memory
-                        .read_u16_be(list_ptr + PPC_LIST_CELL_SIZE_OFFSET + 2)
-                        .unwrap_or(1) as i16;
-                    let row = visible
-                        .0
-                        .saturating_add(v.saturating_sub(view.0) / cell_v.max(1));
-                    let column = visible
-                        .1
-                        .saturating_add(h.saturating_sub(view.1) / cell_h.max(1));
-                    if ppc_list_cell_index(record, row, column).is_some() {
-                        let previous_time = memory
-                            .read_u32_be(list_ptr + PPC_LIST_CLICK_TIME_OFFSET)
-                            .unwrap_or(0);
-                        let previous_v = memory
-                            .read_u16_be(list_ptr + PPC_LIST_LAST_CLICK_OFFSET)
-                                .unwrap_or(u16::MAX)
-                                as i16;
-                        let previous_h = memory
-                            .read_u16_be(list_ptr + PPC_LIST_LAST_CLICK_OFFSET + 2)
-                                .unwrap_or(u16::MAX)
-                                as i16;
-                        let double_time = memory
-                            .read_u32_be(crate::memory::globals::addr::DOUBLE_TIME)
-                            .unwrap_or(PPC_DEFAULT_DOUBLE_TIME_TICKS);
-                        double_click = previous_time != 0
-                            && previous_v == row
-                            && previous_h == column
-                            && tick_count.wrapping_sub(previous_time) <= double_time;
-                        if modifiers & 0x0300 == 0 {
-                            record.selected.clear();
-                            record.selected.insert((row, column));
-                        } else if modifiers & 0x0100 != 0 {
-                            if !record.selected.remove(&(row, column)) {
-                                record.selected.insert((row, column));
-                            }
-                        } else {
-                            record.selected.insert((row, column));
-                        }
-                        record.last_click = (row, column);
-                        record.last_click_tick = *tick_count;
-                        let _ =
-                                memory.write_u16_be(list_ptr + PPC_LIST_CLICK_LOC_OFFSET, v as u16);
-                        let _ = memory
-                                .write_u16_be(list_ptr + PPC_LIST_CLICK_LOC_OFFSET + 2, h as u16);
-                        let _ =
-                                memory.write_u16_be(list_ptr + PPC_LIST_MOUSE_LOC_OFFSET, v as u16);
-                            let _ = memory
-                                .write_u16_be(list_ptr + PPC_LIST_MOUSE_LOC_OFFSET + 2, h as u16);
-                            let _ = memory
-                                .write_u16_be(list_ptr + PPC_LIST_LAST_CLICK_OFFSET, row as u16);
-                            let _ = memory.write_u16_be(
-                                list_ptr + PPC_LIST_LAST_CLICK_OFFSET + 2,
-                                column as u16,
-                            );
-                            let _ = memory
-                                .write_u32_be(list_ptr + PPC_LIST_CLICK_TIME_OFFSET, *tick_count);
-                        let mut allocator = PpcProcessAllocatorView {
-                            memory_manager: process_memory_manager,
-                        };
-                        let result = ppc_list_sync_guest_storage(
-                            Some(&mut allocator),
-                            memory,
-                            heap_cursor,
-                            heap_limit,
-                            last_mem_error,
-                            handles,
-                            record,
-                        );
-                        *last_mem_error = result;
-                        if record.draw_enabled {
-                                ppc_list_redraw(
-                                    memory,
-                                    handles,
-                                    controls,
-                                    gworlds,
-                                    vfs_resources,
-                                    *current_resource_refnum,
-                                    record,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            Some(PpcImportAction::Return(u32::from(double_click)))
-        }
-        PpcImportDispatcherTarget::LActivate => {
-            let active = cpu.gpr[3] != 0;
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[4]) {
-                record.active = active;
-                if let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) {
-                    let _ = memory.write_u8(list_ptr + PPC_LIST_ACTIVE_OFFSET, u8::from(active));
-                    for offset in [PPC_LIST_VSCROLL_OFFSET, PPC_LIST_HSCROLL_OFFSET] {
-                        let control_handle = memory.read_u32_be(list_ptr + offset).unwrap_or(0);
-                        if let Some(control) = ppc_control_ptr(memory, control_handle) {
-                            // LActivate: IM IV-276 describes hiding the bars.
-                            // Mac OS 8.1 keeps contrlVis and sets contrlHilite=255
-                            // (BasiliskII/SheepShaver probe).
-                            let _ = memory.write_u8(
-                                control + PPC_CONTROL_HILITE_OFFSET,
-                                if active { 0 } else { 0xff },
-                            );
-                        }
-                    }
-                    if record.draw_enabled {
-                        ppc_list_redraw(
-                            memory,
-                            handles,
-                            controls,
-                            gworlds,
-                            vfs_resources,
-                            *current_resource_refnum,
-                            record,
-                        );
-                    }
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LSetDrawingMode => {
-            let draw_enabled = cpu.gpr[3] != 0;
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[4]) {
-                record.draw_enabled = draw_enabled;
-                if let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) {
-                    for offset in [PPC_LIST_VSCROLL_OFFSET, PPC_LIST_HSCROLL_OFFSET] {
-                        let control_handle = memory.read_u32_be(list_ptr + offset).unwrap_or(0);
-                        if let Some(control) = ppc_control_ptr(memory, control_handle) {
-                            // LDoDraw(FALSE) disables cell drawing, not control
-                            // visibility (IM IV-275; Mac OS 8.1 oracle probe).
-                            if draw_enabled {
-                                let _ = memory.write_u8(control + PPC_CONTROL_VISIBLE_OFFSET, 0xff);
-                            }
-                        }
-                    }
-                }
-                if draw_enabled {
-                    ppc_list_redraw(
-                        memory,
-                        handles,
-                        controls,
-                        gworlds,
-                        vfs_resources,
-                        *current_resource_refnum,
-                        record,
-                    );
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LScroll => {
-            // More Macintosh Toolbox (1993), pp. 4-89--4-90: scrolling is
-            // pinned to dataBounds and redraws when automatic drawing is on.
-            let d_cols = cpu.gpr[3] as u16 as i16;
-            let d_rows = cpu.gpr[4] as u16 as i16;
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
-                ppc_list_set_visible_origin(
-                    record,
-                    record.visible.0.saturating_add(d_rows),
-                    record.visible.1.saturating_add(d_cols),
-                );
-                let result = ppc_list_sync_guest_visible(memory, record);
-                *last_mem_error = result;
-                if record.draw_enabled {
-                    ppc_list_redraw(
-                        memory,
-                        handles,
-                        controls,
-                        gworlds,
-                        vfs_resources,
-                        *current_resource_refnum,
-                        record,
-                    );
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LSize => {
-            // More Macintosh Toolbox (1993), pp. 4-91--4-92: resize the
-            // visible rectangle and redraw its contents as necessary.
-            let width = cpu.gpr[3] as u16 as i16;
-            let height = cpu.gpr[4] as u16 as i16;
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
-                record.view_rect.2 = record.view_rect.0.saturating_add(height.max(0));
-                record.view_rect.3 = record.view_rect.1.saturating_add(width.max(0));
-                ppc_list_recompute_visible(record);
-                let result = ppc_list_sync_guest_size(memory, record);
-                *last_mem_error = result;
-                if record.draw_enabled {
-                    ppc_list_redraw(
-                        memory,
-                        handles,
-                        controls,
-                        gworlds,
-                        vfs_resources,
-                        *current_resource_refnum,
-                        record,
-                    );
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LUpdate => {
-            if let Some(record) = list_manager.get(&cpu.gpr[4]) {
-                if record.draw_enabled {
-                    ppc_list_redraw(
-                        memory,
-                        handles,
-                        controls,
-                        gworlds,
-                        vfs_resources,
-                        *current_resource_refnum,
-                        record,
-                    );
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LAutoScroll => {
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[3]) {
-                if let (Some(&(row, column)), Some(list_ptr)) = (
-                    record.selected.iter().next(),
-                    memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0),
-                ) {
-                    let visible = ppc_read_rect(memory, list_ptr + PPC_LIST_VISIBLE_OFFSET)
-                        .unwrap_or(record.data_bounds);
-                    let height = visible.2.saturating_sub(visible.0);
-                    let width = visible.3.saturating_sub(visible.1);
-                    record.visible = (
-                        row,
-                        column,
-                        row.saturating_add(height).min(record.data_bounds.2),
-                        column.saturating_add(width).min(record.data_bounds.3),
-                    );
-                    let _ = ppc_write_rect(
-                        memory,
-                        list_ptr + PPC_LIST_VISIBLE_OFFSET,
-                        record.visible.0,
-                        record.visible.1,
-                        record.visible.2,
-                        record.visible.3,
-                    );
-                    if record.draw_enabled {
-                        ppc_list_redraw(
-                            memory,
-                            handles,
-                            controls,
-                            gworlds,
-                            vfs_resources,
-                            *current_resource_refnum,
-                            record,
-                        );
-                    }
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::LSearch => {
-            let requested = ppc_memory_read_bytes(memory, cpu.gpr[3], u32::from(cpu.gpr[4] as u16))
-                .unwrap_or_default();
-            let cell_ptr = cpu.gpr[6];
-            let result = list_manager.get(&cpu.gpr[7]).and_then(|record| {
-                    let start_v = memory.read_u16_be(cell_ptr)? as i16;
-                    let start_h = memory.read_u16_be(cell_ptr + 2)? as i16;
-                    let start = ppc_list_cell_index(record, start_v, start_h)?;
-                    let (columns, rows) = ppc_list_dimensions(record.data_bounds);
-                    (start..columns.saturating_mul(rows)).find_map(|index| {
-                        let cell = ppc_list_cell_for_index(record, index)?;
-                        let bytes = record.cells.get(&cell).map(Vec::as_slice).unwrap_or(&[]);
-                        (bytes.len() == requested.len()
-                            && bytes
-                                .iter()
-                                .zip(&requested)
-                                .all(|(left, right)| left.eq_ignore_ascii_case(right)))
-                        .then_some(cell)
-                    })
-                });
-            if let Some((v, h)) = result {
-                let _ = memory.write_u16_be(cell_ptr, v as u16);
-                let _ = memory.write_u16_be(cell_ptr + 2, h as u16);
-                Some(PpcImportAction::Return(1))
-            } else {
-                Some(PpcImportAction::Return(0))
-            }
+        PpcImportDispatcherTarget::LNew
+        | PpcImportDispatcherTarget::LDispose
+        | PpcImportDispatcherTarget::LAddRow
+        | PpcImportDispatcherTarget::LDelRow
+        | PpcImportDispatcherTarget::LGetSelect
+        | PpcImportDispatcherTarget::LSetSelect
+        | PpcImportDispatcherTarget::LSetCell
+        | PpcImportDispatcherTarget::LGetCell
+        | PpcImportDispatcherTarget::LClick
+        | PpcImportDispatcherTarget::LActivate
+        | PpcImportDispatcherTarget::LSetDrawingMode
+        | PpcImportDispatcherTarget::LScroll
+        | PpcImportDispatcherTarget::LSize
+        | PpcImportDispatcherTarget::LUpdate
+        | PpcImportDispatcherTarget::LAutoScroll
+        | PpcImportDispatcherTarget::LSearch => {
+            unreachable!("list imports return through dispatch_list_import")
         }
         PpcImportDispatcherTarget::SysEnvirons => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_sys_environs(memory, cpu.gpr[4]),
@@ -24098,34 +20107,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::GetIntlResource => {
-            // Inside Macintosh: Text (1993), 6-90 through 6-91: selectors
-            // 0, 1, 2, 4, and 5 select the current script's itl resources.
-            let Some(last_byte) = (cpu.gpr[3] as u16 as i16)
-                .try_into()
-                .ok()
-                .filter(|selector: &u8| matches!(*selector, 0 | 1 | 2 | 4 | 5))
-            else {
-                *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-                return Some(PpcImportAction::Return(0));
-            };
-            cpu.gpr[3] = u32::from_be_bytes([b'i', b't', b'l', b'0' + last_byte]);
-            cpu.gpr[4] = 0;
-            Some(PpcImportAction::Return(ppc_get_resource(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vfs_resources,
-                *current_resource_refnum,
-                false,
-                resource_policy.res_load(),
-                last_resource_error,
-            )))
-        }
         PpcImportDispatcherTarget::AESetInteractionAllowed => {
             // Inside Macintosh: Interapplication Communication (1993),
             // 4-81 through 4-82: the three AEInteractAllowed values are 0..2.
@@ -24195,176 +20176,34 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             let result = byte & mask != 0;
             Some(PpcImportAction::Return(u32::from(result)))
         }
-        PpcImportDispatcherTarget::StdMemset => {
-            let destination = cpu.gpr[3];
-            let byte = cpu.gpr[4] as u8;
-            let count = cpu.gpr[5];
-            if ppc_hle_trace_enabled()
-                && destination < PPC_MAIN_SCREEN_BASE.saturating_add(ppc_main_screen_buffer_size())
-                && destination.saturating_add(count) > PPC_MAIN_SCREEN_BASE
-            {
-                eprintln!(
-                    "[PPC-TRACE] memset screen dst=${destination:08X} byte=${byte:02X} count={count}"
-                );
-            }
-            if ppc_memory_can_write_bytes(memory, destination, count) {
-                let bytes = vec![byte; count as usize];
-                let _ = memory.write_bytes(destination, &bytes);
-            }
-            Some(PpcImportAction::Return(destination))
+        PpcImportDispatcherTarget::StdMemset
+        | PpcImportDispatcherTarget::StdMemcmp
+        | PpcImportDispatcherTarget::StdMemcpy
+        | PpcImportDispatcherTarget::StdMemmove => {
+            unreachable!("stdc imports return through dispatch_stdc_import")
         }
-        PpcImportDispatcherTarget::StdMemcmp => Some(PpcImportAction::Return(ppc_std_memcmp(
-            memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5],
-        ) as u32)),
-        PpcImportDispatcherTarget::StdMemcpy | PpcImportDispatcherTarget::StdMemmove => {
-            let destination = cpu.gpr[3];
-            if ppc_hle_trace_enabled()
-                && destination < PPC_MAIN_SCREEN_BASE.saturating_add(ppc_main_screen_buffer_size())
-                && destination.saturating_add(cpu.gpr[5]) > PPC_MAIN_SCREEN_BASE
-            {
-                eprintln!(
-                    "[PPC-TRACE] {} screen dst=${:08X} src=${:08X} count={}",
-                    binding.symbol_name, destination, cpu.gpr[4], cpu.gpr[5]
-                );
-            }
-            ppc_std_memmove(memory, destination, cpu.gpr[4], cpu.gpr[5]);
-            Some(PpcImportAction::Return(destination))
-        }
-        PpcImportDispatcherTarget::StdMalloc => {
-            let size = cpu.gpr[3];
-            let preserved_mem_error = *last_mem_error;
-            let ptr = process_memory_manager.new_native_ptr(memory, size, false);
-            process_memory_manager.set_native_mem_error(preserved_mem_error);
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
-            Some(PpcImportAction::Return(ptr))
-        }
-        PpcImportDispatcherTarget::StdFree => {
-            let preserved_mem_error = *last_mem_error;
-            let _ = process_memory_manager.dispose_native_ptr(cpu.gpr[3]);
-            process_memory_manager.set_native_mem_error(preserved_mem_error);
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::StdCalloc => {
-            let count = cpu.gpr[3];
-            let ptr = if let Some(size) = count.checked_mul(cpu.gpr[4]).filter(|size| *size != 0) {
-                let preserved_mem_error = *last_mem_error;
-                let ptr = process_memory_manager.new_native_ptr(memory, size, true);
-                process_memory_manager.set_native_mem_error(preserved_mem_error);
-                ppc_apply_process_native_allocator(
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    last_mem_error,
-                );
-                ptr
-            } else {
-                0
-            };
-            Some(PpcImportAction::Return(ptr))
-        }
-        PpcImportDispatcherTarget::StdRealloc => {
-            let preserved_mem_error = *last_mem_error;
-            let ptr = process_memory_manager.reallocate_native_ptr(memory, cpu.gpr[3], cpu.gpr[4]);
-            process_memory_manager.set_native_mem_error(preserved_mem_error);
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
-            Some(PpcImportAction::Return(ptr))
-        }
-        PpcImportDispatcherTarget::StdStrcpy => {
-            let destination = cpu.gpr[3];
-            let source = cpu.gpr[4];
-            let mut offset = 0u32;
-            loop {
-                let Some(byte) = memory.read_u8(source.wrapping_add(offset)) else {
-                    break;
-                };
-                if memory
-                    .write_u8(destination.wrapping_add(offset), byte)
-                    .is_none()
-                {
-                    break;
-                }
-                offset = offset.wrapping_add(1);
-                if byte == 0 {
-                    break;
-                }
-            }
-            Some(PpcImportAction::Return(destination))
-        }
-        PpcImportDispatcherTarget::StdStrncpy => Some(PpcImportAction::Return(ppc_std_strncpy(
-            memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5],
-        ))),
-        PpcImportDispatcherTarget::StdStrcat => {
-            let destination = cpu.gpr[3];
-            ppc_std_strcat(memory, destination, cpu.gpr[4]);
-            Some(PpcImportAction::Return(destination))
-        }
-        PpcImportDispatcherTarget::StdStrncat => Some(PpcImportAction::Return(ppc_std_strncat(
-            memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5],
-        ))),
-        PpcImportDispatcherTarget::StdStrcmp => Some(PpcImportAction::Return(ppc_std_strcmp(
-            memory, cpu.gpr[3], cpu.gpr[4], None,
-        ) as u32)),
-        PpcImportDispatcherTarget::StdStrncmp => Some(PpcImportAction::Return(ppc_std_strcmp(
-            memory,
-            cpu.gpr[3],
-            cpu.gpr[4],
-            Some(cpu.gpr[5]),
-        ) as u32)),
-        PpcImportDispatcherTarget::StdStrlen => {
-            Some(PpcImportAction::Return(ppc_std_strlen(memory, cpu.gpr[3])))
-        }
-        PpcImportDispatcherTarget::StdMemchr => Some(PpcImportAction::Return(ppc_std_memchr(
-            memory,
-            cpu.gpr[3],
-            cpu.gpr[4] as u8,
-            cpu.gpr[5],
-        ))),
-        PpcImportDispatcherTarget::StdStrchr => Some(PpcImportAction::Return(ppc_std_strchr(
-            memory,
-            cpu.gpr[3],
-            cpu.gpr[4] as u8,
-            false,
-        ))),
-        PpcImportDispatcherTarget::StdStrrchr => Some(PpcImportAction::Return(ppc_std_strchr(
-            memory,
-            cpu.gpr[3],
-            cpu.gpr[4] as u8,
-            true,
-        ))),
-        PpcImportDispatcherTarget::StdStrspn => Some(PpcImportAction::Return(ppc_std_strspn(
-            memory, cpu.gpr[3], cpu.gpr[4], true,
-        ))),
-        PpcImportDispatcherTarget::StdStrcspn => Some(PpcImportAction::Return(ppc_std_strspn(
-            memory, cpu.gpr[3], cpu.gpr[4], false,
-        ))),
-        PpcImportDispatcherTarget::StdStrpbrk => Some(PpcImportAction::Return(ppc_std_strpbrk(
-            memory, cpu.gpr[3], cpu.gpr[4],
-        ))),
-        PpcImportDispatcherTarget::StdStrstr => Some(PpcImportAction::Return(ppc_std_strstr(
-            memory, cpu.gpr[3], cpu.gpr[4],
-        ))),
-        PpcImportDispatcherTarget::StdAtoi => {
-            Some(PpcImportAction::Return(ppc_std_atoi(memory, cpu.gpr[3])))
-        }
-        PpcImportDispatcherTarget::StdGetenv => Some(PpcImportAction::Return(0)),
-        PpcImportDispatcherTarget::StdSprintf => {
-            Some(PpcImportAction::Return(ppc_std_sprintf(cpu, memory)))
+        PpcImportDispatcherTarget::StdMalloc
+        | PpcImportDispatcherTarget::StdFree
+        | PpcImportDispatcherTarget::StdCalloc
+        | PpcImportDispatcherTarget::StdRealloc
+        | PpcImportDispatcherTarget::StdStrcpy
+        | PpcImportDispatcherTarget::StdStrncpy
+        | PpcImportDispatcherTarget::StdStrcat
+        | PpcImportDispatcherTarget::StdStrncat
+        | PpcImportDispatcherTarget::StdStrcmp
+        | PpcImportDispatcherTarget::StdStrncmp
+        | PpcImportDispatcherTarget::StdStrlen
+        | PpcImportDispatcherTarget::StdMemchr
+        | PpcImportDispatcherTarget::StdStrchr
+        | PpcImportDispatcherTarget::StdStrrchr
+        | PpcImportDispatcherTarget::StdStrspn
+        | PpcImportDispatcherTarget::StdStrcspn
+        | PpcImportDispatcherTarget::StdStrpbrk
+        | PpcImportDispatcherTarget::StdStrstr
+        | PpcImportDispatcherTarget::StdAtoi
+        | PpcImportDispatcherTarget::StdGetenv
+        | PpcImportDispatcherTarget::StdSprintf => {
+            unreachable!("stdc imports return through dispatch_stdc_import")
         }
         PpcImportDispatcherTarget::StdIoCompatibility(operation) => {
             Some(ppc_dispatch_process_stdio_compatibility(
@@ -24381,415 +20220,28 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 stdio_streams,
             ))
         }
-        PpcImportDispatcherTarget::StdAbs => Some(PpcImportAction::Return(
-            (cpu.gpr[3] as i32).wrapping_abs() as u32,
-        )),
-        PpcImportDispatcherTarget::StdToupper => {
-            let value = cpu.gpr[3] as i32;
-            let result = if (b'a' as i32..=b'z' as i32).contains(&value) {
-                value - i32::from(b'a' - b'A')
-            } else {
-                value
-            };
-            Some(PpcImportAction::Return(result as u32))
-        }
-        PpcImportDispatcherTarget::StdTolower => {
-            let value = cpu.gpr[3] as i32;
-            let result = if (b'A' as i32..=b'Z' as i32).contains(&value) {
-                value + i32::from(b'a' - b'A')
-            } else {
-                value
-            };
-            Some(PpcImportAction::Return(result as u32))
-        }
-        // Universal Interfaces 3.4 ctype.h specifies byte-table masks for the
-        // C-locale classifiers and unsigned-int/unsigned-char conversion rules.
-        PpcImportDispatcherTarget::StdIsalnum => {
-            let byte = cpu.gpr[3] as u8;
-            let result = ppc_ctype_entry(byte) & (PPC_CTYPE_UPP | PPC_CTYPE_LOW | PPC_CTYPE_DIG);
-            Some(PpcImportAction::Return(u32::from(result)))
-        }
-        PpcImportDispatcherTarget::StdIsalpha => {
-            let byte = cpu.gpr[3] as u8;
-            let result = ppc_ctype_entry(byte) & (PPC_CTYPE_UPP | PPC_CTYPE_LOW);
-            Some(PpcImportAction::Return(u32::from(result)))
-        }
-        PpcImportDispatcherTarget::StdIsascii => {
-            let result = u32::from(cpu.gpr[3] <= 0x7f);
-            Some(PpcImportAction::Return(result))
-        }
-        PpcImportDispatcherTarget::StdIscntrl => {
-            let byte = cpu.gpr[3] as u8;
-            let result = ppc_ctype_entry(byte) & PPC_CTYPE_CTL;
-            Some(PpcImportAction::Return(u32::from(result)))
-        }
-        PpcImportDispatcherTarget::StdIsdigit => {
-            let byte = cpu.gpr[3] as u8;
-            let result = ppc_ctype_entry(byte) & PPC_CTYPE_DIG;
-            Some(PpcImportAction::Return(u32::from(result)))
-        }
-        PpcImportDispatcherTarget::StdIsgraph => {
-            let byte = cpu.gpr[3] as u8;
-            let result = ppc_ctype_entry(byte)
-                & (PPC_CTYPE_UPP | PPC_CTYPE_LOW | PPC_CTYPE_DIG | PPC_CTYPE_PUN);
-            Some(PpcImportAction::Return(u32::from(result)))
-        }
-        PpcImportDispatcherTarget::StdIslower => {
-            let byte = cpu.gpr[3] as u8;
-            let result = ppc_ctype_entry(byte) & PPC_CTYPE_LOW;
-            Some(PpcImportAction::Return(u32::from(result)))
-        }
-        PpcImportDispatcherTarget::StdIsprint => {
-            let byte = cpu.gpr[3] as u8;
-            let result = ppc_ctype_entry(byte)
-                & (PPC_CTYPE_UPP | PPC_CTYPE_LOW | PPC_CTYPE_DIG | PPC_CTYPE_PUN | PPC_CTYPE_BLA);
-            Some(PpcImportAction::Return(u32::from(result)))
-        }
-        PpcImportDispatcherTarget::StdIspunct => {
-            let byte = cpu.gpr[3] as u8;
-            let result = ppc_ctype_entry(byte) & PPC_CTYPE_PUN;
-            Some(PpcImportAction::Return(u32::from(result)))
-        }
-        PpcImportDispatcherTarget::StdIsspace => {
-            let byte = cpu.gpr[3] as u8;
-            let result = ppc_ctype_entry(byte) & PPC_CTYPE_WSP;
-            Some(PpcImportAction::Return(u32::from(result)))
-        }
-        PpcImportDispatcherTarget::StdIsupper => {
-            let byte = cpu.gpr[3] as u8;
-            let result = ppc_ctype_entry(byte) & PPC_CTYPE_UPP;
-            Some(PpcImportAction::Return(u32::from(result)))
-        }
-        PpcImportDispatcherTarget::StdIsxdigit => {
-            let byte = cpu.gpr[3] as u8;
-            let result = ppc_ctype_entry(byte) & PPC_CTYPE_HEX;
-            Some(PpcImportAction::Return(u32::from(result)))
-        }
-        PpcImportDispatcherTarget::StdToascii => {
-            let byte = cpu.gpr[3] as u8;
-            let result = byte & 0x7f;
-            Some(PpcImportAction::Return(u32::from(result)))
-        }
-        PpcImportDispatcherTarget::StdSrand => {
-            let seed = if cpu.gpr[3] == 0 { 1 } else { cpu.gpr[3] };
-            let _ = memory.write_u32_be(PPC_RAND_SEED_ADDR, seed);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::StdRand => Some(PpcImportAction::Return(u32::from(
-            ppc_random(memory) & 0x7fff,
-        ))),
-        PpcImportDispatcherTarget::P2CStr => {
-            ppc_p2cstr(cpu, memory);
-            Some(PpcImportAction::Return(cpu.gpr[3]))
-        }
-        PpcImportDispatcherTarget::C2PStr => {
-            ppc_c2pstr(cpu, memory);
-            Some(PpcImportAction::Return(cpu.gpr[3]))
-        }
-        PpcImportDispatcherTarget::UpperText => {
-            // UpperText
-            // Converts a byte range to localized uppercase in place.
-            // PROCEDURE UpperText (textPtr: Ptr; len: Integer);
-            // Inside Macintosh Volume VI (1991), 14-63
-            let text_ptr = cpu.gpr[3];
-            let length = u32::from(cpu.gpr[4] as u16);
-            if ppc_memory_can_write_bytes(memory, text_ptr, length) {
-                for offset in 0..length {
-                    if let Some(byte) = memory.read_u8(text_ptr + offset) {
-                        let _ = memory.write_u8(
-                            text_ptr + offset,
-                            crate::trap::mac_roman_to_upper(byte, false),
-                        );
-                    }
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::GetCurrentThread => {
-            // OSErr GetCurrentThread(ThreadID *currentThreadID);
-            // Inside Macintosh: Thread Manager (1999), p. 62.
-            let id = crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls())
-                .current_thread();
-            let result = if cpu.gpr[3] != 0 && memory.write_u32_be(cpu.gpr[3], id).is_some() {
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
-            };
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        PpcImportDispatcherTarget::GetThreadState => {
-            // OSErr GetThreadState(ThreadID thread, ThreadState *state);
-            // Inside Macintosh: Thread Manager (1999), pp. 45, 63.
-            let result = if cpu.gpr[4] == 0 {
-                PPC_PARAM_ERR
-            } else {
-                match crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls())
-                    .state(cpu.gpr[3])
-                {
-                    Ok(state) if memory.write_u16_be(cpu.gpr[4], state).is_some() => PPC_NO_ERR,
-                    Ok(_) => PPC_PARAM_ERR,
-                    Err(error) => error,
-                }
-            };
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        PpcImportDispatcherTarget::GetThreadCurrentTaskRef => {
-            // OSErr GetThreadCurrentTaskRef(ThreadTaskRef *reference);
-            // Inside Macintosh: Thread Manager (1999), p. 73.
-            let reference = crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls())
-                .task_reference();
-            let result = if cpu.gpr[3] != 0 && memory.write_u32_be(cpu.gpr[3], reference).is_some()
-            {
-                0
-            } else {
-                PPC_PARAM_ERR
-            };
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        PpcImportDispatcherTarget::GetThreadStateGivenTaskRef => {
-            // OSErr GetThreadStateGivenTaskRef(ThreadTaskRef, ThreadID, ThreadState *);
-            // Inside Macintosh: Thread Manager (1999), pp. 74–75.
-            let result = if cpu.gpr[5] == 0 {
-                PPC_PARAM_ERR
-            } else {
-                match crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls())
-                    .state_given_task(cpu.gpr[3], cpu.gpr[4])
-                {
-                    Ok(state) if memory.write_u16_be(cpu.gpr[5], state).is_some() => 0,
-                    Ok(_) => PPC_PARAM_ERR,
-                    Err(error) => error,
-                }
-            };
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        PpcImportDispatcherTarget::SetThreadReadyGivenTaskRef => {
-            // OSErr SetThreadReadyGivenTaskRef(ThreadTaskRef reference, ThreadID thread);
-            // Inside Macintosh: Thread Manager (1999), pp. 75–76.
-            let result = crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls())
-                .ready_given_task(cpu.gpr[3], cpu.gpr[4]);
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        PpcImportDispatcherTarget::SetThreadState
-        | PpcImportDispatcherTarget::SetThreadStateEndCritical => {
-            // SetThreadState / SetThreadStateEndCritical
-            // Set state and optionally exit a critical section atomically.
-            // OSErr (ThreadID thread, ThreadState state, ThreadID suggested);
-            // Inside Macintosh: Thread Manager (1999), pp. 67–72.
-            let thread = cpu.gpr[3];
-            let state = cpu.gpr[4] as u16;
-            let suggested = cpu.gpr[5];
-            let end_critical = matches!(
-                binding.dispatcher_target,
-                PpcImportDispatcherTarget::SetThreadStateEndCritical
-            );
-            Some(
-                match toolbox_startup.execution.calls().set_native_thread_state(
-                    cpu,
-                    thread,
-                    state,
-                    suggested,
-                    end_critical,
-                ) {
-                    Ok(true) => PpcImportAction::Yield(1),
-                    Ok(false) => PpcImportAction::Return(0),
-                    Err(error) => PpcImportAction::Return(ppc_i16_result(error)),
-                },
-            )
-        }
-        PpcImportDispatcherTarget::CreateThreadPool => {
-            // OSErr CreateThreadPool(ThreadStyle, short, Size);
-            // Thread Manager (1999), pp. 50–51: all allocations or none.
-            let manager = crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls());
-            let result = manager.create_pool(
-                GuestIsa::PowerPc,
-                cpu.gpr[3],
-                cpu.gpr[4] as i16,
-                cpu.gpr[5],
-                |size| {
-                    let base = process_memory_manager.new_native_ptr(memory, size, true);
-                    (base != 0).then_some(crate::guest_call::ThreadStorage {
-                        stack_base: base,
-                        stack_limit: base.saturating_add(size),
-                        managed_pointer: true,
-                        ..Default::default()
-                    })
-                },
-            );
-            let error = match result {
-                Ok(()) => 0,
-                Err((error, storage)) => {
-                    for stack in storage {
-                        process_memory_manager.dispose_native_ptr(stack.stack_base);
-                    }
-                    error
-                }
-            };
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
-            Some(PpcImportAction::Return(ppc_i16_result(error)))
-        }
-        PpcImportDispatcherTarget::GetFreeThreadCount
-        | PpcImportDispatcherTarget::GetSpecificFreeThreadCount
-        | PpcImportDispatcherTarget::GetDefaultThreadStackSize => {
-            // OSErr GetFreeThreadCount(ThreadStyle, short *);
-            // OSErr GetSpecificFreeThreadCount(ThreadStyle, Size, short *);
-            // OSErr GetDefaultThreadStackSize(ThreadStyle, Size *);
-            // Thread Manager (1999), pp. 52–55.
-            let specific =
-                binding.dispatcher_target == PpcImportDispatcherTarget::GetSpecificFreeThreadCount;
-            let default_size =
-                binding.dispatcher_target == PpcImportDispatcherTarget::GetDefaultThreadStackSize;
-            let output = if specific { cpu.gpr[5] } else { cpu.gpr[4] };
-            let manager = crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls());
-            let value = if default_size {
-                crate::thread_manager::ThreadManager::stack_size(GuestIsa::PowerPc, cpu.gpr[3], 0)
-            } else {
-                manager
-                    .free_count(
-                        GuestIsa::PowerPc,
-                        cpu.gpr[3],
-                        if specific { cpu.gpr[4] } else { 0 },
-                    )
-                    .map(u32::from)
-            };
-            let result = match value {
-                Err(error) => error,
-                Ok(value) if output != 0 => {
-                    let written = if default_size {
-                        memory.write_u32_be(output, value)
-                    } else {
-                        memory.write_u16_be(output, value as u16)
-                    };
-                    if written.is_some() {
-                        0
-                    } else {
-                        PPC_PARAM_ERR
-                    }
-                }
-                Ok(_) => PPC_PARAM_ERR,
-            };
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        PpcImportDispatcherTarget::ThreadCurrentStackSpace => {
-            // OSErr ThreadCurrentStackSpace(ThreadID, unsigned long *);
-            // Thread Manager (1999), pp. 17–18 and 61.
-            let output = cpu.gpr[4];
-            let manager = crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls());
-            let result = match manager.stack_space(
-                cpu.gpr[3],
-                GuestIsa::PowerPc,
-                cpu.gpr[1],
-                |isa| match isa {
-                    GuestIsa::M68k => memory
-                        .read_u32_be(crate::memory::globals::addr::APPL_LIMIT)
-                        .unwrap_or(0),
-                    GuestIsa::PowerPc => process_memory_manager.application_heap_limit(heap_limit),
-                },
-            ) {
-                Err(error) => error,
-                Ok(value) if output != 0 && memory.write_u32_be(output, value).is_some() => 0,
-                Ok(_) => PPC_PARAM_ERR,
-            };
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        PpcImportDispatcherTarget::NewThread => {
-            // OSErr NewThread(ThreadStyle, ThreadEntryUPP, void *, Size,
-            //                 ThreadOptions, void **, ThreadID *);
-            // Inside Macintosh: Thread Manager (1999), pp. 55–58.
-            let style = cpu.gpr[3];
-            let entry = cpu.gpr[4];
-            let param = cpu.gpr[5];
-            let size = cpu.gpr[6];
-            let options = cpu.gpr[7];
-            let result_destination = cpu.gpr[8];
-            let made = cpu.gpr[9];
-            let execution = toolbox_startup.execution.calls().shared_handle();
-            let mut edge = PpcNewThreadEdge {
-                memory,
-                memory_manager: process_memory_manager,
-                heap_cursor,
-                last_mem_error,
-                msr: cpu.msr,
-                entry_pointer: entry,
-                default_rtoc: cpu.gpr[2],
-                parameter: param,
-                result_destination,
-                thread_made: made,
-                target: None,
-            };
-            let result = ThreadManager::new(&execution)
-                .create_thread(GuestIsa::PowerPc, style, size, options, &mut edge)
-                .map_or_else(|error| error, |_| PPC_NO_ERR);
-            if result != PPC_NO_ERR && made != 0 {
-                let _ = edge.memory.write_u32_be(made, 0);
-            }
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        PpcImportDispatcherTarget::YieldToThread | PpcImportDispatcherTarget::YieldToAnyThread => {
-            // OSErr YieldToThread(ThreadID); OSErr YieldToAnyThread(void);
-            // Inside Macintosh: Thread Manager (1999), pp. 64–66.
-            let suggested = if binding.dispatcher_target == PpcImportDispatcherTarget::YieldToThread
-            {
-                cpu.gpr[3]
-            } else {
-                0
-            };
-            Some(
-                match toolbox_startup.execution.calls()
-                    .yield_native_thread(cpu, suggested)
-                {
-                    Ok(true) => PpcImportAction::Yield(1),
-                    Ok(false) => PpcImportAction::Return(0),
-                    Err(error) => PpcImportAction::Return(ppc_i16_result(error)),
-                },
-            )
-        }
-        PpcImportDispatcherTarget::DisposeThread => {
-            // OSErr DisposeThread(ThreadID, void *, Boolean);
-            // Inside Macintosh: Thread Manager (1999), pp. 59–60.
-            let calls = &toolbox_startup.execution.calls();
-            let task = crate::guest_call::ExecutionTaskId::from_thread_id(
-                crate::thread_manager::ThreadManager::new(calls).resolve_thread(cpu.gpr[3]),
-            );
-            let result = cpu.gpr[4];
-            let recycle = cpu.gpr[5] as u8 != 0;
-            Some(match calls.retire_native_thread(task, cpu, recycle, |context| {
-                context.result_destination == 0
-                    || memory
-                        .write_u32_be(context.result_destination, result)
-                        .is_some()
-            }) {
-                Ok(retirement) => {
-                    let switched = matches!(retirement, NativeRetirement::Switched(_));
-                    ppc_release_retired_thread_storage(
-                        process_memory_manager,
-                        retirement,
-                        recycle,
-                    );
-                    if switched {
-                        PpcImportAction::Yield(1)
-                    } else {
-                        PpcImportAction::Return(0)
-                    }
-                }
-                Err(error) => PpcImportAction::Return(ppc_i16_result(error)),
-            })
-        }
-        PpcImportDispatcherTarget::ThreadBeginCritical => {
-            Some(PpcImportAction::Return(ppc_i16_result(
-                crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls())
-                    .begin_critical(),
-            )))
-        }
-        PpcImportDispatcherTarget::ThreadEndCritical => {
-            Some(PpcImportAction::Return(ppc_i16_result(
-                crate::thread_manager::ThreadManager::new(&toolbox_startup.execution.calls())
-                    .end_critical(),
-            )))
+        PpcImportDispatcherTarget::StdAbs
+        | PpcImportDispatcherTarget::StdToupper
+        | PpcImportDispatcherTarget::StdTolower
+        | PpcImportDispatcherTarget::StdIsalnum
+        | PpcImportDispatcherTarget::StdIsalpha
+        | PpcImportDispatcherTarget::StdIsascii
+        | PpcImportDispatcherTarget::StdIscntrl
+        | PpcImportDispatcherTarget::StdIsdigit
+        | PpcImportDispatcherTarget::StdIsgraph
+        | PpcImportDispatcherTarget::StdIslower
+        | PpcImportDispatcherTarget::StdIsprint
+        | PpcImportDispatcherTarget::StdIspunct
+        | PpcImportDispatcherTarget::StdIsspace
+        | PpcImportDispatcherTarget::StdIsupper
+        | PpcImportDispatcherTarget::StdIsxdigit
+        | PpcImportDispatcherTarget::StdToascii
+        | PpcImportDispatcherTarget::StdSrand
+        | PpcImportDispatcherTarget::StdRand
+        | PpcImportDispatcherTarget::P2CStr
+        | PpcImportDispatcherTarget::C2PStr
+        | PpcImportDispatcherTarget::UpperText => {
+            unreachable!("stdc imports return through dispatch_stdc_import")
         }
         PpcImportDispatcherTarget::GetCurrentProcess => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_get_current_process(cpu, memory)),
@@ -24810,330 +20262,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 launched_app_path,
             )),
         )),
-        PpcImportDispatcherTarget::DSpStartup => {
-            draw_sprocket.started = true;
-            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
-        }
-        PpcImportDispatcherTarget::DSpShutdown => {
-            *draw_sprocket = PpcDrawSprocketState::default();
-            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
-        }
-        PpcImportDispatcherTarget::DSpGetFirstContext => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_get_first_context(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::DSpGetNextContext => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_get_next_context(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::DSpProcessEvent => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_process_event(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::DSpCanUserSelectContext => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_can_user_select_context(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::DSpGetMouse => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_dsp_get_mouse(cpu, memory, &input),
-        ))),
-        PpcImportDispatcherTarget::DSpFindContextFromPoint => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_find_context_from_point(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::DSpContextGlobalToLocal => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_context_global_to_local(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::DSpFindBestContext => {
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_dsp_find_best_context(memory, cpu.gpr[3], cpu.gpr[4], draw_sprocket),
-            )))
-        }
-        PpcImportDispatcherTarget::DSpUserSelectContext => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_user_select_context(cpu, memory, draw_sprocket)),
-        )),
-        PpcImportDispatcherTarget::DSpSetBlankingColor => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_set_blanking_color(cpu, memory, draw_sprocket)),
-        )),
-        PpcImportDispatcherTarget::DSpAltBufferNew => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_alt_buffer_new(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                gworlds,
-                &mut toolbox_startup.gworld_allocations,
-                *current_gdevice,
-                draw_sprocket,
-            )),
-        )),
-        PpcImportDispatcherTarget::DSpAltBufferGetCGrafPtr => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_alt_buffer_get_cgraf_ptr(cpu, memory, gworlds)),
-        )),
-        PpcImportDispatcherTarget::DSpContextReserve => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_context_reserve(cpu, memory, draw_sprocket, gworlds)),
-        )),
-        PpcImportDispatcherTarget::DSpContextRelease => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_context_release(cpu, draw_sprocket)),
-        )),
-        PpcImportDispatcherTarget::DSpContextSetState => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_context_set_state(cpu, draw_sprocket)),
-        )),
-        PpcImportDispatcherTarget::DSpContextFadeGamma => {
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_dsp_context_fade_gamma(cpu, memory, draw_sprocket, PpcDspGammaFadeKind::Manual),
-            )))
-        }
-        PpcImportDispatcherTarget::DSpContextFadeGammaIn => {
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_dsp_context_fade_gamma(cpu, memory, draw_sprocket, PpcDspGammaFadeKind::In),
-            )))
-        }
-        PpcImportDispatcherTarget::DSpContextFadeGammaOut => {
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_dsp_context_fade_gamma(cpu, memory, draw_sprocket, PpcDspGammaFadeKind::Out),
-            )))
-        }
-        PpcImportDispatcherTarget::DSpContextGetFrontBuffer => {
-            let front_buffer_out_ptr = cpu.gpr[4];
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_dsp_context_get_buffer(
-                    cpu,
-                    memory,
-                    draw_sprocket.front_buffer_gworld,
-                    front_buffer_out_ptr,
-                ),
-            )))
-        }
-        PpcImportDispatcherTarget::DSpContextGetBackBuffer => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_context_get_back_buffer(cpu, memory, draw_sprocket)),
-        )),
-        PpcImportDispatcherTarget::DSpContextSwapBuffers => {
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_dsp_context_swap_buffers(cpu, memory, draw_sprocket, gworlds),
-            )))
-        }
-        PpcImportDispatcherTarget::DSpContextSetClutEntries => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_context_set_clut_entries(cpu, memory, screen_clut)),
-        )),
-        PpcImportDispatcherTarget::DSpContextGetDisplayID => {
-            let display_id_out_ptr = cpu.gpr[4];
-            if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
-                Some(PpcImportAction::Return(ppc_i16_result(error)))
-            } else if display_id_out_ptr == 0
-                || !ppc_memory_can_write_bytes(memory, display_id_out_ptr, 4)
-            {
-                Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)))
-            } else if memory
-                .write_u32_be(display_id_out_ptr, PPC_DSP_DISPLAY_ID)
-                .is_none()
-            {
-                Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)))
-            } else {
-                Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
-            }
-        }
-        PpcImportDispatcherTarget::DSpContextGetAttributes => {
-            let attributes_out_ptr = cpu.gpr[4];
-            if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
-                Some(PpcImportAction::Return(ppc_i16_result(error)))
-            } else if attributes_out_ptr == 0
-                || !ppc_memory_can_write_bytes(
-                    memory,
-                    attributes_out_ptr,
-                    PPC_DSP_CONTEXT_ATTRIBUTES_SIZE,
-                )
-            {
-                Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)))
-            } else if ppc_write_dsp_context_attributes(
-                memory,
-                attributes_out_ptr,
-                draw_sprocket.context_attributes,
-            )
-            .is_none()
-            {
-                Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)))
-            } else {
-                Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
-            }
-        }
-        // FUNCTION GetVol (volName: StringPtr; VAR vRefNum: Integer): OSErr;
-        // Inside Macintosh: Files (1992), 2-134 (lines 7672-7695).
-        PpcImportDispatcherTarget::GetVol => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_get_vol(
-                cpu,
-                memory,
-                default_dir_id,
-                *application_working_directory_ref_num,
-                working_directories,
-                vfs_volumes,
-            ),
-        ))),
-        PpcImportDispatcherTarget::GetWDInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_get_wd_info(
-                cpu,
-                memory,
-                default_dir_id,
-                *application_working_directory_ref_num,
-                working_directories,
-                vfs_volumes,
-            ),
-        ))),
-        PpcImportDispatcherTarget::HGetVol => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_hget_vol(
-                cpu,
-                memory,
-                default_dir_id,
-                *application_working_directory_ref_num,
-                working_directories,
-                vfs_volumes,
-            ),
-        ))),
-        PpcImportDispatcherTarget::HSetVol => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_hset_vol(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_volumes,
-                default_dir_id,
-                working_directories,
-                next_working_directory_ref_num,
-                application_working_directory_ref_num,
-            ),
-        ))),
-        PpcImportDispatcherTarget::FlushVol => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_flush_vol(cpu, memory),
-        ))),
-        PpcImportDispatcherTarget::PBFlushVol => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_complete_pb(memory, cpu.gpr[3], PPC_NO_ERR),
-        ))),
-        PpcImportDispatcherTarget::ParamText => {
-            param_text.with_mut(|slots| ppc_param_text(cpu, memory, slots));
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::AlertReturnDefault => {
-            let alert_id = cpu.gpr[3] as u16 as i16;
-            if ppc_hle_trace_enabled() {
-                eprintln!(
-                    "[PPC-TRACE] Alert id={} params={:?}",
-                    alert_id,
-                    param_text
-                        .iter()
-                        .map(|bytes| decode_mac_roman(bytes))
-                        .collect::<Vec<_>>()
-                );
-            }
-            let mut dialog = gworlds.iter().rev().find_map(|record| {
-                (memory.read_u16_be(record.port + PPC_CWINDOW_WINDOW_KIND_OFFSET) == Some(2)
-                    && ppc_window_is_visible(memory, record.port)
-                    && memory.read_u16_be(record.port + PPC_DIALOG_RESOURCE_ID_OFFSET)
-                        == Some(alert_id as u16))
-                .then_some(record.port)
-            });
-            if dialog.is_none() {
-                let created = ppc_new_alert_dialog(
-                    cpu,
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                    controls,
-                    gworlds,
-                    window_list,
-                    *current_gdevice,
-                    vfs_resources,
-                    *current_resource_refnum,
-                    last_resource_error,
-                    alert_id,
-                    param_text,
-                );
-                if created == 0 {
-                    return Some(PpcImportAction::Return(ppc_i16_result(-1)));
-                }
-                *current_gworld = created;
-                *current_gdevice = ppc_gworld_device(gworlds, created).unwrap_or(*current_gdevice);
-                let _ = ppc_draw_dialog(
-                    memory,
-                    handles,
-                    controls,
-                    gworlds,
-                    screen_clut,
-                    vfs_resources,
-                    *current_resource_refnum,
-                    created,
-                );
-                dialog = Some(created);
-            }
-            let dialog = dialog.unwrap();
-            *current_gworld = dialog;
-            *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
-            let mut modal_cpu = cpu.clone();
-            modal_cpu.gpr[4] = dialog + PPC_DIALOG_ALERT_HIT_HLE_OFFSET;
-            let action = ppc_modal_dialog(
-                &mut modal_cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                controls,
-                gworlds,
-                current_gworld,
-                current_gdevice,
-                screen_clut,
-                *quickdraw_fore_color,
-                quickdraw_fore_indices,
-                input,
-                event_queue,
-                dialog_callback_stack,
-                vfs_resources,
-                *current_resource_refnum,
-            );
-            if matches!(action, PpcImportAction::ReturnPreserve) {
-                let hit = memory
-                    .read_u16_be(dialog + PPC_DIALOG_ALERT_HIT_HLE_OFFSET)
-                    .unwrap_or(1);
-                let mut allocator = PpcProcessAllocatorView {
-                    memory_manager: process_memory_manager,
-                };
-                ppc_dispose_window(
-                    &mut allocator,
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                    controls,
-                    gworlds,
-                    window_list,
-                    current_gworld,
-                    current_gdevice,
-                    dialog,
-                );
-                if *current_gworld != PPC_MAIN_GWORLD {
-                    ppc_enqueue_window_update_event(event_queue, *current_gworld, *tick_count, input);
-                }
-                Some(PpcImportAction::Return(u32::from(hit)))
-            } else {
-                Some(action)
-            }
-        }
-        ref target @ (PpcImportDispatcherTarget::MathCeil
-        | PpcImportDispatcherTarget::MathSqrt
-        | PpcImportDispatcherTarget::MathSin
-        | PpcImportDispatcherTarget::MathCos
-        | PpcImportDispatcherTarget::MathAsin
-        | PpcImportDispatcherTarget::MathTan
-        | PpcImportDispatcherTarget::MathAtan
-        | PpcImportDispatcherTarget::MathAtan2
-        | PpcImportDispatcherTarget::MathPow
-        | PpcImportDispatcherTarget::MathFmod
-        | PpcImportDispatcherTarget::MathLog
-        | PpcImportDispatcherTarget::MathLog10
-        | PpcImportDispatcherTarget::MathDtox80
-        | PpcImportDispatcherTarget::X2Fix) => {
-            dispatch_math::dispatch_math_import(target, cpu, memory)
+        PpcImportDispatcherTarget::ParamText
+        | PpcImportDispatcherTarget::AlertReturnDefault => {
+            unreachable!("dialog imports return through dispatch_dialog_import")
         }
         PpcImportDispatcherTarget::Q3Initialize => {
             q3_lifecycle.initialize_count = q3_lifecycle.initialize_count.saturating_add(1);
@@ -27120,242 +22251,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::QAEngineGestalt => {
             Some(PpcImportAction::Return(ppc_qa_engine_gestalt(cpu, memory)))
         }
-        PpcImportDispatcherTarget::ISpElementNewVirtualFromNeeds => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_element_new_virtual_from_needs(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                input_sprocket,
-                input_sprocket_virtual_elements,
-            )),
-        )),
-        PpcImportDispatcherTarget::ISpElementListNew => {
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_isp_element_list_new(
-                    cpu,
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    input_sprocket_virtual_elements,
-                ),
-            )))
-        }
-        PpcImportDispatcherTarget::ISpElementListAddElements => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_element_list_add_elements(
-                cpu,
-                memory,
-                input_sprocket_virtual_elements,
-            )),
-        )),
-        PpcImportDispatcherTarget::ISpElementListGetNextEvent => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_element_list_get_next_event(
-                cpu,
-                memory,
-                input,
-                *input_sprocket,
-                input_sprocket_virtual_elements,
-                *tick_count,
-            )),
-        )),
-        PpcImportDispatcherTarget::ISpElementListFlush => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_element_list_flush(
-                cpu,
-                memory,
-                input,
-                *input_sprocket,
-                input_sprocket_virtual_elements,
-            )),
-        )),
-        PpcImportDispatcherTarget::ISpDevicesExtract => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_devices_extract(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::ISpDevicesExtractByClass => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_devices_extract_by_class(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::ISpDeviceGetDefinition => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_device_get_definition(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::ISpDeviceGetElementList => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_device_get_element_list(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::ISpElementListExtract => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_element_list_extract(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::ISpElementGetInfo => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_element_get_info(cpu, memory)),
-        )),
-        PpcImportDispatcherTarget::ISpElementGetSimpleState => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_element_get_simple_state(
-                cpu,
-                memory,
-                input,
-                *input_sprocket,
-                input_sprocket_virtual_elements,
-            )),
-        )),
-        // Apple InputSprocket.h 1.7 (QuickTime 6.0.2 SDK) declares
-        // ISpGetVersion as returning the four-byte NumVersion structure.
-        // The CFM PowerPC structure-result pointer is passed in r3, matching
-        // SndSoundManagerVersion above. NumVersion 1.7 final is 01 70 80 00.
-        PpcImportDispatcherTarget::ISpGetVersion => {
-            if cpu.gpr[3] != 0 && ppc_memory_can_write_bytes(memory, cpu.gpr[3], 4) {
-                let _ = memory.write_u32_be(cpu.gpr[3], 0x0170_8000);
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::ISpStartup => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_isp_init(input_sprocket),
-        ))),
-        PpcImportDispatcherTarget::ISpShutdown => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_isp_stop(input_sprocket),
-        ))),
-        PpcImportDispatcherTarget::ISpInit => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_isp_init(input_sprocket),
-        ))),
-        PpcImportDispatcherTarget::ISpStop => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_isp_stop(input_sprocket),
-        ))),
-        PpcImportDispatcherTarget::ISpSuspend => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_isp_suspend(input_sprocket),
-        ))),
-        PpcImportDispatcherTarget::ISpResume => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_isp_resume(input_sprocket),
-        ))),
-        PpcImportDispatcherTarget::ISpDevicesActivate => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_devices_activate(cpu, memory, input_sprocket)),
-        )),
-        PpcImportDispatcherTarget::ISpDevicesDeactivate => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_isp_devices_deactivate(cpu, memory, input_sprocket)),
-        )),
-        PpcImportDispatcherTarget::ISpConfigure => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_isp_configure(input_sprocket),
-        ))),
-        PpcImportDispatcherTarget::QtEnterMovies => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_qt_enter_movies(quicktime),
-        ))),
-        PpcImportDispatcherTarget::QtExitMovies => {
-            ppc_qt_exit_movies(quicktime);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::QtGetMoviesError => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_qt_get_movies_error(quicktime)),
-        )),
-        PpcImportDispatcherTarget::QtGetMoviesStickyError => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_qt_get_movies_sticky_error(quicktime)),
-        )),
-        PpcImportDispatcherTarget::QtClearMoviesStickyError => {
-            ppc_qt_clear_movies_sticky_error(quicktime);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::QtGetGraphicsImporterForFile => {
-            let error = ppc_qt_get_graphics_importer_for_file(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                quicktime,
-            );
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtGraphicsImportGetBoundsRect => {
-            let error = ppc_qt_graphics_import_get_bounds_rect(cpu, memory, quicktime);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtGraphicsImportSetGWorld => {
-            let error = ppc_qt_graphics_import_set_gworld(cpu, quicktime);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtGraphicsImportDraw => {
-            let error =
-                ppc_qt_graphics_import_draw(cpu, memory, gworlds, *current_gworld, quicktime);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtOpenMovieFile => {
-            let error = ppc_qt_open_movie_file(cpu, memory, vfs_directories, vfs_files, quicktime);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtNewMovieFromFile => {
-            let error = ppc_qt_new_movie_from_file(
-                cpu,
-                memory,
-                vfs_files,
-                vfs_resource_files,
-                vfs_resources,
-                quicktime,
-                sound,
-            );
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtGetMovieBox => {
-            let error = ppc_qt_get_movie_box(cpu, memory, quicktime);
-            let _ = ppc_qt_record_error(quicktime, error);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::QtSetMovieBox => {
-            let error = ppc_qt_set_movie_box(cpu, memory, quicktime);
-            let _ = ppc_qt_record_error(quicktime, error);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::QtSetMovieGWorld => {
-            let error = ppc_qt_set_movie_gworld(cpu, quicktime);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtStartMovie => {
-            let error = ppc_qt_start_movie(cpu, memory, gworlds, *current_gworld, quicktime, sound);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtStopMovie => {
-            let error = ppc_qt_stop_movie(cpu, quicktime, sound);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtMoviesTask => {
-            let error = ppc_qt_movies_task(cpu, memory, gworlds, *current_gworld, quicktime, sound);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtDisposeMovie => {
-            let error = ppc_qt_dispose_movie(cpu, quicktime, sound);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
-        PpcImportDispatcherTarget::QtIsMovieDone => {
-            let (error, done) = ppc_qt_is_movie_done(cpu, quicktime);
-            let _ = ppc_qt_record_error(quicktime, error);
-            Some(PpcImportAction::Return(u32::from(done)))
-        }
-        PpcImportDispatcherTarget::QtGoToBeginningOfMovie => {
-            let error = ppc_qt_go_to_beginning_of_movie(cpu, quicktime, sound);
-            let _ = ppc_qt_record_error(quicktime, error);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::QtCloseMovieFile => {
-            let error = ppc_qt_close_movie_file(cpu, quicktime);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
-        }
         PpcImportDispatcherTarget::CloseComponent => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_close_component(cpu, quicktime),
         ))),
@@ -27469,95 +22364,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 },
             )
         }
-        PpcImportDispatcherTarget::InsTime | PpcImportDispatcherTarget::InsXTime => {
-            timer_tasks.with_mut(|timer_tasks| {
-                ppc_install_time_task(
-                    memory,
-                    timer_tasks,
-                    callback_scheduling,
-                    cpu.gpr[3],
-                    binding.dispatcher_target == PpcImportDispatcherTarget::InsXTime,
-                );
-            });
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::PrimeTime => {
-            timer_tasks.with_mut(|timer_tasks| {
-                ppc_prime_time_task(
-                    memory,
-                    timer_tasks,
-                    callback_scheduling,
-                    cpu.gpr[3],
-                    cpu.gpr[4] as i32,
-                    *tick_count,
-                );
-            });
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::RmvTime => {
-            callback_scheduling.with_mut(|scheduling| {
-                scheduling.current_subtick = scheduling
-                    .current_subtick
-                    .max(u64::from(*tick_count) * 1_000_000);
-            });
-            timer_tasks.with_mut(|timer_tasks| {
-                ppc_remove_time_task(memory, timer_tasks, callback_scheduling, cpu.gpr[3]);
-            });
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::VInstall
-        | PpcImportDispatcherTarget::VRemove
-        | PpcImportDispatcherTarget::SlotVInstall
-        | PpcImportDispatcherTarget::SlotVRemove => {
-            let task_ptr = cpu.gpr[3];
-            if ppc_hle_trace_enabled() {
-                let q_type = memory.read_u16_be(task_ptr + 4).unwrap_or(0);
-                let vbl_addr = memory.read_u32_be(task_ptr + 6).unwrap_or(0);
-                let vbl_count = memory.read_u16_be(task_ptr + 10).unwrap_or(0);
-                let vbl_phase = memory.read_u16_be(task_ptr + 12).unwrap_or(0);
-                let callback_target =
-                    ppc_resolve_callback_target(memory, vbl_addr, cpu.gpr[2], None);
-                let callback_text = callback_target
-                    .map(|target| {
-                        format!(
-                            " entry=${:08X} rtoc=${:08X} procInfo=${:08X} flags=${:04X}",
-                            target.entry, target.rtoc, target.proc_info, target.routine_flags
-                        )
-                    })
-                    .unwrap_or_default();
-                eprintln!(
-                    "[PPC-TRACE] {} task=${:08X} qType={} addr=${:08X} count={} phase={}{}",
-                    binding.symbol_name,
-                    task_ptr,
-                    q_type,
-                    vbl_addr,
-                    vbl_count,
-                    vbl_phase,
-                    callback_text
-                );
-            }
-            // Inside Macintosh: Processes (1994), pp. 4-22–4-24:
-            // SlotVInstall and SlotVRemove use the same VBLTask layout and
-            // scheduling rules as their system-based counterparts. Systemless
-            // exposes one active display queue, so both feed that queue.
-            let installing = matches!(
-                binding.dispatcher_target,
-                PpcImportDispatcherTarget::VInstall | PpcImportDispatcherTarget::SlotVInstall
-            );
-            let result = vbl_tasks.with_mut(|vbl_tasks| {
-                if installing {
-                    let slot = matches!(
-                        binding.dispatcher_target,
-                        PpcImportDispatcherTarget::SlotVInstall
-                    )
-                    .then_some(cpu.gpr[4] as i16);
-                    ppc_install_vbl_task(memory, vbl_tasks, task_ptr, slot)
-                } else {
-                    ppc_remove_vbl_task(memory, vbl_tasks, task_ptr)
-                }
-            });
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
         PpcImportDispatcherTarget::LegacyMemoryUtility(operation) => {
             ppc_dispatch_legacy_memory_utility(
                 operation,
@@ -27570,51 +22376,12 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 handles,
             )
         }
-        PpcImportDispatcherTarget::LegacyControl(operation) => ppc_dispatch_legacy_control(
-            operation,
-            cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            controls,
-            gworlds,
-            screen_clut,
-            toolbox_startup,
-            input,
-            vfs_resources,
-            *current_resource_refnum,
-            last_resource_error,
-        ),
-        PpcImportDispatcherTarget::LegacyWindow(operation) => ppc_dispatch_legacy_window(
-            operation,
-            cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            controls,
-            gworlds,
-            window_list,
-            current_gworld,
-            current_gdevice,
-            quickdraw_fore_color,
-            quickdraw_fore_indices,
-            quickdraw_back_color,
-            screen_clut,
-            color_manager_clut,
-            toolbox_startup,
-            input,
-            *tick_count,
-            event_queue,
-            vfs_resources,
-            *current_resource_refnum,
-            last_resource_error,
-        ),
+        PpcImportDispatcherTarget::LegacyControl(_) => {
+            unreachable!("control imports return through dispatch_control_import")
+        }
+        PpcImportDispatcherTarget::LegacyWindow(_) => {
+            unreachable!("window imports return through dispatch_window_import")
+        }
         PpcImportDispatcherTarget::AppleEventCompatibility(operation) => {
             Some(ppc_dispatch_apple_event_compatibility(
                 operation,
@@ -27627,25 +22394,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 handles,
             ))
         }
-        PpcImportDispatcherTarget::DialogCompatibility(operation) => {
-            Some(ppc_dispatch_dialog_compatibility(
-                operation,
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                controls,
-                gworlds,
-                screen_clut,
-                current_gworld,
-                current_gdevice,
-                dialog_callback_stack,
-                vfs_resources,
-                *current_resource_refnum,
-            ))
+        PpcImportDispatcherTarget::DialogCompatibility(_) => {
+            unreachable!("dialog imports return through dispatch_dialog_import")
         }
         PpcImportDispatcherTarget::QuickDrawCompatibility(operation) => {
             Some(ppc_dispatch_quickdraw_compatibility(
@@ -27681,18 +22431,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             handles,
             launched_app_path,
         )),
-        PpcImportDispatcherTarget::FileCompatibility(operation) => Some(ppc_dispatch_file_compatibility(
-            operation,
-            cpu,
-            memory,
-            files,
-            vfs_directories,
-            vfs_volumes,
-            default_dir_id,
-            working_directories,
-            next_working_directory_ref_num,
-            application_working_directory_ref_num,
-        )),
         PpcImportDispatcherTarget::AppleTalkCompatibility(operation) => {
             Some(ppc_dispatch_appletalk_compatibility(operation, cpu, memory))
         }
@@ -27702,25 +22440,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::SlotCompatibility => {
             Some(ppc_dispatch_slot_compatibility(binding, cpu, memory))
         }
-        PpcImportDispatcherTarget::StandardFileCompatibility(operation) => {
-            Some(ppc_dispatch_standard_file(
-                operation,
-                cpu,
-                memory,
-                toolbox_startup,
-                process_memory_manager,
-                heap_cursor,
-                last_mem_error,
-                gworlds,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                vfs_volumes,
-                default_dir_id,
-                working_directories,
-                next_working_directory_ref_num,
-                event_queue,
-            ))
+        PpcImportDispatcherTarget::StandardFileCompatibility(_) => {
+            unreachable!("standard file imports return through dispatch_standard_file_import")
         }
         PpcImportDispatcherTarget::SysBeep
         | PpcImportDispatcherTarget::SndSoundManagerVersion
@@ -27767,13 +22488,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::Math64(operation) => {
             Some(ppc_dispatch_math64(operation, cpu, memory))
         }
-        PpcImportDispatcherTarget::StdCCompatibility(operation) => Some(ppc_dispatch_stdc_compatibility(
-            operation,
-            cpu,
-            memory,
-            stdc_qsort_stack,
-            &mut toolbox_startup.stdc_signal_state,
-        )),
+        PpcImportDispatcherTarget::StdCCompatibility(_) => {
+            unreachable!("stdc imports return through dispatch_stdc_import")
+        }
         PpcImportDispatcherTarget::ObjectSupportCompatibility => {
             Some(ppc_dispatch_object_support_compatibility(
                 cpu,
@@ -28049,392 +22766,6 @@ fn ppc_dispatch_apple_event_compatibility(
         | PpcAppleEventCompatibilityOperation::PutParamPtr => PPC_NO_ERR,
     };
     PpcImportAction::Return(ppc_i16_result(result))
-}
-
-fn ppc_dialog_live_items(
-    memory: &mut PpcSectionMem,
-    handles: &[PpcHandleRecord],
-    dialog: u32,
-) -> Option<(u32, u32, Vec<u8>, Vec<PpcDialogItemView>)> {
-    let handle = memory.read_u32_be(dialog.checked_add(PPC_DIALOG_ITEMS_OFFSET)?)?;
-    let ptr = memory.read_u32_be(handle)?;
-    let bytes = ppc_handle_bytes(memory, handles, handle)?;
-    let items = ppc_parse_dialog_items(&bytes)?;
-    Some((handle, ptr, bytes, items))
-}
-
-fn ppc_dialog_item_end(bytes: &[u8], item: &PpcDialogItemView) -> Option<usize> {
-    let payload_len = usize::from(*bytes.get(item.item_offset.checked_add(13)?)?);
-    Some((item.item_offset.checked_add(14 + payload_len)? + 1) & !1)
-}
-
-fn ppc_offset_ditl_items(bytes: &mut [u8], items: &[PpcDialogItemView], dv: i16, dh: i16) {
-    for item in items {
-        let offset = item.item_offset;
-        for (coordinate_offset, delta) in [(4usize, dv), (6, dh), (8, dv), (10, dh)] {
-            let Some(start) = offset.checked_add(coordinate_offset) else {
-                continue;
-            };
-            let Some(pair) = bytes.get(start..start.saturating_add(2)) else {
-                continue;
-            };
-            let value = i16::from_be_bytes([pair[0], pair[1]]).saturating_add(delta);
-            if let Some(destination) = bytes.get_mut(start..start.saturating_add(2)) {
-                destination.copy_from_slice(&value.to_be_bytes());
-            }
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_dispatch_dialog_compatibility(
-    operation: PpcDialogCompatibilityOperation,
-    cpu: &mut PpcCpu,
-    process_memory_manager: &mut ProcessNativeMemoryManager,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    controls: &[PpcControlRecord],
-    gworlds: &mut Vec<PpcGWorldRecord>,
-    screen_clut: &[[u16; 3]; 256],
-    current_gworld: &mut u32,
-    current_gdevice: &mut u32,
-    dialog_callback_stack: &mut Vec<PpcDialogCallbackState>,
-    vfs_resources: &[PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-) -> PpcImportAction {
-    let dialog = cpu.gpr[3];
-    match operation {
-        PpcDialogCompatibilityOperation::IsDialogEvent => {
-            let result = ppc_read_dialog_event(memory, cpu.gpr[3])
-                .and_then(|event| {
-                    let dialog = ppc_dialog_for_event(memory, gworlds, event.what, event.message)?;
-                    Some(match event.what {
-                        6 | 8 => event.message == dialog,
-                        1 => ppc_dialog_global_bounds(memory, gworlds, dialog).is_some_and(
-                            |bounds| {
-                                event.where_v >= bounds.0
-                                    && event.where_v < bounds.2
-                                    && event.where_h >= bounds.1
-                                    && event.where_h < bounds.3
-                            },
-                        ),
-                        _ => true,
-                    })
-                })
-                .unwrap_or(false);
-            PpcImportAction::Return(u32::from(result))
-        }
-        PpcDialogCompatibilityOperation::DialogSelect => {
-            if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
-                return action;
-            }
-            let event_ptr = cpu.gpr[3];
-            let dialog_out_ptr = cpu.gpr[4];
-            let item_hit_ptr = cpu.gpr[5];
-            let Some(event) = ppc_read_dialog_event(memory, event_ptr) else {
-                return PpcImportAction::Return(0);
-            };
-            let Some(dialog) = ppc_dialog_for_event(memory, gworlds, event.what, event.message)
-            else {
-                return PpcImportAction::Return(0);
-            };
-            let Some(bounds) = ppc_dialog_global_bounds(memory, gworlds, dialog) else {
-                return PpcImportAction::Return(0);
-            };
-            let Some(items) = ppc_dialog_items_for_dialog(memory, handles, dialog) else {
-                return PpcImportAction::Return(0);
-            };
-            if matches!(event.what, 6 | 8) && dialog_out_ptr != 0 {
-                let _ = memory.write_u32_be(dialog_out_ptr, dialog);
-            }
-            match event.what {
-                6 if event.message == dialog => {
-                    *current_gworld = dialog;
-                    *current_gdevice =
-                        ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
-                    let _ = ppc_draw_dialog(
-                        memory,
-                        handles,
-                        controls,
-                        gworlds,
-                        screen_clut,
-                        vfs_resources,
-                        current_resource_refnum,
-                        dialog,
-                    );
-                    ppc_begin_dialog_callbacks(
-                        cpu,
-                        memory,
-                        dialog_callback_stack,
-                        dialog,
-                        &items,
-                        bounds,
-                        PpcDialogCallbackCompletion::Return(0),
-                    )
-                }
-                1 if event.where_v >= bounds.0
-                    && event.where_v < bounds.2
-                    && event.where_h >= bounds.1
-                    && event.where_h < bounds.3 =>
-                {
-                    let Some(hit) = ppc_dialog_item_at_global_point(
-                        &items,
-                        bounds,
-                        event.where_v,
-                        event.where_h,
-                    ) else {
-                        return PpcImportAction::Return(0);
-                    };
-                    if dialog_out_ptr != 0 {
-                        let _ = memory.write_u32_be(dialog_out_ptr, dialog);
-                    }
-                    if item_hit_ptr != 0 {
-                        let _ = memory.write_u16_be(item_hit_ptr, hit);
-                    }
-                    if items
-                        .get(usize::from(hit).saturating_sub(1))
-                        .is_some_and(|item| {
-                            item.item_type & !PPC_DIALOG_ITEM_DISABLED == PPC_DIALOG_ITEM_EDIT_TEXT
-                        })
-                    {
-                        let te_handle = memory
-                            .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
-                            .unwrap_or(0);
-                        ppc_te_click(
-                            memory,
-                            handles,
-                            te_handle,
-                            event.where_v.saturating_sub(bounds.0),
-                            event.where_h.saturating_sub(bounds.1),
-                            event.modifiers & 0x0200 != 0,
-                            event.when,
-                        );
-                    }
-                    PpcImportAction::Return(1)
-                }
-                3 | 5 => {
-                    let te_handle = memory
-                        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
-                        .unwrap_or(0);
-                    let edit_item = memory
-                        .read_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET)
-                        .unwrap_or(u16::MAX)
-                        .saturating_add(1);
-                    let character = event.message as u8;
-                    let editable = edit_item != 0
-                        && items
-                            .get(usize::from(edit_item).saturating_sub(1))
-                            .is_some_and(|item| {
-                                item.item_type & !PPC_DIALOG_ITEM_DISABLED
-                                    == PPC_DIALOG_ITEM_EDIT_TEXT
-                            });
-                    if !editable || !matches!(character, 0x08 | 0x20..=0x7e) {
-                        return PpcImportAction::Return(0);
-                    }
-                    let mut allocator = PpcProcessAllocatorView {
-                        memory_manager: process_memory_manager,
-                    };
-                    let result = ppc_te_key(
-                        Some(&mut allocator),
-                        memory,
-                        heap_cursor,
-                        heap_limit,
-                        last_mem_error,
-                        handles,
-                        te_handle,
-                        character,
-                    );
-                    *last_mem_error = result;
-                    if *last_mem_error != PPC_NO_ERR {
-                        return PpcImportAction::Return(0);
-                    }
-                    if dialog_out_ptr != 0 {
-                        let _ = memory.write_u32_be(dialog_out_ptr, dialog);
-                    }
-                    if item_hit_ptr != 0 {
-                        let _ = memory.write_u16_be(item_hit_ptr, edit_item);
-                    }
-                    PpcImportAction::Return(1)
-                }
-                _ => PpcImportAction::Return(0),
-            }
-        }
-        PpcDialogCompatibilityOperation::CountDitl => PpcImportAction::Return(
-            ppc_dialog_items_for_dialog(memory, handles, dialog)
-                .and_then(|items| u32::try_from(items.len()).ok())
-                .unwrap_or(0),
-        ),
-        PpcDialogCompatibilityOperation::FindDialogItem => {
-            let point = cpu.gpr[4];
-            let v = (point >> 16) as u16 as i16;
-            let h = point as u16 as i16;
-            let found = ppc_dialog_items_for_dialog(memory, handles, dialog)
-                .and_then(|items| {
-                    items.iter().enumerate().find_map(|(index, item)| {
-                        let rect = item.rect;
-                        (v >= rect.0 && v < rect.2 && h >= rect.1 && h < rect.3)
-                            .then(|| u32::try_from(index + 1).unwrap_or(u32::MAX))
-                    })
-                })
-                .unwrap_or(0);
-            PpcImportAction::Return(found)
-        }
-        PpcDialogCompatibilityOperation::HideDialogItem
-        | PpcDialogCompatibilityOperation::ShowDialogItem => {
-            if let Some((_handle, ptr, _bytes, items)) =
-                ppc_dialog_live_items(memory, handles, dialog)
-            {
-                let item_number = cpu.gpr[4] as u16 as usize;
-                if let Some(item) = item_number
-                    .checked_sub(1)
-                    .and_then(|index| items.get(index))
-                {
-                    let left = item.rect.1;
-                    let hide = operation == PpcDialogCompatibilityOperation::HideDialogItem;
-                    let should_move = if hide {
-                        left < 0x2000
-                    } else {
-                        left > 0x2000
-                    };
-                    if should_move {
-                        let delta = if hide { 0x4000i16 } else { -0x4000i16 };
-                        let item_addr = ptr + item.item_offset as u32;
-                        let _ = memory
-                            .write_u16_be(item_addr + 6, item.rect.1.wrapping_add(delta) as u16);
-                        let _ = memory
-                            .write_u16_be(item_addr + 10, item.rect.3.wrapping_add(delta) as u16);
-                    }
-                }
-            }
-            PpcImportAction::ReturnPreserve
-        }
-        PpcDialogCompatibilityOperation::AppendDitl => {
-            let Some((handle, _ptr, current_bytes, current_items)) =
-                ppc_dialog_live_items(memory, handles, dialog)
-            else {
-                return PpcImportAction::ReturnPreserve;
-            };
-            let Some(mut appended_bytes) = ppc_handle_bytes(memory, handles, cpu.gpr[4]) else {
-                return PpcImportAction::ReturnPreserve;
-            };
-            let Some(appended_items) = ppc_parse_dialog_items(&appended_bytes) else {
-                return PpcImportAction::ReturnPreserve;
-            };
-            let method = cpu.gpr[5] as u16 as i16;
-            let (dv, dh) = match method {
-                1 => (
-                    0,
-                    gworlds
-                        .iter()
-                        .find(|gworld| gworld.port == dialog)
-                        .map_or(0, |gworld| ppc_u32_to_i16_saturating(gworld.width)),
-                ),
-                2 => (
-                    gworlds
-                        .iter()
-                        .find(|gworld| gworld.port == dialog)
-                        .map_or(0, |gworld| ppc_u32_to_i16_saturating(gworld.height)),
-                    0,
-                ),
-                value if value < 0 => current_items
-                    .get(usize::from(value.unsigned_abs()).saturating_sub(1))
-                    .map_or((0, 0), |item| (item.rect.0, item.rect.1)),
-                _ => (0, 0),
-            };
-            ppc_offset_ditl_items(&mut appended_bytes, &appended_items, dv, dh);
-            let total_count = current_items.len().saturating_add(appended_items.len());
-            let mut combined = current_bytes;
-            combined.extend_from_slice(appended_bytes.get(2..).unwrap_or_default());
-            let count_minus_one = total_count.saturating_sub(1).min(i16::MAX as usize) as i16;
-            combined[0..2].copy_from_slice(&count_minus_one.to_be_bytes());
-            let size = u32::try_from(combined.len()).unwrap_or(u32::MAX);
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result =
-                allocator.resize_handle(memory, heap_cursor, last_mem_error, handles, handle, size);
-            *last_mem_error = result;
-            if result == PPC_NO_ERR {
-                if let Some(ptr) = memory.read_u32_be(handle) {
-                    let _ = memory.write_bytes(ptr, &combined);
-                }
-            }
-            PpcImportAction::ReturnPreserve
-        }
-        PpcDialogCompatibilityOperation::ShortenDitl => {
-            let Some((handle, _ptr, mut bytes, items)) =
-                ppc_dialog_live_items(memory, handles, dialog)
-            else {
-                return PpcImportAction::ReturnPreserve;
-            };
-            let remove = usize::from(cpu.gpr[4] as u16).min(items.len());
-            let retained = items.len().saturating_sub(remove);
-            let end = if retained == 0 {
-                2
-            } else {
-                ppc_dialog_item_end(&bytes, &items[retained - 1]).unwrap_or(bytes.len())
-            };
-            bytes.truncate(end);
-            let count_minus_one = if retained == 0 {
-                -1
-            } else {
-                retained.saturating_sub(1).min(i16::MAX as usize) as i16
-            };
-            bytes[0..2].copy_from_slice(&count_minus_one.to_be_bytes());
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = allocator.resize_handle(
-                memory,
-                heap_cursor,
-                last_mem_error,
-                handles,
-                handle,
-                u32::try_from(bytes.len()).unwrap_or(u32::MAX),
-            );
-            *last_mem_error = result;
-            if result == PPC_NO_ERR {
-                if let Some(ptr) = memory.read_u32_be(handle) {
-                    let _ = memory.write_bytes(ptr, &bytes);
-                }
-            }
-            PpcImportAction::ReturnPreserve
-        }
-        PpcDialogCompatibilityOperation::UpdateDialog => {
-            if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
-                return action;
-            }
-            *current_gworld = dialog;
-            *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
-            let bounds = ppc_dialog_global_bounds(memory, gworlds, dialog);
-            let items = ppc_dialog_items_for_dialog(memory, handles, dialog);
-            let _ = ppc_draw_dialog(
-                memory,
-                handles,
-                controls,
-                gworlds,
-                screen_clut,
-                vfs_resources,
-                current_resource_refnum,
-                dialog,
-            );
-            match (bounds, items) {
-                (Some(bounds), Some(items)) => ppc_begin_dialog_callbacks(
-                    cpu,
-                    memory,
-                    dialog_callback_stack,
-                    dialog,
-                    &items,
-                    bounds,
-                    PpcDialogCallbackCompletion::ReturnPreserve,
-                ),
-                _ => PpcImportAction::ReturnPreserve,
-            }
-        }
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -29630,7 +23961,7 @@ fn ppc_dispatch_system_compatibility(
     }
 }
 
-fn ppc_dispatch_file_compatibility(
+pub(super) fn ppc_dispatch_file_compatibility(
     operation: PpcFileCompatibilityOperation,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
@@ -30119,49 +24450,6 @@ fn ppc_math_fmod(cpu: &mut PpcCpu) {
     cpu.fpr[1] = (dividend % divisor).to_bits();
 }
 
-fn ppc_dispatch_stdc_signal(cpu: &PpcCpu, signal_state: &mut PpcStdSignalState) -> PpcImportAction {
-    // ISO/IEC 9899:1990, 7.3.3.1: signal installs a handler and returns the
-    // handler previously associated with the signal. SIG_DFL is represented
-    // by a null function pointer and SIG_IGN by the conventional pointer
-    // value one. No asynchronous host signal is delivered to guest code, but
-    // retaining the guest-visible handler makes install/reset sequences obey
-    // the C interface without invoking arbitrary native addresses.
-    const SIG_ERR: u32 = u32::MAX;
-    const SIG_MIN: i32 = 1;
-    const SIG_MAX: i32 = 32;
-    let signal = cpu.gpr[3] as i32;
-    let handler = cpu.gpr[4];
-    if !(SIG_MIN..=SIG_MAX).contains(&signal) || handler == SIG_ERR {
-        return PpcImportAction::Return(SIG_ERR);
-    }
-
-    let slot = usize::try_from(signal - SIG_MIN).unwrap();
-    let previous = signal_state.handlers[slot];
-    signal_state.handlers[slot] = handler;
-    PpcImportAction::Return(previous)
-}
-
-fn ppc_dispatch_stdc_compatibility(
-    operation: PpcStdCCompatibilityOperation,
-    cpu: &mut PpcCpu,
-    memory: &mut PpcSectionMem,
-    qsort_stack: &mut Vec<PpcQsortState>,
-    signal_state: &mut PpcStdSignalState,
-) -> PpcImportAction {
-    match operation {
-        PpcStdCCompatibilityOperation::Signal => ppc_dispatch_stdc_signal(cpu, signal_state),
-        PpcStdCCompatibilityOperation::Sscanf => {
-            PpcImportAction::Return(ppc_dispatch_stdc_sscanf(cpu, memory))
-        }
-        PpcStdCCompatibilityOperation::Strftime => {
-            PpcImportAction::Return(ppc_dispatch_stdc_strftime(cpu, memory))
-        }
-        PpcStdCCompatibilityOperation::Qsort => ppc_dispatch_stdc_qsort(cpu, memory, qsort_stack),
-        PpcStdCCompatibilityOperation::Vsprintf => {
-            PpcImportAction::Return(ppc_std_vsprintf(cpu, memory))
-        }
-    }
-}
 
 fn ppc_stdio_stream_info<'a>(
     stream: u32,
@@ -30699,712 +24987,6 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
     }
 }
 
-fn ppc_sscanf_store_integer(
-    memory: &mut PpcSectionMem,
-    destination: u32,
-    value: u64,
-    length: PpcPrintfLength,
-) -> bool {
-    match length {
-        PpcPrintfLength::Char => memory.write_u8(destination, value as u8).is_some(),
-        PpcPrintfLength::Short => memory.write_u16_be(destination, value as u16).is_some(),
-        PpcPrintfLength::LongLong | PpcPrintfLength::LongDouble => {
-            memory
-                .write_u32_be(destination, (value >> 32) as u32)
-                .is_some()
-                && memory
-                    .write_u32_be(destination.saturating_add(4), value as u32)
-                    .is_some()
-        }
-        PpcPrintfLength::Default | PpcPrintfLength::Long => {
-            memory.write_u32_be(destination, value as u32).is_some()
-        }
-    }
-}
-
-fn ppc_sscanf_integer(
-    input: &[u8],
-    start: usize,
-    width: usize,
-    specifier: u8,
-) -> Option<(u64, usize)> {
-    let limit = input.len().min(start.saturating_add(width));
-    let mut cursor = start;
-    let negative = match input.get(cursor) {
-        Some(b'-') => {
-            cursor += 1;
-            true
-        }
-        Some(b'+') => {
-            cursor += 1;
-            false
-        }
-        _ => false,
-    };
-    let mut radix = match specifier {
-        b'o' => 8,
-        b'x' | b'X' | b'p' => 16,
-        _ => 10,
-    };
-    if specifier == b'i' {
-        if cursor + 2 <= limit
-            && input.get(cursor) == Some(&b'0')
-            && matches!(input.get(cursor + 1), Some(b'x' | b'X'))
-        {
-            radix = 16;
-            cursor += 2;
-        } else if input.get(cursor) == Some(&b'0') {
-            radix = 8;
-        }
-    } else if radix == 16
-        && cursor + 2 <= limit
-        && input.get(cursor) == Some(&b'0')
-        && matches!(input.get(cursor + 1), Some(b'x' | b'X'))
-    {
-        cursor += 2;
-    }
-    let digit_start = cursor;
-    let mut value = 0u64;
-    while cursor < limit {
-        let Some(digit) = (input[cursor] as char).to_digit(radix) else {
-            break;
-        };
-        value = value
-            .saturating_mul(u64::from(radix))
-            .saturating_add(u64::from(digit));
-        cursor += 1;
-    }
-    if cursor == digit_start {
-        return None;
-    }
-    if negative {
-        value = 0u64.wrapping_sub(value);
-    }
-    Some((value, cursor))
-}
-
-fn ppc_sscanf_length(format: &[u8], cursor: &mut usize) -> PpcPrintfLength {
-    match format.get(*cursor).copied() {
-        Some(b'h') if format.get(*cursor + 1) == Some(&b'h') => {
-            *cursor += 2;
-            PpcPrintfLength::Char
-        }
-        Some(b'h') => {
-            *cursor += 1;
-            PpcPrintfLength::Short
-        }
-        Some(b'l') if format.get(*cursor + 1) == Some(&b'l') => {
-            *cursor += 2;
-            PpcPrintfLength::LongLong
-        }
-        Some(b'l') => {
-            *cursor += 1;
-            PpcPrintfLength::Long
-        }
-        Some(b'L') => {
-            *cursor += 1;
-            PpcPrintfLength::LongDouble
-        }
-        Some(b'j') => {
-            *cursor += 1;
-            PpcPrintfLength::LongLong
-        }
-        Some(b'z' | b't') => {
-            *cursor += 1;
-            PpcPrintfLength::Long
-        }
-        _ => PpcPrintfLength::Default,
-    }
-}
-
-fn ppc_sscanf_scan_set(format: &[u8], cursor: &mut usize) -> Option<([bool; 256], bool)> {
-    let inverted = format.get(*cursor) == Some(&b'^');
-    if inverted {
-        *cursor += 1;
-    }
-    let mut set = [false; 256];
-    let mut previous = None;
-    if format.get(*cursor) == Some(&b']') {
-        set[usize::from(b']')] = true;
-        previous = Some(b']');
-        *cursor += 1;
-    }
-    while let Some(byte) = format.get(*cursor).copied() {
-        *cursor += 1;
-        if byte == b']' {
-            return Some((set, inverted));
-        }
-        if byte == b'-' {
-            if let (Some(start), Some(end)) = (previous, format.get(*cursor).copied()) {
-                if end != b']' {
-                    *cursor += 1;
-                    for value in start.min(end)..=start.max(end) {
-                        set[usize::from(value)] = true;
-                    }
-                    previous = Some(end);
-                    continue;
-                }
-            }
-        }
-        set[usize::from(byte)] = true;
-        previous = Some(byte);
-    }
-    None
-}
-
-fn ppc_dispatch_stdc_sscanf(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> u32 {
-    let input = ppc_std_c_string(memory, cpu.gpr[3], 65_535);
-    let format = ppc_std_c_string(memory, cpu.gpr[4], 4096);
-    let mut input_cursor = 0usize;
-    let mut format_cursor = 0usize;
-    let mut argument = 0usize;
-    let mut assignments = 0u32;
-    let mut input_failure = false;
-    while format_cursor < format.len() {
-        if format[format_cursor].is_ascii_whitespace() {
-            while format
-                .get(format_cursor)
-                .is_some_and(u8::is_ascii_whitespace)
-            {
-                format_cursor += 1;
-            }
-            while input.get(input_cursor).is_some_and(u8::is_ascii_whitespace) {
-                input_cursor += 1;
-            }
-            continue;
-        }
-        if format[format_cursor] != b'%' {
-            if input.get(input_cursor) != format.get(format_cursor) {
-                input_failure = input_cursor >= input.len();
-                break;
-            }
-            input_cursor += 1;
-            format_cursor += 1;
-            continue;
-        }
-        format_cursor += 1;
-        if format.get(format_cursor) == Some(&b'%') {
-            if input.get(input_cursor) != Some(&b'%') {
-                input_failure = input_cursor >= input.len();
-                break;
-            }
-            input_cursor += 1;
-            format_cursor += 1;
-            continue;
-        }
-        let suppress = format.get(format_cursor) == Some(&b'*');
-        if suppress {
-            format_cursor += 1;
-        }
-        let mut width = 0usize;
-        while let Some(digit @ b'0'..=b'9') = format.get(format_cursor).copied() {
-            width = width
-                .saturating_mul(10)
-                .saturating_add(usize::from(digit - b'0'));
-            format_cursor += 1;
-        }
-        if width == 0 {
-            width = usize::MAX;
-        }
-        let length = ppc_sscanf_length(&format, &mut format_cursor);
-        let Some(specifier) = format.get(format_cursor).copied() else {
-            break;
-        };
-        format_cursor += 1;
-        let scan_set = if specifier == b'[' {
-            ppc_sscanf_scan_set(&format, &mut format_cursor)
-        } else {
-            None
-        };
-        if specifier != b'c' && specifier != b'[' && specifier != b'n' {
-            while input.get(input_cursor).is_some_and(u8::is_ascii_whitespace) {
-                input_cursor += 1;
-            }
-        }
-        let destination = if suppress || specifier == b'%' {
-            0
-        } else {
-            let destination = ppc_sprintf_argument(cpu, memory, argument);
-            argument += 1;
-            destination
-        };
-        let mut counted_assignment = !suppress && specifier != b'n';
-        let success = match specifier {
-            b'd' | b'i' | b'u' | b'o' | b'x' | b'X' | b'p' => {
-                if let Some((value, end)) =
-                    ppc_sscanf_integer(&input, input_cursor, width, specifier)
-                {
-                    input_cursor = end;
-                    suppress || ppc_sscanf_store_integer(memory, destination, value, length)
-                } else {
-                    false
-                }
-            }
-            b'f' | b'F' | b'e' | b'E' | b'g' | b'G' | b'a' | b'A' => {
-                let end = input.len().min(input_cursor.saturating_add(width));
-                let token_len = input[input_cursor..end]
-                    .iter()
-                    .take_while(|byte| {
-                        byte.is_ascii_digit()
-                            || matches!(
-                                **byte,
-                                b'+' | b'-' | b'.' | b'e' | b'E' | b'p' | b'P' | b'x' | b'X'
-                            )
-                    })
-                    .count();
-                let parsed = std::str::from_utf8(&input[input_cursor..input_cursor + token_len])
-                    .ok()
-                    .and_then(|text| text.parse::<f64>().ok());
-                if let Some(value) = parsed {
-                    input_cursor += token_len;
-                    suppress
-                        || if matches!(length, PpcPrintfLength::Long | PpcPrintfLength::LongDouble)
-                        {
-                            let bits = value.to_bits();
-                            memory
-                                .write_u32_be(destination, (bits >> 32) as u32)
-                                .is_some()
-                                && memory
-                                    .write_u32_be(destination.saturating_add(4), bits as u32)
-                                    .is_some()
-                        } else {
-                            memory
-                                .write_u32_be(destination, (value as f32).to_bits())
-                                .is_some()
-                        }
-                } else {
-                    false
-                }
-            }
-            b's' => {
-                let end = input.len().min(input_cursor.saturating_add(width));
-                let length = input[input_cursor..end]
-                    .iter()
-                    .take_while(|byte| !byte.is_ascii_whitespace())
-                    .count();
-                if length == 0 {
-                    false
-                } else {
-                    let bytes = &input[input_cursor..input_cursor + length];
-                    input_cursor += length;
-                    suppress
-                        || (memory.write_bytes(destination, bytes).is_some()
-                            && memory
-                                .write_u8(destination.saturating_add(length as u32), 0)
-                                .is_some())
-                }
-            }
-            b'c' => {
-                let length = width.min(input.len().saturating_sub(input_cursor));
-                if length == 0 || (width != usize::MAX && length != width) {
-                    false
-                } else {
-                    let length = if width == usize::MAX { 1 } else { length };
-                    let bytes = &input[input_cursor..input_cursor + length];
-                    input_cursor += length;
-                    suppress || memory.write_bytes(destination, bytes).is_some()
-                }
-            }
-            b'[' => {
-                let Some((set, inverted)) = scan_set else {
-                    break;
-                };
-                let end = input.len().min(input_cursor.saturating_add(width));
-                let length = input[input_cursor..end]
-                    .iter()
-                    .take_while(|byte| set[usize::from(**byte)] != inverted)
-                    .count();
-                if length == 0 {
-                    false
-                } else {
-                    let bytes = &input[input_cursor..input_cursor + length];
-                    input_cursor += length;
-                    suppress
-                        || (memory.write_bytes(destination, bytes).is_some()
-                            && memory
-                                .write_u8(destination.saturating_add(length as u32), 0)
-                                .is_some())
-                }
-            }
-            b'n' => {
-                counted_assignment = false;
-                suppress
-                    || ppc_sscanf_store_integer(memory, destination, input_cursor as u64, length)
-            }
-            _ => false,
-        };
-        if !success {
-            input_failure = input_cursor >= input.len();
-            break;
-        }
-        if counted_assignment {
-            assignments = assignments.saturating_add(1);
-        }
-    }
-    if assignments == 0 && input_failure {
-        u32::MAX
-    } else {
-        assignments
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PpcCTm {
-    second: i32,
-    minute: i32,
-    hour: i32,
-    month_day: i32,
-    month: i32,
-    year: i32,
-    week_day: i32,
-    year_day: i32,
-}
-
-fn ppc_read_c_tm(memory: &mut PpcSectionMem, address: u32) -> Option<PpcCTm> {
-    let field = |memory: &mut PpcSectionMem, offset: u32| {
-        memory
-            .read_u32_be(address.checked_add(offset)?)
-            .map(|value| value as i32)
-    };
-    Some(PpcCTm {
-        second: field(memory, 0)?,
-        minute: field(memory, 4)?,
-        hour: field(memory, 8)?,
-        month_day: field(memory, 12)?,
-        month: field(memory, 16)?,
-        year: field(memory, 20)?,
-        week_day: field(memory, 24)?,
-        year_day: field(memory, 28)?,
-    })
-}
-
-fn ppc_c_tm_is_leap_year(year: i32) -> bool {
-    year.rem_euclid(4) == 0 && (year.rem_euclid(100) != 0 || year.rem_euclid(400) == 0)
-}
-
-fn ppc_c_tm_iso_weeks_in_year(year: i32, january_first_weekday: i32) -> i32 {
-    let january_first_iso = if january_first_weekday == 0 {
-        7
-    } else {
-        january_first_weekday
-    };
-    if january_first_iso == 4 || (january_first_iso == 3 && ppc_c_tm_is_leap_year(year)) {
-        53
-    } else {
-        52
-    }
-}
-
-fn ppc_c_tm_iso_year_and_week(tm: PpcCTm) -> (i32, i32) {
-    let year = tm.year.saturating_add(1900);
-    let week_day = tm.week_day.rem_euclid(7);
-    let iso_week_day = if week_day == 0 { 7 } else { week_day };
-    let january_first = (week_day - tm.year_day.rem_euclid(7)).rem_euclid(7);
-    let mut week = (tm.year_day + 10 - iso_week_day) / 7;
-    if week < 1 {
-        let previous_year = year - 1;
-        let previous_january_first = (january_first
-            - if ppc_c_tm_is_leap_year(previous_year) {
-                2
-            } else {
-                1
-            })
-        .rem_euclid(7);
-        return (
-            previous_year,
-            ppc_c_tm_iso_weeks_in_year(previous_year, previous_january_first),
-        );
-    }
-    let weeks_in_year = ppc_c_tm_iso_weeks_in_year(year, january_first);
-    if week > weeks_in_year {
-        return (year + 1, 1);
-    }
-    week = week.clamp(1, 53);
-    (year, week)
-}
-
-fn ppc_dispatch_stdc_strftime(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> u32 {
-    let destination = cpu.gpr[3];
-    let maximum = cpu.gpr[4];
-    let format = ppc_std_c_string(memory, cpu.gpr[5], 4096);
-    let Some(tm) = ppc_read_c_tm(memory, cpu.gpr[6]) else {
-        if destination != 0 && maximum != 0 {
-            let _ = memory.write_u8(destination, 0);
-        }
-        return 0;
-    };
-    let abbreviated_weekdays = [b"Sun", b"Mon", b"Tue", b"Wed", b"Thu", b"Fri", b"Sat"];
-    let weekdays: [&[u8]; 7] = [
-        b"Sunday",
-        b"Monday",
-        b"Tuesday",
-        b"Wednesday",
-        b"Thursday",
-        b"Friday",
-        b"Saturday",
-    ];
-    let abbreviated_months = [
-        b"Jan", b"Feb", b"Mar", b"Apr", b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct", b"Nov",
-        b"Dec",
-    ];
-    let months: [&[u8]; 12] = [
-        b"January",
-        b"February",
-        b"March",
-        b"April",
-        b"May",
-        b"June",
-        b"July",
-        b"August",
-        b"September",
-        b"October",
-        b"November",
-        b"December",
-    ];
-    let year = tm.year.saturating_add(1900);
-    let week_day = tm.week_day.rem_euclid(7);
-    let month = tm.month.clamp(0, 11) as usize;
-    let hour_12 = match tm.hour.rem_euclid(24) % 12 {
-        0 => 12,
-        hour => hour,
-    };
-    let week_sunday = (tm.year_day + 7 - week_day).div_euclid(7);
-    let week_monday = (tm.year_day + 7 - (week_day + 6).rem_euclid(7)).div_euclid(7);
-    let (iso_year, iso_week) = ppc_c_tm_iso_year_and_week(tm);
-    let mut output = Vec::new();
-    let mut cursor = 0usize;
-    while cursor < format.len() {
-        if format[cursor] != b'%' {
-            output.push(format[cursor]);
-            cursor += 1;
-            continue;
-        }
-        cursor += 1;
-        if matches!(format.get(cursor), Some(b'E' | b'O')) {
-            cursor += 1;
-        }
-        let Some(specifier) = format.get(cursor).copied() else {
-            break;
-        };
-        cursor += 1;
-        let field = match specifier {
-            b'a' => abbreviated_weekdays[week_day as usize].to_vec(),
-            b'A' => weekdays[week_day as usize].to_vec(),
-            b'b' | b'h' => abbreviated_months[month].to_vec(),
-            b'B' => months[month].to_vec(),
-            b'c' => format!(
-                "{} {} {:2} {:02}:{:02}:{:02} {year:04}",
-                String::from_utf8_lossy(abbreviated_weekdays[week_day as usize]),
-                String::from_utf8_lossy(abbreviated_months[month]),
-                tm.month_day,
-                tm.hour,
-                tm.minute,
-                tm.second
-            )
-            .into_bytes(),
-            b'C' => format!("{:02}", year.div_euclid(100).rem_euclid(100)).into_bytes(),
-            b'd' => format!("{:02}", tm.month_day).into_bytes(),
-            b'D' | b'x' => format!(
-                "{:02}/{:02}/{:02}",
-                tm.month + 1,
-                tm.month_day,
-                year.rem_euclid(100)
-            )
-            .into_bytes(),
-            b'e' => format!("{:2}", tm.month_day).into_bytes(),
-            b'F' => format!("{year:04}-{:02}-{:02}", tm.month + 1, tm.month_day).into_bytes(),
-            b'g' => format!("{:02}", iso_year.rem_euclid(100)).into_bytes(),
-            b'G' => format!("{iso_year:04}").into_bytes(),
-            b'H' => format!("{:02}", tm.hour).into_bytes(),
-            b'I' => format!("{hour_12:02}").into_bytes(),
-            b'j' => format!("{:03}", tm.year_day + 1).into_bytes(),
-            b'm' => format!("{:02}", tm.month + 1).into_bytes(),
-            b'M' => format!("{:02}", tm.minute).into_bytes(),
-            b'n' => vec![b'\n'],
-            b'p' => {
-                if tm.hour.rem_euclid(24) < 12 {
-                    b"AM".to_vec()
-                } else {
-                    b"PM".to_vec()
-                }
-            }
-            b'r' => format!(
-                "{hour_12:02}:{:02}:{:02} {}",
-                tm.minute,
-                tm.second,
-                if tm.hour.rem_euclid(24) < 12 {
-                    "AM"
-                } else {
-                    "PM"
-                }
-            )
-            .into_bytes(),
-            b'R' => format!("{:02}:{:02}", tm.hour, tm.minute).into_bytes(),
-            b'S' => format!("{:02}", tm.second).into_bytes(),
-            b't' => vec![b'\t'],
-            b'T' | b'X' => format!("{:02}:{:02}:{:02}", tm.hour, tm.minute, tm.second).into_bytes(),
-            b'u' => (if week_day == 0 { 7 } else { week_day })
-                .to_string()
-                .into_bytes(),
-            b'U' => format!("{week_sunday:02}").into_bytes(),
-            b'V' => format!("{iso_week:02}").into_bytes(),
-            b'w' => week_day.to_string().into_bytes(),
-            b'W' => format!("{week_monday:02}").into_bytes(),
-            b'y' => format!("{:02}", year.rem_euclid(100)).into_bytes(),
-            b'Y' => format!("{year:04}").into_bytes(),
-            b'z' | b'Z' => Vec::new(),
-            b'%' => vec![b'%'],
-            other => vec![b'%', other],
-        };
-        output.extend(field);
-        if output.len() > 1_048_576 {
-            break;
-        }
-    }
-
-    let Ok(byte_count) = u32::try_from(output.len()) else {
-        return 0;
-    };
-    let success = byte_count < maximum
-        && byte_count
-            .checked_add(1)
-            .is_some_and(|size| ppc_memory_can_write_bytes(memory, destination, size));
-    if !success {
-        if destination != 0 && maximum != 0 {
-            let _ = memory.write_u8(destination, 0);
-        }
-        return 0;
-    }
-    let _ = memory.write_bytes(destination, &output);
-    let _ = memory.write_u8(destination + byte_count, 0);
-    byte_count
-}
-
-fn ppc_qsort_compare_next(
-    cpu: &mut PpcCpu,
-    memory: &mut PpcSectionMem,
-    state: PpcQsortState,
-) -> Option<PpcImportAction> {
-    let left = state
-        .base
-        .checked_add(state.index.checked_mul(state.width)?)?;
-    let right = left.checked_add(state.width)?;
-    install_powerpc_call_arguments(cpu, memory, &[left, right])?;
-    GuestCallEffect::call_guest(
-        GuestCallRequest::new(GuestCallTarget {
-            isa: GuestIsa::PowerPc,
-            entry: state.comparator.entry,
-            rtoc: state.comparator.rtoc,
-        }),
-        GuestCallContinuation::to_powerpc(
-            PPC_GUEST_CALL_RETURN_PC,
-            cpu.pc,
-            state.restore_rtoc,
-            PpcNativeReturnGpr3::Preserve,
-        ),
-    )
-    .into_ppc_import_action()
-}
-
-fn ppc_dispatch_stdc_qsort(
-    cpu: &mut PpcCpu,
-    memory: &mut PpcSectionMem,
-    states: &mut Vec<PpcQsortState>,
-) -> PpcImportAction {
-    // The PowerPC run-time convention saves GPR3..GPR10 into the caller's
-    // parameter area for variable-argument calls and passes ordinary callback
-    // arguments in GPR3 onward. See Inside Macintosh: PowerPC System Software
-    // (1994), pp. 1-47--1-49. qsort's comparator is an ordinary two-argument
-    // native callback, so route it through the same Mixed Mode-aware callback
-    // path used by Toolbox UPPs instead of substituting host comparison logic.
-    if cpu.lr == cpu.pc {
-        let Some(mut state) = states.pop() else {
-            return PpcImportAction::ReturnPreserve;
-        };
-        if cpu.gpr[3] as i32 > 0 {
-            let Some(left) = state
-                .base
-                .checked_add(state.index.saturating_mul(state.width))
-            else {
-                cpu.lr = state.final_pc;
-                return PpcImportAction::ReturnPreserve;
-            };
-            let Some(right) = left.checked_add(state.width) else {
-                cpu.lr = state.final_pc;
-                return PpcImportAction::ReturnPreserve;
-            };
-            let Some(left_bytes) = ppc_memory_read_bytes(memory, left, state.width) else {
-                cpu.lr = state.final_pc;
-                return PpcImportAction::ReturnPreserve;
-            };
-            let Some(right_bytes) = ppc_memory_read_bytes(memory, right, state.width) else {
-                cpu.lr = state.final_pc;
-                return PpcImportAction::ReturnPreserve;
-            };
-            if memory.write_bytes(left, &right_bytes).is_none()
-                || memory.write_bytes(right, &left_bytes).is_none()
-            {
-                cpu.lr = state.final_pc;
-                return PpcImportAction::ReturnPreserve;
-            }
-            state.swapped = true;
-        }
-
-        state.index = state.index.saturating_add(1);
-        if state.index >= state.pass_end {
-            if !state.swapped || state.pass_end <= 1 {
-                cpu.lr = state.final_pc;
-                cpu.gpr[2] = state.restore_rtoc;
-                return PpcImportAction::ReturnPreserve;
-            }
-            state.pass_end -= 1;
-            state.index = 0;
-            state.swapped = false;
-        }
-        states.push(state);
-        return ppc_qsort_compare_next(cpu, memory, state).unwrap_or_else(|| {
-            let state = states.pop().unwrap();
-            cpu.lr = state.final_pc;
-            PpcImportAction::ReturnPreserve
-        });
-    }
-
-    let (base, count, width, comparator_ptr) = (cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6]);
-    if count < 2 {
-        return PpcImportAction::ReturnPreserve;
-    }
-    let Some(byte_count) = count.checked_mul(width) else {
-        return PpcImportAction::ReturnPreserve;
-    };
-    if width == 0
-        || !ppc_memory_can_read_bytes(memory, base, byte_count)
-        || !ppc_memory_can_write_bytes(memory, base, byte_count)
-    {
-        return PpcImportAction::ReturnPreserve;
-    }
-    let Some(comparator) = ppc_resolve_callback_target(memory, comparator_ptr, cpu.gpr[2], None)
-    else {
-        return PpcImportAction::ReturnPreserve;
-    };
-    if memory.read_u32_be(comparator.entry).is_none() {
-        return PpcImportAction::ReturnPreserve;
-    }
-    let state = PpcQsortState {
-        base,
-        width,
-        comparator,
-        final_pc: cpu.lr,
-        restore_rtoc: cpu.gpr[2],
-        pass_end: count - 1,
-        index: 0,
-        swapped: false,
-    };
-    states.push(state);
-    ppc_qsort_compare_next(cpu, memory, state).unwrap_or_else(|| {
-        states.pop();
-        PpcImportAction::ReturnPreserve
-    })
-}
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_object_support_compatibility(
@@ -31436,224 +25018,6 @@ fn ppc_dispatch_object_support_compatibility(
         &data,
     );
     PpcImportAction::Return(ppc_i16_result(result))
-}
-
-fn ppc_install_vbl_task(
-    memory: &mut PpcSectionMem,
-    vbl_tasks: &mut Vec<PpcVblTaskRecord>,
-    task_ptr: u32,
-    slot: Option<i16>,
-) -> i16 {
-    if task_ptr == 0 || memory.read_u16_be(task_ptr + 4).unwrap_or(0) != 1 {
-        return -2;
-    }
-    let vbl_count = memory.read_u16_be(task_ptr + 10).unwrap_or(0);
-    let vbl_phase = memory.read_u16_be(task_ptr + 12).unwrap_or(0);
-    let _ = memory.write_u16_be(task_ptr + 10, vbl_count.wrapping_add(vbl_phase));
-
-    vbl_tasks.retain(|task| task.task_ptr != task_ptr);
-    vbl_tasks.push(PpcVblTaskRecord {
-        task_ptr,
-        architecture: CallbackTaskArchitecture::PowerPc,
-        slot,
-        pending: false,
-    });
-    ppc_sync_vbl_task_links(memory, vbl_tasks);
-    PPC_NO_ERR
-}
-
-fn ppc_install_time_task(
-    memory: &mut PpcSectionMem,
-    timer_tasks: &mut Vec<PpcTimerTaskRecord>,
-    scheduling: &SharedProcessCallbackScheduling,
-    task_ptr: u32,
-    extended: bool,
-) {
-    if task_ptr == 0 || !ppc_memory_can_write_bytes(memory, task_ptr, 14) {
-        return;
-    }
-    // Inside Macintosh: Processes (1994), pp. 3-17--3-19: InsTime inserts
-    // the record inactive and clears the active high bit in qType.
-    let q_type = memory.read_u16_be(task_ptr + 4).unwrap_or(0) & 0x7fff;
-    let _ = memory.write_u32_be(task_ptr, 0);
-    let _ = memory.write_u16_be(task_ptr + 4, q_type);
-    if !extended || memory.read_u32_be(task_ptr + 14).unwrap_or(0) == 0 {
-        scheduling.with_mut(|scheduling| {
-            scheduling.extended_wakeups.remove(&task_ptr);
-        });
-    }
-    timer_tasks.retain(|task| task.task_ptr != task_ptr);
-    timer_tasks.push(PpcTimerTaskRecord {
-        task_ptr,
-        architecture: CallbackTaskArchitecture::PowerPc,
-        extended,
-        callback: memory.read_u32_be(task_ptr + 6).unwrap_or(0),
-        active: false,
-        fire_at_tick: 0,
-        fire_at_subtick: 0,
-        last_fired_tick: None,
-    });
-    ppc_sync_time_task_links(memory, timer_tasks);
-    if ppc_timer_trace_enabled() {
-        eprintln!(
-            "[TIMER-PPC] install task=${task_ptr:08X} callback=${:08X}",
-            memory.read_u32_be(task_ptr + 6).unwrap_or(0)
-        );
-    }
-}
-
-fn ppc_prime_time_task(
-    memory: &mut PpcSectionMem,
-    timer_tasks: &mut [PpcTimerTaskRecord],
-    scheduling: &SharedProcessCallbackScheduling,
-    task_ptr: u32,
-    count: i32,
-    current_tick: u32,
-) {
-    if task_ptr == 0 || !ppc_memory_can_write_bytes(memory, task_ptr, 14) {
-        return;
-    }
-    // Inside Macintosh: Processes (1994), pp. 3-19--3-20: PrimeTime stores
-    // the requested delay and marks the installed task active.
-    let q_type = memory.read_u16_be(task_ptr + 4).unwrap_or(0) | 0x8000;
-    let _ = memory.write_u16_be(task_ptr + 4, q_type);
-    let _ = memory.write_u32_be(task_ptr + 10, count as u32);
-    const SUBTICKS_PER_TICK: u64 = 1_000_000;
-    let requested_delay_subticks = if count == 0 {
-        0
-    } else if count > 0 {
-        u64::from(count as u32) * 60_000
-    } else {
-        (u64::from(count.unsigned_abs()) * 60).max(1)
-    };
-    let current_subtick = scheduling.with_mut(|scheduling| {
-        let current_subtick = scheduling
-            .current_subtick
-            .max(u64::from(current_tick) * SUBTICKS_PER_TICK);
-        scheduling.current_subtick = current_subtick;
-        current_subtick
-    });
-    if let Some(task) = timer_tasks
-        .iter_mut()
-        .find(|task| task.task_ptr == task_ptr)
-    {
-        task.callback = memory.read_u32_be(task_ptr + 6).unwrap_or(0);
-        task.active = true;
-        task.fire_at_subtick = if task.extended {
-            let prior_wakeup = if memory.read_u32_be(task_ptr + 14).unwrap_or(0) == 0 {
-                None
-            } else {
-                scheduling.extended_wakeups.get(&task_ptr).copied()
-            };
-            let intended_wakeup = prior_wakeup
-                .unwrap_or(current_subtick)
-                .saturating_add(requested_delay_subticks);
-            scheduling.with_mut(|scheduling| {
-                scheduling
-                    .extended_wakeups
-                    .insert(task_ptr, intended_wakeup);
-            });
-            let opaque_wakeup = ((intended_wakeup / 60) as u32).max(1);
-            let _ = memory.write_u32_be(task_ptr + 14, opaque_wakeup);
-            intended_wakeup.max(current_subtick)
-        } else {
-            let delay_subticks = if count == 0 {
-                SUBTICKS_PER_TICK
-            } else {
-                requested_delay_subticks
-            };
-            current_subtick.saturating_add(delay_subticks)
-        };
-        task.fire_at_tick = task.fire_at_subtick.div_ceil(SUBTICKS_PER_TICK) as u32;
-        if ppc_timer_trace_enabled() {
-            eprintln!(
-                "[TIMER-PPC] prime task=${task_ptr:08X} count={count} now={current_tick} fire_at={} callback=${:08X}",
-                task.fire_at_tick,
-                task.callback,
-            );
-        }
-    } else if ppc_timer_trace_enabled() {
-        eprintln!(
-            "[TIMER-PPC] prime ignored uninstalled task=${task_ptr:08X} count={count} now={current_tick}"
-        );
-    }
-}
-
-fn ppc_remove_time_task(
-    memory: &mut PpcSectionMem,
-    timer_tasks: &mut Vec<PpcTimerTaskRecord>,
-    scheduling: &SharedProcessCallbackScheduling,
-    task_ptr: u32,
-) {
-    if task_ptr == 0 || !ppc_memory_can_write_bytes(memory, task_ptr, 14) {
-        return;
-    }
-    let current_subtick = scheduling.current_subtick;
-    let remaining_subticks = timer_tasks
-        .iter()
-        .find(|task| task.task_ptr == task_ptr && task.active)
-        .map(|task| task.fire_at_subtick.saturating_sub(current_subtick))
-        .unwrap_or(0);
-    let remaining_count = if remaining_subticks == 0 {
-        0
-    } else {
-        let remaining_us = remaining_subticks.div_ceil(60);
-        if remaining_us <= i32::MAX as u64 {
-            -(remaining_us as i32)
-        } else {
-            remaining_us.div_ceil(1_000).min(i32::MAX as u64) as i32
-        }
-    };
-    let q_type = memory.read_u16_be(task_ptr + 4).unwrap_or(0) & 0x7fff;
-    let _ = memory.write_u32_be(task_ptr, 0);
-    let _ = memory.write_u16_be(task_ptr + 4, q_type);
-    let _ = memory.write_u32_be(task_ptr + 10, remaining_count as u32);
-    timer_tasks.retain(|task| task.task_ptr != task_ptr);
-    ppc_sync_time_task_links(memory, timer_tasks);
-    if ppc_timer_trace_enabled() {
-        eprintln!("[TIMER-PPC] remove task=${task_ptr:08X}");
-    }
-}
-
-fn ppc_sync_time_task_links(memory: &mut PpcSectionMem, timer_tasks: &[PpcTimerTaskRecord]) {
-    for (index, task) in timer_tasks.iter().enumerate() {
-        let next = timer_tasks
-            .get(index.saturating_add(1))
-            .map(|next| next.task_ptr)
-            .unwrap_or(0);
-        let _ = memory.write_u32_be(task.task_ptr, next);
-    }
-}
-
-fn ppc_remove_vbl_task(
-    memory: &mut PpcSectionMem,
-    vbl_tasks: &mut Vec<PpcVblTaskRecord>,
-    task_ptr: u32,
-) -> i16 {
-    if task_ptr == 0 || memory.read_u16_be(task_ptr + 4).unwrap_or(0) != 1 {
-        return -2;
-    }
-    let before = vbl_tasks.len();
-    vbl_tasks.retain(|task| task.task_ptr != task_ptr);
-    if vbl_tasks.len() == before {
-        return -1;
-    }
-    let _ = memory.write_u32_be(task_ptr, 0);
-    ppc_sync_vbl_task_links(memory, vbl_tasks);
-    PPC_NO_ERR
-}
-
-fn ppc_sync_vbl_task_links(memory: &mut PpcSectionMem, vbl_tasks: &[PpcVblTaskRecord]) {
-    for task in vbl_tasks {
-        let next = vbl_tasks
-            .iter()
-            .skip_while(|candidate| candidate.task_ptr != task.task_ptr)
-            .skip(1)
-            .find(|candidate| candidate.slot == task.slot)
-            .map(|candidate| candidate.task_ptr)
-            .unwrap_or(0);
-        let _ = memory.write_u32_be(task.task_ptr, next);
-    }
 }
 
 fn is_quickdraw_3d_library(library_name: &str) -> bool {
@@ -43175,53 +36539,7 @@ fn ppc_write_f32_be(memory: &mut PpcSectionMem, addr: u32, value: f32) -> Option
     memory.write_u32_be(addr, value.to_bits())
 }
 
-fn ppc_param_text(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, param_text: &mut [Vec<u8>; 4]) {
-    for (index, slot) in param_text.iter_mut().enumerate() {
-        let ptr = cpu.gpr[3 + index];
-        if ptr == 0 {
-            continue;
-        }
-        if let Some(bytes) = ppc_read_pstring_bytes(memory, ptr) {
-            *slot = bytes;
-        }
-    }
-    if ppc_hle_trace_enabled() {
-        let strings = param_text
-            .iter()
-            .map(|bytes| decode_mac_roman(bytes))
-            .collect::<Vec<_>>();
-        eprintln!("[PPC-TRACE] ParamText strings={:?}", strings);
-    }
-}
-
-fn ppc_apply_param_text<'a>(
-    text: &'a [u8],
-    param_text: &[Vec<u8>; 4],
-) -> std::borrow::Cow<'a, [u8]> {
-    if !text.contains(&b'^') {
-        return std::borrow::Cow::Borrowed(text);
-    }
-    let mut expanded = Vec::with_capacity(text.len());
-    let mut offset = 0;
-    while offset < text.len() {
-        if text[offset] == b'^' {
-            if let Some(index) = text
-                .get(offset + 1)
-                .and_then(|byte| byte.checked_sub(b'0'))
-                .filter(|index| usize::from(*index) < param_text.len())
-            {
-                expanded.extend_from_slice(&param_text[usize::from(index)]);
-                offset += 2;
-                continue;
-            }
-        }
-        expanded.push(text[offset]);
-        offset += 1;
-    }
-    std::borrow::Cow::Owned(expanded)
-}
-
-fn ppc_random(memory: &mut PpcSectionMem) -> u16 {
+pub(super) fn ppc_random(memory: &mut PpcSectionMem) -> u16 {
     let old_seed = memory.read_u32_be(PPC_RAND_SEED_ADDR).unwrap_or(1);
     let seed = if old_seed == 0 { 1 } else { old_seed };
     let new_seed = ((u64::from(seed) * 16_807) % 2_147_483_647) as u32;
@@ -43275,57 +36593,6 @@ fn ppc_string_to_num(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
     let _ = memory.write_u32_be(number_ptr, signed as u32);
 }
 
-fn ppc_p2cstr(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
-    let ptr = cpu.gpr[3];
-    let Some(len) = memory.read_u8(ptr) else {
-        return;
-    };
-    let mut bytes = Vec::new();
-    for offset in 0..u32::from(len) {
-        let byte = memory.read_u8(ptr + 1 + offset).unwrap_or(0);
-        bytes.push(byte);
-        let _ = memory.write_u8(ptr + offset, byte);
-    }
-    let _ = memory.write_u8(ptr + u32::from(len), 0);
-    if ppc_hle_trace_enabled() {
-        eprintln!(
-            "[PPC-TRACE] p2cstr ptr=${:08X} lr=${:08X} len={} text=\"{}\"",
-            ptr,
-            cpu.lr,
-            len,
-            decode_mac_roman(&bytes)
-        );
-    }
-}
-
-fn ppc_c2pstr(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
-    let ptr = cpu.gpr[3];
-    let mut len = 0u8;
-    while len < u8::MAX {
-        match memory.read_u8(ptr + u32::from(len)) {
-            Some(0) => break,
-            Some(_) => len = len.saturating_add(1),
-            None => return,
-        }
-    }
-    let mut bytes = Vec::new();
-    for offset in (0..u32::from(len)).rev() {
-        let byte = memory.read_u8(ptr + offset).unwrap_or(0);
-        bytes.push(byte);
-        let _ = memory.write_u8(ptr + 1 + offset, byte);
-    }
-    let _ = memory.write_u8(ptr, len);
-    bytes.reverse();
-    if ppc_hle_trace_enabled() {
-        eprintln!(
-            "[PPC-TRACE] c2pstr ptr=${:08X} lr=${:08X} len={} text=\"{}\"",
-            ptr,
-            cpu.lr,
-            len,
-            decode_mac_roman(&bytes)
-        );
-    }
-}
 
 fn ppc_get_current_process(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
     let psn_ptr = cpu.gpr[3];
@@ -43931,7 +37198,7 @@ fn ppc_procinfo_sized_word(value: u32, size_code: u32) -> u32 {
     }
 }
 
-fn ppc_parameter_area_slot_addr(sp: u32, slot: usize) -> Option<u32> {
+pub(super) fn ppc_parameter_area_slot_addr(sp: u32, slot: usize) -> Option<u32> {
     let slot = u32::try_from(slot).ok()?;
     let offset = PPC_PARAMETER_AREA_OFFSET.checked_add(slot.checked_mul(4)?)?;
     sp.checked_add(offset)
@@ -46488,7 +39755,7 @@ fn ppc_draw_raw_quilt_frame(
     true
 }
 
-fn ppc_draw_pict_bytes_to_16bpp(
+pub(super) fn ppc_draw_pict_bytes_to_16bpp(
     memory: &mut PpcSectionMem,
     front_buffer: PpcFrontBuffer,
     data: &[u8],
@@ -48582,6 +41849,41 @@ fn ppc_qt_go_to_beginning_of_movie(
     PPC_NO_ERR
 }
 
+fn ppc_qt_go_to_end_of_movie(
+    cpu: &mut PpcCpu,
+    quicktime: &mut PpcQuickTimeState,
+    sound: &mut PpcSoundState,
+) -> i16 {
+    if cpu.gpr[3] != PPC_QT_MOVIE || quicktime.movie_disposed {
+        return PPC_PARAM_ERR;
+    }
+    quicktime.movie_at_beginning = false;
+    quicktime.movie_started = false;
+    quicktime.movie_task_count = quicktime.movie_tasks_until_done.max(1);
+    ppc_qt_reset_movie_video_decode_cache(quicktime);
+    ppc_qt_stop_movie_audio(sound);
+    PPC_NO_ERR
+}
+
+fn ppc_qt_get_movie_duration(cpu: &mut PpcCpu, quicktime: &PpcQuickTimeState) -> (i16, u32) {
+    if cpu.gpr[3] != PPC_QT_MOVIE || quicktime.movie_disposed {
+        return (PPC_PARAM_ERR, 0);
+    }
+    let duration = if quicktime.movie_file_duration > 0 {
+        quicktime.movie_file_duration as u32
+    } else {
+        600
+    };
+    (PPC_NO_ERR, duration)
+}
+
+fn ppc_qt_load_movie_into_ram(cpu: &mut PpcCpu, quicktime: &PpcQuickTimeState) -> i16 {
+    if cpu.gpr[3] != PPC_QT_MOVIE || quicktime.movie_disposed {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
 fn ppc_qt_start_movie(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
@@ -50173,7 +43475,7 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
         b"dplv" => Some((0x0002_0006, PPC_NO_ERR)),
         b"dply" => Some((0x0000_0007, PPC_NO_ERR)),
         b"alis" => Some((1, PPC_NO_ERR)),
-        b"fs  " => Some((1, PPC_NO_ERR)),
+        b"fs  " => Some(((1 << 0) | (1 << 1), PPC_NO_ERR)),
         b"fold" => Some((1, PPC_NO_ERR)),
         b"qtim" => Some((PPC_QUICKTIME_VERSION, PPC_NO_ERR)),
         b"drag" => Some((0, PPC_NO_ERR)),
@@ -50752,12 +44054,12 @@ fn ppc_is_explicit_hle_cfm_library(library_name: &str) -> bool {
         || is_quickdraw_3d_accelerator_library(library_name)
 }
 
-fn ppc_main_screen_buffer_size() -> u32 {
+pub(super) fn ppc_main_screen_buffer_size() -> u32 {
     ppc_row_bytes(PPC_MAIN_SCREEN_WIDTH, PPC_MAIN_SCREEN_STORAGE_DEPTH).unwrap()
         * PPC_MAIN_SCREEN_HEIGHT
 }
 
-fn ppc_main_screen_row_bytes() -> u32 {
+pub(super) fn ppc_main_screen_row_bytes() -> u32 {
     ppc_row_bytes(PPC_MAIN_SCREEN_WIDTH, PPC_MAIN_PIXEL_DEPTH).unwrap()
 }
 
@@ -51373,1706 +44675,6 @@ fn ppc_set_port_bits(
         // SetPortPix instead replaces the PixMap handle of a color port.
         let _ = memory.write_bytes(current_port + 2, &bitmap);
     }
-}
-
-fn ppc_window_proc_has_title_bar(proc_id: i16) -> bool {
-    matches!(proc_id, 0 | 4 | 5 | 8 | 12 | 16)
-}
-
-fn ppc_window_structure_bounds(
-    proc_id: i16,
-    content: (i16, i16, i16, i16),
-) -> (i16, i16, i16, i16) {
-    let has_title_bar = ppc_window_proc_has_title_bar(proc_id);
-    let border: i16 = if has_title_bar { 1 } else { 6 };
-    if has_title_bar {
-        crate::window_manager::standard_window_structure_bounds(content)
-    } else {
-        (
-            content.0.saturating_sub(border),
-            content.1.saturating_sub(border),
-            content.2.saturating_add(border),
-            content.3.saturating_add(border),
-        )
-    }
-}
-
-fn ppc_window_proc_id(memory: &mut PpcSectionMem, window: u32) -> i16 {
-    memory
-        .read_u32_be(window.wrapping_add(PPC_CWINDOW_DEF_PROC_OFFSET))
-        .filter(|handle| *handle != 0)
-        .and_then(|handle| memory.read_u32_be(handle))
-        .filter(|data| *data != 0)
-        .and_then(|data| memory.read_u16_be(data))
-        .unwrap_or(0) as i16
-}
-
-fn ppc_update_window_manager_regions(
-    memory: &mut PpcSectionMem,
-    window: u32,
-    content: (i16, i16, i16, i16),
-) -> Option<()> {
-    let content_rgn = memory
-        .read_u32_be(window.checked_add(PPC_CWINDOW_CONTENT_RGN_OFFSET)?)
-        .filter(|handle| ppc_rgn_ptr(memory, *handle).is_some());
-    let structure_rgn = memory
-        .read_u32_be(window.checked_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET)?)
-        .filter(|handle| ppc_rgn_ptr(memory, *handle).is_some());
-    let (Some(content_rgn), Some(structure_rgn)) = (content_rgn, structure_rgn) else {
-        return Some(());
-    };
-    let structure = ppc_window_structure_bounds(ppc_window_proc_id(memory, window), content);
-    ppc_write_rgn_bbox(
-        memory,
-        content_rgn,
-        content.0,
-        content.1,
-        content.2,
-        content.3,
-    )?;
-    ppc_write_rgn_bbox(
-        memory,
-        structure_rgn,
-        structure.0,
-        structure.1,
-        structure.2,
-        structure.3,
-    )?;
-    Some(())
-}
-
-fn ppc_new_cwindow(
-    cpu: &PpcCpu,
-    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &SharedProcessWindowList,
-    current_gdevice: u32,
-) -> u32 {
-    let storage_ptr = cpu.gpr[3];
-    let bounds_ptr = cpu.gpr[4];
-    let _title_ptr = cpu.gpr[5];
-    let visible = cpu.gpr[6] != 0;
-    let proc_id = cpu.gpr[7] as u16 as i16;
-    let behind = cpu.gpr[8];
-    let go_away = cpu.gpr[9] != 0;
-    let ref_con = cpu.gpr[10];
-    if bounds_ptr == 0 {
-        *last_mem_error = PPC_PARAM_ERR;
-        return 0;
-    }
-
-    let Some((top, left, bottom, right)) = ppc_read_rect(memory, bounds_ptr) else {
-        *last_mem_error = PPC_PARAM_ERR;
-        return 0;
-    };
-    let (width, height) = ppc_rect_dimensions(top, left, bottom, right);
-    // Inside Macintosh: Imaging With QuickDraw 1994, "Pixel Images": the
-    // pixel map for a window's color graphics port always uses the pixel
-    // depth, color table, and boundary rectangle of the main screen. Unlike
-    // an offscreen GWorld, an onscreen window therefore points at screen RAM.
-    let screen_pixmap_handle = memory
-        .read_u32_be(current_gdevice)
-        .and_then(|gdevice| memory.read_u32_be(gdevice.checked_add(22)?));
-    let screen_color_table = screen_pixmap_handle
-        .and_then(|pixmap_handle| memory.read_u32_be(pixmap_handle))
-        .and_then(|pixmap| memory.read_u32_be(pixmap.checked_add(42)?))
-        .filter(|handle| *handle != 0)
-        .unwrap_or(PPC_MAIN_CTABLE_HANDLE);
-    let screen_bits = screen_pixmap_handle
-        .and_then(|pixmap_handle| ppc_read_pixmap_handle_bits(memory, pixmap_handle));
-    let (base_addr, row_bytes, screen_top, screen_left, screen_bottom, screen_right, depth) =
-        screen_bits
-            .filter(|bits| matches!(bits.depth, 1 | 2 | 4 | 8 | 16 | 32))
-            .map(|bits| {
-                (
-                    bits.base_addr,
-                    bits.row_bytes,
-                    bits.top,
-                    bits.left,
-                    bits.bottom,
-                    bits.right,
-                    bits.depth,
-                )
-            })
-            .unwrap_or((
-                PPC_MAIN_SCREEN_BASE,
-                ppc_main_screen_row_bytes(),
-                0,
-                0,
-                PPC_MAIN_SCREEN_HEIGHT as i16,
-                PPC_MAIN_SCREEN_WIDTH as i16,
-                PPC_MAIN_PIXEL_DEPTH,
-            ));
-    if row_bytes == 0 {
-        *last_mem_error = PPC_PARAM_ERR;
-        return 0;
-    }
-    if storage_ptr != 0 && !ppc_memory_can_write_bytes(memory, storage_ptr, PPC_CGRAF_PORT_SIZE) {
-        *last_mem_error = PPC_PARAM_ERR;
-        return 0;
-    }
-
-    let has_heap = if storage_ptr != 0 {
-        ppc_heap_can_alloc_sequence(
-            memory,
-            *heap_cursor,
-            heap_limit,
-            &[PPC_PIXMAP_SIZE, 4, 4, 10, 4, 10, 4, 10, 4, 10, 4, 10, 4, 4],
-        )
-    } else {
-        ppc_heap_can_alloc_sequence(
-            memory,
-            *heap_cursor,
-            heap_limit,
-            &[
-                PPC_PIXMAP_SIZE,
-                4,
-                PPC_CGRAF_PORT_SIZE,
-                4,
-                10,
-                4,
-                10,
-                4,
-                10,
-                4,
-                10,
-                4,
-                10,
-                4,
-                4,
-            ],
-        )
-    };
-    if !has_heap {
-        *last_mem_error = PPC_MEM_FULL_ERR;
-        return 0;
-    }
-
-    let pixmap = ppc_allocator_view_reserve_bytes(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        PPC_PIXMAP_SIZE,
-        true,
-    );
-    let pixmap_handle = ppc_allocator_view_reserve_bytes(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        4,
-        true,
-    );
-    let port = if storage_ptr != 0 {
-        storage_ptr
-    } else {
-        ppc_allocator_view_reserve_bytes(
-            allocator.as_deref_mut(),
-            memory,
-            heap_cursor,
-            heap_limit,
-            PPC_CGRAF_PORT_SIZE,
-            true,
-        )
-    };
-    let vis_rgn = ppc_allocator_view_new_rgn(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-    );
-    let clip_rgn = ppc_allocator_view_new_rgn(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-    );
-    let structure_rgn = ppc_allocator_view_new_rgn(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-    );
-    let content_rgn = ppc_allocator_view_new_rgn(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-    );
-    let update_rgn = ppc_allocator_view_new_rgn(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-    );
-    let def_proc = ppc_allocator_view_allocate_handle(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        4,
-        true,
-    );
-    if pixmap == 0
-        || pixmap_handle == 0
-        || port == 0
-        || vis_rgn == 0
-        || clip_rgn == 0
-        || structure_rgn == 0
-        || content_rgn == 0
-        || update_rgn == 0
-        || def_proc == 0
-    {
-        *last_mem_error = PPC_MEM_FULL_ERR;
-        return 0;
-    }
-
-    // Inside Macintosh: Macintosh Toolbox Essentials (1992), Window Manager,
-    // p. 4-18, and Inside Macintosh: Imaging With QuickDraw (1994), Basic
-    // QuickDraw, pp. 2-9–2-10: a new window has a local origin of (0,0), while
-    // the screen boundary rectangle is offset by the negative global origin.
-    let local_bottom = ppc_u32_to_i16_saturating(height);
-    let local_right = ppc_u32_to_i16_saturating(width);
-    let pixel_top = ppc_i32_to_i16_saturating(i32::from(screen_top) - i32::from(top));
-    let pixel_left = ppc_i32_to_i16_saturating(i32::from(screen_left) - i32::from(left));
-    let pixel_bottom = ppc_i32_to_i16_saturating(i32::from(screen_bottom) - i32::from(top));
-    let pixel_right = ppc_i32_to_i16_saturating(i32::from(screen_right) - i32::from(left));
-    let structure = ppc_window_structure_bounds(proc_id, (top, left, bottom, right));
-    let def_proc_data = memory.read_u32_be(def_proc).filter(|ptr| *ptr != 0);
-
-    if memory
-        .write_bytes(port, &[0; PPC_CGRAF_PORT_SIZE as usize])
-        .is_none()
-        || def_proc_data
-            .and_then(|data| memory.write_u16_be(data, proc_id as u16))
-            .is_none()
-        || memory.write_u32_be(pixmap_handle, pixmap).is_none()
-        || ppc_write_pixmap(
-            memory,
-            pixmap,
-            base_addr,
-            row_bytes,
-            pixel_top,
-            pixel_left,
-            pixel_bottom,
-            pixel_right,
-            depth,
-        )
-        .is_none()
-        || memory
-            .write_u32_be(pixmap + 42, if depth <= 8 { screen_color_table } else { 0 })
-            .is_none()
-        || ppc_write_gworld_port(memory, port, pixmap_handle, 0, 0, local_bottom, local_right)
-            .is_none()
-        || memory
-            .write_u32_be(port + PPC_CGRAF_PORT_VIS_RGN_OFFSET, vis_rgn)
-            .is_none()
-        || memory
-            .write_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET, clip_rgn)
-            .is_none()
-        || memory
-            .write_u32_be(port + PPC_CWINDOW_STRUCTURE_RGN_OFFSET, structure_rgn)
-            .is_none()
-        || memory
-            .write_u32_be(port + PPC_CWINDOW_CONTENT_RGN_OFFSET, content_rgn)
-            .is_none()
-        || memory
-            .write_u32_be(port + PPC_CWINDOW_UPDATE_RGN_OFFSET, update_rgn)
-            .is_none()
-        || memory
-            .write_u32_be(port + PPC_CWINDOW_DEF_PROC_OFFSET, def_proc)
-            .is_none()
-        || ppc_write_rgn_bbox(memory, vis_rgn, 0, 0, local_bottom, local_right).is_none()
-        || ppc_write_rgn_bbox(memory, clip_rgn, i16::MIN, i16::MIN, i16::MAX, i16::MAX).is_none()
-        || ppc_write_rgn_bbox(memory, content_rgn, top, left, bottom, right).is_none()
-        || ppc_write_rgn_bbox(
-            memory,
-            structure_rgn,
-            structure.0,
-            structure.1,
-            structure.2,
-            structure.3,
-        )
-        .is_none()
-        || memory
-            .write_u16_be(port + PPC_CWINDOW_WINDOW_KIND_OFFSET, 8)
-            .is_none()
-        || memory
-            .write_u8(port + PPC_CWINDOW_VISIBLE_OFFSET, u8::from(visible))
-            .is_none()
-        || memory
-            .write_u8(port + PPC_CWINDOW_HILITED_OFFSET, 0)
-            .is_none()
-        || memory
-            .write_u8(port + PPC_CWINDOW_GO_AWAY_OFFSET, u8::from(go_away))
-            .is_none()
-        || memory
-            .write_u32_be(port + PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET, ref_con)
-            .is_none()
-    {
-        *last_mem_error = PPC_PARAM_ERR;
-        return 0;
-    }
-
-    *last_mem_error = PPC_NO_ERR;
-    gworlds.retain(|gworld| gworld.port != port);
-    gworlds.push(PpcGWorldRecord {
-        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
-        port,
-        pixmap_handle,
-        pixmap,
-        base_addr,
-        gdevice: current_gdevice,
-        width,
-        height,
-        depth,
-        row_bytes,
-        pixels_locked: false,
-        pixels_no_purge: true,
-    });
-    ppc_reorder_window(gworlds, window_list, port, behind, false);
-    if visible && proc_id == 1 {
-        ppc_draw_existing_window_frame(memory, gworlds, window_list, port, false);
-    }
-    if ppc_gworld_trace_enabled() {
-        eprintln!(
-            "[PPC-GWORLD-TRACE] NewCWindow port=${:08X} storage=${:08X} visible={} proc_id={} base=${:08X} pixmap=${:08X} handle=${:08X} gdevice=${:08X} global_bounds=({}, {}, {}, {}) port_rect=(0, 0, {}, {}) pixel_bounds=({}, {}, {}, {}) size={}x{}x{} row_bytes={} ref_con=${:08X}",
-            port,
-            storage_ptr,
-            visible,
-            proc_id,
-            base_addr,
-            pixmap,
-            pixmap_handle,
-            current_gdevice,
-            top,
-            left,
-            bottom,
-            right,
-            local_bottom,
-            local_right,
-            pixel_top,
-            pixel_left,
-            pixel_bottom,
-            pixel_right,
-            width,
-            height,
-            depth,
-            row_bytes,
-            ref_con
-        );
-    }
-    port
-}
-
-fn ppc_draw_standard_window_frame(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    window: u32,
-    _width: i16,
-    _height: i16,
-    go_away: bool,
-) {
-    // Macintosh Toolbox Essentials (1992), pp. 4-24--4-27: the standard
-    // document WDEF owns an 18-pixel title bar and one-pixel structure frame.
-    let active = memory
-        .read_u8(window.wrapping_add(PPC_CWINDOW_HILITED_OFFSET))
-        .unwrap_or(0)
-        != 0;
-    let proc_id = ppc_window_proc_id(memory, window);
-    let Some(content) = memory
-        .read_u32_be(window + PPC_CWINDOW_CONTENT_RGN_OFFSET)
-        .and_then(|region| ppc_read_rgn_bbox(memory, region))
-    else {
-        return;
-    };
-    let title = memory
-        .read_u32_be(window + PPC_CWINDOW_TITLE_HANDLE_OFFSET)
-        .filter(|handle| *handle != 0)
-        .and_then(|handle| memory.read_u32_be(handle))
-        .filter(|ptr| *ptr != 0)
-        .and_then(|ptr| ppc_read_pstring_bytes(memory, ptr))
-        .unwrap_or_default();
-    let title_width =
-        ppc_text_bytes_advance_for_font(&title, PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
-    let title_metrics = get_font_metrics(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
-    let menu_bar_height = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16;
-    let chrome = crate::window_manager::standard_window_chrome(
-        content,
-        menu_bar_height,
-        title_width,
-        title_metrics.ascent,
-        title_metrics.descent,
-        !title.is_empty(),
-        active,
-        matches!(proc_id, 0 | 4 | 8 | 12),
-        go_away,
-        matches!(proc_id, 8 | 12),
-    );
-    let palette = ppc_ui_theme(gworlds).provider().palette();
-    let _ = ppc_paint_rect_bounds(
-        memory,
-        gworlds,
-        PPC_MAIN_GWORLD,
-        chrome.background,
-        ppc_theme_rgb(palette.frame_light),
-        None,
-    );
-    for rect in chrome.ink.iter().copied() {
-        let _ = ppc_paint_rect_bounds(
-            memory,
-            gworlds,
-            PPC_MAIN_GWORLD,
-            rect,
-            ppc_theme_rgb(palette.frame_dark),
-            None,
-        );
-    }
-
-    if active && ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7 {
-        for rect in chrome.stripe_ink.iter().copied() {
-            let _ = ppc_paint_rect_bounds(
-                memory,
-                gworlds,
-                PPC_MAIN_GWORLD,
-                rect,
-                ppc_theme_rgb(palette.selection),
-                None,
-            );
-        }
-    }
-
-    if !title.is_empty() {
-        let _ = ppc_draw_text_bytes(
-            memory,
-            gworlds,
-            PPC_MAIN_GWORLD,
-            (chrome.title_h, chrome.title_baseline),
-            PPC_QD_TEXT_FONT_DEFAULT,
-            PPC_QD_TEXT_SIZE_SYSTEM,
-            PPC_QD_TEXT_MODE_SRC_OR,
-            ppc_theme_rgb(palette.frame_dark),
-            None,
-            &title,
-        );
-    }
-}
-
-fn ppc_draw_grow_icon(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    window_list: &[u32],
-    window: u32,
-) {
-    if window == 0 || !matches!(ppc_window_proc_id(memory, window), 0 | 8) {
-        return;
-    }
-    let Some(content) = memory
-        .read_u32_be(window + PPC_CWINDOW_CONTENT_RGN_OFFSET)
-        .and_then(|region| ppc_read_rgn_bbox(memory, region))
-    else {
-        return;
-    };
-    let active = memory
-        .read_u8(window.wrapping_add(PPC_CWINDOW_HILITED_OFFSET))
-        .unwrap_or(0)
-        != 0;
-    // DrawGrowIcon is clipped by windows above the target in the Window
-    // Manager port. Preserve that occlusion around native screen-RAM draws.
-    // Macintosh Toolbox Essentials (1992), pp. 4-106 and 4-111--4-112.
-    let preserved_front_pixels =
-        ppc_front_window_occlusion_pixels(memory, gworlds, window_list, window);
-    let icon = crate::window_manager::standard_grow_icon(content, active);
-    let _ = ppc_paint_rect_bounds(
-        memory,
-        gworlds,
-        PPC_MAIN_GWORLD,
-        icon.background,
-        PPC_RGB_WHITE,
-        None,
-    );
-    for rect in icon.ink {
-        let _ = ppc_paint_rect_bounds(
-            memory,
-            gworlds,
-            PPC_MAIN_GWORLD,
-            rect,
-            PPC_RGB_BLACK,
-            None,
-        );
-    }
-    if let Some(saved) = preserved_front_pixels {
-        for (index, (x, y, pixel)) in saved.pixels.iter().copied().enumerate() {
-            let _ = ppc_quickdraw_write_raw_pixel(memory, saved.front_buffer, (x, y), pixel);
-            ppc_restore_saved_detail(memory, saved.front_buffer, (x, y), &saved.pixels, index);
-        }
-    }
-}
-
-fn ppc_draw_existing_window_frame(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    window_list: &[u32],
-    window: u32,
-    host_menu_bar_hidden: bool,
-) {
-    let Some((top, left, bottom, right)) = ppc_read_rect(memory, window.wrapping_add(16)) else {
-        return;
-    };
-    let height = bottom.saturating_sub(top);
-    let width = right.saturating_sub(left);
-    let proc_id = ppc_window_proc_id(memory, window);
-    // Macintosh Toolbox Essentials (1992), pp. 4-10--4-12: the standard
-    // WDEF owns document-window frame pixels. Kiosk presentation suppresses
-    // those host-synthesized pixels without changing the guest's window
-    // regions, ordering, or visibility. Dialog WDEFs remain visible.
-    // ClipAbove excludes the complete structure region of every visible
-    // window above the WDEF being drawn. Native WDEF chrome targets screen
-    // RAM directly, so save those pixels and restore them after the raw draw.
-    // Macintosh Toolbox Essentials (1992), pp. 4-106 and 4-118--4-119.
-    let preserved_front_pixels = ppc_front_window_occlusion_pixels(
-        memory,
-        gworlds,
-        window_list,
-        window,
-    );
-    if ppc_window_proc_has_title_bar(proc_id) && !host_menu_bar_hidden {
-        let go_away = memory
-            .read_u8(window.wrapping_add(PPC_CWINDOW_GO_AWAY_OFFSET))
-            .unwrap_or(0)
-            != 0;
-        ppc_draw_standard_window_frame(memory, gworlds, window, width, height, go_away);
-    } else if proc_id == 1 {
-        ppc_draw_dialog_box_frame(memory, gworlds, window, height, width);
-    }
-    if let Some(saved) = preserved_front_pixels {
-        for (index, (x, y, pixel)) in saved.pixels.iter().copied().enumerate() {
-            let _ = ppc_quickdraw_write_raw_pixel(memory, saved.front_buffer, (x, y), pixel);
-            ppc_restore_saved_detail(memory, saved.front_buffer, (x, y), &saved.pixels, index);
-        }
-    }
-}
-
-struct PpcOccludedWindowPixels {
-    front_buffer: PpcFrontBuffer,
-    pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
-}
-
-fn ppc_front_window_occlusion_pixels(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    window_list: &[u32],
-    window: u32,
-) -> Option<PpcOccludedWindowPixels> {
-    let front_buffer = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD)?;
-    let target_structure = ppc_window_global_structure_bounds(memory, gworlds, window)?;
-    let mut pixels = Vec::new();
-    for front in crate::window_manager::window_occluders(
-        window_list.iter().copied(),
-        window,
-        |candidate| ppc_window_is_visible(memory, candidate),
-    ) {
-        let Some(front_structure) = ppc_window_global_structure_bounds(memory, gworlds, front)
-        else {
-            continue;
-        };
-        let overlap = (
-            target_structure.0.max(front_structure.0).max(0),
-            target_structure.1.max(front_structure.1).max(0),
-            target_structure
-                .2
-                .min(front_structure.2)
-                .min(ppc_u32_to_i16_saturating(front_buffer.height)),
-            target_structure
-                .3
-                .min(front_structure.3)
-                .min(ppc_u32_to_i16_saturating(front_buffer.width)),
-        );
-        if overlap.0 >= overlap.2 || overlap.1 >= overlap.3 {
-            continue;
-        }
-        for y in i32::from(overlap.0)..i32::from(overlap.2) {
-            for x in i32::from(overlap.1)..i32::from(overlap.3) {
-                if let Some(pixel) = ppc_quickdraw_read_pixel(memory, front_buffer, (x, y)) {
-                    pixels.push((x, y, pixel));
-                }
-            }
-        }
-    }
-    let mut saved = crate::memory::SavedPixels::from(pixels);
-    for index in 0..saved.len() {
-        let (x, y, _) = saved[index];
-        ppc_capture_saved_detail(memory, front_buffer, (x, y), &mut saved, index);
-    }
-    Some(PpcOccludedWindowPixels {
-        front_buffer,
-        pixels: saved,
-    })
-}
-
-fn ppc_redraw_visible_window_frame(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    window_list: &[u32],
-    window: u32,
-    host_menu_bar_hidden: bool,
-) {
-    if ppc_window_is_visible(memory, window) {
-        ppc_draw_existing_window_frame(
-            memory,
-            gworlds,
-            window_list,
-            window,
-            host_menu_bar_hidden,
-        );
-    }
-}
-
-fn ppc_window_global_structure_bounds(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    window: u32,
-) -> Option<(i16, i16, i16, i16)> {
-    let content = ppc_window_global_content_bounds(memory, gworlds, window)?;
-    Some(ppc_window_structure_bounds(ppc_window_proc_id(memory, window), content))
-}
-
-fn ppc_union_bounds(
-    first: Option<(i16, i16, i16, i16)>,
-    second: Option<(i16, i16, i16, i16)>,
-) -> Option<(i16, i16, i16, i16)> {
-    let valid = |rect: (i16, i16, i16, i16)| rect.0 < rect.2 && rect.1 < rect.3;
-    match (first.filter(|rect| valid(*rect)), second.filter(|rect| valid(*rect))) {
-        (Some(first), Some(second)) => Some((
-            first.0.min(second.0),
-            first.1.min(second.1),
-            first.2.max(second.2),
-            first.3.max(second.3),
-        )),
-        (Some(rect), None) | (None, Some(rect)) => Some(rect),
-        (None, None) => None,
-    }
-}
-
-fn ppc_invalidate_window_global_rect(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    window: u32,
-    global_rect: (i16, i16, i16, i16),
-) {
-    let Some(content) = ppc_window_global_content_bounds(memory, gworlds, window) else {
-        return;
-    };
-    let intersection = (
-        content.0.max(global_rect.0),
-        content.1.max(global_rect.1),
-        content.2.min(global_rect.2),
-        content.3.min(global_rect.3),
-    );
-    if intersection.0 >= intersection.2 || intersection.1 >= intersection.3 {
-        return;
-    }
-    let update_rgn = memory
-        .read_u32_be(window.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
-        .unwrap_or(0);
-    if ppc_rgn_ptr(memory, update_rgn).is_none() {
-        return;
-    }
-    let local = (
-        intersection.0.saturating_sub(content.0),
-        intersection.1.saturating_sub(content.1),
-        intersection.2.saturating_sub(content.0),
-        intersection.3.saturating_sub(content.1),
-    );
-    ppc_union_window_update_rect(memory, window, local);
-}
-
-fn ppc_union_window_update_rect(
-    memory: &mut PpcSectionMem,
-    window: u32,
-    rect: (i16, i16, i16, i16),
-) {
-    if rect.0 >= rect.2 || rect.1 >= rect.3 {
-        return;
-    }
-    let update_rgn = memory
-        .read_u32_be(window.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
-        .unwrap_or(0);
-    if ppc_rgn_ptr(memory, update_rgn).is_none() {
-        return;
-    }
-    let existing = ppc_read_rgn_bbox(memory, update_rgn).unwrap_or((0, 0, 0, 0));
-    let combined = if existing.0 >= existing.2 || existing.1 >= existing.3 {
-        rect
-    } else {
-        (
-            existing.0.min(rect.0),
-            existing.1.min(rect.1),
-            existing.2.max(rect.2),
-            existing.3.max(rect.3),
-        )
-    };
-    let _ = ppc_write_rgn_bbox(
-        memory,
-        update_rgn,
-        combined.0,
-        combined.1,
-        combined.2,
-        combined.3,
-    );
-}
-
-fn ppc_invalidate_window_local_rect(
-    memory: &mut PpcSectionMem,
-    window: u32,
-    rect: (i16, i16, i16, i16),
-) {
-    let Some(content) = ppc_read_rect(memory, window.wrapping_add(16)) else {
-        return;
-    };
-    let clipped = (
-        rect.0.max(content.0),
-        rect.1.max(content.1),
-        rect.2.min(content.2),
-        rect.3.min(content.3),
-    );
-    ppc_union_window_update_rect(memory, window, clipped);
-}
-
-fn ppc_validate_window_local_rect(
-    memory: &mut PpcSectionMem,
-    window: u32,
-    rect: (i16, i16, i16, i16),
-) {
-    let update_rgn = memory
-        .read_u32_be(window.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
-        .unwrap_or(0);
-    let Some(update) = ppc_read_rgn_bbox(memory, update_rgn)
-        .filter(|current| current.0 < current.2 && current.1 < current.3)
-    else {
-        return;
-    };
-    if rect.0 <= update.0 && rect.1 <= update.1 && rect.2 >= update.2 && rect.3 >= update.3 {
-        let _ = ppc_set_empty_rgn(memory, update_rgn);
-    }
-}
-
-fn ppc_standard_desktop_color(gworlds: &[PpcGWorldRecord], h: i32, v: i32) -> PpcRgbColor {
-    if gworlds
-        .iter()
-        .any(|world| world.port == PPC_MAIN_GWORLD && world.depth == 1)
-    {
-        return if crate::window_manager::standard_desktop_pattern_is_ink(h, v) {
-            PPC_RGB_BLACK
-        } else {
-            PPC_RGB_WHITE
-        };
-    }
-    let palette = ppc_ui_theme(gworlds).provider().palette();
-    ppc_theme_rgb(
-        if crate::window_manager::standard_desktop_pattern_is_ink(h, v) {
-            palette.desktop_dark
-        } else {
-            palette.desktop_light
-        },
-    )
-}
-
-fn ppc_repaint_window_geometry_transition(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    window_list: &[u32],
-    window: u32,
-    was_visible: bool,
-    previous_structure: Option<(i16, i16, i16, i16)>,
-    next_structure: Option<(i16, i16, i16, i16)>,
-    host_menu_bar_hidden: bool,
-    event_queue: &mut VecDeque<PpcQueuedEvent>,
-    when: u32,
-    input: PpcInputSnapshot,
-) {
-    if !was_visible {
-        return;
-    }
-    let Some(exposed) = ppc_union_bounds(previous_structure, next_structure) else {
-        return;
-    };
-    ppc_restore_window_removal_exposure(
-        memory,
-        gworlds,
-        window_list,
-        Some(exposed),
-        host_menu_bar_hidden,
-        event_queue,
-        when,
-        input,
-    );
-    // Keep the moved/resized window's update region explicit even if its new
-    // structure only touches the transition's edge. EndUpdate clears it
-    // after the guest's updateEvt redraws the visible content.
-    ppc_invalidate_window_global_rect(memory, gworlds, window, exposed);
-}
-
-fn ppc_restore_window_removal_exposure(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    window_list: &[u32],
-    exposed: Option<(i16, i16, i16, i16)>,
-    host_menu_bar_hidden: bool,
-    event_queue: &mut VecDeque<PpcQueuedEvent>,
-    when: u32,
-    input: PpcInputSnapshot,
-) {
-    let Some(exposed) = exposed.filter(|rect| rect.0 < rect.2 && rect.1 < rect.3) else {
-        return;
-    };
-    let Some(front_buffer) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) else {
-        return;
-    };
-
-    // NewCWindow ports share the screen PixMap. Removing one therefore has
-    // to restore the desktop pixels outside any remaining window before the
-    // exposed windows receive their update events. This is the PowerPC
-    // equivalent of the classic adapter's saved-under-pixels path.
-    let menu_bar_height = if host_menu_bar_hidden {
-        0
-    } else {
-        memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16
-    };
-    let paint = (
-        exposed.0.max(menu_bar_height).max(0),
-        exposed.1.max(0),
-        exposed.2.min(PPC_MAIN_SCREEN_HEIGHT as i16),
-        exposed.3.min(PPC_MAIN_SCREEN_WIDTH as i16),
-    );
-    if paint.0 < paint.2 && paint.1 < paint.3 {
-        for v in i32::from(paint.0)..i32::from(paint.2) {
-            for h in i32::from(paint.1)..i32::from(paint.3) {
-                let color = ppc_standard_desktop_color(gworlds, h, v);
-                let _ = ppc_quickdraw_write_pixel(memory, front_buffer, (h, v), color);
-            }
-        }
-    }
-
-    // Repaint every remaining visible window whose structure intersects the
-    // exposed area. The update events let guest code redraw only its visible
-    // content, while redrawing the WDEF here restores title bars and frames.
-    for &window in window_list {
-        if !ppc_window_is_visible(memory, window) {
-            continue;
-        }
-        let Some(content) = ppc_window_global_content_bounds(memory, gworlds, window) else {
-            continue;
-        };
-        let structure = ppc_window_structure_bounds(ppc_window_proc_id(memory, window), content);
-        let intersects = structure.0 < exposed.2
-            && exposed.0 < structure.2
-            && structure.1 < exposed.3
-            && exposed.1 < structure.3;
-        if !intersects {
-            continue;
-        }
-        ppc_redraw_visible_window_frame(
-            memory,
-            gworlds,
-            window_list,
-            window,
-            host_menu_bar_hidden,
-        );
-        ppc_invalidate_window_global_rect(memory, gworlds, window, exposed);
-        ppc_enqueue_window_update_event(event_queue, window, when, input);
-    }
-}
-
-fn ppc_sync_process_window_list(memory: &mut PpcSectionMem, window_list: &[u32]) {
-    const WINDOW_NEXT_WINDOW_OFFSET: u32 = 144;
-    const LOWMEM_WINDOW_LIST: u32 = 0x09D6;
-
-    for (index, &window) in window_list.iter().enumerate() {
-        let next = window_list.get(index + 1).copied().unwrap_or(0);
-        if memory.read_u32_be(window.wrapping_add(WINDOW_NEXT_WINDOW_OFFSET)) != Some(next) {
-            let _ = memory.write_u32_be(window.wrapping_add(WINDOW_NEXT_WINDOW_OFFSET), next);
-        }
-    }
-    let head = window_list.first().copied().unwrap_or(0);
-    if memory.read_u32_be(LOWMEM_WINDOW_LIST) != Some(head) {
-        let _ = memory.write_u32_be(LOWMEM_WINDOW_LIST, head);
-    }
-}
-
-fn ppc_transition_front_window_chrome(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    window_list: &[u32],
-    previous_front: Option<u32>,
-    host_menu_bar_hidden: bool,
-) {
-    let next_front = ppc_front_visible_process_window(memory, window_list);
-    if previous_front == next_front {
-        return;
-    }
-    let preserve_previous_chrome = next_front
-        .is_some_and(|window| ppc_window_proc_id(memory, window) == 1);
-    if let Some(previous) = previous_front {
-        if !preserve_previous_chrome {
-            let _ = ppc_set_window_hilited(memory, previous, false);
-            ppc_redraw_visible_window_frame(
-                memory,
-                gworlds,
-                window_list,
-                previous,
-                host_menu_bar_hidden,
-            );
-        }
-    }
-    if let Some(next) = next_front {
-        let _ = ppc_set_window_hilited(memory, next, true);
-        ppc_redraw_visible_window_frame(
-            memory,
-            gworlds,
-            window_list,
-            next,
-            host_menu_bar_hidden,
-        );
-    }
-}
-
-fn ppc_recalculate_window_vis_regions(
-    process_memory_manager: &mut ProcessNativeMemoryManager,
-    memory: &mut PpcSectionMem,
-    window_list: &[u32],
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-) {
-    let mut allocator = PpcProcessAllocatorView {
-        memory_manager: process_memory_manager,
-    };
-    let front_to_back = window_list.to_vec();
-    for window in front_to_back.iter().copied() {
-        let Some(vis_rgn) = memory.read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET) else {
-            continue;
-        };
-        if !ppc_window_is_visible(memory, window) {
-            let _ = ppc_set_empty_rgn(memory, vis_rgn);
-            continue;
-        }
-        let Some(content_rgn) = memory.read_u32_be(window + PPC_CWINDOW_CONTENT_RGN_OFFSET) else {
-            continue;
-        };
-        if ppc_copy_rgn(
-            Some(&mut allocator),
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            content_rgn,
-            vis_rgn,
-        ) != PPC_NO_ERR
-        {
-            continue;
-        }
-        let occluders = crate::window_manager::window_occluders(
-            front_to_back.iter().copied(),
-            window,
-            |front| ppc_window_is_visible(memory, front),
-        );
-        for front in occluders {
-            let Some(structure_rgn) = memory.read_u32_be(front + PPC_CWINDOW_STRUCTURE_RGN_OFFSET)
-            else {
-                continue;
-            };
-            let _ = ppc_region_boolean_op(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                vis_rgn,
-                structure_rgn,
-                vis_rgn,
-                PpcRegionBooleanOp::Difference,
-            );
-        }
-        if let Some((top, left, _, _)) = ppc_read_rgn_bbox(memory, content_rgn) {
-            let _ = ppc_offset_rgn(memory, vis_rgn, left.saturating_neg(), top.saturating_neg());
-        }
-    }
-}
-
-fn ppc_draw_dialog_box_frame(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    window: u32,
-    height: i16,
-    width: i16,
-) {
-    let palette = ppc_ui_theme(gworlds).provider().palette();
-    // Macintosh Toolbox Essentials (1992), pp. 4-24--4-26: dBoxProc owns a
-    // gray dialog surface and a structure region outside the content rectangle.
-    // Initialize both before the application draws its dialog items.
-    let _ = ppc_paint_rect_bounds(
-        memory,
-        gworlds,
-        window,
-        (0, 0, height, width),
-        ppc_theme_rgb(palette.window_background),
-        None,
-    );
-    let Some((top, left, bottom, right)) = memory
-        .read_u32_be(window + PPC_CWINDOW_CONTENT_RGN_OFFSET)
-        .and_then(|region| ppc_read_rgn_bbox(memory, region))
-    else {
-        return;
-    };
-    let outer_top = top.saturating_sub(8);
-    let outer_left = left.saturating_sub(8);
-    let outer_bottom = bottom.saturating_add(8);
-    let outer_right = right.saturating_add(8);
-    if ppc_draw_themed_dialog_frame(
-        memory,
-        gworlds,
-        (top, left, bottom, right),
-        (outer_top, outer_left, outer_bottom, outer_right),
-        1,
-    ) {
-        return;
-    }
-    let _ = ppc_paint_rect_bounds(
-        memory,
-        gworlds,
-        PPC_MAIN_GWORLD,
-        (outer_top, outer_left, outer_bottom, outer_right),
-        ppc_theme_rgb(palette.window_background),
-        None,
-    );
-    for rect in [
-        (top - 8, left - 8, top - 7, right + 8),
-        (top - 8, left - 8, bottom + 8, left - 7),
-        (top - 8, right + 6, bottom + 8, right + 8),
-        (bottom + 6, left - 8, bottom + 8, right + 8),
-        (top - 5, left - 5, top - 4, right + 5),
-        (top - 4, left - 5, top - 3, right + 4),
-        (top - 5, left - 5, bottom + 5, left - 4),
-        (top - 5, left - 4, bottom + 4, left - 3),
-        (top - 5, right + 3, bottom + 4, right + 4),
-        (bottom + 3, left - 5, bottom + 4, right + 4),
-    ] {
-        let _ = ppc_paint_rect_bounds(
-            memory,
-            gworlds,
-            PPC_MAIN_GWORLD,
-            rect,
-            ppc_theme_rgb(palette.frame_dark),
-            None,
-        );
-    }
-}
-
-fn ppc_get_new_cwindow(
-    cpu: &PpcCpu,
-    process_memory_manager: &mut ProcessNativeMemoryManager,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &SharedProcessWindowList,
-    current_gdevice: u32,
-    vfs_resources: &[PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-    last_resource_error: &mut i16,
-    host_menu_bar_hidden: bool,
-) -> u32 {
-    let window_id = cpu.gpr[3] as u16 as i16;
-    let storage_ptr = cpu.gpr[4];
-    let behind = cpu.gpr[5];
-    let Some(resource) = ppc_vfs_resource_index(
-        vfs_resources,
-        current_resource_refnum,
-        u32::from_be_bytes(*b"WIND"),
-        window_id,
-        false,
-    )
-    .and_then(|index| vfs_resources.get(index)) else {
-        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-        return 0;
-    };
-    let bytes = resource.data.clone();
-    let mut allocator = PpcProcessAllocatorView {
-        memory_manager: process_memory_manager,
-    };
-    let Some((bounds_ptr, title_ptr)) = ppc_materialize_window_resource_parameters(
-        Some(&mut allocator),
-        memory,
-        heap_cursor,
-        heap_limit,
-        &bytes,
-    ) else {
-        *last_resource_error = PPC_PARAM_ERR;
-        *last_mem_error = PPC_PARAM_ERR;
-        return 0;
-    };
-    let mut window_cpu = cpu.clone();
-    window_cpu.gpr[3] = storage_ptr;
-    window_cpu.gpr[4] = bounds_ptr;
-    window_cpu.gpr[5] = title_ptr;
-    window_cpu.gpr[6] = u32::from(u16::from_be_bytes([bytes[10], bytes[11]]) != 0);
-    window_cpu.gpr[7] = u32::from(u16::from_be_bytes([bytes[8], bytes[9]]));
-    window_cpu.gpr[8] = behind;
-    window_cpu.gpr[9] = u32::from(u16::from_be_bytes([bytes[12], bytes[13]]) != 0);
-    window_cpu.gpr[10] = u32::from_be_bytes([bytes[14], bytes[15], bytes[16], bytes[17]]);
-    let window = ppc_new_window_from_cpu(
-        &window_cpu,
-        Some(&mut allocator),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        gworlds,
-        window_list,
-        current_gdevice,
-        host_menu_bar_hidden,
-    );
-    if window == 0 {
-        *last_resource_error = PPC_PARAM_ERR;
-        return 0;
-    }
-
-    // GetNewCWindow calls GetNewPalette with the window resource ID and
-    // associates the resulting palette with the new window. If that palette
-    // is absent, the application palette ('pltt' 0) is the default.
-    // Inside Macintosh Volume VI (1991), pp. 20-18--20-19.
-    let palette = ppc_copy_palette_resource(
-        Some(&mut allocator),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        vfs_resources,
-        current_resource_refnum,
-        window_id,
-    );
-    let palette = if palette == 0 && window_id != 0 {
-        ppc_copy_palette_resource(
-            Some(&mut allocator),
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            vfs_resources,
-            current_resource_refnum,
-            0,
-        )
-    } else {
-        palette
-    };
-    if palette != 0 {
-        let _ = memory.write_u32_be(window + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET, palette);
-        let _ = memory.write_u16_be(window + PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET, 1);
-    }
-    *last_resource_error = PPC_NO_ERR;
-    *last_mem_error = PPC_NO_ERR;
-    window
-}
-
-fn ppc_size_window(
-    cpu: &PpcCpu,
-    memory: &mut PpcSectionMem,
-    gworlds: &mut [PpcGWorldRecord],
-) -> Option<()> {
-    // Inside Macintosh: Imaging With QuickDraw (1994), Basic QuickDraw,
-    // p. 2-46: PortSize changes only the port rectangle's size and preserves
-    // the graphics port's coordinate system and boundary rectangle.
-    let window_ptr = cpu.gpr[3];
-    let width = u32::from(cpu.gpr[4] as u16).max(1);
-    let height = u32::from(cpu.gpr[5] as u16).max(1);
-    let (top, left, _, _) = ppc_read_rect(memory, window_ptr.checked_add(16)?)?;
-    let pixmap_handle = memory.read_u32_be(window_ptr.checked_add(2)?)?;
-    let pixmap = memory.read_u32_be(pixmap_handle)?;
-    let (pixel_top, pixel_left, _, _) = ppc_read_rect(memory, pixmap.checked_add(6)?)?;
-    let global_top = top.saturating_sub(pixel_top);
-    let global_left = left.saturating_sub(pixel_left);
-    let bottom = ppc_i32_to_i16_saturating(i32::from(top).saturating_add(height as i32));
-    let right = ppc_i32_to_i16_saturating(i32::from(left).saturating_add(width as i32));
-
-    ppc_write_rect(
-        memory,
-        window_ptr.checked_add(16)?,
-        top,
-        left,
-        bottom,
-        right,
-    )?;
-    if let Some(record) = gworlds.iter_mut().find(|record| record.port == window_ptr) {
-        record.width = width;
-        record.height = height;
-    }
-    ppc_update_window_manager_regions(
-        memory,
-        window_ptr,
-        (
-            global_top,
-            global_left,
-            ppc_i32_to_i16_saturating(i32::from(global_top).saturating_add(height as i32)),
-            ppc_i32_to_i16_saturating(i32::from(global_left).saturating_add(width as i32)),
-        ),
-    )?;
-
-    if ppc_hle_trace_enabled() {
-        eprintln!(
-            "[PPC-TRACE] SizeWindow window=${:08X} width={} height={} bounds=({}, {}, {}, {})",
-            window_ptr, width, height, top, left, bottom, right
-        );
-    }
-    Some(())
-}
-
-fn ppc_move_window(
-    cpu: &PpcCpu,
-    memory: &mut PpcSectionMem,
-    gworlds: &mut [PpcGWorldRecord],
-) -> Option<()> {
-    // Inside Macintosh: Macintosh Toolbox Essentials (1992), Window Manager,
-    // "MoveWindow": moving a window changes its global location without
-    // affecting the local coordinates of its upper-left corner. Shift the
-    // screen boundary rectangle and leave the local port rectangle intact.
-    let window_ptr = cpu.gpr[3];
-    let new_left = cpu.gpr[4] as u16 as i16;
-    let new_top = cpu.gpr[5] as u16 as i16;
-    let (port_top, port_left, port_bottom, port_right) =
-        ppc_read_rect(memory, window_ptr.checked_add(16)?)?;
-    let pixmap_handle = memory.read_u32_be(window_ptr.checked_add(2)?)?;
-    let pixmap = memory.read_u32_be(pixmap_handle)?;
-    let (pixel_top, pixel_left, pixel_bottom, pixel_right) =
-        ppc_read_rect(memory, pixmap.checked_add(6)?)?;
-    let pixel_height = i32::from(pixel_bottom) - i32::from(pixel_top);
-    let pixel_width = i32::from(pixel_right) - i32::from(pixel_left);
-    let new_pixel_top = ppc_i32_to_i16_saturating(i32::from(port_top) - i32::from(new_top));
-    let new_pixel_left = ppc_i32_to_i16_saturating(i32::from(port_left) - i32::from(new_left));
-    let new_pixel_bottom = ppc_i32_to_i16_saturating(i32::from(new_pixel_top) + pixel_height);
-    let new_pixel_right = ppc_i32_to_i16_saturating(i32::from(new_pixel_left) + pixel_width);
-    ppc_write_rect(
-        memory,
-        pixmap + 6,
-        new_pixel_top,
-        new_pixel_left,
-        new_pixel_bottom,
-        new_pixel_right,
-    )?;
-    ppc_update_window_manager_regions(
-        memory,
-        window_ptr,
-        (
-            new_top,
-            new_left,
-            ppc_i32_to_i16_saturating(
-                i32::from(new_top).saturating_add(i32::from(port_bottom.saturating_sub(port_top))),
-            ),
-            ppc_i32_to_i16_saturating(
-                i32::from(new_left).saturating_add(i32::from(port_right.saturating_sub(port_left))),
-            ),
-        ),
-    )?;
-
-    if let Some(record) = gworlds.iter().find(|record| record.port == window_ptr) {
-        debug_assert_eq!(
-            (record.width, record.height),
-            ppc_rect_dimensions(port_top, port_left, port_bottom, port_right)
-        );
-    }
-
-    if ppc_hle_trace_enabled() {
-        eprintln!(
-            "[PPC-TRACE] MoveWindow window=${:08X} left={} top={} port_rect=({}, {}, {}, {}) pixel_bounds=({}, {}, {}, {})",
-            window_ptr,
-            new_left,
-            new_top,
-            port_top,
-            port_left,
-            port_bottom,
-            port_right,
-            new_pixel_top,
-            new_pixel_left,
-            new_pixel_bottom,
-            new_pixel_right
-        );
-    }
-    Some(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_paint_one(
-    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    window: u32,
-    clobbered_rgn: u32,
-    host_menu_bar_hidden: bool,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-) {
-    if window == 0 {
-        ppc_paint_behind(
-            allocator.as_deref_mut(),
-            memory,
-            gworlds,
-            0,
-            clobbered_rgn,
-            host_menu_bar_hidden,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-        );
-        return;
-    }
-    let Some(record) = gworlds.iter().find(|record| record.port == window) else {
-        *last_mem_error = PPC_PARAM_ERR;
-        return;
-    };
-    let Some((port_top, port_left, port_bottom, port_right)) =
-        ppc_read_rect(memory, record.port.wrapping_add(16))
-    else {
-        *last_mem_error = PPC_PARAM_ERR;
-        return;
-    };
-    let Some((pixel_top, pixel_left, _, _)) = ppc_read_rect(memory, record.pixmap.wrapping_add(6))
-    else {
-        *last_mem_error = PPC_PARAM_ERR;
-        return;
-    };
-    let content = (
-        port_top.saturating_sub(pixel_top),
-        port_left.saturating_sub(pixel_left),
-        port_bottom.saturating_sub(pixel_top),
-        port_right.saturating_sub(pixel_left),
-    );
-    let clobbered = ppc_read_rgn_bbox(memory, clobbered_rgn)
-        .filter(|rect| rect.0 < rect.2 && rect.1 < rect.3)
-        .unwrap_or(content);
-    let exposed = (
-        content.0.max(clobbered.0),
-        content.1.max(clobbered.1),
-        content.2.min(clobbered.2),
-        content.3.min(clobbered.3),
-    );
-    if exposed.0 >= exposed.2 || exposed.1 >= exposed.3 {
-        *last_mem_error = PPC_NO_ERR;
-        return;
-    }
-
-    let update_addr = record.port.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET);
-    let mut update_rgn = memory.read_u32_be(update_addr).unwrap_or(0);
-    if ppc_rgn_ptr(memory, update_rgn).is_none() {
-        update_rgn = ppc_allocator_view_new_rgn(
-            allocator.as_deref_mut(),
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-        );
-        if update_rgn == 0 || memory.write_u32_be(update_addr, update_rgn).is_none() {
-            *last_mem_error = PPC_MEM_FULL_ERR;
-            return;
-        }
-    }
-    let previous = ppc_read_rgn_bbox(memory, update_rgn).unwrap_or((0, 0, 0, 0));
-    let combined = if previous.0 >= previous.2 || previous.1 >= previous.3 {
-        exposed
-    } else {
-        (
-            previous.0.min(exposed.0),
-            previous.1.min(exposed.1),
-            previous.2.max(exposed.2),
-            previous.3.max(exposed.3),
-        )
-    };
-    if ppc_write_rgn_bbox(
-        memory, update_rgn, combined.0, combined.1, combined.2, combined.3,
-    )
-    .is_none()
-    {
-        *last_mem_error = PPC_PARAM_ERR;
-        return;
-    }
-
-    // Macintosh Toolbox Essentials (1992), p. 4-118: PaintOne erases the
-    // exposed content with the window's background before adding it to the
-    // update region. NewCWindow ports use the main screen PixMap, so these
-    // Window Manager region coordinates are also the screen-buffer pixels.
-    if let Some(front_buffer) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) {
-        for v in i32::from(exposed.0)..i32::from(exposed.2) {
-            for h in i32::from(exposed.1)..i32::from(exposed.3) {
-                let _ = ppc_quickdraw_write_pixel(memory, front_buffer, (h, v), PPC_RGB_WHITE);
-            }
-        }
-    }
-    *last_mem_error = PPC_NO_ERR;
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_calc_vis_behind(
-    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    start_window: u32,
-    clobbered_rgn: u32,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-) {
-    let Some(clobbered) = ppc_read_rgn_bbox(memory, clobbered_rgn) else {
-        return;
-    };
-    let mut windows = gworlds
-        .iter()
-        .rev()
-        .filter(|record| {
-            !matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
-                && ppc_window_is_visible(memory, record.port)
-        })
-        .collect::<Vec<_>>();
-    if start_window != 0 {
-        if let Some(index) = windows
-            .iter()
-            .position(|record| record.port == start_window)
-        {
-            windows.drain(0..index);
-        } else {
-            windows.clear();
-        }
-    }
-
-    for record in windows {
-        let Some((port_top, port_left, port_bottom, port_right)) =
-            ppc_read_rect(memory, record.port.wrapping_add(16))
-        else {
-            continue;
-        };
-        let Some((pixel_top, pixel_left, _, _)) =
-            ppc_read_rect(memory, record.pixmap.wrapping_add(6))
-        else {
-            continue;
-        };
-        let global = (
-            port_top.saturating_sub(pixel_top),
-            port_left.saturating_sub(pixel_left),
-            port_bottom.saturating_sub(pixel_top),
-            port_right.saturating_sub(pixel_left),
-        );
-        let intersects = global.0 < clobbered.2
-            && clobbered.0 < global.2
-            && global.1 < clobbered.3
-            && clobbered.1 < global.3;
-        if !intersects {
-            continue;
-        }
-
-        let mbar_height = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16;
-        let local_menu_bottom = mbar_height.saturating_add(pixel_top);
-        let local_top = port_top.max(local_menu_bottom);
-        let vis_rgn_addr = record.port.wrapping_add(24);
-        let mut vis_rgn = memory.read_u32_be(vis_rgn_addr).unwrap_or(0);
-        if ppc_rgn_ptr(memory, vis_rgn).is_none() {
-            vis_rgn = ppc_allocator_view_new_rgn(
-                allocator.as_deref_mut(),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            if vis_rgn == 0 || memory.write_u32_be(vis_rgn_addr, vis_rgn).is_none() {
-                *last_mem_error = PPC_MEM_FULL_ERR;
-                return;
-            }
-        }
-        if ppc_write_rgn_bbox(
-            memory,
-            vis_rgn,
-            local_top,
-            port_left,
-            port_bottom,
-            port_right,
-        )
-        .is_none()
-        {
-            *last_mem_error = PPC_PARAM_ERR;
-            return;
-        }
-    }
-
-    // Macintosh Toolbox Essentials (1992), p. 4-119: CalcVisBehind walks
-    // startWindow and every window behind it whose content intersects the
-    // clobbered desktop region, recalculating each window's local visRgn.
-    *last_mem_error = PPC_NO_ERR;
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_paint_behind(
-    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    start_window: u32,
-    clobbered_rgn: u32,
-    host_menu_bar_hidden: bool,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-) {
-    let Some(clobbered) = ppc_read_rgn_bbox(memory, clobbered_rgn) else {
-        return;
-    };
-    let mut windows = gworlds
-        .iter()
-        .rev()
-        .filter(|record| {
-            !matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
-                && ppc_window_is_visible(memory, record.port)
-        })
-        .collect::<Vec<_>>();
-    if start_window != 0 {
-        if let Some(index) = windows
-            .iter()
-            .position(|record| record.port == start_window)
-        {
-            windows.drain(0..index);
-        } else {
-            windows.clear();
-        }
-    } else {
-        windows.clear();
-    }
-
-    for record in windows {
-        let Some((port_top, port_left, port_bottom, port_right)) =
-            ppc_read_rect(memory, record.port.wrapping_add(16))
-        else {
-            continue;
-        };
-        let Some((pixel_top, pixel_left, _, _)) =
-            ppc_read_rect(memory, record.pixmap.wrapping_add(6))
-        else {
-            continue;
-        };
-        let content = (
-            port_top.saturating_sub(pixel_top),
-            port_left.saturating_sub(pixel_left),
-            port_bottom.saturating_sub(pixel_top),
-            port_right.saturating_sub(pixel_left),
-        );
-        let exposed = (
-            content.0.max(clobbered.0),
-            content.1.max(clobbered.1),
-            content.2.min(clobbered.2),
-            content.3.min(clobbered.3),
-        );
-        if exposed.0 >= exposed.2 || exposed.1 >= exposed.3 {
-            continue;
-        }
-
-        let update_addr = record.port.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET);
-        let mut update_rgn = memory.read_u32_be(update_addr).unwrap_or(0);
-        if ppc_rgn_ptr(memory, update_rgn).is_none() {
-            update_rgn = ppc_allocator_view_new_rgn(
-                allocator.as_deref_mut(),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            if update_rgn == 0 || memory.write_u32_be(update_addr, update_rgn).is_none() {
-                *last_mem_error = PPC_MEM_FULL_ERR;
-                return;
-            }
-        }
-        let update = ppc_read_rgn_bbox(memory, update_rgn).unwrap_or((0, 0, 0, 0));
-        let combined = if update.0 >= update.2 || update.1 >= update.3 {
-            exposed
-        } else {
-            (
-                update.0.min(exposed.0),
-                update.1.min(exposed.1),
-                update.2.max(exposed.2),
-                update.3.max(exposed.3),
-            )
-        };
-        if ppc_write_rgn_bbox(
-            memory, update_rgn, combined.0, combined.1, combined.2, combined.3,
-        )
-        .is_none()
-        {
-            *last_mem_error = PPC_PARAM_ERR;
-            return;
-        }
-    }
-
-    if start_window == 0 {
-        let desktop = if host_menu_bar_hidden {
-            (0, 0, PPC_MAIN_SCREEN_HEIGHT as i16, PPC_MAIN_SCREEN_WIDTH as i16)
-        } else {
-            ppc_read_rgn_bbox(memory, PPC_GRAY_RGN_HANDLE).unwrap_or((
-                20,
-                0,
-                PPC_MAIN_SCREEN_HEIGHT as i16,
-                PPC_MAIN_SCREEN_WIDTH as i16,
-            ))
-        };
-        let paint = (
-            desktop.0.max(clobbered.0),
-            desktop.1.max(clobbered.1),
-            desktop.2.min(clobbered.2),
-            desktop.3.min(clobbered.3),
-        );
-        if paint.0 < paint.2 && paint.1 < paint.3 {
-            if let Some(front_buffer) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) {
-                for v in i32::from(paint.0)..i32::from(paint.2) {
-                    for h in i32::from(paint.1)..i32::from(paint.3) {
-                        let color = ppc_standard_desktop_color(gworlds, h, v);
-                        let _ = ppc_quickdraw_write_pixel(memory, front_buffer, (h, v), color);
-                    }
-                }
-            }
-        }
-    }
-
-    // Macintosh Toolbox Essentials (1992), pp. 4-117--4-119: PaintBehind
-    // paints the desktop for NIL and otherwise adds exposed content to the
-    // update regions of startWindow and each window behind it, clipped to the
-    // caller's clobbered region. PaintWhite is clear for this operation.
-    *last_mem_error = PPC_NO_ERR;
 }
 
 fn ppc_color_table_bytes(seed: u32, colors: &[[u16; 3]]) -> Option<Vec<u8>> {
@@ -54418,132 +46020,11 @@ fn ppc_write_gworld_staged_pixel(
     Some(())
 }
 
-fn ppc_gworld_device(gworlds: &[PpcGWorldRecord], port: u32) -> Option<u32> {
+pub(super) fn ppc_gworld_device(gworlds: &[PpcGWorldRecord], port: u32) -> Option<u32> {
     gworlds
         .iter()
         .find(|gworld| gworld.port == port)
         .map(|gworld| gworld.gdevice)
-}
-
-fn ppc_window_is_visible(memory: &mut PpcSectionMem, window: u32) -> bool {
-    window != 0 && memory.read_u8(window.wrapping_add(PPC_CWINDOW_VISIBLE_OFFSET)) == Some(1)
-}
-
-fn ppc_front_visible_window(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-) -> Option<u32> {
-    gworlds.iter().rev().map(|record| record.port).find(|port| {
-        !matches!(*port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
-            && ppc_window_is_visible(memory, *port)
-    })
-}
-
-fn ppc_front_visible_process_window(
-    memory: &mut PpcSectionMem,
-    window_list: &[u32],
-) -> Option<u32> {
-    window_list
-        .iter()
-        .copied()
-        .find(|window| ppc_window_is_visible(memory, *window))
-}
-
-fn ppc_window_global_content_bounds(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    window: u32,
-) -> Option<(i16, i16, i16, i16)> {
-    let (port_top, port_left, port_bottom, port_right) =
-        ppc_read_rect(memory, window.checked_add(16)?)?;
-    let surface = ppc_live_quickdraw_surface(memory, gworlds, window)?;
-    Some((
-        port_top.saturating_sub(surface.top),
-        port_left.saturating_sub(surface.left),
-        port_bottom.saturating_sub(surface.top),
-        port_right.saturating_sub(surface.left),
-    ))
-}
-
-fn ppc_find_window_at_point(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    window_list: &[u32],
-    v: i16,
-    h: i16,
-    menu_bar_height: i16,
-) -> (i16, u32) {
-    let front_window = ppc_front_visible_process_window(memory, window_list);
-    for &window in window_list {
-        if !ppc_window_is_visible(memory, window) {
-            continue;
-        }
-        let Some((top, left, bottom, right)) =
-            ppc_window_global_content_bounds(memory, gworlds, window)
-        else {
-            continue;
-        };
-        let is_front = front_window == Some(window);
-        let proc_id = ppc_window_proc_id(memory, window);
-        if is_front && matches!(proc_id, 0 | 8) {
-            if v >= bottom.saturating_sub(15)
-                && v < bottom
-                && h >= right.saturating_sub(15)
-                && h < right
-            {
-                return (5, window);
-            }
-        }
-        if v >= top && v < bottom && h >= left && h < right {
-            return (3, window);
-        }
-        let title_top = top.saturating_sub(18).max(menu_bar_height);
-        if v >= title_top && v < top && h >= left && h < right {
-            let go_away = memory
-                .read_u8(window.wrapping_add(PPC_CWINDOW_GO_AWAY_OFFSET))
-                .unwrap_or(0)
-                != 0;
-            if is_front && go_away && h < left.saturating_add(18) {
-                return (6, window);
-            }
-            if is_front
-                && matches!(proc_id, 8 | 12)
-                && h >= right.saturating_sub(24)
-                && h < right.saturating_sub(6)
-            {
-                return (7, window);
-            }
-            return (4, window);
-        }
-    }
-    (0, 0)
-}
-
-fn ppc_set_window_visible(memory: &mut PpcSectionMem, window: u32, visible: bool) -> bool {
-    if window == 0 {
-        return false;
-    }
-    // Inside Macintosh: Macintosh Toolbox Essentials (1992), pp. 4-65 and
-    // 4-88--4-89: WindowRecord.visible is the guest-visible source of truth
-    // updated by ShowWindow, HideWindow, and ShowHide.
-    memory
-        .write_u8(
-            window.wrapping_add(PPC_CWINDOW_VISIBLE_OFFSET),
-            u8::from(visible),
-        )
-        .is_some()
-}
-
-fn ppc_set_window_hilited(memory: &mut PpcSectionMem, window: u32, hilited: bool) -> bool {
-    if window == 0 {
-        return false;
-    }
-    memory
-        .write_u8(
-            window.wrapping_add(PPC_CWINDOW_HILITED_OFFSET),
-            u8::from(hilited),
-        )
-        .is_some()
 }
 
 fn ppc_gworld_pixmap(memory: &mut PpcSectionMem, gworlds: &[PpcGWorldRecord], gworld: u32) -> u32 {
@@ -54607,14 +46088,14 @@ fn ppc_legacy_qd_color_to_rgb(color: u32) -> PpcRgbColor {
     }
 }
 
-fn ppc_rgb_color_to_rgb555(color: PpcRgbColor) -> u16 {
+pub(super) fn ppc_rgb_color_to_rgb555(color: PpcRgbColor) -> u16 {
     fn component(value: u16) -> u16 {
         (((u32::from(value) * 31) + 32_767) / 65_535) as u16
     }
     (component(color.red) << 10) | (component(color.green) << 5) | component(color.blue)
 }
 
-fn ppc_fix_ratio(numerator: i16, denominator: i16) -> i32 {
+pub(super) fn ppc_fix_ratio(numerator: i16, denominator: i16) -> i32 {
     // Inside Macintosh Volume I (1985), p. I-467: FixRatio returns the
     // truncated signed 16.16 quotient and uses asymmetric saturation when the
     // denominator is zero.
@@ -54628,13 +46109,13 @@ fn ppc_fix_ratio(numerator: i16, denominator: i16) -> i32 {
     ((i64::from(numerator) << 16) / i64::from(denominator)) as i32
 }
 
-fn ppc_fix_mul(left: i32, right: i32) -> i32 {
+pub(super) fn ppc_fix_mul(left: i32, right: i32) -> i32 {
     // Inside Macintosh Volume I (1985), p. I-467: FixMul rounds its signed
     // 32.32 intermediate to the nearest representable 16.16 value.
     ((i64::from(left) * i64::from(right) + 0x8000) >> 16) as i32
 }
 
-fn ppc_fix_div(numerator: i32, denominator: i32) -> i32 {
+pub(super) fn ppc_fix_div(numerator: i32, denominator: i32) -> i32 {
     // Operating System Utilities (1994), pp. 3-39--3-40: FixDiv divides two
     // signed 16.16 values and returns a signed 16.16 quotient. Saturate when
     // the quotient is not representable, including division by zero.
@@ -54645,7 +46126,7 @@ fn ppc_fix_div(numerator: i32, denominator: i32) -> i32 {
         .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-fn ppc_long_to_fix(value: i32) -> i32 {
+pub(super) fn ppc_long_to_fix(value: i32) -> i32 {
     // Operating System Utilities (1994), p. 3-43: inputs outside the signed
     // 16-bit integer range saturate to the extrema of Fixed.
     if value > 0x7fff {
@@ -54657,7 +46138,7 @@ fn ppc_long_to_fix(value: i32) -> i32 {
     }
 }
 
-fn ppc_fix_to_long(value: i32) -> i32 {
+pub(super) fn ppc_fix_to_long(value: i32) -> i32 {
     // Operating System Utilities (1994), p. 3-44: round to the nearest
     // integer, with exact halves rounded away from zero.
     let value = i64::from(value);
@@ -54668,7 +46149,7 @@ fn ppc_fix_to_long(value: i32) -> i32 {
     }
 }
 
-fn ppc_fix_round(value: i32) -> i16 {
+pub(super) fn ppc_fix_round(value: i32) -> i16 {
     // Inside Macintosh Volume I (1985), p. I-467: round to nearest integer,
     // with exact halves rounded away from zero.
     let value = i64::from(value);
@@ -54693,24 +46174,24 @@ fn ppc_radians_to_fixed(value: f64) -> i32 {
         .clamp(i32::MIN as f64, i32::MAX as f64) as i32
 }
 
-fn ppc_fix_to_frac(value: i32) -> i32 {
+pub(super) fn ppc_fix_to_frac(value: i32) -> i32 {
     // Operating System Utilities (1994), p. 3-44: shift left 14 bits with saturation.
     (i64::from(value) << 14).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-fn ppc_frac_to_fix(value: i32) -> i32 {
+pub(super) fn ppc_frac_to_fix(value: i32) -> i32 {
     // Operating System Utilities (1994), p. 3-44: shift right 14 bits with nearest rounding.
     ((i64::from(value) + (1 << 13)) >> 14).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-fn ppc_f64_to_frac(value: f64) -> u32 {
+pub(super) fn ppc_f64_to_frac(value: f64) -> u32 {
     // Operating System Utilities (1994), p. 3-46: convert float to Fract with saturation.
     (value * 1_073_741_824.0)
         .round()
         .clamp(i32::MIN as f64, i32::MAX as f64) as i32 as u32
 }
 
-fn ppc_frac_sin(value: i32) -> i32 {
+pub(super) fn ppc_frac_sin(value: i32) -> i32 {
     // Inside Macintosh Volume IV (1986), p. IV-64: sine of Fixed radians returned as Fract.
     let sin_val = ppc_fixed_radians(value).sin();
     (sin_val * 1_073_741_824.0)
@@ -54718,7 +46199,7 @@ fn ppc_frac_sin(value: i32) -> i32 {
         .clamp(i32::MIN as f64, i32::MAX as f64) as i32
 }
 
-fn ppc_frac_cos(value: i32) -> i32 {
+pub(super) fn ppc_frac_cos(value: i32) -> i32 {
     // Inside Macintosh Volume IV (1986), p. IV-64: cosine of Fixed radians returned as Fract.
     let cos_val = ppc_fixed_radians(value).cos();
     (cos_val * 1_073_741_824.0)
@@ -54726,7 +46207,7 @@ fn ppc_frac_cos(value: i32) -> i32 {
         .clamp(i32::MIN as f64, i32::MAX as f64) as i32
 }
 
-fn ppc_frac_sqrt(value: u32) -> u32 {
+pub(super) fn ppc_frac_sqrt(value: u32) -> u32 {
     // Operating System Utilities (1994), p. 3-41: unsigned Fract 0..4-2^-30 square root.
     let val = (value as f64) / 1_073_741_824.0;
     let sqrt_val = val.sqrt();
@@ -54735,7 +46216,7 @@ fn ppc_frac_sqrt(value: u32) -> u32 {
         .clamp(0.0, 2_147_483_648.0) as u32
 }
 
-fn ppc_frac_mul(x: i32, y: i32) -> i32 {
+pub(super) fn ppc_frac_mul(x: i32, y: i32) -> i32 {
     // Inside Macintosh Volume IV (1986), p. IV-63: add half a unit in
     // magnitude, then chop toward zero.
     let product = i64::from(x) * i64::from(y);
@@ -54744,7 +46225,7 @@ fn ppc_frac_mul(x: i32, y: i32) -> i32 {
     rounded.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-fn ppc_frac_div(numerator: i32, denominator: i32) -> i32 {
+pub(super) fn ppc_frac_div(numerator: i32, denominator: i32) -> i32 {
     // Inside Macintosh Volume I (1985), p. I-468: signed 2.30 quotient, saturating on divide-by-zero.
     if denominator == 0 {
         return if numerator >= 0 { i32::MAX } else { i32::MIN };
@@ -54753,7 +46234,7 @@ fn ppc_frac_div(numerator: i32, denominator: i32) -> i32 {
         .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-fn ppc_fix_atan2(x: i32, y: i32) -> i32 {
+pub(super) fn ppc_fix_atan2(x: i32, y: i32) -> i32 {
     // Inside Macintosh Volume IV (1986), p. IV-65: arctangent of y/x in radians.
     ppc_radians_to_fixed(f64::from(y).atan2(f64::from(x)))
 }
@@ -54770,7 +46251,7 @@ fn ppc_write_wide(memory: &mut PpcSectionMem, address: u32, value: i64) -> Optio
     Some(())
 }
 
-fn ppc_wide_add(memory: &mut PpcSectionMem, target: u32, source: u32) -> u32 {
+pub(super) fn ppc_wide_add(memory: &mut PpcSectionMem, target: u32, source: u32) -> u32 {
     // QuickDraw GX Environment and Utilities (1994), p. 8-49: add source to
     // target in place and return the target pointer.
     if let (Some(target_value), Some(source_value)) =
@@ -54781,7 +46262,7 @@ fn ppc_wide_add(memory: &mut PpcSectionMem, target: u32, source: u32) -> u32 {
     target
 }
 
-fn ppc_wide_subtract(memory: &mut PpcSectionMem, target: u32, source: u32) -> u32 {
+pub(super) fn ppc_wide_subtract(memory: &mut PpcSectionMem, target: u32, source: u32) -> u32 {
     // QuickDraw GX Environment and Utilities (1994), p. 8-50: subtract source
     // from target in place and return the target pointer.
     if let (Some(target_value), Some(source_value)) =
@@ -54792,7 +46273,7 @@ fn ppc_wide_subtract(memory: &mut PpcSectionMem, target: u32, source: u32) -> u3
     target
 }
 
-fn ppc_wide_negate(memory: &mut PpcSectionMem, target: u32) -> u32 {
+pub(super) fn ppc_wide_negate(memory: &mut PpcSectionMem, target: u32) -> u32 {
     // QuickDraw GX Environment and Utilities (1994), p. 8-50: replace target
     // with its two's-complement negative and return the target pointer.
     if let Some(value) = ppc_read_wide(memory, target) {
@@ -54820,7 +46301,7 @@ fn ppc_round_wide_quotient(dividend: i128, divisor: i128) -> i128 {
     }
 }
 
-fn ppc_wide_shift(memory: &mut PpcSectionMem, target: u32, shift: i32) -> u32 {
+pub(super) fn ppc_wide_shift(memory: &mut PpcSectionMem, target: u32, shift: i32) -> u32 {
     // QuickDraw GX Environment and Utilities (1994), p. 8-51: positive shifts
     // move right with rounding; negative shifts move left.
     if let Some(value) = ppc_read_wide(memory, target) {
@@ -54845,7 +46326,7 @@ fn ppc_wide_shift(memory: &mut PpcSectionMem, target: u32, shift: i32) -> u32 {
     target
 }
 
-fn ppc_wide_multiply(
+pub(super) fn ppc_wide_multiply(
     memory: &mut PpcSectionMem,
     multiplicand: i32,
     multiplier: i32,
@@ -54858,7 +46339,7 @@ fn ppc_wide_multiply(
     target
 }
 
-fn ppc_wide_divide(
+pub(super) fn ppc_wide_divide(
     memory: &mut PpcSectionMem,
     dividend_ptr: u32,
     divisor: i32,
@@ -54909,7 +46390,7 @@ fn ppc_wide_divide(
     }
 }
 
-fn ppc_wide_wide_divide(
+pub(super) fn ppc_wide_wide_divide(
     memory: &mut PpcSectionMem,
     dividend_ptr: u32,
     divisor: i32,
@@ -54941,7 +46422,7 @@ fn ppc_wide_wide_divide(
     dividend_ptr
 }
 
-fn ppc_wide_square_root(memory: &mut PpcSectionMem, source: u32) -> u32 {
+pub(super) fn ppc_wide_square_root(memory: &mut PpcSectionMem, source: u32) -> u32 {
     // QuickDraw GX Environment and Utilities (1994), p. 8-53: interpret the
     // complete source as an unsigned wide value and return its square root.
     let Some(high) = memory.read_u32_be(source) else {
@@ -54956,7 +46437,7 @@ fn ppc_wide_square_root(memory: &mut PpcSectionMem, source: u32) -> u32 {
     ((u64::from(high) << 32) | u64::from(low)).isqrt() as u32
 }
 
-fn ppc_wide_compare(memory: &mut PpcSectionMem, target: u32, source: u32) -> i16 {
+pub(super) fn ppc_wide_compare(memory: &mut PpcSectionMem, target: u32, source: u32) -> i16 {
     // QuickDraw GX Environment and Utilities (1994), p. 8-54: return 1, -1,
     // or 0 according to the ordering of the two wide values.
     match (ppc_read_wide(memory, target), ppc_read_wide(memory, source)) {
@@ -55566,7 +47047,7 @@ fn ppc_current_text_style(memory: &mut PpcSectionMem, current_gworld: u32) -> u8
         .unwrap_or(0)
 }
 
-fn ppc_text_byte_advance_for_font(ch: u8, text_font: i16, text_size: i16) -> i16 {
+pub(super) fn ppc_text_byte_advance_for_font(ch: u8, text_font: i16, text_size: i16) -> i16 {
     let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
     get_glyph(text_font, face.size, ch as char)
         .map(|(glyph, _)| ppc_scale_font_value(i32::from(glyph.advance), numerator, denominator))
@@ -55578,7 +47059,7 @@ fn ppc_text_byte_advance(ch: u8, text_size: i16) -> i16 {
     ppc_text_byte_advance_for_font(ch, PPC_QD_TEXT_FONT_DEFAULT, text_size)
 }
 
-fn ppc_text_bytes_advance_for_font(bytes: &[u8], text_font: i16, text_size: i16) -> i16 {
+pub(super) fn ppc_text_bytes_advance_for_font(bytes: &[u8], text_font: i16, text_size: i16) -> i16 {
     let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
     let base_advance = bytes.iter().fold(0i32, |advance, ch| {
         advance.saturating_add(
@@ -55759,7 +47240,7 @@ fn ppc_apply_text_pixel(
     }
 }
 
-fn ppc_draw_text_bytes(
+pub(super) fn ppc_draw_text_bytes(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     current_gworld: u32,
@@ -56264,7 +47745,7 @@ fn ppc_paint_rect(
     wrote
 }
 
-fn ppc_paint_rect_bounds(
+pub(super) fn ppc_paint_rect_bounds(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     current_gworld: u32,
@@ -56895,7 +48376,7 @@ fn ppc_read_pixmap_bits(memory: &mut PpcSectionMem, pixmap: u32) -> Option<PpcPi
     })
 }
 
-fn ppc_read_pixmap_handle_bits(
+pub(super) fn ppc_read_pixmap_handle_bits(
     memory: &mut PpcSectionMem,
     pixmap_handle: u32,
 ) -> Option<PpcPixMapBits> {
@@ -58549,7 +50030,7 @@ fn ppc_copy_deep_mask(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ppc_write_pixmap(
+pub(super) fn ppc_write_pixmap(
     memory: &mut PpcSectionMem,
     pixmap: u32,
     base_addr: u32,
@@ -58583,7 +50064,7 @@ fn ppc_write_pixmap(
     Some(())
 }
 
-fn ppc_write_gworld_port(
+pub(super) fn ppc_write_gworld_port(
     memory: &mut PpcSectionMem,
     port: u32,
     pixmap_handle: u32,
@@ -60154,7 +51635,7 @@ fn ppc_write_port_rgb_color(
     ppc_write_rgb_color(memory, port.checked_add(offset)?, color)
 }
 
-fn ppc_restore_port_colors(
+pub(super) fn ppc_restore_port_colors(
     memory: &mut PpcSectionMem,
     port: u32,
     fore_color: &mut PpcRgbColor,
@@ -60541,6 +52022,11 @@ fn ppc_draw_sprocket_action_name(target: &PpcImportDispatcherTarget) -> Option<&
         PpcImportDispatcherTarget::DSpContextSetClutEntries => Some("set_clut_entries"),
         PpcImportDispatcherTarget::DSpContextGetDisplayID => Some("get_display_id"),
         PpcImportDispatcherTarget::DSpContextGetAttributes => Some("get_attributes"),
+        PpcImportDispatcherTarget::DSpContextSetVblProc => Some("set_vbl_proc"),
+        PpcImportDispatcherTarget::DSpContextIsBusy => Some("is_busy"),
+        PpcImportDispatcherTarget::DSpAltBufferDispose => Some("alt_buffer_dispose"),
+        PpcImportDispatcherTarget::DSpContextInvalBackBufferRect => Some("inval_back_buffer_rect"),
+        PpcImportDispatcherTarget::DSpContextSetUnderlayAltBuffer => Some("set_underlay_alt_buffer"),
         _ => None,
     }
 }
@@ -61930,7 +53416,7 @@ fn ppc_isp_element_need_name(memory: &mut PpcSectionMem, element: u32) -> Option
     Some(decode_mac_roman(&bytes))
 }
 
-fn ppc_rect_dimensions(top: i16, left: i16, bottom: i16, right: i16) -> (u32, u32) {
+pub(super) fn ppc_rect_dimensions(top: i16, left: i16, bottom: i16, right: i16) -> (u32, u32) {
     let width = i32::from(right).saturating_sub(i32::from(left)).max(1) as u32;
     let height = i32::from(bottom).saturating_sub(i32::from(top)).max(1) as u32;
     (width, height)
@@ -61944,208 +53430,12 @@ fn ppc_row_bytes(width: u32, depth: u32) -> Option<u32> {
         .checked_mul(16)
 }
 
-fn ppc_u32_to_i16_saturating(value: u32) -> i16 {
+pub(super) fn ppc_u32_to_i16_saturating(value: u32) -> i16 {
     i16::try_from(value).unwrap_or(i16::MAX)
 }
 
-fn ppc_i32_to_i16_saturating(value: i32) -> i16 {
+pub(super) fn ppc_i32_to_i16_saturating(value: i32) -> i16 {
     i16::try_from(value).unwrap_or(if value < 0 { i16::MIN } else { i16::MAX })
-}
-
-fn ppc_get_picture(
-    cpu: &mut PpcCpu,
-    process_memory_manager: &mut ProcessNativeMemoryManager,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    _heap_limit: u32,
-    last_mem_error: &mut i16,
-    last_resource_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    vfs_resources: &mut [PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-) -> u32 {
-    let picture_id = cpu.gpr[3] as u16 as i16;
-    let pict_type = u32::from_be_bytes(*b"PICT");
-    if let Some(index) = ppc_vfs_resource_index(
-        vfs_resources,
-        current_resource_refnum,
-        pict_type,
-        picture_id,
-        false,
-    ) {
-        if vfs_resources[index].handle == 0 {
-            let data = vfs_resources[index].data.clone();
-            let handle = ppc_process_alloc_handle_with_bytes(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-                handles,
-                &data,
-            );
-            if handle == 0 {
-                *last_mem_error = PPC_MEM_FULL_ERR;
-                *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-                return 0;
-            }
-            vfs_resources[index].handle = handle;
-        }
-        *last_mem_error = PPC_NO_ERR;
-        *last_resource_error = PPC_NO_ERR;
-        if ppc_hle_trace_enabled() {
-            let record = &vfs_resources[index];
-            eprintln!(
-                "[PPC-TRACE] GetPicture({}) current_ref={} -> handle=${:08X} home_ref={} path=\"{}\" size={}",
-                picture_id,
-                current_resource_refnum,
-                record.handle,
-                record.ref_num,
-                record.path,
-                record.data.len()
-            );
-        }
-        return vfs_resources[index].handle;
-    }
-    let handle = ppc_process_alloc_handle_with_bytes(
-        process_memory_manager,
-        memory,
-        heap_cursor,
-        last_mem_error,
-        handles,
-        &minimal_pict_bytes(),
-    );
-    if handle == 0 {
-        *last_mem_error = PPC_MEM_FULL_ERR;
-        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-    } else {
-        *last_mem_error = PPC_NO_ERR;
-        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-    }
-    if ppc_hle_trace_enabled() {
-        eprintln!(
-            "[PPC-TRACE] GetPicture({}) current_ref={} -> fallback handle=${:08X} err={}",
-            picture_id, current_resource_refnum, handle, PPC_RES_NOT_FOUND_ERR
-        );
-    }
-    handle
-}
-
-fn ppc_get_ind_pattern(
-    cpu: &PpcCpu,
-    memory: &mut PpcSectionMem,
-    vfs_resources: &[PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-    last_resource_error: &mut i16,
-) {
-    let destination = cpu.gpr[3];
-    let pattern_list_id = cpu.gpr[4] as u16 as i16;
-    let pattern_index = cpu.gpr[5] as u16 as usize;
-    if destination == 0 || pattern_index == 0 || !ppc_memory_can_write_bytes(memory, destination, 8)
-    {
-        *last_resource_error = PPC_PARAM_ERR;
-        return;
-    }
-    let Some(resource_index) = ppc_vfs_resource_index(
-        vfs_resources,
-        current_resource_refnum,
-        u32::from_be_bytes(*b"PAT#"),
-        pattern_list_id,
-        false,
-    ) else {
-        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-        return;
-    };
-    let bytes = &vfs_resources[resource_index].data;
-    let count = bytes
-        .get(..2)
-        .and_then(|bytes| bytes.try_into().ok())
-        .map(u16::from_be_bytes)
-        .unwrap_or(0) as usize;
-    let pattern_offset = pattern_index
-        .checked_sub(1)
-        .and_then(|index| index.checked_mul(8))
-        .and_then(|offset| offset.checked_add(2));
-    let Some(pattern) = pattern_offset
-        .filter(|_| pattern_index <= count)
-        .and_then(|offset| bytes.get(offset..offset.saturating_add(8)))
-    else {
-        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-        return;
-    };
-    // Imaging With QuickDraw (1994), pp. 3-127--3-128 and 3-141: PAT#
-    // begins with a big-endian count followed by packed eight-byte Pattern
-    // records, addressed with one-based indices by GetIndPattern.
-    *last_resource_error = if memory.write_bytes(destination, pattern).is_some() {
-        PPC_NO_ERR
-    } else {
-        PPC_PARAM_ERR
-    };
-}
-
-fn ppc_get_pix_pat(
-    cpu: &PpcCpu,
-    process_memory_manager: &mut ProcessNativeMemoryManager,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    vfs_resources: &[PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-    last_resource_error: &mut i16,
-) -> u32 {
-    let pattern_id = cpu.gpr[3] as u16 as i16;
-    let pattern_type = u32::from_be_bytes(*b"ppat");
-    let Some(index) = ppc_vfs_resource_index(
-        vfs_resources,
-        current_resource_refnum,
-        pattern_type,
-        pattern_id,
-        false,
-    ) else {
-        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-        if ppc_hle_trace_enabled() {
-            eprintln!(
-                "[PPC-TRACE] GetPixPat({}) current_ref={} -> NULL err={}",
-                pattern_id, current_resource_refnum, PPC_RES_NOT_FOUND_ERR
-            );
-        }
-        return 0;
-    };
-
-    // Imaging With QuickDraw (1994), pp. 4-88 and 4-103: GetPixPat obtains
-    // the requested 'ppat' resource, then returns a newly allocated copy of
-    // the compiled PixPat/PixMap/image/ColorTable compound structure. Keeping
-    // its documented offsets intact also lets Color QuickDraw consume the
-    // pattern without tying its lifetime to the Resource Manager's handle.
-    let data = &vfs_resources[index].data;
-    let handle = ppc_process_alloc_handle_with_bytes(
-        process_memory_manager,
-        memory,
-        heap_cursor,
-        last_mem_error,
-        handles,
-        data,
-    );
-    if handle == 0 {
-        *last_mem_error = PPC_MEM_FULL_ERR;
-        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-        return 0;
-    }
-    *last_mem_error = PPC_NO_ERR;
-    *last_resource_error = PPC_NO_ERR;
-    if ppc_hle_trace_enabled() {
-        let record = &vfs_resources[index];
-        eprintln!(
-            "[PPC-TRACE] GetPixPat({}) current_ref={} -> handle=${:08X} home_ref={} path=\"{}\" size={}",
-            pattern_id,
-            current_resource_refnum,
-            handle,
-            record.ref_num,
-            record.path,
-            record.data.len()
-        );
-    }
-    handle
 }
 
 fn ppc_draw_picture(
@@ -62322,7 +53612,7 @@ fn ppc_dispose_tracked_handle(
     }
 }
 
-fn ppc_is_valid_handle(
+pub(super) fn ppc_is_valid_handle(
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
     handle: u32,
@@ -62364,7 +53654,7 @@ fn ppc_alloc_handle_with_bytes(
     handle
 }
 
-fn ppc_copy_palette_resource(
+pub(super) fn ppc_copy_palette_resource(
     allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -62624,7 +53914,7 @@ fn ppc_handle_resize_allocation_size(
     }
 }
 
-fn ppc_get_resource(
+pub(super) fn ppc_get_resource(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -62715,97 +54005,7 @@ fn ppc_get_resource(
     handle
 }
 
-const PPC_ICON_SUITE_MAGIC: u32 = u32::from_be_bytes(*b"ISUT");
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_get_icon_suite(
-    cpu: &PpcCpu,
-    process_memory_manager: &mut ProcessNativeMemoryManager,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    vfs_resources: &mut Vec<PpcVfsResourceRecord>,
-    current_resource_refnum: i16,
-    resource_load_enabled: bool,
-    last_resource_error: &mut i16,
-) -> i16 {
-    let output = cpu.gpr[3];
-    if memory.read_u32_be(output).is_none() {
-        *last_mem_error = PPC_PARAM_ERR;
-        return PPC_PARAM_ERR;
-    }
-    let resource_id = cpu.gpr[4] as u16 as i16;
-    let selector = cpu.gpr[5];
-    let resource_types = [
-        (0x0000_0001, u32::from_be_bytes(*b"ICN#")),
-        (0x0000_0002, u32::from_be_bytes(*b"icl4")),
-        (0x0000_0004, u32::from_be_bytes(*b"icl8")),
-        (0x0000_0100, u32::from_be_bytes(*b"ics#")),
-        (0x0000_0200, u32::from_be_bytes(*b"ics4")),
-        (0x0000_0400, u32::from_be_bytes(*b"ics8")),
-        (0x0001_0000, u32::from_be_bytes(*b"icm#")),
-        (0x0002_0000, u32::from_be_bytes(*b"icm4")),
-        (0x0004_0000, u32::from_be_bytes(*b"icm8")),
-    ];
-    let mut entries = Vec::new();
-    for (selector_bit, resource_type) in resource_types {
-        if selector & selector_bit == 0 {
-            continue;
-        }
-        let mut resource_cpu = PpcCpu::new();
-        resource_cpu.gpr[3] = resource_type;
-        resource_cpu.gpr[4] = resource_id as u16 as u32;
-        let handle = ppc_get_resource(
-            &mut resource_cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            vfs_resources,
-            current_resource_refnum,
-            false,
-            resource_load_enabled,
-            last_resource_error,
-        );
-        if handle != 0 {
-            entries.push((resource_type, handle));
-        }
-    }
-
-    // Icon suites are opaque to applications. Keep a compact guest-memory
-    // record so the other Icon Utilities imports can select family members
-    // without application-specific state: magic, default label, count, then
-    // resource type/Handle pairs.
-    let mut bytes = Vec::with_capacity(10 + entries.len() * 8);
-    bytes.extend_from_slice(&PPC_ICON_SUITE_MAGIC.to_be_bytes());
-    bytes.extend_from_slice(&0u32.to_be_bytes());
-    bytes.extend_from_slice(&(entries.len() as u16).to_be_bytes());
-    for (resource_type, handle) in entries {
-        bytes.extend_from_slice(&resource_type.to_be_bytes());
-        bytes.extend_from_slice(&handle.to_be_bytes());
-    }
-    let suite = ppc_process_alloc_handle_with_bytes(
-        process_memory_manager,
-        memory,
-        heap_cursor,
-        last_mem_error,
-        handles,
-        &bytes,
-    );
-    if suite == 0 {
-        let _ = memory.write_u32_be(output, 0);
-        *last_mem_error = PPC_MEM_FULL_ERR;
-        return PPC_MEM_FULL_ERR;
-    }
-    let _ = memory.write_u32_be(output, suite);
-    *last_mem_error = PPC_NO_ERR;
-    *last_resource_error = PPC_NO_ERR;
-    PPC_NO_ERR
-}
+pub(super) const PPC_ICON_SUITE_MAGIC: u32 = u32::from_be_bytes(*b"ISUT");
 
 #[cfg(test)]
 fn ppc_icon_suite_entries(memory: &mut PpcSectionMem, icon_suite: u32) -> Option<Vec<(u32, u32)>> {
@@ -62834,7 +54034,7 @@ fn ppc_resource_name_eq(left: &[u8], right: &[u8]) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ppc_get_named_resource(
+pub(super) fn ppc_get_named_resource(
     cpu: &PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -62907,7 +54107,7 @@ fn ppc_get_named_resource(
     handle
 }
 
-fn ppc_get_ind_resource(
+pub(super) fn ppc_get_ind_resource(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -62980,7 +54180,7 @@ fn ppc_get_ind_resource(
     handle
 }
 
-fn ppc_get_ind_string(
+pub(super) fn ppc_get_ind_string(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -63280,28 +54480,6 @@ fn ppc_read_packed_bitmap_index(
         8 => memory.read_u8(row.checked_add(x)?),
         _ => None,
     }
-}
-
-fn ppc_window_content_color(
-    memory: &mut PpcSectionMem,
-    color_table_handle: u32,
-) -> Option<PpcRgbColor> {
-    let color_table = memory.read_u32_be(color_table_handle)?;
-    let last_entry = memory.read_u16_be(color_table + 6)? as i16;
-    if last_entry < 0 {
-        return None;
-    }
-    for entry_index in 0..=u32::from(last_entry as u16).min(4095) {
-        let entry = color_table.checked_add(8 + entry_index * 8)?;
-        if memory.read_u16_be(entry)? == 0 {
-            return Some(PpcRgbColor {
-                red: memory.read_u16_be(entry + 2)?,
-                green: memory.read_u16_be(entry + 4)?,
-                blue: memory.read_u16_be(entry + 6)?,
-            });
-        }
-    }
-    None
 }
 
 fn ppc_cicon_color(
@@ -63611,7 +54789,7 @@ fn ppc_get_cursor(
     )
 }
 
-fn ppc_materialize_vfs_resource_handle(
+pub(super) fn ppc_materialize_vfs_resource_handle(
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -63694,7 +54872,7 @@ fn ppc_materialize_vfs_resource_handle(
     handle
 }
 
-fn ppc_get_res_attrs(
+pub(super) fn ppc_get_res_attrs(
     cpu: &mut PpcCpu,
     vfs_resources: &[PpcVfsResourceRecord],
     last_resource_error: &mut i16,
@@ -63708,7 +54886,7 @@ fn ppc_get_res_attrs(
     record.attrs as i16
 }
 
-fn ppc_set_res_attrs(
+pub(super) fn ppc_set_res_attrs(
     cpu: &mut PpcCpu,
     vfs_resource_files: &mut [PpcVfsResourceFileRecord],
     vfs_resources: &mut [PpcVfsResourceRecord],
@@ -63730,7 +54908,7 @@ fn ppc_set_res_attrs(
     *last_resource_error = PPC_NO_ERR;
 }
 
-fn ppc_get_res_info(
+pub(super) fn ppc_get_res_info(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_resources: &[PpcVfsResourceRecord],
@@ -63763,7 +54941,7 @@ fn ppc_get_res_info(
     *last_resource_error = PPC_NO_ERR;
 }
 
-fn ppc_set_res_info(
+pub(super) fn ppc_set_res_info(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_resource_files: &mut [PpcVfsResourceFileRecord],
@@ -63798,7 +54976,7 @@ fn ppc_set_res_info(
     *last_resource_error = PPC_NO_ERR;
 }
 
-fn ppc_home_res_file(
+pub(super) fn ppc_home_res_file(
     cpu: &mut PpcCpu,
     vfs_resources: &[PpcVfsResourceRecord],
     last_resource_error: &mut i16,
@@ -63812,7 +54990,7 @@ fn ppc_home_res_file(
     record.ref_num
 }
 
-fn ppc_count_resources(
+pub(super) fn ppc_count_resources(
     cpu: &mut PpcCpu,
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
@@ -63840,7 +55018,7 @@ fn ppc_count_resources(
     i16::try_from(count).unwrap_or(i16::MAX)
 }
 
-fn ppc_unique_id(
+pub(super) fn ppc_unique_id(
     cpu: &mut PpcCpu,
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
@@ -63861,7 +55039,7 @@ fn ppc_unique_id(
     i16::MAX
 }
 
-fn ppc_update_res_file(
+pub(super) fn ppc_update_res_file(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
@@ -63910,7 +55088,7 @@ fn ppc_update_res_file(
     *last_resource_error = PPC_NO_ERR;
 }
 
-fn ppc_vfs_resource_index(
+pub(super) fn ppc_vfs_resource_index(
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
     res_type: u32,
@@ -63932,7 +55110,7 @@ fn ppc_vfs_resource_index(
     })
 }
 
-fn ppc_write_pstring_bytes(memory: &mut PpcSectionMem, addr: u32, bytes: &[u8]) -> bool {
+pub(super) fn ppc_write_pstring_bytes(memory: &mut PpcSectionMem, addr: u32, bytes: &[u8]) -> bool {
     let len = bytes.len().min(255);
     if memory.write_u8(addr, len as u8).is_none() {
         return false;
@@ -64175,7 +55353,7 @@ fn ppc_dequeue_event(
     (0, 0, tick_count, input.mouse_v, input.mouse_h, 0, false)
 }
 
-fn ppc_enqueue_window_update_event(
+pub(super) fn ppc_enqueue_window_update_event(
     event_queue: &mut VecDeque<PpcQueuedEvent>,
     window: u32,
     when: u32,
@@ -64224,7 +55402,7 @@ fn ppc_enqueue_window_activation_event(
     });
 }
 
-fn ppc_enqueue_window_activation_transition(
+pub(super) fn ppc_enqueue_window_activation_transition(
     memory: &mut PpcSectionMem,
     event_queue: &mut VecDeque<PpcQueuedEvent>,
     previous_front: Option<u32>,
@@ -64499,7 +55677,7 @@ fn ppc_complete_apple_event_dispatch(
     );
 }
 
-fn ppc_add_resource(
+pub(super) fn ppc_add_resource(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -64553,7 +55731,7 @@ fn ppc_add_resource(
     PPC_NO_ERR
 }
 
-fn ppc_changed_resource(
+pub(super) fn ppc_changed_resource(
     cpu: &mut PpcCpu,
     vfs_resource_files: &mut [PpcVfsResourceFileRecord],
     vfs_resources: &mut [PpcVfsResourceRecord],
@@ -64578,7 +55756,7 @@ fn ppc_changed_resource(
     *last_resource_error = PPC_NO_ERR;
 }
 
-fn ppc_write_resource(
+pub(super) fn ppc_write_resource(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
@@ -64617,7 +55795,7 @@ fn ppc_drop_raw_resource_data(record: &mut PpcVfsResourceRecord) {
     record.raw_attrs = None;
 }
 
-fn ppc_remove_resource(
+pub(super) fn ppc_remove_resource(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     vfs_resource_files: &mut [PpcVfsResourceFileRecord],
@@ -64645,7 +55823,7 @@ fn ppc_remove_resource(
     *last_resource_error = PPC_NO_ERR;
 }
 
-fn ppc_release_resource(
+pub(super) fn ppc_release_resource(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -64687,7 +55865,7 @@ fn ppc_release_resource(
     }
 }
 
-fn ppc_detach_resource(
+pub(super) fn ppc_detach_resource(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     vfs_resources: &mut [PpcVfsResourceRecord],
@@ -64710,7 +55888,7 @@ fn ppc_detach_resource(
     *last_resource_error = PPC_NO_ERR;
 }
 
-fn ppc_read_partial_resource(
+pub(super) fn ppc_read_partial_resource(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_resources: &[PpcVfsResourceRecord],
@@ -64761,7 +55939,7 @@ fn ppc_read_partial_resource(
     };
 }
 
-fn ppc_handle_bytes(
+pub(super) fn ppc_handle_bytes(
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
     handle: u32,
@@ -64786,7 +55964,7 @@ fn ppc_resource_name(memory: &mut PpcSectionMem, name_ptr: u32) -> Option<Vec<u8
     Some(name)
 }
 
-fn minimal_pict_bytes() -> [u8; 12] {
+pub(super) fn minimal_pict_bytes() -> [u8; 12] {
     [
         0x00, 0x0c, // picSize
         0x00, 0x00, 0x00, 0x00, // top, left
@@ -64808,998 +55986,6 @@ fn ppc_get_pict_info(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
         }
     }
     PPC_NO_ERR
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PpcDialogTemplate {
-    bounds: (i16, i16, i16, i16),
-    proc_id: i16,
-    visible: bool,
-    go_away: bool,
-    ref_con: u32,
-    items_id: i16,
-    title: Vec<u8>,
-    position: u16,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PpcDialogItemView {
-    item_offset: usize,
-    item_type: u8,
-    rect: (i16, i16, i16, i16),
-    handle: u32,
-    payload: Vec<u8>,
-}
-
-fn ppc_dialog_be_i16(bytes: &[u8], offset: usize) -> Option<i16> {
-    Some(i16::from_be_bytes([
-        *bytes.get(offset)?,
-        *bytes.get(offset.checked_add(1)?)?,
-    ]))
-}
-
-fn ppc_dialog_be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_be_bytes([
-        *bytes.get(offset)?,
-        *bytes.get(offset.checked_add(1)?)?,
-        *bytes.get(offset.checked_add(2)?)?,
-        *bytes.get(offset.checked_add(3)?)?,
-    ]))
-}
-
-fn ppc_parse_dialog_template(bytes: &[u8]) -> Option<PpcDialogTemplate> {
-    // Macintosh Toolbox Essentials (1992), pp. 6-113--6-114: a DLOG
-    // contains the window rectangle, proc ID, visibility/go-away flags,
-    // refCon, DITL ID, Pascal title, and (on System 7) an optional
-    // positioning word after even-byte alignment.
-    let bounds = (
-        ppc_dialog_be_i16(bytes, 0)?,
-        ppc_dialog_be_i16(bytes, 2)?,
-        ppc_dialog_be_i16(bytes, 4)?,
-        ppc_dialog_be_i16(bytes, 6)?,
-    );
-    let title_len = usize::from(*bytes.get(20)?);
-    let title_end = 21usize.checked_add(title_len)?;
-    let title = bytes.get(21..title_end)?.to_vec();
-    let position_offset = (title_end + 1) & !1;
-    let position = bytes
-        .get(position_offset..position_offset.saturating_add(2))
-        .and_then(|value| value.try_into().ok())
-        .map(u16::from_be_bytes)
-        .unwrap_or(0);
-    Some(PpcDialogTemplate {
-        bounds,
-        proc_id: ppc_dialog_be_i16(bytes, 8)?,
-        visible: *bytes.get(10)? != 0,
-        go_away: *bytes.get(12)? != 0,
-        ref_con: ppc_dialog_be_u32(bytes, 14)?,
-        items_id: ppc_dialog_be_i16(bytes, 18)?,
-        title,
-        position,
-    })
-}
-
-fn ppc_parse_dialog_items(bytes: &[u8]) -> Option<Vec<PpcDialogItemView>> {
-    // Macintosh Toolbox Essentials (1992), pp. 6-120--6-121: DITL starts
-    // with countMinusOne. Each even-aligned item has a four-byte handle,
-    // Rect, type byte, length byte, and length bytes of item data.
-    let count_minus_one = ppc_dialog_be_i16(bytes, 0)?;
-    let count = if count_minus_one < 0 {
-        0
-    } else {
-        usize::try_from(count_minus_one).ok()?.checked_add(1)?
-    };
-    let mut offset = 2usize;
-    let mut items = Vec::with_capacity(count);
-    for _ in 0..count {
-        let item_type = *bytes.get(offset.checked_add(12)?)?;
-        let payload_len = usize::from(*bytes.get(offset.checked_add(13)?)?);
-        let payload_start = offset.checked_add(14)?;
-        let payload_end = payload_start.checked_add(payload_len)?;
-        items.push(PpcDialogItemView {
-            item_offset: offset,
-            item_type,
-            rect: (
-                ppc_dialog_be_i16(bytes, offset.checked_add(4)?)?,
-                ppc_dialog_be_i16(bytes, offset.checked_add(6)?)?,
-                ppc_dialog_be_i16(bytes, offset.checked_add(8)?)?,
-                ppc_dialog_be_i16(bytes, offset.checked_add(10)?)?,
-            ),
-            handle: ppc_dialog_be_u32(bytes, offset)?,
-            payload: bytes.get(payload_start..payload_end)?.to_vec(),
-        });
-        offset = (payload_end + 1) & !1;
-    }
-    Some(items)
-}
-
-fn ppc_position_dialog_bounds(
-    bounds: (i16, i16, i16, i16),
-    position: u16,
-    gworlds: &[PpcGWorldRecord],
-) -> (i16, i16, i16, i16) {
-    let centered = matches!(
-        position,
-        0x280a | 0x300a | 0x380a | 0xa80a | 0xb00a | 0xb80a
-    );
-    if !centered {
-        return bounds;
-    }
-    let screen = gworlds.iter().find(|record| record.port == PPC_MAIN_GWORLD);
-    let screen_width = screen.map_or(PPC_MAIN_SCREEN_WIDTH, |record| record.width) as i32;
-    let screen_height = screen.map_or(PPC_MAIN_SCREEN_HEIGHT, |record| record.height) as i32;
-    let height = i32::from(bounds.2) - i32::from(bounds.0);
-    let width = i32::from(bounds.3) - i32::from(bounds.1);
-    let top = (screen_height - height).max(0) / 2;
-    let left = (screen_width - width).max(0) / 2;
-    (
-        ppc_i32_to_i16_saturating(top),
-        ppc_i32_to_i16_saturating(left),
-        ppc_i32_to_i16_saturating(top + height),
-        ppc_i32_to_i16_saturating(left + width),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_new_alert_dialog(
-    cpu: &PpcCpu,
-    process_memory_manager: &mut ProcessNativeMemoryManager,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    controls: &mut Vec<PpcControlRecord>,
-    gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &SharedProcessWindowList,
-    current_gdevice: u32,
-    vfs_resources: &mut [PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-    last_resource_error: &mut i16,
-    alert_id: i16,
-    param_text: &[Vec<u8>; 4],
-) -> u32 {
-    let Some(alert_index) = ppc_vfs_resource_index(
-        vfs_resources,
-        current_resource_refnum,
-        u32::from_be_bytes(*b"ALRT"),
-        alert_id,
-        false,
-    ) else {
-        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-        return 0;
-    };
-    let alert = &vfs_resources[alert_index].data;
-    if alert.len() < 12 {
-        *last_resource_error = PPC_PARAM_ERR;
-        return 0;
-    }
-    let bounds = (
-        i16::from_be_bytes([alert[0], alert[1]]),
-        i16::from_be_bytes([alert[2], alert[3]]),
-        i16::from_be_bytes([alert[4], alert[5]]),
-        i16::from_be_bytes([alert[6], alert[7]]),
-    );
-    let items_id = i16::from_be_bytes([alert[8], alert[9]]);
-    let stages = u16::from_be_bytes([alert[10], alert[11]]);
-    let position = alert
-        .get(12..14)
-        .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
-        .unwrap_or(0);
-    let Some(ditl_index) = ppc_vfs_resource_index(
-        vfs_resources,
-        current_resource_refnum,
-        u32::from_be_bytes(*b"DITL"),
-        items_id,
-        false,
-    ) else {
-        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-        return 0;
-    };
-    let ditl_bytes = vfs_resources[ditl_index].data.clone();
-    if ppc_parse_dialog_items(&ditl_bytes).is_none() {
-        *last_resource_error = PPC_PARAM_ERR;
-        return 0;
-    }
-    let items_handle = ppc_process_alloc_handle_with_bytes(
-        process_memory_manager,
-        memory,
-        heap_cursor,
-        last_mem_error,
-        handles,
-        &ditl_bytes,
-    );
-    if items_handle == 0 {
-        *last_mem_error = PPC_MEM_FULL_ERR;
-        return 0;
-    }
-    let bounds = ppc_position_dialog_bounds(bounds, position, gworlds);
-    let scratch = ppc_process_heap_alloc(process_memory_manager, memory, heap_cursor, 9, true);
-    let Some(items_slot) = ppc_parameter_area_slot_addr(cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
-    else {
-        *last_mem_error = PPC_PARAM_ERR;
-        return 0;
-    };
-    if scratch == 0
-        || ppc_write_rect(memory, scratch, bounds.0, bounds.1, bounds.2, bounds.3).is_none()
-        || memory.write_u8(scratch + 8, 0).is_none()
-    {
-        *last_mem_error = PPC_MEM_FULL_ERR;
-        return 0;
-    }
-    let saved_items_slot = memory.read_u32_be(items_slot).unwrap_or(0);
-    if memory.write_u32_be(items_slot, items_handle).is_none() {
-        *last_mem_error = PPC_PARAM_ERR;
-        return 0;
-    }
-    let mut dialog_cpu = cpu.clone();
-    dialog_cpu.gpr[3] = 0;
-    dialog_cpu.gpr[4] = scratch;
-    dialog_cpu.gpr[5] = scratch + 8;
-    dialog_cpu.gpr[6] = 1;
-    dialog_cpu.gpr[7] = 1;
-    dialog_cpu.gpr[8] = u32::MAX;
-    dialog_cpu.gpr[9] = 0;
-    dialog_cpu.gpr[10] = alert_id as u16 as u32;
-    let dialog = ppc_new_dialog(
-        &dialog_cpu,
-        process_memory_manager,
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        gworlds,
-        window_list,
-        current_gdevice,
-    );
-    let _ = memory.write_u32_be(items_slot, saved_items_slot);
-    let dialog = if dialog != 0
-        && !ppc_initialize_dialog_items(
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            controls,
-            param_text,
-            dialog,
-            vfs_resources,
-            current_resource_refnum,
-            last_resource_error,
-        ) {
-        0
-    } else {
-        dialog
-    };
-    if dialog != 0 {
-        let first_stage = stages & 0x000f;
-        let default_item = if first_stage & 0x0008 == 0 { 1 } else { 2 };
-        let _ = memory.write_u16_be(dialog + PPC_DIALOG_RESOURCE_ID_OFFSET, alert_id as u16);
-        let _ = memory.write_u16_be(dialog + PPC_DIALOG_DEFAULT_ITEM_OFFSET, default_item);
-        let _ = memory.write_u16_be(dialog + PPC_DIALOG_ALERT_HIT_HLE_OFFSET, 0);
-        *last_resource_error = PPC_NO_ERR;
-    }
-    dialog
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_get_new_dialog(
-    cpu: &PpcCpu,
-    process_memory_manager: &mut ProcessNativeMemoryManager,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    controls: &mut Vec<PpcControlRecord>,
-    gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &SharedProcessWindowList,
-    current_gdevice: u32,
-    vfs_resources: &mut [PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-    last_resource_error: &mut i16,
-    param_text: &[Vec<u8>; 4],
-) -> u32 {
-    let dialog_id = cpu.gpr[3] as u16 as i16;
-    let Some(dlog_index) = ppc_vfs_resource_index(
-        vfs_resources,
-        current_resource_refnum,
-        u32::from_be_bytes(*b"DLOG"),
-        dialog_id,
-        false,
-    ) else {
-        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-        return 0;
-    };
-    let Some(template) = ppc_parse_dialog_template(&vfs_resources[dlog_index].data) else {
-        *last_resource_error = PPC_PARAM_ERR;
-        return 0;
-    };
-    let Some(ditl_index) = ppc_vfs_resource_index(
-        vfs_resources,
-        current_resource_refnum,
-        u32::from_be_bytes(*b"DITL"),
-        template.items_id,
-        false,
-    ) else {
-        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-        return 0;
-    };
-    let ditl_bytes = vfs_resources[ditl_index].data.clone();
-    if ppc_parse_dialog_items(&ditl_bytes).is_none() {
-        *last_resource_error = PPC_PARAM_ERR;
-        return 0;
-    }
-    // GetNewDialog copies the DITL into an application-owned handle. Item
-    // handles are then installed in that copy, so GetDialogItem and guest
-    // mutations observe the same live list rather than the resource bytes.
-    let items_handle = ppc_process_alloc_handle_with_bytes(
-        process_memory_manager,
-        memory,
-        heap_cursor,
-        last_mem_error,
-        handles,
-        &ditl_bytes,
-    );
-    if items_handle == 0 {
-        *last_mem_error = PPC_MEM_FULL_ERR;
-        return 0;
-    }
-    let bounds = ppc_position_dialog_bounds(template.bounds, template.position, gworlds);
-    let scratch_size = 8u32.saturating_add(1 + template.title.len().min(255) as u32);
-    let scratch = ppc_process_heap_alloc(
-        process_memory_manager,
-        memory,
-        heap_cursor,
-        scratch_size,
-        true,
-    );
-    if scratch == 0
-        || ppc_write_rect(memory, scratch, bounds.0, bounds.1, bounds.2, bounds.3).is_none()
-        || !ppc_write_pstring_bytes(memory, scratch + 8, &template.title)
-    {
-        *last_mem_error = PPC_MEM_FULL_ERR;
-        return 0;
-    }
-    let Some(items_slot) = ppc_parameter_area_slot_addr(cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
-    else {
-        *last_mem_error = PPC_PARAM_ERR;
-        return 0;
-    };
-    let saved_items_slot = memory.read_u32_be(items_slot).unwrap_or(0);
-    if memory.write_u32_be(items_slot, items_handle).is_none() {
-        *last_mem_error = PPC_PARAM_ERR;
-        return 0;
-    }
-    let mut new_cpu = cpu.clone();
-    new_cpu.gpr[3] = cpu.gpr[4];
-    new_cpu.gpr[4] = scratch;
-    new_cpu.gpr[5] = scratch + 8;
-    new_cpu.gpr[6] = u32::from(template.visible);
-    new_cpu.gpr[7] = template.proc_id as u16 as u32;
-    new_cpu.gpr[8] = cpu.gpr[5];
-    new_cpu.gpr[9] = u32::from(template.go_away);
-    new_cpu.gpr[10] = template.ref_con;
-    let dialog = ppc_new_dialog(
-        &new_cpu,
-        process_memory_manager,
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        gworlds,
-        window_list,
-        current_gdevice,
-    );
-    let _ = memory.write_u32_be(items_slot, saved_items_slot);
-    let dialog = if dialog != 0
-        && !ppc_initialize_dialog_items(
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            controls,
-            param_text,
-            dialog,
-            vfs_resources,
-            current_resource_refnum,
-            last_resource_error,
-        ) {
-        0
-    } else {
-        dialog
-    };
-    if dialog != 0 {
-        let _ = memory.write_u16_be(dialog + PPC_DIALOG_RESOURCE_ID_OFFSET, dialog_id as u16);
-        *last_resource_error = PPC_NO_ERR;
-    }
-    dialog
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_new_dialog(
-    cpu: &PpcCpu,
-    process_memory_manager: &mut ProcessNativeMemoryManager,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &SharedProcessWindowList,
-    current_gdevice: u32,
-) -> u32 {
-    let requested_storage = cpu.gpr[3];
-    let bounds_ptr = cpu.gpr[4];
-    let title_ptr = cpu.gpr[5];
-    let visible = cpu.gpr[6] != 0;
-    let proc_id = cpu.gpr[7];
-    let behind = cpu.gpr[8];
-    let go_away = cpu.gpr[9] != 0;
-    let ref_con = cpu.gpr[10];
-    let items = ppc_parameter_area_slot_addr(cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
-        .and_then(|addr| memory.read_u32_be(addr))
-        .unwrap_or(0);
-    if bounds_ptr == 0 {
-        *last_mem_error = PPC_PARAM_ERR;
-        return 0;
-    }
-
-    let storage = if requested_storage == 0 {
-        ppc_process_heap_alloc(
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            PPC_DIALOG_RECORD_SIZE,
-            true,
-        )
-    } else if ppc_memory_can_write_bytes(memory, requested_storage, PPC_DIALOG_RECORD_SIZE) {
-        let _ = memory.write_bytes(requested_storage, &vec![0; PPC_DIALOG_RECORD_SIZE as usize]);
-        requested_storage
-    } else {
-        0
-    };
-    if storage == 0 {
-        *last_mem_error = if requested_storage == 0 {
-            PPC_MEM_FULL_ERR
-        } else {
-            PPC_PARAM_ERR
-        };
-        return 0;
-    }
-
-    let mut window_cpu = cpu.clone();
-    window_cpu.gpr[3] = storage;
-    window_cpu.gpr[4] = bounds_ptr;
-    window_cpu.gpr[5] = title_ptr;
-    window_cpu.gpr[6] = u32::from(visible);
-    window_cpu.gpr[7] = proc_id;
-    window_cpu.gpr[8] = behind;
-    window_cpu.gpr[9] = u32::from(go_away);
-    window_cpu.gpr[10] = ref_con;
-    let mut allocator = PpcProcessAllocatorView {
-        memory_manager: process_memory_manager,
-    };
-    let dialog = ppc_new_cwindow(
-        &window_cpu,
-        Some(&mut allocator),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        gworlds,
-        window_list,
-        current_gdevice,
-    );
-    if dialog == 0 {
-        return 0;
-    }
-
-    let title = ppc_read_pstring_bytes(memory, title_ptr).unwrap_or_default();
-    let mut title_string = Vec::with_capacity(title.len().saturating_add(1));
-    title_string.push(title.len().min(255) as u8);
-    title_string.extend(title.into_iter().take(255));
-    let title_handle = allocator.allocate_handle_with_bytes(
-        memory,
-        heap_cursor,
-        last_mem_error,
-        handles,
-        &title_string,
-    );
-    if title_handle == 0
-        || memory
-            .write_u16_be(dialog + PPC_CWINDOW_WINDOW_KIND_OFFSET, 2)
-            .is_none()
-        || memory.write_u32_be(dialog + 134, title_handle).is_none()
-        || memory
-            .write_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET, items)
-            .is_none()
-        || memory
-            .write_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET, 0)
-            .is_none()
-        || memory
-            .write_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET, u16::MAX)
-            .is_none()
-        || memory
-            .write_u16_be(dialog + PPC_DIALOG_EDIT_OPEN_OFFSET, 0)
-            .is_none()
-        || memory
-            .write_u16_be(dialog + PPC_DIALOG_DEFAULT_ITEM_OFFSET, 1)
-            .is_none()
-    {
-        *last_mem_error = if title_handle == 0 {
-            PPC_MEM_FULL_ERR
-        } else {
-            PPC_PARAM_ERR
-        };
-        return 0;
-    }
-
-    // Macintosh Toolbox Essentials (1992), pp. 6-115--6-118: NewDialog's
-    // first eight parameters construct its window; the ninth installs the
-    // caller-owned DITL handle in the DialogRecord, whose editing state starts
-    // closed with no selected edit field and item 1 as the default button.
-    *last_mem_error = PPC_NO_ERR;
-    dialog
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_initialize_dialog_items(
-    process_memory_manager: &mut ProcessNativeMemoryManager,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    controls: &mut Vec<PpcControlRecord>,
-    param_text: &[Vec<u8>; 4],
-    dialog: u32,
-    vfs_resources: &mut [PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-    last_resource_error: &mut i16,
-) -> bool {
-    let Some(items_handle) = memory
-        .read_u32_be(dialog.wrapping_add(PPC_DIALOG_ITEMS_OFFSET))
-        .filter(|handle| *handle != 0)
-    else {
-        return true;
-    };
-    let Some(ditl_bytes) = ppc_handle_bytes(memory, handles, items_handle) else {
-        *last_mem_error = PPC_PARAM_ERR;
-        return false;
-    };
-    let Some(items) = ppc_parse_dialog_items(&ditl_bytes) else {
-        *last_resource_error = PPC_PARAM_ERR;
-        return false;
-    };
-    let Some(items_ptr) = memory.read_u32_be(items_handle).filter(|ptr| *ptr != 0) else {
-        *last_mem_error = PPC_PARAM_ERR;
-        return false;
-    };
-
-    // Macintosh Toolbox Essentials (1992), pp. 6-26--6-42 and 6-120--6-121:
-    // Dialog Manager copies the DITL, replaces each item's placeholder with
-    // its live handle, and uses Control Manager records owned by the dialog
-    // for buttons, checkboxes, radio buttons, and resource-defined controls.
-    let mut first_edit = None;
-    for (item_index, item) in items.into_iter().enumerate() {
-        let base_type = item.item_type & !PPC_DIALOG_ITEM_DISABLED;
-        let mut missing_resource = false;
-        let item_handle = match base_type {
-            PPC_DIALOG_ITEM_BUTTON | PPC_DIALOG_ITEM_CHECKBOX | PPC_DIALOG_ITEM_RADIO => {
-                let proc_id = match base_type {
-                    PPC_DIALOG_ITEM_CHECKBOX => 1,
-                    PPC_DIALOG_ITEM_RADIO => 2,
-                    _ => 0,
-                };
-                let mut allocator = PpcProcessAllocatorView {
-                    memory_manager: process_memory_manager,
-                };
-                ppc_new_control_record_values(
-                    Some(&mut allocator),
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                    controls,
-                    dialog,
-                    item.rect,
-                    &item.payload,
-                    true,
-                    0,
-                    0,
-                    1,
-                    proc_id,
-                    0,
-                )
-            }
-            PPC_DIALOG_ITEM_RESOURCE_CONTROL => {
-                let resource_id = item
-                    .payload
-                    .get(..2)
-                    .and_then(|bytes| bytes.try_into().ok())
-                    .map(i16::from_be_bytes)
-                    .unwrap_or(0);
-                if let Some(index) = ppc_vfs_resource_index(
-                    vfs_resources,
-                    current_resource_refnum,
-                    u32::from_be_bytes(*b"CNTL"),
-                    resource_id,
-                    false,
-                ) {
-                    let bytes = &vfs_resources[index].data;
-                    if bytes.len() < 23 {
-                        *last_resource_error = PPC_PARAM_ERR;
-                        return false;
-                    }
-                    let title_len = usize::from(bytes[22]).min(bytes.len().saturating_sub(23));
-                    let mut allocator = PpcProcessAllocatorView {
-                        memory_manager: process_memory_manager,
-                    };
-                    ppc_new_control_record_values(
-                        Some(&mut allocator),
-                        memory,
-                        heap_cursor,
-                        heap_limit,
-                        last_mem_error,
-                        handles,
-                        controls,
-                        dialog,
-                        item.rect,
-                        &bytes[23..23 + title_len],
-                        bytes[10] != 0,
-                        i16::from_be_bytes([bytes[8], bytes[9]]),
-                        i16::from_be_bytes([bytes[14], bytes[15]]),
-                        i16::from_be_bytes([bytes[12], bytes[13]]),
-                        i16::from_be_bytes([bytes[16], bytes[17]]),
-                        u32::from_be_bytes([bytes[18], bytes[19], bytes[20], bytes[21]]),
-                    )
-                } else {
-                    missing_resource = true;
-                    *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-                    0
-                }
-            }
-            PPC_DIALOG_ITEM_STATIC_TEXT => {
-                // Macintosh Toolbox Essentials (1992), pp. 6-129--6-130:
-                // ParamText replaces ^0..^3 in static-text items of every
-                // subsequently created dialog or alert.
-                let text = ppc_apply_param_text(&item.payload, param_text);
-                ppc_process_alloc_handle_with_bytes(
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    last_mem_error,
-                    handles,
-                    &text,
-                )
-            }
-            PPC_DIALOG_ITEM_EDIT_TEXT => {
-                ppc_process_alloc_handle_with_bytes(
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    last_mem_error,
-                    handles,
-                    &item.payload,
-                )
-            }
-            PPC_DIALOG_ITEM_ICON | PPC_DIALOG_ITEM_PICTURE => {
-                let resource_id = item
-                    .payload
-                    .get(..2)
-                    .and_then(|bytes| bytes.try_into().ok())
-                    .map(i16::from_be_bytes)
-                    .unwrap_or(0);
-                let resource_type = if base_type == PPC_DIALOG_ITEM_ICON {
-                    u32::from_be_bytes(*b"ICON")
-                } else {
-                    u32::from_be_bytes(*b"PICT")
-                };
-                if let Some(index) = ppc_vfs_resource_index(
-                    vfs_resources,
-                    current_resource_refnum,
-                    resource_type,
-                    resource_id,
-                    false,
-                ) {
-                    ppc_materialize_vfs_resource_handle(
-                        process_memory_manager,
-                        memory,
-                        heap_cursor,
-                        heap_limit,
-                        last_mem_error,
-                        handles,
-                        vfs_resources,
-                        index,
-                        true,
-                        last_resource_error,
-                    )
-                } else {
-                    missing_resource = true;
-                    *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-                    0
-                }
-            }
-            _ => item.handle,
-        };
-        if item_handle == 0
-            && !missing_resource
-            && matches!(
-                base_type,
-                PPC_DIALOG_ITEM_BUTTON
-                    | PPC_DIALOG_ITEM_CHECKBOX
-                    | PPC_DIALOG_ITEM_RADIO
-                    | PPC_DIALOG_ITEM_RESOURCE_CONTROL
-                    | PPC_DIALOG_ITEM_STATIC_TEXT
-                    | PPC_DIALOG_ITEM_EDIT_TEXT
-                    | PPC_DIALOG_ITEM_ICON
-                    | PPC_DIALOG_ITEM_PICTURE
-            )
-        {
-            if *last_mem_error == PPC_NO_ERR && *last_resource_error == PPC_NO_ERR {
-                *last_mem_error = PPC_MEM_FULL_ERR;
-            }
-            return false;
-        }
-        if base_type == PPC_DIALOG_ITEM_RESOURCE_CONTROL {
-            ppc_initialize_popup_control(
-                memory, controls, vfs_resources, current_resource_refnum, item_handle,
-            );
-        }
-        if memory
-            .write_u32_be(items_ptr.wrapping_add(item.item_offset as u32), item_handle)
-            .is_none()
-        {
-            *last_mem_error = PPC_PARAM_ERR;
-            return false;
-        }
-        if base_type == PPC_DIALOG_ITEM_EDIT_TEXT && first_edit.is_none() {
-            first_edit = Some((item_index, item_handle, item.rect));
-        }
-    }
-    if let Some((item_index, item_handle, rect)) = first_edit {
-        let mut allocator = PpcProcessAllocatorView {
-            memory_manager: process_memory_manager,
-        };
-        let te_handle = ppc_te_create_for_dialog_item(
-            Some(&mut allocator),
-            None,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            dialog,
-            item_handle,
-            rect,
-            0,
-            PPC_QD_TEXT_MODE_SRC_OR,
-            PPC_QD_TEXT_SIZE_SYSTEM,
-            PpcRgbColor {
-                red: 0,
-                green: 0,
-                blue: 0,
-            },
-        );
-        if te_handle == 0
-            || memory
-                .write_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET, te_handle)
-                .is_none()
-            || memory
-                .write_u16_be(
-                    dialog + PPC_DIALOG_EDIT_FIELD_OFFSET,
-                    item_index.min(i16::MAX as usize) as u16,
-                )
-                .is_none()
-            || memory
-                .write_u16_be(dialog + PPC_DIALOG_EDIT_OPEN_OFFSET, 1)
-                .is_none()
-        {
-            *last_mem_error = PPC_MEM_FULL_ERR;
-            return false;
-        }
-    }
-    *last_resource_error = PPC_NO_ERR;
-    true
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_te_create_for_dialog_item(
-    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    mut legacy_handle_states: Option<&mut Vec<PpcHandleStateRecord>>,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    dialog: u32,
-    item_text_handle: u32,
-    rect: (i16, i16, i16, i16),
-    tick_count: u32,
-    text_mode: i16,
-    text_size: i16,
-    fore_color: PpcRgbColor,
-) -> u32 {
-    let scratch = ppc_allocator_view_reserve_bytes(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        16,
-        true,
-    );
-    if scratch == 0
-        || ppc_write_rect(memory, scratch, rect.0, rect.1, rect.2, rect.3).is_none()
-        || ppc_write_rect(memory, scratch + 8, rect.0, rect.1, rect.2, rect.3).is_none()
-    {
-        return 0;
-    }
-    let te_handle = ppc_te_initialize_record(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        scratch,
-        scratch + 8,
-        dialog,
-        tick_count,
-        text_mode,
-        text_size,
-        fore_color,
-        false,
-    );
-    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
-        return 0;
-    };
-    let temporary_text_handle = memory
-        .read_u32_be(te_ptr + PPC_TE_HTEXT_OFFSET)
-        .unwrap_or(0);
-    let length = handles
-        .iter()
-        .find(|record| record.handle == item_text_handle)
-        .map(|record| record.size.min(i16::MAX as u32) as u16)
-        .unwrap_or(0);
-    if memory
-        .write_u32_be(te_ptr + PPC_TE_HTEXT_OFFSET, item_text_handle)
-        .is_none()
-        || memory
-            .write_u16_be(te_ptr + PPC_TE_LENGTH_OFFSET, length)
-            .is_none()
-    {
-        return 0;
-    }
-    ppc_te_forget_handle(
-        allocator.as_deref_mut(),
-        legacy_handle_states.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        temporary_text_handle,
-    );
-    if ppc_te_recalculate_layout(
-        allocator,
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        te_handle,
-    ) != PPC_NO_ERR
-    {
-        return 0;
-    }
-    // Macintosh Toolbox Essentials (1992), pp. 6-135--6-137: when a
-    // dialog opens its first editText item, Dialog Manager activates the
-    // shared TERec and selects the item's initial text. The first typed
-    // character therefore replaces resource placeholder/default text.
-    if let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) {
-        let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, 0);
-        let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, length);
-        let _ = memory.write_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET, 1);
-        let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
-    }
-    te_handle
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_select_dialog_item_text(
-    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    mut legacy_handle_states: Option<&mut Vec<PpcHandleStateRecord>>,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    dialog: u32,
-    item_number: usize,
-    selection_start: u16,
-    selection_end: u16,
-    tick_count: u32,
-    text_mode: i16,
-    text_size: i16,
-    fore_color: PpcRgbColor,
-) {
-    let Some(item_index) = item_number.checked_sub(1) else {
-        return;
-    };
-    let Some(item) = ppc_dialog_items_for_dialog(memory, handles, dialog)
-        .and_then(|items| items.get(item_index).cloned())
-        .filter(|item| item.item_type & !PPC_DIALOG_ITEM_DISABLED == PPC_DIALOG_ITEM_EDIT_TEXT)
-    else {
-        return;
-    };
-    let current_field = memory
-        .read_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET)
-        .unwrap_or(u16::MAX) as usize;
-    let mut te_handle = memory
-        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
-        .unwrap_or(0);
-    if current_field != item_index || ppc_te_record_ptr(memory, te_handle).is_none() {
-        if let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) {
-            // A DialogRecord's TERec borrows the live DITL text handle; detach
-            // it before disposing the old edit record when focus changes.
-            let _ = memory.write_u32_be(te_ptr + PPC_TE_HTEXT_OFFSET, 0);
-            ppc_te_dispose(
-                allocator.as_deref_mut(),
-                legacy_handle_states.as_deref_mut(),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                te_handle,
-            );
-        }
-        te_handle = ppc_te_create_for_dialog_item(
-            allocator,
-            legacy_handle_states,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            dialog,
-            item.handle,
-            item.rect,
-            tick_count,
-            text_mode,
-            text_size,
-            fore_color,
-        );
-        if te_handle == 0 {
-            return;
-        }
-        let _ = memory.write_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET, te_handle);
-        let _ = memory.write_u16_be(
-            dialog + PPC_DIALOG_EDIT_FIELD_OFFSET,
-            item_index.min(i16::MAX as usize) as u16,
-        );
-        let _ = memory.write_u16_be(dialog + PPC_DIALOG_EDIT_OPEN_OFFSET, 1);
-    }
-    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
-        return;
-    };
-    let length = memory
-        .read_u16_be(te_ptr + PPC_TE_LENGTH_OFFSET)
-        .unwrap_or(0);
-    let start = selection_start.min(length);
-    let end = selection_end.min(length);
-    let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, start);
-    let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, end);
-    let _ = memory.write_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET, 1);
-    let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
 }
 
 fn ppc_palette_entry_color(
@@ -65996,7 +56182,7 @@ fn ppc_closest_available_clut_index(
         .map_or(0, |(index, _)| index as u8)
 }
 
-fn ppc_release_palette_allocations_and_restore(
+pub(super) fn ppc_release_palette_allocations_and_restore(
     memory: &mut PpcSectionMem,
     toolbox_startup: &mut PpcToolboxStartupState,
     palette: u32,
@@ -66492,14 +56678,14 @@ fn ppc_apply_palette(
     true
 }
 
-fn ppc_register_gdevice(toolbox_startup: &mut PpcToolboxStartupState, gdevice: u32) {
+pub(super) fn ppc_register_gdevice(toolbox_startup: &mut PpcToolboxStartupState, gdevice: u32) {
     if gdevice != 0 && !toolbox_startup.known_gdevices.contains(&gdevice) {
         toolbox_startup.known_gdevices.push(gdevice);
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ppc_activate_window_palette(
+pub(super) fn ppc_activate_window_palette(
     memory: &mut PpcSectionMem,
     window: u32,
     gdevice: u32,
@@ -66585,7 +56771,7 @@ fn ppc_activate_window_palette(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ppc_activate_front_window_palette(
+pub(super) fn ppc_activate_front_window_palette(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     fallback_gdevice: u32,
@@ -67741,7 +57927,7 @@ fn ppc_get_ctable(
     handle
 }
 
-fn ppc_read_ctable_clut(
+pub(super) fn ppc_read_ctable_clut(
     memory: &mut PpcSectionMem,
     ctable_handle: u32,
     base_clut: &[[u16; 3]; 256],
@@ -67887,4322 +58073,6 @@ fn ppc_dispose_pixmap(
         handles,
         pixmap_handle,
     );
-}
-
-fn ppc_get_dialog_item(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcHandleRecord]) {
-    let dialog = cpu.gpr[3];
-    let item_number = cpu.gpr[4] as u16 as usize;
-    let item_type_ptr = cpu.gpr[5];
-    let item_handle_ptr = cpu.gpr[6];
-    let item_rect_ptr = cpu.gpr[7];
-    if !ppc_optional_output_can_write(memory, item_type_ptr, 2)
-        || !ppc_optional_output_can_write(memory, item_handle_ptr, 4)
-        || !ppc_optional_output_can_write(memory, item_rect_ptr, 8)
-    {
-        return;
-    }
-    let item = memory
-        .read_u32_be(dialog.wrapping_add(PPC_DIALOG_ITEMS_OFFSET))
-        .and_then(|items_handle| ppc_handle_bytes(memory, handles, items_handle))
-        .and_then(|bytes| ppc_parse_dialog_items(&bytes))
-        .and_then(|items| {
-            item_number
-                .checked_sub(1)
-                .and_then(|index| items.get(index).cloned())
-        });
-    let Some(item) = item else {
-        if item_type_ptr != 0 {
-            let _ = memory.write_u16_be(item_type_ptr, 0);
-        }
-        if item_handle_ptr != 0 {
-            let _ = memory.write_u32_be(item_handle_ptr, 0);
-        }
-        if item_rect_ptr != 0 {
-            let _ = ppc_write_rect(memory, item_rect_ptr, 0, 0, 0, 0);
-        }
-        return;
-    };
-    if item_type_ptr != 0 {
-        let _ = memory.write_u16_be(item_type_ptr, u16::from(item.item_type));
-    }
-    if item_handle_ptr != 0 {
-        let _ = memory.write_u32_be(item_handle_ptr, item.handle);
-    }
-    if item_rect_ptr != 0 {
-        let _ = ppc_write_rect(
-            memory,
-            item_rect_ptr,
-            item.rect.0,
-            item.rect.1,
-            item.rect.2,
-            item.rect.3,
-        );
-    }
-}
-
-fn ppc_set_dialog_item(cpu: &PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcHandleRecord]) {
-    let dialog = cpu.gpr[3];
-    let item_number = cpu.gpr[4] as u16 as usize;
-    let item_type = cpu.gpr[5] as u16;
-    let item_handle = cpu.gpr[6];
-    let rect_ptr = cpu.gpr[7];
-    let Some(items_handle) = memory.read_u32_be(dialog.wrapping_add(PPC_DIALOG_ITEMS_OFFSET))
-    else {
-        return;
-    };
-    let Some(items_ptr) = memory.read_u32_be(items_handle).filter(|ptr| *ptr != 0) else {
-        return;
-    };
-    let Some(item) = ppc_handle_bytes(memory, handles, items_handle)
-        .and_then(|bytes| ppc_parse_dialog_items(&bytes))
-        .and_then(|items| {
-            item_number
-                .checked_sub(1)
-                .and_then(|index| items.get(index).cloned())
-        })
-    else {
-        return;
-    };
-    let item_addr = items_ptr.wrapping_add(item.item_offset as u32);
-    let Some(rect) = ppc_read_rect(memory, rect_ptr) else {
-        return;
-    };
-    // Macintosh Toolbox Essentials (1992), pp. 6-120--6-123: mutate the
-    // live DITL item's handle, Rect, and type in place without drawing it.
-    let _ = memory.write_u32_be(item_addr, item_handle);
-    let _ = ppc_write_rect(memory, item_addr + 4, rect.0, rect.1, rect.2, rect.3);
-    let _ = memory.write_u8(item_addr + 12, item_type as u8);
-}
-
-fn ppc_dialog_items_for_dialog(
-    memory: &mut PpcSectionMem,
-    handles: &[PpcHandleRecord],
-    dialog: u32,
-) -> Option<Vec<PpcDialogItemView>> {
-    let items_handle = memory.read_u32_be(dialog.checked_add(PPC_DIALOG_ITEMS_OFFSET)?)?;
-    let bytes = ppc_handle_bytes(memory, handles, items_handle)?;
-    ppc_parse_dialog_items(&bytes)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PpcDialogEvent {
-    what: u16,
-    message: u32,
-    when: u32,
-    where_v: i16,
-    where_h: i16,
-    modifiers: u16,
-}
-
-fn ppc_read_dialog_event(memory: &mut PpcSectionMem, event_ptr: u32) -> Option<PpcDialogEvent> {
-    Some(PpcDialogEvent {
-        what: memory.read_u16_be(event_ptr)?,
-        message: memory.read_u32_be(event_ptr.checked_add(2)?)?,
-        when: memory.read_u32_be(event_ptr.checked_add(6)?)?,
-        where_v: memory.read_u16_be(event_ptr.checked_add(10)?)? as i16,
-        where_h: memory.read_u16_be(event_ptr.checked_add(12)?)? as i16,
-        modifiers: memory.read_u16_be(event_ptr.checked_add(14)?)?,
-    })
-}
-
-fn ppc_dialog_for_event(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    what: u16,
-    message: u32,
-) -> Option<u32> {
-    // Inside Macintosh Volume I (1985), pp. I-416--I-417: update and
-    // activate events name their window in `message`; other dialog events
-    // are routed to the frontmost visible dialog.
-    if matches!(what, 6 | 8)
-        && memory.read_u16_be(message.checked_add(PPC_CWINDOW_WINDOW_KIND_OFFSET)?) == Some(2)
-    {
-        return Some(message);
-    }
-    gworlds.iter().rev().find_map(|record| {
-        (memory.read_u16_be(record.port.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET)) == Some(2)
-            && ppc_window_is_visible(memory, record.port))
-        .then_some(record.port)
-    })
-}
-
-fn ppc_dialog_global_bounds(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    dialog: u32,
-) -> Option<(i16, i16, i16, i16)> {
-    let record = gworlds.iter().find(|record| record.port == dialog)?;
-    let (pixel_top, pixel_left, _, _) = ppc_read_rect(memory, record.pixmap.checked_add(6)?)?;
-    let top = pixel_top.saturating_neg();
-    let left = pixel_left.saturating_neg();
-    Some((
-        top,
-        left,
-        top.saturating_add(ppc_u32_to_i16_saturating(record.height)),
-        left.saturating_add(ppc_u32_to_i16_saturating(record.width)),
-    ))
-}
-
-fn ppc_dialog_rect_to_global(
-    bounds: (i16, i16, i16, i16),
-    rect: (i16, i16, i16, i16),
-) -> (i16, i16, i16, i16) {
-    (
-        bounds.0.saturating_add(rect.0),
-        bounds.1.saturating_add(rect.1),
-        bounds.0.saturating_add(rect.2),
-        bounds.1.saturating_add(rect.3),
-    )
-}
-
-fn ppc_dialog_draw_callbacks(
-    memory: &mut PpcSectionMem,
-    items: &[PpcDialogItemView],
-    bounds: (i16, i16, i16, i16),
-    default_rtoc: u32,
-) -> Vec<(PpcCallbackTarget, u32)> {
-    items
-        .iter()
-        .enumerate()
-        .filter_map(|(index, item)| {
-            if item.item_type & !PPC_DIALOG_ITEM_DISABLED != PPC_DIALOG_ITEM_USER_ITEM
-                || item.handle == 0
-            {
-                return None;
-            }
-            let rect = ppc_dialog_rect_to_global(bounds, item.rect);
-            if rect.0 >= bounds.2 || rect.2 <= bounds.0 || rect.1 >= bounds.3 || rect.3 <= bounds.1
-            {
-                return None;
-            }
-            let target = ppc_resolve_callback_target(memory, item.handle, default_rtoc, None)?;
-            memory.read_u32_be(target.entry)?;
-            Some((target, u32::try_from(index + 1).unwrap_or(u32::MAX)))
-        })
-        .collect()
-}
-
-fn ppc_next_dialog_callback(
-    cpu: &mut PpcCpu,
-    memory: &mut PpcSectionMem,
-    dialog_callback_stack: &mut Vec<PpcDialogCallbackState>,
-) -> PpcImportAction {
-    loop {
-        let Some(state) = dialog_callback_stack.last_mut() else {
-            return PpcImportAction::ReturnPreserve;
-        };
-        if state.next_callback >= state.callbacks.len() {
-            let state = dialog_callback_stack.pop().unwrap();
-            cpu.lr = state.final_pc;
-            cpu.gpr[2] = state.restore_rtoc;
-            return match state.completion {
-                PpcDialogCallbackCompletion::ReturnPreserve => PpcImportAction::ReturnPreserve,
-                PpcDialogCallbackCompletion::Return(value) => PpcImportAction::Return(value),
-                PpcDialogCallbackCompletion::Yield => PpcImportAction::Yield(u64::MAX),
-            };
-        }
-        let (target, item_number) = state.callbacks[state.next_callback];
-        let dialog = state.dialog;
-        let restore_rtoc = state.restore_rtoc;
-        state.next_callback += 1;
-        if install_powerpc_call_arguments(cpu, memory, &[dialog, item_number]).is_none() {
-            continue;
-        }
-        return GuestCallEffect::call_guest(
-            GuestCallRequest::new(GuestCallTarget {
-                isa: GuestIsa::PowerPc,
-                entry: target.entry,
-                rtoc: target.rtoc,
-            }),
-            GuestCallContinuation::to_powerpc(
-                PPC_GUEST_CALL_RETURN_PC,
-                cpu.pc,
-                restore_rtoc,
-                PpcNativeReturnGpr3::Preserve,
-            ),
-        )
-        .into_ppc_import_action()
-        .expect("validated dialog callback must be native PowerPC");
-    }
-}
-
-fn ppc_resume_dialog_callbacks(
-    cpu: &mut PpcCpu,
-    memory: &mut PpcSectionMem,
-    dialog_callback_stack: &mut Vec<PpcDialogCallbackState>,
-) -> Option<PpcImportAction> {
-    (cpu.lr == cpu.pc
-        && dialog_callback_stack
-            .last()
-            .is_some_and(|state| state.import_pc == cpu.pc))
-    .then(|| ppc_next_dialog_callback(cpu, memory, dialog_callback_stack))
-}
-
-fn ppc_begin_dialog_callbacks(
-    cpu: &mut PpcCpu,
-    memory: &mut PpcSectionMem,
-    dialog_callback_stack: &mut Vec<PpcDialogCallbackState>,
-    dialog: u32,
-    items: &[PpcDialogItemView],
-    bounds: (i16, i16, i16, i16),
-    completion: PpcDialogCallbackCompletion,
-) -> PpcImportAction {
-    let callbacks = ppc_dialog_draw_callbacks(memory, items, bounds, cpu.gpr[2]);
-    if callbacks.is_empty() {
-        return match completion {
-            PpcDialogCallbackCompletion::ReturnPreserve => PpcImportAction::ReturnPreserve,
-            PpcDialogCallbackCompletion::Return(value) => PpcImportAction::Return(value),
-            PpcDialogCallbackCompletion::Yield => PpcImportAction::Yield(u64::MAX),
-        };
-    }
-    dialog_callback_stack.push(PpcDialogCallbackState {
-        import_pc: cpu.pc,
-        dialog,
-        callbacks,
-        next_callback: 0,
-        final_pc: cpu.lr,
-        restore_rtoc: cpu.gpr[2],
-        completion,
-    });
-    ppc_next_dialog_callback(cpu, memory, dialog_callback_stack)
-}
-
-fn ppc_fill_front_rect(
-    memory: &mut PpcSectionMem,
-    front: PpcFrontBuffer,
-    rect: (i16, i16, i16, i16),
-    color: PpcRgbColor,
-) -> bool {
-    let top = i32::from(rect.0).max(0).min(front.height as i32);
-    let left = i32::from(rect.1).max(0).min(front.width as i32);
-    let bottom = i32::from(rect.2).max(0).min(front.height as i32);
-    let right = i32::from(rect.3).max(0).min(front.width as i32);
-    if top >= bottom || left >= right {
-        return false;
-    }
-    let pixel = match front.depth {
-        depth @ (1 | 2 | 4 | 8) => {
-            let fallback = TrapDispatcher::standard_mac_indexed_clut(depth as u16)
-                .map(|(clut, _)| clut)
-                .unwrap_or_else(TrapDispatcher::standard_mac_8bpp_clut);
-            let clut = if front.base_addr == PPC_MAIN_SCREEN_BASE {
-                ppc_read_ctable_clut(memory, PPC_MAIN_CTABLE_HANDLE, &fallback).unwrap_or(fallback)
-            } else {
-                fallback
-            };
-            u16::from(ppc_rgb_color_to_index_in_clut(
-                color,
-                &clut,
-                ppc_indexed_depth_entry_count(depth).unwrap_or(1),
-            ))
-        }
-        16 => ppc_rgb_color_to_rgb555(color),
-        _ => return false,
-    };
-    let mut wrote = false;
-    for y in top..bottom {
-        for x in left..right {
-            wrote |= ppc_quickdraw_write_raw_pixel(memory, front, (x, y), pixel);
-        }
-    }
-    wrote
-}
-
-fn ppc_frame_front_rect(
-    memory: &mut PpcSectionMem,
-    front: PpcFrontBuffer,
-    rect: (i16, i16, i16, i16),
-    color: PpcRgbColor,
-    thickness: i16,
-) -> bool {
-    let mut wrote = false;
-    for inset in 0..thickness.max(1) {
-        let inset_rect = (
-            rect.0.saturating_add(inset),
-            rect.1.saturating_add(inset),
-            rect.2.saturating_sub(inset),
-            rect.3.saturating_sub(inset),
-        );
-        wrote |= ppc_fill_front_rect(
-            memory,
-            front,
-            (
-                inset_rect.0,
-                inset_rect.1,
-                inset_rect.0.saturating_add(1),
-                inset_rect.3,
-            ),
-            color,
-        );
-        wrote |= ppc_fill_front_rect(
-            memory,
-            front,
-            (
-                inset_rect.2.saturating_sub(1),
-                inset_rect.1,
-                inset_rect.2,
-                inset_rect.3,
-            ),
-            color,
-        );
-        wrote |= ppc_fill_front_rect(
-            memory,
-            front,
-            (
-                inset_rect.0,
-                inset_rect.1,
-                inset_rect.2,
-                inset_rect.1.saturating_add(1),
-            ),
-            color,
-        );
-        wrote |= ppc_fill_front_rect(
-            memory,
-            front,
-            (
-                inset_rect.0,
-                inset_rect.3.saturating_sub(1),
-                inset_rect.2,
-                inset_rect.3,
-            ),
-            color,
-        );
-    }
-    wrote
-}
-
-fn ppc_frame_front_round_rect(
-    memory: &mut PpcSectionMem,
-    front: PpcFrontBuffer,
-    rect: (i16, i16, i16, i16),
-    oval: i16,
-    thickness: i16,
-    color: PpcRgbColor,
-) -> bool {
-    let slot = memory.presentation();
-    let detail = if matches!(front.depth, 8 | 16) {
-        let fallback = TrapDispatcher::standard_mac_8bpp_clut();
-        let clut = if front.base_addr == PPC_MAIN_SCREEN_BASE {
-            ppc_read_ctable_clut(memory, PPC_MAIN_CTABLE_HANDLE, &fallback).unwrap_or(fallback)
-        } else {
-            fallback
-        };
-        let foreground = if front.depth == 16 {
-            u32::from(ppc_rgb_color_to_rgb555(color))
-        } else {
-            u32::from(ppc_rgb_color_to_index_in_clut(color, &clut, 256))
-        };
-        slot.rounded_control_corners(
-            (rect.0.into(), rect.1.into(), rect.2.into(), rect.3.into()),
-            oval.into(),
-            thickness.into(),
-            front.depth as u16,
-            None,
-            foreground,
-            |x, y, lane| {
-                if x < 0 || y < 0 || x >= front.width as i32 || y >= front.height as i32 {
-                    return None;
-                }
-                let address = front.base_addr
-                    + y as u32 * front.row_bytes
-                    + x as u32 * (front.depth / 8)
-                    + lane;
-                Some((address, memory.read_u8(address)?))
-            },
-        )
-    } else {
-        None
-    };
-    let outer = Rect {
-        top: rect.0,
-        left: rect.1,
-        bottom: rect.2,
-        right: rect.3,
-    };
-    let inner = Rect {
-        top: rect.0.saturating_add(thickness),
-        left: rect.1.saturating_add(thickness),
-        bottom: rect.2.saturating_sub(thickness),
-        right: rect.3.saturating_sub(thickness),
-    };
-    let outer_spans = TrapDispatcher::compute_rrect_spans(&outer, oval, oval);
-    let inner_spans = TrapDispatcher::compute_rrect_spans(
-        &inner,
-        oval.saturating_sub(thickness.saturating_mul(2)),
-        oval.saturating_sub(thickness.saturating_mul(2)),
-    );
-    let mut wrote = false;
-    for y in rect.0..rect.2 {
-        let Some(&(outer_left, outer_right)) = outer_spans.get((y - rect.0) as usize) else {
-            continue;
-        };
-        let inner_span = if y >= inner.top && y < inner.bottom {
-            inner_spans.get((y - inner.top) as usize).copied()
-        } else {
-            None
-        };
-        let (inner_left, inner_right) = inner_span.unwrap_or((outer_right, outer_left));
-        wrote |= ppc_fill_front_rect(
-            memory,
-            front,
-            (y, outer_left, y.saturating_add(1), inner_left.min(outer_right)),
-            color,
-        );
-        wrote |= ppc_fill_front_rect(
-            memory,
-            front,
-            (
-                y,
-                inner_right.max(outer_left),
-                y.saturating_add(1),
-                outer_right,
-            ),
-            color,
-        );
-    }
-    slot.finish_rounded_control(detail, |address| memory.read_u8(address).unwrap_or(0));
-    wrote
-}
-
-fn ppc_dialog_text_lines(bytes: &[u8], max_width: i16) -> Vec<Vec<u8>> {
-    crate::quickdraw::text::wrap_classic_text(bytes, max_width, |_, byte| {
-        ppc_text_byte_advance_for_font(byte, PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM)
-    })
-    .into_iter()
-    .map(|line| bytes[line.start..line.visible_end].to_vec())
-    .collect()
-}
-
-fn ppc_draw_dialog_text(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    rect: (i16, i16, i16, i16),
-    bytes: &[u8],
-    color: PpcRgbColor,
-) {
-    let max_width = rect.3.saturating_sub(rect.1).max(1);
-    let lines = ppc_dialog_text_lines(bytes, max_width);
-    for (index, line) in lines.iter().enumerate() {
-        let baseline = rect
-            .0
-            .saturating_add(12)
-            .saturating_add(i16::try_from(index).unwrap_or(i16::MAX).saturating_mul(16));
-        if baseline >= rect.2 {
-            break;
-        }
-        let _ = ppc_draw_text_bytes(
-            memory,
-            gworlds,
-            PPC_MAIN_GWORLD,
-            (rect.1, baseline),
-            PPC_QD_TEXT_FONT_DEFAULT,
-            PPC_QD_TEXT_SIZE_SYSTEM,
-            PPC_QD_TEXT_MODE_SRC_OR,
-            color,
-            None,
-            line,
-        );
-    }
-}
-
-fn ppc_dialog_item_title(
-    memory: &mut PpcSectionMem,
-    handles: &[PpcHandleRecord],
-    item: &PpcDialogItemView,
-) -> Vec<u8> {
-    let base_type = item.item_type & !PPC_DIALOG_ITEM_DISABLED;
-    if matches!(
-        base_type,
-        PPC_DIALOG_ITEM_BUTTON | PPC_DIALOG_ITEM_CHECKBOX | PPC_DIALOG_ITEM_RADIO
-    ) {
-        return memory
-            .read_u32_be(item.handle)
-            .filter(|ptr| *ptr != 0)
-            .and_then(|ptr| ppc_read_pstring_bytes(memory, ptr + PPC_CONTROL_TITLE_OFFSET))
-            .unwrap_or_default();
-    }
-    ppc_handle_bytes(memory, handles, item.handle).unwrap_or_else(|| item.payload.clone())
-}
-
-fn ppc_draw_dialog(
-    memory: &mut PpcSectionMem,
-    handles: &[PpcHandleRecord],
-    controls: &[PpcControlRecord],
-    gworlds: &[PpcGWorldRecord],
-    screen_clut: &[[u16; 3]; 256],
-    vfs_resources: &[PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-    dialog: u32,
-) -> bool {
-    let Some(front) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) else {
-        return false;
-    };
-    let Some(bounds) = ppc_dialog_global_bounds(memory, gworlds, dialog) else {
-        return false;
-    };
-    let Some(items) = ppc_dialog_items_for_dialog(memory, handles, dialog) else {
-        return false;
-    };
-    // Macintosh Toolbox Essentials (1992), p. 6-142: DrawDialog redraws
-    // items, controls, text, and user-item callbacks. It does not erase the
-    // dialog surface: applications may have already drawn custom contents
-    // outside those items. Window creation supplies the initial background.
-    let palette = ppc_ui_theme(gworlds).provider().palette();
-    let default_item = memory
-        .read_u16_be(dialog.wrapping_add(PPC_DIALOG_DEFAULT_ITEM_OFFSET))
-        .unwrap_or(1) as usize;
-    for (index, item) in items.iter().enumerate() {
-        let rect = ppc_dialog_rect_to_global(bounds, item.rect);
-        match item.item_type & !PPC_DIALOG_ITEM_DISABLED {
-            PPC_DIALOG_ITEM_BUTTON | PPC_DIALOG_ITEM_CHECKBOX | PPC_DIALOG_ITEM_RADIO => {
-                // Macintosh Toolbox Essentials (1992), pp. 5-4--5-6 and
-                // 6-26--6-42: DITL buttons, checkboxes, and radio buttons are
-                // live Control Manager controls. Draw the materialized record
-                // so its CDEF, value, visibility, and title determine the
-                // result instead of treating every item as a push button.
-                let _ = ppc_draw_control_inner(
-                    memory,
-                    handles,
-                    controls,
-                    gworlds,
-                    vfs_resources,
-                    current_resource_refnum,
-                    item.handle,
-                    true,
-                );
-                if (item.item_type & !PPC_DIALOG_ITEM_DISABLED) == PPC_DIALOG_ITEM_BUTTON
-                    && index + 1 == default_item
-                    && ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7
-                {
-                    let outer = (
-                        rect.0.saturating_sub(4),
-                        rect.1.saturating_sub(4),
-                        rect.2.saturating_add(4),
-                        rect.3.saturating_add(4),
-                    );
-                    let oval = (outer.2.saturating_sub(outer.0) / 2 - 4).max(4);
-                    let _ = ppc_frame_front_round_rect(
-                        memory,
-                        front,
-                        outer,
-                        oval,
-                        3,
-                        ppc_theme_rgb(palette.frame_dark),
-                    );
-                }
-            }
-            PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_EDIT_TEXT => {
-                let text = ppc_dialog_item_title(memory, handles, item);
-                if (item.item_type & !PPC_DIALOG_ITEM_DISABLED) == PPC_DIALOG_ITEM_EDIT_TEXT {
-                    let outer = (
-                        rect.0.saturating_sub(3),
-                        rect.1.saturating_sub(3),
-                        rect.2.saturating_add(3),
-                        rect.3.saturating_add(3),
-                    );
-                    let _ = ppc_frame_front_rect(
-                        memory,
-                        front,
-                        outer,
-                        ppc_theme_rgb(palette.frame_dark),
-                        1,
-                    );
-                }
-                let selected = if (item.item_type & !PPC_DIALOG_ITEM_DISABLED)
-                    == PPC_DIALOG_ITEM_EDIT_TEXT
-                    && memory
-                        .read_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET)
-                        .is_some_and(|field| usize::from(field) == index)
-                {
-                    memory
-                        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
-                        .and_then(|handle| ppc_te_record_ptr(memory, handle))
-                        .is_some_and(|te_ptr| {
-                            memory
-                                .read_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET)
-                                .unwrap_or(0)
-                                != 0
-                                && memory
-                                    .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
-                                    .unwrap_or(0)
-                                    < memory
-                                        .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
-                                        .unwrap_or(0)
-                        })
-                } else {
-                    false
-                };
-                if selected {
-                    let interior = (
-                        rect.0,
-                        rect.1,
-                        rect.0.saturating_add(16).min(rect.2),
-                        rect.3,
-                    );
-                    if !ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, interior) {
-                        let _ = ppc_fill_front_rect(
-                            memory,
-                            front,
-                            interior,
-                            ppc_theme_rgb(palette.frame_dark),
-                        );
-                    }
-                }
-                let text_rect = if matches!(
-                    item.item_type & !PPC_DIALOG_ITEM_DISABLED,
-                    PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_EDIT_TEXT
-                ) {
-                    (rect.0, rect.1.saturating_add(1), rect.2, rect.3)
-                } else {
-                    rect
-                };
-                ppc_draw_dialog_text(
-                    memory,
-                    gworlds,
-                    text_rect,
-                    &text,
-                    if selected && ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7 {
-                        ppc_theme_rgb(palette.window_background)
-                    } else {
-                        ppc_theme_rgb(palette.frame_dark)
-                    },
-                );
-            }
-            PPC_DIALOG_ITEM_PICTURE => {
-                if let Some(bytes) = ppc_handle_bytes(memory, handles, item.handle) {
-                    let _ = ppc_draw_pict_bytes_to_16bpp(
-                        memory,
-                        front,
-                        &bytes,
-                        rect,
-                        screen_clut,
-                        0,
-                        false,
-                    );
-                }
-            }
-            PPC_DIALOG_ITEM_ICON => {
-                let _ =
-                    ppc_frame_front_rect(memory, front, rect, ppc_theme_rgb(palette.frame_dark), 1);
-            }
-            PPC_DIALOG_ITEM_RESOURCE_CONTROL => {
-                let _ = ppc_draw_control_inner(
-                    memory,
-                    handles,
-                    controls,
-                    gworlds,
-                    vfs_resources,
-                    current_resource_refnum,
-                    item.handle,
-                    true,
-                );
-            }
-            _ => {}
-        }
-    }
-    // Resource-control DITL entries can retain the resource handle after the
-    // Control Manager has materialized the live control. Draw live pop-up
-    // controls owned by the dialog as a final pass so SetControlValue calls
-    // made before the dialog is positioned cannot leave them missing or at
-    // stale local coordinates.
-    for record in controls {
-        if !(1008..=1023).contains(&(record.proc_id & 0x0fff)) {
-            continue;
-        }
-        let Some(control) = ppc_control_ptr(memory, record.handle) else {
-            continue;
-        };
-        if memory.read_u32_be(control.wrapping_add(PPC_CONTROL_OWNER_OFFSET)) != Some(dialog) {
-            continue;
-        }
-        let _ = ppc_draw_control_inner(
-            memory,
-            handles,
-            controls,
-            gworlds,
-            vfs_resources,
-            current_resource_refnum,
-            record.handle,
-            true,
-        );
-    }
-    let _ = memory.write_u8(dialog + PPC_CWINDOW_VISIBLE_OFFSET, 1);
-    true
-}
-
-fn ppc_dialog_item_at_global_point(
-    items: &[PpcDialogItemView],
-    bounds: (i16, i16, i16, i16),
-    where_v: i16,
-    where_h: i16,
-) -> Option<u16> {
-    items.iter().enumerate().find_map(|(index, item)| {
-        if item.item_type & PPC_DIALOG_ITEM_DISABLED != 0 {
-            return None;
-        }
-        let rect = ppc_dialog_rect_to_global(bounds, item.rect);
-        (where_v >= rect.0 && where_v < rect.2 && where_h >= rect.1 && where_h < rect.3)
-            .then(|| u16::try_from(index + 1).unwrap_or(u16::MAX))
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_track_dialog_popup(
-    memory: &mut PpcSectionMem,
-    controls: &[PpcControlRecord],
-    gworlds: &[PpcGWorldRecord],
-    vfs_resources: &[PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-    dialog: u32,
-    item_rect: (i16, i16, i16, i16),
-    input: PpcInputSnapshot,
-) -> bool {
-    let Some((record, control)) = controls.iter().find_map(|record| {
-        if !(1008..=1023).contains(&(record.proc_id & 0x0fff)) {
-            return None;
-        }
-        let control = ppc_control_ptr(memory, record.handle)?;
-        (memory.read_u32_be(control + PPC_CONTROL_OWNER_OFFSET) == Some(dialog)
-            && ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET) == Some(item_rect))
-        .then_some((record, control))
-    }) else {
-        return false;
-    };
-    let Some(resource_index) = ppc_vfs_resource_index(
-        vfs_resources,
-        current_resource_refnum,
-        u32::from_be_bytes(*b"MENU"),
-        record.popup_menu_id,
-        false,
-    ) else {
-        return false;
-    };
-    let Some((_, _, menu_items)) = ppc_decode_menu_items(&vfs_resources[resource_index].data)
-    else {
-        return false;
-    };
-    let selected = memory
-        .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
-        .unwrap_or(1)
-        .max(1);
-    let Some(dialog_bounds) = ppc_dialog_global_bounds(memory, gworlds, dialog) else {
-        return false;
-    };
-    let global_rect = ppc_dialog_rect_to_global(dialog_bounds, item_rect);
-    if input.mouse_h < global_rect.1 || input.mouse_h >= global_rect.3 {
-        return false;
-    }
-    // Macintosh Toolbox Essentials (1992), pp. 3-104--3-105: the current
-    // item is aligned with the pop-up control while the mouse tracks the
-    // vertically stacked menu. Use the live pointer position so scripted and
-    // interactive drags can choose a different row before the mouse-up event.
-    let menu_top = i32::from(global_rect.0)
-        .saturating_sub(i32::from(selected.saturating_sub(1)).saturating_mul(16));
-    let relative_v = i32::from(input.mouse_v).saturating_sub(menu_top);
-    if relative_v < 0 {
-        return false;
-    }
-    let item = usize::try_from(relative_v / 16).unwrap_or(usize::MAX) + 1;
-    if item == 0 || item > menu_items.len() || !menu_items[item - 1].enabled {
-        return false;
-    }
-    let item = u16::try_from(item).unwrap_or(u16::MAX);
-    if item == selected {
-        return false;
-    }
-    memory
-        .write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, item)
-        .is_some()
-}
-
-fn ppc_dialog_cancel_item(
-    memory: &mut PpcSectionMem,
-    handles: &[PpcHandleRecord],
-    items: &[PpcDialogItemView],
-) -> Option<u16> {
-    items.iter().enumerate().find_map(|(index, item)| {
-        if item.item_type & PPC_DIALOG_ITEM_DISABLED != 0
-            || item.item_type & !PPC_DIALOG_ITEM_DISABLED != PPC_DIALOG_ITEM_BUTTON
-        {
-            return None;
-        }
-        let title = ppc_dialog_item_title(memory, handles, item);
-        title
-            .eq_ignore_ascii_case(b"cancel")
-            .then(|| u16::try_from(index + 1).unwrap_or(u16::MAX))
-    })
-}
-
-fn ppc_modal_dialog(
-    cpu: &mut PpcCpu,
-    process_memory_manager: &mut ProcessNativeMemoryManager,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    controls: &[PpcControlRecord],
-    gworlds: &[PpcGWorldRecord],
-    current_gworld: &mut u32,
-    current_gdevice: &mut u32,
-    screen_clut: &[[u16; 3]; 256],
-    fore_color: PpcRgbColor,
-    fore_indices: &HashMap<u32, u8>,
-    input: PpcInputSnapshot,
-    event_queue: &mut VecDeque<PpcQueuedEvent>,
-    dialog_callback_stack: &mut Vec<PpcDialogCallbackState>,
-    vfs_resources: &[PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-) -> PpcImportAction {
-    if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
-        return action;
-    }
-    let item_hit_ptr = cpu.gpr[4];
-    if item_hit_ptr == 0 || !ppc_memory_can_write_bytes(memory, item_hit_ptr, 2) {
-        return PpcImportAction::ReturnPreserve;
-    }
-    let dialog = if memory.read_u16_be(current_gworld.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET))
-        == Some(2)
-    {
-        *current_gworld
-    } else {
-        gworlds
-            .iter()
-            .rev()
-            .find(|record| {
-                memory.read_u16_be(record.port.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET))
-                    == Some(2)
-                    && ppc_window_is_visible(memory, record.port)
-            })
-            .map(|record| record.port)
-            .unwrap_or(0)
-    };
-    let Some(bounds) = ppc_dialog_global_bounds(memory, gworlds, dialog) else {
-        return PpcImportAction::ReturnPreserve;
-    };
-    let Some(items) = ppc_dialog_items_for_dialog(memory, handles, dialog) else {
-        return PpcImportAction::ReturnPreserve;
-    };
-    *current_gworld = dialog;
-    *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
-    let event = event_queue.pop_front();
-    let mut handled_edit_event = false;
-    let hit = match event.as_ref().map(|event| event.what) {
-        Some(1) => event.as_ref().and_then(|event| {
-            let hit =
-                ppc_dialog_item_at_global_point(&items, bounds, event.where_v, event.where_h)?;
-            let item = items.get(usize::from(hit).checked_sub(1)?)?;
-            if item.item_type & !PPC_DIALOG_ITEM_DISABLED == PPC_DIALOG_ITEM_EDIT_TEXT {
-                let te_handle = memory
-                    .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
-                    .unwrap_or(0);
-                ppc_te_click(
-                    memory,
-                    handles,
-                    te_handle,
-                    event.where_v.saturating_sub(bounds.0),
-                    event.where_h.saturating_sub(bounds.1),
-                    event.modifiers & 0x0200 != 0,
-                    0,
-                );
-                handled_edit_event = true;
-                None
-            } else {
-                if item.item_type & !PPC_DIALOG_ITEM_DISABLED == PPC_DIALOG_ITEM_RESOURCE_CONTROL
-                    && ppc_track_dialog_popup(
-                        memory,
-                        controls,
-                        gworlds,
-                        vfs_resources,
-                        current_resource_refnum,
-                        dialog,
-                        item.rect,
-                        input,
-                    )
-                {
-                    let _ = ppc_draw_dialog(
-                        memory,
-                        handles,
-                        controls,
-                        gworlds,
-                        screen_clut,
-                        vfs_resources,
-                        current_resource_refnum,
-                        dialog,
-                    );
-                }
-                Some(hit)
-            }
-        }),
-        Some(3 | 5) => {
-            let event = event.as_ref().unwrap();
-            let character = event.message as u8;
-            let key_code = (event.message >> 8) as u8;
-            if matches!(character, b'\r' | 3)
-                || matches!(key_code, PPC_KEY_RETURN | PPC_KEY_NUMPAD_ENTER)
-            {
-                memory
-                    .read_u16_be(dialog + PPC_DIALOG_DEFAULT_ITEM_OFFSET)
-                    .filter(|item| *item != 0)
-            } else if character == 0x1b || key_code == PPC_KEY_ESCAPE {
-                memory
-                    .read_u16_be(dialog + PPC_DIALOG_CANCEL_ITEM_HLE_OFFSET)
-                    .filter(|item| *item != 0)
-                    .or_else(|| ppc_dialog_cancel_item(memory, handles, &items))
-            } else if character.eq_ignore_ascii_case(&b'a') && event.modifiers & 0x0100 != 0 {
-                let te_handle = memory
-                    .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
-                    .unwrap_or(0);
-                if let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) {
-                    let length = memory
-                        .read_u16_be(te_ptr + PPC_TE_LENGTH_OFFSET)
-                        .unwrap_or(0);
-                    let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, 0);
-                    let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, length);
-                    handled_edit_event = true;
-                }
-                None
-            } else if matches!(character, 0x08 | 0x20..=0x7e) {
-                let te_handle = memory
-                    .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
-                    .unwrap_or(0);
-                let mut allocator = PpcProcessAllocatorView {
-                    memory_manager: process_memory_manager,
-                };
-                let result = ppc_te_key(
-                    Some(&mut allocator),
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                    te_handle,
-                    character,
-                );
-                *last_mem_error = result;
-                if result == PPC_NO_ERR {
-                    handled_edit_event = true;
-                    let _ = ppc_draw_dialog(
-                        memory,
-                        handles,
-                        controls,
-                        gworlds,
-                        screen_clut,
-                        vfs_resources,
-                        current_resource_refnum,
-                        dialog,
-                    );
-                    ppc_te_draw(
-                        memory,
-                        handles,
-                        gworlds,
-                        te_handle,
-                        dialog,
-                        fore_color,
-                        fore_indices,
-                    );
-                }
-                None
-            } else {
-                None
-            }
-        }
-        Some(6) => {
-            let _ = ppc_draw_dialog(
-                memory,
-                handles,
-                controls,
-                gworlds,
-                screen_clut,
-                vfs_resources,
-                current_resource_refnum,
-                dialog,
-            );
-            return ppc_begin_dialog_callbacks(
-                cpu,
-                memory,
-                dialog_callback_stack,
-                dialog,
-                &items,
-                bounds,
-                PpcDialogCallbackCompletion::Yield,
-            );
-        }
-        _ => None,
-    };
-    if let Some(hit) = hit {
-        let _ = memory.write_u16_be(item_hit_ptr, hit);
-        if ppc_hle_trace_enabled() {
-            eprintln!(
-                "[PPC-TRACE] ModalDialog dialog=${dialog:08X} filter=${:08X} -> item {}",
-                cpu.gpr[3], hit
-            );
-        }
-        PpcImportAction::ReturnPreserve
-    } else {
-        if handled_edit_event && ppc_hle_trace_enabled() {
-            let text = memory
-                .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
-                .and_then(|handle| ppc_te_text_bytes(memory, handles, handle))
-                .unwrap_or_default();
-            eprintln!(
-                "[PPC-TRACE] ModalDialog dialog=${dialog:08X} edit={:?}",
-                String::from_utf8_lossy(&text)
-            );
-        }
-        // ModalDialog is synchronous. Keep the PC at the import until a host
-        // event selects an enabled item; returning item 0 makes guest code
-        // spin and advances its state contrary to the Toolbox contract.
-        PpcImportAction::Yield(u64::MAX)
-    }
-}
-
-fn ppc_set_control_title(
-    cpu: &PpcCpu,
-    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-) {
-    let control_handle = cpu.gpr[3];
-    let title_ptr = cpu.gpr[4];
-    let title = ppc_read_pstring_bytes(memory, title_ptr).unwrap_or_default();
-    if control_handle == 0 || title_ptr == 0 {
-        *last_mem_error = PPC_PARAM_ERR;
-        return;
-    }
-    let result = ppc_allocator_view_resize_handle(
-        allocator,
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        control_handle,
-        PPC_CONTROL_RECORD_SIZE,
-    );
-    if result != PPC_NO_ERR {
-        *last_mem_error = result;
-        return;
-    }
-    let Some(control) = memory
-        .read_u32_be(control_handle)
-        .filter(|control| *control != 0)
-    else {
-        *last_mem_error = PPC_PARAM_ERR;
-        return;
-    };
-    let wrote = ppc_write_pstring_bytes(
-        memory,
-        control.wrapping_add(PPC_CONTROL_TITLE_OFFSET),
-        &title,
-    );
-    // Macintosh Toolbox Essentials (1992), pp. 5-73 and 5-96: a control's
-    // Str255 title begins at byte 40 of its relocatable ControlRecord.
-    *last_mem_error = if wrote { PPC_NO_ERR } else { PPC_PARAM_ERR };
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_dispatch_popup_track_control(
-    cpu: &PpcCpu,
-    memory: &mut PpcSectionMem,
-    handles: &[PpcHandleRecord],
-    controls: &[PpcControlRecord],
-    gworlds: &[PpcGWorldRecord],
-    screen_clut: &[[u16; 3]; 256],
-    vfs_resources: &[PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-    startup: &mut PpcToolboxStartupState,
-    input: PpcInputSnapshot,
-    control_handle: u32,
-    start_v: i16,
-    start_h: i16,
-) -> Option<PpcImportAction> {
-    let record = controls.iter().find(|record| {
-        record.handle == control_handle && (1008..=1023).contains(&(record.proc_id & 0x0fff))
-    })?;
-    // TrackControl's CDEF must not begin a retained popup session for an
-    // invisible, inactive, or missed control. Keep this guard in the helper
-    // as well as at the dispatcher call site because direct PPC callers can
-    // enter this adapter without first running FindControl. Macintosh
-    // Toolbox Essentials (1992), pp. 5-67--5-69.
-    ppc_control_part_at_point(memory, controls, control_handle, start_v, start_h)?;
-    let control = ppc_control_ptr(memory, control_handle)?;
-    let owner = memory.read_u32_be(control + PPC_CONTROL_OWNER_OFFSET)?;
-    let surface = ppc_live_quickdraw_surface(memory, gworlds, owner)?;
-    let menu_id = record.popup_menu_id;
-    let current_menu_list = ppc_current_menu_list(memory);
-    let menu_handle = ppc_get_menu_handle(memory, current_menu_list, menu_id);
-    if menu_handle == 0 {
-        return Some(PpcImportAction::Return(0));
-    }
-
-    // TrackControl receives a window-local start point, while the Menu
-    // Manager's PopUpMenuSelect contract is expressed in global screen
-    // coordinates. Reuse the standard retained popup session so CDEF-backed
-    // controls get the same disabled/separator hit testing, save-under, and
-    // repaint behavior as a direct PopUpMenuSelect call.
-    let (control_top, control_left, _, _) =
-        ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET)?;
-    let (global_h, global_v) =
-        surface.local_point((i32::from(control_left), i32::from(control_top)));
-    let mut popup_cpu = cpu.clone();
-    popup_cpu.gpr[3] = menu_handle;
-    popup_cpu.gpr[4] = u32::from(ppc_i32_to_i16_saturating(global_v) as u16);
-    popup_cpu.gpr[5] = u32::from(ppc_i32_to_i16_saturating(global_h) as u16);
-    popup_cpu.gpr[6] = memory
-        .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
-        .unwrap_or(1) as u32;
-    let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
-    let menu_colors = MenuColorTable::new(&menu_color_bytes);
-    let action = ppc_dispatch_pop_up_menu_select(
-        &popup_cpu,
-        memory,
-        gworlds,
-        screen_clut,
-        menu_colors,
-        startup,
-        input,
-        vfs_resources,
-        current_resource_refnum,
-    );
-    Some(match action {
-        PpcImportAction::Return(result) => {
-            let item = result as u16 as i16;
-            if item > 0 && ppc_menu_item_is_selectable(memory, menu_handle, item) {
-                let _ = memory.write_u16_be(
-                    control + PPC_CONTROL_VALUE_OFFSET,
-                    item as u16,
-                );
-                let _ = ppc_draw_control(
-                    memory,
-                    handles,
-                    controls,
-                    gworlds,
-                    vfs_resources,
-                    current_resource_refnum,
-                    control_handle,
-                );
-                PpcImportAction::Return(ppc_i16_result(10))
-            } else {
-                PpcImportAction::Return(0)
-            }
-        }
-        PpcImportAction::ReturnWithExtraCycles(result, extra_cycles) => {
-            let item = result as u16 as i16;
-            if item > 0 && ppc_menu_item_is_selectable(memory, menu_handle, item) {
-                let _ = memory.write_u16_be(
-                    control + PPC_CONTROL_VALUE_OFFSET,
-                    item as u16,
-                );
-                let _ = ppc_draw_control(
-                    memory,
-                    handles,
-                    controls,
-                    gworlds,
-                    vfs_resources,
-                    current_resource_refnum,
-                    control_handle,
-                );
-                PpcImportAction::ReturnWithExtraCycles(ppc_i16_result(10), extra_cycles)
-            } else {
-                PpcImportAction::ReturnWithExtraCycles(0, extra_cycles)
-            }
-        }
-        action => action,
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_dispatch_legacy_control(
-    operation: PpcLegacyControlOperation,
-    cpu: &mut PpcCpu,
-    process_memory_manager: &mut ProcessNativeMemoryManager,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    controls: &mut Vec<PpcControlRecord>,
-    gworlds: &[PpcGWorldRecord],
-    screen_clut: &[[u16; 3]; 256],
-    toolbox_startup: &mut PpcToolboxStartupState,
-    input: PpcInputSnapshot,
-    vfs_resources: &mut [PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-    last_resource_error: &mut i16,
-) -> Option<PpcImportAction> {
-    match operation {
-        PpcLegacyControlOperation::NewControl => {
-            let ref_con = ppc_parameter_area_slot_addr(cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
-                .and_then(|address| memory.read_u32_be(address))
-                .unwrap_or(0);
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let handle = ppc_new_control_values(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                controls,
-                cpu.gpr[3],
-                cpu.gpr[4],
-                cpu.gpr[5],
-                cpu.gpr[6] != 0,
-                cpu.gpr[7] as u16 as i16,
-                cpu.gpr[8] as u16 as i16,
-                cpu.gpr[9] as u16 as i16,
-                cpu.gpr[10] as u16 as i16,
-                ref_con,
-            );
-            ppc_initialize_popup_control(
-                memory, controls, vfs_resources, current_resource_refnum, handle,
-            );
-            if handle != 0 && cpu.gpr[6] != 0 {
-                let _ = ppc_draw_control(
-                    memory,
-                    handles,
-                    controls,
-                    gworlds,
-                    vfs_resources,
-                    current_resource_refnum,
-                    handle,
-                );
-            }
-            Some(PpcImportAction::Return(handle))
-        }
-        PpcLegacyControlOperation::GetNewControl => {
-            let resource_id = cpu.gpr[3] as u16 as i16;
-            let owner = cpu.gpr[4];
-            let Some(index) = ppc_vfs_resource_index(
-                vfs_resources,
-                current_resource_refnum,
-                u32::from_be_bytes(*b"CNTL"),
-                resource_id,
-                false,
-            ) else {
-                *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-                return Some(PpcImportAction::Return(0));
-            };
-            let bytes = vfs_resources[index].data.clone();
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let Some((bounds, title_ptr)) = ppc_materialize_control_resource_parameters(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                &bytes,
-            ) else {
-                *last_resource_error = PPC_PARAM_ERR;
-                return Some(PpcImportAction::Return(0));
-            };
-            let handle = ppc_new_control_values(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                controls,
-                owner,
-                bounds,
-                title_ptr,
-                bytes[10] != 0,
-                i16::from_be_bytes([bytes[8], bytes[9]]),
-                i16::from_be_bytes([bytes[14], bytes[15]]),
-                i16::from_be_bytes([bytes[12], bytes[13]]),
-                i16::from_be_bytes([bytes[16], bytes[17]]),
-                u32::from_be_bytes([bytes[18], bytes[19], bytes[20], bytes[21]]),
-            );
-            *last_resource_error = if handle == 0 {
-                PPC_PARAM_ERR
-            } else {
-                PPC_NO_ERR
-            };
-            ppc_initialize_popup_control(
-                memory, controls, vfs_resources, current_resource_refnum, handle,
-            );
-            if handle != 0 && bytes[10] != 0 {
-                let _ = ppc_draw_control(
-                    memory,
-                    handles,
-                    controls,
-                    gworlds,
-                    vfs_resources,
-                    current_resource_refnum,
-                    handle,
-                );
-            }
-            Some(PpcImportAction::Return(handle))
-        }
-        PpcLegacyControlOperation::DisposeControl => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            ppc_dispose_control(
-                Some(&mut allocator),
-                None,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                controls,
-                cpu.gpr[3],
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcLegacyControlOperation::KillControls => {
-            let owner = cpu.gpr[3];
-            let control_handles = ppc_window_control_handles(memory, owner);
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            for handle in control_handles {
-                ppc_dispose_control(
-                    Some(&mut allocator),
-                    None,
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                    controls,
-                    handle,
-                );
-            }
-            let _ = memory.write_u32_be(owner.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET), 0);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcLegacyControlOperation::GetControlValue
-        | PpcLegacyControlOperation::GetControlMinimum
-        | PpcLegacyControlOperation::GetControlMaximum => {
-            let offset = match operation {
-                PpcLegacyControlOperation::GetControlMinimum => PPC_CONTROL_MIN_OFFSET,
-                PpcLegacyControlOperation::GetControlMaximum => PPC_CONTROL_MAX_OFFSET,
-                PpcLegacyControlOperation::GetControlValue => PPC_CONTROL_VALUE_OFFSET,
-                _ => unreachable!(),
-            };
-            let value = ppc_control_ptr(memory, cpu.gpr[3])
-                .and_then(|control| memory.read_u16_be(control.wrapping_add(offset)))
-                .unwrap_or(0) as i16;
-            Some(PpcImportAction::Return(ppc_i16_result(value)))
-        }
-        PpcLegacyControlOperation::GetControlTitle => {
-            if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
-                let title =
-                    ppc_read_pstring_bytes(memory, control.wrapping_add(PPC_CONTROL_TITLE_OFFSET))
-                        .unwrap_or_default();
-                let _ = ppc_write_pstring_bytes(memory, cpu.gpr[4], &title);
-            } else if cpu.gpr[4] != 0 {
-                let _ = memory.write_u8(cpu.gpr[4], 0);
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcLegacyControlOperation::SetControlMinimum
-        | PpcLegacyControlOperation::SetControlMaximum => {
-            if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
-                let value = cpu.gpr[4] as u16 as i16;
-                let offset = if operation == PpcLegacyControlOperation::SetControlMinimum {
-                    PPC_CONTROL_MIN_OFFSET
-                } else {
-                    PPC_CONTROL_MAX_OFFSET
-                };
-                let _ = memory.write_u16_be(control.wrapping_add(offset), value as u16);
-                ppc_clamp_control_value(memory, control);
-                let _ = ppc_draw_control(
-                    memory,
-                    handles,
-                    controls,
-                    gworlds,
-                    vfs_resources,
-                    current_resource_refnum,
-                    cpu.gpr[3],
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcLegacyControlOperation::ShowControl | PpcLegacyControlOperation::HideControl => {
-            if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
-                let visible = operation == PpcLegacyControlOperation::ShowControl;
-                let _ = memory.write_u8(
-                    control.wrapping_add(PPC_CONTROL_VISIBLE_OFFSET),
-                    if visible { 0xff } else { 0 },
-                );
-                if visible {
-                    let _ = ppc_draw_control(
-                        memory,
-                        handles,
-                        controls,
-                        gworlds,
-                        vfs_resources,
-                        current_resource_refnum,
-                        cpu.gpr[3],
-                    );
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcLegacyControlOperation::MoveControl | PpcLegacyControlOperation::SizeControl => {
-            if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
-                let rect_addr = control.wrapping_add(PPC_CONTROL_RECT_OFFSET);
-                if let Some((top, left, bottom, right)) = ppc_read_rect(memory, rect_addr) {
-                    let width = right.saturating_sub(left);
-                    let height = bottom.saturating_sub(top);
-                    let result = if operation == PpcLegacyControlOperation::MoveControl {
-                        let new_left = cpu.gpr[4] as u16 as i16;
-                        let new_top = cpu.gpr[5] as u16 as i16;
-                        ppc_write_rect(
-                            memory,
-                            rect_addr,
-                            new_top,
-                            new_left,
-                            new_top.saturating_add(height),
-                            new_left.saturating_add(width),
-                        )
-                    } else {
-                        let new_width = cpu.gpr[4] as u16 as i16;
-                        let new_height = cpu.gpr[5] as u16 as i16;
-                        ppc_write_rect(
-                            memory,
-                            rect_addr,
-                            top,
-                            left,
-                            top.saturating_add(new_height),
-                            left.saturating_add(new_width),
-                        )
-                    };
-                    if result.is_some() {
-                        let _ = ppc_draw_control(
-                            memory,
-                            handles,
-                            controls,
-                            gworlds,
-                            vfs_resources,
-                            current_resource_refnum,
-                            cpu.gpr[3],
-                        );
-                    }
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcLegacyControlOperation::FindControl => {
-            let v = (cpu.gpr[3] >> 16) as u16 as i16;
-            let h = cpu.gpr[3] as u16 as i16;
-            let (handle, part) =
-                ppc_find_control_at_point(memory, controls, cpu.gpr[4], v, h).unwrap_or((0, 0));
-            if cpu.gpr[5] != 0 {
-                memory.write_u32_be(cpu.gpr[5], handle)?;
-            }
-            Some(PpcImportAction::Return(ppc_i16_result(part)))
-        }
-        PpcLegacyControlOperation::TestControl => {
-            let v = (cpu.gpr[4] >> 16) as u16 as i16;
-            let h = cpu.gpr[4] as u16 as i16;
-            let part = ppc_control_part_at_point(memory, controls, cpu.gpr[3], v, h).unwrap_or(0);
-            if crate::trap::dispatch::trace_input_enabled() {
-                eprintln!(
-                    "[INPUT] PPC TestControl control=${:08X} point=({}, {}) -> {}",
-                    cpu.gpr[3], v, h, part
-                );
-            }
-            Some(PpcImportAction::Return(ppc_i16_result(part)))
-        }
-        PpcLegacyControlOperation::TrackControl => {
-            // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80:
-            // -1 selects contrlAction; a second -1 invokes the popup CDEF.
-            let action_proc = if cpu.gpr[5] == u32::MAX {
-                ppc_control_ptr(memory, cpu.gpr[3])
-                    .and_then(|control| memory.read_u32_be(control + 32))
-                    .unwrap_or(0)
-            } else {
-                cpu.gpr[5]
-            };
-            let v = (cpu.gpr[4] >> 16) as u16 as i16;
-            let h = cpu.gpr[4] as u16 as i16;
-            let part = ppc_control_part_at_point(memory, controls, cpu.gpr[3], v, h).unwrap_or(0);
-            if crate::trap::dispatch::trace_input_enabled() {
-                eprintln!(
-                    "[INPUT] PPC TrackControl control=${:08X} point=({}, {}) action=${:08X} -> {}",
-                    cpu.gpr[3], v, h, cpu.gpr[5], part
-                );
-            }
-            if part != 0 && action_proc == u32::MAX {
-                if let Some(action) = ppc_dispatch_popup_track_control(
-                    cpu,
-                    memory,
-                    handles,
-                    controls,
-                    gworlds,
-                    screen_clut,
-                    vfs_resources,
-                    current_resource_refnum,
-                    toolbox_startup,
-                    input,
-                    cpu.gpr[3],
-                    v,
-                    h,
-                ) {
-                    return Some(action);
-                }
-            }
-            if part == 129 {
-                if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
-                    if let Some((top, left, bottom, right)) =
-                        ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET)
-                    {
-                        let vertical = bottom.saturating_sub(top) >= right.saturating_sub(left);
-                        let axis_start = if vertical { top } else { left };
-                        let axis_end = if vertical { bottom } else { right };
-                        let arrow = (axis_end - axis_start).min(16).max(1);
-                        let track_start = axis_start.saturating_add(arrow);
-                        let track_end = axis_end.saturating_sub(arrow);
-                        let track = i32::from(track_end.saturating_sub(track_start)).max(1);
-                        let thumb = 8i32.min(track);
-                        let travel = track.saturating_sub(thumb).max(1);
-                        let min = memory
-                            .read_u16_be(control + PPC_CONTROL_MIN_OFFSET)
-                            .unwrap_or(0) as i16;
-                        let max = memory
-                            .read_u16_be(control + PPC_CONTROL_MAX_OFFSET)
-                            .unwrap_or(0) as i16;
-                        let coord = if vertical { v } else { h };
-                        let rel_coord =
-                            (i32::from(coord) - i32::from(track_start)).clamp(0, travel);
-                        let span = i32::from(max).saturating_sub(i32::from(min));
-                        let new_val =
-                            (i32::from(min) + (rel_coord * span + travel / 2) / travel) as i16;
-                        let _ = memory.write_u16_be(
-                            control + PPC_CONTROL_VALUE_OFFSET,
-                            new_val as u16,
-                        );
-                        let _ = ppc_draw_control(
-                            memory,
-                            handles,
-                            controls,
-                            gworlds,
-                            vfs_resources,
-                            current_resource_refnum,
-                            cpu.gpr[3],
-                        );
-                    }
-                }
-                return Some(PpcImportAction::Return(ppc_i16_result(129)));
-            }
-            if part == 0 || action_proc == 0 || action_proc == u32::MAX {
-                return Some(PpcImportAction::Return(ppc_i16_result(part)));
-            }
-            let restore_rtoc = cpu.gpr[2];
-            let final_pc = cpu.lr;
-            let target = ppc_resolve_callback_target(memory, action_proc, restore_rtoc, None)?;
-            install_powerpc_call_arguments(cpu, memory, &[cpu.gpr[3], part as u16 as u32])?;
-            Some(
-                GuestCallEffect::call_guest(
-                    GuestCallRequest::new(GuestCallTarget {
-                        isa: GuestIsa::PowerPc,
-                        entry: target.entry,
-                        rtoc: target.rtoc,
-                    }),
-                    GuestCallContinuation::to_powerpc(
-                        PPC_GUEST_CALL_RETURN_PC,
-                        final_pc,
-                        restore_rtoc,
-                        PpcNativeReturnGpr3::Set(ppc_i16_result(part)),
-                    ),
-                )
-                .into_ppc_import_action()?,
-            )
-        }
-        PpcLegacyControlOperation::DrawOneControl => {
-            let _ = ppc_draw_control(
-                memory,
-                handles,
-                controls,
-                gworlds,
-                vfs_resources,
-                current_resource_refnum,
-                cpu.gpr[3],
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_new_control_values(
-    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    controls: &mut Vec<PpcControlRecord>,
-    owner: u32,
-    bounds_ptr: u32,
-    title_ptr: u32,
-    visible: bool,
-    value: i16,
-    min: i16,
-    max: i16,
-    proc_id: i16,
-    ref_con: u32,
-) -> u32 {
-    let Some(bounds) = ppc_read_rect(memory, bounds_ptr) else {
-        *last_mem_error = PPC_PARAM_ERR;
-        return 0;
-    };
-    let title = ppc_read_pstring_bytes(memory, title_ptr).unwrap_or_default();
-    ppc_new_control_record_values(
-        allocator,
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        controls,
-        owner,
-        bounds,
-        &title,
-        visible,
-        value,
-        min,
-        max,
-        proc_id,
-        ref_con,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_new_control_record_values(
-    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    controls: &mut Vec<PpcControlRecord>,
-    owner: u32,
-    bounds: (i16, i16, i16, i16),
-    title: &[u8],
-    visible: bool,
-    value: i16,
-    min: i16,
-    max: i16,
-    proc_id: i16,
-    ref_con: u32,
-) -> u32 {
-    if owner == 0
-        || memory
-            .read_u32_be(owner.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET))
-            .is_none()
-    {
-        *last_mem_error = PPC_PARAM_ERR;
-        return 0;
-    }
-    let handle = ppc_allocator_view_allocate_handle(
-        allocator,
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        PPC_CONTROL_RECORD_SIZE,
-        true,
-    );
-    let Some(control) = ppc_control_ptr(memory, handle) else {
-        *last_mem_error = PPC_MEM_FULL_ERR;
-        return 0;
-    };
-    let old_head = memory
-        .read_u32_be(owner.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET))
-        .unwrap_or(0);
-    // Popup CDEF records repurpose contrlMin for the menu ID and contrlMax
-    // for the title width, so their value is a menu item number rather than
-    // an ordinary min/max control value. Macintosh Toolbox Essentials (1992),
-    // pp. 5-25--5-27.
-    let initial_value = if (1008..=1023).contains(&(proc_id & 0x0fff)) {
-        value
-    } else {
-        value.clamp(min.min(max), min.max(max))
-    };
-    let wrote = memory
-        .write_u32_be(control.wrapping_add(PPC_CONTROL_NEXT_OFFSET), old_head)
-        .is_some()
-        && memory
-            .write_u32_be(control.wrapping_add(PPC_CONTROL_OWNER_OFFSET), owner)
-            .is_some()
-        && ppc_write_rect(
-            memory,
-            control + PPC_CONTROL_RECT_OFFSET,
-            bounds.0,
-            bounds.1,
-            bounds.2,
-            bounds.3,
-        )
-        .is_some()
-        && memory
-            .write_u8(
-                control.wrapping_add(PPC_CONTROL_VISIBLE_OFFSET),
-                if visible { 0xff } else { 0 },
-            )
-            .is_some()
-        && memory
-            .write_u8(control.wrapping_add(PPC_CONTROL_HILITE_OFFSET), 0)
-            .is_some()
-        && memory
-            .write_u16_be(
-                control.wrapping_add(PPC_CONTROL_VALUE_OFFSET),
-                initial_value as u16,
-            )
-            .is_some()
-        && memory
-            .write_u16_be(control.wrapping_add(PPC_CONTROL_MIN_OFFSET), min as u16)
-            .is_some()
-        && memory
-            .write_u16_be(control.wrapping_add(PPC_CONTROL_MAX_OFFSET), max as u16)
-            .is_some()
-        && memory
-            .write_u32_be(control.wrapping_add(PPC_CONTROL_REF_CON_OFFSET), ref_con)
-            .is_some()
-        && ppc_write_pstring_bytes(
-            memory,
-            control.wrapping_add(PPC_CONTROL_TITLE_OFFSET),
-            title,
-        )
-        && memory
-            .write_u32_be(owner.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET), handle)
-            .is_some();
-    if !wrote {
-        *last_mem_error = PPC_PARAM_ERR;
-        return 0;
-    }
-    let popup = (1008..=1023).contains(&(proc_id & 0x0fff));
-    // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80.
-    let _ = memory.write_u32_be(control + 32, if popup { u32::MAX } else { 0 });
-    controls.retain(|record| record.handle != handle);
-    controls.push(PpcControlRecord {
-        handle,
-        pointer: control,
-        proc_id,
-        popup_menu_id: if popup { min } else { 0 },
-        popup_title_width: popup.then_some(max),
-    });
-    *last_mem_error = PPC_NO_ERR;
-    handle
-}
-
-// GetNewControl converts popup creation parameters into the live item range.
-// The resource value is title style, not the selected item; menu ID and title
-// width are retained in PpcControlRecord. Macintosh Toolbox Essentials (1992),
-// Creating Pop-Up Menus, pp. 5-25--5-27.
-fn ppc_initialize_popup_control(
-    memory: &mut PpcSectionMem,
-    controls: &[PpcControlRecord],
-    resources: &[PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-    handle: u32,
-) {
-    let Some(record) = controls.iter().find(|record| {
-        record.handle == handle && (1008..=1023).contains(&(record.proc_id & 0x0fff))
-    }) else {
-        return;
-    };
-    let Some(control) = ppc_control_ptr(memory, handle) else {
-        return;
-    };
-    let menu_list = ppc_current_menu_list(memory);
-    let menu = ppc_get_menu_handle(memory, menu_list, record.popup_menu_id);
-    let count = if menu != 0 {
-        usize::from(ppc_count_menu_items(memory, menu))
-    } else {
-        ppc_vfs_resource_index(
-            resources, current_resource_refnum, u32::from_be_bytes(*b"MENU"),
-            record.popup_menu_id, false,
-        )
-        .and_then(|index| ppc_decode_menu_items(&resources[index].data))
-        .map_or(0, |(_, _, items)| items.len())
-    };
-    let count = count.min(i16::MAX as usize) as u16;
-    let _ = memory.write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, u16::from(count != 0));
-    let _ = memory.write_u16_be(control + PPC_CONTROL_MIN_OFFSET, 1);
-    let _ = memory.write_u16_be(control + PPC_CONTROL_MAX_OFFSET, count);
-}
-
-fn ppc_materialize_control_resource_parameters(
-    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    bytes: &[u8],
-) -> Option<(u32, u32)> {
-    if bytes.len() < 23 {
-        return None;
-    }
-    let title_len = usize::from(bytes[22]).min(bytes.len().saturating_sub(23));
-    let scratch = ppc_allocator_view_reserve_bytes(
-        allocator,
-        memory,
-        heap_cursor,
-        heap_limit,
-        u32::try_from(8 + 1 + title_len).ok()?,
-        true,
-    );
-    if scratch == 0 {
-        return None;
-    }
-    memory.write_bytes(scratch, &bytes[..8])?;
-    memory.write_u8(scratch + 8, title_len as u8)?;
-    memory.write_bytes(scratch + 9, &bytes[23..23 + title_len])?;
-    Some((scratch, scratch + 8))
-}
-
-fn ppc_control_ptr(memory: &mut PpcSectionMem, handle: u32) -> Option<u32> {
-    (handle != 0)
-        .then(|| memory.read_u32_be(handle))
-        .flatten()
-        .filter(|control| *control != 0)
-}
-
-fn ppc_window_control_handles(memory: &mut PpcSectionMem, owner: u32) -> Vec<u32> {
-    let mut out = Vec::new();
-    let mut handle = memory
-        .read_u32_be(owner.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET))
-        .unwrap_or(0);
-    while handle != 0 && out.len() < 4096 && !out.contains(&handle) {
-        out.push(handle);
-        handle = ppc_control_ptr(memory, handle)
-            .and_then(|control| memory.read_u32_be(control.wrapping_add(PPC_CONTROL_NEXT_OFFSET)))
-            .unwrap_or(0);
-    }
-    out
-}
-
-fn ppc_dispose_control(
-    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    legacy_free_handle_blocks: Option<&mut Vec<PpcHandleRecord>>,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    controls: &mut Vec<PpcControlRecord>,
-    handle: u32,
-) {
-    let Some(control) = ppc_control_ptr(memory, handle) else {
-        return;
-    };
-    let owner = memory
-        .read_u32_be(control.wrapping_add(PPC_CONTROL_OWNER_OFFSET))
-        .unwrap_or(0);
-    let next = memory
-        .read_u32_be(control.wrapping_add(PPC_CONTROL_NEXT_OFFSET))
-        .unwrap_or(0);
-    let head_addr = owner.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET);
-    let head = memory.read_u32_be(head_addr).unwrap_or(0);
-    if head == handle {
-        let _ = memory.write_u32_be(head_addr, next);
-    } else {
-        for candidate in ppc_window_control_handles(memory, owner) {
-            let Some(candidate_ptr) = ppc_control_ptr(memory, candidate) else {
-                continue;
-            };
-            if memory.read_u32_be(candidate_ptr.wrapping_add(PPC_CONTROL_NEXT_OFFSET))
-                == Some(handle)
-            {
-                let _ =
-                    memory.write_u32_be(candidate_ptr.wrapping_add(PPC_CONTROL_NEXT_OFFSET), next);
-                break;
-            }
-        }
-    }
-    if let Some(allocator) = allocator {
-        let _ = allocator.dispose_handle(
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            handle,
-        );
-    } else if let Some(free_handle_blocks) = legacy_free_handle_blocks {
-        if let Some(index) = handles.iter().position(|record| record.handle == handle) {
-            let record = handles.remove(index);
-            let _ = memory.write_u32_be(handle, 0);
-            free_handle_blocks.push(record);
-        }
-    }
-    controls.retain(|record| record.handle != handle);
-}
-
-fn ppc_clamp_control_value(memory: &mut PpcSectionMem, control: u32) {
-    let value = memory
-        .read_u16_be(control.wrapping_add(PPC_CONTROL_VALUE_OFFSET))
-        .unwrap_or(0) as i16;
-    let min = memory
-        .read_u16_be(control.wrapping_add(PPC_CONTROL_MIN_OFFSET))
-        .unwrap_or(0) as i16;
-    let max = memory
-        .read_u16_be(control.wrapping_add(PPC_CONTROL_MAX_OFFSET))
-        .unwrap_or(0) as i16;
-    let _ = memory.write_u16_be(
-        control.wrapping_add(PPC_CONTROL_VALUE_OFFSET),
-        value.clamp(min.min(max), min.max(max)) as u16,
-    );
-}
-
-fn ppc_control_part_at_point(
-    memory: &mut PpcSectionMem,
-    controls: &[PpcControlRecord],
-    handle: u32,
-    v: i16,
-    h: i16,
-) -> Option<i16> {
-    let control = ppc_control_ptr(memory, handle)?;
-    if memory.read_u8(control + PPC_CONTROL_VISIBLE_OFFSET)? == 0
-        || memory.read_u8(control + PPC_CONTROL_HILITE_OFFSET)? >= 0xfe
-    {
-        return None;
-    }
-    let (top, left, bottom, right) = ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET)?;
-    if v < top || v >= bottom || h < left || h >= right {
-        return None;
-    }
-    let proc_id = controls
-        .iter()
-        .find(|record| record.handle == handle)
-        .map_or(0, |record| record.proc_id);
-    match proc_id & 0x0fff {
-        0 => Some(10),
-        1 | 2 => Some(11),
-        16 => {
-            let vertical = bottom.saturating_sub(top) >= right.saturating_sub(left);
-            let axis_start = if vertical { top } else { left };
-            let axis_end = if vertical { bottom } else { right };
-            let coordinate = if vertical { v } else { h };
-            let arrow = (axis_end - axis_start).min(16).max(1);
-            if coordinate < axis_start.saturating_add(arrow) {
-                return Some(20);
-            }
-            if coordinate >= axis_end.saturating_sub(arrow) {
-                return Some(21);
-            }
-            let min = memory.read_u16_be(control + PPC_CONTROL_MIN_OFFSET)? as i16;
-            let max = memory.read_u16_be(control + PPC_CONTROL_MAX_OFFSET)? as i16;
-            let value = memory.read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)? as i16;
-            let track_start = axis_start.saturating_add(arrow);
-            let track_end = axis_end.saturating_sub(arrow);
-            let track = i32::from(track_end.saturating_sub(track_start)).max(1);
-            let thumb = 8i32.min(track);
-            let span = i32::from(max).saturating_sub(i32::from(min)).max(1);
-            let relative = i32::from(value)
-                .saturating_sub(i32::from(min))
-                .clamp(0, span);
-            let thumb_start = i32::from(track_start)
-                + relative.saturating_mul(track.saturating_sub(thumb)) / span;
-            let coordinate = i32::from(coordinate);
-            if coordinate < thumb_start {
-                Some(22)
-            } else if coordinate < thumb_start + thumb {
-                Some(129)
-            } else {
-                Some(23)
-            }
-        }
-        _ => Some(10),
-    }
-}
-
-fn ppc_find_control_at_point(
-    memory: &mut PpcSectionMem,
-    controls: &[PpcControlRecord],
-    owner: u32,
-    v: i16,
-    h: i16,
-) -> Option<(u32, i16)> {
-    ppc_window_control_handles(memory, owner)
-        .into_iter()
-        .find_map(|handle| {
-            ppc_control_part_at_point(memory, controls, handle, v, h).map(|part| (handle, part))
-        })
-}
-
-fn ppc_popup_control_selected_text(
-    memory: &mut PpcSectionMem,
-    vfs_resources: &[PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-    menu_id: i16,
-    selected: usize,
-) -> Vec<u8> {
-    // A menu created by NewMenu has no MENU resource to consult. The live
-    // MenuHandle is also authoritative after SetItem/AppendMenu mutate an
-    // existing menu, so prefer its guest bytes and use the resource only as
-    // the fallback for resource-backed menus that have not been materialized.
-    let current_menu_list = ppc_current_menu_list(memory);
-    let menu_handle = ppc_get_menu_handle(memory, current_menu_list, menu_id);
-    if let Ok(item_number) = i16::try_from(selected) {
-        if let Some((item_address, item_length)) = ppc_menu_item(memory, menu_handle, item_number) {
-            return ppc_memory_read_bytes(
-                memory,
-                item_address.saturating_add(1),
-                u32::from(item_length),
-            )
-            .unwrap_or_default();
-        }
-    }
-
-    ppc_vfs_resource_index(
-        vfs_resources,
-        current_resource_refnum,
-        u32::from_be_bytes(*b"MENU"),
-        menu_id,
-        false,
-    )
-    .and_then(|index| ppc_decode_menu_items(&vfs_resources[index].data))
-    .and_then(|(_, _, items)| selected.checked_sub(1).and_then(|i| items.get(i).cloned()))
-    .map(|item| item.text)
-    .unwrap_or_default()
-}
-
-fn ppc_popup_control_display_title(
-    title: &[u8],
-    available_width: i16,
-    text_font: i16,
-    text_size: i16,
-) -> Vec<u8> {
-    if available_width <= 0 {
-        return Vec::new();
-    }
-    if ppc_text_bytes_advance_for_font(title, text_font, text_size) <= available_width {
-        return title.to_vec();
-    }
-
-    let ellipsis = b"...";
-    let ellipsis_width = ppc_text_bytes_advance_for_font(ellipsis, text_font, text_size);
-    if ellipsis_width > available_width {
-        return Vec::new();
-    }
-
-    let mut prefix = Vec::new();
-    let mut prefix_width = 0i16;
-    for byte in title {
-        let byte_width = ppc_text_byte_advance_for_font(*byte, text_font, text_size);
-        if prefix_width.saturating_add(byte_width).saturating_add(ellipsis_width)
-            > available_width
-        {
-            break;
-        }
-        prefix.push(*byte);
-        prefix_width = prefix_width.saturating_add(byte_width);
-    }
-    prefix.extend_from_slice(ellipsis);
-    prefix
-}
-
-fn ppc_draw_control(
-    memory: &mut PpcSectionMem,
-    handles: &[PpcHandleRecord],
-    controls: &[PpcControlRecord],
-    gworlds: &[PpcGWorldRecord],
-    vfs_resources: &[PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-    handle: u32,
-) -> bool {
-    ppc_draw_control_inner(
-        memory,
-        handles,
-        controls,
-        gworlds,
-        vfs_resources,
-        current_resource_refnum,
-        handle,
-        false,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_draw_window_controls(
-    memory: &mut PpcSectionMem,
-    handles: &[PpcHandleRecord],
-    controls: &[PpcControlRecord],
-    gworlds: &[PpcGWorldRecord],
-    vfs_resources: &[PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-    window: u32,
-) -> bool {
-    // Macintosh Toolbox Essentials (1992), pp. 5-87--5-88: DrawControls
-    // draws every visible control in reverse order of creation. NewControl
-    // prepends to wControlList, so walking the list tail-first preserves the
-    // documented overlap order (the first-created control is frontmost).
-    let head = memory
-        .read_u32_be(window.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET))
-        .unwrap_or(0);
-    let control_handles = crate::control_manager::control_draw_order(head, |handle| {
-        ppc_control_ptr(memory, handle)
-            .and_then(|control| memory.read_u32_be(control.wrapping_add(PPC_CONTROL_NEXT_OFFSET)))
-    });
-    let mut drew = false;
-    for handle in control_handles {
-        drew |= ppc_draw_control(
-            memory,
-            handles,
-            controls,
-            gworlds,
-            vfs_resources,
-            current_resource_refnum,
-            handle,
-        );
-    }
-    drew
-}
-
-fn ppc_blit_theme_bitmap(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    port: u32,
-    top: i16,
-    left: i16,
-    bitmap: &ThemeBitmap,
-) -> bool {
-    ppc_blit_theme_bitmap_masked(memory, gworlds, port, top, left, bitmap, None)
-}
-
-fn ppc_blit_theme_bitmap_masked(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    port: u32,
-    top: i16,
-    left: i16,
-    bitmap: &ThemeBitmap,
-    transparent: Option<Rgb8>,
-) -> bool {
-    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, port) else {
-        return false;
-    };
-    let clip_storage = memory
-        .read_u32_be(port.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
-        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
-    let vis_storage = memory
-        .read_u32_be(port.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
-        .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
-    let mut pixels = HashMap::new();
-    let rgba = bitmap.rgba();
-    let mut wrote = false;
-    for y in 0..bitmap.height() {
-        for x in 0..bitmap.width() {
-            let offset = ((y * bitmap.width() + x) * 4) as usize;
-            let rgb = Rgb8 {
-                r: rgba[offset],
-                g: rgba[offset + 1],
-                b: rgba[offset + 2],
-            };
-            if transparent == Some(rgb) {
-                continue;
-            }
-            let pixel = *pixels.entry((rgb.r, rgb.g, rgb.b)).or_insert_with(|| {
-                ppc_quickdraw_surface_color_pixel(
-                    memory,
-                    surface,
-                    PpcRgbColor {
-                        red: u16::from(rgb.r) * 0x0101,
-                        green: u16::from(rgb.g) * 0x0101,
-                        blue: u16::from(rgb.b) * 0x0101,
-                    },
-                )
-                .unwrap_or(0)
-            });
-            let port_h = i32::from(left) + x as i32;
-            let port_v = i32::from(top) + y as i32;
-            let point = surface.local_point((port_h, port_v));
-            if ppc_local_point_in_port_regions(
-                surface,
-                point,
-                vis_storage.as_deref(),
-                clip_storage.as_deref(),
-            ) {
-                wrote |= ppc_quickdraw_write_raw_pixel(memory, surface.front_buffer, point, pixel);
-            }
-        }
-    }
-    wrote
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_draw_control_inner(
-    memory: &mut PpcSectionMem,
-    _handles: &[PpcHandleRecord],
-    controls: &[PpcControlRecord],
-    gworlds: &[PpcGWorldRecord],
-    vfs_resources: &[PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-    handle: u32,
-    draw_dialog_popup: bool,
-) -> bool {
-    let Some(control) = ppc_control_ptr(memory, handle) else {
-        return false;
-    };
-    if memory
-        .read_u8(control + PPC_CONTROL_VISIBLE_OFFSET)
-        .unwrap_or(0)
-        == 0
-    {
-        return true;
-    }
-    let owner = memory
-        .read_u32_be(control + PPC_CONTROL_OWNER_OFFSET)
-        .unwrap_or(0);
-    let Some((top, left, bottom, right)) = ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET)
-    else {
-        return false;
-    };
-    let palette = ppc_ui_theme(gworlds).provider().palette();
-    let record = controls.iter().find(|record| record.handle == handle);
-    let proc_id = record.map_or(0, |record| record.proc_id) & 0x0fff;
-    let mut frame_cpu = PpcCpu::new();
-    frame_cpu.gpr[3] = control + PPC_CONTROL_RECT_OFFSET;
-    let is_default = ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7
-        && proc_id == 0
-        && memory.read_u16_be(owner + PPC_CWINDOW_WINDOW_KIND_OFFSET) == Some(2)
-        && ppc_dialog_items_for_dialog(memory, _handles, owner).is_some_and(|items| {
-            let index = memory
-                .read_u16_be(owner + PPC_DIALOG_DEFAULT_ITEM_OFFSET)
-                .unwrap_or(1);
-            items
-                .get(usize::from(index.saturating_sub(1)))
-                .is_some_and(|item| memory.read_u32_be(item.handle) == Some(control))
-        });
-    let themed = ppc_draw_themed_control(
-        memory,
-        gworlds,
-        owner,
-        control,
-        proc_id,
-        is_default,
-        (top, left, bottom, right),
-    );
-    let framed = if let Some(drawn) = themed {
-        drawn
-    } else {
-        match proc_id {
-            0 => {
-                let slot = memory.presentation();
-                let detail =
-                    ppc_live_quickdraw_surface(memory, gworlds, owner).and_then(|surface| {
-                        if !matches!(surface.front_buffer.depth, 8 | 16) {
-                            return None;
-                        }
-                        let foreground = ppc_quickdraw_surface_fore_pixel(
-                            memory,
-                            surface,
-                            ppc_theme_rgb(palette.frame_dark),
-                            None,
-                        )? as u32;
-                        let background = ppc_quickdraw_surface_fore_pixel(
-                            memory,
-                            surface,
-                            ppc_theme_rgb(palette.window_background),
-                            None,
-                        )? as u32;
-                        let clip = memory
-                            .read_u32_be(owner + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
-                            .and_then(|rgn| ppc_region_storage(memory, rgn));
-                        let vis = memory
-                            .read_u32_be(owner + PPC_CGRAF_PORT_VIS_RGN_OFFSET)
-                            .and_then(|rgn| ppc_region_storage(memory, rgn));
-                        let fb = surface.front_buffer;
-                        slot.rounded_control_corners(
-                            surface.local_rect((top, left, bottom, right)),
-                            crate::control_manager::STANDARD_BUTTON_OVAL.into(),
-                            1,
-                            fb.depth as u16,
-                            Some(background),
-                            foreground,
-                            |x, y, lane| {
-                                if x < 0
-                                    || y < 0
-                                    || x >= fb.width as i32
-                                    || y >= fb.height as i32
-                                    || !ppc_local_point_in_port_regions(
-                                        surface,
-                                        (x, y),
-                                        vis.as_deref(),
-                                        clip.as_deref(),
-                                    )
-                                {
-                                    return None;
-                                }
-                                let address = fb.base_addr
-                                    + y as u32 * fb.row_bytes
-                                    + x as u32 * (fb.depth / 8)
-                                    + lane;
-                                Some((address, memory.read_u8(address)?))
-                            },
-                        )
-                    });
-                frame_cpu.gpr[4] = crate::control_manager::STANDARD_BUTTON_OVAL as u32;
-                frame_cpu.gpr[5] = crate::control_manager::STANDARD_BUTTON_OVAL as u32;
-                let _ = ppc_paint_round_rect(
-                    &frame_cpu,
-                    memory,
-                    gworlds,
-                    owner,
-                    ppc_theme_rgb(palette.window_background),
-                    None,
-                );
-                let framed = ppc_frame_round_rect(
-                    &frame_cpu,
-                    memory,
-                    gworlds,
-                    owner,
-                    ppc_theme_rgb(palette.frame_dark),
-                    None,
-                );
-                slot.finish_rounded_control(detail, |address| memory.read_u8(address).unwrap_or(0));
-                framed
-            }
-            1 => {
-                // Macintosh Toolbox Essentials (1992), pp. 5-15--5-16: the
-                // standard checkbox CDEF draws a compact indicator at the left
-                // of the control title and marks it when contrlValue is nonzero.
-                let layout =
-                    crate::control_manager::standard_checkbox_layout((top, left, bottom, right));
-                let (box_top, box_left, box_bottom, box_right) = layout.indicator;
-                let indicator_size = box_bottom.saturating_sub(box_top);
-                let mut wrote = ppc_paint_rect_bounds(
-                    memory,
-                    gworlds,
-                    owner,
-                    layout.indicator,
-                    ppc_theme_rgb(palette.window_background),
-                    None,
-                );
-                wrote |= ppc_line_to(
-                    memory,
-                    gworlds,
-                    owner,
-                    (box_left, box_top),
-                    (box_right.saturating_sub(1), box_top),
-                    ppc_theme_rgb(palette.frame_dark),
-                    None,
-                );
-                wrote |= ppc_line_to(
-                    memory,
-                    gworlds,
-                    owner,
-                    (box_right.saturating_sub(1), box_top),
-                    (box_right.saturating_sub(1), box_bottom.saturating_sub(1)),
-                    ppc_theme_rgb(palette.frame_dark),
-                    None,
-                );
-                wrote |= ppc_line_to(
-                    memory,
-                    gworlds,
-                    owner,
-                    (box_right.saturating_sub(1), box_bottom.saturating_sub(1)),
-                    (box_left, box_bottom.saturating_sub(1)),
-                    ppc_theme_rgb(palette.frame_dark),
-                    None,
-                );
-                wrote |= ppc_line_to(
-                    memory,
-                    gworlds,
-                    owner,
-                    (box_left, box_bottom.saturating_sub(1)),
-                    (box_left, box_top),
-                    ppc_theme_rgb(palette.frame_dark),
-                    None,
-                );
-                if memory
-                    .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
-                    .unwrap_or(0)
-                    != 0
-                {
-                    crate::control_manager::for_each_standard_checkbox_mark_pixel(
-                        indicator_size,
-                        |x, y| {
-                            wrote |= ppc_line_to(
-                                memory,
-                                gworlds,
-                                owner,
-                                (box_left.saturating_add(x), box_top.saturating_add(y)),
-                                (box_left.saturating_add(x), box_top.saturating_add(y)),
-                                ppc_theme_rgb(palette.frame_dark),
-                                None,
-                            );
-                        },
-                    );
-                }
-                wrote
-            }
-            2 => {
-                // Inside Macintosh Volume I (1985), p. I-322: radioButProc is a
-                // round indicator whose on state is a small filled black circle.
-                let layout = crate::control_manager::standard_radio_button_layout((
-                    top, left, bottom, right,
-                ));
-                let indicator = layout.indicator;
-                let mut wrote = ppc_draw_oval_bounds(
-                    memory,
-                    gworlds,
-                    owner,
-                    indicator,
-                    ppc_theme_rgb(palette.window_background),
-                    None,
-                    false,
-                );
-                wrote |= ppc_draw_oval_bounds(
-                    memory,
-                    gworlds,
-                    owner,
-                    indicator,
-                    ppc_theme_rgb(palette.frame_dark),
-                    None,
-                    true,
-                );
-                if memory
-                    .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
-                    .unwrap_or(0)
-                    != 0
-                {
-                    let (dot_top, dot_left, dot_bottom, dot_right) = indicator;
-                    wrote |= ppc_draw_oval_bounds(
-                        memory,
-                        gworlds,
-                        owner,
-                        (
-                            dot_top.saturating_add(3),
-                            dot_left.saturating_add(3),
-                            dot_bottom.saturating_sub(3),
-                            dot_right.saturating_sub(3),
-                        ),
-                        ppc_theme_rgb(palette.frame_dark),
-                        None,
-                        false,
-                    );
-                }
-                wrote
-            }
-            16 => {
-                // Both CPU adapters submit the same ControlRecord state to the
-                // architecture-neutral presentation provider. Only this final
-                // guest-framebuffer blit remains adapter-specific.
-                let value = memory
-                    .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
-                    .unwrap_or(0) as i16;
-                let min = memory
-                    .read_u16_be(control + PPC_CONTROL_MIN_OFFSET)
-                    .unwrap_or(0) as i16;
-                let max = memory
-                    .read_u16_be(control + PPC_CONTROL_MAX_OFFSET)
-                    .unwrap_or(0) as i16;
-                let hilite = memory
-                    .read_u8(control + PPC_CONTROL_HILITE_OFFSET)
-                    .unwrap_or(0);
-                let bitmap = render_scrollbar_bitmap(
-                    ppc_ui_theme(gworlds),
-                    right.saturating_sub(left),
-                    bottom.saturating_sub(top),
-                    value,
-                    min,
-                    max,
-                    hilite,
-                );
-                ppc_blit_theme_bitmap(memory, gworlds, owner, top, left, &bitmap)
-            }
-            1008..=1023 => {
-                // The standard pop-up CDEF is resource ID 63, whose proc IDs
-                // occupy 63 << 4 through 63 << 4 | 15. Its contrlMin field is
-                // the MENU resource ID and contrlValue is the one-based item.
-                let dialog_bounds = memory
-                    .read_u16_be(owner + PPC_CWINDOW_WINDOW_KIND_OFFSET)
-                    .filter(|kind| *kind == 2)
-                    .and_then(|_| ppc_dialog_global_bounds(memory, gworlds, owner));
-                if dialog_bounds.is_some() && !draw_dialog_popup {
-                    return true;
-                }
-                // Draw in the owning port so its visible and clipping regions
-                // also apply to controls outside or partly outside a dialog.
-                // Macintosh Toolbox Essentials (1992), Display Rectangles, ch. 6.
-                let (draw_owner, (draw_top, draw_left, draw_bottom, draw_right)) =
-                    (owner, (top, left, bottom, right));
-                // popupMenuProc reserves `contrlMax` pixels for the label before
-                // the button. A fixed-width popup uses the rest of the control
-                // rect as its stable button width; omitting this offset makes
-                // the PPC renderer paint the button over its label and gives its
-                // selected title an incorrectly large content area. Macintosh
-                // Toolbox Essentials (1992), pp. 5-25--5-27.
-                let title_width = record
-                    .and_then(|record| record.popup_title_width)
-                    .unwrap_or(0)
-                    .max(0);
-                let draw_left = draw_left.saturating_add(title_width);
-                let draw_top = draw_top.saturating_add(1);
-                let draw_bottom = draw_bottom.saturating_sub(2);
-                let draw_right = draw_right.saturating_sub(1);
-                let mut wrote;
-                let enabled = memory
-                    .read_u8(control + PPC_CONTROL_HILITE_OFFSET)
-                    .unwrap_or(0)
-                    != 255;
-                if ppc_draw_themed_control_rect(
-                    memory,
-                    gworlds,
-                    draw_owner,
-                    (draw_top, draw_left, draw_bottom, draw_right),
-                    crate::ui_theme::ControlKind::PopupButton,
-                    enabled,
-                    false,
-                ) {
-                    wrote = true;
-                } else {
-                    wrote = ppc_paint_rect_bounds(
-                        memory,
-                        gworlds,
-                        draw_owner,
-                        (draw_top, draw_left, draw_bottom, draw_right),
-                        ppc_theme_rgb(palette.window_background),
-                        None,
-                    );
-                    for (start, end) in [
-                        (
-                            (draw_left, draw_top),
-                            (draw_right.saturating_sub(1), draw_top),
-                        ),
-                        (
-                            (draw_right.saturating_sub(1), draw_top),
-                            (draw_right.saturating_sub(1), draw_bottom.saturating_sub(1)),
-                        ),
-                        (
-                            (draw_right.saturating_sub(1), draw_bottom.saturating_sub(1)),
-                            (draw_left, draw_bottom.saturating_sub(1)),
-                        ),
-                        (
-                            (draw_left, draw_bottom.saturating_sub(1)),
-                            (draw_left, draw_top),
-                        ),
-                    ] {
-                        wrote |= ppc_line_to(
-                            memory,
-                            gworlds,
-                            draw_owner,
-                            start,
-                            end,
-                            ppc_theme_rgb(palette.frame_dark),
-                            None,
-                        );
-                    }
-                    let arrow_left = draw_right.saturating_sub(18).max(draw_left);
-                    wrote |= ppc_line_to(
-                        memory,
-                        gworlds,
-                        draw_owner,
-                        (arrow_left, draw_top),
-                        (arrow_left, draw_bottom.saturating_sub(1)),
-                        ppc_theme_rgb(palette.frame_dark),
-                        None,
-                    );
-                    let arrow_h = draw_right.saturating_sub(9);
-                    let center_v =
-                        draw_top.saturating_add(draw_bottom.saturating_sub(draw_top) / 2);
-                    for offset in 0..3i16 {
-                        wrote |= ppc_line_to(
-                            memory,
-                            gworlds,
-                            draw_owner,
-                            (
-                                arrow_h.saturating_sub(offset),
-                                center_v.saturating_sub(3 - offset),
-                            ),
-                            (
-                                arrow_h.saturating_add(offset),
-                                center_v.saturating_sub(3 - offset),
-                            ),
-                            ppc_theme_rgb(palette.frame_dark),
-                            None,
-                        );
-                        wrote |= ppc_line_to(
-                            memory,
-                            gworlds,
-                            draw_owner,
-                            (
-                                arrow_h.saturating_sub(offset),
-                                center_v.saturating_add(3 - offset),
-                            ),
-                            (
-                                arrow_h.saturating_add(offset),
-                                center_v.saturating_add(3 - offset),
-                            ),
-                            ppc_theme_rgb(palette.frame_dark),
-                            None,
-                        );
-                    }
-                }
-                let selected = memory
-                    .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
-                    .unwrap_or(0) as usize;
-                let menu_id = record.map_or(0, |record| record.popup_menu_id);
-                let selected_text = ppc_popup_control_selected_text(
-                    memory,
-                    vfs_resources,
-                    current_resource_refnum,
-                    menu_id,
-                    selected,
-                );
-                let text_left = draw_left.saturating_add(5);
-                let text_right = draw_right.saturating_sub(19).max(text_left);
-                let display_title = ppc_popup_control_display_title(
-                    &selected_text,
-                    text_right.saturating_sub(text_left),
-                    PPC_QD_TEXT_FONT_DEFAULT,
-                    PPC_QD_TEXT_SIZE_SYSTEM,
-                );
-                if !display_title.is_empty() {
-                    let _ = ppc_draw_text_bytes(
-                        memory,
-                        gworlds,
-                        draw_owner,
-                        (text_left, draw_top.saturating_add(14)),
-                        PPC_QD_TEXT_FONT_DEFAULT,
-                        PPC_QD_TEXT_SIZE_SYSTEM,
-                        PPC_QD_TEXT_MODE_SRC_OR,
-                        ppc_theme_rgb(palette.frame_dark),
-                        None,
-                        &display_title,
-                    );
-                }
-                wrote
-            }
-            _ => ppc_frame_rect(
-                &frame_cpu,
-                memory,
-                gworlds,
-                owner,
-                ppc_theme_rgb(palette.frame_dark),
-                None,
-            ),
-        }
-    };
-    let title =
-        ppc_read_pstring_bytes(memory, control + PPC_CONTROL_TITLE_OFFSET).unwrap_or_default();
-    if !title.is_empty() {
-        let title = title
-            .into_iter()
-            .flat_map(|byte| {
-                if byte == 0xc9 {
-                    vec![b'.', b'.', b'.']
-                } else {
-                    vec![byte]
-                }
-            })
-            .collect::<Vec<_>>();
-        let advance = ppc_text_bytes_advance_for_font(
-            &title,
-            PPC_QD_TEXT_FONT_DEFAULT,
-            PPC_QD_TEXT_SIZE_SYSTEM,
-        );
-        let metrics = get_font_metrics(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
-        let (centered_h, centered_v) = crate::control_manager::centered_control_label_origin(
-            (top, left, bottom, right),
-            advance,
-            metrics.ascent,
-            metrics.descent,
-        );
-        let popup = (1008..=1023).contains(&proc_id);
-        let (title_h, title) = if popup {
-            // Popup CDEF labels are right-aligned immediately before the
-            // button's reserved title-width region, matching the 68K
-            // draw_popup_control_label path. Keep the label out of the
-            // selected-item content area.
-            let title_width = record
-                .and_then(|record| record.popup_title_width)
-                .unwrap_or(0)
-                .max(0);
-            let popup_left = left.saturating_add(title_width);
-            let text_right = popup_left.saturating_sub(6);
-            let available_width = text_right.saturating_sub(left);
-            (
-                text_right.saturating_sub(advance).max(left),
-                ppc_popup_control_display_title(
-                    &title,
-                    available_width,
-                    PPC_QD_TEXT_FONT_DEFAULT,
-                    PPC_QD_TEXT_SIZE_SYSTEM,
-                ),
-            )
-        } else {
-            let title_h = match proc_id {
-                0 => centered_h,
-                1 => {
-                    crate::control_manager::standard_checkbox_layout((top, left, bottom, right))
-                        .label_left
-                }
-                2 => {
-                    crate::control_manager::standard_radio_button_layout((top, left, bottom, right))
-                        .label_left
-                }
-                _ => left.saturating_add(16),
-            };
-            (title_h, title)
-        };
-        let title_v = centered_v.min(bottom.saturating_sub(1));
-        let _ = ppc_draw_text_bytes(
-            memory,
-            gworlds,
-            owner,
-            (title_h, title_v),
-            PPC_QD_TEXT_FONT_DEFAULT,
-            PPC_QD_TEXT_SIZE_SYSTEM,
-            PPC_QD_TEXT_MODE_SRC_OR,
-            ppc_theme_rgb(palette.frame_dark),
-            None,
-            &title,
-        );
-    }
-    framed
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_dispatch_legacy_window(
-    operation: PpcLegacyWindowOperation,
-    cpu: &mut PpcCpu,
-    process_memory_manager: &mut ProcessNativeMemoryManager,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    controls: &mut Vec<PpcControlRecord>,
-    gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &SharedProcessWindowList,
-    current_gworld: &mut u32,
-    current_gdevice: &mut u32,
-    quickdraw_fore_color: &mut PpcRgbColor,
-    quickdraw_fore_indices: &mut HashMap<u32, u8>,
-    quickdraw_back_color: &mut PpcRgbColor,
-    screen_clut: &mut [[u16; 3]; 256],
-    color_manager_clut: &mut [[u16; 3]; 256],
-    toolbox_startup: &mut PpcToolboxStartupState,
-    input: PpcInputSnapshot,
-    when: u32,
-    event_queue: &mut VecDeque<PpcQueuedEvent>,
-    vfs_resources: &mut [PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-    last_resource_error: &mut i16,
-) -> Option<PpcImportAction> {
-    match operation {
-        PpcLegacyWindowOperation::NewWindow => {
-            let previous_front = ppc_front_visible_process_window(memory, window_list);
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let window = ppc_new_window_from_cpu(
-                cpu,
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                gworlds,
-                window_list,
-                *current_gdevice,
-                toolbox_startup.host_menu_bar_hidden,
-            );
-            if window != 0 {
-                ppc_recalculate_window_vis_regions(
-                    process_memory_manager,
-                    memory,
-                    window_list,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                );
-                *current_gworld = window;
-                let next_front = ppc_front_visible_process_window(memory, window_list);
-                ppc_enqueue_window_activation_transition(
-                    memory,
-                    event_queue,
-                    previous_front,
-                    next_front,
-                    when,
-                );
-                if next_front != previous_front {
-                    let _ = ppc_activate_front_window_palette(
-                        memory,
-                        gworlds,
-                        *current_gdevice,
-                        screen_clut,
-                        color_manager_clut,
-                        toolbox_startup,
-                    );
-                }
-            }
-            Some(PpcImportAction::Return(window))
-        }
-        PpcLegacyWindowOperation::GetNewWindow => {
-            let previous_front = ppc_front_visible_process_window(memory, window_list);
-            let resource_id = cpu.gpr[3] as u16 as i16;
-            let Some(index) = ppc_vfs_resource_index(
-                vfs_resources,
-                current_resource_refnum,
-                u32::from_be_bytes(*b"WIND"),
-                resource_id,
-                false,
-            ) else {
-                *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-                return Some(PpcImportAction::Return(0));
-            };
-            let bytes = vfs_resources[index].data.clone();
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let Some((bounds, title)) = ppc_materialize_window_resource_parameters(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                &bytes,
-            ) else {
-                *last_resource_error = PPC_PARAM_ERR;
-                return Some(PpcImportAction::Return(0));
-            };
-            let mut window_cpu = cpu.clone();
-            window_cpu.gpr[3] = cpu.gpr[4];
-            window_cpu.gpr[4] = bounds;
-            window_cpu.gpr[5] = title;
-            window_cpu.gpr[6] = u32::from(u16::from_be_bytes([bytes[10], bytes[11]]) != 0);
-            window_cpu.gpr[7] = u32::from(u16::from_be_bytes([bytes[8], bytes[9]]));
-            window_cpu.gpr[8] = cpu.gpr[5];
-            window_cpu.gpr[9] = u32::from(u16::from_be_bytes([bytes[12], bytes[13]]) != 0);
-            window_cpu.gpr[10] = u32::from_be_bytes([bytes[14], bytes[15], bytes[16], bytes[17]]);
-            let window = ppc_new_window_from_cpu(
-                &window_cpu,
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                gworlds,
-                window_list,
-                *current_gdevice,
-                toolbox_startup.host_menu_bar_hidden,
-            );
-            *last_resource_error = if window == 0 {
-                PPC_PARAM_ERR
-            } else {
-                PPC_NO_ERR
-            };
-            if window != 0 {
-                ppc_recalculate_window_vis_regions(
-                    process_memory_manager,
-                    memory,
-                    window_list,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                );
-                *current_gworld = window;
-                let next_front = ppc_front_visible_process_window(memory, window_list);
-                ppc_enqueue_window_activation_transition(
-                    memory,
-                    event_queue,
-                    previous_front,
-                    next_front,
-                    when,
-                );
-                if next_front != previous_front {
-                    let _ = ppc_activate_front_window_palette(
-                        memory,
-                        gworlds,
-                        *current_gdevice,
-                        screen_clut,
-                        color_manager_clut,
-                        toolbox_startup,
-                    );
-                }
-            }
-            Some(PpcImportAction::Return(window))
-        }
-        PpcLegacyWindowOperation::GetWindowTitle => {
-            let title = memory
-                .read_u32_be(cpu.gpr[3].wrapping_add(PPC_CWINDOW_TITLE_HANDLE_OFFSET))
-                .filter(|handle| *handle != 0)
-                .and_then(|handle| memory.read_u32_be(handle))
-                .filter(|ptr| *ptr != 0)
-                .and_then(|ptr| ppc_read_pstring_bytes(memory, ptr))
-                .unwrap_or_default();
-            if cpu.gpr[4] != 0 {
-                let _ = ppc_write_pstring_bytes(memory, cpu.gpr[4], &title);
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcLegacyWindowOperation::SetWindowTitle => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let changed = ppc_set_window_title(
-                Some(&mut allocator),
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                cpu.gpr[3],
-                cpu.gpr[4],
-            );
-            if changed {
-                ppc_redraw_visible_window_frame(
-                    memory,
-                    gworlds,
-                    window_list,
-                    cpu.gpr[3],
-                    toolbox_startup.host_menu_bar_hidden,
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcLegacyWindowOperation::DisposeWindow => {
-            let window = cpu.gpr[3];
-            let previous_front = ppc_front_visible_process_window(memory, window_list);
-            let was_visible = ppc_window_is_visible(memory, window);
-            let exposed = was_visible
-                .then(|| {
-                    memory
-                        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
-                        .and_then(|region| ppc_read_rgn_bbox(memory, region))
-                })
-                .flatten();
-            let disposed_palette = memory
-                .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-                .unwrap_or(0);
-            let disposed_pixmap_handle = gworlds
-                .iter()
-                .find(|record| {
-                    record.port == window
-                        && !matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
-                })
-                .map(|record| record.pixmap_handle);
-            let was_current = *current_gworld == window;
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            ppc_dispose_window(
-                &mut allocator,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                controls,
-                gworlds,
-                window_list,
-                current_gworld,
-                current_gdevice,
-                window,
-            );
-            ppc_recalculate_window_vis_regions(
-                process_memory_manager,
-                memory,
-                window_list,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            ppc_transition_front_window_chrome(
-                memory,
-                gworlds,
-                window_list,
-                previous_front,
-                toolbox_startup.host_menu_bar_hidden,
-            );
-            ppc_restore_window_removal_exposure(
-                memory,
-                gworlds,
-                window_list,
-                exposed,
-                toolbox_startup.host_menu_bar_hidden,
-                event_queue,
-                when,
-                input,
-            );
-            if let Some(pixmap_handle) = disposed_pixmap_handle {
-                toolbox_startup
-                    .indexed_screen_ctables
-                    .remove(&pixmap_handle);
-                quickdraw_fore_indices.remove(&window);
-                let still_associated = toolbox_startup.application_palette == disposed_palette
-                    || gworlds.iter().any(|record| {
-                        memory
-                            .read_u32_be(
-                                record
-                                    .port
-                                    .wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET),
-                            )
-                            .unwrap_or(0)
-                            == disposed_palette
-                    });
-                if disposed_palette != 0 && !still_associated {
-                    ppc_release_palette_allocations_and_restore(
-                        memory,
-                        toolbox_startup,
-                        disposed_palette,
-                        *current_gdevice,
-                        screen_clut,
-                        color_manager_clut,
-                    );
-                }
-            }
-            if was_current && *current_gworld != window {
-                ppc_restore_port_colors(
-                    memory,
-                    *current_gworld,
-                    quickdraw_fore_color,
-                    quickdraw_back_color,
-                );
-            }
-            if ppc_front_visible_process_window(memory, window_list) != previous_front {
-                let _ = ppc_activate_front_window_palette(
-                    memory,
-                    gworlds,
-                    *current_gdevice,
-                    screen_clut,
-                    color_manager_clut,
-                    toolbox_startup,
-                );
-            }
-            if *current_gworld != PPC_MAIN_GWORLD {
-                ppc_enqueue_window_update_event(event_queue, *current_gworld, when, input);
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcLegacyWindowOperation::HighlightWindow => {
-            let _ = ppc_set_window_hilited(memory, cpu.gpr[3], cpu.gpr[4] != 0);
-            ppc_redraw_visible_window_frame(
-                memory,
-                gworlds,
-                window_list,
-                cpu.gpr[3],
-                toolbox_startup.host_menu_bar_hidden,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcLegacyWindowOperation::BringToFront => {
-            let previous_front = ppc_front_visible_process_window(memory, window_list);
-            ppc_reorder_window(gworlds, window_list, cpu.gpr[3], 0, true);
-            ppc_recalculate_window_vis_regions(
-                process_memory_manager,
-                memory,
-                window_list,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            if ppc_front_visible_process_window(memory, window_list) != previous_front {
-                let _ = ppc_activate_front_window_palette(
-                    memory,
-                    gworlds,
-                    *current_gdevice,
-                    screen_clut,
-                    color_manager_clut,
-                    toolbox_startup,
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcLegacyWindowOperation::SendBehind => {
-            let previous_front = ppc_front_visible_process_window(memory, window_list);
-            ppc_reorder_window(gworlds, window_list, cpu.gpr[3], cpu.gpr[4], false);
-            ppc_recalculate_window_vis_regions(
-                process_memory_manager,
-                memory,
-                window_list,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            if ppc_front_visible_process_window(memory, window_list) != previous_front {
-                let _ = ppc_activate_front_window_palette(
-                    memory,
-                    gworlds,
-                    *current_gdevice,
-                    screen_clut,
-                    color_manager_clut,
-                    toolbox_startup,
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcLegacyWindowOperation::DragWindow => Some(ppc_dispatch_drag_window(
-            cpu,
-            process_memory_manager,
-            memory,
-            gworlds,
-            window_list,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            current_gworld,
-            toolbox_startup,
-            event_queue,
-            screen_clut,
-            when,
-            input,
-        )),
-        PpcLegacyWindowOperation::GrowWindow => Some(ppc_dispatch_grow_window(
-            cpu,
-            memory,
-            gworlds,
-            toolbox_startup,
-            event_queue,
-            screen_clut,
-            input,
-        )),
-        PpcLegacyWindowOperation::TrackBox => {
-            let part = cpu.gpr[5] as u16 as i16;
-            let inside = ppc_window_part_contains_point(
-                memory,
-                gworlds,
-                cpu.gpr[3],
-                part,
-                input.mouse_v,
-                input.mouse_h,
-            );
-            Some(PpcImportAction::Return(u32::from(inside)))
-        }
-        PpcLegacyWindowOperation::TrackGoAway => Some(ppc_dispatch_track_go_away(
-            cpu,
-            memory,
-            gworlds,
-            toolbox_startup,
-            event_queue,
-            input,
-        )),
-        PpcLegacyWindowOperation::ZoomWindow => {
-            let window = cpu.gpr[3];
-            let was_visible = ppc_window_is_visible(memory, window);
-            let previous_front = ppc_front_visible_process_window(memory, window_list);
-            let previous_structure =
-                ppc_window_global_structure_bounds(memory, gworlds, window);
-            if ppc_zoom_window(cpu, memory, gworlds).is_some() {
-                if cpu.gpr[5] != 0 {
-                    ppc_reorder_window(gworlds, window_list, window, 0, true);
-                }
-                ppc_recalculate_window_vis_regions(
-                    process_memory_manager,
-                    memory,
-                    window_list,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                );
-                let next_structure =
-                    ppc_window_global_structure_bounds(memory, gworlds, window);
-                ppc_repaint_window_geometry_transition(
-                    memory,
-                    gworlds,
-                    window_list,
-                    window,
-                    was_visible,
-                    previous_structure,
-                    next_structure,
-                    toolbox_startup.host_menu_bar_hidden,
-                    event_queue,
-                    when,
-                    input,
-                );
-                ppc_transition_front_window_chrome(
-                    memory,
-                    gworlds,
-                    window_list,
-                    previous_front,
-                    toolbox_startup.host_menu_bar_hidden,
-                );
-                let next_front = ppc_front_visible_process_window(memory, window_list);
-                if cpu.gpr[5] != 0 && next_front == Some(window) {
-                    *current_gworld = window;
-                    *current_gdevice =
-                        ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
-                    ppc_register_gdevice(toolbox_startup, *current_gdevice);
-                    ppc_restore_port_colors(
-                        memory,
-                        *current_gworld,
-                        quickdraw_fore_color,
-                        quickdraw_back_color,
-                    );
-                    let _ = ppc_set_window_hilited(memory, window, true);
-                }
-                if next_front != previous_front {
-                    let _ = ppc_activate_front_window_palette(
-                        memory,
-                        gworlds,
-                        *current_gdevice,
-                        screen_clut,
-                        color_manager_clut,
-                        toolbox_startup,
-                    );
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcLegacyWindowOperation::CalculateVisibleRegion => {
-            let window = cpu.gpr[3];
-            let mut vis_rgn = memory
-                .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
-                .unwrap_or(0);
-            if vis_rgn == 0 {
-                let mut allocator = PpcProcessAllocatorView {
-                    memory_manager: process_memory_manager,
-                };
-                vis_rgn = ppc_allocator_view_new_rgn(
-                    Some(&mut allocator),
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                );
-                let _ = memory
-                    .write_u32_be(window.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET), vis_rgn);
-            }
-            if vis_rgn != 0 {
-                let _ = ppc_rect_rgn(memory, vis_rgn, window.wrapping_add(16));
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_new_window_from_cpu(
-    cpu: &PpcCpu,
-    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &SharedProcessWindowList,
-    current_gdevice: u32,
-    host_menu_bar_hidden: bool,
-) -> u32 {
-    let previous_front = ppc_front_visible_window(memory, gworlds);
-    let window = ppc_new_cwindow(
-        cpu,
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        gworlds,
-        window_list,
-        current_gdevice,
-    );
-    if window == 0 {
-        return 0;
-    }
-    let _ = memory.write_u32_be(window + PPC_CWINDOW_CONTROL_LIST_OFFSET, 0);
-    if !ppc_set_window_title(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        window,
-        cpu.gpr[5],
-    ) {
-        return 0;
-    }
-    let state_handle = ppc_allocator_view_allocate_handle(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        16,
-        true,
-    );
-    let Some(state) = memory.read_u32_be(state_handle).filter(|state| *state != 0) else {
-        *last_mem_error = PPC_MEM_FULL_ERR;
-        return 0;
-    };
-    let initial = ppc_read_rect(memory, cpu.gpr[4]).unwrap_or((0, 0, 1, 1));
-    let wrote = ppc_write_rect(memory, state, initial.0, initial.1, initial.2, initial.3).is_some()
-        && ppc_write_rect(
-            memory,
-            state + 8,
-            20,
-            0,
-            PPC_MAIN_SCREEN_HEIGHT as i16,
-            PPC_MAIN_SCREEN_WIDTH as i16,
-        )
-        .is_some()
-        && memory
-            .write_u32_be(window + PPC_CWINDOW_STATE_HANDLE_OFFSET, state_handle)
-            .is_some();
-    if !wrote {
-        *last_mem_error = PPC_PARAM_ERR;
-        return 0;
-    }
-    ppc_transition_front_window_chrome(
-        memory,
-        gworlds,
-        window_list,
-        previous_front,
-        host_menu_bar_hidden,
-    );
-    if cpu.gpr[6] != 0 && ppc_front_visible_process_window(memory, window_list) != Some(window) {
-        ppc_draw_existing_window_frame(
-            memory,
-            gworlds,
-            window_list,
-            window,
-            host_menu_bar_hidden,
-        );
-    }
-    *last_mem_error = PPC_NO_ERR;
-    window
-}
-
-fn ppc_set_window_title(
-    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    window: u32,
-    title_ptr: u32,
-) -> bool {
-    if window == 0 {
-        *last_mem_error = PPC_PARAM_ERR;
-        return false;
-    }
-    let title = if title_ptr == 0 {
-        Vec::new()
-    } else {
-        ppc_read_pstring_bytes(memory, title_ptr).unwrap_or_default()
-    };
-    let size = u32::try_from(title.len().min(255) + 1).unwrap_or(256);
-    let existing = memory
-        .read_u32_be(window + PPC_CWINDOW_TITLE_HANDLE_OFFSET)
-        .unwrap_or(0);
-    let handle = if existing != 0 {
-        if ppc_allocator_view_resize_handle(
-            allocator.as_deref_mut(),
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            existing,
-            size,
-        ) != PPC_NO_ERR
-        {
-            *last_mem_error = PPC_MEM_FULL_ERR;
-            return false;
-        }
-        existing
-    } else {
-        ppc_allocator_view_allocate_handle(
-            allocator.as_deref_mut(),
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            size,
-            true,
-        )
-    };
-    let Some(data) = memory.read_u32_be(handle).filter(|data| *data != 0) else {
-        *last_mem_error = PPC_MEM_FULL_ERR;
-        return false;
-    };
-    let wrote = ppc_write_pstring_bytes(memory, data, &title)
-        && memory
-            .write_u32_be(window + PPC_CWINDOW_TITLE_HANDLE_OFFSET, handle)
-            .is_some()
-        && memory
-            .write_u16_be(
-                window + PPC_CWINDOW_TITLE_WIDTH_OFFSET,
-                ppc_text_bytes_advance_for_font(
-                    &title,
-                    PPC_QD_TEXT_FONT_DEFAULT,
-                    PPC_QD_TEXT_SIZE_SYSTEM,
-                ) as u16,
-            )
-            .is_some();
-    *last_mem_error = if wrote { PPC_NO_ERR } else { PPC_PARAM_ERR };
-    wrote
-}
-
-fn ppc_materialize_window_resource_parameters(
-    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    bytes: &[u8],
-) -> Option<(u32, u32)> {
-    if bytes.len() < 19 {
-        return None;
-    }
-    let title_len = usize::from(bytes[18]);
-    if bytes.len() < 19usize.checked_add(title_len)? {
-        return None;
-    }
-    let scratch = ppc_allocator_view_reserve_bytes(
-        allocator,
-        memory,
-        heap_cursor,
-        heap_limit,
-        u32::try_from(8 + 1 + title_len).ok()?,
-        true,
-    );
-    if scratch == 0 {
-        return None;
-    }
-    memory.write_bytes(scratch, &bytes[..8])?;
-    memory.write_u8(scratch + 8, title_len as u8)?;
-    memory.write_bytes(scratch + 9, &bytes[19..19 + title_len])?;
-    Some((scratch, scratch + 8))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_dispose_window(
-    allocator: &mut PpcProcessAllocatorView<'_>,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    controls: &mut Vec<PpcControlRecord>,
-    gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &SharedProcessWindowList,
-    current_gworld: &mut u32,
-    current_gdevice: &mut u32,
-    window: u32,
-) {
-    for control in ppc_window_control_handles(memory, window) {
-        ppc_dispose_control(
-            Some(allocator),
-            None,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            controls,
-            control,
-        );
-    }
-    for offset in [
-        PPC_CGRAF_PORT_VIS_RGN_OFFSET,
-        PPC_CGRAF_PORT_CLIP_RGN_OFFSET,
-        PPC_CWINDOW_STRUCTURE_RGN_OFFSET,
-        PPC_CWINDOW_CONTENT_RGN_OFFSET,
-        PPC_CWINDOW_UPDATE_RGN_OFFSET,
-        PPC_CWINDOW_DEF_PROC_OFFSET,
-        PPC_CWINDOW_TITLE_HANDLE_OFFSET,
-        PPC_CWINDOW_STATE_HANDLE_OFFSET,
-    ] {
-        let handle = memory.read_u32_be(window.wrapping_add(offset)).unwrap_or(0);
-        let _ = allocator.dispose_handle(
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            handle,
-        );
-        let _ = memory.write_u32_be(window.wrapping_add(offset), 0);
-    }
-    gworlds.retain(|record| {
-        record.port != window || matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
-    });
-    window_list.with_mut(|windows| windows.retain(|candidate| *candidate != window));
-    if *current_gworld == window {
-        *current_gworld = ppc_front_visible_process_window(memory, window_list)
-            .unwrap_or(PPC_MAIN_GWORLD);
-        *current_gdevice = ppc_gworld_device(gworlds, *current_gworld).unwrap_or(PPC_MAIN_GDEVICE);
-    }
-}
-
-fn ppc_reorder_window(
-    gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &SharedProcessWindowList,
-    window: u32,
-    behind: u32,
-    front: bool,
-) {
-    window_list.with_mut(|windows| {
-        windows.retain(|candidate| *candidate != window);
-        if front || behind == u32::MAX {
-            windows.insert(0, window);
-        } else if behind == 0 {
-            windows.push(window);
-        } else if let Some(index) = windows.iter().position(|candidate| *candidate == behind) {
-            windows.insert(index + 1, window);
-        } else {
-            windows.push(window);
-        }
-    });
-
-    let Some(index) = gworlds.iter().position(|record| {
-        record.port == window && !matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
-    }) else {
-        return;
-    };
-    let record = gworlds.remove(index);
-    if front {
-        gworlds.push(record);
-        return;
-    }
-    let insert = if behind == 0 {
-        gworlds
-            .iter()
-            .rposition(|record| matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD))
-            .map_or(0, |index| index + 1)
-    } else {
-        gworlds
-            .iter()
-            .position(|record| record.port == behind)
-            .unwrap_or(gworlds.len())
-    };
-    gworlds.insert(insert, record);
-}
-
-fn ppc_window_part_contains_point(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    window: u32,
-    part: i16,
-    v: i16,
-    h: i16,
-) -> bool {
-    let Some((top, left, _, right)) = ppc_dialog_global_bounds(memory, gworlds, window) else {
-        return false;
-    };
-    match part {
-        6 => v >= top.saturating_sub(18) && v < top && h >= left && h < left.saturating_add(18),
-        7 | 8 => {
-            v >= top.saturating_sub(18) && v < top && h >= right.saturating_sub(18) && h < right
-        }
-        _ => false,
-    }
-}
-
-fn ppc_drag_window_call(cpu: &PpcCpu) -> PpcDragWindowCall {
-    PpcDragWindowCall {
-        window: cpu.gpr[3],
-        start_point: cpu.gpr[4],
-        bounds_ptr: cpu.gpr[5],
-        stack_pointer: cpu.gpr[1],
-        return_address: cpu.lr,
-    }
-}
-
-fn ppc_point_in_rect(point: (i16, i16), rect: (i16, i16, i16, i16)) -> bool {
-    point.0 >= rect.0 && point.0 < rect.2 && point.1 >= rect.1 && point.1 < rect.3
-}
-
-fn ppc_offset_rect_bounds(
-    rect: (i16, i16, i16, i16),
-    delta_v: i16,
-    delta_h: i16,
-) -> (i16, i16, i16, i16) {
-    (
-        rect.0.saturating_add(delta_v),
-        rect.1.saturating_add(delta_h),
-        rect.2.saturating_add(delta_v),
-        rect.3.saturating_add(delta_h),
-    )
-}
-
-fn ppc_drag_outline_points(front: PpcFrontBuffer, rect: (i16, i16, i16, i16)) -> Vec<(i32, i32)> {
-    let (top, left, bottom, right) = (
-        i32::from(rect.0),
-        i32::from(rect.1),
-        i32::from(rect.2),
-        i32::from(rect.3),
-    );
-    if bottom <= top || right <= left {
-        return Vec::new();
-    }
-    let width = i32::try_from(front.width).unwrap_or(i32::MAX);
-    let height = i32::try_from(front.height).unwrap_or(i32::MAX);
-    let mut points = Vec::new();
-    for x in left.max(0)..right.min(width) {
-        for y in [top, bottom - 1] {
-            if y >= 0 && y < height {
-                points.push((x, y));
-            }
-        }
-    }
-    for y in (top + 1).max(0)..(bottom - 1).min(height) {
-        for x in [left, right - 1] {
-            if x >= 0 && x < width {
-                points.push((x, y));
-            }
-        }
-    }
-    points
-}
-
-fn ppc_restore_drag_window_outline(memory: &mut PpcSectionMem, state: &PpcDragWindowTrackingState) {
-    for (index, (x, y, pixel)) in state.saved_pixels.iter().copied().enumerate() {
-        let _ = ppc_quickdraw_write_raw_pixel(memory, state.front_buffer, (x, y), pixel);
-        ppc_restore_saved_detail(
-            memory,
-            state.front_buffer,
-            (x, y),
-            &state.saved_pixels,
-            index,
-        );
-    }
-}
-
-fn ppc_refresh_drag_window_outline(
-    memory: &mut PpcSectionMem,
-    screen_clut: &[[u16; 3]; 256],
-    state: &mut PpcDragWindowTrackingState,
-    mouse: (i16, i16),
-) {
-    let start = (
-        (state.call.start_point >> 16) as u16 as i16,
-        state.call.start_point as u16 as i16,
-    );
-    let outline = ppc_offset_rect_bounds(
-        state.original_structure,
-        mouse.0.wrapping_sub(start.0),
-        mouse.1.wrapping_sub(start.1),
-    );
-    if !state.saved_pixels.is_empty() && state.outline == outline {
-        return;
-    }
-    ppc_restore_drag_window_outline(memory, state);
-    state.outline = outline;
-    state.saved_pixels = ppc_drag_outline_points(state.front_buffer, state.outline)
-        .into_iter()
-        .filter_map(|(x, y)| {
-            ppc_quickdraw_read_pixel(memory, state.front_buffer, (x, y)).map(|pixel| (x, y, pixel))
-        })
-        .collect::<Vec<_>>()
-        .into();
-    for index in 0..state.saved_pixels.len() {
-        let (x, y, _) = state.saved_pixels[index];
-        ppc_capture_saved_detail(
-            memory,
-            state.front_buffer,
-            (x, y),
-            &mut state.saved_pixels,
-            index,
-        );
-    }
-    let Some(black) =
-        ppc_physical_screen_color_pixel(state.front_buffer, PPC_RGB_BLACK, screen_clut)
-    else {
-        return;
-    };
-    let Some(white) =
-        ppc_physical_screen_color_pixel(state.front_buffer, PPC_RGB_WHITE, screen_clut)
-    else {
-        return;
-    };
-    for (x, y, _) in state.saved_pixels.iter().copied() {
-        let pixel = if (x + y).rem_euclid(2) == 0 {
-            black
-        } else {
-            white
-        };
-        let _ = ppc_quickdraw_write_raw_pixel(memory, state.front_buffer, (x, y), pixel);
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_dispatch_drag_window(
-    cpu: &PpcCpu,
-    process_memory_manager: &mut ProcessNativeMemoryManager,
-    memory: &mut PpcSectionMem,
-    gworlds: &mut Vec<PpcGWorldRecord>,
-    window_list: &SharedProcessWindowList,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    current_gworld: &mut u32,
-    startup: &mut PpcToolboxStartupState,
-    event_queue: &mut VecDeque<PpcQueuedEvent>,
-    screen_clut: &[[u16; 3]; 256],
-    when: u32,
-    input: PpcInputSnapshot,
-) -> PpcImportAction {
-    // DragWindow owns a synchronous Window Manager loop and moves only a
-    // gray structure-region outline until mouse-up. Macintosh Toolbox
-    // Essentials (1992), pp. 4-94--4-95.
-    let call = ppc_drag_window_call(cpu);
-    if let Some(state) = startup.drag_window_tracking.as_ref() {
-        if state.call != call {
-            return PpcImportAction::ReturnPreserve;
-        }
-        let live_front = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD);
-        let valid_window = gworlds.iter().any(|record| record.port == call.window)
-            && ppc_window_is_visible(memory, call.window)
-            && ppc_dialog_global_bounds(memory, gworlds, call.window)
-                == Some(state.original_content);
-        if live_front != Some(state.front_buffer) {
-            startup.drag_window_tracking = None;
-            return PpcImportAction::ReturnPreserve;
-        }
-        if !valid_window {
-            let state = startup.drag_window_tracking.take().unwrap();
-            ppc_restore_drag_window_outline(memory, &state);
-            return PpcImportAction::ReturnPreserve;
-        }
-
-        if input.mouse_button {
-            let mut state = startup.drag_window_tracking.take().unwrap();
-            ppc_refresh_drag_window_outline(
-                memory,
-                screen_clut,
-                &mut state,
-                (input.mouse_v, input.mouse_h),
-            );
-            startup.drag_window_tracking = Some(state);
-            return PpcImportAction::Yield(u64::MAX);
-        }
-
-        let state = startup.drag_window_tracking.take().unwrap();
-        ppc_restore_drag_window_outline(memory, &state);
-        if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
-            event_queue.remove(index);
-        }
-        let release = (input.mouse_v, input.mouse_h);
-        let start = (
-            (call.start_point >> 16) as u16 as i16,
-            call.start_point as u16 as i16,
-        );
-        if release != start && ppc_point_in_rect(release, state.bounds) {
-            let mut move_cpu = cpu.clone();
-            move_cpu.gpr[4] = state
-                .original_content
-                .1
-                .saturating_add(release.1.wrapping_sub(start.1))
-                as u16 as u32;
-            move_cpu.gpr[5] = state
-                .original_content
-                .0
-                .saturating_add(release.0.wrapping_sub(start.0))
-                as u16 as u32;
-            move_cpu.gpr[6] = 1;
-            if ppc_move_window(&move_cpu, memory, gworlds).is_some() {
-                let previous_front = ppc_front_visible_process_window(memory, window_list);
-                ppc_reorder_window(gworlds, window_list, call.window, 0, true);
-                ppc_recalculate_window_vis_regions(
-                    process_memory_manager,
-                    memory,
-                    window_list,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                );
-                let next_structure =
-                    ppc_window_global_structure_bounds(memory, gworlds, call.window);
-                ppc_repaint_window_geometry_transition(
-                    memory,
-                    gworlds,
-                    window_list,
-                    call.window,
-                    true,
-                    Some(state.original_structure),
-                    next_structure,
-                    startup.host_menu_bar_hidden,
-                    event_queue,
-                    when,
-                    input,
-                );
-                ppc_transition_front_window_chrome(
-                    memory,
-                    gworlds,
-                    window_list,
-                    previous_front,
-                    startup.host_menu_bar_hidden,
-                );
-                *current_gworld = call.window;
-            }
-        }
-        return PpcImportAction::ReturnPreserve;
-    }
-
-    if startup.execution.menu().is_some()
-        || startup.go_away_tracking.is_some()
-        || !input.mouse_button
-        || call.window == 0
-    {
-        return PpcImportAction::ReturnPreserve;
-    }
-    let (Some(bounds), Some(original_content), Some(front_buffer)) = (
-        ppc_read_rect(memory, call.bounds_ptr),
-        ppc_dialog_global_bounds(memory, gworlds, call.window),
-        ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD),
-    ) else {
-        return PpcImportAction::ReturnPreserve;
-    };
-    if !ppc_window_is_visible(memory, call.window) {
-        return PpcImportAction::ReturnPreserve;
-    }
-    let original_structure =
-        ppc_window_structure_bounds(ppc_window_proc_id(memory, call.window), original_content);
-    let mut state = PpcDragWindowTrackingState {
-        call,
-        front_buffer,
-        original_content,
-        original_structure,
-        bounds,
-        outline: original_structure,
-        saved_pixels: Vec::new().into(),
-    };
-    ppc_refresh_drag_window_outline(
-        memory,
-        screen_clut,
-        &mut state,
-        (input.mouse_v, input.mouse_h),
-    );
-    startup.drag_window_tracking = Some(state);
-    PpcImportAction::Yield(u64::MAX)
-}
-
-fn ppc_grow_window_call(cpu: &PpcCpu) -> PpcGrowWindowCall {
-    PpcGrowWindowCall {
-        window: cpu.gpr[3],
-        start_point: cpu.gpr[4],
-        size_rect_ptr: cpu.gpr[5],
-        stack_pointer: cpu.gpr[1],
-        return_address: cpu.lr,
-    }
-}
-
-fn ppc_restore_grow_window_outline(memory: &mut PpcSectionMem, state: &PpcGrowWindowTrackingState) {
-    for (index, (x, y, pixel)) in state.saved_pixels.iter().copied().enumerate() {
-        let _ = ppc_quickdraw_write_raw_pixel(memory, state.front_buffer, (x, y), pixel);
-        ppc_restore_saved_detail(
-            memory,
-            state.front_buffer,
-            (x, y),
-            &state.saved_pixels,
-            index,
-        );
-    }
-}
-
-fn ppc_refresh_grow_window_outline(
-    memory: &mut PpcSectionMem,
-    screen_clut: &[[u16; 3]; 256],
-    state: &mut PpcGrowWindowTrackingState,
-    mouse: (i16, i16),
-) {
-    let (height, width) = crate::window_manager::grow_dimensions_from_drag(
-        state.original_content,
-        state.size_limits,
-        ((state.call.start_point >> 16) as i16, state.call.start_point as i16),
-        mouse,
-    );
-    let proposed_content = (
-        state.original_content.0,
-        state.original_content.1,
-        state.original_content.0.saturating_add(height),
-        state.original_content.1.saturating_add(width),
-    );
-    let outline = ppc_window_structure_bounds(
-        ppc_window_proc_id(memory, state.call.window),
-        proposed_content,
-    );
-    if !state.saved_pixels.is_empty() && state.outline == outline {
-        return;
-    }
-    ppc_restore_grow_window_outline(memory, state);
-    state.outline = outline;
-    state.saved_pixels = ppc_drag_outline_points(state.front_buffer, state.outline)
-        .into_iter()
-        .filter_map(|(x, y)| {
-            ppc_quickdraw_read_pixel(memory, state.front_buffer, (x, y)).map(|pixel| (x, y, pixel))
-        })
-        .collect::<Vec<_>>()
-        .into();
-    for index in 0..state.saved_pixels.len() {
-        let (x, y, _) = state.saved_pixels[index];
-        ppc_capture_saved_detail(
-            memory,
-            state.front_buffer,
-            (x, y),
-            &mut state.saved_pixels,
-            index,
-        );
-    }
-    let Some(black) =
-        ppc_physical_screen_color_pixel(state.front_buffer, PPC_RGB_BLACK, screen_clut)
-    else {
-        return;
-    };
-    let Some(white) =
-        ppc_physical_screen_color_pixel(state.front_buffer, PPC_RGB_WHITE, screen_clut)
-    else {
-        return;
-    };
-    for (x, y, _) in state.saved_pixels.iter().copied() {
-        let pixel = if (x + y).rem_euclid(2) == 0 {
-            black
-        } else {
-            white
-        };
-        let _ = ppc_quickdraw_write_raw_pixel(memory, state.front_buffer, (x, y), pixel);
-    }
-}
-
-fn ppc_dispatch_grow_window(
-    cpu: &PpcCpu,
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    startup: &mut PpcToolboxStartupState,
-    event_queue: &mut VecDeque<PpcQueuedEvent>,
-    screen_clut: &[[u16; 3]; 256],
-    input: PpcInputSnapshot,
-) -> PpcImportAction {
-    // GrowWindow owns the mouse through release and returns a proposed size;
-    // the caller applies that size separately with SizeWindow. Inside
-    // Macintosh Volume I (1985), pp. I-297--I-299.
-    let call = ppc_grow_window_call(cpu);
-    if let Some(state) = startup.grow_window_tracking.as_ref() {
-        if state.call != call {
-            return PpcImportAction::Return(0);
-        }
-        let live_front = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD);
-        let valid_window = gworlds.iter().any(|record| record.port == call.window)
-            && ppc_window_is_visible(memory, call.window)
-            && ppc_dialog_global_bounds(memory, gworlds, call.window)
-                == Some(state.original_content);
-        if live_front != Some(state.front_buffer) {
-            startup.grow_window_tracking = None;
-            return PpcImportAction::Return(0);
-        }
-        if !valid_window {
-            let state = startup.grow_window_tracking.take().unwrap();
-            ppc_restore_grow_window_outline(memory, &state);
-            return PpcImportAction::Return(0);
-        }
-        if input.mouse_button {
-            let mut state = startup.grow_window_tracking.take().unwrap();
-            ppc_refresh_grow_window_outline(
-                memory,
-                screen_clut,
-                &mut state,
-                (input.mouse_v, input.mouse_h),
-            );
-            startup.grow_window_tracking = Some(state);
-            return PpcImportAction::Yield(u64::MAX);
-        }
-
-        let state = startup.grow_window_tracking.take().unwrap();
-        ppc_restore_grow_window_outline(memory, &state);
-        if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
-            event_queue.remove(index);
-        }
-        let (height, width) = crate::window_manager::grow_dimensions_from_drag(
-            state.original_content,
-            state.size_limits,
-            ((state.call.start_point >> 16) as i16, state.call.start_point as i16),
-            (input.mouse_v, input.mouse_h),
-        );
-        let old_height = state
-            .original_content
-            .2
-            .saturating_sub(state.original_content.0);
-        let old_width = state
-            .original_content
-            .3
-            .saturating_sub(state.original_content.1);
-        let result = if height == old_height && width == old_width {
-            0
-        } else {
-            (u32::from(height as u16) << 16) | u32::from(width as u16)
-        };
-        return PpcImportAction::Return(result);
-    }
-
-    if startup.execution.menu().is_some()
-        || startup.go_away_tracking.is_some()
-        || startup.drag_window_tracking.is_some()
-        || !input.mouse_button
-        || call.window == 0
-    {
-        return PpcImportAction::Return(0);
-    }
-    let (Some(size_limits), Some(original_content), Some(front_buffer)) = (
-        ppc_read_rect(memory, call.size_rect_ptr),
-        ppc_dialog_global_bounds(memory, gworlds, call.window),
-        ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD),
-    ) else {
-        return PpcImportAction::Return(0);
-    };
-    if !ppc_window_is_visible(memory, call.window) {
-        return PpcImportAction::Return(0);
-    }
-    let mut state = PpcGrowWindowTrackingState {
-        call,
-        front_buffer,
-        original_content,
-        size_limits,
-        outline: ppc_window_structure_bounds(
-            ppc_window_proc_id(memory, call.window),
-            original_content,
-        ),
-        saved_pixels: Vec::new().into(),
-    };
-    ppc_refresh_grow_window_outline(
-        memory,
-        screen_clut,
-        &mut state,
-        (input.mouse_v, input.mouse_h),
-    );
-    startup.grow_window_tracking = Some(state);
-    PpcImportAction::Yield(u64::MAX)
-}
-
-fn ppc_go_away_call(cpu: &PpcCpu) -> PpcGoAwayCall {
-    PpcGoAwayCall {
-        window: cpu.gpr[3],
-        start_point: cpu.gpr[4],
-        stack_pointer: cpu.gpr[1],
-        return_address: cpu.lr,
-    }
-}
-
-fn ppc_go_away_window_is_trackable(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    window: u32,
-) -> bool {
-    let proc_id = ppc_window_proc_id(memory, window);
-    gworlds.iter().any(|record| record.port == window)
-        && ppc_front_visible_window(memory, gworlds) == Some(window)
-        && ppc_window_is_visible(memory, window)
-        && memory
-            .read_u8(window.wrapping_add(PPC_CWINDOW_HILITED_OFFSET))
-            .unwrap_or(0)
-            != 0
-        && memory
-            .read_u8(window.wrapping_add(PPC_CWINDOW_GO_AWAY_OFFSET))
-            .unwrap_or(0)
-            != 0
-        && ppc_window_proc_has_title_bar(proc_id)
-        && proc_id != 5
-}
-
-fn ppc_go_away_highlight_pixels(
-    memory: &mut PpcSectionMem,
-    surface: PpcQuickDrawSurface,
-) -> Option<crate::memory::SavedPixels<u16>> {
-    let mut pixels = Vec::with_capacity(121);
-    for v in -15..-4 {
-        for h in 8..19 {
-            pixels.push(ppc_quickdraw_read_pixel(
-                memory,
-                surface.front_buffer,
-                surface.local_point((h, v)),
-            )?);
-        }
-    }
-    let mut pixels = crate::memory::SavedPixels::from(pixels);
-    for (index, (h, v)) in (-15..-4)
-        .flat_map(|v| (8..19).map(move |h| (h, v)))
-        .enumerate()
-    {
-        ppc_capture_saved_detail(
-            memory,
-            surface.front_buffer,
-            surface.local_point((h, v)),
-            &mut pixels,
-            index,
-        );
-    }
-    Some(pixels)
-}
-
-fn ppc_draw_go_away_tracking_feedback(
-    memory: &mut PpcSectionMem,
-    state: &PpcGoAwayTrackingState,
-    highlighted: bool,
-) {
-    let mask = match state.surface.front_buffer.depth {
-        1 => 0x0001,
-        2 => 0x0003,
-        4 => 0x000f,
-        8 => 0x00ff,
-        16 => 0x7fff,
-        _ => return,
-    };
-    let mut saved = state.saved_pixels.clone();
-    if highlighted {
-        let lanes = (state.surface.front_buffer.depth / 8).max(1) as usize;
-        saved.transform_detail(|offset, byte| {
-            byte ^ (mask >> ((lanes - 1 - offset % lanes) * 8)) as u8
-        });
-    }
-    for (index, ((h, v), pixel)) in (-15..-4)
-        .flat_map(|v| (8..19).map(move |h| (h, v)))
-        .zip(state.saved_pixels.iter().copied())
-        .enumerate()
-    {
-        let value = if highlighted { pixel ^ mask } else { pixel };
-        let _ = ppc_quickdraw_write_raw_pixel(
-            memory,
-            state.surface.front_buffer,
-            state.surface.local_point((h, v)),
-            value,
-        );
-        ppc_restore_saved_detail(
-            memory,
-            state.surface.front_buffer,
-            state.surface.local_point((h, v)),
-            &saved,
-            index,
-        );
-    }
-}
-
-fn ppc_dispatch_track_go_away(
-    cpu: &PpcCpu,
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    startup: &mut PpcToolboxStartupState,
-    event_queue: &mut VecDeque<PpcQueuedEvent>,
-    input: PpcInputSnapshot,
-) -> PpcImportAction {
-    // TrackGoAway owns a synchronous Window Manager tracking loop. Retain the
-    // import frame until mouse-up and toggle the WDEF close-box feedback as
-    // the pointer crosses its hit region. Macintosh Toolbox Essentials
-    // (1992), pp. 4-103--4-104.
-    let call = ppc_go_away_call(cpu);
-    if let Some(state) = startup.go_away_tracking.as_ref() {
-        if state.call != call {
-            return PpcImportAction::Return(0);
-        }
-        let live_surface = ppc_live_quickdraw_surface(memory, gworlds, call.window);
-        if live_surface != Some(state.surface) {
-            startup.go_away_tracking = None;
-            return PpcImportAction::Return(0);
-        }
-        if !ppc_go_away_window_is_trackable(memory, gworlds, call.window) {
-            let state = startup.go_away_tracking.take().unwrap();
-            ppc_draw_go_away_tracking_feedback(memory, &state, false);
-            return PpcImportAction::Return(0);
-        }
-
-        let inside = ppc_window_part_contains_point(
-            memory,
-            gworlds,
-            call.window,
-            6,
-            input.mouse_v,
-            input.mouse_h,
-        );
-        if input.mouse_button {
-            let mut state = startup.go_away_tracking.take().unwrap();
-            if state.highlighted != inside {
-                ppc_draw_go_away_tracking_feedback(memory, &state, inside);
-                state.highlighted = inside;
-            }
-            startup.go_away_tracking = Some(state);
-            return PpcImportAction::Yield(u64::MAX);
-        }
-
-        let state = startup.go_away_tracking.take().unwrap();
-        ppc_draw_go_away_tracking_feedback(memory, &state, false);
-        if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
-            event_queue.remove(index);
-        }
-        return PpcImportAction::Return(u32::from(inside));
-    }
-
-    if startup.execution.menu().is_some()
-        || !input.mouse_button
-        || !ppc_go_away_window_is_trackable(memory, gworlds, call.window)
-    {
-        return PpcImportAction::Return(0);
-    }
-    let start_v = (call.start_point >> 16) as u16 as i16;
-    let start_h = call.start_point as u16 as i16;
-    if !ppc_window_part_contains_point(memory, gworlds, call.window, 6, start_v, start_h) {
-        return PpcImportAction::Return(0);
-    }
-    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, call.window) else {
-        return PpcImportAction::Return(0);
-    };
-    let Some(saved_pixels) = ppc_go_away_highlight_pixels(memory, surface) else {
-        return PpcImportAction::Return(0);
-    };
-    let highlighted = ppc_window_part_contains_point(
-        memory,
-        gworlds,
-        call.window,
-        6,
-        input.mouse_v,
-        input.mouse_h,
-    );
-    let state = PpcGoAwayTrackingState {
-        call,
-        surface,
-        saved_pixels,
-        highlighted,
-    };
-    ppc_draw_go_away_tracking_feedback(memory, &state, highlighted);
-    startup.go_away_tracking = Some(state);
-    PpcImportAction::Yield(u64::MAX)
-}
-
-fn ppc_zoom_window(
-    cpu: &PpcCpu,
-    memory: &mut PpcSectionMem,
-    gworlds: &mut [PpcGWorldRecord],
-) -> Option<()> {
-    let window = cpu.gpr[3];
-    let part = cpu.gpr[4] as u16 as i16;
-    let state = memory
-        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
-        .filter(|handle| *handle != 0)
-        .and_then(|handle| memory.read_u32_be(handle))
-        .filter(|state| *state != 0);
-    let state = state?;
-    let offset = if part == 8 { 8 } else { 0 };
-    let (top, left, bottom, right) = ppc_read_rect(memory, state + offset)?;
-    let mut move_cpu = cpu.clone();
-    move_cpu.gpr[4] = left as u16 as u32;
-    move_cpu.gpr[5] = top as u16 as u32;
-    ppc_move_window(&move_cpu, memory, gworlds)?;
-    let mut size_cpu = cpu.clone();
-    size_cpu.gpr[4] = right.saturating_sub(left) as u16 as u32;
-    size_cpu.gpr[5] = bottom.saturating_sub(top) as u16 as u32;
-    ppc_size_window(&size_cpu, memory, gworlds)?;
-    Some(())
 }
 
 fn ppc_text_width(
@@ -72631,645 +58501,6 @@ fn ppc_te_read_rect(memory: &mut PpcSectionMem, rect_ptr: u32) -> Option<[u16; 4
     ])
 }
 
-fn ppc_list_dimensions(bounds: (i16, i16, i16, i16)) -> (usize, usize) {
-    (
-        usize::try_from(i32::from(bounds.3) - i32::from(bounds.1)).unwrap_or(0),
-        usize::try_from(i32::from(bounds.2) - i32::from(bounds.0)).unwrap_or(0),
-    )
-}
-
-fn ppc_list_visible_rect(
-    view_rect: (i16, i16, i16, i16),
-    data_bounds: (i16, i16, i16, i16),
-    cell_size: (i16, i16),
-) -> (i16, i16, i16, i16) {
-    // More Macintosh Toolbox (1993), pp. 4-70--4-72 and 4-91--4-92:
-    // visible includes any cell that intersects the view, so partial cells
-    // round up to the next row or column.
-    let (columns, rows) = ppc_list_dimensions(data_bounds);
-    let cell_v = cell_size.0.max(1);
-    let cell_h = cell_size.1.max(1);
-    let view_height = (i32::from(view_rect.2) - i32::from(view_rect.0)).max(0);
-    let view_width = (i32::from(view_rect.3) - i32::from(view_rect.1)).max(0);
-    let visible_rows = usize::try_from((view_height + i32::from(cell_v) - 1) / i32::from(cell_v))
-        .unwrap_or(0)
-        .max(1)
-        .min(rows);
-    let visible_columns = usize::try_from((view_width + i32::from(cell_h) - 1) / i32::from(cell_h))
-        .unwrap_or(0)
-        .max(1)
-        .min(columns);
-    (
-        data_bounds.0,
-        data_bounds.1,
-        data_bounds.0.saturating_add(visible_rows as i16),
-        data_bounds.1.saturating_add(visible_columns as i16),
-    )
-}
-
-fn ppc_list_set_visible_origin(record: &mut PpcListRecord, row: i16, column: i16) {
-    record.set_visible_origin(row, column);
-}
-
-fn ppc_list_recompute_visible(record: &mut PpcListRecord) {
-    let old_origin = (record.visible.0, record.visible.1);
-    record.visible = ppc_list_visible_rect(record.view_rect, record.data_bounds, record.cell_size);
-    ppc_list_set_visible_origin(record, old_origin.0, old_origin.1);
-}
-
-fn ppc_list_cell_index(record: &PpcListRecord, v: i16, h: i16) -> Option<usize> {
-    let (columns, rows) = ppc_list_dimensions(record.data_bounds);
-    let column = usize::try_from(i32::from(h) - i32::from(record.data_bounds.1)).ok()?;
-    let row = usize::try_from(i32::from(v) - i32::from(record.data_bounds.0)).ok()?;
-    (column < columns && row < rows).then(|| row * columns + column)
-}
-
-fn ppc_list_cell_for_index(record: &PpcListRecord, index: usize) -> Option<(i16, i16)> {
-    let (columns, rows) = ppc_list_dimensions(record.data_bounds);
-    if columns == 0 || index >= columns.saturating_mul(rows) {
-        return None;
-    }
-    Some((
-        record
-            .data_bounds
-            .0
-            .saturating_add((index / columns) as i16),
-        record
-            .data_bounds
-            .1
-            .saturating_add((index % columns) as i16),
-    ))
-}
-
-fn ppc_list_scrollbar_bounds(record: &PpcListRecord, vertical: bool) -> (i16, i16, i16, i16) {
-    // More Macintosh Toolbox (1993), pp. 4-75--4-76: standard list scroll
-    // bars occupy the one-pixel border outside rView and a 16-pixel strip.
-    if vertical {
-        (
-            record.view_rect.0.saturating_sub(1),
-            record.view_rect.3,
-            record.view_rect.2.saturating_add(1),
-            record.view_rect.3.saturating_add(16),
-        )
-    } else {
-        (
-            record.view_rect.2,
-            record.view_rect.1.saturating_sub(1),
-            record.view_rect.2.saturating_add(16),
-            record.view_rect.3.saturating_add(1),
-        )
-    }
-}
-
-fn ppc_list_scrollbar_limits(record: &PpcListRecord, vertical: bool) -> (i16, i16, i16) {
-    record.scrollbar_limits(vertical)
-}
-
-fn ppc_list_sync_guest_scrollbars(memory: &mut PpcSectionMem, record: &PpcListRecord) -> i16 {
-    let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else {
-        return PPC_PARAM_ERR;
-    };
-    for (offset, vertical) in [
-        (PPC_LIST_VSCROLL_OFFSET, true),
-        (PPC_LIST_HSCROLL_OFFSET, false),
-    ] {
-        let control_handle = memory.read_u32_be(list_ptr + offset).unwrap_or(0);
-        let Some(control) = ppc_control_ptr(memory, control_handle) else {
-            continue;
-        };
-        let (top, left, bottom, right) = ppc_list_scrollbar_bounds(record, vertical);
-        let (value, min, max) = ppc_list_scrollbar_limits(record, vertical);
-        if ppc_write_rect(
-            memory,
-            control + PPC_CONTROL_RECT_OFFSET,
-            top,
-            left,
-            bottom,
-            right,
-        )
-        .is_none()
-            || memory
-                .write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, value as u16)
-                .is_none()
-            || memory
-                .write_u16_be(control + PPC_CONTROL_MIN_OFFSET, min as u16)
-                .is_none()
-            || memory
-                .write_u16_be(control + PPC_CONTROL_MAX_OFFSET, max as u16)
-                .is_none()
-        {
-            return PPC_PARAM_ERR;
-        }
-    }
-    PPC_NO_ERR
-}
-
-fn ppc_list_sync_guest_geometry(memory: &mut PpcSectionMem, record: &PpcListRecord) -> i16 {
-    let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else {
-        return PPC_PARAM_ERR;
-    };
-    if ppc_write_rect(
-        memory,
-        list_ptr + PPC_LIST_VIEW_OFFSET,
-        record.view_rect.0,
-        record.view_rect.1,
-        record.view_rect.2,
-        record.view_rect.3,
-    )
-    .is_none()
-        || ppc_write_rect(
-            memory,
-            list_ptr + PPC_LIST_VISIBLE_OFFSET,
-            record.visible.0,
-            record.visible.1,
-            record.visible.2,
-            record.visible.3,
-        )
-        .is_none()
-    {
-        return PPC_PARAM_ERR;
-    }
-    ppc_list_sync_guest_scrollbars(memory, record)
-}
-
-fn ppc_list_sync_guest_visible(memory: &mut PpcSectionMem, record: &PpcListRecord) -> i16 {
-    let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else {
-        return PPC_PARAM_ERR;
-    };
-    if ppc_write_rect(
-        memory,
-        list_ptr + PPC_LIST_VISIBLE_OFFSET,
-        record.visible.0,
-        record.visible.1,
-        record.visible.2,
-        record.visible.3,
-    )
-    .is_none()
-    {
-        return PPC_PARAM_ERR;
-    }
-    ppc_list_sync_guest_scrollbars(memory, record)
-}
-
-fn ppc_list_sync_guest_size(memory: &mut PpcSectionMem, record: &PpcListRecord) -> i16 {
-    let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else {
-        return PPC_PARAM_ERR;
-    };
-    if memory
-        .write_u16_be(
-            list_ptr + PPC_LIST_VIEW_OFFSET + 4,
-            record.view_rect.2 as u16,
-        )
-        .is_none()
-        || memory
-            .write_u16_be(
-                list_ptr + PPC_LIST_VIEW_OFFSET + 6,
-                record.view_rect.3 as u16,
-            )
-            .is_none()
-    {
-        return PPC_PARAM_ERR;
-    }
-    ppc_list_sync_guest_visible(memory, record)
-}
-
-fn ppc_list_sync_guest_storage(
-    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    record: &PpcListRecord,
-) -> i16 {
-    let (columns, rows) = ppc_list_dimensions(record.data_bounds);
-    let cell_count = columns.saturating_mul(rows);
-    let offsets_size = (cell_count as u32).saturating_add(1).saturating_mul(2);
-    let list_size = PPC_LIST_REC_MIN_SIZE.max(PPC_LIST_CELL_ARRAY_OFFSET + offsets_size);
-    let result = ppc_allocator_view_resize_handle(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        record.handle,
-        list_size,
-    );
-    if result != PPC_NO_ERR {
-        return result;
-    }
-    let data_size = (0..cell_count).fold(0u32, |size, index| {
-        let bytes = ppc_list_cell_for_index(record, index)
-            .and_then(|cell| record.cells.get(&cell))
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        size.saturating_add(bytes.len().min(0x7fff) as u32)
-    });
-    if data_size > 32_000 {
-        return PPC_MEM_FULL_ERR;
-    }
-    let result = ppc_allocator_view_resize_handle(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        record.cells_handle,
-        data_size,
-    );
-    if result != PPC_NO_ERR {
-        return result;
-    }
-    let result = ppc_list_sync_guest_geometry(memory, record);
-    if result != PPC_NO_ERR {
-        return result;
-    }
-    let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else {
-        return PPC_PARAM_ERR;
-    };
-    if ppc_write_rect(
-        memory,
-        list_ptr + PPC_LIST_DATA_BOUNDS_OFFSET,
-        record.data_bounds.0,
-        record.data_bounds.1,
-        record.data_bounds.2,
-        record.data_bounds.3,
-    )
-    .is_none()
-        || memory
-            .write_u32_be(list_ptr + PPC_LIST_CELLS_OFFSET, record.cells_handle)
-            .is_none()
-        || memory
-            .write_u16_be(
-                list_ptr + PPC_LIST_MAX_INDEX_OFFSET,
-                cell_count.saturating_mul(2).min(u16::MAX as usize) as u16,
-            )
-            .is_none()
-    {
-        return PPC_PARAM_ERR;
-    }
-    let data_ptr = memory.read_u32_be(record.cells_handle).unwrap_or(0);
-    let mut offset = 0u16;
-    for index in 0..cell_count {
-        let cell = ppc_list_cell_for_index(record, index)
-            .expect("List Manager index is inside dataBounds");
-        let bytes = record.cells.get(&cell).map(Vec::as_slice).unwrap_or(&[]);
-        let selection = if record.selected.contains(&cell) {
-            0x8000
-        } else {
-            0
-        };
-        let _ = memory.write_u16_be(
-            list_ptr + PPC_LIST_CELL_ARRAY_OFFSET + index as u32 * 2,
-            selection | offset,
-        );
-        if !bytes.is_empty()
-            && memory
-                .write_bytes(data_ptr + u32::from(offset), bytes)
-                .is_none()
-        {
-            return PPC_PARAM_ERR;
-        }
-        offset = offset.saturating_add(bytes.len().min(0x7fff) as u16);
-    }
-    let _ = memory.write_u16_be(
-        list_ptr + PPC_LIST_CELL_ARRAY_OFFSET + cell_count as u32 * 2,
-        offset,
-    );
-    PPC_NO_ERR
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_list_new(
-    cpu: &PpcCpu,
-    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    last_mem_error: &mut i16,
-    handles: &mut Vec<PpcHandleRecord>,
-    controls: &mut Vec<PpcControlRecord>,
-    list_manager: &mut ProcessListManagerState,
-) -> u32 {
-    let (Some(view), Some(data_bounds)) = (
-        ppc_read_rect(memory, cpu.gpr[3]),
-        ppc_read_rect(memory, cpu.gpr[4]),
-    ) else {
-        return 0;
-    };
-    let (columns, rows) = ppc_list_dimensions(data_bounds);
-    let Some(cell_count) = columns
-        .checked_mul(rows)
-        .filter(|count| *count <= i16::MAX as usize)
-    else {
-        return 0;
-    };
-    let list_handle = ppc_allocator_view_allocate_handle(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        PPC_LIST_REC_MIN_SIZE + (cell_count as u32 + 1) * 2,
-        true,
-    );
-    let cells_handle = ppc_allocator_view_allocate_handle(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        0,
-        true,
-    );
-    let Some(list_ptr) = memory.read_u32_be(list_handle).filter(|ptr| *ptr != 0) else {
-        return 0;
-    };
-    let mut cell_v = (cpu.gpr[5] >> 16) as u16 as i16;
-    let mut cell_h = cpu.gpr[5] as u16 as i16;
-    if cell_v <= 0 {
-        let font = ppc_current_text_font(memory, cpu.gpr[7]);
-        let size = memory
-            .read_u16_be(cpu.gpr[7].wrapping_add(PPC_CGRAF_PORT_TX_SIZE_OFFSET))
-            .unwrap_or(PPC_QD_TEXT_SIZE_SYSTEM as u16) as i16;
-        let (face, scale) = get_font_face_scaled(font, size);
-        cell_v = face
-            .metrics
-            .ascent
-            .saturating_add(face.metrics.descent)
-            .saturating_add(face.metrics.leading)
-            .saturating_mul(scale)
-            .max(1);
-    }
-    if cell_h <= 0 {
-        cell_h = if columns == 0 {
-            1
-        } else {
-            (view.3.saturating_sub(view.1) / columns as i16).max(1)
-        };
-    }
-    let visible = ppc_list_visible_rect(view, data_bounds, (cell_v, cell_h));
-    let scroll_horiz = cpu.gpr[10] != 0;
-    let scroll_vert = ppc_parameter_area_slot_addr(cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
-        .and_then(|slot| memory.read_u32_be(slot))
-        .unwrap_or(0)
-        != 0;
-    let draw_enabled = cpu.gpr[8] != 0;
-    let record = PpcListRecord {
-        handle: list_handle,
-        cells_handle,
-        view_rect: view,
-        data_bounds,
-        cell_size: (cell_v, cell_h),
-        visible,
-        port: cpu.gpr[7],
-        draw_enabled,
-        active: true,
-        cells: std::collections::HashMap::new(),
-        selected: std::collections::BTreeSet::new(),
-        last_click: (-1, -1),
-        last_click_tick: 0,
-    };
-    let v_scroll = if scroll_vert {
-        ppc_new_control_record_values(
-            allocator.as_deref_mut(),
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            controls,
-            record.port,
-            ppc_list_scrollbar_bounds(&record, true),
-            &[],
-            draw_enabled,
-            ppc_list_scrollbar_limits(&record, true).0,
-            ppc_list_scrollbar_limits(&record, true).1,
-            ppc_list_scrollbar_limits(&record, true).2,
-            16,
-            0,
-        )
-    } else {
-        0
-    };
-    let h_scroll = if scroll_horiz {
-        ppc_new_control_record_values(
-            allocator.as_deref_mut(),
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            controls,
-            record.port,
-            ppc_list_scrollbar_bounds(&record, false),
-            &[],
-            draw_enabled,
-            ppc_list_scrollbar_limits(&record, false).0,
-            ppc_list_scrollbar_limits(&record, false).1,
-            ppc_list_scrollbar_limits(&record, false).2,
-            16,
-            0,
-        )
-    } else {
-        0
-    };
-    if ppc_write_rect(
-        memory,
-        list_ptr + PPC_LIST_VIEW_OFFSET,
-        view.0,
-        view.1,
-        view.2,
-        view.3,
-    )
-    .is_none()
-        || memory
-            .write_u32_be(list_ptr + PPC_LIST_PORT_OFFSET, cpu.gpr[7])
-            .is_none()
-        || memory
-            .write_u32_be(list_ptr + PPC_LIST_VSCROLL_OFFSET, v_scroll)
-            .is_none()
-        || memory
-            .write_u32_be(list_ptr + PPC_LIST_HSCROLL_OFFSET, h_scroll)
-            .is_none()
-        || memory
-            .write_u8(list_ptr + PPC_LIST_SEL_FLAGS_OFFSET, 0)
-            .is_none()
-        || memory
-            .write_u8(list_ptr + PPC_LIST_ACTIVE_OFFSET, 1)
-            .is_none()
-        || memory
-            .write_u16_be(
-                list_ptr + PPC_LIST_INDENT_OFFSET,
-                cell_v.saturating_sub(3) as u16,
-            )
-            .is_none()
-        || memory
-            .write_u16_be(list_ptr + PPC_LIST_INDENT_OFFSET + 2, 1)
-            .is_none()
-        || memory
-            .write_u16_be(list_ptr + PPC_LIST_CELL_SIZE_OFFSET, cell_v as u16)
-            .is_none()
-        || memory
-            .write_u16_be(list_ptr + PPC_LIST_CELL_SIZE_OFFSET + 2, cell_h as u16)
-            .is_none()
-        || ppc_write_rect(
-            memory,
-            list_ptr + PPC_LIST_VISIBLE_OFFSET,
-            visible.0,
-            visible.1,
-            visible.2,
-            visible.3,
-        )
-        .is_none()
-        || memory
-            .write_u8(list_ptr + PPC_LIST_FLAGS_OFFSET, 0)
-            .is_none()
-    {
-        return 0;
-    }
-    if ppc_list_sync_guest_storage(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        &record,
-    ) != PPC_NO_ERR
-    {
-        return 0;
-    }
-    list_manager.insert(list_handle, record);
-    list_handle
-}
-
-fn ppc_list_draw(memory: &mut PpcSectionMem, gworlds: &[PpcGWorldRecord], record: &PpcListRecord) {
-    let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else {
-        return;
-    };
-    let Some((view_top, view_left, view_bottom, view_right)) =
-        ppc_read_rect(memory, list_ptr + PPC_LIST_VIEW_OFFSET)
-    else {
-        return;
-    };
-    let Some(visible) = ppc_read_rect(memory, list_ptr + PPC_LIST_VISIBLE_OFFSET) else {
-        return;
-    };
-    let cell_v = memory
-        .read_u16_be(list_ptr + PPC_LIST_CELL_SIZE_OFFSET)
-        .unwrap_or(1) as i16;
-    let cell_h = memory
-        .read_u16_be(list_ptr + PPC_LIST_CELL_SIZE_OFFSET + 2)
-        .unwrap_or(1) as i16;
-    let active = memory
-        .read_u8(list_ptr + PPC_LIST_ACTIVE_OFFSET)
-        .unwrap_or(1)
-        != 0;
-    let port = memory
-        .read_u32_be(list_ptr + PPC_LIST_PORT_OFFSET)
-        .unwrap_or(PPC_MAIN_GWORLD);
-    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, port) else {
-        return;
-    };
-    let front = surface.front_buffer;
-    let font = ppc_current_text_font(memory, port);
-    let size = memory
-        .read_u16_be(port.wrapping_add(PPC_CGRAF_PORT_TX_SIZE_OFFSET))
-        .unwrap_or(PPC_QD_TEXT_SIZE_SYSTEM as u16) as i16;
-    let (face, scale) = get_font_face_scaled(font, size);
-    let ascent = face.metrics.ascent.saturating_mul(scale);
-    for row in visible.0..visible.2 {
-        for column in visible.1..visible.3 {
-            if ppc_list_cell_index(record, row, column).is_none() {
-                continue;
-            }
-            let top = view_top.saturating_add(row.saturating_sub(visible.0).saturating_mul(cell_v));
-            let left =
-                view_left.saturating_add(column.saturating_sub(visible.1).saturating_mul(cell_h));
-            // List view coordinates are local to the list's port. Imaging
-            // With QuickDraw (1994), pp. 2-9--2-10: map them through the
-            // port's PixMap boundary before writing the backing pixels.
-            let rect = surface.local_rect_i16((
-                top,
-                left,
-                top.saturating_add(cell_v).min(view_bottom),
-                left.saturating_add(cell_h).min(view_right),
-            ));
-            let selected = active && record.selected.contains(&(row, column));
-            let background = if selected {
-                PPC_RGB_BLACK
-            } else {
-                PPC_RGB_WHITE
-            };
-            let foreground = if selected {
-                PPC_RGB_WHITE
-            } else {
-                PPC_RGB_BLACK
-            };
-            let _ = ppc_fill_front_rect(memory, front, rect, background);
-            let _ = ppc_draw_text_bytes(
-                memory,
-                gworlds,
-                port,
-                (left.saturating_add(1), top.saturating_add(ascent)),
-                font,
-                size,
-                PPC_QD_TEXT_MODE_SRC_OR,
-                foreground,
-                None,
-                record
-                    .cells
-                    .get(&(row, column))
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]),
-            );
-        }
-    }
-}
-
-fn ppc_list_redraw(
-    memory: &mut PpcSectionMem,
-    handles: &[PpcHandleRecord],
-    controls: &[PpcControlRecord],
-    gworlds: &[PpcGWorldRecord],
-    vfs_resources: &[PpcVfsResourceRecord],
-    current_resource_refnum: i16,
-    record: &PpcListRecord,
-) {
-    ppc_list_draw(memory, gworlds, record);
-    let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) else {
-        return;
-    };
-    for offset in [PPC_LIST_VSCROLL_OFFSET, PPC_LIST_HSCROLL_OFFSET] {
-        let Some(control_handle) = memory
-            .read_u32_be(list_ptr + offset)
-            .filter(|handle| *handle != 0)
-        else {
-            continue;
-        };
-        if !record.active {
-            if let Some(control) = ppc_control_ptr(memory, control_handle) {
-                // LUpdate's inactive-list scrollbar state on Mac OS 8.1.
-                let _ = memory.write_u8(control + PPC_CONTROL_HILITE_OFFSET, 254);
-            }
-        }
-        let _ = ppc_draw_control(
-            memory,
-            handles,
-            controls,
-            gworlds,
-            vfs_resources,
-            current_resource_refnum,
-            control_handle,
-        );
-    }
-}
-
 fn ppc_te_write_rect(memory: &mut PpcSectionMem, rect_ptr: u32, rect: [u16; 4]) -> bool {
     rect.iter().copied().enumerate().all(|(index, value)| {
         memory
@@ -73279,7 +58510,7 @@ fn ppc_te_write_rect(memory: &mut PpcSectionMem, rect_ptr: u32, rect: [u16; 4]) 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ppc_te_initialize_record(
+pub(super) fn ppc_te_initialize_record(
     mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -73554,11 +58785,11 @@ fn ppc_te_initialize_record(
     te_handle
 }
 
-fn ppc_te_record_ptr(memory: &mut PpcSectionMem, te_handle: u32) -> Option<u32> {
+pub(super) fn ppc_te_record_ptr(memory: &mut PpcSectionMem, te_handle: u32) -> Option<u32> {
     memory.read_u32_be(te_handle).filter(|ptr| *ptr != 0)
 }
 
-fn ppc_te_text_bytes(
+pub(super) fn ppc_te_text_bytes(
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
     te_handle: u32,
@@ -73988,7 +59219,7 @@ fn ppc_te_primary_font_and_size(memory: &mut PpcSectionMem, te_ptr: u32) -> (i16
     )
 }
 
-fn ppc_te_recalculate_layout(
+pub(super) fn ppc_te_recalculate_layout(
     mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -74614,7 +59845,7 @@ fn ppc_te_commit_edit_buffer(
     PPC_NO_ERR
 }
 
-fn ppc_te_key(
+pub(super) fn ppc_te_key(
     allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -74756,7 +59987,7 @@ fn ppc_te_point_to_offset(
     Some(offset)
 }
 
-fn ppc_te_click(
+pub(super) fn ppc_te_click(
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
     te_handle: u32,
@@ -75280,7 +60511,7 @@ fn ppc_get_scrap(
     bytes.len() as u32
 }
 
-fn ppc_te_draw(
+pub(super) fn ppc_te_draw(
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
     gworlds: &[PpcGWorldRecord],
@@ -75557,7 +60788,7 @@ fn ppc_te_cleanup_handles(
     }
 }
 
-fn ppc_te_forget_handle(
+pub(super) fn ppc_te_forget_handle(
     allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     legacy_handle_states: Option<&mut Vec<PpcHandleStateRecord>>,
     memory: &mut PpcSectionMem,
@@ -75591,7 +60822,7 @@ fn ppc_te_forget_handle(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ppc_te_dispose(
+pub(super) fn ppc_te_dispose(
     mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     mut legacy_handle_states: Option<&mut Vec<PpcHandleStateRecord>>,
     memory: &mut PpcSectionMem,
@@ -75743,7 +60974,7 @@ fn ppc_mutate_menu_items_in_place(
     bytes.len() <= original.len() && memory.write_bytes(menu, &bytes).is_some()
 }
 
-fn ppc_decode_menu_items(bytes: &[u8]) -> Option<(usize, u32, Vec<PpcMenuItemDefinition>)> {
+pub(super) fn ppc_decode_menu_items(bytes: &[u8]) -> Option<(usize, u32, Vec<PpcMenuItemDefinition>)> {
     let decoded = MenuItems::decode(bytes)?;
     Some((decoded.first_item, decoded.enable_flags, decoded.items))
 }
@@ -78171,7 +63402,7 @@ fn ppc_restore_menu_tracking(
     ppc_restore_tracked_menu(memory, surface, state);
 }
 
-fn ppc_physical_screen_color_pixel(
+pub(super) fn ppc_physical_screen_color_pixel(
     front: PpcFrontBuffer,
     color: PpcRgbColor,
     screen_clut: &[[u16; 3]; 256],
@@ -81350,750 +66581,6 @@ fn ppc_menu_item(memory: &mut PpcSectionMem, menu_handle: u32, item: i16) -> Opt
     None
 }
 
-fn ppc_std_memcmp(memory: &mut PpcSectionMem, first: u32, second: u32, count: u32) -> i32 {
-    for offset in 0..count {
-        let Some(first_addr) = first.checked_add(offset) else {
-            break;
-        };
-        let Some(second_addr) = second.checked_add(offset) else {
-            break;
-        };
-        let (Some(a), Some(b)) = (memory.read_u8(first_addr), memory.read_u8(second_addr)) else {
-            break;
-        };
-        if a != b {
-            return i32::from(a) - i32::from(b);
-        }
-    }
-    0
-}
-
-fn ppc_std_memmove(memory: &mut PpcSectionMem, destination: u32, source: u32, count: u32) {
-    let Some(bytes) = ppc_memory_read_bytes(memory, source, count) else {
-        return;
-    };
-    if ppc_memory_can_write_bytes(memory, destination, count) {
-        let _ = memory.write_bytes(destination, &bytes);
-    }
-}
-
-fn ppc_std_strlen(memory: &mut PpcSectionMem, string: u32) -> u32 {
-    let mut length = 0u32;
-    while let Some(addr) = string.checked_add(length) {
-        match memory.read_u8(addr) {
-            Some(0) | None => break,
-            Some(_) => length = length.saturating_add(1),
-        }
-    }
-    length
-}
-
-fn ppc_std_memchr(memory: &mut PpcSectionMem, bytes: u32, needle: u8, count: u32) -> u32 {
-    for offset in 0..count {
-        let Some(address) = bytes.checked_add(offset) else {
-            return 0;
-        };
-        let Some(value) = memory.read_u8(address) else {
-            return 0;
-        };
-        if value == needle {
-            return address;
-        }
-    }
-    0
-}
-
-fn ppc_std_strchr(memory: &mut PpcSectionMem, string: u32, needle: u8, reverse: bool) -> u32 {
-    let mut offset = 0u32;
-    let mut last = 0u32;
-    loop {
-        let Some(address) = string.checked_add(offset) else {
-            return 0;
-        };
-        let Some(value) = memory.read_u8(address) else {
-            return 0;
-        };
-        if value == needle {
-            if !reverse {
-                return address;
-            }
-            last = address;
-        }
-        if value == 0 {
-            return last;
-        }
-        let Some(next) = offset.checked_add(1) else {
-            return 0;
-        };
-        offset = next;
-    }
-}
-
-fn ppc_std_c_string_contains(memory: &mut PpcSectionMem, string: u32, needle: u8) -> bool {
-    let mut offset = 0u32;
-    loop {
-        let Some(address) = string.checked_add(offset) else {
-            return false;
-        };
-        match memory.read_u8(address) {
-            Some(0) | None => return false,
-            Some(value) if value == needle => return true,
-            Some(_) => {
-                let Some(next) = offset.checked_add(1) else {
-                    return false;
-                };
-                offset = next;
-            }
-        }
-    }
-}
-
-fn ppc_std_strspn(memory: &mut PpcSectionMem, string: u32, set: u32, accept: bool) -> u32 {
-    let mut length = 0u32;
-    loop {
-        let Some(address) = string.checked_add(length) else {
-            return length;
-        };
-        let Some(value) = memory.read_u8(address) else {
-            return length;
-        };
-        if value == 0 || ppc_std_c_string_contains(memory, set, value) != accept {
-            return length;
-        }
-        let Some(next) = length.checked_add(1) else {
-            return length;
-        };
-        length = next;
-    }
-}
-
-fn ppc_std_strpbrk(memory: &mut PpcSectionMem, string: u32, set: u32) -> u32 {
-    let mut offset = 0u32;
-    loop {
-        let Some(address) = string.checked_add(offset) else {
-            return 0;
-        };
-        let Some(value) = memory.read_u8(address) else {
-            return 0;
-        };
-        if value == 0 {
-            return 0;
-        }
-        if ppc_std_c_string_contains(memory, set, value) {
-            return address;
-        }
-        let Some(next) = offset.checked_add(1) else {
-            return 0;
-        };
-        offset = next;
-    }
-}
-
-fn ppc_std_strstr(memory: &mut PpcSectionMem, haystack: u32, needle: u32) -> u32 {
-    match memory.read_u8(needle) {
-        Some(0) => return haystack,
-        Some(_) => {}
-        None => return 0,
-    }
-    let mut candidate_offset = 0u32;
-    loop {
-        let Some(candidate) = haystack.checked_add(candidate_offset) else {
-            return 0;
-        };
-        match memory.read_u8(candidate) {
-            Some(0) | None => return 0,
-            Some(_) => {}
-        }
-        let mut match_offset = 0u32;
-        loop {
-            let Some(needle_address) = needle.checked_add(match_offset) else {
-                return 0;
-            };
-            let Some(needle_value) = memory.read_u8(needle_address) else {
-                return 0;
-            };
-            if needle_value == 0 {
-                return candidate;
-            }
-            let Some(haystack_address) = candidate.checked_add(match_offset) else {
-                return 0;
-            };
-            if memory.read_u8(haystack_address) != Some(needle_value) {
-                break;
-            }
-            let Some(next) = match_offset.checked_add(1) else {
-                return 0;
-            };
-            match_offset = next;
-        }
-        let Some(next) = candidate_offset.checked_add(1) else {
-            return 0;
-        };
-        candidate_offset = next;
-    }
-}
-
-fn ppc_std_c_string(memory: &mut PpcSectionMem, string: u32, limit: usize) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    for offset in 0..limit {
-        let Some(address) = string.checked_add(offset as u32) else {
-            break;
-        };
-        let Some(byte) = memory.read_u8(address) else {
-            break;
-        };
-        if byte == 0 {
-            break;
-        }
-        bytes.push(byte);
-    }
-    bytes
-}
-
-fn ppc_sprintf_argument(cpu: &PpcCpu, memory: &mut PpcSectionMem, index: usize) -> u32 {
-    if index < 6 {
-        return cpu.gpr[5 + index];
-    }
-    cpu.gpr[1]
-        .checked_add(32 + index as u32 * 4)
-        .and_then(|address| memory.read_u32_be(address))
-        .unwrap_or(0)
-}
-
-fn ppc_sprintf_pad(mut field: Vec<u8>, width: usize, left: bool, zero: bool) -> Vec<u8> {
-    if field.len() >= width {
-        return field;
-    }
-    let padding = width - field.len();
-    if left {
-        field.extend(std::iter::repeat(b' ').take(padding));
-        return field;
-    }
-    let pad = if zero { b'0' } else { b' ' };
-    let prefix_len = if zero && matches!(field.first(), Some(b'+' | b'-' | b' ')) {
-        1
-    } else if zero && matches!(field.get(..2), Some(b"0x" | b"0X")) {
-        2
-    } else {
-        0
-    };
-    if prefix_len != 0 {
-        let prefix = field.drain(..prefix_len).collect::<Vec<_>>();
-        let mut padded = Vec::with_capacity(width);
-        padded.extend(prefix);
-        padded.extend(std::iter::repeat(pad).take(padding));
-        padded.extend(field);
-        return padded;
-    }
-    let mut padded = Vec::with_capacity(width);
-    padded.extend(std::iter::repeat(pad).take(padding));
-    padded.extend(field);
-    padded
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PpcPrintfLength {
-    Default,
-    Char,
-    Short,
-    Long,
-    LongLong,
-    LongDouble,
-}
-
-fn ppc_printf_unsigned_bytes(value: u64, radix: u32, uppercase: bool) -> Vec<u8> {
-    match (radix, uppercase) {
-        (8, _) => format!("{value:o}").into_bytes(),
-        (16, false) => format!("{value:x}").into_bytes(),
-        (16, true) => format!("{value:X}").into_bytes(),
-        _ => value.to_string().into_bytes(),
-    }
-}
-
-fn ppc_printf_apply_numeric_precision(
-    mut digits: Vec<u8>,
-    value_is_zero: bool,
-    precision: Option<usize>,
-) -> Vec<u8> {
-    let Some(precision) = precision else {
-        return digits;
-    };
-    if precision == 0 && value_is_zero {
-        return Vec::new();
-    }
-    if digits.len() < precision {
-        let mut padded = Vec::with_capacity(precision);
-        padded.extend(std::iter::repeat(b'0').take(precision - digits.len()));
-        padded.append(&mut digits);
-        return padded;
-    }
-    digits
-}
-
-fn ppc_printf_general(value: f64, precision: usize, uppercase: bool) -> Vec<u8> {
-    let precision = precision.max(1);
-    let absolute = value.abs();
-    let exponent = if absolute == 0.0 {
-        0
-    } else {
-        absolute.log10().floor() as i32
-    };
-    let mut text = if exponent < -4 || exponent >= precision as i32 {
-        format!("{:.*e}", precision.saturating_sub(1), value)
-    } else {
-        format!(
-            "{:.*}",
-            precision.saturating_sub(1 + exponent.max(0) as usize),
-            value
-        )
-    };
-    if let Some(exponent_index) = text.find('e') {
-        let exponent = text.split_off(exponent_index);
-        while text.ends_with('0') && text.contains('.') {
-            text.pop();
-        }
-        if text.ends_with('.') {
-            text.pop();
-        }
-        text.push_str(&exponent);
-    } else {
-        while text.ends_with('0') && text.contains('.') {
-            text.pop();
-        }
-        if text.ends_with('.') {
-            text.pop();
-        }
-    }
-    if uppercase {
-        text.make_ascii_uppercase();
-    }
-    text.into_bytes()
-}
-
-fn ppc_std_format<F>(
-    memory: &mut PpcSectionMem,
-    destination: u32,
-    format_ptr: u32,
-    trace_name: &str,
-    mut next_word: F,
-) -> u32
-where
-    F: FnMut(&mut PpcSectionMem, usize) -> u32,
-{
-    let format = ppc_std_c_string(memory, format_ptr, 4096);
-    let mut output = Vec::new();
-    let mut cursor = 0usize;
-    let mut argument = 0usize;
-    while cursor < format.len() {
-        if format[cursor] != b'%' {
-            output.push(format[cursor]);
-            cursor += 1;
-            continue;
-        }
-        cursor += 1;
-        if format.get(cursor) == Some(&b'%') {
-            output.push(b'%');
-            cursor += 1;
-            continue;
-        }
-        let mut left = false;
-        let mut zero = false;
-        let mut plus = false;
-        let mut space = false;
-        let mut alternate = false;
-        loop {
-            match format.get(cursor).copied() {
-                Some(b'-') => left = true,
-                Some(b'0') => zero = true,
-                Some(b'+') => plus = true,
-                Some(b' ') => space = true,
-                Some(b'#') => alternate = true,
-                _ => break,
-            }
-            cursor += 1;
-        }
-        let mut width = 0usize;
-        if format.get(cursor) == Some(&b'*') {
-            let dynamic_width = next_word(memory, argument) as i32;
-            argument += 1;
-            if dynamic_width < 0 {
-                left = true;
-                width = dynamic_width.unsigned_abs() as usize;
-            } else {
-                width = dynamic_width as usize;
-            }
-            cursor += 1;
-        } else {
-            while let Some(digit @ b'0'..=b'9') = format.get(cursor).copied() {
-                width = width
-                    .saturating_mul(10)
-                    .saturating_add(usize::from(digit - b'0'));
-                cursor += 1;
-            }
-        }
-        let mut precision = None;
-        if format.get(cursor) == Some(&b'.') {
-            cursor += 1;
-            if format.get(cursor) == Some(&b'*') {
-                let dynamic_precision = next_word(memory, argument) as i32;
-                argument += 1;
-                cursor += 1;
-                if dynamic_precision >= 0 {
-                    precision = Some(dynamic_precision as usize);
-                }
-            } else {
-                let mut value = 0usize;
-                while let Some(digit @ b'0'..=b'9') = format.get(cursor).copied() {
-                    value = value
-                        .saturating_mul(10)
-                        .saturating_add(usize::from(digit - b'0'));
-                    cursor += 1;
-                }
-                precision = Some(value);
-            }
-        }
-        let length = match format.get(cursor).copied() {
-            Some(b'h') if format.get(cursor + 1) == Some(&b'h') => {
-                cursor += 2;
-                PpcPrintfLength::Char
-            }
-            Some(b'h') => {
-                cursor += 1;
-                PpcPrintfLength::Short
-            }
-            Some(b'l') if format.get(cursor + 1) == Some(&b'l') => {
-                cursor += 2;
-                PpcPrintfLength::LongLong
-            }
-            Some(b'l') => {
-                cursor += 1;
-                PpcPrintfLength::Long
-            }
-            Some(b'L') => {
-                cursor += 1;
-                PpcPrintfLength::LongDouble
-            }
-            Some(b'j' | b'z' | b't') => {
-                cursor += 1;
-                PpcPrintfLength::Long
-            }
-            _ => PpcPrintfLength::Default,
-        };
-        let Some(specifier) = format.get(cursor).copied() else {
-            break;
-        };
-        cursor += 1;
-        let mut consumes_word = !matches!(specifier, b'%');
-        let mut field = match specifier {
-            b's' => {
-                let value = next_word(memory, argument);
-                let mut bytes = ppc_std_c_string(memory, value, 65_535);
-                if let Some(precision) = precision {
-                    bytes.truncate(precision);
-                }
-                bytes
-            }
-            b'P' => {
-                let value = next_word(memory, argument);
-                let length = memory.read_u8(value).unwrap_or(0) as u32;
-                let mut bytes = ppc_memory_read_bytes(memory, value.saturating_add(1), length)
-                    .unwrap_or_default();
-                if let Some(precision) = precision {
-                    bytes.truncate(precision);
-                }
-                bytes
-            }
-            b'c' => vec![next_word(memory, argument) as u8],
-            b'd' | b'i' => {
-                let raw = if length == PpcPrintfLength::LongLong {
-                    let high = u64::from(next_word(memory, argument));
-                    argument += 1;
-                    (high << 32) | u64::from(next_word(memory, argument))
-                } else {
-                    u64::from(next_word(memory, argument))
-                };
-                let signed = match length {
-                    PpcPrintfLength::Char => i64::from(raw as i8),
-                    PpcPrintfLength::Short => i64::from(raw as i16),
-                    PpcPrintfLength::LongLong => raw as i64,
-                    _ => i64::from(raw as u32 as i32),
-                };
-                let mut text = ppc_printf_apply_numeric_precision(
-                    signed.unsigned_abs().to_string().into_bytes(),
-                    signed == 0,
-                    precision,
-                );
-                if signed < 0 {
-                    text.insert(0, b'-');
-                } else {
-                    if plus {
-                        text.insert(0, b'+');
-                    } else if space {
-                        text.insert(0, b' ');
-                    }
-                }
-                text
-            }
-            b'u' | b'x' | b'X' | b'o' => {
-                let value = if length == PpcPrintfLength::LongLong {
-                    let high = u64::from(next_word(memory, argument));
-                    argument += 1;
-                    (high << 32) | u64::from(next_word(memory, argument))
-                } else {
-                    let value = next_word(memory, argument);
-                    match length {
-                        PpcPrintfLength::Char => u64::from(value as u8),
-                        PpcPrintfLength::Short => u64::from(value as u16),
-                        _ => u64::from(value),
-                    }
-                };
-                let radix = match specifier {
-                    b'o' => 8,
-                    b'x' | b'X' => 16,
-                    _ => 10,
-                };
-                let mut text = ppc_printf_apply_numeric_precision(
-                    ppc_printf_unsigned_bytes(value, radix, specifier == b'X'),
-                    value == 0,
-                    precision,
-                );
-                if alternate && value != 0 {
-                    match specifier {
-                        b'o' if text.first() != Some(&b'0') => text.insert(0, b'0'),
-                        b'x' => text.splice(0..0, *b"0x").for_each(drop),
-                        b'X' => text.splice(0..0, *b"0X").for_each(drop),
-                        _ => {}
-                    }
-                }
-                text
-            }
-            b'p' => format!("{:08x}", next_word(memory, argument)).into_bytes(),
-            b'f' | b'F' | b'e' | b'E' | b'g' | b'G' => {
-                let high = u64::from(next_word(memory, argument));
-                argument += 1;
-                let low = u64::from(next_word(memory, argument));
-                let value = f64::from_bits((high << 32) | low);
-                let precision = precision.unwrap_or(6).min(1024);
-                let mut text = match specifier {
-                    b'f' | b'F' => format!("{value:.precision$}").into_bytes(),
-                    b'e' | b'E' => format!("{value:.precision$e}").into_bytes(),
-                    _ => ppc_printf_general(value, precision, matches!(specifier, b'G')),
-                };
-                if matches!(specifier, b'F' | b'E') {
-                    text.make_ascii_uppercase();
-                }
-                if value.is_sign_positive() {
-                    if plus {
-                        text.insert(0, b'+');
-                    } else if space {
-                        text.insert(0, b' ');
-                    }
-                }
-                text
-            }
-            b'n' => {
-                let destination = next_word(memory, argument);
-                match length {
-                    PpcPrintfLength::Char => {
-                        let _ = memory.write_u8(destination, output.len() as u8);
-                    }
-                    PpcPrintfLength::Short => {
-                        let _ = memory.write_u16_be(destination, output.len() as u16);
-                    }
-                    _ => {
-                        let _ = memory.write_u32_be(destination, output.len() as u32);
-                    }
-                }
-                Vec::new()
-            }
-            b'%' => {
-                consumes_word = false;
-                vec![b'%']
-            }
-            other => vec![b'%', other],
-        };
-        if consumes_word {
-            argument += 1;
-        }
-        let numeric_precision_disables_zero =
-            precision.is_some() && matches!(specifier, b'd' | b'i' | b'u' | b'x' | b'X' | b'o');
-        field = ppc_sprintf_pad(
-            field,
-            width.min(1_048_576),
-            left,
-            zero && !left && !numeric_precision_disables_zero,
-        );
-        output.extend(field);
-        if output.len() > 1_048_576 {
-            output.truncate(1_048_576);
-            break;
-        }
-    }
-    let byte_count = u32::try_from(output.len()).unwrap_or(u32::MAX);
-    if byte_count
-        .checked_add(1)
-        .is_some_and(|size| ppc_memory_can_write_bytes(memory, destination, size))
-    {
-        let _ = memory.write_bytes(destination, &output);
-        let _ = memory.write_u8(destination + byte_count, 0);
-    }
-    if ppc_hle_trace_enabled() {
-        eprintln!(
-            "[PPC-TRACE] {trace_name} dst=${destination:08X} format={:?} -> {:?}",
-            String::from_utf8_lossy(&format),
-            String::from_utf8_lossy(&output)
-        );
-    }
-    byte_count
-}
-
-fn ppc_std_sprintf(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> u32 {
-    ppc_std_format(
-        memory,
-        cpu.gpr[3],
-        cpu.gpr[4],
-        "sprintf",
-        |memory, index| ppc_sprintf_argument(cpu, memory, index),
-    )
-}
-
-fn ppc_std_vsprintf(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> u32 {
-    let argument_list = cpu.gpr[5];
-    ppc_std_format(
-        memory,
-        cpu.gpr[3],
-        cpu.gpr[4],
-        "vsprintf",
-        |memory, index| {
-            argument_list
-                .checked_add(u32::try_from(index).unwrap_or(u32::MAX).saturating_mul(4))
-                .and_then(|address| memory.read_u32_be(address))
-                .unwrap_or(0)
-        },
-    )
-}
-
-fn ppc_std_strcmp(memory: &mut PpcSectionMem, first: u32, second: u32, limit: Option<u32>) -> i32 {
-    let max = limit.unwrap_or(u32::MAX);
-    for offset in 0..max {
-        let a = first
-            .checked_add(offset)
-            .and_then(|addr| memory.read_u8(addr))
-            .unwrap_or(0);
-        let b = second
-            .checked_add(offset)
-            .and_then(|addr| memory.read_u8(addr))
-            .unwrap_or(0);
-        if a != b {
-            return i32::from(a) - i32::from(b);
-        }
-        if a == 0 {
-            break;
-        }
-    }
-    0
-}
-
-fn ppc_std_strcat(memory: &mut PpcSectionMem, destination: u32, source: u32) {
-    let destination_len = ppc_std_strlen(memory, destination);
-    let source_len = ppc_std_strlen(memory, source);
-    let Some(copy_len) = source_len.checked_add(1) else {
-        return;
-    };
-    let Some(destination_end) = destination.checked_add(destination_len) else {
-        return;
-    };
-    ppc_std_memmove(memory, destination_end, source, copy_len);
-}
-
-fn ppc_std_strncpy(memory: &mut PpcSectionMem, destination: u32, source: u32, count: u32) -> u32 {
-    if count == 0 {
-        return destination;
-    }
-    // Keep malformed guest counts from forcing an unbounded host allocation.
-    // Classic C strings in the supported runtime are much smaller than this;
-    // an over-limit request is treated as an invalid guest buffer.
-    const MAX_STD_STRING_COPY: u32 = 16 * 1024 * 1024;
-    if count > MAX_STD_STRING_COPY {
-        return destination;
-    }
-    let mut bytes = Vec::new();
-    for offset in 0..count {
-        let byte = memory
-            .read_u8(source.checked_add(offset).unwrap_or(u32::MAX))
-            .unwrap_or(0);
-        bytes.push(byte);
-        if byte == 0 {
-            bytes.resize(count as usize, 0);
-            break;
-        }
-    }
-    if ppc_memory_can_write_bytes(memory, destination, count) {
-        let _ = memory.write_bytes(destination, &bytes);
-    }
-    destination
-}
-
-fn ppc_std_strncat(memory: &mut PpcSectionMem, destination: u32, source: u32, count: u32) -> u32 {
-    const MAX_STD_STRING_COPY: u32 = 16 * 1024 * 1024;
-    if count > MAX_STD_STRING_COPY {
-        return destination;
-    }
-    let destination_end = destination.checked_add(ppc_std_strlen(memory, destination));
-    let Some(destination_end) = destination_end else {
-        return destination;
-    };
-    let source_bytes = ppc_std_c_string(memory, source, count as usize);
-    let Some(total) = u32::try_from(source_bytes.len())
-        .ok()
-        .and_then(|length| length.checked_add(1))
-    else {
-        return destination;
-    };
-    if ppc_memory_can_write_bytes(memory, destination_end, total) {
-        let _ = memory.write_bytes(destination_end, &source_bytes);
-        let _ = memory.write_u8(destination_end + total - 1, 0);
-    }
-    destination
-}
-
-fn ppc_std_atoi(memory: &mut PpcSectionMem, string: u32) -> u32 {
-    let mut offset = 0u32;
-    while memory
-        .read_u8(string.checked_add(offset).unwrap_or(u32::MAX))
-        .is_some_and(|byte| byte.is_ascii_whitespace())
-    {
-        offset = offset.saturating_add(1);
-    }
-    let negative = match memory.read_u8(string.checked_add(offset).unwrap_or(u32::MAX)) {
-        Some(b'-') => {
-            offset = offset.saturating_add(1);
-            true
-        }
-        Some(b'+') => {
-            offset = offset.saturating_add(1);
-            false
-        }
-        _ => false,
-    };
-    let mut value = 0i64;
-    let mut saw_digit = false;
-    while let Some(byte) = memory.read_u8(string.checked_add(offset).unwrap_or(u32::MAX)) {
-        if !byte.is_ascii_digit() {
-            break;
-        }
-        saw_digit = true;
-        value = value
-            .saturating_mul(10)
-            .saturating_add(i64::from(byte - b'0'));
-        offset = offset.saturating_add(1);
-    }
-    if !saw_digit {
-        return 0;
-    }
-    let signed = if negative { -value } else { value };
-    signed.clamp(i32::MIN as i64, i32::MAX as i64) as i32 as u32
-}
 
 fn ppc_f64_to_fixed(value: f64) -> u32 {
     (value * 65536.0)
@@ -82177,7 +66664,7 @@ fn ppc_volume_name_for_ref_num<'a>(
     }
 }
 
-fn ppc_hget_vol(
+pub(super) fn ppc_hget_vol(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     default_dir_id: u32,
@@ -82217,7 +66704,7 @@ fn ppc_hget_vol(
     PPC_NO_ERR
 }
 
-fn ppc_hset_vol(
+pub(super) fn ppc_hset_vol(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -82335,7 +66822,7 @@ fn ppc_hset_vol(
     PPC_NO_ERR
 }
 
-fn ppc_get_vol(
+pub(super) fn ppc_get_vol(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     default_dir_id: u32,
@@ -82370,7 +66857,7 @@ fn ppc_get_vol(
     PPC_NO_ERR
 }
 
-fn ppc_get_wd_info(
+pub(super) fn ppc_get_wd_info(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     default_dir_id: u32,
@@ -82405,7 +66892,7 @@ fn ppc_get_wd_info(
     PPC_NO_ERR
 }
 
-fn ppc_flush_vol(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+pub(super) fn ppc_flush_vol(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
     let name_ptr = cpu.gpr[3];
     if name_ptr != 0 && ppc_read_pstring_bytes(memory, name_ptr).is_none() {
         return PPC_PARAM_ERR;
@@ -82485,7 +66972,7 @@ fn ppc_set_logical_trap_address(
     result.is_ok()
 }
 
-fn ppc_write_rect(
+pub(super) fn ppc_write_rect(
     memory: &mut PpcSectionMem,
     rect_ptr: u32,
     top: i16,
@@ -82500,7 +66987,7 @@ fn ppc_write_rect(
     Some(())
 }
 
-fn ppc_read_rect(memory: &mut PpcSectionMem, rect_ptr: u32) -> Option<(i16, i16, i16, i16)> {
+pub(super) fn ppc_read_rect(memory: &mut PpcSectionMem, rect_ptr: u32) -> Option<(i16, i16, i16, i16)> {
     let top = memory.read_u16_be(rect_ptr)? as i16;
     let left = memory.read_u16_be(rect_ptr + 2)? as i16;
     let bottom = memory.read_u16_be(rect_ptr + 4)? as i16;
@@ -83011,7 +67498,7 @@ fn ppc_process_new_rgn(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ppc_allocator_view_new_rgn(
+pub(super) fn ppc_allocator_view_new_rgn(
     allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -83084,7 +67571,7 @@ fn ppc_clip_rect(
     *last_mem_error = PPC_NO_ERR;
 }
 
-fn ppc_rgn_ptr(memory: &mut PpcSectionMem, rgn_handle: u32) -> Option<u32> {
+pub(super) fn ppc_rgn_ptr(memory: &mut PpcSectionMem, rgn_handle: u32) -> Option<u32> {
     if rgn_handle == 0 {
         return None;
     }
@@ -83096,7 +67583,7 @@ fn ppc_rgn_ptr(memory: &mut PpcSectionMem, rgn_handle: u32) -> Option<u32> {
     }
 }
 
-fn ppc_write_rgn_bbox(
+pub(super) fn ppc_write_rgn_bbox(
     memory: &mut PpcSectionMem,
     rgn_handle: u32,
     top: i16,
@@ -83109,16 +67596,16 @@ fn ppc_write_rgn_bbox(
     ppc_write_rect(memory, ptr + 2, top, left, bottom, right)
 }
 
-fn ppc_read_rgn_bbox(memory: &mut PpcSectionMem, rgn_handle: u32) -> Option<(i16, i16, i16, i16)> {
+pub(super) fn ppc_read_rgn_bbox(memory: &mut PpcSectionMem, rgn_handle: u32) -> Option<(i16, i16, i16, i16)> {
     let ptr = ppc_rgn_ptr(memory, rgn_handle)?;
     ppc_read_rect(memory, ptr + 2)
 }
 
-fn ppc_set_empty_rgn(memory: &mut PpcSectionMem, rgn_handle: u32) -> Option<()> {
+pub(super) fn ppc_set_empty_rgn(memory: &mut PpcSectionMem, rgn_handle: u32) -> Option<()> {
     ppc_write_rgn_bbox(memory, rgn_handle, 0, 0, 0, 0)
 }
 
-fn ppc_copy_rgn(
+pub(super) fn ppc_copy_rgn(
     allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -83194,7 +67681,7 @@ fn ppc_copy_rgn(
 }
 
 #[derive(Clone, Copy)]
-enum PpcRegionBooleanOp {
+pub(super) enum PpcRegionBooleanOp {
     Intersection,
     Union,
     Difference,
@@ -83487,7 +67974,7 @@ fn ppc_write_region_storage(
     PPC_NO_ERR
 }
 
-fn ppc_region_boolean_op(
+pub(super) fn ppc_region_boolean_op(
     allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -83566,12 +68053,12 @@ fn ppc_set_rect_rgn(
     ppc_write_rgn_bbox(memory, rgn_handle, top, left, bottom, right)
 }
 
-fn ppc_rect_rgn(memory: &mut PpcSectionMem, rgn_handle: u32, rect_ptr: u32) -> Option<()> {
+pub(super) fn ppc_rect_rgn(memory: &mut PpcSectionMem, rgn_handle: u32, rect_ptr: u32) -> Option<()> {
     let (top, left, bottom, right) = ppc_read_rect(memory, rect_ptr)?;
     ppc_write_rgn_bbox(memory, rgn_handle, top, left, bottom, right)
 }
 
-fn ppc_offset_rgn(memory: &mut PpcSectionMem, rgn_handle: u32, dh: i16, dv: i16) -> i16 {
+pub(super) fn ppc_offset_rgn(memory: &mut PpcSectionMem, rgn_handle: u32, dh: i16, dv: i16) -> i16 {
     let Some(ptr) = ppc_rgn_ptr(memory, rgn_handle) else {
         return PPC_PARAM_ERR;
     };
@@ -83981,7 +68468,7 @@ fn ppc_map_rect(memory: &mut PpcSectionMem, rect_ptr: u32, src_ptr: u32, dst_ptr
     );
 }
 
-fn ppc_fs_make_fsspec(
+pub(super) fn ppc_fs_make_fsspec(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -84063,7 +68550,8 @@ struct PpcCatalogEntry {
     is_directory: bool,
 }
 
-fn ppc_pb_get_cat_info(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_pb_get_cat_info(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_volumes: &[PpcVfsVolumeRecord],
@@ -84191,7 +68679,7 @@ fn ppc_pb_get_cat_info(
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
 }
 
-fn ppc_pb_set_cat_info(
+pub(super) fn ppc_pb_set_cat_info(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &mut [PpcVfsDirectory],
@@ -84286,7 +68774,7 @@ fn ppc_pb_set_cat_info(
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
 }
 
-fn ppc_pb_get_finfo(
+pub(super) fn ppc_pb_get_finfo(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -84370,7 +68858,7 @@ fn ppc_pb_get_finfo(
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
 }
 
-fn ppc_pb_set_finfo(
+pub(super) fn ppc_pb_set_finfo(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -84605,7 +69093,7 @@ fn ppc_set_finfo_for_path(
     found
 }
 
-fn ppc_pbh_get_v_info(
+pub(super) fn ppc_pbh_get_v_info(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_volumes: &[PpcVfsVolumeRecord],
@@ -84757,7 +69245,7 @@ fn ppc_pbh_get_v_info(
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
 }
 
-fn ppc_complete_pb(memory: &mut PpcSectionMem, pb: u32, err: i16) -> i16 {
+pub(super) fn ppc_complete_pb(memory: &mut PpcSectionMem, pb: u32, err: i16) -> i16 {
     if memory.write_u16_be(pb + 16, err as u16).is_none() {
         PPC_PARAM_ERR
     } else {
@@ -84766,7 +69254,7 @@ fn ppc_complete_pb(memory: &mut PpcSectionMem, pb: u32, err: i16) -> i16 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ppc_pb_get_fcb_info(
+pub(super) fn ppc_pb_get_fcb_info(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     files: &[PpcFileRecord],
@@ -85176,7 +69664,7 @@ fn ppc_parent_dir_id_for_path(vfs_directories: &[PpcVfsDirectory], path: &str) -
     ppc_directory_id_for_path(vfs_directories, parent_path).unwrap_or(PPC_ROOT_DIR_ID)
 }
 
-fn ppc_get_finfo(
+pub(super) fn ppc_get_finfo(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -85251,7 +69739,7 @@ fn ppc_h_finfo_path(
     ppc_vfs_file_or_resource_path(vfs_files, vfs_resource_files, &requested_path).ok_or(PPC_FNF_ERR)
 }
 
-fn ppc_h_get_finfo(
+pub(super) fn ppc_h_get_finfo(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -85287,7 +69775,7 @@ fn ppc_h_get_finfo(
     }
 }
 
-fn ppc_h_set_finfo(
+pub(super) fn ppc_h_set_finfo(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -85326,1483 +69814,7 @@ fn ppc_h_set_finfo(
     }
 }
 
-const PPC_STANDARD_FILE_GET_DIALOG_WIDTH: i16 = 356;
-const PPC_STANDARD_FILE_GET_DIALOG_HEIGHT: i16 = 178;
-const PPC_STANDARD_FILE_GET_LIST_RECT: (i16, i16, i16, i16) = (35, 18, 163, 236);
-const PPC_STANDARD_FILE_GET_SCROLL_RECT: (i16, i16, i16, i16) = (35, 235, 163, 251);
-const PPC_STANDARD_FILE_GET_DESKTOP_RECT: (i16, i16, i16, i16) = (66, 258, 87, 338);
-const PPC_STANDARD_FILE_GET_CANCEL_RECT: (i16, i16, i16, i16) = (110, 258, 131, 338);
-const PPC_STANDARD_FILE_GET_OPEN_RECT: (i16, i16, i16, i16) = (138, 258, 159, 338);
-const PPC_STANDARD_FILE_GET_ROW_HEIGHT: i16 = 14;
-const PPC_STANDARD_FILE_PUT_DIALOG_WIDTH: i16 = 360;
-const PPC_STANDARD_FILE_PUT_DIALOG_HEIGHT: i16 = 148;
-const PPC_STANDARD_FILE_PUT_CANCEL_RECT: (i16, i16, i16, i16) = (103, 166, 125, 246);
-const PPC_STANDARD_FILE_PUT_SAVE_RECT: (i16, i16, i16, i16) = (103, 258, 125, 338);
-const PPC_STANDARD_FILE_PUT_NAME_RECT: (i16, i16, i16, i16) = (52, 24, 72, 330);
-
-fn ppc_standard_file_reply_ptr(mode: PpcStandardFileMode, cpu: &PpcCpu) -> u32 {
-    match mode {
-        PpcStandardFileMode::GetModern => cpu.gpr[6],
-        PpcStandardFileMode::GetLegacy => cpu.gpr[9],
-        PpcStandardFileMode::PutModern => cpu.gpr[5],
-        PpcStandardFileMode::PutLegacy => cpu.gpr[7],
-    }
-}
-
-fn ppc_standard_file_call(mode: PpcStandardFileMode, cpu: &PpcCpu) -> PpcStandardFileCall {
-    PpcStandardFileCall {
-        mode,
-        reply: ppc_standard_file_reply_ptr(mode, cpu),
-        return_address: cpu.lr,
-    }
-}
-
-fn ppc_standard_file_get_type_list(
-    memory: &mut PpcSectionMem,
-    num_types: i16,
-    type_list_ptr: u32,
-) -> Option<Option<Vec<u32>>> {
-    // Inside Macintosh: Files (1992), pp. 3-50--3-51: -1 means all types,
-    // zero means no selectable file types, and positive values name OSTypes.
-    if num_types < -1 {
-        return None;
-    }
-    if num_types == -1 {
-        return Some(None);
-    }
-    if num_types == 0 {
-        return Some(Some(Vec::new()));
-    }
-    if type_list_ptr == 0 {
-        return None;
-    }
-    let count = usize::try_from(num_types).ok()?.min(64);
-    let mut result = Vec::with_capacity(count);
-    for index in 0..count {
-        let offset = u32::try_from(index).ok()?.checked_mul(4)?;
-        result.push(memory.read_u32_be(type_list_ptr.checked_add(offset)?)?);
-    }
-    Some(Some(result))
-}
-
-fn ppc_standard_file_get_entries(
-    vfs_directories: &[PpcVfsDirectory],
-    vfs_files: &[PpcVfsFileRecord],
-    vfs_resource_files: &[PpcVfsResourceFileRecord],
-    dir_id: u32,
-    file_types: Option<&[u32]>,
-) -> Vec<PpcStandardFileEntry> {
-    let Some(parent_path) = ppc_directory_path_for_id(vfs_directories, dir_id) else {
-        return Vec::new();
-    };
-    let mut entries = Vec::new();
-    for directory in vfs_directories
-        .iter()
-        .filter(|directory| directory.parent_dir_id == dir_id)
-    {
-        entries.push(PpcStandardFileEntry {
-            name: encode_mac_roman_lossy(ppc_vfs_basename(&directory.path))
-                .into_iter()
-                .take(63)
-                .collect(),
-            path: directory.path.clone(),
-            dir_id: directory.dir_id,
-            file_type: 0,
-            finder_flags: directory.finder_flags,
-            is_directory: true,
-        });
-    }
-    for file in vfs_files {
-        let Some(name) = ppc_child_name_for_parent(parent_path, &file.path) else {
-            continue;
-        };
-        if file_types.is_some_and(|types| !types.contains(&file.file_type)) {
-            continue;
-        }
-        entries.push(PpcStandardFileEntry {
-            name: encode_mac_roman_lossy(name).into_iter().take(63).collect(),
-            path: file.path.clone(),
-            dir_id,
-            file_type: file.file_type,
-            finder_flags: file.finder_flags,
-            is_directory: false,
-        });
-    }
-    for fork in vfs_resource_files {
-        // A resource-only record is visible, but a second resource record for
-        // a data-backed file must not duplicate the catalog row.
-        if vfs_files
-            .iter()
-            .any(|file| file.path.eq_ignore_ascii_case(&fork.path))
-        {
-            continue;
-        }
-        let Some(name) = ppc_child_name_for_parent(parent_path, &fork.path) else {
-            continue;
-        };
-        if file_types.is_some_and(|types| !types.contains(&fork.file_type)) {
-            continue;
-        }
-        entries.push(PpcStandardFileEntry {
-            name: encode_mac_roman_lossy(name).into_iter().take(63).collect(),
-            path: fork.path.clone(),
-            dir_id,
-            file_type: fork.file_type,
-            finder_flags: fork.finder_flags,
-            is_directory: false,
-        });
-    }
-    entries.sort_by(|left, right| {
-        (
-            String::from_utf8_lossy(&left.name).to_ascii_lowercase(),
-            u8::from(!left.is_directory),
-            left.path.to_ascii_lowercase(),
-        )
-            .cmp(&(
-                String::from_utf8_lossy(&right.name).to_ascii_lowercase(),
-                u8::from(!right.is_directory),
-                right.path.to_ascii_lowercase(),
-            ))
-    });
-    entries
-}
-
-fn ppc_capture_saved_detail<T>(
-    memory: &PpcSectionMem,
-    front: PpcFrontBuffer,
-    point: (i32, i32),
-    pixels: &mut crate::memory::SavedPixels<T>,
-    index: usize,
-) {
-    if matches!(front.depth, 8 | 16) {
-        let lanes = front.depth / 8;
-        let address = front.base_addr + point.1 as u32 * front.row_bytes + point.0 as u32 * lanes;
-        memory.presentation().capture_detail(
-            pixels,
-            index * lanes as usize,
-            address,
-            lanes as usize,
-        );
-    }
-}
-fn ppc_restore_saved_detail<T>(
-    memory: &PpcSectionMem,
-    front: PpcFrontBuffer,
-    point: (i32, i32),
-    pixels: &crate::memory::SavedPixels<T>,
-    index: usize,
-) {
-    if matches!(front.depth, 8 | 16) {
-        let lanes = front.depth / 8;
-        let address = front.base_addr + point.1 as u32 * front.row_bytes + point.0 as u32 * lanes;
-        memory.presentation().restore_detail(
-            pixels,
-            index * lanes as usize,
-            address,
-            lanes as usize,
-        );
-    }
-}
-
-fn ppc_standard_file_save_pixels(
-    memory: &mut PpcSectionMem,
-    front: PpcFrontBuffer,
-    bounds: (i16, i16, i16, i16),
-) -> crate::memory::SavedPixels<(i32, i32, u16)> {
-    let top = i32::from(bounds.0).max(0).min(front.height as i32);
-    let left = i32::from(bounds.1).max(0).min(front.width as i32);
-    let bottom = i32::from(bounds.2).max(0).min(front.height as i32);
-    let right = i32::from(bounds.3).max(0).min(front.width as i32);
-    let mut pixels = Vec::new();
-    for y in top..bottom {
-        for x in left..right {
-            if let Some(pixel) = ppc_quickdraw_read_pixel(memory, front, (x, y)) {
-                pixels.push((x, y, pixel));
-            }
-        }
-    }
-    let mut saved = crate::memory::SavedPixels::from(pixels);
-    for index in 0..saved.len() {
-        let (x, y, _) = saved[index];
-        ppc_capture_saved_detail(memory, front, (x, y), &mut saved, index);
-    }
-    saved
-}
-
-fn ppc_standard_file_restore_pixels(
-    memory: &mut PpcSectionMem,
-    pixels: &crate::memory::SavedPixels<(i32, i32, u16)>,
-    front: PpcFrontBuffer,
-) {
-    for (index, (x, y, value)) in pixels.iter().copied().enumerate() {
-        let _ = ppc_quickdraw_write_raw_pixel(memory, front, (x, y), value);
-        ppc_restore_saved_detail(memory, front, (x, y), pixels, index);
-    }
-}
-
-fn ppc_standard_file_point_in_rect(
-    point: (i16, i16),
-    rect: (i16, i16, i16, i16),
-) -> bool {
-    point.0 >= rect.0 && point.0 < rect.2 && point.1 >= rect.1 && point.1 < rect.3
-}
-
-fn ppc_standard_file_centered_bounds(
-    front: PpcFrontBuffer,
-    width: i16,
-    height: i16,
-    requested_origin: Option<(i16, i16)>,
-) -> (i16, i16, i16, i16) {
-    let (centered_top, centered_left) = (
-        (front.height as i16).saturating_sub(height) / 2,
-        (front.width as i16).saturating_sub(width) / 2,
-    );
-    let (requested_top, requested_left) = requested_origin.unwrap_or((centered_top, centered_left));
-    let top = requested_top
-        .max(0)
-        .min((front.height as i16).saturating_sub(height).max(0));
-    let left = requested_left
-        .max(0)
-        .min((front.width as i16).saturating_sub(width).max(0));
-    (top, left, top.saturating_add(height), left.saturating_add(width))
-}
-
-fn ppc_standard_file_point_from_gpr(point: u32) -> (i16, i16) {
-    ((point >> 16) as u16 as i16, point as u16 as i16)
-}
-
-impl PpcStandardFileOperation {
-    fn mode(self) -> PpcStandardFileMode {
-        match self {
-            Self::StandardGetFile | Self::CustomGetFile => PpcStandardFileMode::GetModern,
-            Self::SfGetFile | Self::SfpGetFile => PpcStandardFileMode::GetLegacy,
-            Self::CustomPutFile | Self::StandardPutFile => PpcStandardFileMode::PutModern,
-            Self::SfpPutFile | Self::SfPutFile => PpcStandardFileMode::PutLegacy,
-        }
-    }
-
-    fn requested_origin(self, cpu: &PpcCpu) -> Option<(i16, i16)> {
-        let point = match self {
-            Self::SfGetFile | Self::SfpGetFile | Self::SfpPutFile | Self::SfPutFile => cpu.gpr[3],
-            Self::CustomGetFile => cpu.gpr[8],
-            Self::CustomPutFile => cpu.gpr[7],
-            Self::StandardGetFile | Self::StandardPutFile => return None,
-        };
-        let origin = ppc_standard_file_point_from_gpr(point);
-        if origin == (-1, -1) {
-            None
-        } else {
-            Some(origin)
-        }
-    }
-
-    fn filter_pointer(self, cpu: &PpcCpu) -> (u32, bool) {
-        match self {
-            Self::StandardGetFile => (cpu.gpr[3], false),
-            Self::CustomGetFile => (cpu.gpr[3], true),
-            Self::SfGetFile | Self::SfpGetFile => (cpu.gpr[5], false),
-            Self::CustomPutFile
-            | Self::SfpPutFile
-            | Self::SfPutFile
-            | Self::StandardPutFile => (0, false),
-        }
-    }
-
-    fn prompt_pointer(self, cpu: &PpcCpu) -> u32 {
-        match self {
-            Self::CustomPutFile | Self::StandardPutFile => cpu.gpr[3],
-            Self::SfpPutFile | Self::SfPutFile => cpu.gpr[4],
-            Self::StandardGetFile
-            | Self::CustomGetFile
-            | Self::SfGetFile
-            | Self::SfpGetFile => 0,
-        }
-    }
-}
-
-fn ppc_standard_file_prompt(memory: &mut PpcSectionMem, prompt_ptr: u32) -> Vec<u8> {
-    if prompt_ptr == 0 {
-        return b"Save as:".to_vec();
-    }
-    let prompt = ppc_read_pstring_bytes(memory, prompt_ptr).unwrap_or_default();
-    if prompt.is_empty() {
-        b"Save as:".to_vec()
-    } else {
-        prompt
-    }
-}
-
-const PPC_STANDARD_FILE_FILTER_PB_SIZE: u32 = 256;
-const PPC_STANDARD_FILE_FILTER_NAME_OFFSET: u32 = 128;
-
-fn ppc_standard_file_write_filter_pb(
-    memory: &mut PpcSectionMem,
-    filter_pb: u32,
-    entry: &PpcStandardFileEntry,
-) -> bool {
-    if !ppc_memory_can_write_bytes(memory, filter_pb, PPC_STANDARD_FILE_FILTER_PB_SIZE) {
-        return false;
-    }
-    let name_ptr = filter_pb.saturating_add(PPC_STANDARD_FILE_FILTER_NAME_OFFSET);
-    ppc_write_pstring_bytes(memory, name_ptr, &entry.name)
-        && memory.write_u32_be(filter_pb + 18, name_ptr).is_some()
-        && memory
-            .write_u16_be(filter_pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
-            .is_some()
-        && memory.write_u16_be(filter_pb + 28, 0).is_some()
-        && memory.write_u32_be(filter_pb + 48, entry.dir_id).is_some()
-        && ppc_write_finfo(memory, filter_pb + 32, entry.file_type, 0, entry.finder_flags).is_some()
-}
-
-fn ppc_standard_file_filter_next_action(
-    cpu: &mut PpcCpu,
-    memory: &mut PpcSectionMem,
-    state: &mut PpcStandardFileFilteringState,
-) -> Option<PpcImportAction> {
-    while state
-        .tracking
-        .entries
-        .get(state.next_entry)
-        .is_some_and(|entry| entry.is_directory)
-    {
-        state.next_entry = state.next_entry.saturating_add(1);
-    }
-    let entry = state.tracking.entries.get(state.next_entry)?;
-    if entry.is_directory {
-        return None;
-    }
-    if !ppc_standard_file_write_filter_pb(memory, state.filter_pb, entry) {
-        return None;
-    }
-    let arguments = if state.callback_with_data {
-        vec![state.filter_pb, 0]
-    } else {
-        vec![state.filter_pb]
-    };
-    install_powerpc_call_arguments(cpu, memory, &arguments)?;
-    Some(
-        GuestCallEffect::call_guest(
-            GuestCallRequest::new(GuestCallTarget {
-                isa: GuestIsa::PowerPc,
-                entry: state.callback.entry,
-                rtoc: state.callback.rtoc,
-            }),
-            GuestCallContinuation::to_powerpc(
-                PPC_GUEST_CALL_RETURN_PC,
-                state.import_pc,
-                state.restore_rtoc,
-                PpcNativeReturnGpr3::Mask(0xff),
-            ),
-        )
-        .into_ppc_import_action()?,
-    )
-}
-
-fn ppc_standard_file_dispose_filter_pb(
-    process_memory_manager: &mut ProcessNativeMemoryManager,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    last_mem_error: &mut i16,
-    filter_pb: u32,
-) {
-    if filter_pb != 0 {
-        let _ = process_memory_manager.dispose_native_ptr(filter_pb);
-        ppc_apply_process_native_allocator(
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            last_mem_error,
-        );
-    }
-}
-
-fn ppc_standard_file_draw_button(
-    memory: &mut PpcSectionMem,
-    front: PpcFrontBuffer,
-    gworlds: &[PpcGWorldRecord],
-    bounds: (i16, i16, i16, i16),
-    rect: (i16, i16, i16, i16),
-    label: &[u8],
-    is_default: bool,
-) {
-    let global = (
-        bounds.0.saturating_add(rect.0),
-        bounds.1.saturating_add(rect.1),
-        bounds.0.saturating_add(rect.2),
-        bounds.1.saturating_add(rect.3),
-    );
-    if !ppc_draw_themed_control_rect(
-        memory,
-        gworlds,
-        PPC_MAIN_GWORLD,
-        global,
-        crate::ui_theme::ControlKind::PushButton,
-        true,
-        is_default,
-    ) {
-        let _ = ppc_fill_front_rect(memory, front, global, PPC_RGB_WHITE);
-        let _ = ppc_frame_front_rect(memory, front, global, PPC_RGB_BLACK, 1);
-    }
-    ppc_draw_dialog_text(memory, gworlds, global, label, PPC_RGB_BLACK);
-}
-
-fn ppc_standard_file_draw_scrollbar(
-    memory: &mut PpcSectionMem,
-    front: PpcFrontBuffer,
-    gworlds: &[PpcGWorldRecord],
-    bounds: (i16, i16, i16, i16),
-) {
-    let palette = ppc_ui_theme(gworlds).provider().palette();
-    let rect = (
-        bounds.0.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.0),
-        bounds.1.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.1),
-        bounds.0.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.2),
-        bounds.1.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.3),
-    );
-    let _ = ppc_fill_front_rect(memory, front, rect, ppc_theme_rgb(palette.frame_light));
-    let _ = ppc_frame_front_rect(memory, front, rect, ppc_theme_rgb(palette.frame_dark), 1);
-    let middle = rect.0.saturating_add((rect.2 - rect.0) / 2);
-    let _ = ppc_fill_front_rect(
-        memory,
-        front,
-        (middle, rect.1, middle.saturating_add(1), rect.3),
-        ppc_theme_rgb(palette.frame_dark),
-    );
-    ppc_draw_dialog_text(
-        memory,
-        gworlds,
-        (rect.0, rect.1, middle, rect.3),
-        b"^",
-        ppc_theme_rgb(palette.frame_dark),
-    );
-    ppc_draw_dialog_text(
-        memory,
-        gworlds,
-        (middle, rect.1, rect.2, rect.3),
-        b"v",
-        ppc_theme_rgb(palette.frame_dark),
-    );
-}
-
-fn ppc_standard_file_draw_get_dialog(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    tracking: &PpcStandardFileGetTrackingState,
-) {
-    let front = tracking.front_buffer;
-    let bounds = tracking.bounds;
-    if !ppc_draw_themed_dialog_frame(memory, gworlds, bounds, bounds, 2) {
-        let _ = ppc_fill_front_rect(memory, front, bounds, PPC_RGB_WHITE);
-        let _ = ppc_frame_front_rect(memory, front, bounds, PPC_RGB_BLACK, 2);
-    }
-    ppc_draw_dialog_text(
-        memory,
-        gworlds,
-        (
-            bounds.0.saturating_add(14),
-            bounds.1.saturating_add(18),
-            bounds.0.saturating_add(32),
-            bounds.1.saturating_add(330),
-        ),
-        b"Open File",
-        PPC_RGB_BLACK,
-    );
-    let list = (
-        bounds.0.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.0),
-        bounds.1.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.1),
-        bounds.0.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.2),
-        bounds.1.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.3),
-    );
-    let _ = ppc_fill_front_rect(memory, front, list, PPC_RGB_WHITE);
-    let _ = ppc_frame_front_rect(memory, front, list, PPC_RGB_BLACK, 1);
-    let visible_rows = 8usize;
-    let first_visible = tracking.selected.saturating_sub(visible_rows - 1);
-    for row in 0..visible_rows {
-        let index = first_visible + row;
-        let Some(entry) = tracking.entries.get(index) else {
-            break;
-        };
-        let row_top = list.0.saturating_add(2).saturating_add(
-            i16::try_from(row)
-                .unwrap_or(i16::MAX)
-                .saturating_mul(PPC_STANDARD_FILE_GET_ROW_HEIGHT),
-        );
-        let row_bottom = row_top
-            .saturating_add(PPC_STANDARD_FILE_GET_ROW_HEIGHT)
-            .min(list.2.saturating_sub(1));
-        let selected = index == tracking.selected;
-        let row_rect = (
-            row_top,
-            list.1.saturating_add(2),
-            row_bottom,
-            list.3.saturating_sub(2),
-        );
-        if selected {
-            let _ = ppc_fill_front_rect(memory, front, row_rect, PPC_RGB_BLACK);
-        }
-        let mut text = entry.name.clone();
-        if entry.is_directory {
-            text.extend_from_slice(b" >");
-        }
-        ppc_draw_dialog_text(
-            memory,
-            gworlds,
-            (
-                row_top.saturating_add(1),
-                list.1.saturating_add(5),
-                row_bottom,
-                list.3.saturating_sub(3),
-            ),
-            &text,
-            if selected {
-                PPC_RGB_WHITE
-            } else {
-                PPC_RGB_BLACK
-            },
-        );
-    }
-    let filter = tracking
-        .file_types
-        .as_ref()
-        .and_then(|types| types.first().copied())
-        .map(|value| value.to_be_bytes())
-        .unwrap_or(*b"ALL ");
-    let mut filter_label = b"Filter: ".to_vec();
-    filter_label.extend_from_slice(&filter);
-    ppc_draw_dialog_text(
-        memory,
-        gworlds,
-        (
-            bounds.0.saturating_add(14),
-            bounds.1.saturating_add(190),
-            bounds.0.saturating_add(34),
-            bounds.1.saturating_add(330),
-        ),
-        &filter_label,
-        PPC_RGB_BLACK,
-    );
-    ppc_standard_file_draw_scrollbar(memory, front, gworlds, bounds);
-    ppc_standard_file_draw_button(
-        memory,
-        front,
-        gworlds,
-        bounds,
-        PPC_STANDARD_FILE_GET_DESKTOP_RECT,
-        b"Desktop",
-        false,
-    );
-    ppc_standard_file_draw_button(
-        memory,
-        front,
-        gworlds,
-        bounds,
-        PPC_STANDARD_FILE_GET_CANCEL_RECT,
-        b"Cancel",
-        false,
-    );
-    ppc_standard_file_draw_button(
-        memory,
-        front,
-        gworlds,
-        bounds,
-        PPC_STANDARD_FILE_GET_OPEN_RECT,
-        b"Open",
-        true,
-    );
-}
-
-fn ppc_standard_file_draw_put_dialog(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    tracking: &PpcStandardFilePutTrackingState,
-) {
-    let front = tracking.front_buffer;
-    let bounds = tracking.bounds;
-    if !ppc_draw_themed_dialog_frame(memory, gworlds, bounds, bounds, 2) {
-        let _ = ppc_fill_front_rect(memory, front, bounds, PPC_RGB_WHITE);
-        let _ = ppc_frame_front_rect(memory, front, bounds, PPC_RGB_BLACK, 2);
-    }
-    ppc_draw_dialog_text(
-        memory,
-        gworlds,
-        (
-            bounds.0.saturating_add(14),
-            bounds.1.saturating_add(18),
-            bounds.0.saturating_add(32),
-            bounds.1.saturating_add(330),
-        ),
-        b"Save File",
-        PPC_RGB_BLACK,
-    );
-    ppc_draw_dialog_text(
-        memory,
-        gworlds,
-        (
-            bounds.0.saturating_add(32),
-            bounds.1.saturating_add(18),
-            bounds.0.saturating_add(50),
-            bounds.1.saturating_add(330),
-        ),
-        &tracking.prompt,
-        PPC_RGB_BLACK,
-    );
-    let name = (
-        bounds.0.saturating_add(PPC_STANDARD_FILE_PUT_NAME_RECT.0),
-        bounds.1.saturating_add(PPC_STANDARD_FILE_PUT_NAME_RECT.1),
-        bounds.0.saturating_add(PPC_STANDARD_FILE_PUT_NAME_RECT.2),
-        bounds.1.saturating_add(PPC_STANDARD_FILE_PUT_NAME_RECT.3),
-    );
-    let _ = ppc_fill_front_rect(memory, front, name, PPC_RGB_WHITE);
-    let _ = ppc_frame_front_rect(memory, front, name, PPC_RGB_BLACK, 1);
-    let selected = tracking.sel_start < tracking.sel_end;
-    let themed = ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7;
-    if selected && !themed {
-        let _ = ppc_fill_front_rect(
-            memory,
-            front,
-            (
-                name.0,
-                name.1.saturating_add(2),
-                name.2,
-                name.3.saturating_sub(2),
-            ),
-            PPC_RGB_BLACK,
-        );
-    }
-    ppc_draw_dialog_text(
-        memory,
-        gworlds,
-        (name.0.saturating_add(2), name.1, name.2, name.3),
-        &tracking.name,
-        if selected && !themed {
-            PPC_RGB_WHITE
-        } else {
-            PPC_RGB_BLACK
-        },
-    );
-    if selected && themed {
-        ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, name);
-    }
-    ppc_standard_file_draw_button(
-        memory,
-        front,
-        gworlds,
-        bounds,
-        PPC_STANDARD_FILE_PUT_CANCEL_RECT,
-        b"Cancel",
-        false,
-    );
-    ppc_standard_file_draw_button(
-        memory,
-        front,
-        gworlds,
-        bounds,
-        PPC_STANDARD_FILE_PUT_SAVE_RECT,
-        b"Save",
-        true,
-    );
-}
-
-fn ppc_standard_file_write_cancel_reply(
-    memory: &mut PpcSectionMem,
-    mode: PpcStandardFileMode,
-    reply: u32,
-) {
-    if reply == 0 {
-        return;
-    }
-    // sfGood/good is the only defined result after cancellation; preserve
-    // the caller-owned tail just as Standard File does on classic systems.
-    let _ = memory.write_u8(reply, 0);
-    let _ = mode;
-}
-
-fn ppc_standard_file_working_directory_ref(
-    vref: i16,
-    dir_id: u32,
-    vfs_volumes: &[PpcVfsVolumeRecord],
-    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
-    next_working_directory_ref_num: &mut i16,
-) -> i16 {
-    let root_dir_id = if vref == PPC_BOOT_VOLUME_REF_NUM {
-        PPC_ROOT_DIR_ID
-    } else {
-        vfs_volumes
-            .iter()
-            .find(|volume| volume.ref_num == vref)
-            .map(|volume| volume.root_dir_id)
-            .unwrap_or(PPC_ROOT_DIR_ID)
-    };
-    if dir_id == root_dir_id {
-        return vref;
-    }
-    if let Some(existing) = working_directories.values().find(|record| {
-        record.volume_ref_num == vref && record.dir_id == dir_id && record.proc_id == 0
-    }) {
-        return existing.ref_num;
-    }
-    let mut ref_num = (*next_working_directory_ref_num).max(1);
-    while ref_num == PPC_BOOT_VOLUME_REF_NUM || working_directories.contains_key(&ref_num) {
-        ref_num = ref_num.saturating_add(1);
-    }
-    *next_working_directory_ref_num = ref_num.saturating_add(1);
-    working_directories.insert(
-        ref_num,
-        ProcessWorkingDirectory {
-            ref_num,
-            volume_ref_num: vref,
-            dir_id,
-            proc_id: 0,
-        },
-    );
-    ref_num
-}
-
-fn ppc_standard_file_write_get_reply(
-    memory: &mut PpcSectionMem,
-    mode: PpcStandardFileMode,
-    reply: u32,
-    entry: &PpcStandardFileEntry,
-    legacy_wd_ref: i16,
-) {
-    if reply == 0 {
-        return;
-    }
-    match mode {
-        PpcStandardFileMode::GetModern => {
-            if memory.write_u8(reply, 1).is_none() {
-                return;
-            }
-            let _ = memory.write_u8(reply + 1, 0);
-            let _ = memory.write_u32_be(reply + 2, entry.file_type);
-            let _ = ppc_write_fsspec(
-                memory,
-                reply + 6,
-                PPC_BOOT_VOLUME_REF_NUM,
-                entry.dir_id,
-                &entry.name,
-            );
-            let _ = memory.write_u16_be(reply + 76, 0);
-            let _ = memory.write_u16_be(reply + 78, entry.finder_flags);
-            let _ = memory.write_u8(reply + 80, 0);
-            let _ = memory.write_u8(reply + 81, 0);
-            let _ = memory.write_u32_be(reply + 82, 0);
-            let _ = memory.write_u16_be(reply + 86, 0);
-        }
-        PpcStandardFileMode::GetLegacy => {
-            if memory.write_u8(reply, 1).is_none() {
-                return;
-            }
-            let _ = memory.write_u8(reply + 1, 0);
-            let _ = memory.write_u32_be(reply + 2, entry.file_type);
-            let _ = memory.write_u16_be(reply + 6, legacy_wd_ref as u16);
-            let _ = memory.write_u16_be(reply + 8, 0);
-            let _ = ppc_write_pstring_bytes(memory, reply + 10, &entry.name);
-        }
-        PpcStandardFileMode::PutModern | PpcStandardFileMode::PutLegacy => {}
-    }
-}
-
-fn ppc_standard_file_write_put_reply(
-    memory: &mut PpcSectionMem,
-    mode: PpcStandardFileMode,
-    reply: u32,
-    vref: i16,
-    dir_id: u32,
-    name: &[u8],
-    replacing: bool,
-) {
-    if reply == 0 {
-        return;
-    }
-    match mode {
-        PpcStandardFileMode::PutModern => {
-            if memory.write_u8(reply, 1).is_none() {
-                return;
-            }
-            let _ = memory.write_u8(reply + 1, u8::from(replacing));
-            let _ = memory.write_u32_be(reply + 2, 0);
-            let _ = ppc_write_fsspec(memory, reply + 6, vref, dir_id, name);
-            let _ = memory.write_u16_be(reply + 76, 0);
-            let _ = memory.write_u16_be(reply + 78, 0);
-            let _ = memory.write_u8(reply + 80, 0);
-            let _ = memory.write_u8(reply + 81, 0);
-            let _ = memory.write_u32_be(reply + 82, 0);
-            let _ = memory.write_u16_be(reply + 86, 0);
-        }
-        PpcStandardFileMode::PutLegacy => {
-            if memory.write_u8(reply, 1).is_none() {
-                return;
-            }
-            let _ = memory.write_u8(reply + 1, 0);
-            let _ = memory.write_u32_be(reply + 2, 0);
-            let _ = memory.write_u16_be(reply + 6, vref as u16);
-            let _ = memory.write_u16_be(reply + 8, 0);
-            let _ = ppc_write_pstring_bytes(memory, reply + 10, name);
-        }
-        PpcStandardFileMode::GetModern | PpcStandardFileMode::GetLegacy => {}
-    }
-}
-
-fn ppc_standard_file_finish_get(
-    memory: &mut PpcSectionMem,
-    startup: &mut PpcToolboxStartupState,
-    tracking: PpcStandardFileGetTrackingState,
-    vfs_volumes: &[PpcVfsVolumeRecord],
-    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
-    next_working_directory_ref_num: &mut i16,
-    accepted: bool,
-) -> PpcImportAction {
-    ppc_standard_file_restore_pixels(memory, &tracking.saved_pixels, tracking.front_buffer);
-    if accepted
-        && tracking
-            .entries
-            .get(tracking.selected)
-            .is_some_and(|entry| !entry.is_directory)
-    {
-        let legacy_wd_ref = if tracking.call.mode == PpcStandardFileMode::GetLegacy {
-            ppc_standard_file_working_directory_ref(
-                PPC_BOOT_VOLUME_REF_NUM,
-                tracking.entries.get(tracking.selected).unwrap().dir_id,
-                vfs_volumes,
-                working_directories,
-                next_working_directory_ref_num,
-            )
-        } else {
-            PPC_BOOT_VOLUME_REF_NUM
-        };
-        ppc_standard_file_write_get_reply(
-            memory,
-            tracking.call.mode,
-            tracking.call.reply,
-            tracking.entries.get(tracking.selected).unwrap(),
-            legacy_wd_ref,
-        );
-    } else {
-        ppc_standard_file_write_cancel_reply(memory, tracking.call.mode, tracking.call.reply);
-    }
-    startup.standard_file_get_tracking = None;
-    PpcImportAction::ReturnPreserve
-}
-
-fn ppc_standard_file_finish_put(
-    memory: &mut PpcSectionMem,
-    startup: &mut PpcToolboxStartupState,
-    tracking: PpcStandardFilePutTrackingState,
-    vfs_directories: &[PpcVfsDirectory],
-    vfs_files: &[PpcVfsFileRecord],
-    vfs_resource_files: &[PpcVfsResourceFileRecord],
-    vfs_volumes: &[PpcVfsVolumeRecord],
-    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
-    next_working_directory_ref_num: &mut i16,
-    accepted: bool,
-) -> PpcImportAction {
-    ppc_standard_file_restore_pixels(memory, &tracking.saved_pixels, tracking.front_buffer);
-    if accepted && !tracking.name.is_empty() {
-        let replacing = ppc_fsspec_target_exists(
-            vfs_directories,
-            vfs_files,
-            vfs_resource_files,
-            tracking.dir_id,
-            &tracking.name,
-        );
-        let vref = if tracking.call.mode == PpcStandardFileMode::PutLegacy {
-            ppc_standard_file_working_directory_ref(
-                tracking.vref,
-                tracking.dir_id,
-                vfs_volumes,
-                working_directories,
-                next_working_directory_ref_num,
-            )
-        } else {
-            tracking.vref
-        };
-        ppc_standard_file_write_put_reply(
-            memory,
-            tracking.call.mode,
-            tracking.call.reply,
-            vref,
-            tracking.dir_id,
-            &tracking.name,
-            replacing,
-        );
-    } else {
-        ppc_standard_file_write_cancel_reply(memory, tracking.call.mode, tracking.call.reply);
-    }
-    startup.standard_file_put_tracking = None;
-    PpcImportAction::ReturnPreserve
-}
-
-fn ppc_standard_file_backspace_name(tracking: &mut PpcStandardFilePutTrackingState) {
-    let start = tracking.sel_start.min(tracking.name.len());
-    let end = tracking.sel_end.min(tracking.name.len()).max(start);
-    if start < end {
-        tracking.name.drain(start..end);
-        tracking.sel_start = start;
-        tracking.sel_end = start;
-    } else if start > 0 {
-        tracking.name.remove(start - 1);
-        tracking.sel_start = start - 1;
-        tracking.sel_end = start - 1;
-    } else {
-        tracking.sel_start = 0;
-        tracking.sel_end = 0;
-    }
-}
-
-fn ppc_standard_file_insert_name_character(
-    tracking: &mut PpcStandardFilePutTrackingState,
-    character: u8,
-) {
-    let start = tracking.sel_start.min(tracking.name.len());
-    let end = tracking.sel_end.min(tracking.name.len()).max(start);
-    let retained_len = tracking.name.len().saturating_sub(end - start);
-    if retained_len >= 63 {
-        tracking.sel_start = start.min(63);
-        tracking.sel_end = tracking.sel_start;
-        return;
-    }
-    tracking.name.splice(start..end, [character]);
-    tracking.name.truncate(63);
-    tracking.sel_start = start.saturating_add(1).min(tracking.name.len());
-    tracking.sel_end = tracking.sel_start;
-}
-
-fn ppc_standard_file_get_service(
-    cpu: &PpcCpu,
-    memory: &mut PpcSectionMem,
-    startup: &mut PpcToolboxStartupState,
-    vfs_directories: &[PpcVfsDirectory],
-    vfs_files: &ProcessVfsFileRecords,
-    vfs_resource_files: &[PpcVfsResourceFileRecord],
-    vfs_volumes: &[PpcVfsVolumeRecord],
-    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
-    next_working_directory_ref_num: &mut i16,
-    event_queue: &mut EventQueue,
-    gworlds: &[PpcGWorldRecord],
-) -> PpcImportAction {
-    let Some(mut tracking) = startup.standard_file_get_tracking.take() else {
-        return PpcImportAction::ReturnPreserve;
-    };
-    if tracking.call.return_address != cpu.lr {
-        return ppc_standard_file_finish_get(
-            memory,
-            startup,
-            tracking,
-            vfs_volumes,
-            working_directories,
-            next_working_directory_ref_num,
-            false,
-        );
-    }
-    let event = event_queue
-        .iter()
-        .position(|event| matches!(event.what, 1 | 3 | 5))
-        .and_then(|index| event_queue.remove(index));
-    let mut open = false;
-    if let Some(event) = event {
-        if event.what == 1 {
-            let local = (
-                event.where_v.saturating_sub(tracking.bounds.0),
-                event.where_h.saturating_sub(tracking.bounds.1),
-            );
-            if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_CANCEL_RECT) {
-                return ppc_standard_file_finish_get(
-                    memory,
-                    startup,
-                    tracking,
-                    vfs_volumes,
-                    working_directories,
-                    next_working_directory_ref_num,
-                    false,
-                );
-            }
-            if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_DESKTOP_RECT) {
-                tracking.current_dir_id = PPC_ROOT_DIR_ID;
-                tracking.entries = ppc_standard_file_get_entries(
-                    vfs_directories,
-                    vfs_files,
-                    vfs_resource_files,
-                    PPC_ROOT_DIR_ID,
-                    tracking.file_types.as_deref(),
-                );
-                tracking.selected = 0;
-            } else if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_OPEN_RECT) {
-                open = true;
-            } else if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_LIST_RECT)
-                && !tracking.entries.is_empty()
-            {
-                let row = ((local.0 - PPC_STANDARD_FILE_GET_LIST_RECT.0 - 2)
-                    / PPC_STANDARD_FILE_GET_ROW_HEIGHT)
-                    .max(0) as usize;
-                let first_visible = tracking.selected.saturating_sub(7);
-                let index = first_visible.saturating_add(row);
-                if index < tracking.entries.len() {
-                    tracking.selected = index;
-                }
-            } else if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_SCROLL_RECT)
-                && !tracking.entries.is_empty()
-            {
-                let halfway = (PPC_STANDARD_FILE_GET_SCROLL_RECT.2
-                    - PPC_STANDARD_FILE_GET_SCROLL_RECT.0)
-                    / 2;
-                tracking.selected = if local.0 < PPC_STANDARD_FILE_GET_SCROLL_RECT.0 + halfway {
-                    tracking.selected.saturating_sub(1)
-                } else {
-                    (tracking.selected + 1).min(tracking.entries.len() - 1)
-                };
-            }
-        } else {
-            let character = event.message as u8;
-            let key_code = (event.message >> 8) as u8;
-            if character == b'\r'
-                || character == 3
-                || key_code == PPC_KEY_RETURN
-                || key_code == PPC_KEY_NUMPAD_ENTER
-            {
-                open = true;
-            } else if character == 0x1b || key_code == PPC_KEY_ESCAPE {
-                return ppc_standard_file_finish_get(
-                    memory,
-                    startup,
-                    tracking,
-                    vfs_volumes,
-                    working_directories,
-                    next_working_directory_ref_num,
-                    false,
-                );
-            } else if key_code == 0x7e || character == 0x1e {
-                tracking.selected = tracking.selected.saturating_sub(1);
-            } else if key_code == 0x7d || character == 0x1f {
-                if !tracking.entries.is_empty() {
-                    tracking.selected = (tracking.selected + 1).min(tracking.entries.len() - 1);
-                }
-            }
-        }
-    }
-    if open {
-        if let Some(entry) = tracking.entries.get(tracking.selected) {
-            if entry.is_directory {
-                tracking.current_dir_id = entry.dir_id;
-                tracking.entries = ppc_standard_file_get_entries(
-                    vfs_directories,
-                    vfs_files,
-                    vfs_resource_files,
-                    entry.dir_id,
-                    tracking.file_types.as_deref(),
-                );
-                tracking.selected = 0;
-            } else {
-                return ppc_standard_file_finish_get(
-                    memory,
-                    startup,
-                    tracking,
-                    vfs_volumes,
-                    working_directories,
-                    next_working_directory_ref_num,
-                    true,
-                );
-            }
-        }
-    }
-    ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
-    startup.standard_file_get_tracking = Some(tracking);
-    PpcImportAction::Yield(u64::MAX)
-}
-
-fn ppc_standard_file_get_start(
-    operation: PpcStandardFileOperation,
-    cpu: &mut PpcCpu,
-    memory: &mut PpcSectionMem,
-    startup: &mut PpcToolboxStartupState,
-    process_memory_manager: &mut ProcessNativeMemoryManager,
-    heap_cursor: &mut u32,
-    last_mem_error: &mut i16,
-    vfs_directories: &[PpcVfsDirectory],
-    vfs_files: &ProcessVfsFileRecords,
-    vfs_resource_files: &[PpcVfsResourceFileRecord],
-    vfs_volumes: &[PpcVfsVolumeRecord],
-    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
-    next_working_directory_ref_num: &mut i16,
-    default_dir_id: u32,
-    event_queue: &mut EventQueue,
-    gworlds: &[PpcGWorldRecord],
-    mode: PpcStandardFileMode,
-    requested_origin: Option<(i16, i16)>,
-) -> PpcImportAction {
-    if let Some(mut filtering) = startup.standard_file_get_filtering.take() {
-        if filtering.import_pc == cpu.pc && cpu.lr == cpu.pc {
-            let candidate_index = filtering.next_entry;
-            let accepted = cpu.gpr[3] & 0xff != 0;
-            if accepted {
-                filtering.next_entry = filtering.next_entry.saturating_add(1);
-            } else if candidate_index < filtering.tracking.entries.len()
-                && !filtering.tracking.entries[candidate_index].is_directory
-            {
-                filtering.tracking.entries.remove(candidate_index);
-            }
-            if let Some(action) = ppc_standard_file_filter_next_action(
-                cpu,
-                memory,
-                &mut filtering,
-            ) {
-                startup.standard_file_get_filtering = Some(filtering);
-                return action;
-            }
-            ppc_standard_file_dispose_filter_pb(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-                filtering.filter_pb,
-            );
-            let tracking = filtering.tracking;
-            ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
-            startup.standard_file_get_tracking = Some(tracking);
-            return PpcImportAction::Yield(u64::MAX);
-        }
-        ppc_standard_file_dispose_filter_pb(
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            last_mem_error,
-            filtering.filter_pb,
-        );
-        ppc_standard_file_restore_pixels(
-            memory,
-            &filtering.tracking.saved_pixels,
-            filtering.tracking.front_buffer,
-        );
-        ppc_standard_file_write_cancel_reply(
-            memory,
-            filtering.tracking.call.mode,
-            filtering.tracking.call.reply,
-        );
-        return PpcImportAction::ReturnPreserve;
-    }
-    if startup.standard_file_get_tracking.is_some() {
-        return ppc_standard_file_get_service(
-            cpu,
-            memory,
-            startup,
-            vfs_directories,
-            vfs_files,
-            vfs_resource_files,
-            vfs_volumes,
-            working_directories,
-            next_working_directory_ref_num,
-            event_queue,
-            gworlds,
-        );
-    }
-    let (num_types, type_list) = match mode {
-        PpcStandardFileMode::GetModern => (cpu.gpr[4] as u16 as i16, cpu.gpr[5]),
-        PpcStandardFileMode::GetLegacy => (cpu.gpr[6] as u16 as i16, cpu.gpr[7]),
-        PpcStandardFileMode::PutModern | PpcStandardFileMode::PutLegacy => {
-            return PpcImportAction::ReturnPreserve
-        }
-    };
-    let reply = ppc_standard_file_reply_ptr(mode, cpu);
-    let Some(file_types) = ppc_standard_file_get_type_list(memory, num_types, type_list) else {
-        ppc_standard_file_write_cancel_reply(memory, mode, reply);
-        return PpcImportAction::ReturnPreserve;
-    };
-    let current_dir_id = ppc_directory_path_for_id(vfs_directories, default_dir_id)
-        .map(|_| default_dir_id)
-        .unwrap_or(PPC_ROOT_DIR_ID);
-    let entries = ppc_standard_file_get_entries(
-        vfs_directories,
-        vfs_files,
-        vfs_resource_files,
-        current_dir_id,
-        file_types.as_deref(),
-    );
-    let Some(front_buffer) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) else {
-        ppc_standard_file_write_cancel_reply(memory, mode, reply);
-        return PpcImportAction::ReturnPreserve;
-    };
-    let bounds = ppc_standard_file_centered_bounds(
-        front_buffer,
-        PPC_STANDARD_FILE_GET_DIALOG_WIDTH,
-        PPC_STANDARD_FILE_GET_DIALOG_HEIGHT,
-        requested_origin,
-    );
-    let mut tracking = PpcStandardFileGetTrackingState {
-        call: ppc_standard_file_call(mode, cpu),
-        entries,
-        current_dir_id,
-        file_types,
-        selected: 0,
-        bounds,
-        front_buffer,
-        saved_pixels: ppc_standard_file_save_pixels(memory, front_buffer, bounds),
-    };
-    let (filter_ptr, callback_with_data) = operation.filter_pointer(cpu);
-    if filter_ptr != 0 {
-        if let Some(callback) = ppc_resolve_callback_target(memory, filter_ptr, cpu.gpr[2], None)
-            .filter(|callback| memory.read_u32_be(callback.entry).is_some())
-        {
-            let filter_pb = process_memory_manager.new_native_ptr(
-                memory,
-                PPC_STANDARD_FILE_FILTER_PB_SIZE,
-                true,
-            );
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
-            if filter_pb != 0 {
-                let mut filtering = PpcStandardFileFilteringState {
-                    import_pc: cpu.pc,
-                    restore_rtoc: cpu.gpr[2],
-                    callback,
-                    callback_with_data,
-                    tracking,
-                    next_entry: 0,
-                    filter_pb,
-                };
-                if let Some(action) =
-                    ppc_standard_file_filter_next_action(cpu, memory, &mut filtering)
-                {
-                    startup.standard_file_get_filtering = Some(filtering);
-                    return action;
-                }
-                ppc_standard_file_dispose_filter_pb(
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    last_mem_error,
-                    filter_pb,
-                );
-                tracking = filtering.tracking;
-            }
-        }
-    }
-    ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
-    startup.standard_file_get_tracking = Some(tracking);
-    PpcImportAction::Yield(u64::MAX)
-}
-
-fn ppc_standard_file_put_start(
-    cpu: &PpcCpu,
-    memory: &mut PpcSectionMem,
-    startup: &mut PpcToolboxStartupState,
-    default_dir_id: u32,
-    gworlds: &[PpcGWorldRecord],
-    mode: PpcStandardFileMode,
-    prompt_ptr: u32,
-    requested_origin: Option<(i16, i16)>,
-) -> PpcImportAction {
-    let name_ptr = match mode {
-        PpcStandardFileMode::PutModern => cpu.gpr[4],
-        PpcStandardFileMode::PutLegacy => cpu.gpr[5],
-        PpcStandardFileMode::GetModern | PpcStandardFileMode::GetLegacy => {
-            return PpcImportAction::ReturnPreserve
-        }
-    };
-    let mut name = if name_ptr != 0 {
-        ppc_read_pstring_bytes(memory, name_ptr).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    if name.is_empty() {
-        name.extend_from_slice(b"Untitled");
-    }
-    name.truncate(63);
-    let reply = ppc_standard_file_reply_ptr(mode, cpu);
-    let Some(front_buffer) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) else {
-        ppc_standard_file_write_cancel_reply(memory, mode, reply);
-        return PpcImportAction::ReturnPreserve;
-    };
-    let bounds = ppc_standard_file_centered_bounds(
-        front_buffer,
-        PPC_STANDARD_FILE_PUT_DIALOG_WIDTH,
-        PPC_STANDARD_FILE_PUT_DIALOG_HEIGHT,
-        requested_origin,
-    );
-    let tracking = PpcStandardFilePutTrackingState {
-        call: ppc_standard_file_call(mode, cpu),
-        vref: PPC_BOOT_VOLUME_REF_NUM,
-        dir_id: default_dir_id,
-        prompt: ppc_standard_file_prompt(memory, prompt_ptr),
-        name: name.clone(),
-        sel_start: 0,
-        sel_end: name.len(),
-        bounds,
-        front_buffer,
-        saved_pixels: ppc_standard_file_save_pixels(memory, front_buffer, bounds),
-    };
-    ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
-    startup.standard_file_put_tracking = Some(tracking);
-    PpcImportAction::Yield(u64::MAX)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn ppc_dispatch_standard_file(
-    operation: PpcStandardFileOperation,
-    cpu: &mut PpcCpu,
-    memory: &mut PpcSectionMem,
-    startup: &mut PpcToolboxStartupState,
-    process_memory_manager: &mut ProcessNativeMemoryManager,
-    heap_cursor: &mut u32,
-    last_mem_error: &mut i16,
-    gworlds: &[PpcGWorldRecord],
-    vfs_directories: &mut Vec<PpcVfsDirectory>,
-    vfs_files: &ProcessVfsFileRecords,
-    vfs_resource_files: &[PpcVfsResourceFileRecord],
-    vfs_volumes: &[PpcVfsVolumeRecord],
-    default_dir_id: u32,
-    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
-    next_working_directory_ref_num: &mut i16,
-    event_queue: &mut EventQueue,
-) -> PpcImportAction {
-    let mode = operation.mode();
-    let requested_origin = operation.requested_origin(cpu);
-    match mode {
-        PpcStandardFileMode::GetModern | PpcStandardFileMode::GetLegacy => {
-            ppc_standard_file_get_start(
-                operation,
-                cpu,
-                memory,
-                startup,
-                process_memory_manager,
-                heap_cursor,
-                last_mem_error,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                vfs_volumes,
-                working_directories,
-                next_working_directory_ref_num,
-                default_dir_id,
-                event_queue,
-                gworlds,
-                mode,
-                requested_origin,
-            )
-        }
-        PpcStandardFileMode::PutModern | PpcStandardFileMode::PutLegacy => {
-            if let Some(mut tracking) = startup.standard_file_put_tracking.take() {
-                if tracking.call.return_address != cpu.lr {
-                    return ppc_standard_file_finish_put(
-                        memory,
-                        startup,
-                        tracking,
-                        vfs_directories,
-                        vfs_files,
-                        vfs_resource_files,
-                        vfs_volumes,
-                        working_directories,
-                        next_working_directory_ref_num,
-                        false,
-                    );
-                }
-                let event = event_queue
-                    .iter()
-                    .position(|event| matches!(event.what, 1 | 3 | 5))
-                    .and_then(|index| event_queue.remove(index));
-                let mut accept = false;
-                if let Some(event) = event {
-                    if event.what == 1 {
-                        let local = (
-                            event.where_v.saturating_sub(tracking.bounds.0),
-                            event.where_h.saturating_sub(tracking.bounds.1),
-                        );
-                        if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_CANCEL_RECT)
-                        {
-                            return ppc_standard_file_finish_put(
-                                memory,
-                                startup,
-                                tracking,
-                                vfs_directories,
-                                vfs_files,
-                                vfs_resource_files,
-                                vfs_volumes,
-                                working_directories,
-                                next_working_directory_ref_num,
-                                false,
-                            );
-                        }
-                        accept = ppc_standard_file_point_in_rect(
-                            local,
-                            PPC_STANDARD_FILE_PUT_SAVE_RECT,
-                        );
-                    } else {
-                        let character = event.message as u8;
-                        let key_code = (event.message >> 8) as u8;
-                        if character == b'\r'
-                            || character == 3
-                            || key_code == PPC_KEY_RETURN
-                            || key_code == PPC_KEY_NUMPAD_ENTER
-                        {
-                            accept = true;
-                        } else if character == 0x1b || key_code == PPC_KEY_ESCAPE {
-                            return ppc_standard_file_finish_put(
-                                memory,
-                                startup,
-                                tracking,
-                                vfs_directories,
-                                vfs_files,
-                                vfs_resource_files,
-                                vfs_volumes,
-                                working_directories,
-                                next_working_directory_ref_num,
-                                false,
-                            );
-                        } else if character.eq_ignore_ascii_case(&b'a')
-                            && event.modifiers & 0x0100 != 0
-                        {
-                            tracking.sel_start = 0;
-                            tracking.sel_end = tracking.name.len();
-                        } else if character == 0x08 || key_code == 0x33 {
-                            ppc_standard_file_backspace_name(&mut tracking);
-                        } else if event.modifiers & 0x0100 == 0
-                            && (0x20..=0x7e).contains(&character)
-                            && !matches!(character, b'/' | b':')
-                            && tracking.sel_start <= tracking.sel_end
-                            && tracking.sel_end <= tracking.name.len()
-                        {
-                            ppc_standard_file_insert_name_character(&mut tracking, character);
-                        }
-                    }
-                }
-                if accept {
-                    return ppc_standard_file_finish_put(
-                        memory,
-                        startup,
-                        tracking,
-                        vfs_directories,
-                        vfs_files,
-                        vfs_resource_files,
-                        vfs_volumes,
-                        working_directories,
-                        next_working_directory_ref_num,
-                        true,
-                    );
-                }
-                ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
-                startup.standard_file_put_tracking = Some(tracking);
-                PpcImportAction::Yield(u64::MAX)
-            } else {
-                let prompt_ptr = operation.prompt_pointer(cpu);
-                ppc_standard_file_put_start(
-                    cpu,
-                    memory,
-                    startup,
-                    default_dir_id,
-                    gworlds,
-                    mode,
-                    prompt_ptr,
-                    requested_origin,
-                )
-            }
-        }
-    }
-}
-
-fn ppc_fsp_get_finfo(
+pub(super) fn ppc_fsp_get_finfo(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -86876,7 +69888,7 @@ fn ppc_fsp_get_finfo(
     PPC_FNF_ERR
 }
 
-fn ppc_fsp_set_finfo(
+pub(super) fn ppc_fsp_set_finfo(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &mut [PpcVfsDirectory],
@@ -88876,7 +71888,7 @@ fn ppc_fsp_open_res_file(
     ref_num
 }
 
-fn ppc_open_res_file(
+pub(super) fn ppc_open_res_file(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_files: &mut ProcessVfsFileRecords,
@@ -88940,7 +71952,7 @@ fn ppc_open_res_file(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ppc_h_open_res_file(
+pub(super) fn ppc_h_open_res_file(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -89097,7 +72109,7 @@ fn ppc_open_resource_path(
     ref_num
 }
 
-fn ppc_close_res_file(
+pub(super) fn ppc_close_res_file(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -89729,7 +72741,7 @@ fn ppc_ref_num_from_gpr(value: u32) -> i16 {
     value as u16 as i16
 }
 
-fn ppc_block_move(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) {
+pub(super) fn ppc_block_move(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) {
     let source_ptr = cpu.gpr[3];
     let dest_ptr = cpu.gpr[4];
     let byte_count = cpu.gpr[5] as usize;
@@ -89797,7 +72809,7 @@ fn ppc_hand_to_hand(
     PPC_NO_ERR
 }
 
-fn ppc_system_handle_record(memory: &mut PpcSectionMem, handle: u32) -> Option<PpcHandleRecord> {
+pub(super) fn ppc_system_handle_record(memory: &mut PpcSectionMem, handle: u32) -> Option<PpcHandleRecord> {
     // Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-47 and 4-83:
     // a GDevice's indexed PixMap owns its ColorTable through a Handle. The
     // main device is Toolbox-owned rather than application-heap-owned, but
@@ -89848,7 +72860,7 @@ fn initial_ppc_vfs_directories() -> Vec<PpcVfsDirectory> {
     ]
 }
 
-fn ppc_dir_create(
+pub(super) fn ppc_dir_create(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &mut Vec<PpcVfsDirectory>,
@@ -89898,7 +72910,7 @@ fn ppc_dir_create(
     PPC_NO_ERR
 }
 
-fn ppc_fsp_dir_create(
+pub(super) fn ppc_fsp_dir_create(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &mut Vec<PpcVfsDirectory>,
@@ -89951,7 +72963,7 @@ fn ppc_fsp_dir_create(
     PPC_NO_ERR
 }
 
-fn ppc_find_folder_dir_id(folder_type: u32) -> u32 {
+pub(super) fn ppc_find_folder_dir_id(folder_type: u32) -> u32 {
     if folder_type == u32::from_be_bytes(*b"pref") {
         PPC_PREFERENCES_DIR_ID
     } else {
@@ -89959,7 +72971,7 @@ fn ppc_find_folder_dir_id(folder_type: u32) -> u32 {
     }
 }
 
-fn ppc_new_alias(
+pub(super) fn ppc_new_alias(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -90461,7 +73473,7 @@ fn ppc_read_fixed_pstring_bytes(
     Some(bytes)
 }
 
-fn ppc_resolve_alias(
+pub(super) fn ppc_resolve_alias(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -90503,7 +73515,7 @@ fn ppc_resolve_alias(
     PPC_NO_ERR
 }
 
-fn ppc_update_alias(
+pub(super) fn ppc_update_alias(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     last_mem_error: &mut i16,
@@ -90606,7 +73618,7 @@ fn ppc_update_alias(
     PPC_NO_ERR
 }
 
-fn ppc_resolve_alias_file(
+pub(super) fn ppc_resolve_alias_file(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
@@ -90767,7 +73779,7 @@ fn ppc_equal_string(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> u32 {
     u32::from(equal)
 }
 
-fn ppc_read_pstring_bytes(memory: &mut PpcSectionMem, addr: u32) -> Option<Vec<u8>> {
+pub(super) fn ppc_read_pstring_bytes(memory: &mut PpcSectionMem, addr: u32) -> Option<Vec<u8>> {
     let len = memory.read_u8(addr)? as usize;
     let mut bytes = Vec::with_capacity(len);
     for offset in 0..len {
@@ -90834,7 +73846,7 @@ fn ppc_heap_alloc(
     ptr
 }
 
-fn ppc_process_heap_alloc(
+pub(super) fn ppc_process_heap_alloc(
     memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -90851,7 +73863,7 @@ fn ppc_process_heap_alloc(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ppc_process_alloc_handle_with_bytes(
+pub(super) fn ppc_process_alloc_handle_with_bytes(
     memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -90893,8 +73905,8 @@ fn ppc_process_alloc_handle(
     handle
 }
 
-struct PpcProcessAllocatorView<'a> {
-    memory_manager: &'a mut ProcessNativeMemoryManager,
+pub(super) struct PpcProcessAllocatorView<'a> {
+    pub(super) memory_manager: &'a mut ProcessNativeMemoryManager,
 }
 
 impl PpcProcessAllocatorView<'_> {
@@ -90990,7 +74002,7 @@ impl PpcProcessAllocatorView<'_> {
     }
 }
 
-fn ppc_allocator_view_reserve_bytes(
+pub(super) fn ppc_allocator_view_reserve_bytes(
     allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -91006,7 +74018,7 @@ fn ppc_allocator_view_reserve_bytes(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ppc_allocator_view_allocate_handle(
+pub(super) fn ppc_allocator_view_allocate_handle(
     allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -91041,7 +74053,7 @@ fn ppc_allocator_view_allocate_handle_with_bytes(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ppc_allocator_view_resize_handle(
+pub(super) fn ppc_allocator_view_resize_handle(
     allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -91371,7 +74383,7 @@ fn ppc_dispatch_legacy_memory_utility(
     }
 }
 
-fn ppc_largest_free_ptr_block(
+pub(super) fn ppc_largest_free_ptr_block(
     memory: &PpcSectionMem,
     heap_cursor: u32,
     heap_limit: u32,
@@ -91392,11 +74404,11 @@ fn ppc_free_ptr_block_fits_limit(record: &ProcessPtrRecord, heap_limit: u32) -> 
         .is_some_and(|end| end <= heap_limit)
 }
 
-fn ppc_memory_can_write_bytes(memory: &mut PpcSectionMem, addr: u32, len: u32) -> bool {
+pub(super) fn ppc_memory_can_write_bytes(memory: &mut PpcSectionMem, addr: u32, len: u32) -> bool {
     memory.preflight_writable_range(addr, len)
 }
 
-fn ppc_init_zone_header(
+pub(super) fn ppc_init_zone_header(
     memory: &mut PpcSectionMem,
     start: u32,
     limit: u32,
@@ -91442,7 +74454,7 @@ fn ppc_init_zone_header(
     let _ = memory.write_u32_be(PPC_THE_ZONE_ADDR, start);
 }
 
-fn ppc_memory_can_read_bytes(memory: &mut PpcSectionMem, addr: u32, len: u32) -> bool {
+pub(super) fn ppc_memory_can_read_bytes(memory: &mut PpcSectionMem, addr: u32, len: u32) -> bool {
     for offset in 0..len {
         let Some(byte_addr) = addr.checked_add(offset) else {
             return false;
@@ -91454,7 +74466,7 @@ fn ppc_memory_can_read_bytes(memory: &mut PpcSectionMem, addr: u32, len: u32) ->
     true
 }
 
-fn ppc_memory_read_bytes(memory: &mut PpcSectionMem, addr: u32, len: u32) -> Option<Vec<u8>> {
+pub(super) fn ppc_memory_read_bytes(memory: &mut PpcSectionMem, addr: u32, len: u32) -> Option<Vec<u8>> {
     let mut bytes = Vec::with_capacity(usize::try_from(len).ok()?);
     for offset in 0..len {
         bytes.push(memory.read_u8(addr.checked_add(offset)?)?);
@@ -91462,7 +74474,7 @@ fn ppc_memory_read_bytes(memory: &mut PpcSectionMem, addr: u32, len: u32) -> Opt
     Some(bytes)
 }
 
-fn ppc_optional_output_can_write(memory: &mut PpcSectionMem, addr: u32, len: u32) -> bool {
+pub(super) fn ppc_optional_output_can_write(memory: &mut PpcSectionMem, addr: u32, len: u32) -> bool {
     addr == 0 || ppc_memory_can_write_bytes(memory, addr, len)
 }
 
@@ -91475,7 +74487,7 @@ fn ppc_optional_pstring_output_can_write(
     addr == 0 || ppc_memory_can_write_bytes(memory, addr, len + 1)
 }
 
-fn ppc_heap_can_alloc_sequence(
+pub(super) fn ppc_heap_can_alloc_sequence(
     memory: &PpcSectionMem,
     heap_cursor: u32,
     heap_limit: u32,
@@ -91534,11 +74546,11 @@ fn ppc_allocation_size(size: u32) -> Option<u32> {
         .map(|size| size.max(PPC_HEAP_ALIGNMENT))
 }
 
-fn ppc_heap_free_capacity(memory: &PpcSectionMem, heap_cursor: u32, heap_limit: u32) -> (u32, u32) {
+pub(super) fn ppc_heap_free_capacity(memory: &PpcSectionMem, heap_cursor: u32, heap_limit: u32) -> (u32, u32) {
     memory.readonly_allocation_available_bytes(heap_cursor, heap_limit)
 }
 
-fn ppc_i16_result(value: i16) -> u32 {
+pub(super) fn ppc_i16_result(value: i16) -> u32 {
     i32::from(value) as u32
 }
 
@@ -91803,7 +74815,7 @@ impl RetiredThreadStorageEdge for PpcRetiredThreadStorageEdge<'_> {
     }
 }
 
-fn ppc_release_retired_thread_storage(
+pub(super) fn ppc_release_retired_thread_storage(
     manager: &mut ProcessNativeMemoryManager,
     retirement: NativeRetirement,
     recycle: bool,
@@ -91818,7 +74830,7 @@ fn ppc_release_retired_thread_storage(
     );
 }
 
-fn ppc_resolve_callback_target(
+pub(super) fn ppc_resolve_callback_target(
     memory: &mut PpcSectionMem,
     proc_ptr: u32,
     default_rtoc: u32,

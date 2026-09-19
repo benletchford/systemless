@@ -18385,6 +18385,10 @@
         disp.mix_movie_music(&mut Vec::new(), 22050 + 2205);
         assert!((disp.movie_states[&movie].audio_time - 0.1).abs() < 1e-9);
         bus.write_long(TEST_SP, movie);
+        call(&mut disp, &mut cpu, &mut bus, 0x000E);
+        assert_eq!(disp.movie_states[&movie].current_time, 600);
+        assert_eq!(disp.movie_states[&movie].audio_time, 600.0);
+        bus.write_long(TEST_SP, movie);
         call(&mut disp, &mut cpu, &mut bus, 0x000C);
         output.clear();
         disp.mix_movie_music(&mut output, 2205);
@@ -18601,6 +18605,19 @@
         assert!(result.unwrap().is_ok(), "GetMovieDuration should return");
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
         assert_ne!(bus.read_long(sp + 4), 0xDEAD_BEEF);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x000E); // GoToEndOfMovie
+        bus.write_long(sp, movie);
+        let result = disp.dispatch_toolbox(true, 0x2AA, &mut cpu, &mut bus);
+        assert!(result.is_some(), "GoToEndOfMovie should be handled");
+        assert!(result.unwrap().is_ok(), "GoToEndOfMovie should return");
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(
+            disp.movie_states[&movie].current_time,
+            disp.movie_states[&movie].duration
+        );
 
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0x00F4); // SetMoviePreferredRate

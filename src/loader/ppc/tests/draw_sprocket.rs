@@ -774,6 +774,7 @@ use super::*;
             user_select_count: 1,
             last_swap_context: Some(PPC_DSP_CONTEXT),
             swap_count: 3,
+            ..PpcDrawSprocketState::default()
         };
 
         let probe = loaded.run_with_hle_imports(64);
@@ -1744,5 +1745,86 @@ use super::*;
             Some(context_attributes.page_count)
         );
         assert_eq!(loaded.memory.read_u8(attributes_ptr + 52), Some(0));
+    }
+
+    #[test]
+    fn hle_import_runner_handles_draw_sprocket_vbl_busy_and_alt_buffer_calls() {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetVBLProc");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+        loaded.cpu.gpr[4] = 0x0200_1000;
+        loaded.cpu.gpr[5] = 0x1234_5678;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.draw_sprocket.vbl_proc, Some(0x0200_1000));
+        assert_eq!(loaded.draw_sprocket.vbl_refcon, Some(0x1234_5678));
+
+        let busy_ptr = 0x0400_0100;
+        loaded.memory.write_u8(busy_ptr, 1).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DSpContextIsBusy;
+        loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+        loaded.cpu.gpr[4] = busy_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u8(busy_ptr), Some(0));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DSpAltBufferDispose;
+        loaded.cpu.gpr[3] = 0x0300_0100;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target =
+            PpcImportDispatcherTarget::DSpContextInvalBackBufferRect;
+        loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+        loaded.cpu.gpr[4] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target =
+            PpcImportDispatcherTarget::DSpContextSetUnderlayAltBuffer;
+        loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+        loaded.cpu.gpr[4] = 0x0300_0100;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    }
+
+    #[test]
+    fn fire_vbl_tasks_invokes_active_draw_sprocket_vbl_proc() {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpStartup");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        const VECTOR: u32 = PPC_DATA_BASE + 0x4000;
+        const ENTRY: u32 = PPC_CODE_BASE + 0x2000;
+        loaded.memory.add_region(VECTOR, vec![0; 8]);
+        loaded.memory.write_u32_be(VECTOR, ENTRY).unwrap();
+        loaded.memory.write_u32_be(VECTOR + 4, PPC_DATA_BASE).unwrap();
+        loaded.memory.add_region(ENTRY, vec![0x4e, 0x80, 0x00, 0x20]);
+        loaded.draw_sprocket.active_context = Some(PPC_DSP_CONTEXT);
+        loaded.draw_sprocket.context_state = PpcDspContextPlayState::Active;
+        loaded.draw_sprocket.vbl_proc = Some(VECTOR);
+        loaded.draw_sprocket.vbl_refcon = Some(0x1234_5678);
+
+        let probes = loaded.fire_vbl_tasks_for_ticks(0, 2, 10, 64, false, false);
+        assert_eq!(probes.len(), 2);
+        assert_eq!(probes[0].invocation.callback, VECTOR);
+        assert_eq!(probes[1].invocation.callback, VECTOR);
     }
 

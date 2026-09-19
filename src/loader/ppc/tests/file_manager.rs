@@ -7412,3 +7412,273 @@ use super::*;
         assert_eq!(loaded.vfs_resource_files[0].path, "Preferences");
         assert!(loaded.vfs_resource_files[0].dirty);
     }
+
+    #[test]
+    fn classic_resource_query_and_count_imports_use_the_vfs() {
+        let pef = synthetic_pef_with_import(b"CountResources");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let current_refnum = *loaded.process_file_system.current_resource_file;
+        let other_refnum = current_refnum + 1;
+
+        // Resource in current file
+        loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: current_refnum,
+            path: "App".to_string(),
+            res_type: u32::from_be_bytes(*b"STR "),
+            res_id: 128,
+            name: b"First".to_vec(),
+            data: b"hello".to_vec(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+        // Resource in another file
+        loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: other_refnum,
+            path: "Other".to_string(),
+            res_type: u32::from_be_bytes(*b"STR "),
+            res_id: 129,
+            name: b"Second".to_vec(),
+            data: b"world".to_vec(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+
+        // CountResources (all files): should be 2
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 2);
+
+        // Count1Resources (current file only): should be 1
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Count1Resources;
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 1);
+
+        // Unique1ID: candidate should be 129 (since 128 exists in current file)
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Unique1ID;
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 129);
+
+        // UniqueID: candidate should be 130 (since 128 and 129 exist across files)
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::UniqueID;
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 130);
+
+        // GetIndResource: 1-based index 1 -> res_id 128
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetIndResource;
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
+        loaded.cpu.gpr[4] = 1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        let handle1 = loaded.cpu.gpr[3];
+        assert_ne!(handle1, 0);
+        assert_eq!(
+            ppc_handle_bytes(
+                &mut loaded.memory,
+                &test_handle_records!(loaded),
+                handle1
+            ),
+            Some(b"hello".to_vec())
+        );
+
+        // Get1IndResource: 1-based index 1 -> res_id 128
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Get1IndResource;
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
+        loaded.cpu.gpr[4] = 1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], handle1);
+
+        // Get1IndResource: index 2 should not exist in current file
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Get1IndResource;
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"STR ");
+        loaded.cpu.gpr[4] = 2;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
+    }
+
+    #[test]
+    fn classic_resource_metadata_and_mutation_imports_use_the_vfs() {
+        let pef = synthetic_pef_with_import(b"GetResourceSizeOnDisk");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let current_refnum = *loaded.process_file_system.current_resource_file;
+        let scratch = PPC_DATA_BASE + 0x2400;
+        loaded.memory.add_region(scratch, vec![0; 0x200]);
+
+        let handle = scratch + 0x20;
+        loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: current_refnum,
+            path: "App".to_string(),
+            res_type: u32::from_be_bytes(*b"TEST"),
+            res_id: 128,
+            name: b"Sample".to_vec(),
+            data: b"hello world payload".to_vec(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle,
+        });
+
+        // GetResourceSizeOnDisk: reports on-disk size
+        loaded.cpu.gpr[3] = handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 19);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+
+        // GetResAttrs: retrieves resource attributes
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetResAttrs;
+        loaded.cpu.gpr[3] = handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+        // SetResAttrs: mutates resource attributes
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::SetResAttrs;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 0x20;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+        assert_eq!(loaded.process_file_system.vfs_resources[0].attrs, 0x20);
+
+        // HomeResFile: queries owning resource file refnum
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::HomeResFile;
+        loaded.cpu.gpr[3] = handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, current_refnum);
+
+        // GetResInfo: retrieves resource metadata
+        let id_ptr = scratch + 0x80;
+        let type_ptr = scratch + 0x84;
+        let name_ptr = scratch + 0x88;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetResInfo;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = id_ptr;
+        loaded.cpu.gpr[5] = type_ptr;
+        loaded.cpu.gpr[6] = name_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+        assert_eq!(loaded.memory.read_u16_be(id_ptr), Some(128));
+        assert_eq!(
+            loaded.memory.read_u32_be(type_ptr),
+            Some(u32::from_be_bytes(*b"TEST"))
+        );
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, name_ptr).as_deref(),
+            Some(&b"Sample"[..])
+        );
+
+        // ReadPartialResource: reads chunk from offset into buffer
+        let buf_ptr = scratch + 0xc0;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ReadPartialResource;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 6;
+        loaded.cpu.gpr[5] = buf_ptr;
+        loaded.cpu.gpr[6] = 5;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, buf_ptr, 5),
+            Some(b"world".to_vec())
+        );
+
+        // ChangedResource: marks changed attribute
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ChangedResource;
+        loaded.cpu.gpr[3] = handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+        assert_eq!(
+            loaded.process_file_system.vfs_resources[0].attrs & PPC_RES_CHANGED_ATTR,
+            PPC_RES_CHANGED_ATTR
+        );
+
+        // RemoveResource: removes from vfs_resources
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::RemoveResource;
+        loaded.cpu.gpr[3] = handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+        assert!(loaded.process_file_system.vfs_resources.is_empty());
+
+        // AddResource: adds new resource record
+        let new_handle = ppc_alloc_handle_with_bytes(
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            test_handles!(loaded),
+            b"new resource data",
+        );
+        assert_ne!(new_handle, 0);
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::AddResource;
+        loaded.cpu.gpr[3] = new_handle;
+        loaded.cpu.gpr[4] = u32::from_be_bytes(*b"NEW_");
+        loaded.cpu.gpr[5] = 200;
+        loaded.cpu.gpr[6] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+        assert_eq!(loaded.process_file_system.vfs_resources.len(), 1);
+        assert_eq!(loaded.process_file_system.vfs_resources[0].res_id, 200);
+
+        // SetResInfo: update ID and name
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::SetResInfo;
+        loaded.cpu.gpr[3] = new_handle;
+        loaded.cpu.gpr[4] = 201;
+        loaded.cpu.gpr[5] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+        assert_eq!(loaded.process_file_system.vfs_resources[0].res_id, 201);
+
+        // WriteResource: clears changed attribute
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::WriteResource;
+        loaded.cpu.gpr[3] = new_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+        assert_eq!(
+            loaded.process_file_system.vfs_resources[0].attrs & PPC_RES_CHANGED_ATTR,
+            0
+        );
+
+        // UpdateResFile: flushes dirty resources
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::UpdateResFile;
+        loaded.cpu.gpr[3] = current_refnum as u32;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+    }

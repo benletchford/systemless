@@ -1197,45 +1197,6 @@ impl super::TrapDispatcher {
         )
     }
 
-    fn menu_item_component_pixel_index(
-        bus: &MacMemoryBus,
-        menu_id: i16,
-        menu_item: i16,
-        pixel_size: u16,
-        item_rgb_offset: u32,
-    ) -> Option<u8> {
-        if !matches!(pixel_size, 2 | 4 | 8) {
-            return None;
-        }
-
-        let bytes = Self::live_menu_color_table_bytes(bus);
-        let colors = MenuColorTable::new(&bytes).item_colors(menu_id, menu_item);
-        let rgb = match item_rgb_offset {
-            4 => colors.mark,
-            10 => colors.name,
-            16 => colors.command,
-            _ => return None,
-        };
-        Self::menu_color_rgb_pixel_index(bus, rgb)
-    }
-
-    fn menu_item_background_pixel_index(
-        bus: &MacMemoryBus,
-        menu_id: i16,
-        menu_item: i16,
-        pixel_size: u16,
-    ) -> Option<u8> {
-        if !matches!(pixel_size, 2 | 4 | 8) {
-            return None;
-        }
-
-        let bytes = Self::live_menu_color_table_bytes(bus);
-        let rgb = MenuColorTable::new(&bytes)
-            .item_colors(menu_id, menu_item)
-            .background;
-        Self::menu_color_rgb_pixel_index(bus, rgb)
-    }
-
     /// Pixel value the standard definition procedures use to dim
     /// unavailable menu content on a colour screen.
     ///
@@ -2370,13 +2331,12 @@ impl super::TrapDispatcher {
                         }
                         let (mv, mh) = self.menu_tracking_mouse_pos(bus);
                         if self.menu_tracking_button_down(bus) {
-                            let new_menu = self.current_menu_title_hit_test(bus, mh);
-                            let active_menu = self.menu_tracking.as_ref().unwrap().menu_handle;
                             let mbar_h = bus.read_word(addr::MBAR_HEIGHT) as i16;
-                            if let Some(new_idx) = new_menu {
-                                if self.menu_handle_for_index(new_idx) != Some(active_menu)
-                                    && mv < mbar_h
-                                {
+                            if mv < mbar_h {
+                                let new_menu = self.current_menu_title_hit_test(bus, mh);
+                                let active_menu = self.menu_tracking.as_ref().unwrap().menu_handle;
+                                if let Some(new_idx) = new_menu {
+                                    if self.menu_handle_for_index(new_idx) != Some(active_menu) {
                                     let old_saved = self.menu_tracking.take().unwrap();
                                     self.clear_active_menu_definition();
                                     self.restore_menu_tracking_pixels(bus, old_saved);
@@ -2392,7 +2352,8 @@ impl super::TrapDispatcher {
                                     } else {
                                         self.restore_menu_definition_port(cpu, bus);
                                     }
-                                    return Some(Ok(()));
+                                        return Some(Ok(()));
+                                    }
                                 }
                             }
                         }
@@ -2577,16 +2538,15 @@ impl super::TrapDispatcher {
                         let (mv, mh) = self.menu_tracking_mouse_pos(bus);
 
                         // Check if mouse moved to a different menu title
-                        let new_menu = self.current_menu_title_hit_test(bus, mh);
-                        let tracking = self.menu_tracking.as_ref().unwrap();
                         let mbar_h =
                             bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
-                        if let Some(new_idx) = new_menu {
-                            if self.menu_handle_for_index(new_idx) != Some(tracking.menu_handle)
-                                && mv < mbar_h
-                            {
-                                // Switch to different menu
-                                let old_saved = self.menu_tracking.take().unwrap();
+                        if mv < mbar_h {
+                            let new_menu = self.current_menu_title_hit_test(bus, mh);
+                            let tracking = self.menu_tracking.as_ref().unwrap();
+                            if let Some(new_idx) = new_menu {
+                                if self.menu_handle_for_index(new_idx) != Some(tracking.menu_handle) {
+                                    // Switch to different menu
+                                    let old_saved = self.menu_tracking.take().unwrap();
                                 self.restore_menu_tracking_pixels(bus, old_saved);
                                 if self.open_menu_dropdown(bus, new_idx) {
                                     self.prepare_menu_definition_port(cpu, bus);
@@ -2612,8 +2572,9 @@ impl super::TrapDispatcher {
                                 return Some(Ok(()));
                             }
                         }
+                    }
 
-                        let old_trace = self.menu_tracking.as_ref().map(|tracking| {
+                    let old_trace = self.menu_tracking.as_ref().map(|tracking| {
                             tracking
                                 .submenus
                                 .last()
@@ -4733,12 +4694,42 @@ impl super::TrapDispatcher {
     }
 
     fn ensure_submenu_for_request(&mut self, bus: &mut MacMemoryBus, request: SubmenuRequest<u32>) {
-        let resolved_child = self
-            .menu_index_for_handle(request.parent_handle)
-            .and_then(|parent_menu_idx| {
-                self.submenu_menu_index_for_parent_item(bus, parent_menu_idx, request.parent_item)
-            })
-            .and_then(|submenu_idx| self.menus.get(submenu_idx).map(|menu| menu.handle));
+        let Some(parent_menu_idx) = self.menu_index_for_handle(request.parent_handle) else {
+            return;
+        };
+        let Some(parent_menu) = self.menus.get(parent_menu_idx) else {
+            return;
+        };
+        let open_submenus_at_depth = self
+            .menu_tracking
+            .as_ref()
+            .map_or(0, |tracking| tracking.submenus.len());
+        let item_idx = (request.parent_item - 1) as usize;
+        let item_has_hierarchical_id = parent_menu
+            .items
+            .get(item_idx)
+            .and_then(|item| crate::menu_manager::hierarchical_menu_id(item.key_equiv, item.mark))
+            .is_some();
+
+        if !item_has_hierarchical_id && open_submenus_at_depth <= request.child_depth {
+            return;
+        }
+        if item_has_hierarchical_id
+            && self
+                .menu_tracking
+                .as_ref()
+                .and_then(|t| t.submenus.get(request.child_depth))
+                .is_some_and(|s| s.parent_item == request.parent_item)
+        {
+            return;
+        }
+
+        let resolved_child = if item_has_hierarchical_id {
+            self.submenu_menu_index_for_parent_item(bus, parent_menu_idx, request.parent_item)
+                .and_then(|submenu_idx| self.menus.get(submenu_idx).map(|menu| menu.handle))
+        } else {
+            None
+        };
         let reconciliation = self
             .menu_tracking
             .with_tracking_mut(|tracking| tracking.reconcile_submenu(request, resolved_child));
@@ -5030,13 +5021,6 @@ impl super::TrapDispatcher {
     ) -> bool {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        let screen = (
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-        );
         let (top, left, bottom, right) = rect;
         if menu_idx >= self.menus.len() {
             return false;
@@ -5093,12 +5077,61 @@ impl super::TrapDispatcher {
             } else {
                 StandardMenuPaneKind::Hierarchical
             };
+            let black_pixel = Self::menu_standard_pixel_index(bus, pixel_size, true);
             if let Some(chrome) = StandardMenuChrome::new(kind, rect) {
                 chrome.for_each_frame_pixel(|x, y| {
-                    Self::menu_set_standard_pixel(bus, screen, x, y, true);
+                    if let Some(pixel_index) = black_pixel {
+                        Self::fb_set_pixel_index(
+                            bus,
+                            screen_base,
+                            row_bytes,
+                            pixel_size,
+                            screen_width,
+                            screen_height,
+                            x,
+                            y,
+                            pixel_index,
+                        );
+                    } else {
+                        Self::fb_set_pixel(
+                            bus,
+                            screen_base,
+                            row_bytes,
+                            pixel_size,
+                            screen_width,
+                            screen_height,
+                            x,
+                            y,
+                            true,
+                        );
+                    }
                 });
                 chrome.for_each_shadow_pixel(|x, y| {
-                    Self::menu_set_standard_pixel(bus, screen, x, y, true);
+                    if let Some(pixel_index) = black_pixel {
+                        Self::fb_set_pixel_index(
+                            bus,
+                            screen_base,
+                            row_bytes,
+                            pixel_size,
+                            screen_width,
+                            screen_height,
+                            x,
+                            y,
+                            pixel_index,
+                        );
+                    } else {
+                        Self::fb_set_pixel(
+                            bus,
+                            screen_base,
+                            row_bytes,
+                            pixel_size,
+                            screen_width,
+                            screen_height,
+                            x,
+                            y,
+                            true,
+                        );
+                    }
                 });
             }
         }
@@ -5116,20 +5149,24 @@ impl super::TrapDispatcher {
         let attached_pulldown = self.draw_menu_dropdown_chrome(bus, menu_idx, rect);
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        let screen = (
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-        );
         let (top, left, bottom, right) = rect;
         if menu_idx >= self.menus.len() {
             return;
         }
         let menu = &self.menus[menu_idx];
-        let dropdown_bg_index =
-            Self::menu_dropdown_background_pixel_index(bus, menu.id, pixel_size);
+        let standard_black = Self::menu_standard_pixel_index(bus, pixel_size, true);
+        let standard_white = Self::menu_standard_pixel_index(bus, pixel_size, false);
+        let color_table_bytes = Self::live_menu_color_table_bytes(bus);
+        let menu_color_table = MenuColorTable::new(&color_table_bytes);
+        let dropdown_bg_index = if matches!(pixel_size, 2 | 4 | 8) {
+            if color_table_bytes.is_empty() {
+                standard_white
+            } else {
+                Self::menu_color_rgb_pixel_index(bus, menu_color_table.dropdown_background(menu.id))
+            }
+        } else {
+            None
+        };
 
         // Draw items
         let font_id: i16 = 0;
@@ -5191,12 +5228,22 @@ impl super::TrapDispatcher {
             }
             let is_separator = item.text == "-";
             let row_enabled = menu.enabled && item.enabled;
-            let mark_pixel_index =
-                Self::menu_item_component_pixel_index(bus, menu.id, item_no, pixel_size, 4);
-            let name_pixel_index =
-                Self::menu_item_component_pixel_index(bus, menu.id, item_no, pixel_size, 10);
-            let command_pixel_index =
-                Self::menu_item_component_pixel_index(bus, menu.id, item_no, pixel_size, 16);
+            let (mark_pixel_index, name_pixel_index, command_pixel_index, item_bg_pixel_index) =
+                if matches!(pixel_size, 2 | 4 | 8) {
+                    if color_table_bytes.is_empty() {
+                        (standard_black, standard_black, standard_black, standard_white)
+                    } else {
+                        let colors = menu_color_table.item_colors(menu.id, item_no);
+                        (
+                            Self::menu_color_rgb_pixel_index(bus, colors.mark),
+                            Self::menu_color_rgb_pixel_index(bus, colors.name),
+                            Self::menu_color_rgb_pixel_index(bus, colors.command),
+                            Self::menu_color_rgb_pixel_index(bus, colors.background),
+                        )
+                    }
+                } else {
+                    (None, None, None, None)
+                };
             let classic_selected = self.ui_theme_id() == UiThemeId::ClassicSystem7
                 && highlighted_item == item_no
                 && row_enabled
@@ -5209,12 +5256,11 @@ impl super::TrapDispatcher {
                     // the default item color) as the background and its menu
                     // background (RGB4) as the foreground for every component.
                     let selected_background = name_pixel_index
-                        .or_else(|| Self::menu_color_rgb_pixel_index(bus, [0; 3]))
+                        .or(standard_black)
                         .unwrap_or(255);
-                    let selected_foreground =
-                        Self::menu_item_background_pixel_index(bus, menu.id, item_no, pixel_size)
-                            .or_else(|| Self::menu_color_rgb_pixel_index(bus, [0xFFFF; 3]))
-                            .unwrap_or(0);
+                    let selected_foreground = item_bg_pixel_index
+                        .or(standard_white)
+                        .unwrap_or(0);
                     (selected_background, selected_foreground)
                 });
             if let Some((selected_background, _)) = selected_colors {
@@ -5481,10 +5527,11 @@ impl super::TrapDispatcher {
             if is_hierarchical {
                 // IM:V V-23 / V-236: hierarchical items show a right-pointing
                 // indicator; their mark byte is the submenu ID, not a checkmark.
+                let indicator_color = content_index(command_pixel_index);
                 for_each_standard_hierarchy_indicator_pixel(
                     layout.indicator_left,
                     layout.indicator_mid_y,
-                    |x, y| match content_index(command_pixel_index) {
+                    |x, y| match indicator_color {
                         Some(pixel_index) => Self::fb_set_pixel_index(
                             bus,
                             screen_base,
@@ -5624,12 +5671,60 @@ impl super::TrapDispatcher {
         let center_x = left.saturating_add(right.saturating_sub(left) / 2);
         if scroll_up {
             for_each_standard_scroll_up_indicator_pixel(center_x, top, |x, y| {
-                Self::menu_set_standard_pixel(bus, screen, x, y, true);
+                if let Some(pixel_index) = standard_black {
+                    Self::fb_set_pixel_index(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        x,
+                        y,
+                        pixel_index,
+                    );
+                } else {
+                    Self::fb_set_pixel(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        x,
+                        y,
+                        true,
+                    );
+                }
             });
         }
         if scroll_down {
             for_each_standard_scroll_down_indicator_pixel(center_x, bottom, |x, y| {
-                Self::menu_set_standard_pixel(bus, screen, x, y, true);
+                if let Some(pixel_index) = standard_black {
+                    Self::fb_set_pixel_index(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        x,
+                        y,
+                        pixel_index,
+                    );
+                } else {
+                    Self::fb_set_pixel(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        x,
+                        y,
+                        true,
+                    );
+                }
             });
         }
     }

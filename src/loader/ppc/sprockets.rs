@@ -82,6 +82,8 @@ pub struct PpcDrawSprocketState {
     pub user_select_count: u32,
     pub last_swap_context: Option<u32>,
     pub swap_count: u32,
+    pub vbl_proc: Option<u32>,
+    pub vbl_refcon: Option<u32>,
 }
 
 impl Default for PpcDrawSprocketState {
@@ -105,6 +107,8 @@ impl Default for PpcDrawSprocketState {
             user_select_count: 0,
             last_swap_context: None,
             swap_count: 0,
+            vbl_proc: None,
+            vbl_refcon: None,
         }
     }
 }

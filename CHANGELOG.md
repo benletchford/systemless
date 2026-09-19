@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.41.12](https://github.com/benletchford/systemless/compare/v0.41.11...v0.41.12) (2026-09-18)
+
+
+### Bug Fixes
+
+* **ppc:** implement QuickTime duration, DrawSprocket VBL proc, and lowercase aliases ([#2021](https://github.com/benletchford/systemless/issues/2021)) ([d99e569](https://github.com/benletchford/systemless/commit/d99e5697eb61bbf150ebcb5bd98a6b93c1accf43))
+
+## [0.41.11](https://github.com/benletchford/systemless/compare/v0.41.10...v0.41.11) (2026-09-18)
+
+
+### Bug Fixes
+
+* **trap:** report gestaltHasFSSpecCalls in gestaltFSAttr ([#2016](https://github.com/benletchford/systemless/issues/2016)) ([64e2efa](https://github.com/benletchford/systemless/commit/64e2efa0828b809368ec1a169c7f75923fbe020c))
+
+## [0.41.10](https://github.com/benletchford/systemless/compare/v0.41.9...v0.41.10) (2026-09-17)
+
+
+### Bug Fixes
+
+* **menu:** prevent cpu spin and redundant parsing during menu hover ([#2010](https://github.com/benletchford/systemless/issues/2010)) ([98be0a5](https://github.com/benletchford/systemless/commit/98be0a5fdc04c601759809247858f665f883faa4))
+
 ## [0.41.9](https://github.com/benletchford/systemless/compare/v0.41.8...v0.41.9) (2026-09-17)
 
 

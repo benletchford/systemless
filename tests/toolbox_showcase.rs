@@ -3350,6 +3350,7 @@ fn step_gui_until<F: FnMut(&mut FixtureRunner) -> bool>(
         if condition(runner) {
             return;
         }
+        runner.advance_menu_presentation_clock(std::time::Duration::from_millis(17));
         let target = runner.guest_tick() + 1;
         assert!(runner.run_gui_slice_with_audio(10_000, target, 0).1);
         prepare_review_presentation(runner);
@@ -3600,4 +3601,102 @@ fn textedit_repeated_input_and_selection_complete() {
     step_gui_until(&mut runner, "menu after editing", |r| {
         menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_GRAPHICS)
     });
+}
+
+#[test]
+fn menu_bar_hover_responsiveness_and_performance() {
+    let mut runner = new_runner_with_screen_depth(8);
+    runner
+        .set_powerpc_screen_depth(if prefer_powerpc() { 16 } else { 8 })
+        .unwrap();
+    runner.set_ui_theme(UiThemeId::ClassicSystem7);
+    runner.set_menu_bar_visible(true);
+    runner.set_instructions_per_tick(systemless::runner::default_realtime_instructions_per_tick(
+        prefer_powerpc(),
+    ));
+    runner.set_app_start_time(3_786_912_000);
+    let app = load_game(&mut runner, SHOWCASE_SIT).unwrap();
+    init_game(&mut runner, &app);
+    prepare_review_presentation(&mut runner);
+    step_gui_until(&mut runner, "graphics ready", |r| r.window_count() >= 1);
+    finish_gui_paint(&mut runner);
+
+    // 1. Click on the Options menu title in the menu bar to open it.
+    runner.set_mouse_position(10, 146);
+    runner.push_mouse_down(10, 146);
+
+    let target = runner.guest_tick().saturating_add(1);
+    let (steps, still_running) = runner.run_gui_cpu_slice(10_000, target);
+    assert!(still_running && !runner.is_halted());
+    assert!(runner.is_ui_tracking_active());
+    // Initial slice executes the guest event loop into MenuSelect ($A93D), entering UI tracking.
+    let expected_hover_steps = if runner.is_powerpc_app() {
+        assert_eq!(steps, 10_000);
+        10_000
+    } else {
+        assert!(steps < 2_500, "entering MenuSelect should take a small bounded instruction slice: got {steps}");
+        1
+    };
+
+    // 2. Drag across to Pages menu title, then hover down into the options.
+    runner.set_mouse_position(10, 56);
+    let (steps, still_running) = runner.run_gui_cpu_slice(10_000, target);
+    assert!(still_running && !runner.is_halted());
+    assert_eq!(steps, expected_hover_steps);
+
+    // Hover down over options in the Pages dropdown:
+    // (28, 56) is Graphics, (44, 56) is Controls, (60, 56) is Windows.
+    for (v, h) in [(28, 56), (44, 56), (60, 56), (44, 56), (28, 56)] {
+        runner.set_mouse_position(v, h);
+        let start_time = std::time::Instant::now();
+        let target = runner.guest_tick().saturating_add(1);
+        let (steps, still_running) = runner.run_gui_cpu_slice(10_000, target);
+        let elapsed = start_time.elapsed();
+        assert!(still_running && !runner.is_halted());
+        assert_eq!(steps, expected_hover_steps, "hovering over an option must execute bounded steps and yield");
+        assert!(
+            elapsed < std::time::Duration::from_millis(1000),
+            "hover step took too long: {elapsed:?}"
+        );
+    }
+
+    // 3. Hover back to Options menu and into nested Game Options submenu:
+    runner.set_mouse_position(10, 146);
+    let target = runner.guest_tick().saturating_add(1);
+    let (steps, still_running) = runner.run_gui_cpu_slice(10_000, target);
+    assert!(still_running && !runner.is_halted());
+    assert_eq!(steps, expected_hover_steps);
+
+    // Hover over Game Options parent item (49, 170)
+    for _ in 0..10 {
+        runner.set_mouse_position(49, 170);
+        let start_time = std::time::Instant::now();
+        let target = runner.guest_tick().saturating_add(1);
+        let (steps, still_running) = runner.run_gui_cpu_slice(10_000, target);
+        let elapsed = start_time.elapsed();
+        assert!(still_running && !runner.is_halted());
+        assert_eq!(steps, expected_hover_steps, "nested hover step must execute bounded steps and yield");
+        assert!(
+            elapsed < std::time::Duration::from_millis(1000),
+            "nested hover step took too long: {elapsed:?}"
+        );
+    }
+
+    // 4. Finally, move back to Pages -> Controls item (44, 56) and release mouse.
+    runner.set_mouse_position(10, 56);
+    let target = runner.guest_tick().saturating_add(1);
+    let (steps, _) = runner.run_gui_cpu_slice(10_000, target);
+    assert_eq!(steps, expected_hover_steps);
+
+    runner.set_mouse_position(44, 56);
+    let target = runner.guest_tick().saturating_add(1);
+    let (steps, _) = runner.run_gui_cpu_slice(10_000, target);
+    assert_eq!(steps, expected_hover_steps);
+
+    runner.push_mouse_up(44, 56);
+    step_gui_until(&mut runner, "hover-select switch to Controls page", |r| {
+        !r.is_ui_tracking_active()
+            && menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_CONTROLS)
+    });
+    assert!(!runner.is_ui_tracking_active());
 }

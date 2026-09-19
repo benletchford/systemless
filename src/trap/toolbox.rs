@@ -14761,6 +14761,25 @@ impl super::TrapDispatcher {
                         record_movie_error(self, err);
                         Ok(())
                     }
+                    0x000E => {
+                        // GoToEndOfMovie ($AAAA selector $000E)
+                        // Repositions a movie to play from its end.
+                        // pascal void GoToEndOfMovie(Movie theMovie);
+                        // Inside Macintosh: QuickTime 1993, p. 2-114.
+                        let sp = cpu.read_reg(Register::A7);
+                        let movie = bus.read_long(sp);
+                        let err = if let Some(state) = self.movie_states.get_mut(&movie) {
+                            state.current_time = state.duration;
+                            state.audio_time = state.duration as f64;
+                            0
+                        } else {
+                            QUICKTIME_INVALID_MOVIE
+                        };
+                        cpu.write_reg(Register::A7, sp + 4);
+                        cpu.write_reg(Register::D0, err as u32);
+                        record_movie_error(self, err);
+                        Ok(())
+                    }
                     0x0016 => {
                         // SetMovieGWorld ($AAAA selector $0016)
                         // Sets the graphics world used to display a movie.
