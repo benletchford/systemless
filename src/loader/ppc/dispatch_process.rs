@@ -136,14 +136,16 @@ fn ppc_get_process_information(
         return PPC_PROC_NOT_FOUND_ERR;
     }
 
-    let app = ppc_current_process_app_metadata(
+    let app = resolve_process_application_metadata(
         vfs_directories,
         vfs_files,
         vfs_resource_files,
+        None,
         launched_app_path,
     );
     let name_ptr = memory.read_u32_be(info_ptr + 4).unwrap_or(0);
-    if name_ptr != 0 && !ppc_write_pstring_bytes(memory, name_ptr, &app.name) {
+    let app_name = ppc_vfs_basename_bytes(&app.path);
+    if name_ptr != 0 && !ppc_write_pstring_bytes(memory, name_ptr, &app_name) {
         return PPC_PARAM_ERR;
     }
     let app_spec_ptr = memory.read_u32_be(info_ptr + 56).unwrap_or(0);
@@ -153,7 +155,7 @@ fn ppc_get_process_information(
             app_spec_ptr,
             PPC_BOOT_VOLUME_REF_NUM,
             app.parent_dir_id,
-            &app.name,
+            &app_name,
         )
         .is_none()
     {
@@ -184,69 +186,4 @@ fn ppc_get_process_information(
         return PPC_PARAM_ERR;
     }
     PPC_NO_ERR
-}
-
-struct PpcProcessAppMetadata {
-    name: Vec<u8>,
-    parent_dir_id: u32,
-    file_type: u32,
-    creator: u32,
-}
-
-fn ppc_current_process_app_metadata(
-    vfs_directories: &[PpcVfsDirectory],
-    vfs_files: &[PpcVfsFileRecord],
-    vfs_resource_files: &[PpcVfsResourceFileRecord],
-    launched_app_path: Option<&str>,
-) -> PpcProcessAppMetadata {
-    let appl_type = u32::from_be_bytes(*b"APPL");
-    if let Some(path) = launched_app_path {
-        if let Some(file) = vfs_files
-            .iter()
-            .find(|file| file.path.eq_ignore_ascii_case(path) && file.file_type == appl_type)
-        {
-            return PpcProcessAppMetadata {
-                name: ppc_vfs_basename_bytes(&file.path),
-                parent_dir_id: ppc_parent_dir_id_for_path(vfs_directories, &file.path),
-                file_type: file.file_type,
-                creator: file.creator,
-            };
-        }
-        if let Some(file) = vfs_resource_files
-            .iter()
-            .find(|file| file.path.eq_ignore_ascii_case(path) && file.file_type == appl_type)
-        {
-            return PpcProcessAppMetadata {
-                name: ppc_vfs_basename_bytes(&file.path),
-                parent_dir_id: ppc_parent_dir_id_for_path(vfs_directories, &file.path),
-                file_type: file.file_type,
-                creator: file.creator,
-            };
-        }
-    }
-    if let Some(file) = vfs_files.iter().find(|file| file.file_type == appl_type) {
-        return PpcProcessAppMetadata {
-            name: ppc_vfs_basename_bytes(&file.path),
-            parent_dir_id: ppc_parent_dir_id_for_path(vfs_directories, &file.path),
-            file_type: file.file_type,
-            creator: file.creator,
-        };
-    }
-    if let Some(file) = vfs_resource_files
-        .iter()
-        .find(|file| file.file_type == appl_type)
-    {
-        return PpcProcessAppMetadata {
-            name: ppc_vfs_basename_bytes(&file.path),
-            parent_dir_id: ppc_parent_dir_id_for_path(vfs_directories, &file.path),
-            file_type: file.file_type,
-            creator: file.creator,
-        };
-    }
-    PpcProcessAppMetadata {
-        name: b"Application".to_vec(),
-        parent_dir_id: PPC_ROOT_DIR_ID,
-        file_type: appl_type,
-        creator: u32::from_be_bytes(*b"????"),
-    }
 }

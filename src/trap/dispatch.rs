@@ -41,6 +41,9 @@ use crate::process_context::{
     SharedProcessSoundManager, SharedProcessTextEditManager, SharedProcessTickState,
     SharedProcessValue,
 };
+use crate::process_manager::{
+    resolve_process_application_metadata, ProcessApplicationMetadata,
+};
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
 use crate::{Error, Result};
@@ -2230,6 +2233,16 @@ impl std::ops::Deref for TrapDispatcher {
 }
 
 impl TrapDispatcher {
+    pub(crate) fn current_process_application_metadata(&self) -> ProcessApplicationMetadata {
+        resolve_process_application_metadata(
+            &self.process_file_system.vfs_directories,
+            &self.process_file_system.vfs_files,
+            &self.process_file_system.resource_manager.vfs_resource_files,
+            Some(&self.vfs_metadata),
+            self.process_file_system.launched_app_path.as_deref(),
+        )
+    }
+
     /// Mutate process-owned Resource Manager state for one serialized trap
     /// operation without exposing a mutable reference through `DerefMut`.
     pub(crate) fn with_resource_manager_mut<R>(
