@@ -16808,6 +16808,52 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         return Some(action);
     }
 
+    if let Some(action) = dispatch_qd3d::dispatch_q3_geometry_import(
+        dispatch_qd3d::PpcQ3GeometryDispatchContext {
+            target: &binding.dispatcher_target,
+            cpu,
+            process_memory_manager,
+            memory,
+            stores: PpcQ3ObjectStores {
+                q3_objects,
+                q3_object_refs,
+                q3_renderer_preferences,
+                q3_files,
+                q3_group_memberships,
+                q3_file_groups,
+                q3_views,
+                q3_submissions,
+                q3_view_transforms,
+                q3_submission_transforms,
+                q3_view_materials,
+                q3_submission_materials,
+                q3_submission_lights,
+                q3_view_state_stack,
+                q3_completed_frames,
+                q3_retained_frames,
+                q3_fog_styles,
+                q3_memory_storages,
+                q3_attributes,
+                q3_shader_uv_transforms,
+                q3_shader_boundaries,
+                q3_mipmap_textures,
+                q3_texture_shaders,
+                q3_draw_contexts,
+                q3_trimeshes,
+                q3_styles,
+                q3_cameras,
+                q3_lights,
+            },
+            next_q3_object,
+            q3_error_state,
+            heap_cursor,
+            last_mem_error,
+            gworlds,
+        },
+    ) {
+        return Some(action);
+    }
+
     if let Some(action) = dispatch_qd3d::dispatch_q3_group_view_import(
         dispatch_qd3d::PpcQ3GroupViewDispatchContext {
             target: &binding.dispatcher_target,
@@ -18709,213 +18755,28 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 "QuickDraw 3D style imports return through dispatch_q3_shader_style_import_fast"
             )
         }
-        PpcImportDispatcherTarget::Q3TriMeshNew => {
-            Some(PpcImportAction::Return(ppc_q3_trimesh_new(
-                cpu,
-                process_memory_manager,
-                memory,
-                q3_objects,
-                q3_object_refs,
-                next_q3_object,
-                heap_cursor,
-                last_mem_error,
-                q3_trimeshes,
-            )))
+        PpcImportDispatcherTarget::Q3TriMeshNew
+        | PpcImportDispatcherTarget::Q3TriMeshGetData
+        | PpcImportDispatcherTarget::Q3TriMeshSetData
+        | PpcImportDispatcherTarget::Q3TriMeshEmptyData
+        | PpcImportDispatcherTarget::Q3AttributeSetNew
+        | PpcImportDispatcherTarget::Q3AttributeSetAdd
+        | PpcImportDispatcherTarget::Q3AttributeSetGet
+        | PpcImportDispatcherTarget::Q3AttributeSetClear
+        | PpcImportDispatcherTarget::Q3AttributeSetContains
+        | PpcImportDispatcherTarget::Q3AttributeSetGetNextAttributeType => {
+            unreachable!("QuickDraw 3D geometry imports return through typed dispatch")
         }
-        PpcImportDispatcherTarget::Q3TriMeshGetData => {
-            Some(PpcImportAction::Return(u32::from(ppc_q3_trimesh_get_data(
-                cpu,
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-                q3_objects,
-                q3_object_refs,
-                q3_error_state,
-                q3_attributes,
-                q3_texture_shaders,
-                q3_trimeshes,
-            ))))
-        }
-        PpcImportDispatcherTarget::Q3TriMeshSetData => {
-            Some(PpcImportAction::Return(u32::from(ppc_q3_trimesh_set_data(
-                cpu,
-                memory,
-                q3_objects,
-                q3_object_refs,
-                q3_renderer_preferences,
-                q3_error_state,
-                q3_files,
-                q3_group_memberships,
-                q3_file_groups,
-                q3_views,
-                q3_submissions,
-                q3_view_transforms,
-                q3_submission_transforms,
-                q3_view_materials,
-                q3_submission_materials,
-                q3_submission_lights,
-                q3_view_state_stack,
-                q3_completed_frames,
-                q3_retained_frames,
-                q3_fog_styles,
-                q3_memory_storages,
-                q3_attributes,
-                q3_shader_uv_transforms,
-                q3_shader_boundaries,
-                q3_mipmap_textures,
-                q3_texture_shaders,
-                q3_draw_contexts,
-                q3_trimeshes,
-                q3_styles,
-                q3_cameras,
-                q3_lights,
-            ))))
-        }
-        PpcImportDispatcherTarget::Q3TriMeshEmptyData => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_trimesh_empty_data(cpu, memory),
-        ))),
-        PpcImportDispatcherTarget::Q3AttributeSetNew => {
-            let attribute_set = ppc_q3_alloc_object(
-                q3_objects,
-                next_q3_object,
-                PpcQ3ObjectKind::Generic,
-                PPC_Q3_TYPE_ATTRIBUTE_SET,
-                0,
-                0,
-            );
-            Some(PpcImportAction::Return(attribute_set))
-        }
-        PpcImportDispatcherTarget::Q3AttributeSetAdd => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_attribute_set_add(
-                cpu,
-                memory,
-                q3_objects,
-                q3_object_refs,
-                q3_renderer_preferences,
-                q3_error_state,
-                q3_attributes,
-                q3_files,
-                q3_group_memberships,
-                q3_file_groups,
-                q3_views,
-                q3_submissions,
-                q3_view_transforms,
-                q3_submission_transforms,
-                q3_view_materials,
-                q3_submission_materials,
-                q3_submission_lights,
-                q3_view_state_stack,
-                q3_completed_frames,
-                q3_retained_frames,
-                q3_fog_styles,
-                q3_memory_storages,
-                q3_shader_uv_transforms,
-                q3_shader_boundaries,
-                q3_mipmap_textures,
-                q3_texture_shaders,
-                q3_draw_contexts,
-                q3_trimeshes,
-                q3_styles,
-                q3_cameras,
-                q3_lights,
-            ),
-        ))),
-        PpcImportDispatcherTarget::Q3AttributeSetGet => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_attribute_set_get(
-                cpu,
-                memory,
-                q3_objects,
-                q3_object_refs,
-                q3_error_state,
-                q3_attributes,
-            ),
-        ))),
-        PpcImportDispatcherTarget::Q3AttributeSetClear => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_attribute_set_clear(
-                cpu,
-                q3_objects,
-                q3_object_refs,
-                q3_renderer_preferences,
-                q3_error_state,
-                q3_attributes,
-                q3_files,
-                q3_group_memberships,
-                q3_file_groups,
-                q3_views,
-                q3_submissions,
-                q3_view_transforms,
-                q3_submission_transforms,
-                q3_view_materials,
-                q3_submission_materials,
-                q3_submission_lights,
-                q3_view_state_stack,
-                q3_completed_frames,
-                q3_retained_frames,
-                q3_fog_styles,
-                q3_memory_storages,
-                q3_shader_uv_transforms,
-                q3_shader_boundaries,
-                q3_mipmap_textures,
-                q3_texture_shaders,
-                q3_draw_contexts,
-                q3_trimeshes,
-                q3_styles,
-                q3_cameras,
-                q3_lights,
-            ),
-        ))),
-        PpcImportDispatcherTarget::Q3AttributeSetContains => {
-            Some(PpcImportAction::Return(u32::from(
-                ppc_q3_attribute_set_contains(cpu, q3_objects, q3_error_state, q3_attributes),
-            )))
-        }
-        PpcImportDispatcherTarget::Q3AttributeSetGetNextAttributeType => Some(
-            PpcImportAction::Return(u32::from(ppc_q3_attribute_set_get_next_attribute_type(
-                cpu,
-                memory,
-                q3_objects,
-                q3_error_state,
-                q3_attributes,
-            ))),
-        ),
         PpcImportDispatcherTarget::Q3StorageGetSize
         | PpcImportDispatcherTarget::Q3StorageGetData
         | PpcImportDispatcherTarget::Q3StorageSetData => {
             unreachable!("QuickDraw 3D storage imports return through typed dispatch")
         }
-        PpcImportDispatcherTarget::Q3PixmapDrawContextNew => {
-            Some(PpcImportAction::Return(ppc_q3_draw_context_new(
-                cpu,
-                memory,
-                q3_objects,
-                next_q3_object,
-                q3_draw_contexts,
-                PPC_Q3_DRAW_CONTEXT_TYPE_PIXMAP,
-                PPC_Q3_PIXMAP_DRAW_CONTEXT_DATA_SIZE,
-            )))
+        PpcImportDispatcherTarget::Q3PixmapDrawContextNew
+        | PpcImportDispatcherTarget::Q3MacDrawContextNew
+        | PpcImportDispatcherTarget::Q3DrawContextGetPane => {
+            unreachable!("QuickDraw 3D geometry imports return through typed dispatch")
         }
-        PpcImportDispatcherTarget::Q3MacDrawContextNew => {
-            Some(PpcImportAction::Return(ppc_q3_draw_context_new(
-                cpu,
-                memory,
-                q3_objects,
-                next_q3_object,
-                q3_draw_contexts,
-                PPC_Q3_DRAW_CONTEXT_TYPE_MACINTOSH,
-                PPC_Q3_MAC_DRAW_CONTEXT_DATA_SIZE,
-            )))
-        }
-        PpcImportDispatcherTarget::Q3DrawContextGetPane => Some(PpcImportAction::Return(
-            u32::from(ppc_q3_draw_context_get_pane(
-                cpu,
-                memory,
-                q3_objects,
-                q3_error_state,
-                q3_draw_contexts,
-                gworlds,
-            )),
-        )),
         PpcImportDispatcherTarget::Q3Vector3DNormalize
         | PpcImportDispatcherTarget::Q3Vector2DNormalize
         | PpcImportDispatcherTarget::Q3Vector3DCross
@@ -19138,30 +18999,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             ))))
         }
         PpcImportDispatcherTarget::Q3TriMeshSubmit => {
-            Some(PpcImportAction::Return(u32::from(ppc_q3_submit(
-                cpu,
-                memory,
-                q3_objects,
-                q3_group_memberships,
-                q3_views,
-                q3_view_transforms,
-                q3_submissions,
-                q3_submission_transforms,
-                q3_view_materials,
-                q3_submission_materials,
-                q3_submission_lights,
-                q3_view_state_stack,
-                q3_attributes,
-                q3_styles,
-                q3_shader_boundaries,
-                q3_shader_uv_transforms,
-                q3_texture_shaders,
-                q3_mipmap_textures,
-                q3_trimeshes,
-                q3_lights,
-                q3_error_state,
-                PpcQ3SubmissionKind::TriMesh,
-            ))))
+            unreachable!("QuickDraw 3D submissions return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3MatrixTransformSubmit => {
             Some(PpcImportAction::Return(u32::from(ppc_q3_submit(
