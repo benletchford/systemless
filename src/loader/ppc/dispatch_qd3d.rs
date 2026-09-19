@@ -466,6 +466,346 @@ pub(super) fn dispatch_q3_shader_style_import_fast(
     }
 }
 
+pub(super) struct PpcQ3SceneDispatchContext<'a> {
+    pub(super) target: &'a PpcImportDispatcherTarget,
+    pub(super) cpu: &'a PpcCpu,
+    pub(super) memory: &'a mut PpcSectionMem,
+    pub(super) q3_objects: &'a mut Vec<PpcQ3ObjectRecord>,
+    pub(super) next_q3_object: &'a mut u32,
+    pub(super) q3_cameras: &'a mut Vec<PpcQ3CameraRecord>,
+    pub(super) q3_lights: &'a mut Vec<PpcQ3LightRecord>,
+    pub(super) q3_error_state: &'a mut PpcQ3ErrorState,
+}
+
+pub(super) fn dispatch_q3_scene_import_fast(
+    context: PpcQ3SceneDispatchContext<'_>,
+) -> Option<PpcImportAction> {
+    let PpcQ3SceneDispatchContext {
+        target,
+        cpu,
+        memory,
+        q3_objects,
+        next_q3_object,
+        q3_cameras,
+        q3_lights,
+        q3_error_state,
+    } = context;
+    match target {
+        PpcImportDispatcherTarget::Q3ViewAngleAspectCameraNew => Some(PpcImportAction::Return(
+            ppc_q3_view_angle_aspect_camera_new(
+                cpu,
+                memory,
+                q3_objects,
+                next_q3_object,
+                q3_cameras,
+            ),
+        )),
+        PpcImportDispatcherTarget::Q3OrthographicCameraNew => Some(PpcImportAction::Return(
+            ppc_q3_orthographic_camera_new(cpu, memory, q3_objects, next_q3_object, q3_cameras),
+        )),
+        PpcImportDispatcherTarget::Q3ViewPlaneCameraNew => Some(PpcImportAction::Return(
+            ppc_q3_view_plane_camera_new(cpu, memory, q3_objects, next_q3_object, q3_cameras),
+        )),
+        PpcImportDispatcherTarget::Q3CameraGetPlacement => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_camera_get_placement(cpu, memory, q3_objects, q3_error_state, q3_cameras),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3CameraSetPlacement => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_camera_set_placement(cpu, memory, q3_objects, q3_error_state, q3_cameras),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3CameraGetRange => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_camera_get_range(cpu, memory, q3_objects, q3_error_state, q3_cameras),
+        ))),
+        PpcImportDispatcherTarget::Q3CameraSetRange => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_camera_set_range(cpu, memory, q3_objects, q3_error_state, q3_cameras),
+        ))),
+        PpcImportDispatcherTarget::Q3CameraGetViewPort => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_camera_get_viewport(cpu, memory, q3_objects, q3_error_state, q3_cameras),
+        ))),
+        PpcImportDispatcherTarget::Q3CameraSetViewPort => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_camera_set_viewport(cpu, memory, q3_objects, q3_error_state, q3_cameras),
+        ))),
+        PpcImportDispatcherTarget::Q3CameraGetWorldToView => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_camera_get_world_to_view(
+                cpu,
+                memory,
+                q3_objects,
+                q3_error_state,
+                q3_cameras,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3CameraGetViewToFrustum => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_camera_get_view_to_frustum(
+                cpu,
+                memory,
+                q3_objects,
+                q3_error_state,
+                q3_cameras,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3LightGetType => Some(PpcImportAction::Return(
+            ppc_q3_light_get_type(cpu, q3_objects, q3_error_state, q3_lights),
+        )),
+        PpcImportDispatcherTarget::Q3LightGetState => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_light_get_state(cpu, memory, q3_objects, q3_error_state, q3_lights),
+        ))),
+        PpcImportDispatcherTarget::Q3LightSetState => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_light_set_state(cpu, q3_objects, q3_error_state, q3_lights),
+        ))),
+        PpcImportDispatcherTarget::Q3LightGetBrightness => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_light_get_brightness(cpu, memory, q3_objects, q3_error_state, q3_lights),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3LightSetBrightness => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_light_set_brightness(
+                cpu,
+                q3_objects,
+                q3_error_state,
+                q3_lights,
+                ppc_fpr_as_f32(cpu, 1),
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3LightGetColor => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_light_get_color(cpu, memory, q3_objects, q3_error_state, q3_lights),
+        ))),
+        PpcImportDispatcherTarget::Q3LightSetColor => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_light_set_color(cpu, memory, q3_objects, q3_error_state, q3_lights),
+        ))),
+        PpcImportDispatcherTarget::Q3LightGetData => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_light_get_data(cpu, memory, q3_objects, q3_error_state, q3_lights),
+        ))),
+        PpcImportDispatcherTarget::Q3LightSetData => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_light_set_data(cpu, memory, q3_objects, q3_error_state, q3_lights),
+        ))),
+        PpcImportDispatcherTarget::Q3AmbientLightNew => Some(PpcImportAction::Return(
+            ppc_q3_ambient_light_new(cpu, memory, q3_objects, next_q3_object, q3_lights),
+        )),
+        PpcImportDispatcherTarget::Q3AmbientLightGetData => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_ambient_light_get_data(cpu, memory, q3_objects, q3_error_state, q3_lights),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3AmbientLightSetData => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_ambient_light_set_data(cpu, memory, q3_objects, q3_error_state, q3_lights),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3DirectionalLightNew => Some(PpcImportAction::Return(
+            ppc_q3_directional_light_new(cpu, memory, q3_objects, next_q3_object, q3_lights),
+        )),
+        PpcImportDispatcherTarget::Q3DirectionalLightGetCastShadowsState => Some(
+            PpcImportAction::Return(u32::from(ppc_q3_directional_light_get_cast_shadows_state(
+                cpu,
+                memory,
+                q3_objects,
+                q3_error_state,
+                q3_lights,
+            ))),
+        ),
+        PpcImportDispatcherTarget::Q3DirectionalLightSetCastShadowsState => Some(
+            PpcImportAction::Return(u32::from(ppc_q3_directional_light_set_cast_shadows_state(
+                cpu,
+                q3_objects,
+                q3_error_state,
+                q3_lights,
+            ))),
+        ),
+        PpcImportDispatcherTarget::Q3DirectionalLightGetDirection => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_directional_light_get_direction(
+                cpu,
+                memory,
+                q3_objects,
+                q3_error_state,
+                q3_lights,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3DirectionalLightSetDirection => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_directional_light_set_direction(
+                cpu,
+                memory,
+                q3_objects,
+                q3_error_state,
+                q3_lights,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3DirectionalLightGetData => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_directional_light_get_data(
+                cpu,
+                memory,
+                q3_objects,
+                q3_error_state,
+                q3_lights,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3DirectionalLightSetData => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_directional_light_set_data(
+                cpu,
+                memory,
+                q3_objects,
+                q3_error_state,
+                q3_lights,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3PointLightNew => Some(PpcImportAction::Return(
+            ppc_q3_point_light_new(cpu, memory, q3_objects, next_q3_object, q3_lights),
+        )),
+        PpcImportDispatcherTarget::Q3PointLightGetCastShadowsState => Some(
+            PpcImportAction::Return(u32::from(ppc_q3_point_light_get_cast_shadows_state(
+                cpu,
+                memory,
+                q3_objects,
+                q3_error_state,
+                q3_lights,
+            ))),
+        ),
+        PpcImportDispatcherTarget::Q3PointLightSetCastShadowsState => Some(
+            PpcImportAction::Return(u32::from(ppc_q3_point_light_set_cast_shadows_state(
+                cpu,
+                q3_objects,
+                q3_error_state,
+                q3_lights,
+            ))),
+        ),
+        PpcImportDispatcherTarget::Q3PointLightGetAttenuation => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_point_light_get_attenuation(
+                cpu,
+                memory,
+                q3_objects,
+                q3_error_state,
+                q3_lights,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3PointLightSetAttenuation => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_point_light_set_attenuation(cpu, q3_objects, q3_error_state, q3_lights),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3PointLightGetLocation => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_point_light_get_location(cpu, memory, q3_objects, q3_error_state, q3_lights),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3PointLightSetLocation => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_point_light_set_location(cpu, memory, q3_objects, q3_error_state, q3_lights),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3PointLightGetData => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_point_light_get_data(cpu, memory, q3_objects, q3_error_state, q3_lights),
+        ))),
+        PpcImportDispatcherTarget::Q3PointLightSetData => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_point_light_set_data(cpu, memory, q3_objects, q3_error_state, q3_lights),
+        ))),
+        PpcImportDispatcherTarget::Q3SpotLightNew => Some(PpcImportAction::Return(
+            ppc_q3_spot_light_new(cpu, memory, q3_objects, next_q3_object, q3_lights),
+        )),
+        PpcImportDispatcherTarget::Q3SpotLightGetCastShadowsState => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_spot_light_get_cast_shadows_state(
+                cpu,
+                memory,
+                q3_objects,
+                q3_error_state,
+                q3_lights,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3SpotLightSetCastShadowsState => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_spot_light_set_cast_shadows_state(
+                cpu,
+                q3_objects,
+                q3_error_state,
+                q3_lights,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3SpotLightGetAttenuation => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_spot_light_get_attenuation(
+                cpu,
+                memory,
+                q3_objects,
+                q3_error_state,
+                q3_lights,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3SpotLightSetAttenuation => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_spot_light_set_attenuation(cpu, q3_objects, q3_error_state, q3_lights),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3SpotLightGetLocation => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_spot_light_get_location(cpu, memory, q3_objects, q3_error_state, q3_lights),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3SpotLightSetLocation => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_spot_light_set_location(cpu, memory, q3_objects, q3_error_state, q3_lights),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3SpotLightGetDirection => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_spot_light_get_direction(cpu, memory, q3_objects, q3_error_state, q3_lights),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3SpotLightSetDirection => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_spot_light_set_direction(cpu, memory, q3_objects, q3_error_state, q3_lights),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3SpotLightGetHotAngle => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_spot_light_get_hot_angle(cpu, memory, q3_objects, q3_error_state, q3_lights),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3SpotLightSetHotAngle => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_spot_light_set_hot_angle(
+                cpu,
+                q3_objects,
+                q3_error_state,
+                q3_lights,
+                ppc_fpr_as_f32(cpu, 1),
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3SpotLightGetOuterAngle => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_spot_light_get_outer_angle(
+                cpu,
+                memory,
+                q3_objects,
+                q3_error_state,
+                q3_lights,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3SpotLightSetOuterAngle => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_spot_light_set_outer_angle(
+                cpu,
+                q3_objects,
+                q3_error_state,
+                q3_lights,
+                ppc_fpr_as_f32(cpu, 1),
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3SpotLightGetFallOff => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_spot_light_get_fall_off(cpu, memory, q3_objects, q3_error_state, q3_lights),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3SpotLightSetFallOff => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_spot_light_set_fall_off(cpu, q3_objects, q3_error_state, q3_lights),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3SpotLightGetData => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_spot_light_get_data(cpu, memory, q3_objects, q3_error_state, q3_lights),
+        ))),
+        PpcImportDispatcherTarget::Q3SpotLightSetData => Some(PpcImportAction::Return(u32::from(
+            ppc_q3_spot_light_set_data(cpu, memory, q3_objects, q3_error_state, q3_lights),
+        ))),
+        _ => None,
+    }
+}
+
 pub(super) struct PpcQ3ObjectGroupDispatchContext<'a> {
     pub(super) target: &'a PpcImportDispatcherTarget,
     pub(super) cpu: &'a PpcCpu,
