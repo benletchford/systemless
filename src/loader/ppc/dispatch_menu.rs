@@ -742,6 +742,13 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                     .unwrap_or(0),
             ))
         }
+        PpcImportDispatcherTarget::GetMBarHeight => Some(PpcImportAction::Return(u32::from(
+            memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20),
+        ))),
+        PpcImportDispatcherTarget::SetMBarHeight => {
+            let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, cpu.gpr[3] as u16);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::MenuSelect => ppc_step_menu_tracking(
             cpu,
             process_memory_manager,

@@ -17014,6 +17014,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             memory,
             handles,
             gworlds,
+            current_gworld: *current_gworld,
             current_menu_list,
             screen_clut,
             toolbox_startup,
@@ -17566,6 +17567,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::MenuKey
         | PpcImportDispatcherTarget::MenuEvent
         | PpcImportDispatcherTarget::MenuChoice
+        | PpcImportDispatcherTarget::GetMBarHeight
+        | PpcImportDispatcherTarget::SetMBarHeight
         | PpcImportDispatcherTarget::MenuSelect => {
             unreachable!("menu imports return through dispatch_menu_import")
         }
@@ -18025,30 +18028,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::CalcVisBehind => {
             unreachable!("window imports return through dispatch_window_import")
         }
-        PpcImportDispatcherTarget::GetMouse => {
-            let point_ptr = cpu.gpr[3];
-            if point_ptr != 0 && ppc_memory_can_write_bytes(memory, point_ptr, 4) {
-                let _ = memory.write_u16_be(point_ptr, input.mouse_v as u16);
-                let _ = memory.write_u16_be(point_ptr + 2, input.mouse_h as u16);
-                // GetMouse reports the position in the current graphics port's
-                // local coordinate system. EventRecord.where remains global.
-                // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 2-25.
-                let _ = ppc_transform_port_point(memory, *current_gworld, point_ptr, false);
-            }
-            if crate::trap::dispatch::trace_input_enabled() {
-                let local_v = memory
-                    .read_u16_be(point_ptr)
-                    .unwrap_or(input.mouse_v as u16) as i16;
-                let local_h = memory
-                    .read_u16_be(point_ptr.saturating_add(2))
-                    .unwrap_or(input.mouse_h as u16) as i16;
-                eprintln!(
-                    "[INPUT] PPC GetMouse ptr=${point_ptr:08X} -> ({}, {})",
-                    local_v, local_h
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
         PpcImportDispatcherTarget::SelectWindow => {
             unreachable!("window imports return through dispatch_window_import")
         }
@@ -18101,13 +18080,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::GetDefFontSize
         | PpcImportDispatcherTarget::GetFontName => {
             unreachable!("Font Manager imports return through dispatch_font_import")
-        }
-        PpcImportDispatcherTarget::GetMBarHeight => Some(PpcImportAction::Return(u32::from(
-            memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20),
-        ))),
-        PpcImportDispatcherTarget::SetMBarHeight => {
-            let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, cpu.gpr[3] as u16);
-            Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DMGetDisplayIDByGDevice
         | PpcImportDispatcherTarget::DMGetGDeviceByDisplayID => {
@@ -20506,7 +20478,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::Button
         | PpcImportDispatcherTarget::StillDown
         | PpcImportDispatcherTarget::WaitMouseUp
-        | PpcImportDispatcherTarget::GetKeys => {
+        | PpcImportDispatcherTarget::GetKeys
+        | PpcImportDispatcherTarget::GetMouse => {
             unreachable!("event imports return through dispatch_event_import")
         }
         PpcImportDispatcherTarget::LMGetMenuList

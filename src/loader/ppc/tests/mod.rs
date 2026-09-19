@@ -64144,7 +64144,7 @@ fn hle_import_runner_get_max_device_requires_screen_intersection() {
 }
 
 #[test]
-fn hle_import_runner_handles_get_mbar_height() {
+fn hle_import_runner_handles_menu_bar_height_accessors() {
     let pef = synthetic_pef_with_import(b"GetMBarHeight");
     let mut loaded = load_pef_application(&pef).unwrap();
 
@@ -64153,6 +64153,16 @@ fn hle_import_runner_handles_get_mbar_height() {
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 20);
+
+    let pef = synthetic_pef_with_import(b"LMSetMBarHeight");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 37;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR), Some(37));
 }
 
 mod font_manager;
