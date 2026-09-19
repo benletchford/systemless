@@ -4,6 +4,7 @@ pub(super) struct PpcQuickDrawDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
     pub(super) memory: &'a mut PpcSectionMem,
+    pub(super) gworlds: &'a [PpcGWorldRecord],
     pub(super) tick_count: u32,
     pub(super) current_gworld: u32,
     pub(super) current_gdevice: u32,
@@ -24,6 +25,7 @@ pub(super) fn dispatch_quickdraw_import(
         binding,
         cpu,
         memory,
+        gworlds,
         tick_count,
         current_gworld,
         current_gdevice,
@@ -38,6 +40,12 @@ pub(super) fn dispatch_quickdraw_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::InitGraf => {
+            toolbox_startup.init_graf_count = toolbox_startup.init_graf_count.saturating_add(1);
+            toolbox_startup.init_graf_global_ptr = cpu.gpr[3];
+            let _ = ppc_init_graf(memory, gworlds, cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetForeColor => {
             let color_ptr = cpu.gpr[3];
             if color_ptr != 0 && ppc_memory_can_write_bytes(memory, color_ptr, 6) {
