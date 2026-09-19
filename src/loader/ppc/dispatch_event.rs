@@ -388,6 +388,7 @@ pub(super) struct PpcEventDispatchContext<'a> {
     pub(super) memory: &'a mut PpcSectionMem,
     pub(super) handles: &'a [PpcHandleRecord],
     pub(super) gworlds: &'a [PpcGWorldRecord],
+    pub(super) current_gworld: u32,
     pub(super) current_menu_list: u32,
     pub(super) screen_clut: &'a [[u16; 3]; 256],
     pub(super) toolbox_startup: &'a mut PpcToolboxStartupState,
@@ -406,6 +407,7 @@ pub(super) fn dispatch_event_import(
         memory,
         handles,
         gworlds,
+        current_gworld,
         current_menu_list,
         screen_clut,
         toolbox_startup,
@@ -596,6 +598,30 @@ pub(super) fn dispatch_event_import(
         }
         PpcImportDispatcherTarget::GetKeys => {
             Some(dispatch_getkeys_import(cpu, memory, input, None))
+        }
+        PpcImportDispatcherTarget::GetMouse => {
+            let point_ptr = cpu.gpr[3];
+            if point_ptr != 0 && ppc_memory_can_write_bytes(memory, point_ptr, 4) {
+                let _ = memory.write_u16_be(point_ptr, input.mouse_v as u16);
+                let _ = memory.write_u16_be(point_ptr + 2, input.mouse_h as u16);
+                // GetMouse reports the position in the current graphics port's
+                // local coordinate system. EventRecord.where remains global.
+                // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 2-25.
+                let _ = ppc_transform_port_point(memory, current_gworld, point_ptr, false);
+            }
+            if crate::trap::dispatch::trace_input_enabled() {
+                let local_v = memory
+                    .read_u16_be(point_ptr)
+                    .unwrap_or(input.mouse_v as u16) as i16;
+                let local_h = memory
+                    .read_u16_be(point_ptr.saturating_add(2))
+                    .unwrap_or(input.mouse_h as u16) as i16;
+                eprintln!(
+                    "[INPUT] PPC GetMouse ptr=${point_ptr:08X} -> ({}, {})",
+                    local_v, local_h
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
         }
         _ => None,
     }
