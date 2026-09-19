@@ -8724,6 +8724,47 @@ impl PpcLoadedApp {
                     },
                 ) {
                     Some(action)
+                } else if let Some(action) =
+                    dispatch_qd3d::dispatch_q3_object_renderer_import_fast(
+                        dispatch_qd3d::PpcQ3ObjectRendererDispatchContext {
+                            target: &binding.dispatcher_target,
+                            cpu,
+                            stores: PpcQ3ObjectStores {
+                                q3_objects: &mut q3_objects,
+                                q3_object_refs: &mut q3_object_refs,
+                                q3_renderer_preferences: &mut q3_renderer_preferences,
+                                q3_files: &mut q3_files,
+                                q3_group_memberships: &mut q3_group_memberships,
+                                q3_file_groups: &mut q3_file_groups,
+                                q3_views: &mut q3_views,
+                                q3_submissions: &mut q3_submissions,
+                                q3_view_transforms: &mut q3_view_transforms,
+                                q3_submission_transforms: &mut q3_submission_transforms,
+                                q3_view_materials: &mut q3_view_materials,
+                                q3_submission_materials: &mut q3_submission_materials,
+                                q3_submission_lights: &mut q3_submission_lights,
+                                q3_view_state_stack: &mut q3_view_state_stack,
+                                q3_completed_frames: &mut q3_completed_frames,
+                                q3_retained_frames: &mut q3_retained_frames,
+                                q3_fog_styles: &mut q3_fog_styles,
+                                q3_memory_storages: &mut q3_memory_storages,
+                                q3_attributes: &mut q3_attributes,
+                                q3_shader_uv_transforms: &mut q3_shader_uv_transforms,
+                                q3_shader_boundaries: &mut q3_shader_boundaries,
+                                q3_mipmap_textures: &mut q3_mipmap_textures,
+                                q3_texture_shaders: &mut q3_texture_shaders,
+                                q3_draw_contexts: &mut q3_draw_contexts,
+                                q3_trimeshes: &mut q3_trimeshes,
+                                q3_styles: &mut q3_styles,
+                                q3_cameras: &mut q3_cameras,
+                                q3_lights: &mut q3_lights,
+                            },
+                            q3_error_state: &mut q3_error_state,
+                            next_q3_object: &mut next_q3_object,
+                        },
+                    )
+                {
+                    Some(action)
                 } else if let Some(action) = dispatch_qd3d::dispatch_q3_object_group_import_fast(
                     dispatch_qd3d::PpcQ3ObjectGroupDispatchContext {
                         target: &binding.dispatcher_target,
@@ -18419,133 +18460,19 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 Some(PpcImportAction::Return(last_error))
             }
         }
-        PpcImportDispatcherTarget::Q3ObjectDispose => {
-            let object = cpu.gpr[3];
-            let disposed = {
-                let mut stores = PpcQ3ObjectStores {
-                    q3_objects,
-                    q3_object_refs,
-                    q3_renderer_preferences,
-                    q3_files,
-                    q3_group_memberships,
-                    q3_file_groups,
-                    q3_views,
-                    q3_submissions,
-                    q3_view_transforms,
-                    q3_submission_transforms,
-                    q3_view_materials,
-                    q3_submission_materials,
-                    q3_submission_lights,
-                    q3_view_state_stack,
-                    q3_completed_frames,
-                    q3_retained_frames,
-                    q3_fog_styles,
-                    q3_memory_storages,
-                    q3_attributes,
-                    q3_shader_uv_transforms,
-                    q3_shader_boundaries,
-                    q3_mipmap_textures,
-                    q3_texture_shaders,
-                    q3_draw_contexts,
-                    q3_trimeshes,
-                    q3_styles,
-                    q3_cameras,
-                    q3_lights,
-                };
-                ppc_q3_object_release_reference(&mut stores, object)
-            };
-            if !disposed {
-                q3_error_state.post(PPC_Q3_ERROR_INVALID_OBJECT_PARAMETER);
-            }
-            Some(PpcImportAction::Return(u32::from(disposed)))
-        }
-        PpcImportDispatcherTarget::Q3ObjectDuplicate => {
-            let object = cpu.gpr[3];
-            if ppc_q3_object_retain(q3_objects, q3_object_refs, object) {
-                Some(PpcImportAction::Return(object))
-            } else {
-                q3_error_state.post(PPC_Q3_ERROR_INVALID_OBJECT_PARAMETER);
-                Some(PpcImportAction::Return(0))
-            }
-        }
-        PpcImportDispatcherTarget::Q3SharedGetReference => {
-            let object = cpu.gpr[3];
-            let object_type = ppc_q3_object_type_for_handle(q3_objects, object);
-            if ppc_q3_object_type_is_shared(object_type)
-                && ppc_q3_object_retain(q3_objects, q3_object_refs, object)
-            {
-                Some(PpcImportAction::Return(object))
-            } else {
-                q3_error_state.post(PPC_Q3_ERROR_INVALID_OBJECT_PARAMETER);
-                Some(PpcImportAction::Return(0))
-            }
-        }
-        PpcImportDispatcherTarget::Q3SharedIsReferenced => {
-            let object = cpu.gpr[3];
-            let object_type = ppc_q3_object_type_for_handle(q3_objects, object);
-            if ppc_q3_object_type_is_shared(object_type) {
-                Some(PpcImportAction::Return(u32::from(
-                    ppc_q3_object_reference_count(q3_objects, q3_object_refs, object)
-                        .is_some_and(|ref_count| ref_count > 1),
-                )))
-            } else {
-                q3_error_state.post(PPC_Q3_ERROR_INVALID_OBJECT_PARAMETER);
-                Some(PpcImportAction::Return(0))
-            }
-        }
-        PpcImportDispatcherTarget::Q3SharedGetType => {
-            let object = cpu.gpr[3];
-            let shared_type = ppc_q3_shared_type_for_object_type(ppc_q3_object_type_for_handle(
-                q3_objects, object,
-            ));
-            if shared_type != PPC_Q3_TYPE_NONE {
-                Some(PpcImportAction::Return(shared_type))
-            } else {
-                q3_error_state.post(PPC_Q3_ERROR_INVALID_OBJECT_PARAMETER);
-                Some(PpcImportAction::Return(PPC_Q3_TYPE_NONE))
-            }
-        }
-        PpcImportDispatcherTarget::Q3ShapeGetType => {
-            let object = cpu.gpr[3];
-            let shape_type = ppc_q3_shape_type_for_object_type(ppc_q3_object_type_for_handle(
-                q3_objects, object,
-            ));
-            if shape_type != PPC_Q3_TYPE_NONE {
-                Some(PpcImportAction::Return(shape_type))
-            } else {
-                q3_error_state.post(PPC_Q3_ERROR_INVALID_OBJECT_PARAMETER);
-                Some(PpcImportAction::Return(PPC_Q3_TYPE_NONE))
-            }
-        }
-        PpcImportDispatcherTarget::Q3ShapeGetLeafType => {
-            let object = cpu.gpr[3];
-            let object_type = ppc_q3_object_type_for_handle(q3_objects, object);
-            if ppc_q3_shape_type_for_object_type(object_type) != PPC_Q3_TYPE_NONE {
-                Some(PpcImportAction::Return(object_type))
-            } else {
-                q3_error_state.post(PPC_Q3_ERROR_INVALID_OBJECT_PARAMETER);
-                Some(PpcImportAction::Return(PPC_Q3_TYPE_NONE))
-            }
-        }
-        PpcImportDispatcherTarget::Q3ObjectIsDrawable => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_object_is_drawable(cpu, q3_objects, q3_error_state),
-        ))),
-        PpcImportDispatcherTarget::Q3ObjectIsType => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_object_is_type(cpu, q3_objects, q3_error_state),
-        ))),
-        PpcImportDispatcherTarget::Q3ObjectGetType => {
-            Some(PpcImportAction::Return(ppc_q3_object_type(cpu, q3_objects)))
-        }
-        PpcImportDispatcherTarget::Q3ObjectGetLeafType => {
-            Some(PpcImportAction::Return(ppc_q3_object_type(cpu, q3_objects)))
-        }
-        PpcImportDispatcherTarget::Q3GeometryGetType => {
-            Some(PpcImportAction::Return(ppc_q3_class_object_type(
-                cpu,
-                q3_objects,
-                q3_error_state,
-                ppc_q3_object_type_is_geometry,
-            )))
+        PpcImportDispatcherTarget::Q3ObjectDispose
+        | PpcImportDispatcherTarget::Q3ObjectDuplicate
+        | PpcImportDispatcherTarget::Q3SharedGetReference
+        | PpcImportDispatcherTarget::Q3SharedIsReferenced
+        | PpcImportDispatcherTarget::Q3SharedGetType
+        | PpcImportDispatcherTarget::Q3ShapeGetType
+        | PpcImportDispatcherTarget::Q3ShapeGetLeafType
+        | PpcImportDispatcherTarget::Q3ObjectIsDrawable
+        | PpcImportDispatcherTarget::Q3ObjectIsType
+        | PpcImportDispatcherTarget::Q3ObjectGetType
+        | PpcImportDispatcherTarget::Q3ObjectGetLeafType
+        | PpcImportDispatcherTarget::Q3GeometryGetType => {
+            unreachable!("QuickDraw 3D object imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3ShaderGetType => {
             Some(PpcImportAction::Return(ppc_q3_class_object_type(
@@ -18555,19 +18482,12 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 ppc_q3_object_type_is_shader,
             )))
         }
-        PpcImportDispatcherTarget::Q3GroupGetType => Some(PpcImportAction::Return(
-            ppc_q3_class_object_type(cpu, q3_objects, q3_error_state, ppc_q3_object_type_is_group),
-        )),
-        PpcImportDispatcherTarget::Q3RendererNewFromType => Some(PpcImportAction::Return(
-            ppc_q3_renderer_new_from_type(cpu, q3_objects, q3_error_state, next_q3_object),
-        )),
-        PpcImportDispatcherTarget::Q3RendererGetType => Some(PpcImportAction::Return(
-            ppc_q3_renderer_get_type(cpu, q3_objects, q3_error_state),
-        )),
-        PpcImportDispatcherTarget::Q3RendererSync | PpcImportDispatcherTarget::Q3RendererFlush => {
-            Some(PpcImportAction::Return(u32::from(
-                ppc_q3_renderer_is_valid(cpu, q3_objects, q3_error_state),
-            )))
+        PpcImportDispatcherTarget::Q3GroupGetType
+        | PpcImportDispatcherTarget::Q3RendererNewFromType
+        | PpcImportDispatcherTarget::Q3RendererGetType
+        | PpcImportDispatcherTarget::Q3RendererSync
+        | PpcImportDispatcherTarget::Q3RendererFlush => {
+            unreachable!("QuickDraw 3D object/renderer imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3InteractiveRendererSetDoubleBufferBypass => {
             Some(PpcImportAction::Return(u32::from(
