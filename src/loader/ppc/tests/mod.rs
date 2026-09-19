@@ -65241,6 +65241,8 @@ mod font_manager;
 
 mod display_depth;
 
+mod device_manager;
+
 mod draw_sprocket;
 
 mod input_sprocket;
