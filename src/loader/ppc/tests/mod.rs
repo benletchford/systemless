@@ -64923,6 +64923,53 @@ fn hle_import_runner_handles_wake_up_process() {
 }
 
 #[test]
+fn hle_import_runner_handles_same_process() {
+    let pef = synthetic_pef_with_import(b"SameProcess");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let first_psn_ptr = PPC_DATA_BASE + 0x1000;
+    let second_psn_ptr = PPC_DATA_BASE + 0x1008;
+    let result_ptr = PPC_DATA_BASE + 0x1010;
+    loaded.memory.add_region(first_psn_ptr, vec![0; 17]);
+    for psn_ptr in [first_psn_ptr, second_psn_ptr] {
+        loaded
+            .memory
+            .write_u32_be(psn_ptr, PPC_CURRENT_PROCESS_PSN_HIGH)
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(psn_ptr + 4, PPC_CURRENT_PROCESS_PSN_LOW)
+            .unwrap();
+    }
+    loaded.cpu.gpr[3] = first_psn_ptr;
+    loaded.cpu.gpr[4] = second_psn_ptr;
+    loaded.cpu.gpr[5] = result_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u8(result_ptr), Some(1));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = first_psn_ptr;
+    loaded.cpu.gpr[4] = second_psn_ptr;
+    loaded.cpu.gpr[5] = result_ptr;
+    loaded
+        .memory
+        .write_u32_be(second_psn_ptr + 4, PPC_CURRENT_PROCESS_PSN_LOW + 1)
+        .unwrap();
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u8(result_ptr), Some(0));
+}
+
+#[test]
 fn hle_import_runner_handles_get_process_information() {
     let pef = synthetic_pef_with_import(b"GetProcessInformation");
     let mut loaded = load_pef_application(&pef).unwrap();
