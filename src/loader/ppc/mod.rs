@@ -158,6 +158,7 @@ mod dispatch_mixed_mode;
 mod dispatch_native_exceptions;
 use dispatch_native_exceptions::*;
 mod dispatch_picture;
+mod dispatch_polygons;
 mod dispatch_process;
 mod dispatch_qd3d;
 mod dispatch_quickdraw;
@@ -16779,6 +16780,25 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     ) {
         return Some(action);
     }
+    if let Some(action) = dispatch_polygons::dispatch_polygon_import(
+        dispatch_polygons::PpcPolygonDispatchContext {
+            binding,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            gworlds,
+            current_gworld: *current_gworld,
+            quickdraw_fore_color,
+            quickdraw_fore_indices,
+            toolbox_startup,
+        },
+    ) {
+        return Some(action);
+    }
     if let Some(action) = dispatch_quickdraw::dispatch_quickdraw_import(
         dispatch_quickdraw::PpcQuickDrawDispatchContext {
             binding,
@@ -17904,67 +17924,13 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::OpenPoly => Some(PpcImportAction::Return(ppc_open_poly(
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            last_mem_error,
-            handles,
-            *current_gworld,
-        ))),
-        PpcImportDispatcherTarget::ClosePoly => {
-            if *current_gworld != 0 {
-                let _ = memory.write_u32_be(current_gworld.wrapping_add(100), 0);
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::KillPoly => {
-            let polygon = cpu.gpr[3];
-            if ppc_open_polygon(memory, *current_gworld) == Some(polygon) {
-                let _ = memory.write_u32_be(current_gworld.wrapping_add(100), 0);
-            }
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let _ = allocator.dispose_handle(
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                polygon,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::FramePoly => {
-            if toolbox_startup.open_region_port == *current_gworld {
-                ppc_open_region_include_polygon(toolbox_startup, memory, cpu.gpr[3]);
-            } else {
-                let _ = ppc_frame_polygon(
-                    memory,
-                    gworlds,
-                    *current_gworld,
-                    cpu.gpr[3],
-                    *quickdraw_fore_color,
-                    quickdraw_fore_indices.get(current_gworld).copied(),
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::PaintPoly | PpcImportDispatcherTarget::FillPoly => {
-            if toolbox_startup.open_region_port == *current_gworld {
-                ppc_open_region_include_polygon(toolbox_startup, memory, cpu.gpr[3]);
-            } else {
-                let _ = ppc_paint_polygon(
-                    memory,
-                    gworlds,
-                    *current_gworld,
-                    cpu.gpr[3],
-                    *quickdraw_fore_color,
-                    quickdraw_fore_indices.get(current_gworld).copied(),
-                );
-            }
-            Some(PpcImportAction::ReturnPreserve)
+        PpcImportDispatcherTarget::OpenPoly
+        | PpcImportDispatcherTarget::ClosePoly
+        | PpcImportDispatcherTarget::KillPoly
+        | PpcImportDispatcherTarget::FramePoly
+        | PpcImportDispatcherTarget::PaintPoly
+        | PpcImportDispatcherTarget::FillPoly => {
+            unreachable!("Polygon Manager imports return through dispatch_polygon_import")
         }
         PpcImportDispatcherTarget::NewCWindow
         | PpcImportDispatcherTarget::GetNewCWindow
