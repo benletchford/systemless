@@ -234,9 +234,234 @@ pub(super) fn dispatch_q3_math_import_fast(
         PpcImportDispatcherTarget::Q3MatrixTransformSet => Some(PpcImportAction::Return(
             u32::from(ppc_q3_matrix_transform_set(cpu, q3_objects, q3_error_state)),
         )),
-        PpcImportDispatcherTarget::Q3TransformGetMatrix => Some(PpcImportAction::Return(u32::from(
-            ppc_q3_transform_get_matrix(cpu, memory, q3_objects, q3_error_state),
-        ))),
+        PpcImportDispatcherTarget::Q3TransformGetMatrix => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_transform_get_matrix(cpu, memory, q3_objects, q3_error_state),
+            )))
+        }
+        _ => None,
+    }
+}
+
+pub(super) struct PpcQ3ShaderStyleDispatchContext<'a> {
+    pub(super) target: &'a PpcImportDispatcherTarget,
+    pub(super) cpu: &'a PpcCpu,
+    pub(super) memory: &'a mut PpcSectionMem,
+    pub(super) q3_objects: &'a mut Vec<PpcQ3ObjectRecord>,
+    pub(super) q3_object_refs: &'a mut Vec<PpcQ3ObjectReferenceRecord>,
+    pub(super) q3_error_state: &'a mut PpcQ3ErrorState,
+    pub(super) next_q3_object: &'a mut u32,
+    pub(super) q3_texture_shaders: &'a mut Vec<PpcQ3TextureShaderRecord>,
+    pub(super) q3_mipmap_textures: &'a mut Vec<PpcQ3MipmapTextureRecord>,
+    pub(super) q3_shader_uv_transforms: &'a mut Vec<PpcQ3ShaderUvTransformRecord>,
+    pub(super) q3_shader_boundaries: &'a mut Vec<PpcQ3ShaderBoundaryRecord>,
+    pub(super) q3_styles: &'a mut Vec<PpcQ3StyleRecord>,
+}
+
+pub(super) fn dispatch_q3_shader_style_import_fast(
+    context: PpcQ3ShaderStyleDispatchContext<'_>,
+) -> Option<PpcImportAction> {
+    let PpcQ3ShaderStyleDispatchContext {
+        target,
+        cpu,
+        memory,
+        q3_objects,
+        q3_object_refs,
+        q3_error_state,
+        next_q3_object,
+        q3_texture_shaders,
+        q3_mipmap_textures,
+        q3_shader_uv_transforms,
+        q3_shader_boundaries,
+        q3_styles,
+    } = context;
+    match target {
+        PpcImportDispatcherTarget::Q3TextureShaderNew => {
+            Some(PpcImportAction::Return(ppc_q3_texture_shader_new(
+                cpu,
+                q3_objects,
+                q3_object_refs,
+                q3_error_state,
+                next_q3_object,
+                q3_texture_shaders,
+            )))
+        }
+        PpcImportDispatcherTarget::Q3LambertIlluminationNew => {
+            Some(PpcImportAction::Return(ppc_q3_illumination_shader_new(
+                q3_objects,
+                next_q3_object,
+                PPC_Q3_ILLUMINATION_TYPE_LAMBERT,
+            )))
+        }
+        PpcImportDispatcherTarget::Q3NullIlluminationNew => {
+            Some(PpcImportAction::Return(ppc_q3_illumination_shader_new(
+                q3_objects,
+                next_q3_object,
+                PPC_Q3_ILLUMINATION_TYPE_NULL,
+            )))
+        }
+        PpcImportDispatcherTarget::Q3PhongIlluminationNew => {
+            Some(PpcImportAction::Return(ppc_q3_illumination_shader_new(
+                q3_objects,
+                next_q3_object,
+                PPC_Q3_ILLUMINATION_TYPE_PHONG,
+            )))
+        }
+        PpcImportDispatcherTarget::Q3TextureShaderGetTexture => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_texture_shader_get_texture(
+                cpu,
+                memory,
+                q3_objects,
+                q3_object_refs,
+                q3_error_state,
+                q3_texture_shaders,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3MipmapTextureNew => {
+            Some(PpcImportAction::Return(ppc_q3_mipmap_texture_new(
+                cpu,
+                memory,
+                q3_objects,
+                q3_object_refs,
+                q3_error_state,
+                next_q3_object,
+                q3_mipmap_textures,
+            )))
+        }
+        PpcImportDispatcherTarget::Q3MipmapTextureGetMipmap => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_mipmap_texture_get_mipmap(
+                cpu,
+                memory,
+                q3_objects,
+                q3_object_refs,
+                q3_error_state,
+                q3_mipmap_textures,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3ShaderGetUVTransform => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_shader_get_uv_transform(
+                cpu,
+                memory,
+                q3_objects,
+                q3_error_state,
+                q3_shader_uv_transforms,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3ShaderSetUVTransform => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_shader_set_uv_transform(
+                cpu,
+                memory,
+                q3_objects,
+                q3_error_state,
+                q3_shader_uv_transforms,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3ShaderGetUBoundary => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_shader_get_boundary(
+                cpu,
+                memory,
+                q3_objects,
+                q3_error_state,
+                q3_shader_boundaries,
+                PpcQ3ShaderBoundaryAxis::U,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3ShaderSetUBoundary => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_shader_set_boundary(
+                cpu,
+                q3_objects,
+                q3_error_state,
+                q3_shader_boundaries,
+                PpcQ3ShaderBoundaryAxis::U,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3ShaderGetVBoundary => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_shader_get_boundary(
+                cpu,
+                memory,
+                q3_objects,
+                q3_error_state,
+                q3_shader_boundaries,
+                PpcQ3ShaderBoundaryAxis::V,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3ShaderSetVBoundary => Some(PpcImportAction::Return(
+            u32::from(ppc_q3_shader_set_boundary(
+                cpu,
+                q3_objects,
+                q3_error_state,
+                q3_shader_boundaries,
+                PpcQ3ShaderBoundaryAxis::V,
+            )),
+        )),
+        PpcImportDispatcherTarget::Q3BackfacingStyleNew
+        | PpcImportDispatcherTarget::Q3InterpolationStyleNew
+        | PpcImportDispatcherTarget::Q3FillStyleNew
+        | PpcImportDispatcherTarget::Q3OrientationStyleNew => {
+            let (kind, object_type) = match target {
+                PpcImportDispatcherTarget::Q3BackfacingStyleNew => {
+                    (PpcQ3StyleKind::Backfacing, PPC_Q3_STYLE_TYPE_BACKFACING)
+                }
+                PpcImportDispatcherTarget::Q3InterpolationStyleNew => (
+                    PpcQ3StyleKind::Interpolation,
+                    PPC_Q3_STYLE_TYPE_INTERPOLATION,
+                ),
+                PpcImportDispatcherTarget::Q3FillStyleNew => {
+                    (PpcQ3StyleKind::Fill, PPC_Q3_STYLE_TYPE_FILL)
+                }
+                PpcImportDispatcherTarget::Q3OrientationStyleNew => {
+                    (PpcQ3StyleKind::Orientation, PPC_Q3_STYLE_TYPE_ORIENTATION)
+                }
+                _ => unreachable!(),
+            };
+            Some(PpcImportAction::Return(ppc_q3_style_new(
+                cpu,
+                q3_objects,
+                next_q3_object,
+                q3_styles,
+                kind,
+                object_type,
+            )))
+        }
+        PpcImportDispatcherTarget::Q3BackfacingStyleGet
+        | PpcImportDispatcherTarget::Q3InterpolationStyleGet
+        | PpcImportDispatcherTarget::Q3FillStyleGet
+        | PpcImportDispatcherTarget::Q3OrientationStyleGet => {
+            let kind = match target {
+                PpcImportDispatcherTarget::Q3BackfacingStyleGet => PpcQ3StyleKind::Backfacing,
+                PpcImportDispatcherTarget::Q3InterpolationStyleGet => PpcQ3StyleKind::Interpolation,
+                PpcImportDispatcherTarget::Q3FillStyleGet => PpcQ3StyleKind::Fill,
+                PpcImportDispatcherTarget::Q3OrientationStyleGet => PpcQ3StyleKind::Orientation,
+                _ => unreachable!(),
+            };
+            Some(PpcImportAction::Return(u32::from(ppc_q3_style_get(
+                cpu,
+                memory,
+                q3_objects,
+                q3_error_state,
+                q3_styles,
+                kind,
+            ))))
+        }
+        PpcImportDispatcherTarget::Q3BackfacingStyleSet
+        | PpcImportDispatcherTarget::Q3InterpolationStyleSet
+        | PpcImportDispatcherTarget::Q3FillStyleSet
+        | PpcImportDispatcherTarget::Q3OrientationStyleSet => {
+            let kind = match target {
+                PpcImportDispatcherTarget::Q3BackfacingStyleSet => PpcQ3StyleKind::Backfacing,
+                PpcImportDispatcherTarget::Q3InterpolationStyleSet => PpcQ3StyleKind::Interpolation,
+                PpcImportDispatcherTarget::Q3FillStyleSet => PpcQ3StyleKind::Fill,
+                PpcImportDispatcherTarget::Q3OrientationStyleSet => PpcQ3StyleKind::Orientation,
+                _ => unreachable!(),
+            };
+            Some(PpcImportAction::Return(u32::from(ppc_q3_style_set(
+                cpu,
+                q3_objects,
+                q3_error_state,
+                q3_styles,
+                kind,
+            ))))
+        }
         _ => None,
     }
 }
