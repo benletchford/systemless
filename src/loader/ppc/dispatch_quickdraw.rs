@@ -579,6 +579,95 @@ pub(super) fn dispatch_quickdraw_import(
             ppc_sync_gworld_pen(memory, current_gworld, new_h, new_v);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::PaintRect => {
+            if ppc_hle_trace_enabled() {
+                eprintln!(
+                    "[PPC-TRACE] PaintRect tick={} port=${:08X} rect=${:08X} bounds={:?} fore=({:04X},{:04X},{:04X})",
+                    tick_count,
+                    current_gworld,
+                    cpu.gpr[3],
+                    ppc_read_rect(memory, cpu.gpr[3]),
+                    quickdraw_fore_color.red,
+                    quickdraw_fore_color.green,
+                    quickdraw_fore_color.blue,
+                );
+            }
+            if let (Some(commands), Some(rect)) = (
+                ppc_open_picture_commands(toolbox_startup, current_gworld),
+                ppc_read_rect(memory, cpu.gpr[3]),
+            ) {
+                pict::recording_push_rect(commands, 0x0031, rect);
+            } else {
+                let _ = ppc_paint_rect(
+                    cpu,
+                    memory,
+                    gworlds,
+                    current_gworld,
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(&current_gworld).copied(),
+                    *quickdraw_back_color,
+                    &toolbox_startup.quickdraw_pen_pattern,
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::EraseRect => {
+            if ppc_hle_trace_enabled() {
+                eprintln!(
+                    "[PPC-TRACE] EraseRect tick={} port=${:08X} rect=${:08X} bounds={:?} back=({:04X},{:04X},{:04X})",
+                    tick_count,
+                    current_gworld,
+                    cpu.gpr[3],
+                    ppc_read_rect(memory, cpu.gpr[3]),
+                    quickdraw_back_color.red,
+                    quickdraw_back_color.green,
+                    quickdraw_back_color.blue,
+                );
+            }
+            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+                let _ = ppc_paint_rect_bounds(
+                    memory,
+                    gworlds,
+                    current_gworld,
+                    rect,
+                    *quickdraw_back_color,
+                    None,
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::InvertRect => {
+            let _ = ppc_invert_rect(cpu, memory, gworlds, current_gworld);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::FrameRect => {
+            if toolbox_startup.open_region_port == current_gworld {
+                ppc_open_region_include_rect(toolbox_startup, memory, cpu.gpr[3]);
+            } else {
+                let _ = ppc_frame_rect(
+                    cpu,
+                    memory,
+                    gworlds,
+                    current_gworld,
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(&current_gworld).copied(),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::FillRect | PpcImportDispatcherTarget::FillCRect => {
+            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+                let _ = ppc_paint_rect_bounds(
+                    memory,
+                    gworlds,
+                    current_gworld,
+                    rect,
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(&current_gworld).copied(),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetPen => {
             if cpu.gpr[3] != 0 {
                 let _ = memory.write_u16_be(cpu.gpr[3], *quickdraw_pen_v as u16);
