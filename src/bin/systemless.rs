@@ -814,7 +814,7 @@ struct App {
     #[cfg(target_os = "windows")]
     gpu_wake: Option<winit::event_loop::EventLoopProxy<()>>,
     #[cfg(target_os = "windows")]
-    gpu_frame: systemless::memory::CompactPresentation,
+    gpu_frame: systemless::memory::CompactPresentationCache,
     #[cfg(target_os = "windows")]
     gpu_pending: Option<PendingGpuFrame>,
     window: Option<Rc<Window>>,
@@ -1590,7 +1590,7 @@ impl App {
             return;
         }
         let _timing = FramePhaseTimer::new("GPU readiness retry work");
-        match gpu.present(&self.gpu_frame, pending.size, pending.rect) {
+        match gpu.present(self.gpu_frame.frame(), pending.size, pending.rect) {
             Ok(true) => {
                 self.gpu_pending = None;
                 self.last_presented_guest_tick = Some(pending.guest_tick);
@@ -2083,10 +2083,7 @@ impl App {
                     && !self.debug_overlay_visible
                     && {
                         let _timing = FramePhaseTimer::new("GPU compact preparation");
-                        runner.bus().compact_presentation_without_overlays(
-                            (game_w, game_h),
-                            &mut self.gpu_frame,
-                        )
+                        self.gpu_frame.prepare(runner.bus(), (game_w, game_h))
                     }
             }
             #[cfg(not(target_os = "windows"))]
@@ -2131,16 +2128,15 @@ impl App {
                 if let Some(guest) = guest_frame.as_ref() {
                     runner
                         .bus()
-                        .compact_presentation(guest, &frame_argb, &mut self.gpu_frame)
+                        .compact_presentation(guest, &frame_argb, self.gpu_frame.frame_mut())
                 } else {
-                    self.gpu_frame.width = game_w;
-                    self.gpu_frame.height = game_h;
-                    self.gpu_frame.scale = 1;
-                    self.gpu_frame.cells.clear();
-                    self.gpu_frame
-                        .cells
-                        .extend(frame_argb.iter().map(|p| p & 0xffffff));
-                    self.gpu_frame.detail.clear();
+                    let output = self.gpu_frame.frame_mut();
+                    output.width = game_w;
+                    output.height = game_h;
+                    output.scale = 1;
+                    output.cells.clear();
+                    output.cells.extend(frame_argb.iter().map(|p| p & 0xffffff));
+                    output.detail.clear();
                     true
                 }
             };
@@ -2154,7 +2150,7 @@ impl App {
             });
             let result = if exported {
                 self.gpu.as_mut().unwrap().present(
-                    &self.gpu_frame,
+                    self.gpu_frame.frame(),
                     (buf_w, buf_h),
                     aspect_fit_dimensions(game_w, game_h, buf_w, buf_h),
                 )
