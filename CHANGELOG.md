@@ -1,5 +1,96 @@
 # Changelog
 
+## [0.42.0](https://github.com/benletchford/systemless/compare/v0.41.12...v0.42.0) (2026-09-19)
+
+
+### Features
+
+* **ppc:** implement MathLib exp import ([#2031](https://github.com/benletchford/systemless/issues/2031)) ([d474426](https://github.com/benletchford/systemless/commit/d4744269f8df64d82599b1ad489dd97cb02729e9))
+* **windows:** use D3D11 coverage presentation with software fallback ([d5b94a7](https://github.com/benletchford/systemless/commit/d5b94a7bc17db2f7636786a2d0386fa44c4cc1b1))
+
+
+### Bug Fixes
+
+* **fonts:** fit Geneva 9 fallback with OFL Coppet ([#2007](https://github.com/benletchford/systemless/issues/2007)) ([f2f080d](https://github.com/benletchford/systemless/commit/f2f080d1387b6046136889ad3e93dc0065b71ccb))
+* **ppc:** invoke active DrawSprocket VBL proc during VBL task processing ([#2027](https://github.com/benletchford/systemless/issues/2027)) ([fca0aad](https://github.com/benletchford/systemless/commit/fca0aadcbd3a0a934087a82aa03a73007a83c0e5))
+
+
+### Performance Improvements
+
+* cache classic indexed window title bars ([669b307](https://github.com/benletchford/systemless/commit/669b307014017c7fc7166ee3116640c158b2def1))
+* **cpu:** enable native memory traces with observed writes ([1444ee3](https://github.com/benletchford/systemless/commit/1444ee3cd2dd4a799b8950c7072b4b1905beabf7))
+* reuse resolved RAM routes for scalar writes ([d4f65e0](https://github.com/benletchford/systemless/commit/d4f65e00794a2534d902d1f9f074cbdaad52d57e))
+* skip redundant restoration of unchanged pixel spans ([49a0396](https://github.com/benletchford/systemless/commit/49a03962149f070dcc516fe24636f6bf35077b4b))
+* use offset hashing for retained pixel snapshots ([8d9f456](https://github.com/benletchford/systemless/commit/8d9f45635b09baa73cb2538b04b49aae6f669880))
+
+
+### Code Refactoring
+
+* **ppc:** add typed bit transfer dispatch ([#2153](https://github.com/benletchford/systemless/issues/2153)) ([bf3187a](https://github.com/benletchford/systemless/commit/bf3187a8ee45c2ac683d12fa749b27cecc112965))
+* **ppc:** add typed color table dispatch ([#2159](https://github.com/benletchford/systemless/issues/2159)) ([640875a](https://github.com/benletchford/systemless/commit/640875afcd30fe419eb5bf47fff3780055d18205))
+* **ppc:** add typed graphics device dispatch ([#2155](https://github.com/benletchford/systemless/issues/2155)) ([374726c](https://github.com/benletchford/systemless/commit/374726c1ae5beec6c7fd5fded0ac1a0501db4031))
+* **ppc:** add typed GWorld dispatch ([#2157](https://github.com/benletchford/systemless/issues/2157)) ([101b5e5](https://github.com/benletchford/systemless/commit/101b5e580421032903783676860854658def651b))
+* **ppc:** add typed palette dispatch ([#2161](https://github.com/benletchford/systemless/issues/2161)) ([26e3c84](https://github.com/benletchford/systemless/commit/26e3c844b9aeca8b3ff0f2aba6d5d33d71ff4e73))
+* **ppc:** add typed picture dispatch ([#2135](https://github.com/benletchford/systemless/issues/2135)) ([1ef11b8](https://github.com/benletchford/systemless/commit/1ef11b8dd54690bcbcf1bc10eca8525dd6c23579))
+* **ppc:** add typed Polygon Manager dispatch ([a72139b](https://github.com/benletchford/systemless/commit/a72139b3ac9b5b704f436f558809b3a19cbb8867)), closes [#2150](https://github.com/benletchford/systemless/issues/2150)
+* **ppc:** add typed Region Manager dispatch ([080c0d1](https://github.com/benletchford/systemless/commit/080c0d19660ad29b6246f111be45177f30c88c2f)), closes [#2148](https://github.com/benletchford/systemless/issues/2148)
+* **ppc:** consolidate file compatibility and volume helpers in domain dispatcher ([#2083](https://github.com/benletchford/systemless/issues/2083)) ([8f2869a](https://github.com/benletchford/systemless/commit/8f2869a7f01fff0cbf286de01be855d688b32510))
+* **ppc:** extract Desk Manager dispatcher ([#2115](https://github.com/benletchford/systemless/issues/2115)) ([dec4f0f](https://github.com/benletchford/systemless/commit/dec4f0fa3bbb4ad9934b50ebe3480afc7810cf02))
+* **ppc:** extract Device Manager dispatcher ([#2112](https://github.com/benletchford/systemless/issues/2112)) ([641e9c0](https://github.com/benletchford/systemless/commit/641e9c0b78b9d71ba712ed740ef301d0bd733ef1))
+* **ppc:** extract Gestalt dispatcher ([#2117](https://github.com/benletchford/systemless/issues/2117)) ([20ce55f](https://github.com/benletchford/systemless/commit/20ce55f54ccb80868356281efeb655c52ab3aa67))
+* **ppc:** extract native exception kernel ([#2120](https://github.com/benletchford/systemless/issues/2120)) ([c92d4cc](https://github.com/benletchford/systemless/commit/c92d4ccc08ff503817703172366d76c76308db01))
+* **ppc:** extract native exception tests ([#2123](https://github.com/benletchford/systemless/issues/2123)) ([76fd5b4](https://github.com/benletchford/systemless/commit/76fd5b40622127511dcd3a8f3e31153e6067be2e))
+* **ppc:** extract Process Manager tests ([#2125](https://github.com/benletchford/systemless/issues/2125)) ([ebc3324](https://github.com/benletchford/systemless/commit/ebc33248d59d2059682fdb03690ef3a43ac6b215))
+* **ppc:** extract shared scrap state tests ([#2127](https://github.com/benletchford/systemless/issues/2127)) ([28563d1](https://github.com/benletchford/systemless/commit/28563d167b36123d1aaba6cbb29447a4425cd37e))
+* **ppc:** extract Toolbox Utilities dispatcher ([#2110](https://github.com/benletchford/systemless/issues/2110)) ([401005b](https://github.com/benletchford/systemless/commit/401005b0061b85248a9d082d57aa009d2513d577))
+* **ppc:** finish typed event and menu dispatch ([#2165](https://github.com/benletchford/systemless/issues/2165)) ([2cd0a6c](https://github.com/benletchford/systemless/commit/2cd0a6c07a6460295f2e9d3d2b527b45a9f91265))
+* **ppc:** finish typed font dispatch ([#2163](https://github.com/benletchford/systemless/issues/2163)) ([b2e0efa](https://github.com/benletchford/systemless/commit/b2e0efa70e509e62fd34c76c8d3b419697f132c9))
+* **ppc:** route Apple Event imports through domain dispatcher ([#2094](https://github.com/benletchford/systemless/issues/2094)) ([16527b7](https://github.com/benletchford/systemless/commit/16527b71e3b43113bf98e0224862a91b0869cb2c))
+* **ppc:** route catalog information imports by domain ([#2035](https://github.com/benletchford/systemless/issues/2035)) ([ef7301a](https://github.com/benletchford/systemless/commit/ef7301adff76c6cae0456b3f92166adb66b2c15e))
+* **ppc:** route CloseResFile import through resource domain dispatcher ([#2043](https://github.com/benletchford/systemless/issues/2043)) ([5e6e7d6](https://github.com/benletchford/systemless/commit/5e6e7d60d1e654da12c4665ca5c3b05f475758a1))
+* **ppc:** route code fragment manager imports through domain dispatcher ([#2085](https://github.com/benletchford/systemless/issues/2085)) ([076416b](https://github.com/benletchford/systemless/commit/076416bec7ac8f3b61b085e707713d20f66b81ce))
+* **ppc:** route control manager imports through domain dispatcher ([#2071](https://github.com/benletchford/systemless/issues/2071)) ([0bfcc2e](https://github.com/benletchford/systemless/commit/0bfcc2efe1303c5ac4bcf6296f11aabe04440d2a))
+* **ppc:** route cursor and color icon imports through domain dispatcher ([#2088](https://github.com/benletchford/systemless/issues/2088)) ([8263d43](https://github.com/benletchford/systemless/commit/8263d4397c726f0218fa95a371c3b41075310519))
+* **ppc:** route dialog manager imports through domain dispatcher ([#2075](https://github.com/benletchford/systemless/issues/2075)) ([23ea1c8](https://github.com/benletchford/systemless/commit/23ea1c8b0f787395cd1aaab0005a123cc88e5921))
+* **ppc:** route display manager imports through domain dispatcher ([#2081](https://github.com/benletchford/systemless/issues/2081)) ([9be2d49](https://github.com/benletchford/systemless/commit/9be2d4978327f47e35a633d0ef2fe2d6658238ed))
+* **ppc:** route DrawSprocket imports through drawsprocket domain dispatcher ([#2059](https://github.com/benletchford/systemless/issues/2059)) ([4f776f1](https://github.com/benletchford/systemless/commit/4f776f13f21d509436a983ba978c4a790287a96f))
+* **ppc:** route Finder information imports by domain ([#2033](https://github.com/benletchford/systemless/issues/2033)) ([3fcbb3a](https://github.com/benletchford/systemless/commit/3fcbb3a5b4759caaa7a2033e1196c0556f31ee3a))
+* **ppc:** route FindFolder, ResolveAliasFile, and FileCompatibility imports through file domain dispatcher ([#2045](https://github.com/benletchford/systemless/issues/2045)) ([71765aa](https://github.com/benletchford/systemless/commit/71765aa5c87b0fa951d5b95b0bcba527ffcd5906))
+* **ppc:** route Fixed-Point, Fract, and Wide math imports through math domain dispatcher ([#2049](https://github.com/benletchford/systemless/issues/2049)) ([2393eb1](https://github.com/benletchford/systemless/commit/2393eb115072e4448b3d7316319cd6971de8ad74))
+* **ppc:** route Font Manager imports through domain dispatcher ([#2102](https://github.com/benletchford/systemless/issues/2102)) ([5a7c2bd](https://github.com/benletchford/systemless/commit/5a7c2bd686d10f74334fbe378b94f7024199a096))
+* **ppc:** route InitGraf through QuickDraw dispatcher ([#2108](https://github.com/benletchford/systemless/issues/2108)) ([7b9fbcd](https://github.com/benletchford/systemless/commit/7b9fbcdf655f722c74ebdf03e003bb9550b9d5e6))
+* **ppc:** route InitMenus through menu dispatcher ([#2106](https://github.com/benletchford/systemless/issues/2106)) ([8d773ac](https://github.com/benletchford/systemless/commit/8d773acef9c491d4292863fb870dd0d10186d9a5))
+* **ppc:** route InputSprocket imports through inputsprocket domain dispatcher ([#2061](https://github.com/benletchford/systemless/issues/2061)) ([cbdf8f0](https://github.com/benletchford/systemless/commit/cbdf8f0c08969ea26a75d6cc76c104804f2062ea))
+* **ppc:** route list manager imports through domain dispatcher ([#2073](https://github.com/benletchford/systemless/issues/2073)) ([b4868cb](https://github.com/benletchford/systemless/commit/b4868cb775db66035ab37730bc67539a715637be))
+* **ppc:** route Memory Manager imports through memory domain dispatcher ([#2051](https://github.com/benletchford/systemless/issues/2051)) ([f4b41e6](https://github.com/benletchford/systemless/commit/f4b41e6863a7254de4f03f2f58697b2547eea96a))
+* **ppc:** route Menu Manager imports through menu domain dispatcher ([#2053](https://github.com/benletchford/systemless/issues/2053)) ([d501db1](https://github.com/benletchford/systemless/commit/d501db1b6ab77282227ca21720157d1c9720db0f))
+* **ppc:** route mixed mode manager imports through domain dispatcher ([#2090](https://github.com/benletchford/systemless/issues/2090)) ([979c6be](https://github.com/benletchford/systemless/commit/979c6be14491b877e4529e6e6324225fb430fdcf))
+* **ppc:** route pen motion through QuickDraw dispatch ([#2139](https://github.com/benletchford/systemless/issues/2139)) ([41cf80f](https://github.com/benletchford/systemless/commit/41cf80fb233290ac0869d804487006b4e5242a1c))
+* **ppc:** route pen state through QuickDraw dispatch ([#2137](https://github.com/benletchford/systemless/issues/2137)) ([209f94d](https://github.com/benletchford/systemless/commit/209f94d67e1ed84e38a456a6c1af425fe7795900))
+* **ppc:** route Process Manager imports through domain dispatcher ([#2096](https://github.com/benletchford/systemless/issues/2096)) ([81ca46e](https://github.com/benletchford/systemless/commit/81ca46e50269bdaa8182e76aa35ef6c5508b2a7f))
+* **ppc:** route QuickDraw curves through typed dispatch ([e2086e8](https://github.com/benletchford/systemless/commit/e2086e886edcef31b735260844924fe5b8694da7)), closes [#2144](https://github.com/benletchford/systemless/issues/2144)
+* **ppc:** route QuickDraw rectangles through typed dispatch ([ed55c7d](https://github.com/benletchford/systemless/commit/ed55c7d6128910d68bd09db2538622dcafc6dfd4)), closes [#2142](https://github.com/benletchford/systemless/issues/2142)
+* **ppc:** route QuickDraw regions through typed dispatch ([744fd40](https://github.com/benletchford/systemless/commit/744fd40f985a1074fc384d1c7a11ad7b07ce4545)), closes [#2146](https://github.com/benletchford/systemless/issues/2146)
+* **ppc:** route QuickDraw text through font dispatch ([5b964cf](https://github.com/benletchford/systemless/commit/5b964cfbc5209868d79f1bad59366554de17fabf)), closes [#2140](https://github.com/benletchford/systemless/issues/2140)
+* **ppc:** route QuickTime imports through quicktime domain dispatcher ([#2063](https://github.com/benletchford/systemless/issues/2063)) ([1f2a152](https://github.com/benletchford/systemless/commit/1f2a1527512f472c455cf4f3cf58af7df968db5c))
+* **ppc:** route remaining File Manager imports by domain ([#2037](https://github.com/benletchford/systemless/issues/2037)) ([1e9b564](https://github.com/benletchford/systemless/commit/1e9b564ee076e59039bd7e9f149fe9b36aa344a8))
+* **ppc:** route ResolveAlias, UpdateAlias, and NewAlias imports through file domain dispatcher ([#2047](https://github.com/benletchford/systemless/issues/2047)) ([51aeddb](https://github.com/benletchford/systemless/commit/51aeddb9f280537cb31841d285d422ef0b91b9e5))
+* **ppc:** route resource file opens by domain ([#2024](https://github.com/benletchford/systemless/issues/2024)) ([38f5610](https://github.com/benletchford/systemless/commit/38f5610d56b149a623cc9723215668bfd50672c9))
+* **ppc:** route Resource Manager metadata and mutation imports by domain ([#2041](https://github.com/benletchford/systemless/issues/2041)) ([019d938](https://github.com/benletchford/systemless/commit/019d9381b7f9457653e108aa19fcf2a2b53c46ae))
+* **ppc:** route Resource Manager query imports by domain ([#2039](https://github.com/benletchford/systemless/issues/2039)) ([43e2831](https://github.com/benletchford/systemless/commit/43e28312454e05fe3d147432d92dcffc46d93caa))
+* **ppc:** route Scrap Manager imports through domain dispatcher ([#2099](https://github.com/benletchford/systemless/issues/2099)) ([7c120b0](https://github.com/benletchford/systemless/commit/7c120b04c2220888e90e206a36b4df760ff4d337))
+* **ppc:** route standard c library imports through domain dispatcher ([#2079](https://github.com/benletchford/systemless/issues/2079)) ([6304dd7](https://github.com/benletchford/systemless/commit/6304dd7076d189722f58ac3468daae7e7ee280ee))
+* **ppc:** route standard file package imports through domain dispatcher ([#2069](https://github.com/benletchford/systemless/issues/2069)) ([d23d79b](https://github.com/benletchford/systemless/commit/d23d79b5ccc579b4e8b0a38b092b3ef84d948cd3))
+* **ppc:** route TextEdit imports through textedit domain dispatcher ([#2057](https://github.com/benletchford/systemless/issues/2057)) ([76a0235](https://github.com/benletchford/systemless/commit/76a0235d6e7aab043c6f8fc0a76b74475b83cd18))
+* **ppc:** route Thread Manager imports through thread domain dispatcher ([#2055](https://github.com/benletchford/systemless/issues/2055)) ([2d59657](https://github.com/benletchford/systemless/commit/2d596571be13830e5e19fdea74be73489b40d1e5))
+* **ppc:** route Time and VBL imports through time domain dispatcher ([#2065](https://github.com/benletchford/systemless/issues/2065)) ([38ad059](https://github.com/benletchford/systemless/commit/38ad0598898e185de124c0cecb60880c08d41ccf))
+* **ppc:** route typed resource getters through resource domain dispatcher ([#2067](https://github.com/benletchford/systemless/issues/2067)) ([92fc221](https://github.com/benletchford/systemless/commit/92fc22165fe0d13990d61ad1bdfc43fcec9e2fb7))
+* **ppc:** route volume and working directory imports by domain ([#2029](https://github.com/benletchford/systemless/issues/2029)) ([f101ef3](https://github.com/benletchford/systemless/commit/f101ef370abeb906b4961e834d1f76bf8427242b))
+* **ppc:** route window manager imports through domain dispatcher ([#2077](https://github.com/benletchford/systemless/issues/2077)) ([d215f93](https://github.com/benletchford/systemless/commit/d215f934a5a96d8928dbfe483ee78a487c5d7a09))
+* **process:** unify application metadata ([#2133](https://github.com/benletchford/systemless/issues/2133)) ([56f7667](https://github.com/benletchford/systemless/commit/56f7667a0b710d1b7211551cefbebcf650c070ed))
+* **process:** unify process serial number identity ([#2129](https://github.com/benletchford/systemless/issues/2129)) ([f999367](https://github.com/benletchford/systemless/commit/f9993672e541d61ac6b38c7879f60c4c62564fca))
+* **process:** unify single-process enumeration ([#2131](https://github.com/benletchford/systemless/issues/2131)) ([28d628b](https://github.com/benletchford/systemless/commit/28d628b5a0dcf1490afd1fdf751b8c6aa98dcb1e))
+
 ## [0.41.12](https://github.com/benletchford/systemless/compare/v0.41.11...v0.41.12) (2026-09-18)
 
 
