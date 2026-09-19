@@ -104,7 +104,7 @@ use crate::process_context::{
     SharedProcessTickState, SharedProcessTimerTasks, SharedProcessValue, SharedProcessVblTasks,
     SharedProcessWindowList,
 };
-use crate::process_manager::ProcessSerialNumber;
+use crate::process_manager::{ProcessSerialNumber, SingleProcessEnumeration};
 use crate::quickdraw::fonts::style::{
     get_italic_end_extend, get_italic_slant, get_italic_underline_extend_left,
 };
@@ -23151,12 +23151,15 @@ fn ppc_dispatch_system_compatibility(
                 memory.read_u32_be(psn).unwrap_or(u32::MAX),
                 memory.read_u32_be(psn + 4).unwrap_or(u32::MAX),
             );
-            if current == ProcessSerialNumber::NONE {
-                let _ = memory.write_u32_be(psn, ProcessSerialNumber::CURRENT.high);
-                let _ = memory.write_u32_be(psn + 4, ProcessSerialNumber::CURRENT.low);
-                PpcImportAction::Return(0)
-            } else {
-                PpcImportAction::Return(ppc_i16_result(PPC_PROC_NOT_FOUND_ERR))
+            match current.next_single_process() {
+                SingleProcessEnumeration::Current(current) => {
+                    let _ = memory.write_u32_be(psn, current.high);
+                    let _ = memory.write_u32_be(psn + 4, current.low);
+                    PpcImportAction::Return(0)
+                }
+                SingleProcessEnumeration::End | SingleProcessEnumeration::Invalid => {
+                    PpcImportAction::Return(ppc_i16_result(PPC_PROC_NOT_FOUND_ERR))
+                }
             }
         }
         PpcSystemCompatibilityOperation::SetFrontProcess => PpcImportAction::Return(0),

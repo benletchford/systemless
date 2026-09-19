@@ -7,7 +7,7 @@ use crate::managers::resource::ResourceFork;
 use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::process_context::ProcessVfsDirectory;
-use crate::process_manager::ProcessSerialNumber;
+use crate::process_manager::{ProcessSerialNumber, SingleProcessEnumeration};
 use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy, read_fsspec_name};
 use crate::{Error, Result};
 
@@ -6406,16 +6406,18 @@ impl super::TrapDispatcher {
                             bus.read_long(psn_ptr),
                             bus.read_long(psn_ptr.wrapping_add(4)),
                         );
-                        let err: i16 = if psn == ProcessSerialNumber::NONE {
-                            bus.write_long(psn_ptr, ProcessSerialNumber::CURRENT.high);
-                            bus.write_long(psn_ptr.wrapping_add(4), ProcessSerialNumber::CURRENT.low);
-                            0
-                        } else if psn.is_current() {
-                            bus.write_long(psn_ptr, ProcessSerialNumber::CURRENT.high);
-                            bus.write_long(psn_ptr.wrapping_add(4), 0);
-                            -600
-                        } else {
-                            -50
+                        let err: i16 = match psn.next_single_process() {
+                            SingleProcessEnumeration::Current(current) => {
+                                bus.write_long(psn_ptr, current.high);
+                                bus.write_long(psn_ptr.wrapping_add(4), current.low);
+                                0
+                            }
+                            SingleProcessEnumeration::End => {
+                                bus.write_long(psn_ptr, ProcessSerialNumber::CURRENT.high);
+                                bus.write_long(psn_ptr.wrapping_add(4), 0);
+                                -600
+                            }
+                            SingleProcessEnumeration::Invalid => -50,
                         };
                         bus.write_word(sp + 4, err as u16);
                         cpu.write_reg(Register::A7, sp + 4);
