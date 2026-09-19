@@ -157,6 +157,7 @@ mod dispatch_menu;
 mod dispatch_mixed_mode;
 mod dispatch_native_exceptions;
 use dispatch_native_exceptions::*;
+mod dispatch_picture;
 mod dispatch_process;
 mod dispatch_qd3d;
 mod dispatch_quickdraw;
@@ -16783,6 +16784,26 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         return Some(action);
     }
 
+    if let Some(action) = dispatch_picture::dispatch_picture_import(
+        dispatch_picture::PpcPictureDispatchContext {
+            binding,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            vfs_resources,
+            gworlds,
+            current_gworld: *current_gworld,
+            screen_clut,
+            color_manager_clut,
+        },
+    ) {
+        return Some(action);
+    }
+
     if let Some(action) = dispatch_fonts::dispatch_font_import(
         dispatch_fonts::PpcFontDispatchContext {
             binding,
@@ -17536,36 +17557,10 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::DrawGrowIcon => {
             unreachable!("window imports return through dispatch_window_import")
         }
-        PpcImportDispatcherTarget::GetPictInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_get_pict_info(cpu, memory),
-        ))),
-        PpcImportDispatcherTarget::DrawPicture => {
-            let _ = ppc_draw_picture(
-                cpu,
-                memory,
-                handles,
-                vfs_resources,
-                gworlds,
-                *current_gworld,
-                screen_clut,
-                color_manager_clut,
-            );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::KillPicture => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            ppc_kill_picture(
-                cpu,
-                &mut allocator,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-            );
-            Some(PpcImportAction::ReturnPreserve)
+        PpcImportDispatcherTarget::GetPictInfo
+        | PpcImportDispatcherTarget::DrawPicture
+        | PpcImportDispatcherTarget::KillPicture => {
+            unreachable!("picture imports return through dispatch_picture_import")
         }
         PpcImportDispatcherTarget::InitCursor
         | PpcImportDispatcherTarget::HideCursor
