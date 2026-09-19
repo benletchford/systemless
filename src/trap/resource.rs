@@ -6476,27 +6476,10 @@ impl super::TrapDispatcher {
                             return Some(Ok(()));
                         }
 
-                        let app_path = self
-                            .launched_app_path()
-                            .map(str::to_owned)
-                            .unwrap_or_default();
-                        let app_name = if app_path.is_empty() {
-                            "Application".to_string()
-                        } else {
-                            super::TrapDispatcher::hfs_name_from_vfs_component(
-                                super::TrapDispatcher::vfs_basename(&app_path),
-                            )
-                        };
-                        let (app_type, app_creator, app_parent_dir_id) =
-                            if let Some(metadata) = self.vfs_file_metadata(&app_path) {
-                                (metadata.file_type, metadata.creator, metadata.parent_dir_id)
-                            } else {
-                                (
-                                    u32::from_be_bytes(*b"APPL"),
-                                    u32::from_be_bytes(*b"????"),
-                                    2,
-                                )
-                            };
+                        let app = self.current_process_application_metadata();
+                        let app_name = super::TrapDispatcher::hfs_name_from_vfs_component(
+                            super::TrapDispatcher::vfs_basename(&app.path),
+                        );
 
                         let name_ptr = bus.read_long(info_ptr + 4);
                         if name_ptr != 0 {
@@ -6509,14 +6492,14 @@ impl super::TrapDispatcher {
                                 app_spec_ptr,
                                 super::TrapDispatcher::boot_volume_ref_num_u16(),
                             );
-                            bus.write_long(app_spec_ptr + 2, app_parent_dir_id);
+                            bus.write_long(app_spec_ptr + 2, app.parent_dir_id);
                             Self::write_pstring(bus, app_spec_ptr + 6, &app_name);
                         }
 
                         bus.write_long(info_ptr + 8, ProcessSerialNumber::CURRENT.high); // processNumber.highLongOfPSN
                         bus.write_long(info_ptr + 12, ProcessSerialNumber::CURRENT.low); // processNumber.lowLongOfPSN
-                        bus.write_long(info_ptr + 16, app_type);
-                        bus.write_long(info_ptr + 20, app_creator);
+                        bus.write_long(info_ptr + 16, app.file_type);
+                        bus.write_long(info_ptr + 20, app.creator);
                         bus.write_long(info_ptr + 24, 0); // processMode
                         let app_zone = bus.read_long(crate::memory::globals::addr::APP_L_ZONE);
                         let appl_limit = bus.read_long(crate::memory::globals::addr::APPL_LIMIT);
@@ -19123,6 +19106,8 @@ mod tests {
     #[test]
     fn osdispatch_getprocessinformation_current_process_returns_populated_info() {
         let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_vfs_entry_metadata("Games/Current App", *b"APPL", *b"GAME", 0);
+        disp.set_launched_app_path("Games/Current App");
 
         let info_ptr = 0x2A0900u32;
         let psn_ptr = 0x2A0A00u32;
@@ -19146,6 +19131,8 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
         assert_eq!(bus.read_long(info_ptr + 8), expected_psn_high);
         assert_eq!(bus.read_long(info_ptr + 12), expected_psn_low);
+        assert_eq!(bus.read_long(info_ptr + 16), u32::from_be_bytes(*b"APPL"));
+        assert_eq!(bus.read_long(info_ptr + 20), u32::from_be_bytes(*b"GAME"));
         assert_eq!(bus.read_long(info_ptr + 24), 0, "processMode");
         assert_eq!(bus.read_long(info_ptr + 28), 0x0010_0000, "processLocation");
         assert_eq!(bus.read_long(info_ptr + 32), bus.ram_size(), "processSize");
@@ -19165,11 +19152,7 @@ mod tests {
             "processLauncher.lowLongOfPSN"
         );
         assert_eq!(bus.read_long(info_ptr + 48), 0, "processLaunchDate");
-        assert_ne!(
-            bus.read_byte(name_ptr),
-            0,
-            "processName should be populated"
-        );
+        assert_eq!(bus.read_pstring(name_ptr), b"Current App");
         assert_ne!(bus.read_word(app_spec_ptr), 0, "processAppSpec.vRefNum");
     }
 

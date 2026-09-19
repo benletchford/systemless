@@ -104,7 +104,9 @@ use crate::process_context::{
     SharedProcessTickState, SharedProcessTimerTasks, SharedProcessValue, SharedProcessVblTasks,
     SharedProcessWindowList,
 };
-use crate::process_manager::{ProcessSerialNumber, SingleProcessEnumeration};
+use crate::process_manager::{
+    resolve_process_application_metadata, ProcessSerialNumber, SingleProcessEnumeration,
+};
 use crate::quickdraw::fonts::style::{
     get_italic_end_extend, get_italic_slant, get_italic_underline_extend_left,
 };
