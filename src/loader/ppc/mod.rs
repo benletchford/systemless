@@ -161,6 +161,7 @@ mod dispatch_textedit;
 mod dispatch_threads;
 mod dispatch_time;
 mod dispatch_stdc;
+mod dispatch_toolbox;
 mod dispatch_window;
 mod dispatch_display;
 use dispatch_control::*;
@@ -16873,6 +16874,15 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     {
         return Some(action);
     }
+    if let Some(action) = dispatch_toolbox::dispatch_toolbox_import(
+        dispatch_toolbox::PpcToolboxDispatchContext {
+            binding,
+            cpu,
+            memory,
+        },
+    ) {
+        return Some(action);
+    }
     if let Some(action) = dispatch_memory::dispatch_memory_import(
         dispatch_memory::PpcMemoryDispatchContext {
             binding,
@@ -19724,9 +19734,17 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::LSearch => {
             unreachable!("list imports return through dispatch_list_import")
         }
-        PpcImportDispatcherTarget::SysEnvirons => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_sys_environs(memory, cpu.gpr[4]),
-        ))),
+        PpcImportDispatcherTarget::SysEnvirons
+        | PpcImportDispatcherTarget::SVersion
+        | PpcImportDispatcherTarget::EqualString
+        | PpcImportDispatcherTarget::NumToString
+        | PpcImportDispatcherTarget::StringToNum
+        | PpcImportDispatcherTarget::Random
+        | PpcImportDispatcherTarget::BitAnd
+        | PpcImportDispatcherTarget::BitOr
+        | PpcImportDispatcherTarget::BitTst => {
+            unreachable!("Toolbox Utilities imports return through dispatch_toolbox_import")
+        }
         PpcImportDispatcherTarget::TextWidth
         | PpcImportDispatcherTarget::TruncString
         | PpcImportDispatcherTarget::StringWidth
@@ -19739,50 +19757,6 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::AESetInteractionAllowed
         | PpcImportDispatcherTarget::AEGetInteractionAllowed => {
             unreachable!("Apple Event imports return through dispatch_apple_event_import")
-        }
-        PpcImportDispatcherTarget::SVersion => {
-            // Inside Macintosh: Devices (1994), 2-30 through 2-31: version 2
-            // denotes the ROM-based Slot Manager; spsPointer is reserved.
-            let block = cpu.gpr[3];
-            let result = if block != 0
-                && memory.write_u32_be(block, 2).is_some()
-                && memory.write_u32_be(block + 4, 0).is_some()
-            {
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
-            };
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        PpcImportDispatcherTarget::EqualString => {
-            Some(PpcImportAction::Return(ppc_equal_string(cpu, memory)))
-        }
-        PpcImportDispatcherTarget::NumToString => {
-            let number = cpu.gpr[3] as i32;
-            let string_ptr = cpu.gpr[4];
-            if string_ptr != 0 {
-                let _ = ppc_write_pstring_bytes(memory, string_ptr, number.to_string().as_bytes());
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::StringToNum => {
-            ppc_string_to_num(cpu, memory);
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::Random => {
-            Some(PpcImportAction::Return(u32::from(ppc_random(memory))))
-        }
-        PpcImportDispatcherTarget::BitAnd => Some(PpcImportAction::Return(cpu.gpr[3] & cpu.gpr[4])),
-        PpcImportDispatcherTarget::BitOr => Some(PpcImportAction::Return(cpu.gpr[3] | cpu.gpr[4])),
-        PpcImportDispatcherTarget::BitTst => {
-            // Inside Macintosh: Operating System Utilities (1992), 3-13:
-            // bit zero is the high-order bit of the first addressed byte.
-            let bit = cpu.gpr[4];
-            let byte_ptr = cpu.gpr[3].wrapping_add(bit / 8);
-            let mask = 0x80u8 >> (bit & 7);
-            let byte = memory.read_u8(byte_ptr).unwrap_or(0);
-            let result = byte & mask != 0;
-            Some(PpcImportAction::Return(u32::from(result)))
         }
         PpcImportDispatcherTarget::StdMemset
         | PpcImportDispatcherTarget::StdMemcmp
