@@ -50,6 +50,86 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::InitMenus => {
+            toolbox_startup.menus_initialized = true;
+            let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
+            let mut allocator = PpcProcessAllocatorView {
+                memory_manager: process_memory_manager,
+            };
+            // Inside Macintosh Volume V (1986), pp. V-228--V-230: the first
+            // InitMenus call allocates the stable DynamicMenuList whose handle
+            // is published in the MenuList low-memory global. Later calls do
+            // not replace that manager-owned handle.
+            if *current_menu_list == 0 {
+                *current_menu_list = ppc_alloc_menu_list_handle_with_allocator(
+                    &[],
+                    Some(&mut allocator),
+                    None,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                );
+                *last_mem_error = if *current_menu_list == 0 {
+                    PPC_MEM_FULL_ERR
+                } else {
+                    ppc_set_current_menu_list(memory, *current_menu_list);
+                    PPC_NO_ERR
+                };
+            } else {
+                // Macintosh Toolbox Essentials (1992), pp. 3-103--3-104:
+                // InitMenus restores the standard MBDF and an empty menu list.
+                // Reinitialization reuses the existing MenuList handle.
+                let result = ppc_replace_menu_list_definition_with_allocator(
+                    Some(&mut allocator),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    *current_menu_list,
+                    &PpcMenuListDefinition::default(),
+                );
+                *last_mem_error = result;
+            }
+            // InitMenus creates the process MenuCInfo table and automatically
+            // adds entries from the current resource chain's `'mctb'` 0.
+            // Inside Macintosh Volume V (1986), pp. V-242--V-244; Macintosh
+            // Toolbox Essentials (1992), pp. 3-154--3-156.
+            let _ = ppc_ensure_menu_color_table_handle_with_allocator(
+                Some(&mut allocator),
+                None,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+            );
+            ppc_load_menu_color_resource_with_allocator(
+                0,
+                Some(&mut allocator),
+                None,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                vfs_resources,
+                current_resource_refnum,
+            );
+            if *current_menu_list != 0 && !toolbox_startup.host_menu_bar_hidden {
+                let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
+                let _ = ppc_draw_menu_bar_with_colors(
+                    memory,
+                    gworlds,
+                    *current_menu_list,
+                    screen_clut,
+                    MenuColorTable::new(&menu_color_bytes),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::NewMenu => {
             let menu_proc = ppc_menu_definition_handle(
                 0,
