@@ -8683,13 +8683,16 @@ impl PpcLoadedApp {
                         input,
                         Some(&mut idle_poll_counts),
                     ))
-                } else if let Some(action) =
-                    dispatch_qd3d::dispatch_q3_matrix_import_fast(
-                        &binding.dispatcher_target,
+                } else if let Some(action) = dispatch_qd3d::dispatch_q3_math_import_fast(
+                    dispatch_qd3d::PpcQ3MathDispatchContext {
+                        target: &binding.dispatcher_target,
                         cpu,
                         memory,
-                    )
-                {
+                        q3_objects: &mut q3_objects,
+                        next_q3_object: &mut next_q3_object,
+                        q3_error_state: &mut q3_error_state,
+                    },
+                ) {
                     Some(action)
                 } else if let Some(action) = dispatch_qd3d::dispatch_q3_object_group_import_fast(
                     dispatch_qd3d::PpcQ3ObjectGroupDispatchContext {
@@ -19425,114 +19428,31 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 gworlds,
             )),
         )),
-        PpcImportDispatcherTarget::Q3Vector3DNormalize => Some(PpcImportAction::Return(
-            ppc_q3_vector3d_normalize(cpu, memory, cpu.gpr[3], cpu.gpr[4]),
-        )),
-        PpcImportDispatcherTarget::Q3Vector2DNormalize => Some(PpcImportAction::Return(
-            ppc_q3_vector2d_normalize(memory, cpu.gpr[3], cpu.gpr[4]),
-        )),
-        PpcImportDispatcherTarget::Q3Vector3DCross => Some(PpcImportAction::Return(
-            ppc_q3_vector3d_cross(cpu, memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]),
-        )),
-        PpcImportDispatcherTarget::Q3Point2DDistance => {
-            cpu.fpr[1] =
-                f64::from(ppc_q3_point2d_distance(memory, cpu.gpr[3], cpu.gpr[4])).to_bits();
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::Q3Point3DDistance => {
-            cpu.fpr[1] =
-                f64::from(ppc_q3_point3d_distance(memory, cpu.gpr[3], cpu.gpr[4])).to_bits();
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::Q3Point3DCrossProductTri => {
-            Some(PpcImportAction::Return(ppc_q3_point3d_cross_product_tri(
-                memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6],
-            )))
-        }
-        PpcImportDispatcherTarget::Q3Matrix3x3SetTranslate => {
-            Some(PpcImportAction::Return(ppc_q3_matrix3x3_set_translate(
-                memory,
-                cpu.gpr[3],
-                ppc_fpr_as_f32(cpu, 1),
-                ppc_fpr_as_f32(cpu, 2),
-            )))
-        }
-        PpcImportDispatcherTarget::Q3Matrix4x4SetIdentity => Some(PpcImportAction::Return(
-            ppc_q3_matrix4x4_set_identity(memory, cpu.gpr[3]),
-        )),
-        PpcImportDispatcherTarget::Q3Matrix4x4SetTranslate => {
-            Some(PpcImportAction::Return(ppc_q3_matrix4x4_set_translate(
-                memory,
-                cpu.gpr[3],
-                ppc_fpr_as_f32(cpu, 1),
-                ppc_fpr_as_f32(cpu, 2),
-                ppc_fpr_as_f32(cpu, 3),
-            )))
-        }
-        PpcImportDispatcherTarget::Q3Matrix4x4SetScale => {
-            Some(PpcImportAction::Return(ppc_q3_matrix4x4_set_scale(
-                memory,
-                cpu.gpr[3],
-                ppc_fpr_as_f32(cpu, 1),
-                ppc_fpr_as_f32(cpu, 2),
-                ppc_fpr_as_f32(cpu, 3),
-            )))
-        }
-        PpcImportDispatcherTarget::Q3Matrix4x4SetRotateX => Some(PpcImportAction::Return(
-            ppc_q3_matrix4x4_set_rotate_x(memory, cpu.gpr[3], ppc_fpr_as_f32(cpu, 1)),
-        )),
-        PpcImportDispatcherTarget::Q3Matrix4x4SetRotateY => Some(PpcImportAction::Return(
-            ppc_q3_matrix4x4_set_rotate_y(memory, cpu.gpr[3], ppc_fpr_as_f32(cpu, 1)),
-        )),
-        PpcImportDispatcherTarget::Q3Matrix4x4SetRotateZ => Some(PpcImportAction::Return(
-            ppc_q3_matrix4x4_set_rotate_z(memory, cpu.gpr[3], ppc_fpr_as_f32(cpu, 1)),
-        )),
-        PpcImportDispatcherTarget::Q3Matrix4x4SetRotateXyz => {
-            Some(PpcImportAction::Return(ppc_q3_matrix4x4_set_rotate_xyz(
-                memory,
-                cpu.gpr[3],
-                ppc_fpr_as_f32(cpu, 1),
-                ppc_fpr_as_f32(cpu, 2),
-                ppc_fpr_as_f32(cpu, 3),
-            )))
-        }
-        PpcImportDispatcherTarget::Q3Matrix4x4Multiply => Some(PpcImportAction::Return(
-            ppc_q3_matrix4x4_multiply(memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]),
-        )),
-        PpcImportDispatcherTarget::Q3Matrix4x4Transpose => Some(PpcImportAction::Return(
-            ppc_q3_matrix4x4_transpose(memory, cpu.gpr[3], cpu.gpr[4]),
-        )),
-        PpcImportDispatcherTarget::Q3Matrix4x4Invert => Some(PpcImportAction::Return(
-            ppc_q3_matrix4x4_invert(memory, cpu.gpr[3], cpu.gpr[4]),
-        )),
-        PpcImportDispatcherTarget::Q3Point3DTransform => Some(PpcImportAction::Return(
-            ppc_q3_point3d_transform(memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]),
-        )),
-        PpcImportDispatcherTarget::Q3Point3DTo3DTransformArray => Some(PpcImportAction::Return(
-            u32::from(ppc_q3_point3d_transform_array(
-                memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6], cpu.gpr[7], cpu.gpr[8],
-                false,
-            )),
-        )),
-        PpcImportDispatcherTarget::Q3Point3DTo4DTransformArray => Some(PpcImportAction::Return(
-            u32::from(ppc_q3_point3d_transform_array(
-                memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6], cpu.gpr[7], cpu.gpr[8],
-                true,
-            )),
-        )),
-        PpcImportDispatcherTarget::Q3Vector3DTransform => Some(PpcImportAction::Return(
-            ppc_q3_vector3d_transform(memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]),
-        )),
-        PpcImportDispatcherTarget::Q3MatrixTransformNew => Some(PpcImportAction::Return(
-            ppc_q3_matrix_transform_new(cpu, q3_objects, next_q3_object),
-        )),
-        PpcImportDispatcherTarget::Q3MatrixTransformSet => Some(PpcImportAction::Return(
-            u32::from(ppc_q3_matrix_transform_set(cpu, q3_objects, q3_error_state)),
-        )),
-        PpcImportDispatcherTarget::Q3TransformGetMatrix => {
-            Some(PpcImportAction::Return(u32::from(
-                ppc_q3_transform_get_matrix(cpu, memory, q3_objects, q3_error_state),
-            )))
+        PpcImportDispatcherTarget::Q3Vector3DNormalize
+        | PpcImportDispatcherTarget::Q3Vector2DNormalize
+        | PpcImportDispatcherTarget::Q3Vector3DCross
+        | PpcImportDispatcherTarget::Q3Point2DDistance
+        | PpcImportDispatcherTarget::Q3Point3DDistance
+        | PpcImportDispatcherTarget::Q3Point3DCrossProductTri
+        | PpcImportDispatcherTarget::Q3Matrix3x3SetTranslate
+        | PpcImportDispatcherTarget::Q3Matrix4x4SetIdentity
+        | PpcImportDispatcherTarget::Q3Matrix4x4SetTranslate
+        | PpcImportDispatcherTarget::Q3Matrix4x4SetScale
+        | PpcImportDispatcherTarget::Q3Matrix4x4SetRotateX
+        | PpcImportDispatcherTarget::Q3Matrix4x4SetRotateY
+        | PpcImportDispatcherTarget::Q3Matrix4x4SetRotateZ
+        | PpcImportDispatcherTarget::Q3Matrix4x4SetRotateXyz
+        | PpcImportDispatcherTarget::Q3Matrix4x4Multiply
+        | PpcImportDispatcherTarget::Q3Matrix4x4Transpose
+        | PpcImportDispatcherTarget::Q3Matrix4x4Invert
+        | PpcImportDispatcherTarget::Q3Point3DTransform
+        | PpcImportDispatcherTarget::Q3Point3DTo3DTransformArray
+        | PpcImportDispatcherTarget::Q3Point3DTo4DTransformArray
+        | PpcImportDispatcherTarget::Q3Vector3DTransform
+        | PpcImportDispatcherTarget::Q3MatrixTransformNew
+        | PpcImportDispatcherTarget::Q3MatrixTransformSet
+        | PpcImportDispatcherTarget::Q3TransformGetMatrix => {
+            unreachable!("QuickDraw 3D math imports return through dispatch_q3_math_import_fast")
         }
         PpcImportDispatcherTarget::Q3FileSetStorage => {
             Some(PpcImportAction::Return(u32::from(ppc_q3_file_set_storage(
