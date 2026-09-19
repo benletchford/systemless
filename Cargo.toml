@@ -29,7 +29,7 @@ include = [
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
-m68k = { version = "0.13.0" }
+m68k = { version = "0.14.0" }
 ppc = "0.6.2"
 thiserror = "2"
 tracing = "0.1"
@@ -136,7 +136,3 @@ debug = "line-tables-only"
 debug-assertions = true
 overflow-checks = true
 incremental = false
-
-[patch.crates-io]
-# Review dependency; replace with the published m68k release before merging.
-m68k = { git = "https://github.com/rlanday/m68k-rs", rev = "02cb0a169e9a9bd5008617a9434db7c21f19ebf8" }
