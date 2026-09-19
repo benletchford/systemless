@@ -218,14 +218,14 @@ impl Ink {
 pub struct SavedPixels<T = u8> {
     values: Vec<T>,
     identity: u64,
-    detail: HashMap<usize, Arc<DetailCell>>,
+    detail: HashMap<usize, Arc<DetailCell>, BuildHasherDefault<SampleOffsetHasher>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DetailCell {
     value: u8,
     indices: Vec<u8>,
-    ink: HashMap<usize, Ink>,
+    ink: HashMap<usize, Ink, BuildHasherDefault<SampleOffsetHasher>>,
 }
 
 /// Evidence for an indexed recoloring performed by guest CPU stores between
@@ -272,7 +272,7 @@ impl<T> From<Vec<T>> for SavedPixels<T> {
         Self {
             values,
             identity: next_snapshot_identity(),
-            detail: HashMap::new(),
+            detail: HashMap::default(),
         }
     }
 }
@@ -349,10 +349,10 @@ impl<T> SavedPixels<T> {
     }
 }
 
-// These tables are keyed only by host-generated physical sample offsets in
-// the bounded presentation surface. They do not hash guest strings or arbitrary
-// resource keys. Mix both the low bucket bits and high tag bits without paying
-// SipHash's per-sample cost during glyph painting and erasure.
+// These tables use only host-generated offsets into bounded presentation
+// surfaces, pixel snapshots, or a cell's subpixel samples. They do not hash guest
+// strings or arbitrary resource keys. Mix both the low bucket bits and high tag
+// bits without paying SipHash's per-sample cost during painting and restoration.
 #[derive(Default)]
 struct SampleOffsetHasher(u64);
 
@@ -775,7 +775,7 @@ impl Presentation {
         let mut cell = DetailCell {
             value: self.guest_values[(y * self.width + x) as usize] as u8,
             indices: Vec::new(),
-            ink: HashMap::new(),
+            ink: HashMap::default(),
         };
         for sy in 0..self.scale {
             for sx in 0..self.scale {
@@ -1007,7 +1007,7 @@ impl Presentation {
                 Arc::new(DetailCell {
                     value: background,
                     indices: vec![background; (self.scale * self.scale) as usize],
-                    ink: HashMap::new(),
+                    ink: HashMap::default(),
                 })
             });
             let cell = Arc::make_mut(cell);
@@ -1241,7 +1241,7 @@ impl MacMemoryBus {
         let mut cell = DetailCell {
             value,
             indices: vec![value; (scale * scale) as usize],
-            ink: HashMap::new(),
+            ink: HashMap::default(),
         };
         let color = |cell: Option<&DetailCell>, i: usize, fallback| {
             cell.map_or(IndexedColor::Solid(fallback), |cell| {
