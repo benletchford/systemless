@@ -1,0 +1,103 @@
+name: Promote catalogue assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      entry:
+        description: Stable entry ID to promote
+        required: true
+        type: string
+      pull_request:
+        description: Open pull request containing the title submission
+        required: true
+        type: string
+      source_commit:
+        description: Full commit SHA of the reviewed catalogue submission in this repository
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: catalogue-asset-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ENTRY_ID: ${{ inputs.entry }}
+      PULL_REQUEST: ${{ inputs.pull_request }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Build trusted CLI
+        run: cargo +stable build --locked -p systemless-catalogue-tools --bin catalogue
+      - name: Require an immutable submission reference
+        shell: bash
+        run: |
+          if [[ ! "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::source_commit must be a full lowercase commit SHA'
+            exit 1
+          fi
+      - name: Require the reviewed head of an open PR
+        id: submission
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (!/^[1-9][0-9]*$/.test(process.env.PULL_REQUEST)) {
+              throw new Error('pull_request must be a positive PR number');
+            }
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo, pull_number: Number(process.env.PULL_REQUEST)
+            });
+            if (pr.state !== 'open' || pr.base.ref !== context.payload.repository.default_branch ||
+                pr.head.sha !== process.env.SOURCE_COMMIT || !pr.head.repo) {
+              throw new Error('Submission must match the current head of an open PR targeting the default branch');
+            }
+            core.setOutput('repository', pr.head.repo.full_name);
+      - name: Check out submission data
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.submission.outputs.repository }}
+          ref: ${{ inputs.source_commit }}
+          path: submission
+          persist-credentials: false
+      - name: Validate and inspect selected sources without credentials
+        shell: bash
+        run: |
+          ./target/debug/catalogue --root submission check
+          ./target/debug/catalogue --root submission assets promote --entry "$ENTRY_ID" > promotion-preview.json
+      - name: Promote selected assets to R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        shell: bash
+        run: ./target/debug/catalogue --root submission assets promote --entry "$ENTRY_ID" --apply > promotion-result.json
+      - name: Validate and compile promoted catalogue
+        shell: bash
+        run: |
+          ./target/debug/catalogue --root submission check --no-incoming
+          ./target/debug/catalogue --root submission build
+      - name: Save source rewrites and recovery journal
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: promoted-catalogue-${{ github.run_id }}
+          retention-days: 14
+          include-hidden-files: true
+          path: |
+            submission/catalogue/
+            promotion-preview.json
+            promotion-result.json
+            submission/catalogue/.promotion/transaction.json

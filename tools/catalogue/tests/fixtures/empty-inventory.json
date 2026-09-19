@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "complete": true,
+  "prefixes": ["catalogue/media/sha256/", "catalogue/objects/sha256/"],
+  "objects": []
+}

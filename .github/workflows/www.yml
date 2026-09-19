@@ -1,0 +1,47 @@
+name: Website and catalogue
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: www-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format website and catalogue tools
+        run: cargo fmt -p systemless-org -p systemless-catalogue-tools -- --check
+      - name: Test promotion authorization and browser worker
+        run: node --test .github/scripts/promote-review.test.cjs www/tests/emulator-worker.test.cjs
+      - name: Test and lint catalogue tools
+        run: |
+          cargo test --locked -p systemless-catalogue-tools
+          cargo clippy --locked -p systemless-catalogue-tools --all-targets -- -D warnings
+          cargo run --locked -p systemless-catalogue-tools -- check --production
+      - name: Test website
+        run: cargo test --locked -p systemless-org
+      - name: Check WebAssembly build
+        run: cargo check --locked -p systemless-org --target wasm32-unknown-unknown
+      - name: Build deterministic production pages
+        run: ./www/scripts/build-pages.sh
+
+  catalogue-msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - run: cargo check --locked -p systemless-catalogue-tools --all-targets

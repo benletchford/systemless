@@ -1,0 +1,112 @@
+name: Promote PR assets
+on:
+  workflow_run:
+    workflows: ['Promotion approval signal']
+    types: [completed]
+permissions:
+  contents: write
+  pull-requests: read
+  issues: write
+  actions: write
+concurrency:
+  group: catalogue-asset-promotion
+  cancel-in-progress: false
+jobs:
+  promote:
+    if: github.event.workflow_run.event == 'pull_request_review' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Authorize maintainer and pin PR head
+        id: authorize
+        uses: actions/github-script@v7
+        with:
+          script: await require('./.github/scripts/promote-review.cjs').authorize({github, context, core});
+      - name: Build trusted CLI
+        if: steps.authorize.outputs.sha != ''
+        run: |
+          rustup toolchain install stable --profile minimal
+          cargo +stable build --locked -p systemless-catalogue-tools --bin catalogue
+      - uses: actions/checkout@v7
+        if: steps.authorize.outputs.sha != ''
+        with:
+          ref: ${{ steps.authorize.outputs.sha }}
+          path: submission
+          persist-credentials: false
+      - name: Validate submission without production credentials
+        if: steps.authorize.outputs.sha != ''
+        env:
+          ENTRY_IDS: ${{ steps.authorize.outputs.ids }}
+        run: |
+          ./target/debug/catalogue --root submission check
+          node - <<'JS'
+          const {execFileSync} = require('node:child_process');
+          for (const id of JSON.parse(process.env.ENTRY_IDS)) {
+            execFileSync('./target/debug/catalogue', ['--root', 'submission', 'assets', 'promote', '--entry', id], {stdio: 'inherit'});
+          }
+          JS
+      - name: Recheck approval before uploading
+        if: steps.authorize.outputs.sha != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const state = JSON.parse(require('node:fs').readFileSync('promotion-state.json', 'utf8'));
+            const pr = await require('./.github/scripts/promote-review.cjs').approvedReview(github, context, state.number, state.reviewId, state.actor);
+            if (pr.head.sha !== state.sha) throw new Error('PR changed after approval');
+      - name: Promote pending assets
+        if: steps.authorize.outputs.sha != ''
+        env:
+          ENTRY_IDS: ${{ steps.authorize.outputs.ids }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          node - <<'JS'
+          const fs = require('node:fs');
+          const {execFileSync} = require('node:child_process');
+          for (const id of JSON.parse(process.env.ENTRY_IDS)) {
+            const result = execFileSync('./target/debug/catalogue', ['--root', 'submission', 'assets', 'promote', '--entry', id, '--apply'], {encoding: 'utf8'});
+            fs.writeFileSync(`promotion-${id}.json`, result);
+          }
+          JS
+      - name: Validate promoted sources
+        if: steps.authorize.outputs.sha != ''
+        run: |
+          ./target/debug/catalogue --root submission check --no-incoming
+          ./target/debug/catalogue --root submission build
+      - name: Commit back to unchanged PR branch and trigger CI
+        if: steps.authorize.outputs.sha != ''
+        id: commit
+        uses: actions/github-script@v7
+        with:
+          script: await require('./.github/scripts/promote-review.cjs').commit({github, context, core});
+      - name: Save promotion results
+        if: always() && steps.authorize.outputs.sha != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: promoted-catalogue-${{ github.run_id }}
+          include-hidden-files: true
+          retention-days: 14
+          path: |
+            promotion-*.json
+            submission/catalogue/
+            submission/catalogue/.promotion/transaction.json
+      - name: Report to PR
+        if: always() && steps.authorize.outputs.sha != ''
+        uses: actions/github-script@v7
+        env:
+          RESULT: ${{ steps.commit.outputs.result }}
+          STATUS: ${{ job.status }}
+          PR_NUMBER: ${{ steps.authorize.outputs.number }}
+        with:
+          script: |
+            const url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const message = process.env.STATUS === 'success'
+              ? `${process.env.RESULT} Fresh CI requested. Approval and merging remain with the maintainer.`
+              : 'Promotion did not finish. See the run for the error and any recovery artifacts. A changed head requires a fresh approving review; fork PRs use the manual workflow.';
+            await github.rest.issues.createComment({...context.repo, issue_number: Number(process.env.PR_NUMBER), body: `${message}\n\n[Promotion run](${url})`});

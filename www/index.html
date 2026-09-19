@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <script>
+    (() => {
+      let savedTheme = null;
+      try {
+        savedTheme = localStorage.getItem("systemless.theme");
+      } catch (_) {}
+      const dark = savedTheme
+        ? savedTheme === "dark"
+        : window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
+    })();
+  </script>
+  <!-- systemless-seo -->
+  <title>Systemless | Play classic 68K and PowerPC Mac games in your browser</title>
+  <meta name="description" content="Play classic 68K and PowerPC Macintosh games in the browser with Systemless, a ROM-free classic Mac runtime for playable preservation." />
+  <meta name="robots" content="index,follow" />
+  <link rel="canonical" href="https://systemless.org/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Systemless" />
+  <meta property="og:title" content="Systemless | Play classic 68K and PowerPC Mac games in your browser" />
+  <meta property="og:description" content="Play classic 68K and PowerPC Macintosh games in the browser with Systemless, a ROM-free classic Mac runtime for playable preservation." />
+  <meta property="og:url" content="https://systemless.org/" />
+  <meta property="og:image" content="https://systemless.org/assets/icons/favicon.svg" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Systemless | Play classic 68K and PowerPC Mac games in your browser" />
+  <meta name="twitter:description" content="Play classic 68K and PowerPC Macintosh games in the browser with Systemless, a ROM-free classic Mac runtime for playable preservation." />
+  <meta name="twitter:image" content="https://systemless.org/assets/icons/favicon.svg" />
+  <script type="application/ld+json">
+    {"@context":"https://schema.org","@type":"WebSite","name":"Systemless","alternateName":"systemless.org","url":"https://systemless.org/"}
+  </script>
+  <!-- /systemless-seo -->
+  <meta name="application-name" content="Systemless" />
+  <meta name="apple-mobile-web-app-title" content="Systemless" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+  <meta name="theme-color" content="#f2efe9" />
+  <meta name="color-scheme" content="light dark" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/assets/icons/favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/assets/icons/apple-touch-icon.png" />
+  <link rel="preconnect" href="https://assets.systemless.org" crossorigin />
+  <script>
+    (() => {
+      const compactTitleMedia = "(max-width: 760px), (display-mode: standalone), (hover: none) and (pointer: coarse)";
+      if (window.matchMedia && window.matchMedia(compactTitleMedia).matches) {
+        document.title = "Systemless";
+      }
+
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker.register("/service-worker.js").catch(() => {});
+        });
+      }
+    })();
+  </script>
+  <link data-trunk rel="rust" data-bin="systemless-org" />
+  <link data-trunk rel="css" href="src/style.css" />
+  <link data-trunk rel="copy-dir" href="assets" />
+  <link data-trunk rel="copy-file" href="public/manifest.webmanifest" />
+  <link data-trunk rel="copy-file" href="public/service-worker.js" />
+  <link data-trunk rel="copy-file" href="src/emulator-worker.js" />
+</head>
+<body>
+  <div id="root">
+    <!-- systemless-fallback -->
+    <main class="seo-fallback">
+      <h1>Classic 68K and PowerPC Macintosh games in your browser</h1>
+      <p>Systemless is a ROM-free classic Mac runtime for playable preservation, serving original 68K and PowerPC Macintosh game archives directly on the web.</p>
+      <section class="seo-cli-hint">
+        <h2>Run your own application</h2>
+        <p>On macOS, install with Homebrew: <code>brew install benletchford/tap/systemless</code></p>
+        <p>On other platforms, install with Cargo: <code>cargo install systemless</code></p>
+        <p>Then launch an application: <code>systemless path/to/application.sit</code></p>
+      </section>
+      <p>The game library is loaded from the community catalogue.</p>
+    </main>
+    <!-- /systemless-fallback -->
+  </div>
+</body>
+</html>

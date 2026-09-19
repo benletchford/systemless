@@ -2,3 +2,21 @@ target/
 .DS_Store
 .vscode
 __pycache__/
+/www/dist/
+/www/.wrangler/
+/www/node_modules/
+/www/.home/
+/catalogue/.lock
+/catalogue/.promotion/
+/catalogue/.downloads/
+
+# Large incoming software is staged and promoted locally, never committed.
+/catalogue/incoming/**/*.sit
+/catalogue/incoming/**/*.sitx
+/catalogue/incoming/**/*.zip
+/catalogue/incoming/**/*.hqx
+/catalogue/incoming/**/*.gz
+/catalogue/incoming/**/*.bin
+/catalogue/incoming/**/*.kpk
+/catalogue/incoming/**/*.img
+/catalogue/incoming/**/*.dat

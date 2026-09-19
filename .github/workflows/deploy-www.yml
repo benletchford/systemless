@@ -1,0 +1,45 @@
+name: Deploy website
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .cargo/**
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - catalogue/**
+      - tools/catalogue/**
+      - www/**
+      - .github/workflows/deploy-www.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
+
+concurrency:
+  group: deploy-www-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Validate catalogue
+        run: cargo run --locked -p systemless-catalogue-tools -- check --production
+      - name: Build production pages
+        run: ./www/scripts/build-pages.sh
+      - name: Deploy Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy www/dist --project-name=systemless-org --branch=master
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}

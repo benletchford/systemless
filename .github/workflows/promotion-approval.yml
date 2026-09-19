@@ -1,0 +1,12 @@
+name: Promotion approval signal
+run-name: 'Promotion review PR #${{ github.event.pull_request.number }} review #${{ github.event.review.id }}'
+on:
+  pull_request_review:
+    types: [submitted]
+permissions: {}
+jobs:
+  signal:
+    if: github.event.review.state == 'approved'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Approval submitted; trusted promotion will validate the review through the GitHub API.'
