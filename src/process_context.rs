@@ -1553,8 +1553,8 @@ pub type SharedProcessDialogText = SharedProcessValue<[Vec<u8>; 4]>;
 /// Inside Macintosh: Toolbox Essentials (1992), pp. 2-30--2-32 and 5-90.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ProcessAppleEventLaunchState {
-    pub(crate) high_level_event_aware: bool,
-    pub(crate) open_application_event_sent: bool,
+    high_level_event_aware: bool,
+    open_application_event_sent: bool,
 }
 
 impl ProcessAppleEventLaunchState {
@@ -2960,59 +2960,46 @@ impl SharedProcessValue<ProcessAppleEventLaunchState> {
     /// process-owned `UnsafeCell`. A callback may enter the other ISA gateway
     /// after this operation returns, so no borrow can cross that boundary.
     pub(crate) fn is_high_level_event_aware(&self) -> bool {
-        // SAFETY: the runner serializes attached adapter access; this method
-        // copies the bit before returning and exposes no reference.
-        unsafe { (&*self.0.get()).high_level_event_aware }
+        self.with_ref(|state| state.high_level_event_aware)
     }
 
     /// Update the process launch capability while keeping the mutable access
     /// scoped to this operation.
     pub(crate) fn set_high_level_event_aware(&self, aware: bool) {
-        // SAFETY: see `is_high_level_event_aware`.
-        unsafe {
-            (&mut *self.0.get()).high_level_event_aware = aware;
-        }
+        self.with_mut(|state| state.high_level_event_aware = aware);
     }
 
     /// Return whether the process-wide synthetic `kAEOpenApplication` has
     /// already been claimed by either attached Event Manager gateway.
     #[cfg(test)]
     pub(crate) fn is_open_application_event_sent(&self) -> bool {
-        // SAFETY: see `is_high_level_event_aware`.
-        unsafe { (&*self.0.get()).open_application_event_sent }
+        self.with_ref(|state| state.open_application_event_sent)
     }
 
     /// Set the process-wide one-shot state for a test fixture.
     pub(crate) fn set_open_application_event_sent(&self, sent: bool) {
-        // SAFETY: see `is_high_level_event_aware`.
-        unsafe {
-            (&mut *self.0.get()).open_application_event_sent = sent;
-        }
+        self.with_mut(|state| state.open_application_event_sent = sent);
     }
 
     /// Start a new application launch with the capability parsed from its
     /// `SIZE` resource and no previously delivered synthetic event.
     pub(crate) fn reset_for_launch(&self, high_level_event_aware: bool) {
-        // SAFETY: see `is_high_level_event_aware`.
-        unsafe {
-            let state = &mut *self.0.get();
+        self.with_mut(|state| {
             state.high_level_event_aware = high_level_event_aware;
             state.open_application_event_sent = false;
-        }
+        });
     }
 
     /// Atomically claim the process-wide one-shot launch event. The caller
     /// must still check its event mask before invoking this method.
     pub(crate) fn claim_open_application_event(&self) -> bool {
-        // SAFETY: see `is_high_level_event_aware`.
-        unsafe {
-            let state = &mut *self.0.get();
+        self.with_mut(|state| {
             if !state.high_level_event_aware || state.open_application_event_sent {
                 return false;
             }
             state.open_application_event_sent = true;
             true
-        }
+        })
     }
 }
 
