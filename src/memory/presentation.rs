@@ -1764,16 +1764,10 @@ impl MacMemoryBus {
         {
             return None;
         }
-        output.clear();
         let pixels = p.resolved_argb(scale);
-        output.reserve(pixels.len() * 4);
-        for pixel in pixels.iter() {
-            output.extend_from_slice(&[
-                (*pixel >> 16) as u8,
-                (*pixel >> 8) as u8,
-                *pixel as u8,
-                255,
-            ]);
+        output.resize(pixels.len() * 4, 0);
+        for (rgba, &pixel) in output.chunks_exact_mut(4).zip(pixels.iter()) {
+            rgba.copy_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, pixel as u8, 255]);
         }
         let width = p.logical_width() * scale;
         for (index, (before, after)) in guest
