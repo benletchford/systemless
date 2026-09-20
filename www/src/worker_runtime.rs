@@ -79,20 +79,23 @@ impl WorkerMachine {
         let logical_size = self.machine.screen_size();
         let should_render =
             gpu_frame.is_none() && (frame_result.visual_work || !self.painted_once || debug);
-        let frame = should_render.then(|| {
-            self.painted_once = true;
-            let stats = debug.then_some(DebugOverlayFrameStats {
-                host_fps: None,
-                frame_ms: None,
-                guest_mips: None,
-                guest_ticks_per_sec: None,
-                ticks_behind: Some(counters.ticks_behind),
-                last_steps: Some(counters.last_steps),
-                cpu_budget_ms: Some(counters.cpu_budget_ms),
-                audio_queue_ms: counters.audio_queue_ms,
-            });
-            Uint8Array::from(self.machine.render_rgba(stats).1)
-        });
+        let frame = should_render
+            .then(|| {
+                self.painted_once = true;
+                let stats = debug.then_some(DebugOverlayFrameStats {
+                    host_fps: None,
+                    frame_ms: None,
+                    guest_mips: None,
+                    guest_ticks_per_sec: None,
+                    ticks_behind: Some(counters.ticks_behind),
+                    last_steps: Some(counters.last_steps),
+                    cpu_budget_ms: Some(counters.cpu_budget_ms),
+                    audio_queue_ms: counters.audio_queue_ms,
+                });
+                let (_, pixels, changed) = self.machine.render_rgba(stats);
+                changed.then(|| Uint8Array::from(pixels))
+            })
+            .flatten();
         let (width, height) = if frame.is_some() {
             self.machine.presented_size()
         } else {

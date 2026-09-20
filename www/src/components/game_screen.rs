@@ -1765,7 +1765,7 @@ fn start_render_loop(
             should_paint_frame(frame_result, size_changed, painted_once, force_debug_paint);
         if painted_frame {
             let render_start_ms = if timing_enabled { perf_now_ms() } else { 0.0 };
-            let ((pixel_w, pixel_h), rgba) =
+            let ((pixel_w, pixel_h), rgba, render_changed) =
                 m.render_rgba(debug_enabled.then(|| perf.frame_stats()));
             if canvas.width() != pixel_w {
                 canvas.set_width(pixel_w);
@@ -1777,17 +1777,19 @@ fn start_render_loop(
             if timing_enabled {
                 timings.render_ms = perf_now_ms() - render_start_ms;
             }
-            let paint_start_ms = if timing_enabled { perf_now_ms() } else { 0.0 };
-            frame.paint(pixel_w, pixel_h, rgba);
-            if timing_enabled {
-                timings.paint_ms = perf_now_ms() - paint_start_ms;
-            }
-            if !painted_once {
-                if let Some(callback) = on_first_paint.borrow_mut().take() {
-                    callback();
+            if render_changed || !painted_once {
+                let paint_start_ms = if timing_enabled { perf_now_ms() } else { 0.0 };
+                frame.paint(pixel_w, pixel_h, rgba);
+                if timing_enabled {
+                    timings.paint_ms = perf_now_ms() - paint_start_ms;
                 }
+                if !painted_once {
+                    if let Some(callback) = on_first_paint.borrow_mut().take() {
+                        callback();
+                    }
+                }
+                painted_once = true;
             }
-            painted_once = true;
         }
         let counters = if timing_enabled {
             let counters = m.perf_counters();

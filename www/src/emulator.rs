@@ -125,6 +125,7 @@ pub struct Machine {
     rendered_outline: bool,
     rendered_cursor: Option<display::CursorImage>,
     rendered_mouse_pos: (i16, i16),
+    last_render_changed: bool,
     output_scale: u32,
     presented_size: (u32, u32),
     frame_palette: display::RgbaPalette,
@@ -332,6 +333,7 @@ impl Machine {
             rendered_outline: false,
             rendered_cursor: None,
             rendered_mouse_pos: (0, 0),
+            last_render_changed: true,
             output_scale: 1,
             presented_size: (0, 0),
             frame_palette: [0; 256],
@@ -683,7 +685,8 @@ impl Machine {
     pub fn render_rgba(
         &mut self,
         debug_stats: Option<DebugOverlayFrameStats>,
-    ) -> ((u32, u32), &[u8]) {
+    ) -> ((u32, u32), &[u8], bool) {
+        self.last_render_changed = false;
         let (screen_mode, clut, mouse_pos, cursor_matches) = {
             let dispatcher = self.runner.dispatcher();
             let cursor_matches = match (&self.rendered_cursor, dispatcher.cursor()) {
@@ -716,13 +719,15 @@ impl Machine {
             && !palette_changed
         {
             if self.rendered_outline {
-                return (self.presented_size, &self.presented_rgba);
+                return (self.presented_size, &self.presented_rgba, false);
             }
             if self.rendered_cursor.is_some() {
-                return (self.presented_size, &self.overlay_rgba);
+                return (self.presented_size, &self.overlay_rgba, false);
             }
-            return (self.presented_size, &self.frame_rgba);
+            return (self.presented_size, &self.frame_rgba, false);
         }
+
+        self.last_render_changed = true;
 
         if palette_changed {
             self.frame_palette = display::rgba_palette_from_clut(&clut);
@@ -812,7 +817,7 @@ impl Machine {
             self.rendered_cursor = None;
         }
 
-        (size, pixels)
+        (size, pixels, self.last_render_changed)
     }
 
     pub fn mouse_down(&mut self, v: i16, h: i16) {
