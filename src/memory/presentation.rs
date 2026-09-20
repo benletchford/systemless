@@ -887,6 +887,29 @@ impl Presentation {
         }
     }
 
+    /// Prove a screen-row span has no retained outline coverage. Other
+    /// layouts use the per-byte path, including padding and row crossings.
+    fn plain_screen_row(&self, address: u32, len: usize) -> bool {
+        if len == 0 {
+            return true;
+        }
+        let Some(last) = u32::try_from(len - 1)
+            .ok()
+            .and_then(|n| address.checked_add(n))
+        else {
+            return false;
+        };
+        let (Some((x, y)), Some((_, last_y))) = (self.position(address), self.position(last))
+        else {
+            return false;
+        };
+        if y != last_y {
+            return false;
+        }
+        let start = (y * self.width + x) as usize;
+        !self.text_cells[start..start + len].iter().any(|&set| set)
+    }
+
     fn matches_detail(&self, address: u32, detail: Option<&Arc<DetailCell>>) -> bool {
         let Some((x, y)) = self.position(address) else {
             return self.offscreen.get(&address) == detail;
@@ -1266,13 +1289,30 @@ impl MacMemoryBus {
             self.write_bytes(destination, bytes);
             return;
         }
-        let previous = self.read_bytes(destination, bytes.len());
-        for (i, (&old, &new)) in previous.iter().zip(bytes).enumerate() {
-            if old != new {
-                self.write_byte(destination + i as u32, new);
+        // Most mirror rows are unchanged. Compare contiguous RAM once while
+        // retaining the routed/traced fallback and changed-byte write behavior.
+        if !self
+            .untraced_ram_slice(destination, bytes.len())
+            .is_some_and(|previous| previous == bytes)
+        {
+            let previous = self.read_bytes(destination, bytes.len());
+            for (i, (&old, &new)) in previous.iter().zip(bytes).enumerate() {
+                if old != new {
+                    self.write_byte(destination + i as u32, new);
+                }
             }
         }
         if let Some(mut p) = self.presentation.as_mut() {
+            let source_end = u64::from(source) + bytes.len() as u64;
+            if p.plain_screen_row(destination, bytes.len())
+                && (!p.may_have_offscreen_detail(source, source_end)
+                    || p.offscreen
+                        .range(source..source + bytes.len() as u32)
+                        .next()
+                        .is_none())
+            {
+                return;
+            }
             let changes = {
                 let mut source_cells = p
                     .offscreen
@@ -2116,6 +2156,61 @@ mod tests {
         bus.outline_glyph_pixel(address, 0, 0, 0);
         bus.write_byte(address, 0);
         bus.end_outline_glyph();
+    }
+
+    #[test]
+    fn framebuffer_sync_preserves_plain_rows_and_updates_changed_bytes() {
+        let mut bus = bus();
+        let epoch = bus.presentation_epoch();
+        bus.sync_presented_bytes(0x1000, 0x8000, &[255; 8]);
+        assert_eq!(bus.presentation_epoch(), epoch);
+        bus.sync_presented_bytes(0x1000, 0x8000, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(bus.read_bytes(0x1000, 8), [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert!(bus
+            .presentation
+            .as_ref()
+            .unwrap()
+            .plain_screen_row(0x1000, 8));
+        assert!(!bus
+            .presentation
+            .as_ref()
+            .unwrap()
+            .plain_screen_row(0x1007, 2));
+    }
+
+    #[test]
+    fn framebuffer_sync_updates_coverage_even_when_guest_bytes_match() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x1000);
+        let same_bytes = bus.read_bytes(0x1000, 8);
+        assert!(bus.presentation.as_ref().unwrap().detail(0x1000).is_some());
+        bus.sync_presented_bytes(0x1000, 0x8000, &same_bytes);
+        assert!(bus.presentation.as_ref().unwrap().detail(0x1000).is_none());
+
+        paint_detail(&mut bus, 0x8000);
+        let source_detail = bus.presentation.as_ref().unwrap().detail(0x8000).unwrap();
+        bus.sync_presented_bytes(0x1000, 0x8000, &same_bytes);
+        assert_eq!(
+            bus.presentation.as_ref().unwrap().detail(0x1000),
+            Some(source_detail)
+        );
+        let epoch = bus.presentation_epoch();
+        bus.sync_presented_bytes(0x1000, 0x8000, &same_bytes);
+        assert_eq!(bus.presentation_epoch(), epoch);
+    }
+
+    #[test]
+    fn framebuffer_sync_clears_coverage_across_rows_and_after_source_erasure() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x1008);
+        let bytes = bus.read_bytes(0x1007, 2);
+        bus.sync_presented_bytes(0x1007, 0x8000, &bytes);
+        assert!(bus.presentation.as_ref().unwrap().detail(0x1008).is_none());
+        paint_detail(&mut bus, 0x8000);
+        bus.sync_presented_bytes(0x1000, 0x8000, &[0; 8]);
+        bus.write_byte(0x8000, 0); // same byte erases retained source coverage
+        bus.sync_presented_bytes(0x1000, 0x8000, &[0; 8]);
+        assert!(bus.presentation.as_ref().unwrap().detail(0x1000).is_none());
     }
 
     #[test]
