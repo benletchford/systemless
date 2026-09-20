@@ -8779,12 +8779,13 @@ impl super::TrapDispatcher {
             if ch == '^' {
                 if let Some(&next) = chars.peek() {
                     if let Some(idx) = next.to_digit(10) {
-                        if (idx as usize) < self.param_text.len() {
-                            chars.next();
-                            out.push_str(&decode_mac_roman(
-                                &self.param_text[idx as usize],
-                            ));
-                            continue;
+                        let idx = idx as usize;
+                        if idx < self.param_text.len() {
+                            if let Some(slot) = self.param_text.slot(idx) {
+                                chars.next();
+                                out.push_str(&decode_mac_roman(&slot));
+                                continue;
+                            }
                         }
                     }
                 }
@@ -11639,10 +11640,10 @@ impl super::TrapDispatcher {
                 eprintln!(
                     "[TRAP] ParamText pc=${:08X} ^0=\"{}\" ^1=\"{}\" ^2=\"{}\" ^3=\"{}\"",
                     trap_pc,
-                    String::from_utf8_lossy(&self.param_text[0]),
-                    String::from_utf8_lossy(&self.param_text[1]),
-                    String::from_utf8_lossy(&self.param_text[2]),
-                    String::from_utf8_lossy(&self.param_text[3]),
+                    String::from_utf8_lossy(&self.param_text.slot(0).unwrap_or_default()),
+                    String::from_utf8_lossy(&self.param_text.slot(1).unwrap_or_default()),
+                    String::from_utf8_lossy(&self.param_text.slot(2).unwrap_or_default()),
+                    String::from_utf8_lossy(&self.param_text.slot(3).unwrap_or_default()),
                 );
                 cpu.write_reg(Register::A7, sp + 16);
                 Ok(())

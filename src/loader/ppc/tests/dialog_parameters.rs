@@ -17,10 +17,10 @@ fn hle_import_runner_handles_param_text_strings() {
 
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(loaded.param_text[0], b"alpha");
-    assert_eq!(loaded.param_text[1], b"bravo");
-    assert_eq!(loaded.param_text[2], b"chi");
-    assert_eq!(loaded.param_text[3], b"d");
+    assert_eq!(loaded.param_text.slot(0).as_deref(), Some(b"alpha".as_slice()));
+    assert_eq!(loaded.param_text.slot(1).as_deref(), Some(b"bravo".as_slice()));
+    assert_eq!(loaded.param_text.slot(2).as_deref(), Some(b"chi".as_slice()));
+    assert_eq!(loaded.param_text.slot(3).as_deref(), Some(b"d".as_slice()));
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn hle_import_runner_handles_legacy_lowercase_param_text_symbol() {
 
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(loaded.param_text[0], b"legacy");
+    assert_eq!(loaded.param_text.slot(0).as_deref(), Some(b"legacy".as_slice()));
 }
 
 #[test]
@@ -84,10 +84,10 @@ fn hle_import_runner_param_text_nil_preserves_previous_slots() {
 
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(loaded.param_text[0], b"new0");
-    assert_eq!(loaded.param_text[1], b"old1");
-    assert_eq!(loaded.param_text[2], b"old2");
-    assert_eq!(loaded.param_text[3], b"old3");
+    assert_eq!(loaded.param_text.slot(0).as_deref(), Some(b"new0".as_slice()));
+    assert_eq!(loaded.param_text.slot(1).as_deref(), Some(b"old1".as_slice()));
+    assert_eq!(loaded.param_text.slot(2).as_deref(), Some(b"old2".as_slice()));
+    assert_eq!(loaded.param_text.slot(3).as_deref(), Some(b"old3".as_slice()));
 }
 
 #[test]
@@ -120,8 +120,8 @@ fn attached_dialog_parameter_text_mutations_cross_isa_immediately() {
         .dispatch_dialog(true, 0x18B, &mut classic_cpu, &mut classic_bus)
         .unwrap()
         .is_ok());
-    assert_eq!(native.param_text[0], b"Classic");
-    assert_eq!(native.param_text[1], b"");
+    assert_eq!(native.param_text.slot(0).as_deref(), Some(b"Classic".as_slice()));
+    assert_eq!(native.param_text.slot(1).as_deref(), Some(b"".as_slice()));
 }
 
 #[test]
@@ -139,8 +139,8 @@ fn cloned_native_adapter_detaches_dialog_parameter_text() {
     detached.cpu.gpr[6] = 0;
     run_test_import(&mut detached, PpcImportDispatcherTarget::ParamText);
 
-    assert_eq!(original.param_text[0], b"Original");
-    assert_eq!(detached.param_text[0], b"Detached");
+    assert_eq!(original.param_text.slot(0).as_deref(), Some(b"Original".as_slice()));
+    assert_eq!(detached.param_text.slot(0).as_deref(), Some(b"Detached".as_slice()));
 }
 
 #[test]

@@ -468,7 +468,7 @@ pub(super) fn dispatch_dialog_import(
                     alert_id,
                     param_text
                         .iter()
-                        .map(|bytes| decode_mac_roman(bytes))
+                        .map(|bytes| decode_mac_roman(&bytes))
                         .collect::<Vec<_>>()
                 );
             }
@@ -1153,7 +1153,7 @@ fn ppc_new_alert_dialog(
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
     alert_id: i16,
-    param_text: &[Vec<u8>; 4],
+    param_text: &SharedProcessDialogText,
 ) -> u32 {
     let Some(alert_index) = ppc_vfs_resource_index(
         vfs_resources,
@@ -1296,7 +1296,7 @@ fn ppc_get_new_dialog(
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
-    param_text: &[Vec<u8>; 4],
+    param_text: &SharedProcessDialogText,
 ) -> u32 {
     let dialog_id = cpu.gpr[3] as u16 as i16;
     let Some(dlog_index) = ppc_vfs_resource_index(
@@ -1554,12 +1554,13 @@ fn ppc_initialize_dialog_items(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     controls: &mut Vec<PpcControlRecord>,
-    param_text: &[Vec<u8>; 4],
+    param_text: &SharedProcessDialogText,
     dialog: u32,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
 ) -> bool {
+    let param_text = param_text.snapshot();
     let Some(items_handle) = memory
         .read_u32_be(dialog.wrapping_add(PPC_DIALOG_ITEMS_OFFSET))
         .filter(|handle| *handle != 0)
@@ -1667,7 +1668,7 @@ fn ppc_initialize_dialog_items(
                 // Macintosh Toolbox Essentials (1992), pp. 6-129--6-130:
                 // ParamText replaces ^0..^3 in static-text items of every
                 // subsequently created dialog or alert.
-                let text = ppc_apply_param_text(&item.payload, param_text);
+                let text = ppc_apply_param_text(&item.payload, &param_text);
                 ppc_process_alloc_handle_with_bytes(
                     process_memory_manager,
                     memory,
