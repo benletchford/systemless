@@ -1,5 +1,64 @@
 use super::*;
 
+pub(super) struct PpcQ3CoreDispatchContext<'a> {
+    pub(super) target: &'a PpcImportDispatcherTarget,
+    pub(super) cpu: &'a PpcCpu,
+    pub(super) memory: &'a mut PpcSectionMem,
+    pub(super) q3_objects: &'a mut Vec<PpcQ3ObjectRecord>,
+    pub(super) next_q3_object: &'a mut u32,
+    pub(super) q3_error_state: &'a mut PpcQ3ErrorState,
+    pub(super) q3_lifecycle: &'a mut PpcQ3LifecycleState,
+}
+
+pub(super) fn dispatch_q3_core_import(
+    context: PpcQ3CoreDispatchContext<'_>,
+) -> Option<PpcImportAction> {
+    let PpcQ3CoreDispatchContext {
+        target,
+        cpu,
+        memory,
+        q3_objects,
+        next_q3_object,
+        q3_error_state,
+        q3_lifecycle,
+    } = context;
+    match target {
+        PpcImportDispatcherTarget::Q3Initialize => {
+            q3_lifecycle.initialize_count = q3_lifecycle.initialize_count.saturating_add(1);
+            q3_lifecycle.initialized_depth = q3_lifecycle.initialized_depth.saturating_add(1);
+            Some(PpcImportAction::Return(1))
+        }
+        PpcImportDispatcherTarget::Q3Exit => {
+            q3_lifecycle.exit_count = q3_lifecycle.exit_count.saturating_add(1);
+            q3_lifecycle.initialized_depth = q3_lifecycle.initialized_depth.saturating_sub(1);
+            Some(PpcImportAction::Return(1))
+        }
+        PpcImportDispatcherTarget::Q3NewObject => {
+            Some(PpcImportAction::Return(ppc_q3_alloc_object(
+                q3_objects,
+                next_q3_object,
+                PpcQ3ObjectKind::Generic,
+                PPC_Q3_TYPE_NONE,
+                cpu.gpr[3],
+                0,
+            )))
+        }
+        PpcImportDispatcherTarget::Q3ErrorGet => {
+            let first_error_ptr = cpu.gpr[3];
+            if first_error_ptr != 0 && !ppc_memory_can_write_bytes(memory, first_error_ptr, 4) {
+                Some(PpcImportAction::Return(q3_error_state.last_error))
+            } else {
+                let (first_error, last_error) = q3_error_state.get();
+                if first_error_ptr != 0 {
+                    let _ = memory.write_u32_be(first_error_ptr, first_error);
+                }
+                Some(PpcImportAction::Return(last_error))
+            }
+        }
+        _ => None,
+    }
+}
+
 pub(super) struct PpcQ3SubmitDispatchContext<'a> {
     pub(super) target: &'a PpcImportDispatcherTarget,
     pub(super) cpu: &'a PpcCpu,
@@ -376,6 +435,14 @@ pub(super) fn dispatch_q3_shader_style_import_fast(
         q3_styles,
     } = context;
     match target {
+        PpcImportDispatcherTarget::Q3ShaderGetType => {
+            Some(PpcImportAction::Return(ppc_q3_class_object_type(
+                cpu,
+                q3_objects,
+                q3_error_state,
+                ppc_q3_object_type_is_shader,
+            )))
+        }
         PpcImportDispatcherTarget::Q3TextureShaderNew => {
             Some(PpcImportAction::Return(ppc_q3_texture_shader_new(
                 cpu,

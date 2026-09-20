@@ -16761,6 +16761,20 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         q3_error_state.clear();
     }
 
+    if let Some(action) = dispatch_qd3d::dispatch_q3_core_import(
+        dispatch_qd3d::PpcQ3CoreDispatchContext {
+            target: &binding.dispatcher_target,
+            cpu,
+            memory,
+            q3_objects,
+            next_q3_object,
+            q3_error_state,
+            q3_lifecycle,
+        },
+    ) {
+        return Some(action);
+    }
+
     if let Some(action) = dispatch_qd3d::dispatch_q3_storage_file_import(
         dispatch_qd3d::PpcQ3StorageFileDispatchContext {
             target: &binding.dispatcher_target,
@@ -18519,15 +18533,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::AlertReturnDefault => {
             unreachable!("dialog imports return through dispatch_dialog_import")
         }
-        PpcImportDispatcherTarget::Q3Initialize => {
-            q3_lifecycle.initialize_count = q3_lifecycle.initialize_count.saturating_add(1);
-            q3_lifecycle.initialized_depth = q3_lifecycle.initialized_depth.saturating_add(1);
-            Some(PpcImportAction::Return(1))
-        }
-        PpcImportDispatcherTarget::Q3Exit => {
-            q3_lifecycle.exit_count = q3_lifecycle.exit_count.saturating_add(1);
-            q3_lifecycle.initialized_depth = q3_lifecycle.initialized_depth.saturating_sub(1);
-            Some(PpcImportAction::Return(1))
+        PpcImportDispatcherTarget::Q3Initialize | PpcImportDispatcherTarget::Q3Exit => {
+            unreachable!("QuickDraw 3D core imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3MemoryStorageNew
         | PpcImportDispatcherTarget::Q3MemoryStorageNewBuffer
@@ -18535,14 +18542,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             unreachable!("QuickDraw 3D storage imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3NewObject => {
-            Some(PpcImportAction::Return(ppc_q3_alloc_object(
-                q3_objects,
-                next_q3_object,
-                PpcQ3ObjectKind::Generic,
-                PPC_Q3_TYPE_NONE,
-                cpu.gpr[3],
-                0,
-            )))
+            unreachable!("QuickDraw 3D core imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3FileNew => {
             unreachable!("QuickDraw 3D file imports return through typed dispatch")
@@ -18551,16 +18551,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             unreachable!("QuickDraw 3D group/view imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3ErrorGet => {
-            let first_error_ptr = cpu.gpr[3];
-            if first_error_ptr != 0 && !ppc_memory_can_write_bytes(memory, first_error_ptr, 4) {
-                Some(PpcImportAction::Return(q3_error_state.last_error))
-            } else {
-                let (first_error, last_error) = q3_error_state.get();
-                if first_error_ptr != 0 {
-                    let _ = memory.write_u32_be(first_error_ptr, first_error);
-                }
-                Some(PpcImportAction::Return(last_error))
-            }
+            unreachable!("QuickDraw 3D core imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3ObjectDispose
         | PpcImportDispatcherTarget::Q3ObjectDuplicate
@@ -18577,12 +18568,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             unreachable!("QuickDraw 3D object imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3ShaderGetType => {
-            Some(PpcImportAction::Return(ppc_q3_class_object_type(
-                cpu,
-                q3_objects,
-                q3_error_state,
-                ppc_q3_object_type_is_shader,
-            )))
+            unreachable!("QuickDraw 3D shader imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3GroupGetType
         | PpcImportDispatcherTarget::Q3RendererNewFromType
