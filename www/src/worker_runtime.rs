@@ -102,6 +102,7 @@ impl WorkerMachine {
 
         let result = Object::new();
         set_bool(&result, "running", frame_result.running);
+        set_bool(&result, "uiTracking", self.machine.is_ui_tracking_active());
         set_bool(&result, "visualWork", frame_result.visual_work);
         set_number(
             &result,

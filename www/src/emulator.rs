@@ -105,6 +105,7 @@ pub struct Machine {
     runtime_pacing: RuntimePacing,
     started_at_ms: f64,
     audio_started_at_ms: f64,
+    last_presentation_at_ms: f64,
     audio_samples_target: u64,
     last_ticks_behind: u32,
     last_steps: usize,
@@ -302,6 +303,7 @@ impl Machine {
             runtime_pacing,
             started_at_ms,
             audio_started_at_ms,
+            last_presentation_at_ms: audio_started_at_ms,
             audio_samples_target: 0,
             last_ticks_behind: 0,
             last_steps: 0,
@@ -368,6 +370,13 @@ impl Machine {
     pub fn run_frame(&mut self) -> FrameRunResult {
         self.runner.prepare_text_presentation();
         let now = performance_now();
+        // Menu feedback runs on host time even while tracking freezes guest ticks.
+        // Toolbox Essentials (1992), SetMenuFlash, p. 3-142.
+        self.runner
+            .advance_menu_presentation_clock(std::time::Duration::from_secs_f64(
+                (now - self.last_presentation_at_ms).max(0.0) / 1000.0,
+            ));
+        self.last_presentation_at_ms = now;
         let frame_start_ms = now;
         let elapsed_ms = now - self.started_at_ms;
         let wall_tick = (elapsed_ms * DEFAULT_VBL_HZ / 1000.0) as u32;
@@ -566,6 +575,10 @@ impl Machine {
             audio.queue_samples(&self.audio_staging);
             self.audio_staging.clear();
         }
+    }
+
+    pub fn is_ui_tracking_active(&self) -> bool {
+        self.runner.is_ui_tracking_active()
     }
 
     pub fn perf_counters(&self) -> PerfCounters {

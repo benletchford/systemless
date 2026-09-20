@@ -3,6 +3,7 @@ let machine = null;
 // Host time can run ahead while a slow game draws before polling input.
 const MIN_PRESS_TICKS = 6;
 let guestTick = 0;
+let uiTracking = false;
 const pressed = new Map();
 const pendingReleases = new Map();
 
@@ -13,10 +14,16 @@ function press(id, apply) {
   if (!pressed.has(id)) pressed.set(id, { at: guestTick, ranGuest: false });
 }
 
+// Tracking loops consume input while guest time is frozen. Waiting for the
+// minimum tick duration there would prevent MenuSelect from ever seeing up.
+function canRelease(state) {
+  return state.ranGuest && (uiTracking || ((guestTick - state.at) >>> 0) >= MIN_PRESS_TICKS);
+}
+
 function release(id, apply) {
   const state = pressed.get(id);
   const finish = () => { apply(); pressed.delete(id); };
-  if (state && (!state.ranGuest || ((guestTick - state.at) >>> 0) < MIN_PRESS_TICKS)) {
+  if (state && !canRelease(state)) {
     pendingReleases.set(id, finish);
   } else {
     pendingReleases.delete(id);
@@ -42,12 +49,13 @@ self.onmessage = async (event) => {
     if (message.type === "frame") {
       const result = machine.runFrame(message.queuedAudioSamples ?? -1, !!message.debug, message.outputScale ?? 1);
       guestTick = result.guestTick >>> 0;
+      uiTracking = !!result.uiTracking;
       if (result.lastSteps > 0 || !result.running) {
         for (const state of pressed.values()) state.ranGuest = true;
       }
       for (const [id, apply] of pendingReleases) {
         const state = pressed.get(id);
-        if (!result.running || (state.ranGuest && ((guestTick - state.at) >>> 0) >= MIN_PRESS_TICKS)) {
+        if (!result.running || canRelease(state)) {
           apply();
           pendingReleases.delete(id);
         }
