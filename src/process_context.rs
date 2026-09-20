@@ -1534,7 +1534,7 @@ impl SharedProcessTickState {
 pub(crate) type SharedProcessEventQueue = SharedProcessValue<EventQueue>;
 pub(crate) type SharedProcessMenuTracking = crate::guest_call::SharedMenuTracking;
 pub(crate) type SharedProcessWindowList = SharedProcessValue<Vec<u32>>;
-pub(crate) type SharedProcessInputState = SharedProcessValue<ProcessInputState>;
+pub(crate) struct SharedProcessInputState(SharedProcessValue<ProcessInputState>);
 pub(crate) type SharedProcessTimerTasks = SharedProcessValue<Vec<ProcessTimerTask>>;
 pub(crate) type SharedProcessVblTasks = SharedProcessValue<Vec<ProcessVblTask>>;
 pub(crate) type SharedProcessCallbackScheduling = SharedProcessValue<ProcessCallbackScheduling>;
@@ -1957,6 +1957,24 @@ impl SharedProcessMixedModeM68kState {
 }
 
 impl SharedProcessInputState {
+    fn with_ref<R>(&self, operation: impl FnOnce(&ProcessInputState) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    fn with_mut<R>(&self, operation: impl FnOnce(&mut ProcessInputState) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    fn attach_to(&mut self, process_input: &Self) {
+        self.0
+            .attach_to(&process_input.0, ProcessInputState::is_pristine);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
     pub(crate) fn mouse_position(&self) -> (i16, i16) {
         self.with_ref(|state| state.mouse_pos)
     }
@@ -2058,6 +2076,28 @@ impl SharedProcessInputState {
                 state.key_repeat = None;
             }
         });
+    }
+}
+
+impl Default for SharedProcessInputState {
+    fn default() -> Self {
+        Self(SharedProcessValue::default())
+    }
+}
+
+impl Clone for SharedProcessInputState {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl std::fmt::Debug for SharedProcessInputState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let snapshot = self.with_ref(|state| *state);
+        formatter
+            .debug_tuple("SharedProcessInputState")
+            .field(&snapshot)
+            .finish()
     }
 }
 
@@ -8026,7 +8066,7 @@ impl ProcessContext {
     }
 
     pub(crate) fn attach_input_state(&self, adapter: &mut SharedProcessInputState) {
-        adapter.attach_to(&self.input_state, ProcessInputState::is_pristine);
+        adapter.attach_to(&self.input_state);
     }
 
     pub(crate) fn attach_classic_file_system(
