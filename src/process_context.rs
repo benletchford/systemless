@@ -1538,7 +1538,8 @@ pub(crate) struct SharedProcessInputState(SharedProcessValue<ProcessInputState>)
 pub(crate) type SharedProcessTimerTasks = SharedProcessValue<Vec<ProcessTimerTask>>;
 pub(crate) type SharedProcessVblTasks = SharedProcessValue<Vec<ProcessVblTask>>;
 pub(crate) type SharedProcessCallbackScheduling = SharedProcessValue<ProcessCallbackScheduling>;
-pub(crate) type SharedProcessMixedModeM68kState = SharedProcessValue<ProcessMixedModeM68kState>;
+#[derive(Clone, Default, Eq, PartialEq)]
+pub(crate) struct SharedProcessMixedModeM68kState(SharedProcessValue<ProcessMixedModeM68kState>);
 pub(crate) type SharedProcessScrapState = SharedProcessValue<ProcessScrapState>;
 pub(crate) type SharedProcessControlManager = SharedProcessValue<ProcessControlManagerState>;
 pub(crate) type SharedProcessListManager = SharedProcessValue<ProcessListManagerState>;
@@ -1941,6 +1942,24 @@ impl SharedProcessValue<ProcessCursorState> {
 }
 
 impl SharedProcessMixedModeM68kState {
+    fn with_ref<R>(&self, operation: impl FnOnce(&ProcessMixedModeM68kState) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    fn with_mut<R>(&self, operation: impl FnOnce(&mut ProcessMixedModeM68kState) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    fn attach_to(&mut self, process_state: &Self) {
+        self.0
+            .attach_copy_to(&process_state.0, ProcessMixedModeM68kState::is_pristine);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
     pub(crate) fn storage_pair(&self) -> (u32, u32) {
         self.with_ref(|state| (state.gateway, state.stack_top))
     }
@@ -1955,6 +1974,15 @@ impl SharedProcessMixedModeM68kState {
 
     pub(crate) fn restore_snapshot(&self, snapshot: ProcessMixedModeM68kState) {
         self.with_mut(|state| *state = snapshot);
+    }
+}
+
+impl std::fmt::Debug for SharedProcessMixedModeM68kState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("SharedProcessMixedModeM68kState")
+            .field(&self.snapshot())
+            .finish()
     }
 }
 
@@ -7962,10 +7990,7 @@ impl ProcessContext {
         &self,
         adapter: &mut SharedProcessMixedModeM68kState,
     ) {
-        adapter.attach_copy_to(
-            &self.mixed_mode_m68k,
-            ProcessMixedModeM68kState::is_pristine,
-        );
+        adapter.attach_to(&self.mixed_mode_m68k);
     }
 
     pub(crate) fn attach_scrap_state(&self, adapter: &mut SharedProcessScrapState) {
