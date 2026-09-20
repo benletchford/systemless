@@ -1563,8 +1563,10 @@ impl ProcessAppleEventLaunchState {
     }
 }
 
-pub(crate) type SharedProcessAppleEventLaunchState =
-    SharedProcessValue<ProcessAppleEventLaunchState>;
+#[derive(Clone, Default, Eq, PartialEq)]
+pub(crate) struct SharedProcessAppleEventLaunchState(
+    SharedProcessValue<ProcessAppleEventLaunchState>,
+);
 
 /// Canonical per-color-port arithmetic transfer colors. The guest-visible
 /// `CGrafPort.grafVars` record is the primary representation; this process
@@ -2995,7 +2997,27 @@ impl SharedProcessResourcePolicy {
     }
 }
 
-impl SharedProcessValue<ProcessAppleEventLaunchState> {
+impl SharedProcessAppleEventLaunchState {
+    fn with_ref<R>(&self, operation: impl FnOnce(&ProcessAppleEventLaunchState) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    fn with_mut<R>(&self, operation: impl FnOnce(&mut ProcessAppleEventLaunchState) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    fn attach_to(&mut self, process_state: &Self) {
+        self.0.attach_copy_to(
+            &process_state.0,
+            ProcessAppleEventLaunchState::is_pristine,
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
     /// Read the launch capability without returning a reference into the
     /// process-owned `UnsafeCell`. A callback may enter the other ISA gateway
     /// after this operation returns, so no borrow can cross that boundary.
@@ -3040,6 +3062,16 @@ impl SharedProcessValue<ProcessAppleEventLaunchState> {
             state.open_application_event_sent = true;
             true
         })
+    }
+}
+
+impl std::fmt::Debug for SharedProcessAppleEventLaunchState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let snapshot = self.with_ref(|state| *state);
+        formatter
+            .debug_tuple("SharedProcessAppleEventLaunchState")
+            .field(&snapshot)
+            .finish()
     }
 }
 
@@ -8223,10 +8255,7 @@ impl ProcessContext {
         &self,
         adapter: &mut SharedProcessAppleEventLaunchState,
     ) {
-        adapter.attach_copy_to(
-            &self.apple_event_launch_state,
-            ProcessAppleEventLaunchState::is_pristine,
-        );
+        adapter.attach_to(&self.apple_event_launch_state);
     }
 
     pub(crate) fn reset_apple_event_launch_state_for_launch(
