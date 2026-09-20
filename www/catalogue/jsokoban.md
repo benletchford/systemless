@@ -30,11 +30,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/JSokoban_1.0b13.sit
-    download_page: https://www.vintageapplemac.com/software/games/j
-    expected_sha256: 04452000ec19ec9a271f340e1ba1c936a3e56f3ea0ff70a0a30545060041ad91
-    expected_size: 61522
+    type: sha256
+    sha256: 04452000ec19ec9a271f340e1ba1c936a3e56f3ea0ff70a0a30545060041ad91
+    size_bytes: 61522
   provenance:
     redistribution: permitted
     original: true
