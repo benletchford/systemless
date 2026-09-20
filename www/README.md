@@ -1,8 +1,9 @@
 # Systemless web frontend
 
-The browser frontend for Systemless is a private workspace package built with
-Leptos and Trunk. It compiles the runtime directly from the repository root;
-there is no separately versioned website or published-crate update step.
+The browser frontend for Systemless is a public package in this repository's
+Cargo workspace, built with Leptos and Trunk. It compiles the runtime directly
+from the repository root and shares the repository release version, but is not
+published as a crate.
 
 The authoritative catalogue lives in [`catalogue/`](catalogue/). Each
 Markdown file contains YAML metadata followed by the page content. Native
@@ -17,6 +18,20 @@ collections in numbered chunks such as `example-01.yaml` and `example-02.yaml`.
 Plugin and artifact IDs remain unique within the resolved entry. Plugin
 artifacts currently stay with their original HTTPS provider; the catalogue
 asset-promotion pipeline does not copy them into managed storage.
+
+## Contribute a catalogue entry
+
+Create `catalogue/<stable-id>.md` by following the structure of an existing
+entry: YAML metadata between the `---` markers, followed by the public Markdown
+description. Keep the stable ID, filename, route, and referenced artifact IDs
+consistent. Put large optional plugin collections in one or more
+`catalogue/plugins/<stable-id>-NN.yaml` files instead of expanding the entry.
+
+Stage assets that still need promotion under
+`catalogue/incoming/<stable-id>/`; do not commit large software archives. Run
+the preview and production validation commands below, then use
+`trunk serve --port 8080` from this directory to inspect the generated route
+before opening a pull request.
 
 ## Validate the catalogue
 
@@ -60,6 +75,14 @@ cargo check --locked -p systemless-org --target wasm32-unknown-unknown
 
 Production output is written to `www/dist/`. The build validates that all
 hosted assets have already been promoted.
+
+## Deployment
+
+Pull requests and commits run the website checks only when they change `www/`
+or an input consumed by the frontend and catalogue tooling. Production Pages
+are built and deployed only after release-please creates a release. The deploy
+workflow checks out that release's exact tag before validating the catalogue,
+building `www/dist/`, and publishing it to Cloudflare Pages.
 
 ## Optional browser probes
 

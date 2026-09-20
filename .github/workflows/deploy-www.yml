@@ -1,16 +1,12 @@
 name: Deploy website
 
 on:
-  push:
-    branches: [master]
-    paths:
-      - .cargo/**
-      - Cargo.toml
-      - Cargo.lock
-      - src/**
-      - www/**
-      - .github/workflows/deploy-www.yml
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release-please tag whose commit will be deployed
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -26,6 +22,8 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown

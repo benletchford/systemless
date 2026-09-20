@@ -44,6 +44,13 @@ catalogue entries and optional plugin collections live in
 [`www/tools/catalogue/`](www/tools/catalogue/). See
 [`www/README.md`](www/README.md) for local browser and catalogue workflows.
 
+### Add to the catalogue
+
+Add a Markdown entry under `www/catalogue/`; keep optional plugin collections
+as separate YAML chunks under `www/catalogue/plugins/`. The
+[catalogue contribution guide](www/README.md#contribute-a-catalogue-entry)
+documents the entry layout, asset staging, validation, and local preview flow.
+
 ## Quick Start
 
 Install with Homebrew on macOS:
