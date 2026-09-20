@@ -3023,8 +3023,7 @@ fn nested_classic_mdef_adapters_keep_live_workspaces_disjoint() {
         );
     }
     assert!(loaded.toolbox_startup.execution.calls().is_empty());
-    assert_eq!(loaded.toolbox_startup.mixed_mode_m68k.gateway, 0);
-    assert_eq!(loaded.toolbox_startup.mixed_mode_m68k.stack_top, 0);
+    assert_eq!(loaded.toolbox_startup.mixed_mode_m68k.storage_pair(), (0, 0));
 }
 
 #[test]
@@ -11045,8 +11044,7 @@ fn native_getmenu_sizes_through_a_classic_resource_mdef() {
     assert_eq!(loaded.memory.read_u16_be(menu + 2), Some(123));
     assert_eq!(loaded.memory.read_u16_be(menu + 4), Some(45));
     assert!(loaded.guest_calls().is_empty());
-    assert_eq!(loaded.toolbox_startup.mixed_mode_m68k.gateway, 0);
-    assert_eq!(loaded.toolbox_startup.mixed_mode_m68k.stack_top, 0);
+    assert_eq!(loaded.toolbox_startup.mixed_mode_m68k.storage_pair(), (0, 0));
 }
 
 #[test]
@@ -11068,8 +11066,7 @@ fn mixed_mode_storage_does_not_publish_a_partial_pair_on_allocation_failure() {
         ),
         None
     );
-    assert_eq!(storage.gateway, 0);
-    assert_eq!(storage.stack_top, 0);
+    assert_eq!(storage.storage_pair(), (0, 0));
     assert_eq!(heap_cursor, initial_heap_cursor);
 }
 
@@ -11099,8 +11096,7 @@ fn attached_mixed_mode_adapters_reuse_storage_without_allocating() {
     )
     .unwrap();
     drop(first_manager);
-    assert_eq!(second.toolbox_startup.mixed_mode_m68k.gateway, pair.0);
-    assert_eq!(second.toolbox_startup.mixed_mode_m68k.stack_top, pair.1);
+    assert_eq!(second.toolbox_startup.mixed_mode_m68k.storage_pair(), pair);
 
     let second_manager_handle = second.process_memory_manager.0.clone();
     let mut second_manager = second_manager_handle.borrow_mut();
@@ -11157,8 +11153,7 @@ fn mixed_mode_storage_rolls_back_native_allocator_on_failure() {
         ),
         None
     );
-    assert_eq!(storage.gateway, 0);
-    assert_eq!(storage.stack_top, 0);
+    assert_eq!(storage.storage_pair(), (0, 0));
     assert_eq!(heap_cursor, heap_base);
     assert_eq!(memory_manager.native_allocator_snapshot(), allocator_before);
     assert_eq!(

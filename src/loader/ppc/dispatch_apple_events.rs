@@ -453,7 +453,7 @@ pub(super) fn ppc_process_apple_event(
             } else {
                 handler.procedure.proc_info
             };
-            let saved_mixed_mode_m68k = *toolbox_startup.mixed_mode_m68k;
+            let saved_mixed_mode_m68k = toolbox_startup.mixed_mode_m68k.snapshot();
             let action = ppc_begin_m68k_universal_proc(
                 cpu,
                 Some(process_memory_manager),

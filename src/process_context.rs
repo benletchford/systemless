@@ -1771,8 +1771,8 @@ pub(crate) struct ProcessKeyRepeatState {
 /// (1994), pp. 2-12--2-20.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ProcessMixedModeM68kState {
-    pub(crate) gateway: u32,
-    pub(crate) stack_top: u32,
+    gateway: u32,
+    stack_top: u32,
 }
 
 impl ProcessMixedModeM68kState {
@@ -1903,6 +1903,14 @@ impl SharedProcessValue<ProcessCursorState> {
 }
 
 impl SharedProcessMixedModeM68kState {
+    pub(crate) fn storage_pair(&self) -> (u32, u32) {
+        self.with_ref(|state| (state.gateway, state.stack_top))
+    }
+
+    pub(crate) fn snapshot(&self) -> ProcessMixedModeM68kState {
+        self.with_ref(|state| *state)
+    }
+
     pub(crate) fn set_storage(&self, gateway: u32, stack_top: u32) {
         self.with_mut(|state| *state = ProcessMixedModeM68kState { gateway, stack_top });
     }
@@ -8893,14 +8901,12 @@ mod tests {
         context.attach_mixed_mode_m68k_state(&mut second);
 
         assert!(first.ptr_eq(&second));
-        assert_eq!(second.gateway, 0x1000);
-        assert_eq!(second.stack_top, 0x20_0000);
+        assert_eq!(second.storage_pair(), (0x1000, 0x20_0000));
 
         let detached = first.clone();
         detached.set_storage(0x3000, 0x30_0000);
         assert!(!first.ptr_eq(&detached));
-        assert_eq!(first.gateway, 0x1000);
-        assert_eq!(first.stack_top, 0x20_0000);
+        assert_eq!(first.storage_pair(), (0x1000, 0x20_0000));
     }
 
     #[test]

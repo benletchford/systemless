@@ -852,8 +852,7 @@ pub(super) fn ppc_mixed_mode_m68k_storage(
     heap_limit: u32,
     storage: &SharedProcessMixedModeM68kState,
 ) -> Option<(u32, u32)> {
-    let state = **storage;
-    match (state.gateway, state.stack_top) {
+    match storage.storage_pair() {
         (0, 0) => {}
         (gateway, stack_top) if gateway != 0 && stack_top != 0 => {
             return Some((gateway, stack_top));
