@@ -7001,6 +7001,7 @@
             geometry.2,
             [(true, Some(&cache)), (false, None), (false, None)],
             &table,
+            None,
         );
         assert!(copied);
         for y in 0..16i16 {
@@ -7037,6 +7038,7 @@
             geometry.2,
             [(true, Some(&short)), (false, None), (false, None)],
             &table,
+            None,
         ));
         assert!(!TrapDispatcher::copy_bits_src_copy_rows_8bpp(
             &mut bus,
@@ -7047,6 +7049,7 @@
             geometry.2,
             [(false, None), (true, None), (false, None)],
             &table,
+            None,
         ));
         assert!(!TrapDispatcher::copy_bits_src_copy_rows_8bpp(
             &mut bus,
@@ -7057,9 +7060,125 @@
             (-1, 2, 15, 14),
             [(false, None), (false, None), (false, None)],
             &table,
+            None,
         ));
         for i in 0..256u32 {
             assert_eq!(bus.read_byte(dst_base + i), 0xEE, "offset {i}");
+        }
+    }
+
+    #[test]
+    fn snapshot_row_copy_matches_pixel_copy_with_overlap_palette_and_outline_detail() {
+        // Inside Macintosh I-199 requires the same visRgn/clipRgn result
+        // through StdBits. Compare the row helper against the former pixel
+        // operation using a saved source, including an overlapping target.
+        let run = |rows: bool, overlap: bool, translated: bool, first_row: u32| {
+            let (_d, _cpu, mut bus) = setup_with_port();
+            let src_base = bus.alloc(512);
+            let dst_base = if overlap {
+                src_base + 16
+            } else {
+                bus.alloc(256)
+            };
+            let palette = std::array::from_fn(|i| [255 - i as u8; 3]);
+            bus.enable_outline_presentation((dst_base, 16, 16, 16, 8), palette, 4);
+            bus.fill_bytes(dst_base, 256, 0xEE);
+            bus.fill_bytes(src_base, 256, 0);
+            TrapDispatcher::fb_draw_string(&mut bus, src_base, 16, 8, 16, 16, 3, 10, "a", 3, 9);
+            let source =
+                bus.save_pixel_bytes(src_base + first_row * 16, (16 - first_row) as usize * 16);
+            // Neither path may reread live source bytes or their detail.
+            // This also makes the overlap test catch a row-at-a-time copy
+            // that accidentally reads a destination written on a prior row.
+            bus.fill_bytes(src_base, 256, 42);
+            let vis = make_row_path_test_rgn(&mut bus);
+            let cache = TrapDispatcher::build_region_membership_cache(&bus, vis, 0, 16).unwrap();
+            let table = std::array::from_fn(|i| if translated { 255 - i as u8 } else { i as u8 });
+            let info = |base| CopyBitmapInfo {
+                base,
+                row_bytes: 16,
+                bounds_top: 0,
+                bounds_left: 0,
+                bounds_bottom: 16,
+                bounds_right: 16,
+                pixel_size: 8,
+                ctab_handle: 0,
+            };
+            if rows {
+                assert!(TrapDispatcher::copy_bits_src_copy_rows_8bpp(
+                    &mut bus,
+                    &info(src_base),
+                    &info(dst_base),
+                    (first_row as i16, 0),
+                    (0, 0, 16, 16 - first_row as i32),
+                    (0, 0, 16, 16),
+                    [(true, Some(&cache)), (false, None), (false, None)],
+                    &table,
+                    Some((first_row, &source)),
+                ));
+            } else {
+                for y in 0..(16 - first_row) as i16 {
+                    for x in 0..16i16 {
+                        if TrapDispatcher::region_contains_point(&bus, vis, y, x) {
+                            let offset = y as usize * 16 + x as usize;
+                            bus.copy_saved_pixel(
+                                dst_base + offset as u32,
+                                &source,
+                                offset,
+                                |index| table[index as usize],
+                            );
+                        }
+                    }
+                }
+            }
+            (
+                bus.read_bytes(src_base, 512),
+                bus.read_bytes(dst_base, 256),
+                bus.outline_presentation_rgb().unwrap().2,
+            )
+        };
+        for overlap in [false, true] {
+            for translated in [false, true] {
+                for first_row in [0, 3] {
+                    assert_eq!(
+                        run(true, overlap, translated, first_row),
+                        run(false, overlap, translated, first_row),
+                        "overlap={overlap} translated={translated} first_row={first_row}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_row_copy_declines_incomplete_source_before_any_write() {
+        let (_d, _cpu, mut bus) = setup_with_port();
+        let (src_base, dst_base) = alloc_row_path_test_bitmaps(&mut bus);
+        let info = |base| CopyBitmapInfo {
+            base,
+            row_bytes: 16,
+            bounds_top: 0,
+            bounds_left: 0,
+            bounds_bottom: 16,
+            bounds_right: 16,
+            pixel_size: 8,
+            ctab_handle: 0,
+        };
+        let table = std::array::from_fn(|i| i as u8);
+        for first_row in [0, 1] {
+            let source = bus.save_pixel_bytes(src_base + first_row * 16, 8 * 16);
+            assert!(!TrapDispatcher::copy_bits_src_copy_rows_8bpp(
+                &mut bus,
+                &info(src_base),
+                &info(dst_base),
+                (0, 0),
+                (0, 0, 16, 16),
+                (0, 0, 16, 16),
+                [(false, None); 3],
+                &table,
+                Some((first_row, &source)),
+            ));
+            assert_eq!(bus.read_bytes(dst_base, 256), vec![0xEE; 256]);
         }
     }
 

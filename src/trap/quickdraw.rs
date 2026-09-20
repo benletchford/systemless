@@ -3932,7 +3932,6 @@ impl super::TrapDispatcher {
                     && no_scaling
                     && src_info.pixel_size == 8
                     && dst_info.pixel_size == 8
-                    && source_snapshot.is_none()
                     && trace_probes.is_empty()
                     && copybits_hud_probe_points.is_none()
                     && dump_copybits_src_path().is_none()
@@ -3966,6 +3965,9 @@ impl super::TrapDispatcher {
                                     (mask_test, mask_membership.as_ref()),
                                 ],
                                 &table,
+                                source_snapshot
+                                    .as_ref()
+                                    .map(|(first_row, _, pixels)| (*first_row, pixels)),
                             )
                         });
                 // With the rows already written the loop has nothing left to
@@ -20401,13 +20403,16 @@ impl super::TrapDispatcher {
     }
 
     /// Whole-row transfer for the commonest CopyBits shape: 8-bit source to
-    /// 8-bit destination, `srcCopy`, unscaled, non-overlapping bitmaps.
+    /// 8-bit destination, `srcCopy`, unscaled. An existing full source
+    /// snapshot preserves overlap and outline detail exactly as the pixel
+    /// loop does; otherwise source reads retain the original row path.
     ///
     /// For that shape every written destination pixel is `table[source
     /// pixel]` (`copy_bits_src_copy_table`, derived from the same per-pixel
-    /// mode function the pixel loop calls), so a row moves as one bus read,
-    /// one table pass and one bus write per covered span instead of a region
-    /// test, a read, a mode evaluation and a write per pixel. The bus's slice
+    /// mode function the pixel loop calls). A plain row uses one bus read,
+    /// one table pass and one bus write per covered span. A saved source
+    /// retains the ordered per-pixel detail writes, but also avoids repeated
+    /// coordinate, region and transfer-mode evaluation. The bus's slice
     /// primitives keep `write_byte`'s guards (read-only code, tracing, the
     /// idle-proof write journal). A region that needs a per-pixel test is
     /// honoured through its decoded row spans -- the same
@@ -20433,6 +20438,7 @@ impl super::TrapDispatcher {
         (clip_t, clip_l, clip_b, clip_r): (i16, i16, i16, i16),
         regions: [(bool, Option<&RegionMembershipCache>); 3],
         table: &[u8; 256],
+        source_snapshot: Option<(u32, &crate::memory::SavedPixels)>,
     ) -> bool {
         // The pixel loop indexes destination rows and columns relative to
         // the destination bounds without checking them; only take that on
@@ -20477,6 +20483,33 @@ impl super::TrapDispatcher {
             // The loop would write no pixel either.
             return true;
         }
+        // Preflight every selected source row before writing. The caller's
+        // full snapshot normally covers this band; an incomplete snapshot
+        // must decline without partially copying the destination. Checking
+        // the full column interval is conservative for rows with holes.
+        if let Some((first_row, pixels)) = source_snapshot {
+            for dy in clip_t..clip_b {
+                let rel = i32::from(dy) - i32::from(dst_top);
+                if rel < 0 || rel >= dst_h {
+                    continue;
+                }
+                let src_y = i32::from(src_top) + rel;
+                if src_y < i32::from(src_info.bounds_top)
+                    || src_y >= i32::from(src_info.bounds_bottom)
+                {
+                    continue;
+                }
+                let row = (src_y - i32::from(src_info.bounds_top)) as u32;
+                let Some(row) = row.checked_sub(first_row) else {
+                    return false;
+                };
+                let end = u64::from(row) * u64::from(src_info.row_bytes)
+                    + (x_hi + shift - i32::from(src_info.bounds_left)) as u64;
+                if end > pixels.len() as u64 {
+                    return false;
+                }
+            }
+        }
         let identity = table
             .iter()
             .enumerate()
@@ -20513,6 +20546,22 @@ impl super::TrapDispatcher {
                 let bytes = &mut row[..(end - start) as usize];
                 let src_addr = src_row + (start + shift - i32::from(src_info.bounds_left)) as u32;
                 let dst_addr = dst_row + (start - i32::from(dst_info.bounds_left)) as u32;
+                if let Some((first_row, pixels)) = source_snapshot {
+                    let source_row = (src_y - i32::from(src_info.bounds_top)) as u32;
+                    let offset = (u64::from(source_row - first_row)
+                        * u64::from(src_info.row_bytes)
+                        + (start + shift - i32::from(src_info.bounds_left)) as u64)
+                        as usize;
+                    // Keep the pixel loop's immutable source, palette map,
+                    // write order, and outline-detail transfer. Only its
+                    // per-pixel geometry and mode evaluation are avoided.
+                    for i in 0..bytes.len() {
+                        bus.copy_saved_pixel(dst_addr + i as u32, pixels, offset + i, |index| {
+                            table[index as usize]
+                        });
+                    }
+                    continue;
+                }
                 let detail = bus
                     .has_outline_presentation()
                     .then(|| bus.save_pixel_bytes(src_addr, bytes.len()));
@@ -21023,7 +21072,6 @@ impl super::TrapDispatcher {
                 && no_scaling
                 && src_info.pixel_size == 8
                 && dst_info.pixel_size == 8
-                && source_snapshot.is_none()
                 && trace_probes.is_empty()
                 && (i32::from(clip_b) - i32::from(clip_t))
                     * (i32::from(clip_r) - i32::from(clip_l))
@@ -21053,6 +21101,9 @@ impl super::TrapDispatcher {
                                 (mask_test, mask_membership.as_ref()),
                             ],
                             &table,
+                            source_snapshot
+                                .as_ref()
+                                .map(|(first_row, _, pixels)| (*first_row, pixels)),
                         )
                     }));
         // With the rows already written the loop has nothing left to do; the
