@@ -7353,6 +7353,130 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A7, sp + 14);
                         Ok(())
                     }
+                    15 => {
+                        // FSpExchangeFiles (selector 15 = $000F)
+                        // FUNCTION FSpExchangeFiles(source: FSSpec;
+                        //   dest: FSSpec): OSErr;
+                        // Stack (rightmost on top): [dest_ptr(4)]
+                        //   [source_ptr(4)] [result(2)]
+                        //
+                        // Files 1992, pp. 2-165--2-166: exchange both data
+                        // and resource forks, plus the modification dates,
+                        // while file identity and catalogue information
+                        // (including file ID, parent, name, creation date,
+                        // and Finder information) remain attached to each
+                        // catalogue entry. Open FCBs must continue to refer
+                        // to the same file identity after the exchange.
+                        let sp = cpu.read_reg(Register::A7);
+                        let dest_spec_ptr = bus.read_long(sp);
+                        let source_spec_ptr = bus.read_long(sp + 4);
+
+                        let source_name = read_fsspec_name(bus, source_spec_ptr);
+                        let source_vref = bus.read_word(source_spec_ptr) as i16;
+                        let source_dir_id = bus.read_long(source_spec_ptr + 2);
+                        let dest_name = read_fsspec_name(bus, dest_spec_ptr);
+                        let dest_vref = bus.read_word(dest_spec_ptr) as i16;
+                        let dest_dir_id = bus.read_long(dest_spec_ptr + 2);
+
+                        let (source_volume, _) =
+                            self.resolve_volume_and_directory(source_vref, source_dir_id);
+                        let (dest_volume, _) =
+                            self.resolve_volume_and_directory(dest_vref, dest_dir_id);
+
+                        let source_key = self
+                            .find_vfs_file_for_hfs_lookup(source_vref, source_dir_id, &source_name)
+                            .or_else(|| {
+                                self.find_vfs_rsrc_file_for_hfs_lookup(
+                                    source_vref,
+                                    source_dir_id,
+                                    &source_name,
+                                )
+                            });
+                        let dest_key = self
+                            .find_vfs_file_for_hfs_lookup(dest_vref, dest_dir_id, &dest_name)
+                            .or_else(|| {
+                                self.find_vfs_rsrc_file_for_hfs_lookup(
+                                    dest_vref,
+                                    dest_dir_id,
+                                    &dest_name,
+                                )
+                            });
+
+                        let result: i16 = if source_volume != dest_volume {
+                            -1303 // diffVolErr
+                        } else if source_key.is_none() || dest_key.is_none() {
+                            -43 // fnfErr
+                        } else {
+                            let source_key = source_key.expect("checked source FSSpec");
+                            let dest_key = dest_key.expect("checked destination FSSpec");
+
+                            if source_key.eq_ignore_ascii_case(&dest_key) {
+                                -5038 // afpSameObjectErr
+                            } else if self.vfs_path_is_read_only(&source_key)
+                                || self.vfs_path_is_read_only(&dest_key)
+                            {
+                                -46 // vLckdErr
+                            } else if self.locked_files.contains(&source_key)
+                                || self.locked_files.contains(&dest_key)
+                            {
+                                -45 // fLckdErr
+                            } else {
+                                let source_data = self.vfs.remove(&source_key);
+                                let dest_data = self.vfs.remove(&dest_key);
+                                if let Some(data) = dest_data {
+                                    self.vfs.insert(source_key.clone(), data);
+                                }
+                                if let Some(data) = source_data {
+                                    self.vfs.insert(dest_key.clone(), data);
+                                }
+
+                                let source_rsrc = self.vfs_rsrc.remove(&source_key);
+                                let dest_rsrc = self.vfs_rsrc.remove(&dest_key);
+                                if let Some(rsrc) = dest_rsrc {
+                                    self.vfs_rsrc.insert(source_key.clone(), rsrc);
+                                }
+                                if let Some(rsrc) = source_rsrc {
+                                    self.vfs_rsrc.insert(dest_key.clone(), rsrc);
+                                }
+
+                                let source_metadata = self.vfs_file_metadata(&source_key);
+                                let dest_metadata = self.vfs_file_metadata(&dest_key);
+                                if let (Some(source_metadata), Some(dest_metadata)) =
+                                    (source_metadata, dest_metadata)
+                                {
+                                    self.vfs_metadata.update(&source_key, |metadata| {
+                                        metadata.modified_date = dest_metadata.modified_date;
+                                    });
+                                    self.vfs_metadata.update(&dest_key, |metadata| {
+                                        metadata.modified_date = source_metadata.modified_date;
+                                    });
+                                    self.publish_vfs_entry_to_process(&source_key);
+                                    self.publish_vfs_entry_to_process(&dest_key);
+                                }
+
+                                if let Some(ref dir) = self.output_dir {
+                                    for key in [&source_key, &dest_key] {
+                                        if let Some(data) = self.vfs.get(key) {
+                                            let host_path = dir.join(key);
+                                            if let Some(parent) = host_path.parent() {
+                                                let _ = std::fs::create_dir_all(parent);
+                                            }
+                                            let _ = std::fs::write(host_path, data);
+                                        }
+                                    }
+                                }
+                                0 // noErr
+                            }
+                        };
+
+                        eprintln!(
+                            "[TRAP] FSpExchangeFiles(\"{}\", \"{}\") -> {}",
+                            source_name, dest_name, result
+                        );
+                        bus.write_word(sp + 8, result as u16);
+                        cpu.write_reg(Register::A7, sp + 8);
+                        Ok(())
+                    }
                     _ => {
                         eprintln!(
                             "[TRAP] HighLevelFSDispatch: Unimplemented Selector {}",
@@ -14333,6 +14457,129 @@ mod tests {
             !disp.vfs_rsrc.contains_key("DelMe.txt"),
             "resource fork should be removed from VFS"
         );
+    }
+
+    // ================================================================
+    // 13f. HighLevelFSDispatch (0x252) selector 15 — FSpExchangeFiles
+    // ================================================================
+    #[test]
+    fn hlfs_dispatch_fspexchangefiles_swaps_forks_and_preserves_file_identity() {
+        // Inside Macintosh: Files (1992), pp. 2-165--2-166: both forks and
+        // modification dates follow the data, while file IDs, names, parent
+        // directories, creation dates, and Finder information remain with
+        // their catalogue entry.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.vfs.insert("Player".to_string(), vec![0x11, 0x12]);
+        disp.vfs_rsrc.insert("Player".to_string(), vec![0x13, 0x14]);
+        disp.vfs
+            .insert("Player SysTwi temp".to_string(), vec![0x21, 0x22, 0x23]);
+        disp.vfs_rsrc
+            .insert("Player SysTwi temp".to_string(), vec![0x24]);
+        disp.set_vfs_entry_finfo(
+            "Player",
+            u32::from_be_bytes(*b"OLD "),
+            u32::from_be_bytes(*b"GAME"),
+            0x0100,
+        );
+        disp.set_vfs_entry_finfo(
+            "Player SysTwi temp",
+            u32::from_be_bytes(*b"NEW "),
+            u32::from_be_bytes(*b"TEMP"),
+            0x0200,
+        );
+        disp.vfs_metadata.update("Player", |metadata| {
+            metadata.created_date = 100;
+            metadata.modified_date = 110;
+        });
+        disp.vfs_metadata.update("Player SysTwi temp", |metadata| {
+            metadata.created_date = 200;
+            metadata.modified_date = 220;
+        });
+        let player_before = disp.vfs_file_metadata("Player").unwrap();
+        let temp_before = disp.vfs_file_metadata("Player SysTwi temp").unwrap();
+
+        // An open access path remains attached to the Player catalogue entry;
+        // its next read observes the newly exchanged contents.
+        disp.open_files.insert(128, "Player".to_string());
+        disp.file_positions.insert(128, 1);
+
+        let source_spec = 0x300000u32;
+        let dest_spec = 0x300080u32;
+        write_fsspec(&mut bus, source_spec, 1, 2, b"Player SysTwi temp");
+        write_fsspec(&mut bus, dest_spec, 1, 2, b"Player");
+
+        let sp = TEST_SP;
+        bus.write_long(sp, dest_spec);
+        bus.write_long(sp + 4, source_spec);
+        bus.write_word(sp + 8, 0xBEEF);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 15);
+
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(TEST_SP + 8) as i16, 0);
+        assert_eq!(disp.vfs.get("Player").unwrap(), &vec![0x21, 0x22, 0x23]);
+        assert_eq!(disp.vfs_rsrc.get("Player").unwrap(), &vec![0x24]);
+        assert_eq!(
+            disp.vfs.get("Player SysTwi temp").unwrap(),
+            &vec![0x11, 0x12]
+        );
+        assert_eq!(
+            disp.vfs_rsrc.get("Player SysTwi temp").unwrap(),
+            &vec![0x13, 0x14]
+        );
+
+        let player_after = disp.vfs_file_metadata("Player").unwrap();
+        let temp_after = disp.vfs_file_metadata("Player SysTwi temp").unwrap();
+        assert_eq!(player_after.file_id, player_before.file_id);
+        assert_eq!(player_after.parent_dir_id, player_before.parent_dir_id);
+        assert_eq!(player_after.created_date, player_before.created_date);
+        assert_eq!(player_after.modified_date, temp_before.modified_date);
+        assert_eq!(player_after.file_type, player_before.file_type);
+        assert_eq!(player_after.creator, player_before.creator);
+        assert_eq!(player_after.finder_flags, player_before.finder_flags);
+        assert_eq!(temp_after.file_id, temp_before.file_id);
+        assert_eq!(temp_after.created_date, temp_before.created_date);
+        assert_eq!(temp_after.modified_date, player_before.modified_date);
+        assert_eq!(temp_after.file_type, temp_before.file_type);
+        assert_eq!(temp_after.creator, temp_before.creator);
+        assert_eq!(temp_after.finder_flags, temp_before.finder_flags);
+        assert_eq!(
+            disp.open_files.get(&128).map(String::as_str),
+            Some("Player")
+        );
+        assert_eq!(disp.file_positions.get(&128), Some(&1));
+    }
+
+    #[test]
+    fn hlfs_dispatch_fspexchangefiles_reports_missing_and_same_files() {
+        // Files 1992, p. 2-166 documents fnfErr and afpSameObjectErr for
+        // missing operands and two FSSpecs identifying the same file.
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.vfs.insert("Player".to_string(), vec![0x11]);
+
+        let player_spec = 0x300000u32;
+        let missing_spec = 0x300080u32;
+        write_fsspec(&mut bus, player_spec, 1, 2, b"Player");
+        write_fsspec(&mut bus, missing_spec, 1, 2, b"Missing");
+
+        for (source_spec, dest_spec, expected) in [
+            (player_spec, missing_spec, -43i16),
+            (player_spec, player_spec, -5038i16),
+        ] {
+            bus.write_long(TEST_SP, dest_spec);
+            bus.write_long(TEST_SP + 4, source_spec);
+            bus.write_word(TEST_SP + 8, 0xBEEF);
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, 15);
+
+            call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+            assert_eq!(bus.read_word(TEST_SP + 8) as i16, expected);
+        }
     }
 
     // ================================================================
