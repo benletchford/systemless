@@ -30,10 +30,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/MacSokoban%203.0.2.sit
-    expected_sha256: af0286028e29cb9a9c8b257dce9c75a68bbd3ae72379a29006d52f6771db82fe
-    expected_size: 91557
+    type: sha256
+    sha256: af0286028e29cb9a9c8b257dce9c75a68bbd3ae72379a29006d52f6771db82fe
+    size_bytes: 91557
   provenance:
     redistribution: permitted
     original: true
