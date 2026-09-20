@@ -11,7 +11,15 @@ default_architecture: 68k
 category: FPS
 launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
+  verified:
+  - date: 2026-09-20
+    tester: Catalogue maintainer
+    systemless_version: 0.42.1
+    architecture: 68k
+    environment: Deterministic headless gameplay run from the original version 1.70 demo archive
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2222
 artifacts:
 - id: archive
   role: archive
@@ -46,4 +54,6 @@ Blood Bath at Red Falls turns a small frontier settlement into a first-person
 maze of ambushes and locked passages. The demo targets colour 68k Macs and is
 preserved here as UnderWorld Software distributed it.
 
-Its compatibility with Systemless remains unverified.
+The current Systemless runtime reaches the live first-person view from the
+demo menu. A deterministic gameplay run also fires the pistol and observes the
+scene advance afterwards, verifying interaction rather than startup alone.

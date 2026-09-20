@@ -6,12 +6,20 @@ summary: Claim a shifting board one edge at a time in Green Dragon Creations' st
 developer: Green Dragon Creations, Inc.
 publisher: Green Dragon Creations, Inc.
 year: 1997
-architectures: [68k]
+architectures: [68k, ppc]
 default_architecture: 68k
-category: Puzzle
+category: Strategy
 launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
+  verified:
+  - date: 2026-09-20
+    tester: Catalogue maintainer
+    systemless_version: 0.42.1
+    architecture: 68k
+    environment: Deterministic headless gameplay run from the original BinHex installer
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2222
 artifacts:
 - id: archive
   role: archive
@@ -44,4 +52,9 @@ references:
 
 Gridz mixes territorial strategy with a board that changes as players claim
 its links. This entry preserves the version 1.2 demo installer rather than an
-installed or reconstructed copy. Systemless compatibility is unverified.
+installed or reconstructed copy.
+
+Systemless launches the 68k application and its bundled data directly from the
+original installer, reaches a new game, creates a player, and enters the live
+3D board after deterministic mouse and keyboard input. PowerPC execution is
+still being investigated separately, so 68k remains the default.
