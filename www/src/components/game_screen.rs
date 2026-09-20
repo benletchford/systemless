@@ -344,7 +344,10 @@ fn GameRuntime(
                         let mark_runtime_ready = Box::new(move || {
                             let _ = ready_canvas.set_attribute("data-runtime-game-id", game.id);
                             let _ = ready_canvas.set_attribute("data-runtime-worker", "true");
-                            let _ = ready_canvas.set_attribute("data-runtime-cpu-mhz", "50");
+                            let _ = ready_canvas.set_attribute(
+                                "data-runtime-cpu-mhz",
+                                &runtime_pacing.cpu_mhz.to_string(),
+                            );
                             status.set(String::new());
                         });
                         *machine_handle_for_task.borrow_mut() =
