@@ -31,6 +31,8 @@ jobs:
       - name: Validate catalogue
         run: cargo run --locked -p systemless-catalogue-tools -- --root www check --production
       - name: Build production pages
+        env:
+          SYSTEMLESS_CATALOGUE_PRODUCTION: 1
         run: ./www/scripts/build-pages.sh
       - name: Deploy Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
