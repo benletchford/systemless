@@ -1603,14 +1603,32 @@ pub(crate) type SharedProcessQuickDrawPixelStates = SharedProcessValue<HashMap<u
 /// I-457--I-459.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessScrapState {
-    pub(crate) entries: Vec<([u8; 4], Vec<u8>)>,
+    entries: Vec<([u8; 4], Vec<u8>)>,
+    count: i16,
+    initialized: bool,
+    in_memory: bool,
+    clipboard_writable: bool,
+    handle: Option<u32>,
+    handle_dirty: bool,
+    stuff_ptr: Option<u32>,
+}
+
+/// Copied process Scrap Manager summary returned across an ABI boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProcessScrapSummary {
+    pub(crate) serialized_size: u32,
     pub(crate) count: i16,
     pub(crate) initialized: bool,
     pub(crate) in_memory: bool,
-    pub(crate) clipboard_writable: bool,
-    pub(crate) handle: Option<u32>,
     pub(crate) handle_dirty: bool,
-    pub(crate) stuff_ptr: Option<u32>,
+}
+
+/// One copied scrap flavor selected by the process manager.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProcessScrapFlavor {
+    pub(crate) data: Vec<u8>,
+    pub(crate) serialized_offset: u32,
+    pub(crate) payload_offset: u32,
 }
 
 impl Default for ProcessScrapState {
@@ -1636,6 +1654,52 @@ impl ProcessScrapState {
     fn append_entry(&mut self, flavor: [u8; 4], data: Vec<u8>) {
         self.entries.push((flavor, data));
         self.handle_dirty = true;
+    }
+
+    fn summary(&self) -> ProcessScrapSummary {
+        ProcessScrapSummary {
+            serialized_size: self
+                .entries
+                .iter()
+                .map(|(_, data)| 8 + ((data.len() as u32 + 1) & !1))
+                .sum(),
+            count: self.count,
+            initialized: self.initialized,
+            in_memory: self.in_memory,
+            handle_dirty: self.handle_dirty,
+        }
+    }
+
+    fn serialized_entries(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.summary().serialized_size as usize);
+        for (flavor, data) in &self.entries {
+            bytes.extend_from_slice(flavor);
+            bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(data);
+            if (data.len() & 1) != 0 {
+                bytes.push(0);
+            }
+        }
+        bytes
+    }
+
+    fn flavor(&self, requested: [u8; 4]) -> Option<ProcessScrapFlavor> {
+        let mut serialized_offset = 0u32;
+        let mut payload_offset = 0u32;
+        for (flavor, data) in &self.entries {
+            if *flavor == requested {
+                return Some(ProcessScrapFlavor {
+                    data: data.clone(),
+                    serialized_offset: serialized_offset.saturating_add(8),
+                    payload_offset,
+                });
+            }
+            serialized_offset = serialized_offset
+                .saturating_add(8)
+                .saturating_add((data.len() as u32 + 1) & !1);
+            payload_offset = payload_offset.saturating_add(data.len() as u32);
+        }
+        None
     }
 
     fn initialize_and_append_entry(&mut self, flavor: [u8; 4], data: Vec<u8>) {
@@ -1893,6 +1957,13 @@ impl<T> SharedProcessValue<T> {
 
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// Read this process value for the duration of one serialized operation.
+    pub(crate) fn with_ref<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        // SAFETY: the process runner serializes attached adapter access. The
+        // closure keeps the shared reference from escaping this operation.
+        unsafe { f(&*self.0.get()) }
     }
 
     /// Mutate this process value for the duration of one serialized operation.
@@ -2364,6 +2435,21 @@ impl SharedProcessDisplayClut {
 }
 
 impl SharedProcessScrapState {
+    /// Return a copied manager summary without exposing process-owned state.
+    pub(crate) fn summary(&self) -> ProcessScrapSummary {
+        self.with_ref(ProcessScrapState::summary)
+    }
+
+    /// Serialize the ordered scrap flavors in the classic Scrap Manager layout.
+    pub(crate) fn serialized_entries(&self) -> Vec<u8> {
+        self.with_ref(ProcessScrapState::serialized_entries)
+    }
+
+    /// Select the first matching flavor and copy its data and offsets.
+    pub(crate) fn flavor(&self, requested: [u8; 4]) -> Option<ProcessScrapFlavor> {
+        self.with_ref(|scrap| scrap.flavor(requested))
+    }
+
     pub(crate) fn append_entry(&self, flavor: [u8; 4], data: Vec<u8>) {
         self.with_mut(|scrap| scrap.append_entry(flavor, data));
     }
@@ -2399,6 +2485,11 @@ impl SharedProcessScrapState {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn set_clipboard_writable(&self, writable: bool) {
         self.with_mut(|scrap| scrap.set_clipboard_writable(writable));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clipboard_writable_for_test(&self) -> bool {
+        self.with_ref(|scrap| scrap.clipboard_writable)
     }
 
     #[cfg(test)]
@@ -10967,5 +11058,47 @@ mod tests {
             detached.image.as_ref().unwrap().mono_parts(),
             crate::display::default_arrow_cursor()
         );
+    }
+
+    #[test]
+    fn process_scrap_manager_owns_summary_serialization_and_flavor_selection() {
+        let scrap = SharedProcessScrapState::default();
+        scrap.zero();
+        scrap.append_entry(*b"TEXT", b"one".to_vec());
+        scrap.append_entry(*b"PICT", vec![0xaa, 0xbb]);
+        scrap.append_entry(*b"TEXT", b"later".to_vec());
+
+        let summary = scrap.summary();
+        assert!(summary.initialized);
+        assert!(summary.in_memory);
+        assert_eq!(summary.count, 1);
+        assert_eq!(summary.serialized_size, 36);
+        assert!(summary.handle_dirty);
+        assert_eq!(
+            scrap.serialized_entries(),
+            [
+                b"TEXT".as_slice(),
+                3u32.to_be_bytes().as_slice(),
+                b"one\0".as_slice(),
+                b"PICT".as_slice(),
+                2u32.to_be_bytes().as_slice(),
+                [0xaa, 0xbb].as_slice(),
+                b"TEXT".as_slice(),
+                5u32.to_be_bytes().as_slice(),
+                b"later\0".as_slice(),
+            ]
+            .concat()
+        );
+
+        let text = scrap.flavor(*b"TEXT").unwrap();
+        assert_eq!(text.data, b"one");
+        assert_eq!(text.serialized_offset, 8);
+        assert_eq!(text.payload_offset, 0);
+
+        let picture = scrap.flavor(*b"PICT").unwrap();
+        assert_eq!(picture.data, vec![0xaa, 0xbb]);
+        assert_eq!(picture.serialized_offset, 20);
+        assert_eq!(picture.payload_offset, 3);
+        assert!(scrap.flavor(*b"snd ").is_none());
     }
 }

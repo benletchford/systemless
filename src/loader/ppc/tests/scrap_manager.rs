@@ -147,7 +147,7 @@ fn attached_desktop_scrap_mutations_cross_isa_immediately() {
     run_test_import(&mut native, PpcImportDispatcherTarget::GetScrap);
     assert_eq!(native.cpu.gpr[3], 13);
     assert_eq!(native.memory.read_u32_be(native_offset), Some(0));
-    assert_eq!(native.scrap.desktop.count, 2);
+    assert_eq!(native.scrap.desktop.summary().count, 2);
 }
 
 #[test]
@@ -288,11 +288,11 @@ fn cloned_native_adapter_detaches_desktop_scrap() {
     detached.cpu.gpr[5] = source;
     run_test_import(&mut detached, PpcImportDispatcherTarget::PutScrap);
 
-    assert!(original.scrap.desktop.entries.is_empty());
-    assert_eq!(original.scrap.desktop.count, 1);
+    assert_eq!(original.scrap.desktop.summary().serialized_size, 0);
+    assert_eq!(original.scrap.desktop.summary().count, 1);
     assert_eq!(
-        detached.scrap.desktop.entries,
-        vec![(*b"TEXT", b"detached".to_vec())]
+        detached.scrap.desktop.flavor(*b"TEXT").unwrap().data,
+        b"detached".to_vec()
     );
-    assert_eq!(detached.scrap.desktop.count, 1);
+    assert_eq!(detached.scrap.desktop.summary().count, 1);
 }

@@ -3742,30 +3742,6 @@ impl super::TrapDispatcher {
         (-1, -1)
     }
 
-    fn serialized_scrap_size(&self) -> u32 {
-        self.scrap
-            .entries
-            .iter()
-            .map(|(_, data)| {
-                let padded = (data.len() as u32 + 1) & !1;
-                8 + padded // type(4) + length(4) + padded data
-            })
-            .sum()
-    }
-
-    fn serialize_scrap_entries(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(self.serialized_scrap_size() as usize);
-        for (entry_type, data) in &self.scrap.entries {
-            bytes.extend_from_slice(entry_type);
-            bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
-            bytes.extend_from_slice(data);
-            if (data.len() & 1) != 0 {
-                bytes.push(0);
-            }
-        }
-        bytes
-    }
-
     /// Copy `bytes` into `handle`, resizing or replacing its backing
     /// allocation as needed and keeping the handle-ownership map in sync.
     /// Returns the current master-pointer target, or 0 for an empty handle
@@ -3955,11 +3931,11 @@ impl super::TrapDispatcher {
         if handle == 0 {
             return 0;
         }
-        if !self.scrap.handle_dirty {
+        if !self.scrap.summary().handle_dirty {
             return handle;
         }
 
-        let bytes = self.serialize_scrap_entries();
+        let bytes = self.scrap.serialized_entries();
         let wrote = if bytes.is_empty() {
             self.write_bytes_to_handle(bus, handle, &bytes);
             true
@@ -9272,17 +9248,17 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 // Allocate ScrapStuff at a fixed location if not yet done
                 let ptr = self.scrap.ensure_stuff_ptr(|| bus.alloc(16));
-                let total_size = self.serialized_scrap_size();
-                let scrap_handle = if self.scrap.in_memory {
+                let summary = self.scrap.summary();
+                let scrap_handle = if summary.in_memory {
                     self.sync_scrap_handle(bus)
                 } else {
                     0
                 };
-                bus.write_long(ptr, total_size); // scrapSize
+                bus.write_long(ptr, summary.serialized_size); // scrapSize
                 bus.write_long(ptr + 4, scrap_handle); // scrapHandle (live in-memory desk scrap)
-                bus.write_word(ptr + 8, self.scrap.count as u16); // scrapCount
-                                                                  // IM:I I-457: scrapState is positive when the scrap is in memory.
-                bus.write_word(ptr + 10, if self.scrap.in_memory { 1 } else { 0 });
+                bus.write_word(ptr + 8, summary.count as u16); // scrapCount
+                                                               // IM:I I-457: scrapState is positive when the scrap is in memory.
+                bus.write_word(ptr + 10, if summary.in_memory { 1 } else { 0 });
                 bus.write_long(ptr + 12, 0); // scrapName (NIL)
                 bus.write_long(sp, ptr); // return value
                 Ok(())
@@ -9403,34 +9379,16 @@ impl super::TrapDispatcher {
                 let the_type = bus.read_long(sp + 4).to_be_bytes(); // theType: ResType
                 let h_dest = bus.read_long(sp + 8); // hDest: Handle
 
-                // Search scrap for matching type. Per IM:I-459 offset is
-                // the byte offset of the DATA (not the entry header) from
-                // the start of the scrap. Each entry is laid out as:
-                // type(4) + length(4) + data + pad-to-even. So for entry
-                // N the data offset is sum(8 + padded_len_i for i<N) + 8.
-                let mut found_offset: u32 = 0;
-                let mut found = None;
-                for entry in &self.scrap.entries {
-                    if entry.0 == the_type {
-                        found = Some(entry.1.clone());
-                        found_offset += 8; // skip the matched entry's own header
-                        break;
-                    }
-                    // Offset accounts for type(4) + length(4) + data (padded to even)
-                    let padded_len = (entry.1.len() as u32 + 1) & !1;
-                    found_offset += 8 + padded_len;
-                }
-
-                match found {
-                    Some(data) => {
-                        let data_len = data.len() as u32;
+                match self.scrap.flavor(the_type) {
+                    Some(flavor) => {
+                        let data_len = flavor.data.len() as u32;
                         // Write offset
                         if offset_ptr != 0 {
-                            bus.write_long(offset_ptr, found_offset);
+                            bus.write_long(offset_ptr, flavor.serialized_offset);
                         }
                         // If hDest is not NIL, copy data into it
                         if h_dest != 0
-                            && self.write_bytes_to_handle(bus, h_dest, &data) == 0
+                            && self.write_bytes_to_handle(bus, h_dest, &flavor.data) == 0
                             && data_len != 0
                         {
                             bus.write_long(sp + 12, (-108i32) as u32); // memFullErr

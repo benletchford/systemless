@@ -767,13 +767,7 @@ pub(super) fn dispatch_textedit_import(
             // copy the TEXT flavor between TextEdit's private scrap and the
             // Scrap Manager's desktop scrap and return an OSErr.
             let result = if from_desktop {
-                let text_bytes = scrap
-                    .desktop
-                    .entries
-                    .iter()
-                    .find(|(flavor, _)| *flavor == *b"TEXT")
-                    .map(|(_, entry_bytes)| entry_bytes.clone());
-                if let Some(bytes) = text_bytes {
+                if let Some(flavor) = scrap.desktop.flavor(*b"TEXT") {
                     let mut allocator = PpcProcessAllocatorView {
                         memory_manager: process_memory_manager,
                     };
@@ -784,7 +778,7 @@ pub(super) fn dispatch_textedit_import(
                         heap_limit,
                         last_mem_error,
                         handles,
-                        &bytes,
+                        &flavor.data,
                     )
                 } else {
                     PPC_NO_TYPE_ERR
