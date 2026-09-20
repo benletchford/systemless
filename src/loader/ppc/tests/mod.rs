@@ -10269,7 +10269,7 @@ fn native_insert_and_append_res_menu_share_resource_name_policy() {
             (0, 0, 0, 0)
         );
     }
-    assert!(loaded.policy.res_load);
+    assert!(loaded.policy.res_load());
     for resource in &loaded.process_file_system.vfs_resources {
         if resource.name == b"Shadowed" {
             assert_eq!(
@@ -60006,11 +60006,11 @@ fn attached_resource_policy_mutations_cross_isa_immediately() {
         .dispatch_toolbox(true, 0x19b, &mut classic_cpu, &mut classic_bus)
         .unwrap()
         .is_ok());
-    assert!(!native.policy.res_load);
+    assert!(!native.policy.res_load());
 
     native.cpu.gpr[3] = 1;
     run_test_import(&mut native, PpcImportDispatcherTarget::SetResLoad);
-    assert!(classic.policy.res_load);
+    assert!(classic.policy.res_load());
 
     classic_bus.write_word(TEST_SP, 0x0100);
     classic_cpu.write_reg(Register::A7, TEST_SP);
@@ -60018,7 +60018,7 @@ fn attached_resource_policy_mutations_cross_isa_immediately() {
         .dispatch_toolbox(true, 0x193, &mut classic_cpu, &mut classic_bus)
         .unwrap()
         .is_ok());
-    assert!(native.policy.res_purge);
+    assert!(native.policy.res_purge());
 }
 
 #[test]
@@ -60124,11 +60124,11 @@ fn cloned_native_adapter_detaches_resource_policy_and_error_state() {
     detached.policy.set_res_purge(false);
     detached.set_test_resource_error(PPC_RES_F_NOT_FOUND_ERR);
 
-    assert!(!original.policy.res_load);
-    assert!(original.policy.res_purge);
+    assert!(!original.policy.res_load());
+    assert!(original.policy.res_purge());
     assert_eq!(original.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
-    assert!(detached.policy.res_load);
-    assert!(!detached.policy.res_purge);
+    assert!(detached.policy.res_load());
+    assert!(!detached.policy.res_purge());
     assert_eq!(
         detached.test_resource_error(),
         PPC_RES_F_NOT_FOUND_ERR
