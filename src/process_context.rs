@@ -802,6 +802,17 @@ impl Default for ProcessDisplayGammaState {
     }
 }
 
+impl ProcessDisplayGammaState {
+    pub(crate) fn is_pristine(&self) -> bool {
+        !self.explicit
+            && (self
+                .table
+                .iter()
+                .all(|channel| channel.iter().all(|component| *component == 0))
+                || self.table == default_display_gamma())
+    }
+}
+
 impl Default for ProcessResourcePolicyState {
     fn default() -> Self {
         Self {
@@ -1428,7 +1439,6 @@ pub struct SharedProcessValue<T>(Rc<UnsafeCell<T>>);
 
 pub(crate) type SharedProcessResourceManager = SharedProcessValue<ProcessResourceManagerState>;
 pub(crate) type SharedProcessResourcePolicy = SharedProcessValue<ProcessResourcePolicyState>;
-pub(crate) type SharedProcessDisplayGamma = SharedProcessValue<ProcessDisplayGammaState>;
 /// Process-wide 256-entry display color table shared by attached CPU adapters.
 pub(crate) type SharedProcessDisplayClut = SharedProcessValue<[[u16; 3]; 256]>;
 pub(crate) type SharedProcessSoundManager = SharedProcessValue<SoundManager>;
@@ -1556,6 +1566,9 @@ pub(crate) struct SharedProcessTextEditManager(SharedProcessValue<ProcessTextEdi
 /// Detached-by-default attachment handle for Dialog Manager `ParamText` slots.
 #[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessDialogText(SharedProcessValue<[Vec<u8>; 4]>);
+/// Detached-by-default attachment handle for display gamma transfer state.
+#[derive(Clone, Default, Eq, PartialEq)]
+pub(crate) struct SharedProcessDisplayGamma(SharedProcessValue<ProcessDisplayGammaState>);
 
 /// Launch-time AppleEvent state owned by the emulated process rather than by
 /// either CPU gateway. The Event Manager's high-level-event awareness comes
@@ -3528,16 +3541,52 @@ impl SharedProcessVblTasks {
     }
 }
 
+impl fmt::Debug for SharedProcessDisplayGamma {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.with_ref(|gamma| {
+            formatter
+                .debug_struct("SharedProcessDisplayGamma")
+                .field("explicit", &gamma.explicit)
+                .finish_non_exhaustive()
+        })
+    }
+}
+
+#[allow(dead_code)]
 impl SharedProcessDisplayGamma {
+    pub(crate) fn from_value(state: ProcessDisplayGammaState) -> Self {
+        Self(SharedProcessValue::from_value(state))
+    }
+
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn attach_to(&mut self, process_state: &Self) {
+        self.0
+            .attach_to(&process_state.0, ProcessDisplayGammaState::is_pristine);
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&ProcessDisplayGammaState) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut ProcessDisplayGammaState) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
     /// Copy the current transfer table without lending a reference into the
     /// process-owned storage across an ABI or callback boundary.
     pub(crate) fn table(&self) -> DisplayGamma {
-        self.table
+        self.with_ref(|state| state.table)
     }
 
-    #[cfg(test)]
     pub(crate) fn is_explicit(&self) -> bool {
-        self.explicit
+        self.with_ref(|state| state.explicit)
     }
 
     /// Publish a guest-installed table and its provenance atomically.
@@ -3555,6 +3604,14 @@ impl SharedProcessDisplayGamma {
                 state.table = table;
             }
         });
+    }
+
+    pub(crate) fn snapshot(&self) -> ProcessDisplayGammaState {
+        self.with_ref(|state| *state)
+    }
+
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.with_ref(ProcessDisplayGammaState::is_pristine)
     }
 }
 
@@ -8670,17 +8727,14 @@ impl ProcessContext {
     ) {
         let clut_is_pristine =
             |clut: &[[u16; 3]; 256]| *clut == [[0; 3]; 256] || *clut == standard_mac_8bpp_clut();
-        let gamma_is_pristine = |gamma: &ProcessDisplayGammaState| {
-            !gamma.explicit
-                && (gamma
-                    .table
-                    .iter()
-                    .all(|channel| channel.iter().all(|component| *component == 0))
-                    || gamma.table == default_display_gamma())
-        };
         device_clut.attach_copy_to(&self.device_clut, clut_is_pristine);
         color_manager_clut.attach_copy_to(&self.color_manager_clut, clut_is_pristine);
-        display_gamma.attach_copy_to(&self.display_gamma, gamma_is_pristine);
+        display_gamma.attach_to(&self.display_gamma);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn display_gamma(&self) -> &SharedProcessDisplayGamma {
+        &self.display_gamma
     }
 
     pub(crate) fn attach_event_queue(&self, adapter: &mut SharedProcessEventQueue) {
@@ -12248,5 +12302,85 @@ mod tests {
         assert_eq!(classic.slot(1), Some(b"Shared".to_vec()));
         assert_eq!(context.dialog_text().slot(1), Some(b"Shared".to_vec()));
         assert_eq!(detached.slot(1), Some(Vec::new()));
+    }
+
+    #[test]
+    fn process_display_gamma_encapsulation() {
+        let gamma = SharedProcessDisplayGamma::default();
+        assert!(gamma.is_pristine());
+        assert!(!gamma.is_explicit());
+        assert_eq!(gamma.table(), default_display_gamma());
+
+        let mut custom = [[0u8; 256]; 3];
+        custom[0][1] = 42;
+        gamma.set_implicit(custom);
+        assert!(!gamma.is_explicit());
+        assert_eq!(gamma.table(), custom);
+
+        let mut explicit_table = [[1u8; 256]; 3];
+        explicit_table[1][2] = 99;
+        gamma.install(explicit_table);
+        assert!(gamma.is_explicit());
+        assert!(!gamma.is_pristine());
+        assert_eq!(gamma.table(), explicit_table);
+
+        // set_implicit must not overwrite an explicit table
+        gamma.set_implicit(custom);
+        assert_eq!(gamma.table(), explicit_table);
+
+        let snapshot = gamma.snapshot();
+        assert!(snapshot.explicit);
+        assert_eq!(snapshot.table, explicit_table);
+
+        let from_val = SharedProcessDisplayGamma::from_value(snapshot);
+        assert!(from_val.is_explicit());
+        assert_eq!(from_val.table(), explicit_table);
+    }
+
+    #[test]
+    fn attached_display_gammas_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic_device = SharedProcessValue::from_value(standard_mac_8bpp_clut());
+        let mut classic_color = SharedProcessValue::from_value(standard_mac_8bpp_clut());
+        let mut classic_gamma = SharedProcessDisplayGamma::default();
+        let mut native_device = SharedProcessValue::from_value(standard_mac_8bpp_clut());
+        let mut native_color = SharedProcessValue::from_value(standard_mac_8bpp_clut());
+        let mut native_gamma = SharedProcessDisplayGamma::default();
+
+        context.attach_display_color_state(
+            &mut classic_device,
+            &mut classic_color,
+            &mut classic_gamma,
+        );
+        let mut custom = [[10u8; 256]; 3];
+        custom[0][0] = 77;
+        classic_gamma.install(custom);
+
+        context.attach_display_color_state(
+            &mut native_device,
+            &mut native_color,
+            &mut native_gamma,
+        );
+        let detached = native_gamma.clone();
+
+        assert!(classic_gamma.ptr_eq(&native_gamma));
+        assert!(context.display_gamma().ptr_eq(&classic_gamma));
+        assert_eq!(native_gamma.table(), custom);
+        assert_eq!(context.display_gamma().table(), custom);
+        assert!(native_gamma.is_explicit());
+
+        let detached_table = [[20u8; 256]; 3];
+        detached.install(detached_table);
+        assert!(!native_gamma.ptr_eq(&detached));
+        assert_eq!(classic_gamma.table(), custom);
+        assert_eq!(native_gamma.table(), custom);
+        assert_eq!(context.display_gamma().table(), custom);
+        assert_eq!(detached.table(), detached_table);
+
+        let shared_table = [[30u8; 256]; 3];
+        native_gamma.install(shared_table);
+        assert_eq!(classic_gamma.table(), shared_table);
+        assert_eq!(context.display_gamma().table(), shared_table);
+        assert_eq!(detached.table(), detached_table);
     }
 }
