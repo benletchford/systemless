@@ -2088,7 +2088,7 @@ impl FixtureRunner {
             queue_len: queue.len(),
             queued_event_types: queue.iter().take(limit).map(|event| event.what).collect(),
             mouse_position: self.dispatcher.mouse_position(),
-            mouse_button: self.dispatcher.input_state.mouse_button,
+            mouse_button: self.dispatcher.input_state.mouse_button_pressed(),
             button_result,
             still_down_result,
             wait_mouse_up_result,
@@ -2165,7 +2165,7 @@ impl FixtureRunner {
             cursor_mask_nonzero_bytes,
             cursor_hotspot,
             cursor_position: dispatcher.mouse_position(),
-            mouse_button: dispatcher.input_state.mouse_button,
+            mouse_button: dispatcher.input_state.mouse_button_pressed(),
             fullscreen_locked: dispatcher.fullscreen_locked,
             mbar_height: self.bus.read_word(addr::MBAR_HEIGHT),
             screen_width,
@@ -3052,7 +3052,7 @@ impl FixtureRunner {
     /// MTemp ($0828), RawMouse ($082C), Mouse ($0830): current position
     /// Inside Macintosh Volume I, I-258; Inside Macintosh Volume II, II-371
     fn sync_mouse_lowmem(&mut self) {
-        let mb_state: u8 = if self.dispatcher.input_state.mouse_button {
+        let mb_state: u8 = if self.dispatcher.input_state.mouse_button_pressed() {
             0x00
         } else {
             0x80
@@ -3585,7 +3585,7 @@ impl FixtureRunner {
         let launch_time = self.bus.read_long(addr::TIME);
         let launch_rnd_seed = self.bus.read_long(addr::RND_SEED);
         let mouse_pos = self.dispatcher.input_state.mouse_pos;
-        let mouse_button = self.dispatcher.input_state.mouse_button;
+        let mouse_button = self.dispatcher.input_state.mouse_button_pressed();
         let output_dir = self.dispatcher.output_dir.clone();
         let file_system = self.process_context.detached_vfs_snapshot();
 
@@ -3624,10 +3624,10 @@ impl FixtureRunner {
         replacement.bus.write_long(addr::TIME, launch_time);
         replacement.bus.write_long(addr::RND_SEED, launch_rnd_seed);
         replacement.dispatcher.read_tick_count(&replacement.bus);
-        replacement.dispatcher.input_state.with_mut(|state| {
-            state.mouse_pos = mouse_pos;
-            state.mouse_button = mouse_button;
-        });
+        replacement
+            .dispatcher
+            .input_state
+            .set_mouse_state(mouse_pos, mouse_button);
         replacement
             .bus
             .write_byte(addr::MB_STATE, if mouse_button { 0x00 } else { 0x80 });
@@ -7852,7 +7852,7 @@ impl FixtureRunner {
     fn ppc_input_snapshot(&self) -> PpcInputSnapshot {
         PpcInputSnapshot {
             key_map: self.dispatcher.input_state.key_map_snapshot(),
-            mouse_button: self.dispatcher.input_state.mouse_button,
+            mouse_button: self.dispatcher.input_state.mouse_button_pressed(),
             mouse_v: self.dispatcher.input_state.mouse_pos.0,
             mouse_h: self.dispatcher.input_state.mouse_pos.1,
         }
@@ -9328,7 +9328,8 @@ impl FixtureRunner {
         let has_pending_unmatched_down = self
             .dispatcher
             .with_process_state(|d| d.has_unmatched_queued_mouse_down());
-        let pressed = self.dispatcher.input_state.mouse_button || has_pending_unmatched_down;
+        let pressed = self.dispatcher.input_state.mouse_button_pressed()
+            || has_pending_unmatched_down;
         let mb_state: u8 = if pressed { 0x00 } else { 0x80 };
         self.bus.write_byte(0x0172, mb_state);
         if input_tick_trace_enabled() {

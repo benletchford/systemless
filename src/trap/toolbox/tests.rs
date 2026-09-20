@@ -2308,7 +2308,7 @@
 
         // Internal state is released, but $0172 is still "pressed"
         // (runner hasn't advanced a tick yet).
-        assert!(!disp.input_state.mouse_button);
+        assert!(!disp.input_state.mouse_button_pressed());
         bus.write_word(sp, 0);
         let result = disp.dispatch_toolbox(true, 0x174, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());

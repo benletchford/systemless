@@ -1623,7 +1623,7 @@ impl super::TrapDispatcher {
         // the initiating mouseDown remains queued, avoiding a zero-initialized
         // MBState falsely retaining synthetic/test calls forever.
         // Inside Macintosh Volume II (1985), p. II-371.
-        self.input_state.mouse_button
+        self.input_state.mouse_button_pressed()
             || (bus.read_byte(crate::memory::globals::addr::MB_STATE) == 0x00
                 && self.has_unmatched_queued_mouse_down())
     }

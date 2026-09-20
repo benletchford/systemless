@@ -16195,7 +16195,7 @@
         assert_eq!(queued_downs.len(), 1);
         assert_eq!((queued_downs[0].where_v, queued_downs[0].where_h), (20, 30));
         assert!(disp.pending_modal_dialog_mouse_up);
-        assert!(!disp.input_state.mouse_button);
+        assert!(!disp.input_state.mouse_button_pressed());
         assert_eq!(bus.read_byte(0x0172), 0x80);
 
         for trap in [0x173, 0x174, 0x177] {

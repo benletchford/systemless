@@ -5993,7 +5993,7 @@ fn attached_68k_and_powerpc_adapters_share_live_input_without_runner_copy() {
 
     assert!(classic.input_state.ptr_eq(&native.process_input));
     assert_eq!(classic.input_state.mouse_pos, (-20, 99));
-    assert!(!classic.input_state.mouse_button);
+    assert!(!classic.input_state.mouse_button_pressed());
     assert_eq!(classic.input_state.key_map_snapshot()[1], 0x08);
     assert!(!native.process_input.ptr_eq(&detached.process_input));
     assert_eq!(detached.current_input_snapshot(), PpcInputSnapshot::default());

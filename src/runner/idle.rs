@@ -191,7 +191,7 @@ impl IdleCycleHostSnapshot {
     pub(crate) fn capture(dispatcher: &TrapDispatcher) -> Self {
         Self {
             mouse_pos: dispatcher.input_state.mouse_pos,
-            mouse_button: dispatcher.input_state.mouse_button,
+            mouse_button: dispatcher.input_state.mouse_button_pressed(),
             key_map: dispatcher.key_map_bytes(),
             caps_lock_physically_pressed: dispatcher
                 .input_state

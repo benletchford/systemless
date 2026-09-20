@@ -4305,7 +4305,7 @@ impl super::TrapDispatcher {
                 let rect = Self::dialog_item_screen_rect(bounds, item.rect);
                 let is_default = hit == default_item;
                 self.draw_dialog_button_highlight_state(bus, rect, &item.text, is_default, true);
-                if self.input_state.mouse_button {
+                if self.input_state.mouse_button_pressed() {
                     let tracking = self.dialog_tracking.as_mut().unwrap();
                     tracking.active_button = Some(super::dispatch::DialogButtonTrackingState {
                         mouse_down: event.clone(),
@@ -9533,7 +9533,7 @@ impl super::TrapDispatcher {
     }
 
     pub(crate) fn mouse_down_over_dialog_button(&self) -> bool {
-        if !self.input_state.mouse_button {
+        if !self.input_state.mouse_button_pressed() {
             return false;
         }
         let Some(tracking) = self.dialog_tracking.as_ref() else {
@@ -9548,7 +9548,7 @@ impl super::TrapDispatcher {
     }
 
     pub(crate) fn mouse_down_over_dialog_plain_user_item(&self) -> bool {
-        if !self.input_state.mouse_button {
+        if !self.input_state.mouse_button_pressed() {
             return false;
         }
         let Some(tracking) = self.dialog_tracking.as_ref() else {
@@ -9819,7 +9819,7 @@ impl super::TrapDispatcher {
                     self.event_queue.remove(idx);
                 }
             }
-            self.input_state.with_mut(|state| state.mouse_button = false);
+            self.input_state.set_mouse_button_pressed(false);
             self.adb.note_mouse_state(self.input_state.mouse_pos, false);
             bus.write_byte(0x0172, 0x80);
         }
@@ -10469,7 +10469,7 @@ impl super::TrapDispatcher {
     }
 
     fn handle_dialog_popup_tracking<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
-        if self.input_state.mouse_button {
+        if self.input_state.mouse_button_pressed() {
             let (mv, mh) = self.input_state.mouse_pos;
             let new_item = self.dialog_popup_item_at_point(bus, mh, mv);
             let old_item = self
@@ -10589,7 +10589,7 @@ impl super::TrapDispatcher {
         let (mouse_v, mouse_h) = self.input_state.mouse_pos;
         let inside = mouse_v >= top && mouse_v < bottom && mouse_h >= left && mouse_h < right;
 
-        if self.input_state.mouse_button {
+        if self.input_state.mouse_button_pressed() {
             if inside != highlighted {
                 self.draw_dialog_button_highlight_state(
                     bus,
@@ -10690,7 +10690,7 @@ impl super::TrapDispatcher {
             return;
         };
 
-        if self.input_state.mouse_button {
+        if self.input_state.mouse_button_pressed() {
             return;
         }
 
@@ -12395,7 +12395,7 @@ impl super::TrapDispatcher {
                     };
 
                     if let Some(mut e) = event {
-                        if e.what == 0 && self.input_state.mouse_button {
+                        if e.what == 0 && self.input_state.mouse_button_pressed() {
                             e.what = 1;
                             e.where_v = self.input_state.mouse_pos.0;
                             e.where_h = self.input_state.mouse_pos.1;
@@ -12495,7 +12495,7 @@ impl super::TrapDispatcher {
                                                     is_default,
                                                     true,
                                                 );
-                                                if self.input_state.mouse_button {
+                                                if self.input_state.mouse_button_pressed() {
                                                     let t = self.dialog_tracking.as_mut().unwrap();
                                                     t.active_button = Some(
                                                         super::dispatch::DialogButtonTrackingState {
@@ -12694,7 +12694,7 @@ impl super::TrapDispatcher {
                                                         tracking, hit, item,
                                                     )
                                                 },
-                                            ) && self.input_state.mouse_button =>
+                                            ) && self.input_state.mouse_button_pressed() =>
                                             {
                                                 let (dlg_ptr, edit_item, edit_text, items) = {
                                                     let tracking =

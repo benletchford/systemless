@@ -187,7 +187,9 @@ impl FixtureRunner {
 
     pub(crate) fn debug_release_held_input(&mut self) {
         let keys = self.dispatcher.input_state.key_map_snapshot();
-        if keys.iter().any(|key| *key != 0) || self.dispatcher.input_state.mouse_button {
+        if keys.iter().any(|key| *key != 0)
+            || self.dispatcher.input_state.mouse_button_pressed()
+        {
             self.debug.touch();
         }
         for key in 0..128u8 {
@@ -195,7 +197,7 @@ impl FixtureRunner {
                 self.push_key_up(key, 0);
             }
         }
-        if self.dispatcher.input_state.mouse_button {
+        if self.dispatcher.input_state.mouse_button_pressed() {
             let (v, h) = self.dispatcher.mouse_position();
             self.push_canonical_mouse_up(v, h);
         }
