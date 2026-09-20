@@ -59,6 +59,106 @@ pub(super) fn dispatch_q3_submit_import_fast(
         PpcImportDispatcherTarget::Q3StyleSubmit => PpcQ3SubmissionKind::Style,
         PpcImportDispatcherTarget::Q3TriMeshSubmit => PpcQ3SubmissionKind::TriMesh,
         PpcImportDispatcherTarget::Q3ObjectSubmit => PpcQ3SubmissionKind::Object,
+        PpcImportDispatcherTarget::Q3MatrixTransformSubmit => PpcQ3SubmissionKind::MatrixTransform,
+        PpcImportDispatcherTarget::Q3ResetTransformSubmit => PpcQ3SubmissionKind::ResetTransform,
+        PpcImportDispatcherTarget::Q3PushSubmit => PpcQ3SubmissionKind::Push,
+        PpcImportDispatcherTarget::Q3PopSubmit => PpcQ3SubmissionKind::Pop,
+        PpcImportDispatcherTarget::Q3BackfacingStyleSubmit => {
+            return Some(PpcImportAction::Return(u32::from(
+                ppc_q3_direct_style_submit(
+                    cpu,
+                    q3_group_memberships,
+                    q3_views,
+                    q3_view_transforms,
+                    q3_submissions,
+                    q3_submission_transforms,
+                    q3_view_materials,
+                    q3_submission_materials,
+                    q3_submission_lights,
+                    q3_shader_boundaries,
+                    q3_shader_uv_transforms,
+                    q3_texture_shaders,
+                    q3_mipmap_textures,
+                    q3_lights,
+                    q3_objects,
+                    q3_error_state,
+                    PpcQ3StyleKind::Backfacing,
+                    PPC_Q3_STYLE_TYPE_BACKFACING,
+                ),
+            )));
+        }
+        PpcImportDispatcherTarget::Q3InterpolationStyleSubmit => {
+            return Some(PpcImportAction::Return(u32::from(
+                ppc_q3_direct_style_submit(
+                    cpu,
+                    q3_group_memberships,
+                    q3_views,
+                    q3_view_transforms,
+                    q3_submissions,
+                    q3_submission_transforms,
+                    q3_view_materials,
+                    q3_submission_materials,
+                    q3_submission_lights,
+                    q3_shader_boundaries,
+                    q3_shader_uv_transforms,
+                    q3_texture_shaders,
+                    q3_mipmap_textures,
+                    q3_lights,
+                    q3_objects,
+                    q3_error_state,
+                    PpcQ3StyleKind::Interpolation,
+                    PPC_Q3_STYLE_TYPE_INTERPOLATION,
+                ),
+            )));
+        }
+        PpcImportDispatcherTarget::Q3FillStyleSubmit => {
+            return Some(PpcImportAction::Return(u32::from(
+                ppc_q3_direct_style_submit(
+                    cpu,
+                    q3_group_memberships,
+                    q3_views,
+                    q3_view_transforms,
+                    q3_submissions,
+                    q3_submission_transforms,
+                    q3_view_materials,
+                    q3_submission_materials,
+                    q3_submission_lights,
+                    q3_shader_boundaries,
+                    q3_shader_uv_transforms,
+                    q3_texture_shaders,
+                    q3_mipmap_textures,
+                    q3_lights,
+                    q3_objects,
+                    q3_error_state,
+                    PpcQ3StyleKind::Fill,
+                    PPC_Q3_STYLE_TYPE_FILL,
+                ),
+            )));
+        }
+        PpcImportDispatcherTarget::Q3OrientationStyleSubmit => {
+            return Some(PpcImportAction::Return(u32::from(
+                ppc_q3_direct_style_submit(
+                    cpu,
+                    q3_group_memberships,
+                    q3_views,
+                    q3_view_transforms,
+                    q3_submissions,
+                    q3_submission_transforms,
+                    q3_view_materials,
+                    q3_submission_materials,
+                    q3_submission_lights,
+                    q3_shader_boundaries,
+                    q3_shader_uv_transforms,
+                    q3_texture_shaders,
+                    q3_mipmap_textures,
+                    q3_lights,
+                    q3_objects,
+                    q3_error_state,
+                    PpcQ3StyleKind::Orientation,
+                    PPC_Q3_STYLE_TYPE_ORIENTATION,
+                ),
+            )));
+        }
         PpcImportDispatcherTarget::Q3FogStyleSubmit => {
             return Some(PpcImportAction::Return(u32::from(ppc_q3_fog_style_submit(
                 cpu,
