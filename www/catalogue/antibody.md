@@ -30,10 +30,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/Antibody%201.0.0.sit
-    expected_sha256: b08c2bdc602cd5e6888776376e52ef9e41a2875985a7de8a20222a573a4557b4
-    expected_size: 2145256
+    type: sha256
+    sha256: b08c2bdc602cd5e6888776376e52ef9e41a2875985a7de8a20222a573a4557b4
+    size_bytes: 2145256
   provenance:
     redistribution: permitted
     original: true
