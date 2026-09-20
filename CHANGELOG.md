@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.42.1](https://github.com/benletchford/systemless/compare/v0.42.0...v0.42.1) (2026-09-20)
+
+
+### Code Refactoring
+
+* **process:** seal Scrap Manager handle ([dc0934e](https://github.com/benletchford/systemless/commit/dc0934ea065a3f9be8328ab3eb541e6298f94529))
+
 ## [0.42.0](https://github.com/benletchford/systemless/compare/v0.41.12...v0.42.0) (2026-09-20)
 
 
