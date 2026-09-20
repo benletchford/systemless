@@ -52,6 +52,8 @@ Build provenance (frozen release library SHA-256):
 
 `cargo test --lib --features test-support`: 5,536 passed, three existing tests ignored. `cargo check --locked --no-default-features`: passed. Both native Windows release builds and their replay executables compile.
 
-The new differential test compares the span helper with the former pixel operation for overlapping destinations, identity and translated palettes, nonzero snapshot first rows, live source mutation after capture, and complete outline-image equality. Another test confirms incomplete snapshots decline before any write. Existing clipping, palette, overlap and retained-dialog tests also pass.
+The new differential test compares the span helper with the former pixel operation for overlapping destinations, identity and translated palettes, nonzero snapshot first rows, shifted bitmap origins/rectangles, padded source strides, live source mutation after capture, and complete outline-image equality. It asserts that the source actually contains outline detail. Both CopyBits entry paths are also exercised with complex clipping, outline presentation enabled/disabled, and shared/separate source and destination bases. Another test confirms incomplete snapshots decline before any write. Existing clipping, palette, overlap and retained-dialog tests also pass.
 
 This removes one periodic source of expensive work, not all pauses. Memory/presentation writes, composition, JIT execution and synchronous compilation still cost CPU. Hidden replay timing does not measure displayed frame pacing or menu/cursor latency.
+
+Follow-up review coverage: all 735 QuickDraw tests pass after those additional cases; production code and the measured executables are unchanged.
