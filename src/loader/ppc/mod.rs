@@ -87,7 +87,7 @@ use crate::menu_manager::{
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{
     ProcessAppleEventHandler, ProcessContext, ProcessFileSystemState,
-    ProcessHandleHeap, ProcessHandleRecord, ProcessHandleStateRecord, ProcessInputState,
+    ProcessHandleHeap, ProcessHandleRecord, ProcessHandleStateRecord,
     ProcessMemoryManager, ProcessNewHandleBackend, ProcessNewHandleRequest,
     ProcessNativeHeapState, ProcessNativeMemoryManager, ProcessPtrRecord,
     ProcessResourceManagerState, ProcessVfsFileRecords,
@@ -4391,20 +4391,17 @@ impl PpcLoadedApp {
                 .write_u16_be(point_addr + 2, input.mouse_h as u16);
         }
         self.input = input;
+        self.process_input.set_key_map_snapshot(input.key_map);
         self.process_input.with_mut(|state| {
-            state.key_map = input.key_map;
             state.mouse_button = input.mouse_button;
             state.mouse_pos = (input.mouse_v, input.mouse_h);
         });
     }
 
     fn current_input_snapshot(&self) -> PpcInputSnapshot {
-        let ProcessInputState {
-            key_map,
-            mouse_button,
-            mouse_pos: (mouse_v, mouse_h),
-            ..
-        } = *self.process_input;
+        let key_map = self.process_input.key_map_snapshot();
+        let mouse_button = self.process_input.mouse_button;
+        let (mouse_v, mouse_h) = self.process_input.mouse_pos;
         PpcInputSnapshot {
             key_map,
             mouse_button,

@@ -3374,7 +3374,7 @@
             .memory
             .read_bytes_into(addr::KEY_MAP_LM, &mut host_key_map)
             .unwrap();
-        assert_eq!(host_key_map, runner.dispatcher.input_state.key_map);
+        assert_eq!(host_key_map, runner.dispatcher.input_state.key_map_snapshot());
         assert_eq!(ppc_app.memory.read_u8(addr::MB_STATE), Some(0));
         for point_addr in [addr::M_TEMP, addr::MOUSE_LOC, addr::MOUSE_LOC2] {
             assert_eq!(ppc_app.memory.read_u16_be(point_addr), Some((-7i16) as u16));

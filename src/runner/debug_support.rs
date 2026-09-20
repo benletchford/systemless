@@ -186,7 +186,7 @@ impl FixtureRunner {
     }
 
     pub(crate) fn debug_release_held_input(&mut self) {
-        let keys = self.dispatcher.input_state.key_map;
+        let keys = self.dispatcher.input_state.key_map_snapshot();
         if keys.iter().any(|key| *key != 0) || self.dispatcher.input_state.mouse_button {
             self.debug.touch();
         }

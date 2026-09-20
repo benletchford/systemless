@@ -192,7 +192,7 @@ impl IdleCycleHostSnapshot {
         Self {
             mouse_pos: dispatcher.input_state.mouse_pos,
             mouse_button: dispatcher.input_state.mouse_button,
-            key_map: *dispatcher.key_map_bytes(),
+            key_map: dispatcher.key_map_bytes(),
             caps_lock_physically_pressed: dispatcher
                 .input_state
                 .caps_lock_physically_pressed(),

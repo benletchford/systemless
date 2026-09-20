@@ -10548,33 +10548,32 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let keys_ptr = bus.read_long(sp);
                 let trap_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
+                let key_map = self.input_state.key_map_snapshot();
                 if super::dispatch::trace_input_enabled() {
                     eprintln!(
                         "[INPUT] GetKeys tick={} pc=${:08X} ptr=${:08X} key_map={:02X?}",
                         self.current_tick(),
                         trap_pc,
                         keys_ptr,
-                        self.input_state.key_map
+                        key_map
                     );
                 }
-                if trace_getkeys_nonzero_enabled()
-                    && self.input_state.key_map.iter().any(|&byte| byte != 0)
-                {
+                if trace_getkeys_nonzero_enabled() && key_map.iter().any(|&byte| byte != 0) {
                     eprintln!(
                         "[INPUT] GetKeys nonzero tick={} pc=${:08X} ptr=${:08X} key_map={:02X?}",
                         self.current_tick(),
                         trap_pc,
                         keys_ptr,
-                        self.input_state.key_map
+                        key_map
                     );
                 }
-                if self.input_state.key_map.iter().any(|&byte| byte != 0) {
+                if key_map.iter().any(|&byte| byte != 0) {
                     self.debug_getkeys_nonzero_count =
                         self.debug_getkeys_nonzero_count.saturating_add(1);
-                    self.debug_last_getkeys_nonzero_key_map = self.input_state.key_map;
+                    self.debug_last_getkeys_nonzero_key_map = key_map;
                 }
                 if keys_ptr != 0 {
-                    bus.write_bytes(keys_ptr, &self.input_state.key_map);
+                    bus.write_bytes(keys_ptr, &key_map);
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())

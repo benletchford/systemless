@@ -1804,7 +1804,7 @@ impl ProcessMixedModeM68kState {
 pub(crate) struct ProcessInputState {
     pub(crate) mouse_pos: (i16, i16),
     pub(crate) mouse_button: bool,
-    pub(crate) key_map: [u8; 16],
+    key_map: [u8; 16],
     caps_lock_physically_pressed: bool,
     key_repeat: Option<ProcessKeyRepeatState>,
 }
@@ -1812,6 +1812,28 @@ pub(crate) struct ProcessInputState {
 impl ProcessInputState {
     pub(crate) fn is_pristine(&self) -> bool {
         self == &Self::default()
+    }
+
+    fn key_is_down(&self, key_code: u8) -> bool {
+        if key_code >= 128 {
+            return false;
+        }
+        let byte_index = usize::from(key_code >> 3);
+        let mask = 1u8 << (key_code & 0x07);
+        (self.key_map[byte_index] & mask) != 0
+    }
+
+    fn set_key_down(&mut self, key_code: u8, down: bool) {
+        if key_code >= 128 {
+            return;
+        }
+        let byte_index = usize::from(key_code >> 3);
+        let mask = 1u8 << (key_code & 0x07);
+        if down {
+            self.key_map[byte_index] |= mask;
+        } else {
+            self.key_map[byte_index] &= !mask;
+        }
     }
 }
 
@@ -1935,6 +1957,22 @@ impl SharedProcessMixedModeM68kState {
 }
 
 impl SharedProcessInputState {
+    pub(crate) fn key_map_snapshot(&self) -> [u8; 16] {
+        self.with_ref(|state| state.key_map)
+    }
+
+    pub(crate) fn key_is_down(&self, key_code: u8) -> bool {
+        self.with_ref(|state| state.key_is_down(key_code))
+    }
+
+    pub(crate) fn set_key_down(&self, key_code: u8, down: bool) {
+        self.with_mut(|state| state.set_key_down(key_code, down));
+    }
+
+    pub(crate) fn set_key_map_snapshot(&self, key_map: [u8; 16]) {
+        self.with_mut(|state| state.key_map = key_map);
+    }
+
     pub(crate) fn caps_lock_physically_pressed(&self) -> bool {
         self.with_ref(|state| state.caps_lock_physically_pressed)
     }
@@ -11071,7 +11109,7 @@ mod tests {
         assert!(classic.ptr_eq(&native));
         assert_eq!(classic.mouse_pos, (56, 78));
         assert!(classic.mouse_button);
-        assert_eq!(classic.key_map[2], 0x40);
+        assert_eq!(classic.key_map_snapshot()[2], 0x40);
         assert!(classic.caps_lock_physically_pressed());
         assert_eq!(classic.key_repeat().unwrap().next_tick(), 90);
         assert_eq!(detached.mouse_pos, (12, 34));

@@ -269,17 +269,6 @@ pub(crate) fn key_map_key_is_down(key_map: &[u8; 16], key_code: u8) -> bool {
     (key_map[byte_idx] & mask) != 0
 }
 
-fn set_key_map_key(key_map: &mut [u8; 16], key_code: u8, down: bool) {
-    let Some((byte_idx, mask)) = key_map_byte_mask(key_code) else {
-        return;
-    };
-    if down {
-        key_map[byte_idx] |= mask;
-    } else {
-        key_map[byte_idx] &= !mask;
-    }
-}
-
 fn trace_sound_enabled() -> bool {
     *TRACE_SOUND.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_SOUND").is_some())
 }
@@ -3218,11 +3207,11 @@ impl TrapDispatcher {
     }
 
     pub(crate) fn key_is_down(&self, key_code: u8) -> bool {
-        key_map_key_is_down(&self.input_state.key_map, key_code)
+        self.input_state.key_is_down(key_code)
     }
 
-    pub(crate) fn key_map_bytes(&self) -> &[u8; 16] {
-        &self.input_state.key_map
+    pub(crate) fn key_map_bytes(&self) -> [u8; 16] {
+        self.input_state.key_map_snapshot()
     }
 
     pub(crate) fn current_event_modifiers(&self) -> u16 {
@@ -3281,9 +3270,9 @@ impl TrapDispatcher {
     }
 
     pub(crate) fn input_trace_state_fields(&self) -> String {
-        let key_map = if self.input_state.key_map.iter().any(|&byte| byte != 0) {
-            self.input_state
-                .key_map
+        let key_map_snapshot = self.input_state.key_map_snapshot();
+        let key_map = if key_map_snapshot.iter().any(|&byte| byte != 0) {
+            key_map_snapshot
                 .iter()
                 .map(|byte| format!("{byte:02X}"))
                 .collect::<Vec<_>>()
@@ -5439,14 +5428,12 @@ impl TrapDispatcher {
             // Caps Lock latches on one physical press and releases on the
             // next. Inside Macintosh Volume I (1985), p. I-34.
             let latched = !self.key_is_down(key_code);
-            self.input_state
-                .with_mut(|state| set_key_map_key(&mut state.key_map, key_code, latched));
+            self.input_state.set_key_down(key_code, latched);
         } else {
             if self.key_is_down(key_code) {
                 return;
             }
-            self.input_state
-                .with_mut(|state| set_key_map_key(&mut state.key_map, key_code, true));
+            self.input_state.set_key_down(key_code, true);
         }
         let modifiers = self.current_event_modifiers();
         if trace_input_enabled() {
@@ -5500,8 +5487,7 @@ impl TrapDispatcher {
         if key_code == Self::CAPS_LOCK_KEY_CODE {
             self.input_state.release_caps_lock();
         } else {
-            self.input_state
-                .with_mut(|state| set_key_map_key(&mut state.key_map, key_code, false));
+            self.input_state.set_key_down(key_code, false);
         }
         self.input_state.clear_key_repeat_for(key_code);
         let modifiers = self.current_event_modifiers();
