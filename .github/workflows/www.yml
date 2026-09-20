@@ -2,9 +2,30 @@ name: Website and catalogue
 
 on:
   pull_request:
+    paths:
+      - .cargo/**
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - www/**
+      - .github/scripts/promote-review.cjs
+      - .github/scripts/promote-review.test.cjs
+      - .github/workflows/deploy-www.yml
+      - .github/workflows/release-please.yml
+      - .github/workflows/www.yml
   push:
     branches: [main, master]
-  workflow_dispatch:
+    paths:
+      - .cargo/**
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - www/**
+      - .github/scripts/promote-review.cjs
+      - .github/scripts/promote-review.test.cjs
+      - .github/workflows/deploy-www.yml
+      - .github/workflows/release-please.yml
+      - .github/workflows/www.yml
 
 permissions:
   contents: read
