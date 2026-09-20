@@ -30,11 +30,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/MatchMaker%201.0%20source.sit.sit
-    download_page: https://www.vintageapplemac.com/software/games/m
-    expected_sha256: 9b1e034b0b2eaed8f75d32a7d9011fbbfa0b3f78eb67c789befa8e856a346153
-    expected_size: 185432
+    type: sha256
+    sha256: 9b1e034b0b2eaed8f75d32a7d9011fbbfa0b3f78eb67c789befa8e856a346153
+    size_bytes: 185432
   provenance:
     redistribution: permitted
     original: true
