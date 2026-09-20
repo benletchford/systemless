@@ -11,7 +11,15 @@ default_architecture: 68k
 category: Arcade
 launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
+  verified:
+  - date: 2026-09-20
+    tester: Catalogue maintainer
+    systemless_version: 0.42.1
+    architecture: 68k
+    environment: Deterministic headless gameplay run from the original StuffIt archive
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2241
 artifacts:
 - id: archive
   role: archive
@@ -42,4 +50,6 @@ references:
 
 Valkyrie's demonstration alternates between a recorded flight and three
 minutes of unrestricted helicopter control. This is the complete original 68k
-demo archive. Systemless compatibility has not yet been verified.
+demo archive. Systemless launches the demo, completes its replay sequence,
+switches into PLAY mode, and responds to flight and weapon controls during a
+deterministic run of the original archive.
