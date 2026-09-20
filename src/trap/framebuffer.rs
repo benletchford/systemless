@@ -1905,7 +1905,7 @@ impl super::TrapDispatcher {
     fn visible_window_count(&self, bus: &MacMemoryBus) -> usize {
         let mut count = 0usize;
         let mut saw = HashSet::new();
-        for &window in self.window_list.iter() {
+        for window in self.window_list.windows() {
             if window != 0 && saw.insert(window) && bus.read_byte(window + 110u32) != 0 {
                 count += 1;
             }
@@ -2101,7 +2101,7 @@ impl super::TrapDispatcher {
         } else {
             None
         };
-        for window in self.window_list.iter().copied().chain(fallback) {
+        for window in self.window_list.windows().into_iter().chain(fallback) {
             if window == 0
                 || !seen.insert(window)
                 || !self.window_visible(bus, window)
@@ -5424,7 +5424,7 @@ impl super::TrapDispatcher {
         paint_parts: &[(i16, i16, i16, i16)],
     ) -> Vec<(i16, i16, i16, i16)> {
         let mut occluded_parts = Vec::new();
-        for &front_window in self.window_list.iter().take_while(|&&w| w != window_ptr) {
+        for front_window in self.window_list.windows().into_iter().take_while(|&w| w != window_ptr) {
             if !self.window_visible(bus, front_window) {
                 continue;
             }
@@ -5714,24 +5714,25 @@ impl super::TrapDispatcher {
         for (dialog_ptr, snapshot) in snapshots {
             let bounds = snapshot.bounds;
             let snapshot_rect = Self::dialog_saved_pixel_rect(bounds);
-            let preserved_front_pixels: Vec<_> = self
-                .window_list
-                .iter()
-                .position(|&window| window == dialog_ptr)
-                .map(|dialog_index| {
-                    self.window_list[..dialog_index]
-                        .iter()
-                        .filter(|&&window| self.window_visible(bus, window))
-                        .filter_map(|&window| {
-                            self.window_structure_rect(bus, window)
-                                .and_then(|structure| {
-                                    Self::rect_intersection(snapshot_rect, structure)
-                                })
-                                .and_then(|overlap| self.save_screen_rect_pixels(bus, overlap))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            let preserved_front_pixels: Vec<_> = self.window_list.with_ref(|windows| {
+                windows
+                    .iter()
+                    .position(|&window| window == dialog_ptr)
+                    .map(|dialog_index| {
+                        windows[..dialog_index]
+                            .iter()
+                            .filter(|&&window| self.window_visible(bus, window))
+                            .filter_map(|&window| {
+                                self.window_structure_rect(bus, window)
+                                    .and_then(|structure| {
+                                        Self::rect_intersection(snapshot_rect, structure)
+                                    })
+                                    .and_then(|overlap| self.save_screen_rect_pixels(bus, overlap))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            });
             self.restore_dialog_content_pixels(bus, bounds, &snapshot.pixels);
             for (top, left, width, height, pixels) in preserved_front_pixels {
                 self.restore_screen_rect_pixels(bus, top, left, width, height, &pixels);

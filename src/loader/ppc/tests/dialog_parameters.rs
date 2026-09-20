@@ -276,7 +276,7 @@ fn hle_import_runner_keeps_resource_alert_modal_until_default_item() {
 
     assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
     let dialog = *loaded.current_gworld;
-    assert_eq!(loaded.window_list.first().copied(), Some(dialog));
+    assert_eq!(loaded.window_list.first(), Some(dialog));
     assert_eq!(
         loaded
             .memory

@@ -1536,7 +1536,8 @@ impl SharedProcessTickState {
 }
 pub(crate) type SharedProcessEventQueue = SharedProcessValue<EventQueue>;
 pub(crate) type SharedProcessMenuTracking = crate::guest_call::SharedMenuTracking;
-pub(crate) type SharedProcessWindowList = SharedProcessValue<Vec<u32>>;
+#[derive(Clone, Default)]
+pub(crate) struct SharedProcessWindowList(SharedProcessValue<Vec<u32>>);
 pub(crate) struct SharedProcessInputState(SharedProcessValue<ProcessInputState>);
 pub(crate) type SharedProcessTimerTasks = SharedProcessValue<Vec<ProcessTimerTask>>;
 pub(crate) type SharedProcessVblTasks = SharedProcessValue<Vec<ProcessVblTask>>;
@@ -3031,24 +3032,121 @@ impl SharedProcessEventQueue {
     }
 }
 
-#[cfg(test)]
+impl fmt::Debug for SharedProcessWindowList {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.with_ref(|windows| {
+            formatter
+                .debug_tuple("SharedProcessWindowList")
+                .field(&windows)
+                .finish()
+        })
+    }
+}
+
+impl PartialEq for SharedProcessWindowList {
+    fn eq(&self, other: &Self) -> bool {
+        self.with_ref(|mine| other.with_ref(|theirs| mine == theirs))
+    }
+}
+
+impl Eq for SharedProcessWindowList {}
+
+impl PartialEq<Vec<u32>> for SharedProcessWindowList {
+    fn eq(&self, other: &Vec<u32>) -> bool {
+        self.with_ref(|windows| windows == other.as_slice())
+    }
+}
+
+impl PartialEq<&[u32]> for SharedProcessWindowList {
+    fn eq(&self, other: &&[u32]) -> bool {
+        self.with_ref(|windows| windows == *other)
+    }
+}
+
+impl<const N: usize> PartialEq<[u32; N]> for SharedProcessWindowList {
+    fn eq(&self, other: &[u32; N]) -> bool {
+        self.with_ref(|windows| windows == other.as_slice())
+    }
+}
+
+#[allow(dead_code)]
 impl SharedProcessWindowList {
-    /// Replace the process-owned front-to-back window order atomically.
-    pub(crate) fn replace(&self, windows: Vec<u32>) {
-        self.with_mut(|current| *current = windows);
+    pub(crate) fn from_value(windows: Vec<u32>) -> Self {
+        Self(SharedProcessValue::from_value(windows))
     }
 
-    /// Append one window at the back of the process-owned order.
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn attach_to(&mut self, process_state: &Self) {
+        self.0.attach_to(&process_state.0, Vec::is_empty);
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&[u32]) -> R) -> R {
+        self.0.with_ref(|windows| operation(windows.as_slice()))
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut Vec<u32>) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    pub(crate) fn with_windows<R>(&self, operation: impl FnOnce(&[u32]) -> R) -> R {
+        self.with_ref(operation)
+    }
+
+    pub(crate) fn with_windows_mut<R>(&self, operation: impl FnOnce(&mut Vec<u32>) -> R) -> R {
+        self.with_mut(operation)
+    }
+
+    pub(crate) fn windows(&self) -> Vec<u32> {
+        self.with_ref(|windows| windows.to_vec())
+    }
+
+    pub(crate) fn to_vec(&self) -> Vec<u32> {
+        self.windows()
+    }
+
+    pub(crate) fn front_window(&self) -> Option<u32> {
+        self.with_ref(|windows| windows.first().copied())
+    }
+
+    pub(crate) fn first(&self) -> Option<u32> {
+        self.front_window()
+    }
+
+    pub(crate) fn get(&self, index: usize) -> Option<u32> {
+        self.with_ref(|windows| windows.get(index).copied())
+    }
+
+    pub(crate) fn contains_window(&self, window: u32) -> bool {
+        self.with_ref(|windows| windows.contains(&window))
+    }
+
+    pub(crate) fn contains(&self, window: &u32) -> bool {
+        self.contains_window(*window)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.with_ref(|windows| windows.is_empty())
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.with_ref(|windows| windows.len())
+    }
+
     pub(crate) fn push(&self, window: u32) {
         self.with_mut(|windows| windows.push(window));
     }
 
-    /// Insert one window at a specific front-to-back position.
     pub(crate) fn insert(&self, index: usize, window: u32) {
         self.with_mut(|windows| windows.insert(index, window));
     }
 
-    /// Append windows in their supplied front-to-back order.
     pub(crate) fn extend<I>(&self, windows: I)
     where
         I: IntoIterator<Item = u32>,
@@ -3056,17 +3154,29 @@ impl SharedProcessWindowList {
         self.with_mut(|current| current.extend(windows));
     }
 
-    /// Remove every tracked window from the process-owned order.
     pub(crate) fn clear(&self) {
         self.with_mut(Vec::clear);
     }
 
-    /// Remove one tracked window by position for deterministic fixture setup.
+    pub(crate) fn replace(&self, windows: Vec<u32>) {
+        self.with_mut(|current| *current = windows);
+    }
+
     pub(crate) fn remove(&self, index: usize) -> u32 {
         self.with_mut(|windows| windows.remove(index))
     }
 
-    /// Retain matching windows without exposing the shared backing vector.
+    pub(crate) fn remove_window(&self, window: u32) -> bool {
+        self.with_mut(|windows| {
+            if let Some(pos) = windows.iter().position(|&w| w == window) {
+                windows.remove(pos);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
     pub(crate) fn retain<F>(&self, predicate: F)
     where
         F: FnMut(&u32) -> bool,
@@ -3074,14 +3184,47 @@ impl SharedProcessWindowList {
         self.with_mut(|windows| windows.retain(predicate));
     }
 
-    /// Remove the backmost tracked window for deterministic fixture setup.
     pub(crate) fn pop(&self) -> Option<u32> {
         self.with_mut(Vec::pop)
     }
 
-    /// Exchange two positions without exposing the shared backing vector.
     pub(crate) fn swap(&self, a: usize, b: usize) {
         self.with_mut(|windows| windows.swap(a, b));
+    }
+
+    pub(crate) fn bring_to_front(&self, window: u32) {
+        self.with_mut(|windows| {
+            windows.retain(|&tracked| tracked != window);
+            windows.insert(0, window);
+        });
+    }
+
+    pub(crate) fn send_behind(&self, window: u32, behind: u32) {
+        self.with_mut(|windows| {
+            windows.retain(|&w| w != window);
+            if behind == 0 {
+                windows.push(window);
+            } else if let Some(idx) = windows.iter().position(|&w| w == behind) {
+                windows.insert(idx + 1, window);
+            } else {
+                windows.push(window);
+            }
+        });
+    }
+
+    pub(crate) fn reorder(&self, window: u32, behind: u32, front: bool) {
+        self.with_mut(|windows| {
+            windows.retain(|candidate| *candidate != window);
+            if front || behind == u32::MAX {
+                windows.insert(0, window);
+            } else if behind == 0 {
+                windows.push(window);
+            } else if let Some(index) = windows.iter().position(|candidate| *candidate == behind) {
+                windows.insert(index + 1, window);
+            } else {
+                windows.push(window);
+            }
+        });
     }
 }
 
@@ -8370,7 +8513,7 @@ impl ProcessContext {
     /// process-wide ordering used by FrontWindow, FindWindow, activation, and
     /// occlusion. Macintosh Toolbox Essentials (1992), pp. 4-64--4-65.
     pub(crate) fn attach_window_list(&self, adapter: &mut SharedProcessWindowList) {
-        adapter.attach_to(&self.window_list, Vec::is_empty);
+        adapter.attach_to(&self.window_list);
     }
 
     pub(crate) fn attach_input_state(&self, adapter: &mut SharedProcessInputState) {
@@ -11524,9 +11667,44 @@ mod tests {
         classic.push(0x4000);
 
         assert!(classic.ptr_eq(&native));
-        assert_eq!(&*classic, &[0x3000, 0x1000, 0x4000]);
-        assert_eq!(&*native, &[0x3000, 0x1000, 0x4000]);
-        assert_eq!(&*detached, &[0x1000, 0x2000]);
+        assert_eq!(classic, [0x3000, 0x1000, 0x4000]);
+        assert_eq!(native, [0x3000, 0x1000, 0x4000]);
+        assert_eq!(detached, [0x1000, 0x2000]);
+    }
+
+    #[test]
+    fn process_window_list_encapsulation() {
+        let list = SharedProcessWindowList::default();
+        assert!(list.is_empty());
+        assert_eq!(list.len(), 0);
+        assert_eq!(list.front_window(), None);
+
+        list.push(0x1000);
+        list.push(0x2000);
+        list.push(0x3000);
+        assert_eq!(list.len(), 3);
+        assert_eq!(list.front_window(), Some(0x1000));
+        assert!(list.contains_window(0x2000));
+        assert!(!list.contains_window(0x9999));
+
+        list.bring_to_front(0x3000);
+        assert_eq!(list.windows(), vec![0x3000, 0x1000, 0x2000]);
+
+        list.send_behind(0x3000, 0x1000);
+        assert_eq!(list.windows(), vec![0x1000, 0x3000, 0x2000]);
+
+        list.reorder(0x2000, 0, false);
+        assert_eq!(list.windows(), vec![0x1000, 0x3000, 0x2000]);
+
+        list.reorder(0x3000, 0, true);
+        assert_eq!(list.windows(), vec![0x3000, 0x1000, 0x2000]);
+
+        assert!(list.remove_window(0x1000));
+        assert!(!list.remove_window(0x1000));
+        assert_eq!(list.windows(), vec![0x3000, 0x2000]);
+
+        list.clear();
+        assert!(list.is_empty());
     }
 
     #[test]

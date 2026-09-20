@@ -19900,7 +19900,7 @@ impl super::TrapDispatcher {
             return;
         };
         let mut ports = self.cport_ports.iter().copied().collect::<Vec<_>>();
-        ports.extend(self.window_list.iter().copied());
+        ports.extend(self.window_list.windows());
         ports.extend([*self.current_port, self.front_window]);
         ports.sort_unstable();
         ports.dedup();
@@ -19951,7 +19951,7 @@ impl super::TrapDispatcher {
         }
         let mut ctab_handles = vec![main_ctab_handle];
         let mut ports = self.cport_ports.iter().copied().collect::<Vec<_>>();
-        ports.extend(self.window_list.iter().copied());
+        ports.extend(self.window_list.windows());
         ports.extend([*self.current_port, self.front_window]);
         ports.sort_unstable();
         ports.dedup();

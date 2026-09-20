@@ -52907,7 +52907,7 @@ fn ppc_window_removal_exposure_uses_pattern_when_host_hides_menu_bar() {
     ppc_restore_window_removal_exposure(
         &mut loaded.memory,
         &loaded.gworlds,
-        &[],
+        &loaded.window_list,
         Some((0, 0, 2, 2)),
         true,
         &mut event_queue,
@@ -53628,7 +53628,7 @@ fn ppc_move_window_front_true_reorders_and_activates_window() {
         u32::MAX,
     );
     loaded.set_event_queue(std::iter::empty());
-    assert_eq!(loaded.window_list.first().copied(), Some(front));
+    assert_eq!(loaded.window_list.first(), Some(front));
 
     loaded.cpu.gpr[3] = back;
     loaded.cpu.gpr[4] = 100;
@@ -53636,7 +53636,7 @@ fn ppc_move_window_front_true_reorders_and_activates_window() {
     loaded.cpu.gpr[6] = 1;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::MoveWindow);
 
-    assert_eq!(loaded.window_list.first().copied(), Some(back));
+    assert_eq!(loaded.window_list.first(), Some(back));
     assert_eq!(
         ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list),
         Some(back)
@@ -53762,7 +53762,7 @@ fn ppc_zoom_front_promotion_preserves_promoted_window_pixels() {
         PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ZoomWindow),
     );
 
-    assert_eq!(loaded.window_list.first().copied(), Some(promoted));
+    assert_eq!(loaded.window_list.first(), Some(promoted));
     assert_eq!(
         ppc_quickdraw_read_pixel(&mut loaded.memory, front, promoted_edge),
         Some(black),

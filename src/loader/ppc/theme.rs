@@ -47,8 +47,8 @@ impl PpcLoadedApp {
         };
         let regions: Vec<_> = self
             .window_list
-            .iter()
-            .copied()
+            .windows()
+            .into_iter()
             .filter(|&window| ppc_window_is_visible(&mut self.memory, window))
             .collect();
         let regions: Vec<_> = regions
