@@ -5433,11 +5433,9 @@ impl TrapDispatcher {
         // Inside Macintosh Volume I, I-246. Ignore duplicate host callbacks
         // so they cannot enqueue extra keyDown records or restart autoKey.
         if key_code == Self::CAPS_LOCK_KEY_CODE {
-            if self.input_state.caps_lock_physically_pressed {
+            if !self.input_state.press_caps_lock() {
                 return;
             }
-            self.input_state
-                .with_mut(|state| state.caps_lock_physically_pressed = true);
             // Caps Lock latches on one physical press and releases on the
             // next. Inside Macintosh Volume I (1985), p. I-34.
             let latched = !self.key_is_down(key_code);
@@ -5500,8 +5498,7 @@ impl TrapDispatcher {
         char_code: u8,
     ) {
         if key_code == Self::CAPS_LOCK_KEY_CODE {
-            self.input_state
-                .with_mut(|state| state.caps_lock_physically_pressed = false);
+            self.input_state.release_caps_lock();
         } else {
             self.input_state
                 .with_mut(|state| set_key_map_key(&mut state.key_map, key_code, false));
