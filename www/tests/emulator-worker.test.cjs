@@ -12,6 +12,7 @@ function worker(steps = () => 1, frameTicks = 6) {
   let now = 0;
   let guestTick = 0;
   let running = true;
+  let uiTracking = false;
   const stub = {
     keyDown: key => keys.add(key),
     keyUp: key => keys.delete(key),
@@ -21,7 +22,7 @@ function worker(steps = () => 1, frameTicks = 6) {
       frames.push({ keys: [...keys], mouse });
       now += 90;
       guestTick = (guestTick + frameTicks) >>> 0;
-      return { lastSteps: steps(), guestTick, running };
+      return { lastSteps: steps(), guestTick, running, uiTracking };
     },
   };
   const context = vm.createContext({
@@ -37,6 +38,7 @@ function worker(steps = () => 1, frameTicks = 6) {
     advance: ms => { now += ms; },
     setTick: tick => { guestTick = tick; },
     halt: () => { running = false; },
+    trackUi: () => { uiTracking = true; },
     releasedAt: () => releasedAt,
   };
 }
@@ -145,4 +147,40 @@ test('minimum press survives guest tick wraparound', async () => {
   await w.send('keyUp', { macKey: 37 });
   for (let i = 0; i < 4; i++) await w.send('frame');
   assert.deepEqual(w.frames.slice(1).map(f => f.keys), [[37], [37], [37], []]);
+});
+
+
+test('a pending mouse release reaches menu tracking with frozen guest ticks', async () => {
+  const w = worker(() => 1, 0);
+  await w.send('mouseDown', { v: 10, h: 120 });
+  await w.send('mouseUp', { v: 50, h: 120 });
+  w.trackUi();
+  await w.send('frame');
+  await w.send('frame');
+  assert.deepEqual(w.frames.map(f => f.mouse), [true, false]);
+  assert.deepEqual(w.releasedAt(), [50, 120]);
+});
+
+test('release after entering tracking does not wait for another guest tick', async () => {
+  const w = worker(() => 1, 0);
+  await w.send('mouseDown', { v: 10, h: 120 });
+  w.trackUi();
+  await w.send('frame');
+  await w.send('mouseUp', { v: 50, h: 120 });
+  await w.send('frame');
+  assert.deepEqual(w.frames.map(f => f.mouse), [true, false]);
+});
+
+test('tracking still gives new input a guest slice before releasing it', async () => {
+  let steps = 0;
+  const w = worker(() => steps, 0);
+  w.trackUi();
+  await w.send('frame');
+  await w.send('keyDown', { macKey: 53 });
+  await w.send('keyUp', { macKey: 53 });
+  await w.send('frame');
+  steps = 1;
+  await w.send('frame');
+  await w.send('frame');
+  assert.deepEqual(w.frames.map(f => f.keys), [[], [53], [53], []]);
 });
