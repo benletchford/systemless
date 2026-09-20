@@ -11,7 +11,15 @@ default_architecture: 68k
 category: Strategy
 launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
+  verified:
+  - date: 2026-09-20
+    tester: Catalogue maintainer
+    systemless_version: 0.42.1
+    architecture: 68k
+    environment: Deterministic headless gameplay run from the original shareware archive
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2222
 artifacts:
 - id: archive
   role: archive
@@ -46,5 +54,6 @@ references:
 
 Warcraft II turns a few workers and an unexplored map into a race for resources,
 technology and position. The Macintosh demo supports 68040 and PowerPC systems;
-this entry keeps Blizzard's complete original archive unchanged. Systemless
-compatibility has not yet been verified.
+this entry keeps Blizzard's complete original archive unchanged. The 68k build
+reaches the live Hillsbrad campaign map and supports unit selection in
+Systemless; the PowerPC path remains to be verified.
