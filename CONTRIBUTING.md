@@ -50,7 +50,8 @@ contributed code.
   and its public interfaces.
 
 Catalogue entries live under `catalogue/`; large optional plugin collections
-live as chunkable YAML files under `plugins/`; browser code lives under `www/`.
+live as chunkable YAML files under `catalogue/plugins/`; browser code lives
+under `www/`.
 See `www/README.md` for catalogue validation, local browser development, and
 asset-promotion commands. Large pending assets belong under
 `catalogue/incoming/<entry-id>/` and must not be committed.

@@ -455,7 +455,7 @@ pub(crate) fn is_entry_file(path: &Path) -> Result<bool> {
         );
         return Ok(false);
     }
-    if matches!(name, "incoming" | ".promotion" | ".downloads") {
+    if matches!(name, "incoming" | "plugins" | ".promotion" | ".downloads") {
         let metadata = std::fs::symlink_metadata(path)?;
         ensure!(
             metadata.is_dir() && !metadata.file_type().is_symlink(),

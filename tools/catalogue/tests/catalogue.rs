@@ -100,9 +100,9 @@ fn plugin_collection(entry: &str) -> PluginCollection {
 }
 
 fn save_plugins(root: &Path, name: &str, collection: &PluginCollection) {
-    fs::create_dir_all(root.join("plugins")).unwrap();
+    fs::create_dir_all(root.join("catalogue/plugins")).unwrap();
     fs::write(
-        root.join(format!("plugins/{name}.yaml")),
+        root.join(format!("catalogue/plugins/{name}.yaml")),
         serde_saphyr::to_string(collection).unwrap(),
     )
     .unwrap();
@@ -1398,7 +1398,7 @@ fn plugin_collection_boundaries_are_strict() {
     save_plugins(root.path(), "test-01", &collection);
     assert!(load(root.path(), Mode::Production).is_err());
 
-    fs::remove_dir_all(root.path().join("plugins")).unwrap();
+    fs::remove_dir_all(root.path().join("catalogue/plugins")).unwrap();
     entry.plugins = plugin_collection("test").plugins;
     save(root.path(), &entry, "");
     assert!(load(root.path(), Mode::Production).is_err());

@@ -9,13 +9,14 @@ Markdown file contains YAML metadata followed by the page content. Native
 validation, page generation, asset promotion, and R2 maintenance live in the
 `systemless-catalogue-tools` package under `../tools/catalogue/`.
 
-Optional plugins are declared separately under [`../plugins/`](../plugins/).
-Each YAML file has `schema_version`, the target `entry`, its external supplement
-`artifacts`, and its `plugins`. Multiple files may target the same entry, so keep
-large collections in numbered chunks such as `example-01.yaml` and
-`example-02.yaml`. Plugin and artifact IDs remain unique within the resolved
-entry. Plugin artifacts currently stay with their original HTTPS provider; the
-catalogue asset-promotion pipeline does not copy them into managed storage.
+Optional plugins are declared separately under
+[`../catalogue/plugins/`](../catalogue/plugins/). Each YAML file has
+`schema_version`, the target `entry`, its external supplement `artifacts`, and
+its `plugins`. Multiple files may target the same entry, so keep large
+collections in numbered chunks such as `example-01.yaml` and `example-02.yaml`.
+Plugin and artifact IDs remain unique within the resolved entry. Plugin
+artifacts currently stay with their original HTTPS provider; the catalogue
+asset-promotion pipeline does not copy them into managed storage.
 
 ## Validate the catalogue
 

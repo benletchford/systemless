@@ -233,7 +233,7 @@ fn license_html(entry: &CompiledEntry) -> Result<String> {
         .community
         .source
         .rsplit_once("/catalogue/")
-        .map(|(prefix, _)| format!("{}/plugins", prefix.replace("/blob/", "/tree/")))
+        .map(|(prefix, _)| format!("{}/catalogue/plugins", prefix.replace("/blob/", "/tree/")))
         .filter(|_| !entry.plugins.is_empty())
         .unwrap_or_else(|| entry.community.source.clone());
     write!(html, "<p>Screenshots, plugins and other files may have different terms. See their individual catalogue records in the <a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\">repository source</a>.</p></section>", escape(&records))?;
