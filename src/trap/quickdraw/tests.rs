@@ -7001,6 +7001,7 @@
             geometry.2,
             [(true, Some(&cache)), (false, None), (false, None)],
             &table,
+            None,
         );
         assert!(copied);
         for y in 0..16i16 {
@@ -7037,6 +7038,7 @@
             geometry.2,
             [(true, Some(&short)), (false, None), (false, None)],
             &table,
+            None,
         ));
         assert!(!TrapDispatcher::copy_bits_src_copy_rows_8bpp(
             &mut bus,
@@ -7047,6 +7049,7 @@
             geometry.2,
             [(false, None), (true, None), (false, None)],
             &table,
+            None,
         ));
         assert!(!TrapDispatcher::copy_bits_src_copy_rows_8bpp(
             &mut bus,
@@ -7057,9 +7060,153 @@
             (-1, 2, 15, 14),
             [(false, None), (false, None), (false, None)],
             &table,
+            None,
         ));
         for i in 0..256u32 {
             assert_eq!(bus.read_byte(dst_base + i), 0xEE, "offset {i}");
+        }
+    }
+
+    #[test]
+    fn snapshot_row_copy_matches_pixel_copy_with_overlap_palette_and_outline_detail() {
+        // Inside Macintosh I-199 requires the same visRgn/clipRgn result
+        // through StdBits. Compare the row helper against the former pixel
+        // operation using a saved source, including an overlapping target.
+        let run = |rows: bool, overlap: bool, translated: bool, first_row: u32, shifted: bool| {
+            let (_d, _cpu, mut bus) = setup_with_port();
+            let stride = if shifted { 20 } else { 16 };
+            let (bounds_top, bounds_left, src_left, dst_left, width) = if shifted {
+                (-5, 7, 10, 2, 12)
+            } else {
+                (0, 0, 0, 0, 16)
+            };
+            let src_bytes = stride * 16;
+            let src_base = bus.alloc(src_bytes + 256);
+            let dst_base = if overlap {
+                src_base + stride
+            } else {
+                bus.alloc(256)
+            };
+            let palette = std::array::from_fn(|i| [255 - i as u8; 3]);
+            bus.enable_outline_presentation((dst_base, 16, 16, 16, 8), palette, 4);
+            bus.fill_bytes(dst_base, 256, 0xEE);
+            bus.fill_bytes(src_base, src_bytes, 0);
+            TrapDispatcher::fb_draw_string(&mut bus, src_base, stride, 8, 16, 16, 3, 10, "a", 3, 9);
+            let source = bus.save_pixel_bytes(
+                src_base + first_row * stride,
+                ((16 - first_row) * stride) as usize,
+            );
+            let bytes_only: crate::memory::SavedPixels = source.to_vec().into();
+            assert!(
+                source != bytes_only,
+                "the oracle must exercise saved outline detail"
+            );
+            // Neither path may reread live source bytes or their detail.
+            // This also makes the overlap test catch a row-at-a-time copy
+            // that accidentally reads a destination written on a prior row.
+            bus.fill_bytes(src_base, src_bytes, 42);
+            let vis = make_row_path_test_rgn(&mut bus);
+            let cache = TrapDispatcher::build_region_membership_cache(&bus, vis, 0, 16).unwrap();
+            let table = std::array::from_fn(|i| if translated { 255 - i as u8 } else { i as u8 });
+            let src_info = CopyBitmapInfo {
+                base: src_base,
+                row_bytes: stride,
+                bounds_top,
+                bounds_left,
+                bounds_bottom: bounds_top + 16,
+                bounds_right: bounds_left + 16,
+                pixel_size: 8,
+                ctab_handle: 0,
+            };
+            let dst_info = CopyBitmapInfo {
+                base: dst_base,
+                row_bytes: 16,
+                bounds_top: 0,
+                bounds_left: 0,
+                bounds_bottom: 16,
+                bounds_right: 16,
+                pixel_size: 8,
+                ctab_handle: 0,
+            };
+            if rows {
+                assert!(TrapDispatcher::copy_bits_src_copy_rows_8bpp(
+                    &mut bus,
+                    &src_info,
+                    &dst_info,
+                    (bounds_top + first_row as i16, src_left),
+                    (0, dst_left, width, 16 - first_row as i32),
+                    (0, 0, 16, 16),
+                    [(true, Some(&cache)), (false, None), (false, None)],
+                    &table,
+                    Some((first_row, &source)),
+                ));
+            } else {
+                for y in 0..(16 - first_row) as i16 {
+                    for x in dst_left..dst_left + width as i16 {
+                        if TrapDispatcher::region_contains_point(&bus, vis, y, x) {
+                            let src_x = src_left + x - dst_left;
+                            let offset =
+                                y as usize * stride as usize + (src_x - bounds_left) as usize;
+                            bus.copy_saved_pixel(
+                                dst_base + y as u32 * 16 + x as u32,
+                                &source,
+                                offset,
+                                |index| table[index as usize],
+                            );
+                        }
+                    }
+                }
+            }
+            (
+                bus.read_bytes(src_base, (src_bytes + 256) as usize),
+                bus.read_bytes(dst_base, 256),
+                bus.outline_presentation_rgb().unwrap().2,
+            )
+        };
+        for overlap in [false, true] {
+            for translated in [false, true] {
+                for first_row in [0, 3] {
+                    for shifted in [false, true] {
+                        assert_eq!(
+                            run(true, overlap, translated, first_row, shifted),
+                            run(false, overlap, translated, first_row, shifted),
+                            "overlap={overlap} translated={translated} first_row={first_row} shifted={shifted}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_row_copy_declines_incomplete_source_before_any_write() {
+        let (_d, _cpu, mut bus) = setup_with_port();
+        let (src_base, dst_base) = alloc_row_path_test_bitmaps(&mut bus);
+        let info = |base| CopyBitmapInfo {
+            base,
+            row_bytes: 16,
+            bounds_top: 0,
+            bounds_left: 0,
+            bounds_bottom: 16,
+            bounds_right: 16,
+            pixel_size: 8,
+            ctab_handle: 0,
+        };
+        let table = std::array::from_fn(|i| i as u8);
+        for first_row in [0, 1] {
+            let source = bus.save_pixel_bytes(src_base + first_row * 16, 8 * 16);
+            assert!(!TrapDispatcher::copy_bits_src_copy_rows_8bpp(
+                &mut bus,
+                &info(src_base),
+                &info(dst_base),
+                (0, 0),
+                (0, 0, 16, 16),
+                (0, 0, 16, 16),
+                [(false, None); 3],
+                &table,
+                Some((first_row, &source)),
+            ));
+            assert_eq!(bus.read_bytes(dst_base, 256), vec![0xEE; 256]);
         }
     }
 
@@ -7068,38 +7215,49 @@
         // Inside Macintosh Volume I (1985), p. I-199: StdBits clips to the
         // current port's visRgn and clipRgn. A 16x16 srcCopy takes the
         // whole-row path; every pixel must agree with region membership.
-        let (mut d, mut cpu, mut bus) = setup_with_port();
-        let port = 0x181000u32;
-        let (src_base, dst_base) = alloc_row_path_test_bitmaps(&mut bus);
-        let vis = make_row_path_test_rgn(&mut bus);
-        let clip = rect_rgn_handle(&mut bus);
-        install_row_path_test_port(&mut d, &mut cpu, &mut bus, port, dst_base, vis, clip);
-        let src_pixmap = bus.alloc(50);
-        write_pixmap_8(&mut bus, src_pixmap, src_base, 16, 16, 0);
-        let src_rect = bus.alloc(8);
-        let dst_rect = bus.alloc(8);
-        write_rect(&mut bus, src_rect, 0, 0, 16, 16);
-        write_rect(&mut bus, dst_rect, 0, 0, 16, 16);
-        bus.write_long(TEST_SP, 0); // maskRgn
-        bus.write_word(TEST_SP + 4, 0); // srcCopy
-        bus.write_long(TEST_SP + 6, dst_rect);
-        bus.write_long(TEST_SP + 10, src_rect);
-        bus.write_long(TEST_SP + 14, src_pixmap);
+        for outline in [false, true] {
+            for same_base in [false, true] {
+                let (mut d, mut cpu, mut bus) = setup_with_port();
+                let port = 0x181000u32;
+                let (src_base, dst_base) = alloc_row_path_test_bitmaps(&mut bus);
+                let dst_base = if same_base { src_base } else { dst_base };
+                if outline {
+                    let palette = std::array::from_fn(|i| [i as u8; 3]);
+                    bus.enable_outline_presentation((dst_base, 16, 16, 16, 8), palette, 4);
+                }
+                let vis = make_row_path_test_rgn(&mut bus);
+                let clip = rect_rgn_handle(&mut bus);
+                install_row_path_test_port(&mut d, &mut cpu, &mut bus, port, dst_base, vis, clip);
+                let src_pixmap = bus.alloc(50);
+                write_pixmap_8(&mut bus, src_pixmap, src_base, 16, 16, 0);
+                let src_rect = bus.alloc(8);
+                let dst_rect = bus.alloc(8);
+                write_rect(&mut bus, src_rect, 0, 0, 16, 16);
+                write_rect(&mut bus, dst_rect, 0, 0, 16, 16);
+                bus.write_long(TEST_SP, 0); // maskRgn
+                bus.write_word(TEST_SP + 4, 0); // srcCopy
+                bus.write_long(TEST_SP + 6, dst_rect);
+                bus.write_long(TEST_SP + 10, src_rect);
+                bus.write_long(TEST_SP + 14, src_pixmap);
 
-        let result = d.dispatch_quickdraw(true, 0x0EB, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok());
-        for y in 0..16i16 {
-            for x in 0..16i16 {
-                let expected = if TrapDispatcher::region_contains_point(&bus, vis, y, x) {
-                    (y * 16 + x) as u8
-                } else {
-                    0xEE
-                };
-                assert_eq!(
-                    bus.read_byte(dst_base + (y as u32) * 16 + x as u32),
-                    expected,
-                    "({x}, {y})"
-                );
+                let result = d.dispatch_quickdraw(true, 0x0EB, &mut cpu, &mut bus);
+                assert!(result.unwrap().is_ok());
+                for y in 0..16i16 {
+                    for x in 0..16i16 {
+                        let expected = if TrapDispatcher::region_contains_point(&bus, vis, y, x) {
+                            (y * 16 + x) as u8
+                        } else if same_base {
+                            (y * 16 + x) as u8
+                        } else {
+                            0xEE
+                        };
+                        assert_eq!(
+                            bus.read_byte(dst_base + (y as u32) * 16 + x as u32),
+                            expected,
+                            "({x}, {y}) outline={outline} same_base={same_base}"
+                        );
+                    }
+                }
             }
         }
     }
@@ -7108,40 +7266,52 @@
     fn copy_bits_row_path_matches_region_membership_for_complex_clip_region() {
         // The same transfer through _CopyBits itself, clipped by a complex
         // clipRgn instead of the visRgn.
-        let (mut d, mut cpu, mut bus) = setup_with_port();
-        let port = 0x181000u32;
-        let (src_base, dst_base) = alloc_row_path_test_bitmaps(&mut bus);
-        let vis = rect_rgn_handle(&mut bus);
-        let clip = make_row_path_test_rgn(&mut bus);
-        let dst_pixmap =
-            install_row_path_test_port(&mut d, &mut cpu, &mut bus, port, dst_base, vis, clip);
-        let src_pixmap = bus.alloc(50);
-        write_pixmap_8(&mut bus, src_pixmap, src_base, 16, 16, 0);
-        let src_rect = bus.alloc(8);
-        let dst_rect = bus.alloc(8);
-        write_rect(&mut bus, src_rect, 0, 0, 16, 16);
-        write_rect(&mut bus, dst_rect, 0, 0, 16, 16);
-        bus.write_long(TEST_SP, 0); // maskRgn
-        bus.write_word(TEST_SP + 4, 0); // srcCopy
-        bus.write_long(TEST_SP + 6, dst_rect);
-        bus.write_long(TEST_SP + 10, src_rect);
-        bus.write_long(TEST_SP + 14, dst_pixmap);
-        bus.write_long(TEST_SP + 18, src_pixmap);
-
-        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok());
-        for y in 0..16i16 {
-            for x in 0..16i16 {
-                let expected = if TrapDispatcher::region_contains_point(&bus, clip, y, x) {
-                    (y * 16 + x) as u8
-                } else {
-                    0xEE
-                };
-                assert_eq!(
-                    bus.read_byte(dst_base + (y as u32) * 16 + x as u32),
-                    expected,
-                    "({x}, {y})"
+        for outline in [false, true] {
+            for same_base in [false, true] {
+                let (mut d, mut cpu, mut bus) = setup_with_port();
+                let port = 0x181000u32;
+                let (src_base, dst_base) = alloc_row_path_test_bitmaps(&mut bus);
+                let dst_base = if same_base { src_base } else { dst_base };
+                if outline {
+                    let palette = std::array::from_fn(|i| [i as u8; 3]);
+                    bus.enable_outline_presentation((dst_base, 16, 16, 16, 8), palette, 4);
+                }
+                let vis = rect_rgn_handle(&mut bus);
+                let clip = make_row_path_test_rgn(&mut bus);
+                let dst_pixmap = install_row_path_test_port(
+                    &mut d, &mut cpu, &mut bus, port, dst_base, vis, clip,
                 );
+                let src_pixmap = bus.alloc(50);
+                write_pixmap_8(&mut bus, src_pixmap, src_base, 16, 16, 0);
+                let src_rect = bus.alloc(8);
+                let dst_rect = bus.alloc(8);
+                write_rect(&mut bus, src_rect, 0, 0, 16, 16);
+                write_rect(&mut bus, dst_rect, 0, 0, 16, 16);
+                bus.write_long(TEST_SP, 0); // maskRgn
+                bus.write_word(TEST_SP + 4, 0); // srcCopy
+                bus.write_long(TEST_SP + 6, dst_rect);
+                bus.write_long(TEST_SP + 10, src_rect);
+                bus.write_long(TEST_SP + 14, dst_pixmap);
+                bus.write_long(TEST_SP + 18, src_pixmap);
+
+                let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+                assert!(result.unwrap().is_ok());
+                for y in 0..16i16 {
+                    for x in 0..16i16 {
+                        let expected = if TrapDispatcher::region_contains_point(&bus, clip, y, x) {
+                            (y * 16 + x) as u8
+                        } else if same_base {
+                            (y * 16 + x) as u8
+                        } else {
+                            0xEE
+                        };
+                        assert_eq!(
+                            bus.read_byte(dst_base + (y as u32) * 16 + x as u32),
+                            expected,
+                            "({x}, {y}) outline={outline} same_base={same_base}"
+                        );
+                    }
+                }
             }
         }
     }
