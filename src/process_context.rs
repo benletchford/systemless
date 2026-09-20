@@ -1808,8 +1808,8 @@ impl ProcessInputState {
 /// Inside Macintosh Volume I (1985), pp. I-167--I-168.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessCursorState {
-    pub(crate) image: Option<CursorImage>,
-    pub(crate) level: i16,
+    image: Option<CursorImage>,
+    level: i16,
 }
 
 impl Default for ProcessCursorState {
@@ -1850,6 +1850,31 @@ impl ProcessCursorState {
 }
 
 impl SharedProcessValue<ProcessCursorState> {
+    pub(crate) fn visible_image(&self) -> Option<&CursorImage> {
+        let state = &**self;
+        if state.visible() {
+            state.image.as_ref()
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn visible(&self) -> bool {
+        self.with_ref(ProcessCursorState::visible)
+    }
+
+    pub(crate) fn level(&self) -> i16 {
+        self.with_ref(|state| state.level)
+    }
+
+    pub(crate) fn has_image(&self) -> bool {
+        self.with_ref(|state| state.image.is_some())
+    }
+
+    pub(crate) fn mono_parts(&self) -> Option<([u8; 32], [u8; 32], i16, i16)> {
+        self.with_ref(|state| state.image.as_ref().map(CursorImage::mono_parts))
+    }
+
     pub(crate) fn init(&self) {
         self.with_mut(ProcessCursorState::init);
     }
@@ -11048,14 +11073,19 @@ mod tests {
         classic.install(CursorImage::mono(data, mask, 3, 4));
 
         assert!(classic.ptr_eq(&native));
-        assert_eq!(classic.level, -1);
+        assert_eq!(classic.level(), -1);
+        assert!(!classic.visible());
+        assert!(classic.visible_image().is_none());
+        assert!(classic.has_image());
         assert_eq!(
-            native.image.as_ref().unwrap().mono_parts(),
+            native.mono_parts().unwrap(),
             (data, mask, 3, 4)
         );
-        assert_eq!(detached.level, 0);
+        assert_eq!(detached.level(), 0);
+        assert!(detached.visible());
+        assert!(detached.visible_image().is_some());
         assert_eq!(
-            detached.image.as_ref().unwrap().mono_parts(),
+            detached.mono_parts().unwrap(),
             crate::display::default_arrow_cursor()
         );
     }
