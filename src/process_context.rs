@@ -1430,7 +1430,8 @@ pub(crate) type SharedProcessDisplayGamma = SharedProcessValue<ProcessDisplayGam
 /// Process-wide 256-entry display color table shared by attached CPU adapters.
 pub(crate) type SharedProcessDisplayClut = SharedProcessValue<[[u16; 3]; 256]>;
 pub(crate) type SharedProcessSoundManager = SharedProcessValue<SoundManager>;
-pub(crate) type SharedProcessCursorState = SharedProcessValue<ProcessCursorState>;
+#[derive(Clone, Default, Eq, PartialEq)]
+pub(crate) struct SharedProcessCursorState(SharedProcessValue<ProcessCursorState>);
 /// Host pacing snapshot for the wrapping Macintosh clock.
 ///
 /// Guest-visible time lives in the low-memory `Ticks` bytes. This process
@@ -1890,9 +1891,27 @@ impl ProcessCursorState {
     }
 }
 
-impl SharedProcessValue<ProcessCursorState> {
+impl SharedProcessCursorState {
+    fn with_ref<R>(&self, operation: impl FnOnce(&ProcessCursorState) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    fn with_mut<R>(&self, operation: impl FnOnce(&mut ProcessCursorState) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    fn attach_to(&mut self, process_state: &Self) {
+        self.0
+            .attach_to(&process_state.0, ProcessCursorState::is_pristine);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
     pub(crate) fn visible_image(&self) -> Option<&CursorImage> {
-        let state = &**self;
+        let state = &*self.0;
         if state.visible() {
             state.image.as_ref()
         } else {
@@ -1940,6 +1959,16 @@ impl SharedProcessValue<ProcessCursorState> {
     #[cfg(test)]
     pub(crate) fn clear_image_for_test(&self) {
         self.with_mut(|state| state.image = None);
+    }
+}
+
+impl std::fmt::Debug for SharedProcessCursorState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let snapshot = self.with_ref(Clone::clone);
+        formatter
+            .debug_tuple("SharedProcessCursorState")
+            .field(&snapshot)
+            .finish()
     }
 }
 
@@ -8098,7 +8127,7 @@ impl ProcessContext {
     }
 
     pub(crate) fn attach_cursor_state(&self, adapter: &mut SharedProcessCursorState) {
-        adapter.attach_to(&self.cursor_state, ProcessCursorState::is_pristine);
+        adapter.attach_to(&self.cursor_state);
     }
 
     /// Attach Color QuickDraw's per-port `GrafVars.rgbOpColor` index. The
