@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.42.3](https://github.com/benletchford/systemless/compare/v0.42.2...v0.42.3) (2026-09-20)
+
+
+### Bug Fixes
+
+* **files:** implement FSpExchangeFiles ([#2249](https://github.com/benletchford/systemless/issues/2249)) ([6a34ea3](https://github.com/benletchford/systemless/commit/6a34ea3cd8b993891f1267ddee32344b89ce9a87))
+* honor guest cursor warps through the cursor task ([e92e18a](https://github.com/benletchford/systemless/commit/e92e18a478e129c60db45a5da23e9efacffa453b))
+
+
+### Performance Improvements
+
+* keep browser gameplay workers busy across missed refreshes ([5d5d072](https://github.com/benletchford/systemless/commit/5d5d0729f9a2bcf9b2d453388986e35a345b8a03))
+* reduce PowerPC framebuffer and resource synchronization overhead ([3a7f239](https://github.com/benletchford/systemless/commit/3a7f239d381a8907c82c7bfd856c3ba3176844b4))
+
+
+### Code Refactoring
+
+* **process:** seal Control Manager handle ([12a1573](https://github.com/benletchford/systemless/commit/12a157347d05f591280418a992b6e9b13ed4cafe))
+* **process:** seal List Manager handle ([8eedf96](https://github.com/benletchford/systemless/commit/8eedf962b19699e96e62621e924a22da1b014aa4))
+* **process:** seal QuickDraw cursor state handle ([cb26e4f](https://github.com/benletchford/systemless/commit/cb26e4f0d587c6f7699dc028511006d5c7e4867b))
+* **process:** seal Window List handle ([031bd10](https://github.com/benletchford/systemless/commit/031bd10aab7c20aca975c021e19de18bef0978c1))
+
 ## [0.42.2](https://github.com/benletchford/systemless/compare/v0.42.1...v0.42.2) (2026-09-20)
 
 
