@@ -29,11 +29,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/Adventure%20Island.sit
-    download_page: https://www.vintageapplemac.com/software/games/a/
-    expected_sha256: bd20a3ce8bbd285ac9e3f84c620380a7fe027dd17aa04a0e88f45f71241ad635
-    expected_size: 131259
+    type: sha256
+    sha256: bd20a3ce8bbd285ac9e3f84c620380a7fe027dd17aa04a0e88f45f71241ad635
+    size_bytes: 131259
   provenance:
     redistribution: permitted
     original: true
