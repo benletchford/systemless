@@ -3,6 +3,7 @@
 //! Provides Big-Endian memory access and Mac low-memory globals.
 
 mod address_space;
+mod page_index;
 pub mod bus;
 pub mod globals;
 

@@ -5,6 +5,7 @@
 //! read-only regions, and instruction-cache behavior required by native PEF
 //! applications.
 
+use super::page_index::PageIndex;
 use crate::guest_procedure::GuestIsa;
 use m68k::core::memory::{BusFault, BusFaultKind};
 use m68k::AddressBus;
@@ -88,6 +89,7 @@ pub(crate) enum GuestMemoryRoute {
     Mixed,
 }
 
+
 /// A sparse guest address space that can be executed by either CPU backend.
 ///
 /// The region implementation remains private so loaders and runtime services
@@ -102,6 +104,12 @@ struct GuestAddressSpaceState {
     /// Derived envelope of nonempty shared mappings; extended on every insert
     /// and copied with detached snapshots. It only rejects impossible hits.
     shared_bounds: std::ops::Range<u64>,
+    /// Per-page filter over `shared_regions`, maintained alongside the
+    /// envelope above. The envelope alone cannot reject an address that falls
+    /// between two distant mappings, which is exactly the case on the CPU hot
+    /// path: guest code executes from sparse PEF sections that sit inside the
+    /// envelope spanned by the runner's RAM aliases.
+    shared_pages: PageIndex,
     readonly_allocation_exclusions: Vec<(u32, u32)>,
     /// Last ledger answer, for an instruction fetch and for a data access.
     /// Two slots because code and data addresses interleave. Appending a
@@ -122,6 +130,7 @@ impl GuestAddressSpaceState {
                 self.shared_bounds.start = self.shared_bounds.start.min(start);
                 self.shared_bounds.end = self.shared_bounds.end.max(end);
             }
+            self.shared_pages.mark(start, end);
         }
         // A new mapping can shadow a cached span or fall inside a cached gap.
         self.instruction_lookup = None;
@@ -131,7 +140,9 @@ impl GuestAddressSpaceState {
 
     #[inline]
     fn may_overlap_shared(&self, start: u64, end: u64) -> bool {
-        start < self.shared_bounds.end && self.shared_bounds.start < end
+        start < self.shared_bounds.end
+            && self.shared_bounds.start < end
+            && self.shared_pages.may_overlap(start, end)
     }
 
     #[inline]
@@ -967,6 +978,7 @@ impl Clone for GuestAddressSpace {
             presentation: Default::default(),
             ordinary_regions: state.ordinary_regions.clone(),
             shared_bounds: state.shared_bounds.clone(),
+            shared_pages: state.shared_pages.clone(),
             shared_regions: state
                 .shared_regions
                 .iter()
@@ -1881,6 +1893,7 @@ mod tests {
     use crate::memory::{MacMemoryBus, MemoryBus};
     use m68k::{AddressBus, BatchExit, CpuCore, StepResult};
     use ppc::{PpcCpu, PpcMemory, PpcRunResult};
+
 
     const M68K_TRACE_HEAD: u32 = 0x1000;
     const M68K_TRACE_WORDS: [u16; 5] = [0x5280, 0x5281, 0x5347, 0x66f8, 0xa000];
