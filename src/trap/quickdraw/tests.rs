@@ -14799,6 +14799,31 @@
     }
 
     #[test]
+    fn dialog_user_item_snapshot_refreshes_when_hidden_dialog_becomes_visible() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let dialog = *d.current_port;
+        let vis_handle = bus.alloc(4);
+        let vis_ptr = bus.alloc(10);
+        bus.write_long(vis_handle, vis_ptr);
+        bus.write_long(dialog + 24, vis_handle);
+
+        bus.write_word(vis_ptr, 10);
+        write_rect(&mut bus, vis_ptr + 2, 0, 0, 0, 0);
+        let hidden = d.prepare_dialog_user_item_port_state(&mut bus, &mut cpu, dialog);
+        assert_eq!(hidden.vis_region.as_ref().unwrap().bytes[2..10], [0; 8]);
+
+        write_rect(&mut bus, vis_ptr + 2, 0, 0, 100, 160);
+        let visible = d.prepare_dialog_user_item_port_state(&mut bus, &mut cpu, dialog);
+
+        assert_eq!(read_rect(&bus, vis_ptr + 2), (0, 0, 100, 160));
+        assert_ne!(
+            visible.vis_region.as_ref().unwrap().bytes,
+            hidden.vis_region.as_ref().unwrap().bytes,
+            "a visible callback must not reuse the hidden callback's empty visRgn"
+        );
+    }
+
+    #[test]
     fn unrelated_cgrafport_state_sync_preserves_resolved_color_pixels() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let port = 0x181000u32;

@@ -19546,16 +19546,15 @@ impl super::TrapDispatcher {
         dialog_ptr: u32,
     ) -> super::dispatch::PortStateSnapshot {
         self.set_current_port_state(bus, cpu, dialog_ptr, None);
-        let snapshot = self
-            .dialog_user_item_port_states
-            .get(&dialog_ptr)
-            .cloned()
-            .unwrap_or_else(|| {
-                let snapshot = self.capture_current_port_state(bus);
-                self.dialog_user_item_port_states
-                    .insert(dialog_ptr, snapshot.clone());
-                snapshot
-            });
+        // Capture the live port state for every callback. In particular,
+        // visRgn changes when a dialog moves from hidden to visible. Reusing
+        // the first callback's snapshot would restore an empty hidden-window
+        // region and clip every later userItem draw. Each callback's matching
+        // restore keeps its drawing-state changes isolated without carrying
+        // stale Window Manager regions across callbacks.
+        // Inside Macintosh Volume I, I-405; Macintosh Toolbox Essentials,
+        // pp. 6-141 to 6-143.
+        let snapshot = self.capture_current_port_state(bus);
         self.restore_current_port_state(bus, cpu, &snapshot);
         snapshot
     }
