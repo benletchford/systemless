@@ -1429,6 +1429,43 @@ mod tests {
     }
 
     #[test]
+    fn catchup_frames_keep_only_the_latest_rendering_backend() {
+        let mut state = super::WorkerFrameState {
+            output_scale: 1,
+            frame: None,
+            gpu_frame: None,
+            running: true,
+            requests: super::WorkerFrameRequests::default(),
+        };
+        super::replace_worker_visual_frame(
+            &mut state,
+            super::WorkerVisualFrame::Software(1, 1, vec![0; 4]),
+        );
+        super::replace_worker_visual_frame(
+            &mut state,
+            super::WorkerVisualFrame::Gpu(wasm_bindgen::JsValue::NULL),
+        );
+        assert!(matches!(
+            super::take_worker_visual_frame(&mut state),
+            Some(super::WorkerVisualFrame::Gpu(_))
+        ));
+        assert!(super::take_worker_visual_frame(&mut state).is_none());
+        super::replace_worker_visual_frame(
+            &mut state,
+            super::WorkerVisualFrame::Gpu(wasm_bindgen::JsValue::NULL),
+        );
+        super::replace_worker_visual_frame(
+            &mut state,
+            super::WorkerVisualFrame::Software(1, 1, vec![255; 4]),
+        );
+        assert!(matches!(
+            super::take_worker_visual_frame(&mut state),
+            Some(super::WorkerVisualFrame::Software(_, _, _))
+        ));
+        assert!(super::take_worker_visual_frame(&mut state).is_none());
+    }
+
+    #[test]
     fn worker_visual_frame_uses_software_frame_without_a_second_borrow() {
         let mut state = super::WorkerFrameState {
             output_scale: 1,
@@ -1842,6 +1879,21 @@ enum WorkerVisualFrame {
     Software(u32, u32, Vec<u8>),
 }
 
+fn replace_worker_visual_frame(state: &mut WorkerFrameState, frame: WorkerVisualFrame) {
+    // Catch-up completions can arrive before the next paint. Keep only the
+    // newest result, including when debug mode changes the rendering backend.
+    match frame {
+        WorkerVisualFrame::Gpu(frame) => {
+            state.frame = None;
+            state.gpu_frame = Some(frame);
+        }
+        WorkerVisualFrame::Software(width, height, pixels) => {
+            state.gpu_frame = None;
+            state.frame = Some((width, height, pixels));
+        }
+    }
+}
+
 fn take_worker_visual_frame(state: &mut WorkerFrameState) -> Option<WorkerVisualFrame> {
     if let Some(frame) = state.gpu_frame.take() {
         Some(WorkerVisualFrame::Gpu(frame))
@@ -1976,12 +2028,15 @@ async fn boot_catalogue_worker(
                 let width = js_number_property(&data, "width").unwrap_or(1.0) as u32;
                 let height = js_number_property(&data, "height").unwrap_or(1.0) as u32;
                 state.output_scale = js_number_property(&data, "outputScale").unwrap_or(1.0) as u32;
-                state.frame = Some((width, height, Uint8Array::new(&frame).to_vec()));
+                replace_worker_visual_frame(
+                    &mut state,
+                    WorkerVisualFrame::Software(width, height, Uint8Array::new(&frame).to_vec()),
+                );
             }
         }
         if let Ok(frame) = Reflect::get(&data, &JsValue::from_str("gpuFrame")) {
             if !frame.is_undefined() {
-                state.gpu_frame = Some(frame);
+                replace_worker_visual_frame(&mut state, WorkerVisualFrame::Gpu(frame));
             }
         }
         let running = state.running;
