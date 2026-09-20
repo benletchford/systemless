@@ -1540,7 +1540,8 @@ pub(crate) type SharedProcessVblTasks = SharedProcessValue<Vec<ProcessVblTask>>;
 pub(crate) type SharedProcessCallbackScheduling = SharedProcessValue<ProcessCallbackScheduling>;
 #[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessMixedModeM68kState(SharedProcessValue<ProcessMixedModeM68kState>);
-pub(crate) type SharedProcessScrapState = SharedProcessValue<ProcessScrapState>;
+#[derive(Clone, Default, Eq, PartialEq)]
+pub(crate) struct SharedProcessScrapState(SharedProcessValue<ProcessScrapState>);
 pub(crate) type SharedProcessControlManager = SharedProcessValue<ProcessControlManagerState>;
 pub(crate) type SharedProcessListManager = SharedProcessValue<ProcessListManagerState>;
 pub(crate) type SharedProcessTextEditManager = SharedProcessValue<ProcessTextEditManagerState>;
@@ -2672,6 +2673,24 @@ impl SharedProcessDisplayClut {
 }
 
 impl SharedProcessScrapState {
+    fn with_ref<R>(&self, operation: impl FnOnce(&ProcessScrapState) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    fn with_mut<R>(&self, operation: impl FnOnce(&mut ProcessScrapState) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    fn attach_to(&mut self, process_state: &Self) {
+        self.0
+            .attach_to(&process_state.0, ProcessScrapState::is_pristine);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
     /// Return a copied manager summary without exposing process-owned state.
     pub(crate) fn summary(&self) -> ProcessScrapSummary {
         self.with_ref(ProcessScrapState::summary)
@@ -2732,6 +2751,16 @@ impl SharedProcessScrapState {
     #[cfg(test)]
     pub(crate) fn replace_entries(&self, entries: Vec<([u8; 4], Vec<u8>)>) {
         self.with_mut(|scrap| scrap.replace_entries(entries));
+    }
+}
+
+impl std::fmt::Debug for SharedProcessScrapState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let snapshot = self.with_ref(Clone::clone);
+        formatter
+            .debug_tuple("SharedProcessScrapState")
+            .field(&snapshot)
+            .finish()
     }
 }
 
@@ -7994,7 +8023,7 @@ impl ProcessContext {
     }
 
     pub(crate) fn attach_scrap_state(&self, adapter: &mut SharedProcessScrapState) {
-        adapter.attach_to(&self.scrap_state, ProcessScrapState::is_pristine);
+        adapter.attach_to(&self.scrap_state);
     }
 
     pub(crate) fn attach_control_manager(&self, adapter: &mut SharedProcessControlManager) {
@@ -11352,5 +11381,26 @@ mod tests {
         assert_eq!(picture.serialized_offset, 20);
         assert_eq!(picture.payload_offset, 3);
         assert!(scrap.flavor(*b"snd ").is_none());
+    }
+
+    #[test]
+    fn attached_scrap_states_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessScrapState::default();
+        let mut native = SharedProcessScrapState::default();
+        context.attach_scrap_state(&mut classic);
+        classic.zero();
+        classic.append_entry(*b"TEXT", b"shared".to_vec());
+        context.attach_scrap_state(&mut native);
+        let detached = native.clone();
+
+        assert!(classic.ptr_eq(&native));
+        assert_eq!(native.flavor(*b"TEXT").unwrap().data, b"shared");
+
+        detached.zero();
+        detached.append_entry(*b"TEXT", b"detached".to_vec());
+        assert!(!native.ptr_eq(&detached));
+        assert_eq!(classic.flavor(*b"TEXT").unwrap().data, b"shared");
+        assert_eq!(detached.flavor(*b"TEXT").unwrap().data, b"detached");
     }
 }
