@@ -5552,11 +5552,7 @@ impl TrapDispatcher {
 
     /// Get the current cursor data for rendering overlay.
     pub fn cursor(&self) -> Option<&CursorImage> {
-        if self.cursor_state.visible() {
-            self.cursor_state.image.as_ref()
-        } else {
-            None
-        }
+        self.cursor_state.visible_image()
     }
 
     /// Show the cursor (called by GUI on mouse move to undo ObscureCursor).
@@ -5573,12 +5569,12 @@ impl TrapDispatcher {
 
     /// Current cursor hide/show nesting level.
     pub fn cursor_level(&self) -> i16 {
-        self.cursor_state.level
+        self.cursor_state.level()
     }
 
     /// Whether a cursor image is installed, independent of visibility.
     pub fn cursor_data_present(&self) -> bool {
-        self.cursor_state.image.is_some()
+        self.cursor_state.has_image()
     }
 
     /// Explicit screen-space transform for frontends that need to map host
@@ -5622,10 +5618,7 @@ impl TrapDispatcher {
     /// `TrapDispatcher::new()` seeds the default arrow). Used by
     /// tests to observe SetCursor's bitmap-storage effect.
     pub fn cursor_data(&self) -> Option<([u8; 32], [u8; 32], i16, i16)> {
-        self.cursor_state
-            .image
-            .as_ref()
-            .map(CursorImage::mono_parts)
+        self.cursor_state.mono_parts()
     }
 
     /// Get the current mouse position.

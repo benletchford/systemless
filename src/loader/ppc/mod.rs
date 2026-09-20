@@ -4426,11 +4426,11 @@ impl PpcLoadedApp {
     }
 
     pub fn cursor_level(&self) -> i16 {
-        self.cursor_state.level
+        self.cursor_state.level()
     }
 
     pub fn cursor_data(&self) -> Option<([u8; 32], [u8; 32], i16, i16)> {
-        Some(self.cursor_state.image.as_ref()?.mono_parts())
+        self.cursor_state.mono_parts()
     }
 
     pub(crate) fn attach_unconverted_process_services(&mut self, context: &mut ProcessContext) {
