@@ -270,17 +270,25 @@ fn maybe_log_mem_write(address: u32, width: u8, value: u32) {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some((start, end)) = mem_write_trace_range() {
         if address >= start && address <= end {
-            let pc = CURRENT_PC.with(|p| *p.borrow());
-            eprintln!(
-                "[MEM-WRITE] PC=${:08X} addr=${:08X} width={} value=${:0width$X}",
-                pc,
-                address,
-                width,
-                value,
-                width = (width as usize) * 2
-            );
+            log_mem_write(address, width, value);
         }
     }
+}
+
+// Keep formatting, TLS access, and their stack frame off the disabled path.
+#[cfg(not(target_arch = "wasm32"))]
+#[cold]
+#[inline(never)]
+fn log_mem_write(address: u32, width: u8, value: u32) {
+    let pc = CURRENT_PC.with(|p| *p.borrow());
+    eprintln!(
+        "[MEM-WRITE] PC=${:08X} addr=${:08X} width={} value=${:0width$X}",
+        pc,
+        address,
+        width,
+        value,
+        width = (width as usize) * 2
+    );
 }
 
 // ============================================================================
@@ -1672,10 +1680,14 @@ impl MacMemoryBus {
         let Some(foreign) = self.foreign_address_space.as_ref() else {
             return false;
         };
-        let Ok(len) = u32::try_from(len) else {
-            return true;
-        };
-        foreign.sparse_mapping_overlaps(self.translate_guest_address(address), len)
+        #[inline(never)]
+        fn overlaps(foreign: &SharedGuestAddressSpace, address: u32, len: usize) -> bool {
+            let Ok(len) = u32::try_from(len) else {
+                return true;
+            };
+            foreign.sparse_mapping_overlaps(address, len)
+        }
+        overlaps(foreign, self.translate_guest_address(address), len)
     }
 
     /// Return the end of a read-only process mapping that overlaps a proposed
@@ -2419,6 +2431,97 @@ impl MacMemoryBus {
         self.presentation.is_some()
     }
 
+    // All non-flat policy stays on the original routed path.
+    #[inline(never)]
+    fn write_word_routed(
+        &mut self,
+        address: u32,
+        foreign_address: u32,
+        value: u16,
+        route: GuestMemoryRoute,
+    ) {
+        match route {
+            GuestMemoryRoute::Shared
+            | GuestMemoryRoute::SharedReadOnly
+            | GuestMemoryRoute::Sparse => {
+                if !self.is_guest_address_writable(address, 2) {
+                    return;
+                }
+                if let Some(memory) = self.foreign_address_space.as_ref() {
+                    let _ = memory.write_routed_u16(foreign_address, value, Some(self.ram_size));
+                }
+                maybe_log_mem_write(address, 2, value as u32);
+            }
+            // A wide access may straddle flat RAM, a sparse mapping, and a
+            // hole.  Do not let the contiguous local-RAM fast path hide the
+            // route transition: preflight every byte and commit through the
+            // status-bearing byte path so a rejected byte cannot leave a
+            // partially-written word behind.
+            GuestMemoryRoute::Mixed => {
+                let _ = self.try_write_bytes_atomic(address, &value.to_be_bytes());
+            }
+            GuestMemoryRoute::Unmapped => {}
+            GuestMemoryRoute::Flat => unreachable!("flat writes stay on the scalar path"),
+        }
+    }
+
+    // Preserve the original probe and per-byte observation order.
+    #[inline(never)]
+    fn write_word_observed(&mut self, address: u32, foreign_address: u32, value: u16) {
+        if self.only_write_probe_blocks_fast_path() {
+            self.record_write_probe_range(foreign_address, 2);
+            self.ram
+                .write_word_in_bounds(foreign_address as usize, value);
+            return;
+        }
+        self.write_byte(address, (value >> 8) as u8);
+        self.write_byte(address.wrapping_add(1), value as u8);
+    }
+
+    // All non-flat policy stays on the original routed path.
+    #[inline(never)]
+    fn write_long_routed(
+        &mut self,
+        address: u32,
+        foreign_address: u32,
+        value: u32,
+        route: GuestMemoryRoute,
+    ) {
+        match route {
+            GuestMemoryRoute::Shared
+            | GuestMemoryRoute::SharedReadOnly
+            | GuestMemoryRoute::Sparse => {
+                if !self.is_guest_address_writable(address, 4) {
+                    return;
+                }
+                if let Some(memory) = self.foreign_address_space.as_ref() {
+                    let _ = memory.write_routed_u32(foreign_address, value, Some(self.ram_size));
+                }
+                maybe_log_mem_write(address, 4, value);
+            }
+            // See the word-sized mixed-route path above.  A longword must
+            // either pass all four routed-byte checks or remain untouched.
+            GuestMemoryRoute::Mixed => {
+                let _ = self.try_write_bytes_atomic(address, &value.to_be_bytes());
+            }
+            GuestMemoryRoute::Unmapped => {}
+            GuestMemoryRoute::Flat => unreachable!("flat writes stay on the scalar path"),
+        }
+    }
+
+    // Preserve the original probe and per-byte observation order.
+    #[inline(never)]
+    fn write_long_observed(&mut self, address: u32, foreign_address: u32, value: u32) {
+        if self.only_write_probe_blocks_fast_path() {
+            self.record_write_probe_range(foreign_address, 4);
+            self.ram
+                .write_long_in_bounds(foreign_address as usize, value);
+            return;
+        }
+        self.write_word(address, (value >> 16) as u16);
+        self.write_word(address.wrapping_add(2), value as u16);
+    }
+
     /// Raw window over guest RAM for the m68k fastmem path, or `None`
     /// while any per-access diagnostic (framebuffer-write tracer, memory
     /// read/write tracer, watchpoint) needs to observe individual bus
@@ -2761,30 +2864,10 @@ impl MemoryBus for MacMemoryBus {
     #[inline]
     fn write_word(&mut self, address: u32, value: u16) {
         let foreign_address = self.translate_guest_address(address);
-        match self.route(address, 2) {
-            GuestMemoryRoute::Shared
-            | GuestMemoryRoute::SharedReadOnly
-            | GuestMemoryRoute::Sparse => {
-                if !self.is_guest_address_writable(address, 2) {
-                    return;
-                }
-                if let Some(memory) = self.foreign_address_space.as_ref() {
-                    let _ = memory.write_routed_u16(foreign_address, value, Some(self.ram_size));
-                }
-                maybe_log_mem_write(address, 2, value as u32);
-                return;
-            }
-            // A wide access may straddle flat RAM, a sparse mapping, and a
-            // hole.  Do not let the contiguous local-RAM fast path hide the
-            // route transition: preflight every byte and commit through the
-            // status-bearing byte path so a rejected byte cannot leave a
-            // partially-written word behind.
-            GuestMemoryRoute::Mixed => {
-                let _ = self.try_write_bytes_atomic(address, &value.to_be_bytes());
-                return;
-            }
-            GuestMemoryRoute::Unmapped => return,
-            GuestMemoryRoute::Flat => {}
+        let route = self.route(address, 2);
+        if route != GuestMemoryRoute::Flat {
+            self.write_word_routed(address, foreign_address, value, route);
+            return;
         }
         // Only a complete Flat route reaches here. It has already proved
         // contiguous translation and local-RAM bounds; retain the protection
@@ -2807,16 +2890,11 @@ impl MemoryBus for MacMemoryBus {
             && self.write_probe_original.is_none()
             && !self.presentation_observes(address, 2);
         if fast {
-            self.ram.write_word_in_bounds(foreign_address as usize, value);
+            self.ram
+                .write_word_in_bounds(foreign_address as usize, value);
             return;
         }
-        if self.only_write_probe_blocks_fast_path() {
-            self.record_write_probe_range(foreign_address, 2);
-            self.ram.write_word_in_bounds(foreign_address as usize, value);
-            return;
-        }
-        self.write_byte(address, (value >> 8) as u8);
-        self.write_byte(address.wrapping_add(1), value as u8);
+        self.write_word_observed(address, foreign_address, value);
     }
 
     /// Big-endian 32-bit write.
@@ -2825,27 +2903,10 @@ impl MemoryBus for MacMemoryBus {
     #[inline]
     fn write_long(&mut self, address: u32, value: u32) {
         let foreign_address = self.translate_guest_address(address);
-        match self.route(address, 4) {
-            GuestMemoryRoute::Shared
-            | GuestMemoryRoute::SharedReadOnly
-            | GuestMemoryRoute::Sparse => {
-                if !self.is_guest_address_writable(address, 4) {
-                    return;
-                }
-                if let Some(memory) = self.foreign_address_space.as_ref() {
-                    let _ = memory.write_routed_u32(foreign_address, value, Some(self.ram_size));
-                }
-                maybe_log_mem_write(address, 4, value);
-                return;
-            }
-            // See the word-sized mixed-route path above.  A longword must
-            // either pass all four routed-byte checks or remain untouched.
-            GuestMemoryRoute::Mixed => {
-                let _ = self.try_write_bytes_atomic(address, &value.to_be_bytes());
-                return;
-            }
-            GuestMemoryRoute::Unmapped => return,
-            GuestMemoryRoute::Flat => {}
+        let route = self.route(address, 4);
+        if route != GuestMemoryRoute::Flat {
+            self.write_long_routed(address, foreign_address, value, route);
+            return;
         }
         // Only a complete Flat route reaches here. It has already proved
         // contiguous translation and local-RAM bounds; retain the protection
@@ -2867,16 +2928,11 @@ impl MemoryBus for MacMemoryBus {
             && self.write_probe_original.is_none()
             && !self.presentation_observes(address, 4);
         if fast {
-            self.ram.write_long_in_bounds(foreign_address as usize, value);
+            self.ram
+                .write_long_in_bounds(foreign_address as usize, value);
             return;
         }
-        if self.only_write_probe_blocks_fast_path() {
-            self.record_write_probe_range(foreign_address, 4);
-            self.ram.write_long_in_bounds(foreign_address as usize, value);
-            return;
-        }
-        self.write_word(address, (value >> 16) as u16);
-        self.write_word(address.wrapping_add(2), value as u16);
+        self.write_long_observed(address, foreign_address, value);
     }
 
     /// Bulk read fast path — one `slice_at` instead of `len` byte
