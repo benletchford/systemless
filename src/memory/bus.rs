@@ -2136,6 +2136,39 @@ impl MacMemoryBus {
         Some(self.ram_slice(start, u32::try_from(len).ok()?))
     }
 
+    /// Copy a plain presentation row while retaining the single revision and
+    /// guest-value update that ordinary presentation writes would perform.
+    /// Diagnostics and protected ranges deliberately use the routed fallback.
+    pub(crate) fn write_plain_presented_bytes(&mut self, address: u32, data: &[u8]) -> bool {
+        if self.presentation.is_none() {
+            return false;
+        }
+        let Some(translated) = self.range_translates_contiguously(address, data.len()) else {
+            return false;
+        };
+        if self.route(address, data.len()) != GuestMemoryRoute::Flat
+            || self.readonly_code_overlaps(translated, data.len() as u32)
+            || mem_read_trace_active()
+            || mem_write_trace_active()
+            || fb_write_trace_range().is_some()
+            || self.write_probe_original.is_some()
+            || watchpoint_armed()
+            || (u64::from(translated) + data.len() as u64) > u64::from(self.ram_size)
+        {
+            return false;
+        }
+        let changed = !self
+            .untraced_ram_slice(address, data.len())
+            .is_some_and(|previous| previous == data);
+        self.ram.write_bytes_in_bounds(translated as usize, data);
+        if changed {
+            if let Some(mut p) = self.presentation.as_mut() {
+                p.sync_plain_screen_row(translated, data);
+            }
+        }
+        true
+    }
+
     /// Copy a RAM range to another RAM range with one bounds/tracing gate.
     /// Falls back to byte writes when debug watchpoints or framebuffer-write
     /// tracing are active so diagnostics still observe each destination byte.
