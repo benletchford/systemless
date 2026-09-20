@@ -7,6 +7,7 @@ mod controls;
 mod resample;
 pub use compact::{CompactPresentation, CompactPresentationCache};
 
+use super::page_index::PageIndex;
 use super::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{outline, Glyph};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -104,6 +105,11 @@ impl PresentationSlot {
             {
                 // Ordinary offscreen writes only invalidate existing detail.
                 // A native rectangle fill must not visit every background byte.
+                // Most such writes are ordinary heap traffic, far from any
+                // retained cell.
+                if !p.may_have_offscreen_detail(address, end) {
+                    return;
+                }
                 let keys: Vec<_> = p
                     .offscreen
                     .range(address..)
@@ -397,6 +403,11 @@ pub(crate) struct Presentation {
     offscreen: BTreeMap<u32, Arc<DetailCell>>,
     // Conservative bounds: deletion may leave false positives, never false negatives.
     offscreen_bounds: Option<(u32, u32)>,
+    /// Page filter over the keys of `offscreen`, with the same conservative
+    /// contract as the bounds above. Offscreen detail is scattered through
+    /// the same heap that ordinary guest writes walk, so the bounds alone
+    /// cannot reject an address landing between two retained cells.
+    offscreen_pages: PageIndex,
     base: u32,
     row_bytes: u32,
     width: u32,
@@ -523,12 +534,15 @@ impl Presentation {
             Some((first, last)) => (first.min(address), last.max(address)),
             None => (address, address),
         });
+        self.offscreen_pages
+            .mark(u64::from(address), u64::from(address) + 1);
     }
 
     #[inline]
     fn may_have_offscreen_detail(&self, address: u32, end: u64) -> bool {
         self.offscreen_bounds
             .is_some_and(|(first, last)| address <= last && end > u64::from(first))
+            && self.offscreen_pages.may_overlap(u64::from(address), end)
     }
 
     /// Only screen bytes and retained offscreen glyphs need write interception.
@@ -1833,6 +1847,7 @@ impl MacMemoryBus {
             output_cache: std::cell::RefCell::new(None),
             offscreen: BTreeMap::new(),
             offscreen_bounds: None,
+            offscreen_pages: PageIndex::default(),
             base,
             row_bytes,
             width: width.into(),
@@ -1881,6 +1896,11 @@ impl MacMemoryBus {
                 .first_key_value()
                 .zip(offscreen.last_key_value())
                 .map(|((&first, _), (&last, _))| (first, last));
+            for &address in offscreen.keys() {
+                presentation
+                    .offscreen_pages
+                    .mark(u64::from(address), u64::from(address) + 1);
+            }
             presentation.offscreen = offscreen;
             presentation.glyph_count = glyph_count;
         }
