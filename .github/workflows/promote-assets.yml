@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       entry:
-        description: Stable entry ID to promote
+        description: Comma-separated stable entry IDs to promote
         required: true
         type: string
       pull_request:
@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      ENTRY_ID: ${{ inputs.entry }}
+      ENTRY_INPUT: ${{ inputs.entry }}
       PULL_REQUEST: ${{ inputs.pull_request }}
       SOURCE_COMMIT: ${{ inputs.source_commit }}
     steps:
@@ -71,11 +71,52 @@ jobs:
           ref: ${{ inputs.source_commit }}
           path: submission
           persist-credentials: false
+      - name: Normalize selected entries
+        shell: bash
+        run: |
+          set -euo pipefail
+          input="$ENTRY_INPUT"
+          if [[ -z "${input//[[:space:]]/}" ]]; then
+            echo '::error::entry must contain one or more nonempty comma-separated stable IDs'
+            exit 1
+          fi
+          : > selected-entry-ids.txt
+          declare -A seen=()
+          last_entry=false
+          while [[ "$last_entry" == false ]]; do
+            if [[ "$input" == *,* ]]; then
+              raw_entry="${input%%,*}"
+              input="${input#*,}"
+            else
+              raw_entry="$input"
+              last_entry=true
+            fi
+            entry="$raw_entry"
+            entry="${entry#"${entry%%[![:space:]]*}"}"
+            entry="${entry%"${entry##*[![:space:]]}"}"
+            if [[ -z "$entry" ]]; then
+              echo '::error::entry must contain one or more nonempty comma-separated stable IDs'
+              exit 1
+            fi
+            if [[ ! "$entry" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+              echo "::error::unsafe entry ID: $entry"
+              exit 1
+            fi
+            if [[ -n "${seen[$entry]+present}" ]]; then
+              echo "::error::duplicate entry ID: $entry"
+              exit 1
+            fi
+            seen["$entry"]=present
+            printf '%s\n' "$entry" >> selected-entry-ids.txt
+          done
       - name: Validate and inspect selected sources without credentials
         shell: bash
         run: |
           ./target/debug/catalogue --root submission/www check
-          ./target/debug/catalogue --root submission/www assets promote --entry "$ENTRY_ID" > promotion-preview.json
+          while IFS= read -r entry; do
+            ./target/debug/catalogue --root submission/www assets promote \
+              --entry "$entry" > "promotion-preview-$entry.json"
+          done < selected-entry-ids.txt
       - name: Promote selected assets to R2
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -83,7 +124,11 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         shell: bash
-        run: ./target/debug/catalogue --root submission/www assets promote --entry "$ENTRY_ID" --apply > promotion-result.json
+        run: |
+          while IFS= read -r entry; do
+            ./target/debug/catalogue --root submission/www assets promote \
+              --entry "$entry" --apply > "promotion-result-$entry.json"
+          done < selected-entry-ids.txt
       - name: Validate and compile promoted catalogue
         shell: bash
         run: |
@@ -98,6 +143,7 @@ jobs:
           include-hidden-files: true
           path: |
             submission/www/catalogue/
-            promotion-preview.json
-            promotion-result.json
+            selected-entry-ids.txt
+            promotion-preview-*.json
+            promotion-result-*.json
             submission/www/catalogue/.promotion/transaction.json
