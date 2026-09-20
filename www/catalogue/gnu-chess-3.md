@@ -30,11 +30,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/GNU%20Chess%203.0.sit
-    download_page: https://www.vintageapplemac.com/software/games/g
-    expected_sha256: 2cb600b375a44cad2cc0b212133072056484953212b958e43751fb28499a547f
-    expected_size: 125350
+    type: sha256
+    sha256: 2cb600b375a44cad2cc0b212133072056484953212b958e43751fb28499a547f
+    size_bytes: 125350
   provenance:
     redistribution: permitted
     original: true
