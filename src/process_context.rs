@@ -1554,7 +1554,8 @@ pub(crate) struct SharedProcessListManager(SharedProcessValue<ProcessListManager
 #[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessTextEditManager(SharedProcessValue<ProcessTextEditManagerState>);
 /// Detached-by-default attachment handle for Dialog Manager `ParamText` slots.
-pub type SharedProcessDialogText = SharedProcessValue<[Vec<u8>; 4]>;
+#[derive(Clone, Default, Eq, PartialEq)]
+pub(crate) struct SharedProcessDialogText(SharedProcessValue<[Vec<u8>; 4]>);
 
 /// Launch-time AppleEvent state owned by the emulated process rather than by
 /// either CPU gateway. The Event Manager's high-level-event awareness comes
@@ -2959,16 +2960,101 @@ impl std::fmt::Debug for SharedProcessTextEditManager {
     }
 }
 
+impl fmt::Debug for SharedProcessDialogText {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.with_ref(|slots| {
+            formatter
+                .debug_tuple("SharedProcessDialogText")
+                .field(slots)
+                .finish()
+        })
+    }
+}
+
+impl PartialEq<[Vec<u8>; 4]> for SharedProcessDialogText {
+    fn eq(&self, other: &[Vec<u8>; 4]) -> bool {
+        self.with_ref(|slots| slots == other)
+    }
+}
+
+impl PartialEq<&[Vec<u8>; 4]> for SharedProcessDialogText {
+    fn eq(&self, other: &&[Vec<u8>; 4]) -> bool {
+        self.with_ref(|slots| slots == *other)
+    }
+}
+
+#[allow(dead_code)]
 impl SharedProcessDialogText {
+    pub(crate) fn from_value(slots: [Vec<u8>; 4]) -> Self {
+        Self(SharedProcessValue::from_value(slots))
+    }
+
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn attach_to(&mut self, process_state: &Self) {
+        self.0.attach_to(&process_state.0, |slots| {
+            slots.iter().all(Vec::is_empty)
+        });
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&[Vec<u8>; 4]) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut [Vec<u8>; 4]) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    pub(crate) fn slot(&self, index: usize) -> Option<Vec<u8>> {
+        self.with_ref(|slots| slots.get(index).cloned())
+    }
+
     /// Replace all four `ParamText` slots within one serialized operation.
-    #[cfg(test)]
     pub(crate) fn set_slots(&self, values: [Vec<u8>; 4]) {
         self.with_mut(|slots| *slots = values);
     }
 
     /// Replace one `ParamText` slot within a single serialized operation.
     pub(crate) fn set_slot(&self, index: usize, value: Vec<u8>) {
-        self.with_mut(|slots| slots[index] = value);
+        self.with_mut(|slots| {
+            if let Some(slot) = slots.get_mut(index) {
+                *slot = value;
+            }
+        });
+    }
+
+    pub(crate) fn snapshot(&self) -> [Vec<u8>; 4] {
+        self.with_ref(|slots| slots.clone())
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        4
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.with_ref(|slots| slots.iter().all(Vec::is_empty))
+    }
+
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.is_empty()
+    }
+
+    pub(crate) fn clear(&self) {
+        self.with_mut(|slots| {
+            for slot in slots.iter_mut() {
+                slot.clear();
+            }
+        });
+    }
+
+    pub(crate) fn iter(&self) -> std::array::IntoIter<Vec<u8>, 4> {
+        self.snapshot().into_iter()
     }
 }
 
@@ -8500,7 +8586,12 @@ impl ProcessContext {
     }
 
     pub(crate) fn attach_dialog_text(&self, adapter: &mut SharedProcessDialogText) {
-        adapter.attach_to(&self.dialog_text, |slots| slots.iter().all(Vec::is_empty));
+        adapter.attach_to(&self.dialog_text);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn dialog_text(&self) -> &SharedProcessDialogText {
+        &self.dialog_text
     }
 
     pub(crate) fn attach_cursor_state(&self, adapter: &mut SharedProcessCursorState) {
@@ -12087,5 +12178,75 @@ mod tests {
                 .flatten(),
             Some(b"Detached".to_vec())
         );
+    }
+
+    #[test]
+    fn process_dialog_text_encapsulation() {
+        let text = SharedProcessDialogText::default();
+        assert!(text.is_empty());
+        assert!(text.is_pristine());
+        assert_eq!(text.len(), 4);
+        assert_eq!(text.slot(0), Some(Vec::new()));
+        assert_eq!(text.slot(3), Some(Vec::new()));
+        assert_eq!(text.slot(4), None);
+
+        text.set_slot(0, b"alpha".to_vec());
+        text.set_slot(1, b"bravo".to_vec());
+        assert!(!text.is_empty());
+        assert!(!text.is_pristine());
+        assert_eq!(text.slot(0), Some(b"alpha".to_vec()));
+        assert_eq!(text.slot(1), Some(b"bravo".to_vec()));
+        assert_eq!(text.slot(2), Some(Vec::new()));
+        assert_eq!(text.slot(3), Some(Vec::new()));
+
+        let snapshot = text.snapshot();
+        assert_eq!(snapshot[0], b"alpha");
+        assert_eq!(snapshot[1], b"bravo");
+
+        text.clear();
+        assert!(text.is_empty());
+        assert!(text.is_pristine());
+
+        let new_slots = [
+            b"one".to_vec(),
+            b"two".to_vec(),
+            b"three".to_vec(),
+            b"four".to_vec(),
+        ];
+        text.set_slots(new_slots.clone());
+        assert_eq!(text, new_slots);
+        assert_eq!(text.slot(0), Some(b"one".to_vec()));
+        assert_eq!(text.slot(3), Some(b"four".to_vec()));
+
+        let from_val = SharedProcessDialogText::from_value(new_slots);
+        assert_eq!(from_val.slot(2), Some(b"three".to_vec()));
+    }
+
+    #[test]
+    fn attached_dialog_texts_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessDialogText::default();
+        let mut native = SharedProcessDialogText::default();
+        context.attach_dialog_text(&mut classic);
+        classic.set_slot(0, b"Classic".to_vec());
+        context.attach_dialog_text(&mut native);
+        let detached = native.clone();
+
+        assert!(classic.ptr_eq(&native));
+        assert!(context.dialog_text().ptr_eq(&classic));
+        assert_eq!(native.slot(0), Some(b"Classic".to_vec()));
+        assert_eq!(context.dialog_text().slot(0), Some(b"Classic".to_vec()));
+
+        detached.set_slot(0, b"Detached".to_vec());
+        assert!(!native.ptr_eq(&detached));
+        assert_eq!(classic.slot(0), Some(b"Classic".to_vec()));
+        assert_eq!(native.slot(0), Some(b"Classic".to_vec()));
+        assert_eq!(context.dialog_text().slot(0), Some(b"Classic".to_vec()));
+        assert_eq!(detached.slot(0), Some(b"Detached".to_vec()));
+
+        native.set_slot(1, b"Shared".to_vec());
+        assert_eq!(classic.slot(1), Some(b"Shared".to_vec()));
+        assert_eq!(context.dialog_text().slot(1), Some(b"Shared".to_vec()));
+        assert_eq!(detached.slot(1), Some(Vec::new()));
     }
 }

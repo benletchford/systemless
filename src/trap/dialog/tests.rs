@@ -4243,12 +4243,7 @@
             .unwrap()
             .unwrap();
 
-        let initial_slots = [
-            disp.param_text[0].clone(),
-            disp.param_text[1].clone(),
-            disp.param_text[2].clone(),
-            disp.param_text[3].clone(),
-        ];
+        let initial_slots = disp.param_text.snapshot();
         let (initial_da_handles, initial_da_strings) = paramtext_da_strings(&bus);
         let initial_stack_after = cpu.read_reg(Register::A7);
         let initial_substitution = disp
@@ -4266,12 +4261,7 @@
             .unwrap()
             .unwrap();
 
-        let nil_slots = [
-            disp.param_text[0].clone(),
-            disp.param_text[1].clone(),
-            disp.param_text[2].clone(),
-            disp.param_text[3].clone(),
-        ];
+        let nil_slots = disp.param_text.snapshot();
         let (nil_da_handles, nil_da_strings) = paramtext_da_strings(&bus);
         let nil_stack_after = cpu.read_reg(Register::A7);
         let nil_substitution = disp
@@ -12685,10 +12675,10 @@
             .unwrap();
 
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 16);
-        assert_eq!(disp.param_text[0], b"alpha");
-        assert_eq!(disp.param_text[1], b"bravo");
-        assert_eq!(disp.param_text[2], b"chi");
-        assert_eq!(disp.param_text[3], b"d");
+        assert_eq!(disp.param_text.slot(0).as_deref(), Some(b"alpha".as_slice()));
+        assert_eq!(disp.param_text.slot(1).as_deref(), Some(b"bravo".as_slice()));
+        assert_eq!(disp.param_text.slot(2).as_deref(), Some(b"chi".as_slice()));
+        assert_eq!(disp.param_text.slot(3).as_deref(), Some(b"d".as_slice()));
     }
 
     #[test]
@@ -12713,8 +12703,8 @@
 
         for i in 0..4 {
             assert_eq!(
-                disp.param_text[i],
-                Vec::<u8>::new(),
+                disp.param_text.slot(i).as_deref(),
+                Some(&b""[..]),
                 "empty Pascal string must clear slot {}",
                 i
             );
@@ -12795,10 +12785,10 @@
             .unwrap()
             .unwrap();
 
-        assert_eq!(disp.param_text[0], b"new0", "param0 should be replaced");
-        assert_eq!(disp.param_text[1], b"old1", "NIL must preserve param1");
-        assert_eq!(disp.param_text[2], b"old2", "NIL must preserve param2");
-        assert_eq!(disp.param_text[3], b"old3", "NIL must preserve param3");
+        assert_eq!(disp.param_text.slot(0).as_deref(), Some(b"new0".as_slice()), "param0 should be replaced");
+        assert_eq!(disp.param_text.slot(1).as_deref(), Some(b"old1".as_slice()), "NIL must preserve param1");
+        assert_eq!(disp.param_text.slot(2).as_deref(), Some(b"old2".as_slice()), "NIL must preserve param2");
+        assert_eq!(disp.param_text.slot(3).as_deref(), Some(b"old3".as_slice()), "NIL must preserve param3");
     }
 
     #[test]
