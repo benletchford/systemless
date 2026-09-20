@@ -51,6 +51,25 @@ artifacts:
       Unchanged 198,535-byte StuffIt archive, pinned by SHA-256
       c052d868750e3083684eb0f5248c9e7c07ac399787f5d65195cfbb2392140794. The
       complete package retains the 68k application, ReadMe and Icon.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: incoming
+    path: catalogue/incoming/space-invaders-1-1/gameplay.png
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/2322
+    permission: >-
+      Original screenshot captured from the exact Space Invaders 1.1 ƒ archive
+      during a deterministic gameplay run for this catalogue. Underlying game
+      artwork remains the property of its rights holder.
+    notes: >-
+      Fresh capture during live Wave 1 with invaders and projectiles visible,
+      cropped to the 512-by-299 game content surface. It excludes the host
+      desktop, emulator margins and Classic Mac menu bar.
 references:
 - https://www.vintageapplemac.com/software/games/s/
 - https://www.vintageapplemac.com/files/games/Space%20Invaders%201.1%20%C6%92.sit
@@ -71,6 +90,8 @@ the unchanged archive keeps both the game and ReadMe together, along with its
 Icon.
 
 ## In Wave 1
+
+![Space Invaders gameplay](incoming/space-invaders-1-1/gameplay.png)
 
 Systemless reaches a live Wave 1 from the exact archive, with the defender,
 invaders and projectiles visible. A deterministic mouse-input run moved the
