@@ -18068,6 +18068,72 @@
         assert_eq!(bus.read_word(sp + 12), 0);
     }
 
+    // Image Compression Manager Dispatch ($AAA3)
+    #[test]
+    fn image_compression_align_screen_rect_uses_eight_bit_grid() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let rect = sp + 0x40;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0008_004C);
+        bus.write_long(sp, 0); // standard alignment
+        bus.write_long(sp + 4, rect);
+        bus.write_word(rect, 10); // top
+        bus.write_word(rect + 2, 7); // left
+        bus.write_word(rect + 4, 110); // bottom
+        bus.write_word(rect + 6, 107); // right
+
+        let result = disp.dispatch_toolbox(true, 0x2A3, &mut cpu, &mut bus);
+        assert!(result.is_some(), "ImageCompressionDispatch should be handled");
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(rect), 10);
+        assert_eq!(bus.read_word(rect + 2), 8);
+        assert_eq!(bus.read_word(rect + 4), 110);
+        assert_eq!(bus.read_word(rect + 6), 108);
+    }
+
+    #[test]
+    fn image_compression_align_screen_rect_preserves_aligned_rect() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let rect = sp + 0x40;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0008_004C);
+        bus.write_long(sp, 0);
+        bus.write_long(sp + 4, rect);
+        bus.write_word(rect, (-20i16) as u16);
+        bus.write_word(rect + 2, (-8i16) as u16);
+        bus.write_word(rect + 4, 20);
+        bus.write_word(rect + 6, 92);
+
+        let result = disp.dispatch_toolbox(true, 0x2A3, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(bus.read_word(rect + 2) as i16, -8);
+        assert_eq!(bus.read_word(rect + 6) as i16, 92);
+    }
+
+    #[test]
+    fn image_compression_align_screen_rect_rejects_unimplemented_custom_proc() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0008_004C);
+        bus.write_long(sp, 0x1234);
+        bus.write_long(sp + 4, sp + 0x40);
+
+        let result = disp.dispatch_toolbox(true, 0x2A3, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_err());
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+    }
+
     // Movie Toolbox Dispatch ($AAAA)
     #[test]
     fn movietoolboxdispatch_selector_in_d0_returns_noerr_and_preserves_stack() {
