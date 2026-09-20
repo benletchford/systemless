@@ -81,7 +81,7 @@ enum AssetCommand {
     Fetch {
         #[arg(long)]
         entry: Option<String>,
-        /// Local cache directory; defaults to <repository-root>/catalogue/.downloads.
+        /// Local cache directory; defaults to <root>/catalogue/.downloads.
         #[arg(long)]
         directory: Option<PathBuf>,
     },

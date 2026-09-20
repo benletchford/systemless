@@ -17,7 +17,7 @@ fn main() {
         .parent()
         .expect("www must be directly below the repository root");
 
-    let catalogue_dir = repository_root.join("catalogue");
+    let catalogue_dir = manifest_dir.join("catalogue");
     println!("cargo:rerun-if-changed={}", catalogue_dir.display());
     println!(
         "cargo:rerun-if-changed={}",
@@ -26,7 +26,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=SYSTEMLESS_GIT_SHA");
     println!("cargo:rerun-if-env-changed=GITHUB_SHA");
 
-    let catalogue = catalogue_tools::load(repository_root, catalogue_tools::Mode::Production)
+    let catalogue = catalogue_tools::load(&manifest_dir, catalogue_tools::Mode::Production)
         .expect("invalid embedded catalogue");
     let compiled = catalogue_tools::build(&catalogue).expect("catalogue compilation failed");
     let generated =

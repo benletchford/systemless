@@ -2,9 +2,9 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {entryIds, validatePr, removalAllowed, authorize} = require('./promote-review.cjs');
 test('only actual changed entry paths become CLI arguments', () => {
-  assert.deepEqual(entryIds([{filename:'catalogue/marathon.md'}, {filename:'catalogue/ev.md',status:'removed'},
-    {filename:'catalogue/../../bad.md'}, {filename:'catalogue/a;echo.md'}, {filename:'.github/workflows/ci.yml'},
-    {filename:'catalogue/marathon.md'}]), ['marathon']);
+  assert.deepEqual(entryIds([{filename:'www/catalogue/marathon.md'}, {filename:'www/catalogue/ev.md',status:'removed'},
+    {filename:'www/catalogue/../../bad.md'}, {filename:'www/catalogue/a;echo.md'}, {filename:'.github/workflows/ci.yml'},
+    {filename:'www/catalogue/marathon.md'}]), ['marathon']);
 });
 test('closed, forked, retargeted, default-head and changed-head PRs are rejected', () => {
   const pr = {state:'open',base:{ref:'master'},head:{ref:'dev/test',sha:'abc',repo:{full_name:'owner/repo'}}};

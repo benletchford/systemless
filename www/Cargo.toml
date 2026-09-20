@@ -94,4 +94,4 @@ web-sys = { version = "0.3", features = [
 ] }
 
 [build-dependencies]
-systemless-catalogue-tools = { path = "../tools/catalogue" }
+systemless-catalogue-tools = { path = "tools/catalogue" }

@@ -49,12 +49,12 @@ contributed code.
 - Keep issues and pull requests scoped to the standalone Systemless repository
   and its public interfaces.
 
-Catalogue entries live under `catalogue/`; large optional plugin collections
-live as chunkable YAML files under `catalogue/plugins/`; browser code lives
-under `www/`.
+Catalogue entries live under `www/catalogue/`; large optional plugin collections
+live as chunkable YAML files under `www/catalogue/plugins/`; browser code and
+catalogue tooling live under `www/`.
 See `www/README.md` for catalogue validation, local browser development, and
 asset-promotion commands. Large pending assets belong under
-`catalogue/incoming/<entry-id>/` and must not be committed.
+`www/catalogue/incoming/<entry-id>/` and must not be committed.
 
 ## Issue and pull-request evidence
 

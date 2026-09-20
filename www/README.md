@@ -4,13 +4,13 @@ The browser frontend for Systemless is a private workspace package built with
 Leptos and Trunk. It compiles the runtime directly from the repository root;
 there is no separately versioned website or published-crate update step.
 
-The authoritative catalogue lives in [`../catalogue/`](../catalogue/). Each
+The authoritative catalogue lives in [`catalogue/`](catalogue/). Each
 Markdown file contains YAML metadata followed by the page content. Native
 validation, page generation, asset promotion, and R2 maintenance live in the
-`systemless-catalogue-tools` package under `../tools/catalogue/`.
+`systemless-catalogue-tools` package under `tools/catalogue/`.
 
 Optional plugins are declared separately under
-[`../catalogue/plugins/`](../catalogue/plugins/). Each YAML file has
+[`catalogue/plugins/`](catalogue/plugins/). Each YAML file has
 `schema_version`, the target `entry`, its external supplement `artifacts`, and
 its `plugins`. Multiple files may target the same entry, so keep large
 collections in numbered chunks such as `example-01.yaml` and `example-02.yaml`.
@@ -23,21 +23,21 @@ asset-promotion pipeline does not copy them into managed storage.
 From the repository root:
 
 ```sh
-cargo run --locked -p systemless-catalogue-tools -- check
-cargo run --locked -p systemless-catalogue-tools -- check --production
+cargo run --locked -p systemless-catalogue-tools -- --root www check
+cargo run --locked -p systemless-catalogue-tools -- --root www check --production
 ```
 
-Pending assets are staged under `catalogue/incoming/<entry-id>/`. An entry
-records the repository-relative source path, such as
+Pending assets are staged under `www/catalogue/incoming/<entry-id>/`. An entry
+records the website-relative source path, such as
 `catalogue/incoming/example/game.sit`; Markdown in the same entry refers to it
 as `incoming/example/game.sit`. Promotion rewrites both references to the
 immutable asset URL and removes the staged file.
 
 An interrupted promotion records
-`catalogue/.promotion/transaction.json`. Recover it with:
+`www/catalogue/.promotion/transaction.json`. Recover it with:
 
 ```sh
-cargo run --locked -p systemless-catalogue-tools -- assets recover
+cargo run --locked -p systemless-catalogue-tools -- --root www assets recover
 ```
 
 ## Develop and test

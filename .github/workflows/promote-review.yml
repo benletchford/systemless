@@ -42,11 +42,11 @@ jobs:
         env:
           ENTRY_IDS: ${{ steps.authorize.outputs.ids }}
         run: |
-          ./target/debug/catalogue --root submission check
+          ./target/debug/catalogue --root submission/www check
           node - <<'JS'
           const {execFileSync} = require('node:child_process');
           for (const id of JSON.parse(process.env.ENTRY_IDS)) {
-            execFileSync('./target/debug/catalogue', ['--root', 'submission', 'assets', 'promote', '--entry', id], {stdio: 'inherit'});
+            execFileSync('./target/debug/catalogue', ['--root', 'submission/www', 'assets', 'promote', '--entry', id], {stdio: 'inherit'});
           }
           JS
       - name: Recheck approval before uploading
@@ -70,15 +70,15 @@ jobs:
           const fs = require('node:fs');
           const {execFileSync} = require('node:child_process');
           for (const id of JSON.parse(process.env.ENTRY_IDS)) {
-            const result = execFileSync('./target/debug/catalogue', ['--root', 'submission', 'assets', 'promote', '--entry', id, '--apply'], {encoding: 'utf8'});
+            const result = execFileSync('./target/debug/catalogue', ['--root', 'submission/www', 'assets', 'promote', '--entry', id, '--apply'], {encoding: 'utf8'});
             fs.writeFileSync(`promotion-${id}.json`, result);
           }
           JS
       - name: Validate promoted sources
         if: steps.authorize.outputs.sha != ''
         run: |
-          ./target/debug/catalogue --root submission check --no-incoming
-          ./target/debug/catalogue --root submission build
+          ./target/debug/catalogue --root submission/www check --no-incoming
+          ./target/debug/catalogue --root submission/www build
       - name: Commit back to unchanged PR branch and trigger CI
         if: steps.authorize.outputs.sha != ''
         id: commit
@@ -94,8 +94,8 @@ jobs:
           retention-days: 14
           path: |
             promotion-*.json
-            submission/catalogue/
-            submission/catalogue/.promotion/transaction.json
+            submission/www/catalogue/
+            submission/www/catalogue/.promotion/transaction.json
       - name: Report to PR
         if: always() && steps.authorize.outputs.sha != ''
         uses: actions/github-script@v7

@@ -74,8 +74,8 @@ jobs:
       - name: Validate and inspect selected sources without credentials
         shell: bash
         run: |
-          ./target/debug/catalogue --root submission check
-          ./target/debug/catalogue --root submission assets promote --entry "$ENTRY_ID" > promotion-preview.json
+          ./target/debug/catalogue --root submission/www check
+          ./target/debug/catalogue --root submission/www assets promote --entry "$ENTRY_ID" > promotion-preview.json
       - name: Promote selected assets to R2
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -83,12 +83,12 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         shell: bash
-        run: ./target/debug/catalogue --root submission assets promote --entry "$ENTRY_ID" --apply > promotion-result.json
+        run: ./target/debug/catalogue --root submission/www assets promote --entry "$ENTRY_ID" --apply > promotion-result.json
       - name: Validate and compile promoted catalogue
         shell: bash
         run: |
-          ./target/debug/catalogue --root submission check --no-incoming
-          ./target/debug/catalogue --root submission build
+          ./target/debug/catalogue --root submission/www check --no-incoming
+          ./target/debug/catalogue --root submission/www build
       - name: Save source rewrites and recovery journal
         if: always()
         uses: actions/upload-artifact@v7
@@ -97,7 +97,7 @@ jobs:
           retention-days: 14
           include-hidden-files: true
           path: |
-            submission/catalogue/
+            submission/www/catalogue/
             promotion-preview.json
             promotion-result.json
-            submission/catalogue/.promotion/transaction.json
+            submission/www/catalogue/.promotion/transaction.json

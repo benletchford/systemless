@@ -409,7 +409,7 @@ fn rendered_url(config: &Config, entry: &Entry, url: &str) -> String {
     if let Some(a) = registered(config, entry, url) {
         if let AssetSource::Incoming { path } = &a.source {
             return format!(
-                "{}/raw/{}/{}",
+                "{}/raw/{}/www/{}",
                 config.repository.trim_end_matches('/'),
                 config.branch,
                 path
@@ -421,7 +421,7 @@ fn rendered_url(config: &Config, entry: &Entry, url: &str) -> String {
         return url.to_string();
     }
     let base = format!(
-        "{}/blob/{}/catalogue/{}.md",
+        "{}/blob/{}/www/catalogue/{}.md",
         config.repository.trim_end_matches('/'),
         config.branch,
         entry.id

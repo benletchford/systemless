@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 
 function entryIds(files) {
   return [...new Set(files.filter(f => f.status !== 'removed')
-    .map(f => /^catalogue\/([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/.exec(f.filename)?.[1])
+    .map(f => /^www\/catalogue\/([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/.exec(f.filename)?.[1])
     .filter(Boolean))].sort();
 }
 function validatePr(pr, repo, branch, sha) {
@@ -60,7 +60,7 @@ async function commit({github, context, core}) {
   const previous = new Map(tree.tree.map(item => [item.path, item]));
   const changes = [];
   for (const id of state.ids) {
-    const filename = `catalogue/${id}.md`;
+    const filename = `www/catalogue/${id}.md`;
     const bytes = fs.readFileSync(path.join('submission', filename));
     const sha = crypto.createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
     if (previous.get(filename)?.sha !== sha) {
@@ -70,8 +70,9 @@ async function commit({github, context, core}) {
     const result = JSON.parse(fs.readFileSync(`promotion-${id}.json`, 'utf8'));
     if (!result.applied) throw new Error('Promotion was not applied');
     for (const file of result.removed) {
-      if (!removalAllowed(file, [id]) || previous.get(file)?.type !== 'blob') throw new Error('Unexpected incoming deletion');
-      changes.push({path: file, mode: '100644', type: 'blob', sha: null});
+      const repositoryPath = `www/${file}`;
+      if (!removalAllowed(file, [id]) || previous.get(repositoryPath)?.type !== 'blob') throw new Error('Unexpected incoming deletion');
+      changes.push({path: repositoryPath, mode: '100644', type: 'blob', sha: null});
     }
   }
   if (!changes.length) {

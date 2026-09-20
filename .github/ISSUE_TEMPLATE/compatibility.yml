@@ -6,7 +6,7 @@ body:
     id: entry
     attributes:
       label: Catalogue entry ID
-      description: Stable ID from catalogue/<id>.md. Keep [id] in the issue title so reports are discoverable.
+      description: Stable ID from www/catalogue/<id>.md. Keep [id] in the issue title so reports are discoverable.
       placeholder: marathon
     validations:
       required: true

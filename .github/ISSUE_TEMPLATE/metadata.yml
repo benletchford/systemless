@@ -13,7 +13,7 @@ body:
     id: correction
     attributes:
       label: Proposed correction
-      description: Identify the field or passage in catalogue/<id>.md and its replacement.
+      description: Identify the field or passage in www/catalogue/<id>.md and its replacement.
     validations:
       required: true
   - type: textarea

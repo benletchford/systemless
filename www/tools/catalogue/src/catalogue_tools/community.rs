@@ -46,7 +46,7 @@ pub fn catalogue_links(config: &Config) -> CatalogueCommunityLinks {
 /// Config and entry must first pass catalogue validation.
 pub fn links(config: &Config, entry: &Entry) -> CommunityLinks {
     let repo = config.repository.trim_end_matches('/');
-    let path = format!("{}/catalogue/{}.md", config.branch, entry.id);
+    let path = format!("{}/www/catalogue/{}.md", config.branch, entry.id);
     let issue = |template, label| issue(config, Some(entry), template, label);
     let mut compatibility_issue = Url::parse(&format!("{SYSTEMLESS_REPOSITORY}/issues/new"))
         .expect("constant repository URL is valid");
