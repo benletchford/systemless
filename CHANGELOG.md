@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.44.0](https://github.com/benletchford/systemless/compare/v0.43.0...v0.44.0) (2026-09-20)
+
+
+### Features
+
+* **catalogue:** add MatchMaker ([#2288](https://github.com/benletchford/systemless/issues/2288)) ([7bf5a71](https://github.com/benletchford/systemless/commit/7bf5a715b186cecb3bb04d317304b48732578ed8))
+
+
+### Performance Improvements
+
+* **web:** tune PowerPC browser pacing ([#2294](https://github.com/benletchford/systemless/issues/2294)) ([debd8fa](https://github.com/benletchford/systemless/commit/debd8fa0d8ea677a57a63fc0501af82e57ede44b))
+
 ## [0.43.0](https://github.com/benletchford/systemless/compare/v0.42.4...v0.43.0) (2026-09-20)
 
 
