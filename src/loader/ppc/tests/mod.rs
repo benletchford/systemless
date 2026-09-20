@@ -13616,8 +13616,8 @@ fn hle_import_runner_creates_and_links_a_classic_control_record() {
         Some(b"Launch".to_vec())
     );
     assert_eq!(
-        &**loaded.controls,
-        &vec![PpcControlRecord {
+        loaded.controls.records(),
+        vec![PpcControlRecord {
             handle,
             pointer: control,
             proc_id: 16,
@@ -13664,7 +13664,8 @@ fn popup_control_records_preserve_item_values_across_set_control_value() {
     assert_eq!(
         loaded
             .controls
-            .iter()
+            .records()
+            .into_iter()
             .find(|record| record.handle == handle)
             .map(|record| (record.popup_menu_id, record.popup_title_width)),
         Some((143, Some(60)))
@@ -13729,7 +13730,7 @@ fn selected_checkbox_draws_indicator_and_checkmark_without_framing_title() {
     assert!(ppc_draw_control(
         &mut loaded.memory,
         &test_handle_records!(loaded),
-        &loaded.controls,
+        &loaded.controls.records(),
         &loaded.gworlds,
         &loaded.process_file_system.vfs_resources,
         *loaded.process_file_system.current_resource_file,
@@ -13787,7 +13788,7 @@ fn selected_radio_button_draws_round_indicator_and_inner_dot() {
     assert!(ppc_draw_control(
         &mut loaded.memory,
         &test_handle_records!(loaded),
-        &loaded.controls,
+        &loaded.controls.records(),
         &loaded.gworlds,
         &loaded.process_file_system.vfs_resources,
         *loaded.process_file_system.current_resource_file,
@@ -13911,7 +13912,7 @@ fn classic_control_hit_testing_and_disposal_follow_the_window_list() {
     assert_eq!(
         ppc_find_control_at_point(
             &mut loaded.memory,
-            &loaded.controls,
+            &loaded.controls.records(),
             PPC_MAIN_GWORLD,
             10,
             10,
@@ -55501,8 +55502,8 @@ fn get_new_dialog_installs_owned_control_records_in_the_live_ditl() {
         Some(b"OK".to_vec())
     );
     assert_eq!(
-        &**loaded.controls,
-        &vec![PpcControlRecord {
+        loaded.controls.records(),
+        vec![PpcControlRecord {
             handle: control_handle,
             pointer: control,
             proc_id: 0,
@@ -55643,7 +55644,7 @@ fn draw_dialog_uses_live_checkbox_control_instead_of_button_fallback() {
     assert!(ppc_draw_dialog(
         &mut loaded.memory,
         &test_handle_records!(loaded),
-        &loaded.controls,
+        &loaded.controls.records(),
         &loaded.gworlds,
         &loaded.screen_clut,
         &loaded.process_file_system.vfs_resources,
@@ -55753,11 +55754,11 @@ fn dialog_popup_controls_use_ditl_bounds_and_menu_resource_items() {
         ppc_read_rect(&mut loaded.memory, control + PPC_CONTROL_RECT_OFFSET),
         Some((38, 226, 58, 326))
     );
-    assert_eq!(loaded.controls[0].popup_menu_id, 300);
+    assert_eq!(loaded.controls.records()[0].popup_menu_id, 300);
     assert_eq!(loaded.memory.read_u16_be(control + PPC_CONTROL_VALUE_OFFSET), Some(1));
     assert_eq!(loaded.memory.read_u16_be(control + PPC_CONTROL_MIN_OFFSET), Some(1));
     assert_eq!(loaded.memory.read_u16_be(control + PPC_CONTROL_MAX_OFFSET), Some(2));
-    assert_eq!(loaded.controls[0].popup_title_width, Some(0));
+    assert_eq!(loaded.controls.records()[0].popup_title_width, Some(0));
     assert_eq!(
         ppc_popup_control_selected_text(
             &mut loaded.memory,
@@ -55774,7 +55775,7 @@ fn dialog_popup_controls_use_ditl_bounds_and_menu_resource_items() {
         .unwrap();
     assert!(ppc_track_dialog_popup(
         &mut loaded.memory,
-        &loaded.controls,
+        &loaded.controls.records(),
         &loaded.gworlds,
         &loaded.process_file_system.vfs_resources,
         *loaded.process_file_system.current_resource_file,
@@ -55812,7 +55813,7 @@ fn dialog_popup_controls_use_ditl_bounds_and_menu_resource_items() {
     ppc_draw_control_inner(
         &mut loaded.memory,
         &handles,
-        &loaded.controls,
+        &loaded.controls.records(),
         &loaded.gworlds,
         &loaded.process_file_system.vfs_resources,
         *loaded.process_file_system.current_resource_file,
@@ -58368,10 +58369,7 @@ fn native_list_manager_stores_cells_rows_selection_and_geometry_in_public_record
     loaded.cpu.gpr[3] = list;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::LDispose);
     assert_eq!(loaded.memory.read_u32_be(vertical_scroll), Some(0));
-    assert!(!loaded
-        .controls
-        .iter()
-        .any(|record| record.handle == vertical_scroll));
+    assert!(!loaded.controls.contains_handle(vertical_scroll));
 }
 
 #[test]
@@ -60248,9 +60246,9 @@ fn attached_control_manager_metadata_crosses_isa_immediately() {
     );
     let classic_record = native
         .controls
-        .iter()
+        .records()
+        .into_iter()
         .find(|record| record.handle == classic_handle)
-        .copied()
         .unwrap();
     assert_eq!(classic_record.pointer, classic_pointer);
     assert_eq!(classic_record.proc_id, 1009);
@@ -60261,10 +60259,7 @@ fn attached_control_manager_metadata_crosses_isa_immediately() {
     assert_eq!(classic.control_manager.proc_id(0x0030_2000), 16);
 
     classic.dispose_control_handle(&mut classic_bus, classic_handle);
-    assert!(!native
-        .controls
-        .iter()
-        .any(|record| record.handle == classic_handle));
+    assert!(!native.controls.contains_handle(classic_handle));
     native.controls.remove_handle(0x0030_1000);
     assert!(!classic.control_manager.contains_pointer(0x0030_2000));
 }
@@ -60285,10 +60280,7 @@ fn cloned_native_adapter_detaches_control_manager_metadata() {
 
     assert_eq!(original.controls.proc_id(0x0031_2000), 1);
     assert_eq!(detached.controls.proc_id(0x0031_2000), 2);
-    assert!(!original
-        .controls
-        .iter()
-        .any(|record| record.handle == 0x0031_3000));
+    assert!(!original.controls.contains_handle(0x0031_3000));
 }
 
 #[test]

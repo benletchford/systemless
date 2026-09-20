@@ -4,6 +4,8 @@ use crate::callback_manager::{
     CallbackTaskArchitecture, ProcessCallbackScheduling, ProcessTimerTask, ProcessVblTask,
 };
 use crate::control_manager::ProcessControlManagerState;
+#[cfg(test)]
+use crate::control_manager::ProcessControlRecord;
 use crate::display::{
     default_arrow_cursor_image, default_display_gamma, standard_mac_8bpp_clut, CursorImage,
     DisplayGamma,
@@ -1543,7 +1545,8 @@ pub(crate) type SharedProcessCallbackScheduling = SharedProcessValue<ProcessCall
 pub(crate) struct SharedProcessMixedModeM68kState(SharedProcessValue<ProcessMixedModeM68kState>);
 #[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessScrapState(SharedProcessValue<ProcessScrapState>);
-pub(crate) type SharedProcessControlManager = SharedProcessValue<ProcessControlManagerState>;
+#[derive(Clone, Default, Eq, PartialEq)]
+pub(crate) struct SharedProcessControlManager(SharedProcessValue<ProcessControlManagerState>);
 pub(crate) type SharedProcessListManager = SharedProcessValue<ProcessListManagerState>;
 #[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessTextEditManager(SharedProcessValue<ProcessTextEditManagerState>);
@@ -2794,9 +2797,62 @@ impl std::fmt::Debug for SharedProcessScrapState {
     }
 }
 
+impl fmt::Debug for SharedProcessControlManager {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.with_ref(|manager| {
+            formatter
+                .debug_tuple("SharedProcessControlManager")
+                .field(manager)
+                .finish()
+        })
+    }
+}
+
 impl SharedProcessControlManager {
+    #[cfg(test)]
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&ProcessControlManagerState) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut ProcessControlManagerState) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    fn attach_to(&mut self, process_state: &Self) {
+        self.0
+            .attach_to(&process_state.0, ProcessControlManagerState::is_pristine);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.with_ref(|manager| manager.is_empty())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_handle(&self, handle: u32) -> bool {
+        self.with_ref(|manager| manager.iter().any(|record| record.handle == handle))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn records(&self) -> Vec<ProcessControlRecord> {
+        self.with_ref(|manager| manager.to_vec())
+    }
+
     pub(crate) fn register(&self, handle: u32, pointer: u32, proc_id: i16, popup_menu_id: i16) {
         self.with_mut(|manager| manager.register(handle, pointer, proc_id, popup_menu_id));
+    }
+
+    pub(crate) fn proc_id(&self, pointer: u32) -> i16 {
+        self.with_ref(|manager| manager.proc_id(pointer))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_pointer(&self, pointer: u32) -> bool {
+        self.with_ref(|manager| manager.contains_pointer(pointer))
     }
 
     pub(crate) fn set_proc_id(&self, pointer: u32, proc_id: i16) {
@@ -2811,6 +2867,10 @@ impl SharedProcessControlManager {
         self.with_mut(|manager| manager.set_popup_title_width(pointer, width));
     }
 
+    pub(crate) fn popup_title_width(&self, pointer: u32, fallback: i16) -> i16 {
+        self.with_ref(|manager| manager.popup_title_width(pointer, fallback))
+    }
+
     pub(crate) fn remove_pointer(&self, pointer: u32) {
         self.with_mut(|manager| manager.remove_pointer(pointer));
     }
@@ -2818,6 +2878,11 @@ impl SharedProcessControlManager {
     #[cfg(test)]
     pub(crate) fn remove_handle(&self, handle: u32) {
         self.with_mut(|manager| manager.remove_handle(handle));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
     }
 }
 
@@ -8111,7 +8176,7 @@ impl ProcessContext {
     }
 
     pub(crate) fn attach_control_manager(&self, adapter: &mut SharedProcessControlManager) {
-        adapter.attach_to(&self.control_manager, ProcessControlManagerState::is_pristine);
+        adapter.attach_to(&self.control_manager);
     }
 
     pub(crate) fn attach_list_manager(&self, adapter: &mut SharedProcessListManager) {
@@ -11507,5 +11572,29 @@ mod tests {
         assert!(!classic.feature_bit(0x2000, 3));
         assert_eq!(detached.handles(), vec![0x1000, 0x2000]);
         assert!(detached.feature_bit(0x2000, 3));
+    }
+
+    #[test]
+    fn attached_control_managers_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessControlManager::default();
+        let mut native = SharedProcessControlManager::default();
+        context.attach_control_manager(&mut classic);
+        classic.register(0x1000, 0x2000, 16, 100);
+        classic.set_popup_title_width(0x2000, 75);
+        context.attach_control_manager(&mut native);
+        let detached = native.clone();
+
+        assert!(classic.ptr_eq(&native));
+        assert_eq!(native.proc_id(0x2000), 16);
+        assert_eq!(native.popup_title_width(0x2000, 0), 75);
+
+        detached.set_proc_id(0x2000, 32);
+        detached.set_popup_title_width(0x2000, 120);
+        assert!(!native.ptr_eq(&detached));
+        assert_eq!(classic.proc_id(0x2000), 16);
+        assert_eq!(classic.popup_title_width(0x2000, 0), 75);
+        assert_eq!(detached.proc_id(0x2000), 32);
+        assert_eq!(detached.popup_title_width(0x2000, 0), 120);
     }
 }
