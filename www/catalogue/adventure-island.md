@@ -50,6 +50,25 @@ artifacts:
       bd20a3ce8bbd285ac9e3f84c620380a7fe027dd17aa04a0e88f45f71241ad635. The
       complete package retains the Adventure Island 68k application and its
       Adventure Island ReadMe.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: incoming
+    path: catalogue/incoming/adventure-island/gameplay.png
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/2321
+    permission: >-
+      Original screenshot captured from the exact Adventure Island archive
+      during a deterministic command-parsing run for this catalogue. Underlying
+      game artwork remains the property of its rights holder.
+    notes: >-
+      Fresh capture after command input was processed, cropped to the 550-by-348
+      Adventure Island application window. It excludes the Mac menu bar, host
+      desktop and emulator margins.
 references:
 - https://www.vintageapplemac.com/software/games/a/
 - https://www.vintageapplemac.com/files/games/Adventure%20Island.sit
@@ -69,6 +88,8 @@ whatever, but please don't alter anything.” This entry points to the exact
 unchanged 131,259-byte archive and keeps its application and ReadMe together.
 
 ## Live command parsing
+
+![Adventure Island gameplay](incoming/adventure-island/gameplay.png)
 
 Systemless reaches the text-adventure window from the exact archive. A
 deterministic run clicked the command area, entered `n`, pressed Return, and
