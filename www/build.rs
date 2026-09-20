@@ -25,9 +25,14 @@ fn main() {
     );
     println!("cargo:rerun-if-env-changed=SYSTEMLESS_GIT_SHA");
     println!("cargo:rerun-if-env-changed=GITHUB_SHA");
+    println!("cargo:rerun-if-env-changed=SYSTEMLESS_CATALOGUE_PRODUCTION");
 
-    let catalogue = catalogue_tools::load(&manifest_dir, catalogue_tools::Mode::Production)
-        .expect("invalid embedded catalogue");
+    let mode = match env::var("SYSTEMLESS_CATALOGUE_PRODUCTION").as_deref() {
+        Ok("1") => catalogue_tools::Mode::Production,
+        Err(env::VarError::NotPresent) => catalogue_tools::Mode::Preview,
+        _ => panic!("SYSTEMLESS_CATALOGUE_PRODUCTION must be 1 or unset"),
+    };
+    let catalogue = catalogue_tools::load(&manifest_dir, mode).expect("invalid embedded catalogue");
     let compiled = catalogue_tools::build(&catalogue).expect("catalogue compilation failed");
     let generated =
         catalogue_tools::site::rust_games(&compiled).expect("invalid game configuration");
