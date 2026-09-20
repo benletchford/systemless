@@ -74,6 +74,119 @@ thread_local! {
     static PENDING_AUDIO_BOOTSTRAP: RefCell<Option<AudioBootstrap>> = const { RefCell::new(None) };
 }
 
+/// The ordinary Mac cursor is a 16x16 monochrome overlay. Keep only the
+/// pixels it temporarily replaces so cursor movement does not require a full
+/// logical-frame copy into `overlay_rgba`.
+#[derive(Default)]
+struct CursorBackup {
+    rect: Option<(u32, u32, u32, u32)>,
+    frame_width: u32,
+    frame_height: u32,
+    pixels: Vec<u8>,
+}
+
+impl CursorBackup {
+    fn discard(&mut self) {
+        self.rect = None;
+        self.frame_width = 0;
+        self.frame_height = 0;
+    }
+
+    fn capture_mono(
+        &mut self,
+        frame: &[u8],
+        width: u32,
+        height: u32,
+        cursor: &display::CursorImage,
+        mouse_pos: (i16, i16),
+    ) -> bool {
+        let display::CursorImage::Mono { hot_v, hot_h, .. } = cursor else {
+            self.discard();
+            return false;
+        };
+        let Some(frame_len) = usize::try_from(width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .and_then(|pixels| pixels.checked_mul(4))
+        else {
+            self.discard();
+            return false;
+        };
+        if frame.len() != frame_len {
+            self.discard();
+            return false;
+        }
+
+        let left = i32::from(mouse_pos.1) - i32::from(*hot_h);
+        let top = i32::from(mouse_pos.0) - i32::from(*hot_v);
+        let right = left + 16;
+        let bottom = top + 16;
+        let x0 = left.clamp(0, width as i32) as u32;
+        let y0 = top.clamp(0, height as i32) as u32;
+        let x1 = right.clamp(0, width as i32) as u32;
+        let y1 = bottom.clamp(0, height as i32) as u32;
+        self.discard();
+        if x0 >= x1 || y0 >= y1 {
+            return true;
+        }
+
+        let row_width = usize::try_from(x1 - x0).unwrap() * 4;
+        let row_count = usize::try_from(y1 - y0).unwrap();
+        self.pixels.resize(row_width * row_count, 0);
+        for row in 0..row_count {
+            let source_start = ((usize::try_from(y0).unwrap() + row)
+                * usize::try_from(width).unwrap()
+                + usize::try_from(x0).unwrap())
+                * 4;
+            let backup_start = row * row_width;
+            self.pixels[backup_start..backup_start + row_width]
+                .copy_from_slice(&frame[source_start..source_start + row_width]);
+        }
+        self.rect = Some((x0, y0, x1 - x0, y1 - y0));
+        self.frame_width = width;
+        self.frame_height = height;
+        true
+    }
+
+    fn restore(&mut self, frame: &mut [u8]) {
+        let Some((x0, y0, width, height)) = self.rect.take() else {
+            return;
+        };
+        let Some(frame_len) = usize::try_from(self.frame_width)
+            .ok()
+            .and_then(|width| {
+                usize::try_from(self.frame_height)
+                    .ok()
+                    .and_then(|height| width.checked_mul(height))
+            })
+            .and_then(|pixels| pixels.checked_mul(4))
+        else {
+            self.discard();
+            return;
+        };
+        if frame.len() != frame_len {
+            self.discard();
+            return;
+        }
+        let row_width = usize::try_from(width).unwrap() * 4;
+        let frame_width = usize::try_from(self.frame_width).unwrap();
+        for row in 0..usize::try_from(height).unwrap() {
+            let destination_start = ((usize::try_from(y0).unwrap() + row) * frame_width
+                + usize::try_from(x0).unwrap())
+                * 4;
+            let backup_start = row * row_width;
+            frame[destination_start..destination_start + row_width]
+                .copy_from_slice(&self.pixels[backup_start..backup_start + row_width]);
+        }
+        self.frame_width = 0;
+        self.frame_height = 0;
+    }
+}
+
 pub fn begin_audio_from_user_gesture() {
     begin_audio_bootstrap(true);
 }
@@ -116,6 +229,7 @@ pub struct Machine {
     /// avoid decoding an unchanged guest screen before drawing host overlays.
     frame_rgba: Vec<u8>,
     overlay_rgba: Vec<u8>,
+    cursor_backup: CursorBackup,
     presented_rgba: Vec<u8>,
     frame_epoch: Option<u64>,
     frame_screen_mode: Option<(u32, u32, u16, u16, u16)>,
@@ -124,6 +238,7 @@ pub struct Machine {
     rendered_scale: u32,
     rendered_outline: bool,
     rendered_cursor: Option<display::CursorImage>,
+    rendered_cursor_in_frame: bool,
     rendered_mouse_pos: (i16, i16),
     output_scale: u32,
     presented_size: (u32, u32),
@@ -323,6 +438,7 @@ impl Machine {
             last_audio_queue_ms: None,
             frame_rgba: Vec::new(),
             overlay_rgba: Vec::new(),
+            cursor_backup: CursorBackup::default(),
             presented_rgba: Vec::new(),
             frame_epoch: None,
             frame_screen_mode: None,
@@ -331,6 +447,7 @@ impl Machine {
             rendered_scale: 0,
             rendered_outline: false,
             rendered_cursor: None,
+            rendered_cursor_in_frame: false,
             rendered_mouse_pos: (0, 0),
             output_scale: 1,
             presented_size: (0, 0),
@@ -684,19 +801,19 @@ impl Machine {
         &mut self,
         debug_stats: Option<DebugOverlayFrameStats>,
     ) -> ((u32, u32), &[u8]) {
-        let (screen_mode, clut, mouse_pos, cursor_matches) = {
+        let (screen_mode, clut, mouse_pos, cursor) = {
             let dispatcher = self.runner.dispatcher();
-            let cursor_matches = match (&self.rendered_cursor, dispatcher.cursor()) {
-                (None, None) => true,
-                (Some(previous), Some(current)) => previous == current,
-                _ => false,
-            };
             (
                 dispatcher.screen_mode,
                 *dispatcher.device_clut,
                 dispatcher.mouse_position(),
-                cursor_matches,
+                dispatcher.cursor().cloned(),
             )
+        };
+        let cursor_matches = match (&self.rendered_cursor, cursor.as_ref()) {
+            (None, None) => true,
+            (Some(previous), Some(current)) => previous == current,
+            _ => false,
         };
         let presentation_epoch = self.runner.bus().presentation_epoch();
         let outline = self.runner.bus().has_visible_outline_detail();
@@ -718,11 +835,16 @@ impl Machine {
             if self.rendered_outline {
                 return (self.presented_size, &self.presented_rgba);
             }
-            if self.rendered_cursor.is_some() {
+            if self.rendered_cursor.is_some() && !self.rendered_cursor_in_frame {
                 return (self.presented_size, &self.overlay_rgba);
             }
             return (self.presented_size, &self.frame_rgba);
         }
+
+        // A normal monochrome cursor is drawn directly into the retained
+        // logical frame below. Restore the small footprint it replaced before
+        // any frame or cursor transition is handled.
+        self.cursor_backup.restore(&mut self.frame_rgba);
 
         if palette_changed {
             self.frame_palette = display::rgba_palette_from_clut(&clut);
@@ -744,23 +866,48 @@ impl Machine {
                 &self.frame_palette,
                 &mut self.frame_rgba,
             );
+            self.cursor_backup.discard();
             self.frame_epoch = presentation_epoch;
             self.frame_screen_mode = Some(screen_mode);
         }
 
-        let cursor = self.runner.dispatcher().cursor().cloned();
         let has_overlay = cursor.is_some() || debug_stats.is_some();
-        if has_overlay {
-            self.overlay_rgba.clone_from(&self.frame_rgba);
-        }
-        if let Some(cursor) = cursor.as_ref() {
+        let compose_cursor_in_frame = debug_stats.is_none()
+            && !outline
+            && cursor
+                .as_ref()
+                .is_some_and(|cursor| matches!(cursor, display::CursorImage::Mono { .. }));
+        let cursor_in_frame = compose_cursor_in_frame
+            && cursor.as_ref().is_some_and(|cursor| {
+                self.cursor_backup.capture_mono(
+                    &self.frame_rgba,
+                    screen_mode.2 as u32,
+                    screen_mode.3 as u32,
+                    cursor,
+                    mouse_pos,
+                )
+            });
+        if cursor_in_frame {
             display::render_cursor(
-                &mut self.overlay_rgba,
+                &mut self.frame_rgba,
                 screen_mode.2 as u32,
                 screen_mode.3 as u32,
-                cursor,
+                cursor.as_ref().unwrap(),
                 mouse_pos,
             );
+        } else {
+            if has_overlay {
+                self.overlay_rgba.clone_from(&self.frame_rgba);
+            }
+            if let Some(cursor) = cursor.as_ref() {
+                display::render_cursor(
+                    &mut self.overlay_rgba,
+                    screen_mode.2 as u32,
+                    screen_mode.3 as u32,
+                    cursor,
+                    mouse_pos,
+                );
+            }
         }
         if let Some(debug_stats) = debug_stats {
             let lines = self.runner.debug_overlay_snapshot(debug_stats).lines();
@@ -792,6 +939,8 @@ impl Machine {
             } else {
                 (self.presented_size, &self.frame_rgba)
             }
+        } else if cursor_in_frame {
+            (self.presented_size, &self.frame_rgba)
         } else if has_overlay {
             (self.presented_size, &self.overlay_rgba)
         } else {
@@ -804,12 +953,14 @@ impl Machine {
             self.rendered_scale = self.output_scale;
             self.rendered_outline = outline;
             self.rendered_cursor = cursor;
+            self.rendered_cursor_in_frame = cursor_in_frame;
             self.rendered_mouse_pos = mouse_pos;
         } else {
             // The debug panel changes every frame and is drawn into the
             // reusable overlay buffer. Do not let it become the cached image.
             self.rendered_epoch = None;
             self.rendered_cursor = None;
+            self.rendered_cursor_in_frame = false;
         }
 
         (size, pixels)
@@ -1383,6 +1534,34 @@ fn map_axis_through_copybits(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_backup_restores_clipped_cursor_before_moving_it() {
+        let width = 5;
+        let height = 4;
+        let original: Vec<u8> = (0..width * height * 4).map(|value| value as u8).collect();
+        let cursor = display::CursorImage::mono([0xFF; 32], [0xFF; 32], 0, 0);
+        let mut actual = original.clone();
+        let mut backup = CursorBackup::default();
+
+        assert!(backup.capture_mono(&actual, width, height, &cursor, (0, 0)));
+        display::render_cursor(&mut actual, width, height, &cursor, (0, 0));
+        let mut expected = original.clone();
+        display::render_cursor(&mut expected, width, height, &cursor, (0, 0));
+        assert_eq!(actual, expected);
+
+        backup.restore(&mut actual);
+        assert_eq!(actual, original);
+
+        assert!(backup.capture_mono(&actual, width, height, &cursor, (2, 3)));
+        display::render_cursor(&mut actual, width, height, &cursor, (2, 3));
+        let mut moved = original.clone();
+        display::render_cursor(&mut moved, width, height, &cursor, (2, 3));
+        assert_eq!(actual, moved);
+
+        backup.restore(&mut actual);
+        assert_eq!(actual, original);
+    }
 
     #[test]
     fn web_runtime_uses_systemless_presentation_theme() {
