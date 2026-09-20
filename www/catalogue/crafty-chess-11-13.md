@@ -30,10 +30,9 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/misc/crafty-chess-1113.hqx
-    expected_sha256: 856d578f6baea59f88682e7da81bd3ea0b1f24886d2b8178f417eebeeae9f83e
-    expected_size: 972415
+    type: sha256
+    sha256: 856d578f6baea59f88682e7da81bd3ea0b1f24886d2b8178f417eebeeae9f83e
+    size_bytes: 972415
   provenance:
     redistribution: permitted
     original: true
