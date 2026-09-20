@@ -78,6 +78,36 @@ fn permission() -> Provenance {
     }
 }
 
+fn plugin_collection(entry: &str) -> PluginCollection {
+    let mut artifact = common::catalogue().documents[0].entry.artifacts[0].clone();
+    artifact.id = "optional-content".into();
+    artifact.role = ArtifactRole::Supplement;
+    artifact.source = AssetSource::External {
+        url: "https://example.org/optional-content.sit".into(),
+    };
+    PluginCollection {
+        schema_version: SCHEMA_VERSION,
+        entry: entry.into(),
+        artifacts: vec![artifact],
+        plugins: vec![Plugin {
+            id: "optional-content".into(),
+            label: "Optional content".into(),
+            description: "An independently hosted extension".into(),
+            download_artifact: "optional-content".into(),
+            install: Vec::new(),
+        }],
+    }
+}
+
+fn save_plugins(root: &Path, name: &str, collection: &PluginCollection) {
+    fs::create_dir_all(root.join("plugins")).unwrap();
+    fs::write(
+        root.join(format!("plugins/{name}.yaml")),
+        serde_saphyr::to_string(collection).unwrap(),
+    )
+    .unwrap();
+}
+
 #[test]
 fn derived_launch_assets_and_unattested_captures_are_rejected() {
     let mut entry = hosted("original", &hash(1));
@@ -1314,6 +1344,85 @@ fn plugins_reference_managed_supplements_and_safe_install_paths() {
         .metadata_issue
         .contains("metadata.yml"));
     assert!(output.entries[0].community.edit.contains("/edit/"));
+}
+
+#[test]
+fn plugin_collections_are_loaded_separately_and_can_be_chunked() {
+    let root = repo();
+    let entry = simple("test");
+    save(root.path(), &entry, "");
+    let collection = plugin_collection("test");
+    save_plugins(root.path(), "test-01", &collection);
+
+    let source = load(root.path(), Mode::Production).unwrap();
+    assert_eq!(source.plugin_documents.len(), 1);
+    assert_eq!(source.documents[0].entry.plugins, collection.plugins);
+    assert!(source.documents[0]
+        .entry
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.id == "optional-content"));
+    assert_eq!(build(&source).unwrap().entries[0].plugins.len(), 1);
+    let serialized = catalogue::serialize_entry_document(&source, &source.documents[0]).unwrap();
+    assert!(!serialized.contains("optional-content"));
+
+    let mut second = collection.clone();
+    second.plugins[0].id = "another-plugin".into();
+    second.plugins[0].label = "Another plugin".into();
+    second.plugins[0].download_artifact = "another-artifact".into();
+    second.artifacts[0].id = "another-artifact".into();
+    save_plugins(root.path(), "test-02", &second);
+    assert_eq!(
+        load(root.path(), Mode::Production).unwrap().documents[0]
+            .entry
+            .plugins
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn plugin_collection_boundaries_are_strict() {
+    let root = repo();
+    let mut entry = simple("test");
+    save(root.path(), &entry, "");
+    let mut collection = plugin_collection("missing");
+    save_plugins(root.path(), "test-01", &collection);
+    assert!(load(root.path(), Mode::Production).is_err());
+
+    collection.entry = "test".into();
+    collection.artifacts[0].source = AssetSource::Sha256 {
+        sha256: hash(1),
+        size_bytes: 123,
+    };
+    save_plugins(root.path(), "test-01", &collection);
+    assert!(load(root.path(), Mode::Production).is_err());
+
+    fs::remove_dir_all(root.path().join("plugins")).unwrap();
+    entry.plugins = plugin_collection("test").plugins;
+    save(root.path(), &entry, "");
+    assert!(load(root.path(), Mode::Production).is_err());
+}
+
+#[test]
+fn promotion_does_not_inline_separate_plugins() {
+    let root = repo();
+    screenshot(root.path(), "test");
+    save_plugins(root.path(), "test-01", &plugin_collection("test"));
+    let store = tempfile::tempdir().unwrap();
+    let mut backend = assets::DirectoryStore {
+        root: store.path().into(),
+    };
+    assets::promote(root.path(), None, true, &mut backend).unwrap();
+    let entry_source = fs::read_to_string(root.path().join("catalogue/test.md")).unwrap();
+    assert!(!entry_source.contains("optional-content"));
+    assert_eq!(
+        load(root.path(), Mode::Production).unwrap().documents[0]
+            .entry
+            .plugins
+            .len(),
+        1
+    );
 }
 
 #[test]

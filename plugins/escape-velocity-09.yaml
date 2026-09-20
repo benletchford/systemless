@@ -1,0 +1,27 @@
+schema_version: 1
+entry: escape-velocity
+artifacts:
+- id: plugin-zzzpalevisagefix-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/zzzpalevisagefix.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/zzzpalevisagefix.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+plugins:
+- id: zzzpalevisagefix-sit
+  label: zzzpalevisagefix.sit
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-zzzpalevisagefix-sit
+  install: []

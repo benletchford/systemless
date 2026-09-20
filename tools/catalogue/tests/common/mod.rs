@@ -20,6 +20,7 @@ pub fn catalogue() -> Catalogue {
     Catalogue {
         config: systemless_catalogue_tools::catalogue_tools::Config::default(),
         documents,
+        plugin_documents: Vec::new(),
         root: ".".into(),
     }
 }

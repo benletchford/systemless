@@ -24,9 +24,16 @@ pub struct Document {
     pub path: PathBuf,
 }
 #[derive(Debug, Clone)]
+pub struct PluginDocument {
+    pub collection: PluginCollection,
+    pub original: String,
+    pub path: PathBuf,
+}
+#[derive(Debug, Clone)]
 pub struct Catalogue {
     pub config: Config,
     pub documents: Vec<Document>,
+    pub plugin_documents: Vec<PluginDocument>,
     pub root: PathBuf,
 }
 
@@ -54,6 +61,25 @@ pub fn serialize_document(entry: &Entry, markdown: &str) -> Result<String> {
         serde_saphyr::to_string(entry)?,
         markdown
     ))
+}
+
+pub fn serialize_entry_document(catalogue: &Catalogue, document: &Document) -> Result<String> {
+    let mut entry = document.entry.clone();
+    let plugin_ids: BTreeSet<_> = catalogue
+        .plugin_documents
+        .iter()
+        .filter(|d| d.collection.entry == entry.id)
+        .flat_map(|d| d.collection.plugins.iter().map(|p| &p.id))
+        .collect();
+    let artifact_ids: BTreeSet<_> = catalogue
+        .plugin_documents
+        .iter()
+        .filter(|d| d.collection.entry == entry.id)
+        .flat_map(|d| d.collection.artifacts.iter().map(|a| &a.id))
+        .collect();
+    entry.plugins.retain(|p| !plugin_ids.contains(&p.id));
+    entry.artifacts.retain(|a| !artifact_ids.contains(&a.id));
+    serialize_document(&entry, &document.markdown)
 }
 
 pub fn load(root: &Path, mode: Mode) -> Result<Catalogue> {
@@ -85,7 +111,11 @@ pub fn load(root: &Path, mode: Mode) -> Result<Catalogue> {
         let original = read_text(&path, 8 * 1024 * 1024)?;
         let (entry, markdown) =
             parse_document(&original).with_context(|| path.display().to_string())?;
-        validate::entry(&entry).with_context(|| path.display().to_string())?;
+        ensure!(
+            entry.plugins.is_empty(),
+            "{}: plugins must be declared in plugins/*.yaml",
+            path.display()
+        );
         ensure!(
             filename == format!("{}.md", entry.id),
             "filename must match entry ID: {filename}"
@@ -124,14 +154,94 @@ pub fn load(root: &Path, mode: Mode) -> Result<Catalogue> {
             path,
         });
     }
+    let plugin_documents = load_plugins(root, &mut documents)?;
     let catalogue = Catalogue {
         config,
         documents,
+        plugin_documents,
         root: root.canonicalize()?,
     };
     validate_catalogue(&catalogue)?;
     validate_incoming(&catalogue, mode)?;
     Ok(catalogue)
+}
+
+pub(crate) fn load_plugins(root: &Path, documents: &mut [Document]) -> Result<Vec<PluginDocument>> {
+    let directory = root.join("plugins");
+    if !directory.exists() && fs::symlink_metadata(&directory).is_err() {
+        return Ok(Vec::new());
+    }
+    ensure!(
+        !fs::symlink_metadata(&directory)?.file_type().is_symlink() && directory.is_dir(),
+        "plugins must be a real directory"
+    );
+    let mut paths = fs::read_dir(&directory)?
+        .map(|p| p.map(|p| p.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    paths.sort();
+    let mut plugin_documents = Vec::new();
+    for candidate in paths {
+        let name = candidate
+            .file_name()
+            .and_then(|p| p.to_str())
+            .context("non UTF-8 path in plugins")?;
+        if name == ".gitkeep" {
+            let metadata = fs::symlink_metadata(&candidate)?;
+            ensure!(
+                metadata.is_file() && metadata.len() == 0,
+                "plugins/.gitkeep must be an empty regular file"
+            );
+            continue;
+        }
+        ensure!(
+            candidate
+                .extension()
+                .is_some_and(|extension| extension == "yaml"),
+            "plugins/ may only contain <chunk-id>.yaml files and an empty .gitkeep: {}",
+            candidate.display()
+        );
+        let stem = candidate
+            .file_stem()
+            .and_then(|p| p.to_str())
+            .context("non UTF-8 plugin filename")?;
+        validate::slug(stem)?;
+        let path = validate::safe_file(root, &format!("plugins/{name}"))?;
+        let original = read_text(&path, 8 * 1024 * 1024)?;
+        let collection: PluginCollection = crate::catalogue_tools::yaml::from_str(&original)
+            .with_context(|| path.display().to_string())?;
+        ensure!(
+            collection.schema_version == SCHEMA_VERSION,
+            "{}: unsupported schema_version {}",
+            path.display(),
+            collection.schema_version
+        );
+        validate::slug(&collection.entry)?;
+        ensure!(
+            !collection.plugins.is_empty(),
+            "{}: plugin collection must not be empty",
+            path.display()
+        );
+        for artifact in &collection.artifacts {
+            ensure!(
+                artifact.role == ArtifactRole::Supplement
+                    && matches!(artifact.source, AssetSource::External { .. }),
+                "{}: plugin artifacts must be external supplements",
+                path.display()
+            );
+        }
+        let entry = documents
+            .iter_mut()
+            .find(|d| d.entry.id == collection.entry)
+            .with_context(|| format!("{}: unknown entry {}", path.display(), collection.entry))?;
+        entry.entry.artifacts.extend(collection.artifacts.clone());
+        entry.entry.plugins.extend(collection.plugins.clone());
+        plugin_documents.push(PluginDocument {
+            collection,
+            original,
+            path,
+        });
+    }
+    Ok(plugin_documents)
 }
 
 pub fn validate_catalogue(c: &Catalogue) -> Result<()> {

@@ -1,0 +1,1178 @@
+schema_version: 1
+entry: escape-velocity
+artifacts:
+- id: plugin-map-patch-for-escape-velocity
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/2011EVMapPatch.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/2011EVMapPatch.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-a-loner-to-die-sea
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/A_Loner_to_Die.sea.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/A_Loner_to_Die.sea.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-aev-sit
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/AEV.sit.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/AEV.sit.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-alertsounds-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/AlertSounds.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/AlertSounds.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-alexs-great-war-2-1
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Alexs%20Great%20War%202.1.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Alexs%20Great%20War%202.1.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-alien-empire-1-1-hqx-1
+  role: supplement
+  format: opaque
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Alien%20Empire%201.1.hqx.1
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Alien%20Empire%201.1.hqx.1
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-alien-empire
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Alien%20Empire.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Alien%20Empire.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-alien-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/alien.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/alien.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-alpha-console-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Alpha%20Console.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Alpha%20Console.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-alpha1-0b12-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/alpha1.0b12.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/alpha1.0b12.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-alteredstates105-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/AlteredStates105.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/AlteredStates105.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-ambrosia-1-0-1-plug-in-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Ambrosia%201.0.1%20Plug-In.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Ambrosia%201.0.1%20Plug-In.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-anarchists1-0-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/anarchists1.0.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/anarchists1.0.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-angelsofvengeance-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/AngelsOfVengeance.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/AngelsOfVengeance.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-aqua-buttons-1-1-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Aqua_Buttons_1.1.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Aqua_Buttons_1.1.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-aquinacorp1-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/AquinaCorp1.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/AquinaCorp1.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-arctco110-sit
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/ArcTCo110.sit.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/ArcTCo110.sit.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-area-51-1-6
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Area_51_1.6.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Area_51_1.6.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-arena-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/arena.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/arena.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-argonaut1-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Argonaut1.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Argonaut1.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-armada128-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Armada128.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Armada128.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-artifact1-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Artifact1.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Artifact1.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-asdom2
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Asdom2.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Asdom2.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-asteridian-3-0-sit
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Asteridian%203.0.sit.Bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Asteridian%203.0.sit.Bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-asteroidbeam-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/AsteroidBeam.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/AsteroidBeam.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-asteroidships10-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/AsteroidShips10.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/AsteroidShips10.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-astex2-01-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/astex2.01.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/astex2.01.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-avichai1-0-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/avichai1.0.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/avichai1.0.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-azertykeyboard-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/azertykeyboard.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/azertykeyboard.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-babylon5
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Babylon5.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Babylon5.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-balatic1-01-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/balatic1.01.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/balatic1.01.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-battle-front-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Battle_Front.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Battle_Front.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-battleofvalhalla091-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BattleOfValhalla091.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BattleOfValhalla091.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-beefyships1-sea
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BeefyShips1.sea.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BeefyShips1.sea.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-behemothpluginpack2-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BehemothPluginPack2.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BehemothPluginPack2.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-betterramscoop-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BetterRamscoop.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BetterRamscoop.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-betweentimeandspaceteaser-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BetweenTimeAndSpaceTeaser.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BetweenTimeAndSpaceTeaser.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-bigevplug-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/bigevplug.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/bigevplug.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-black-pearl-1-0-1-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Black_Pearl_1.0.1.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Black_Pearl_1.0.1.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-blackdrek1-0-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/blackdrek1.0.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/blackdrek1.0.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-blackpanel-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BlackPanel.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BlackPanel.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-blackthornekestrel-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BlackthorneKestrel.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BlackthorneKestrel.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-bladez-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/bladez.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/bladez.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-bmw-sea
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BMW.sea.Bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BMW.sea.Bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-borg1-00-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/borg1.00.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/borg1.00.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-botkupdater1-1-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BOTKupdater1.1.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BOTKupdater1.1.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-bountyplus201-1
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/bountyplus201-1.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/bountyplus201-1.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-bountyplus201
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BountyPlus201.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BountyPlus201.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-bountyplus21-sit
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/bountyplus21.sit.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/bountyplus21.sit.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-bountyplusgraphics2
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BountyPlusGraphics2.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BountyPlusGraphics2.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+plugins:
+- id: map-patch-for-escape-velocity
+  label: Map Patch for Escape Velocity
+  description: >-
+    Patch creates new hyperjump links between long distance (and originally
+    unconnected) points so that you don\t have to waste five minutes jumping from one side
+    of the galaxy to the next. Two hyperjump circular routes were made
+    --Satori-1027-0595-1896-6564-48...
+  download_artifact: plugin-map-patch-for-escape-velocity
+  install: []
+- id: a-loner-to-die-sea
+  label: A Loner to Die.sea
+  description: >-
+    This makes all the governments attack you nomatter how much they like you. Only
+    download if your really good. If you have any questions, comments, or
+    suggestions than just e-mail me at or if you would like more plug-ins just visit my website
+    at
+  download_artifact: plugin-a-loner-to-die-sea
+  install: []
+- id: aev-sit
+  label: AEV.sit
+  description: "Advanced EV is a plug-in for the original Escape Velocity. Very simply, it makes EV more difficult, by making the ships the computer uses more powerful without altering the ships you purchase. It also changes a few things: For example, if you buy a Confed s..."
+  download_artifact: plugin-aev-sit
+  install: []
+- id: alertsounds-sit
+  label: AlertSounds.sit
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-alertsounds-sit
+  install: []
+- id: alexs-great-war-2-1
+  label: Alexs Great War 2.1
+  description: >-
+    This is the great war with a few super ships. So go kill some Aliens. If you
+    can buy it get the confed dreadnought. Have Fun.
+  download_artifact: plugin-alexs-great-war-2-1
+  install: []
+- id: alien-empire-1-1-hqx-1
+  label: Alien Empire 1.1.hqx.1
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-alien-empire-1-1-hqx-1
+  install: []
+- id: alien-empire
+  label: Alien Empire
+  description: >-
+    This changes the confeds and rebels to Aliens and Terran Rebels. All ships
+    weapons are more powerful so you can really heck it out! Made by Alex
+    Wouters!!!!!!!!!!!!!
+  download_artifact: plugin-alien-empire
+  install: []
+- id: alien-sit
+  label: alien.sit
+  description: >-
+    This new alien plug-in contains 4 new systems with 4 new planets, not too big
+    so it wont be such a pain, new missions to get money or weapon rewards.
+  download_artifact: plugin-alien-sit
+  install: []
+- id: alpha-console-sit
+  label: Alpha Console.sit
+  description: >-
+    Alpha Console© v1.0 brings a fresh, new, younger look to EV that wont fail to
+    impress. Theres a new options screen, the in game side panel has a fantastic new
+    look, the like of which has not yet been seen, new target graphics, and all the
+    in-game menu butto...
+  download_artifact: plugin-alpha-console-sit
+  install: []
+- id: alpha1-0b12-sit
+  label: alpha1.0b12.sit
+  description: >-
+    Right now it has several missions at Deneb III. Soon it will edit everything
+    (and have a whole crap load of missions).
+  download_artifact: plugin-alpha1-0b12-sit
+  install: []
+- id: alteredstates105-sit
+  label: AlteredStates105.sit
+  description: >-
+    Altered States alters outfit sizes, weapon physics, outfit descriptions, and
+    ship specifications. Generally, outfits are more compact and weapons are more
+    capable.
+  download_artifact: plugin-alteredstates105-sit
+  install: []
+- id: ambrosia-1-0-1-plug-in-sit
+  label: Ambrosia 1.0.1 Plug-In.sit
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-ambrosia-1-0-1-plug-in-sit
+  install: []
+- id: anarchists1-0-sit
+  label: anarchists1.0.sit
+  description: >-
+    The Anarchists are wealthy privateers and pirates who believe in killing and
+    piracy for fun they even kill each other. Join their cause or supress it.
+  download_artifact: plugin-anarchists1-0-sit
+  install: []
+- id: angelsofvengeance-sit
+  label: AngelsOfVengeance.sit
+  description: "Beer, blues, bulbous-headed aliens and babes: This plug-in has em all. Over 50 new missions, two new opposing governments, several new ships and weapons with unique 3d graphics. Two seperate plots, each with its own shocking conclusion!"
+  download_artifact: plugin-angelsofvengeance-sit
+  install: []
+- id: aqua-buttons-1-1-sit
+  label: Aqua_Buttons_1.1.sit
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-aqua-buttons-1-1-sit
+  install: []
+- id: aquinacorp1-sit
+  label: AquinaCorp1.sit
+  description: >-
+    The AquinaCorp plug-in integrates a set of four nifty (and yellow!) starships
+    into the Escape Velocity universe. Included are a light, very effective
+    escort/fighter, a slow luxury liner, a large, multi-functional bulk freighter and an
+    extremely fast "jumbo"...
+  download_artifact: plugin-aquinacorp1-sit
+  install: []
+- id: arctco110-sit
+  label: ArcTCo110.sit
+  description: >-
+    An ion storm deposits you in an alternate EV universe where three new
+    governments, and many new planets, ships, outfits and missions are woven together into an
+    ingenious plot that can be played out from three sides to two different endings.
+  download_artifact: plugin-arctco110-sit
+  install: []
+- id: area-51-1-6
+  label: Area 51 1.6
+  description: An abandoned station, a secret base, and an Alien invasion...
+  download_artifact: plugin-area-51-1-6
+  install: []
+- id: arena-sit
+  label: arena.sit
+  description: >-
+    Arena is a battle simulator for EV. Start with a Hawk and work your way up
+    through the ranks by fighting ships you select to fight in the Arena. Difficult in my
+    opinion, so it should be a challenge for experienced players.
+  download_artifact: plugin-arena-sit
+  install: []
+- id: argonaut1-sit
+  label: Argonaut1.sit
+  description: >-
+    Argonaut 1.0 adds one new ship. In addition there are fourteen new or modified
+    missions, thirteen modified ships, fifteen modified outfits, and six modified
+    weapons. Many of the dudes and fleets have been realigned and several new
+    personalities have been ad...
+  download_artifact: plugin-argonaut1-sit
+  install: []
+- id: armada128-sit
+  label: Armada128.sit
+  description: >-
+    Armada is based on Infinitech Industries, a small company that creates advanced
+    ships, weaponry, and accessories. Infinitechs flagship, the Armada, features
+    awesome and completely new 3D graphics, as does everything else in the plugin.
+    Includes new stuff fo...
+  download_artifact: plugin-armada128-sit
+  install: []
+- id: artifact1-sit
+  label: Artifact1.sit
+  description: >-
+    This plug-in was inspired by the Babylon5 movie "Third Space". It adds several
+    ships, weapons, sounds, and outfits, as well as a mission set of 20 or so
+    missions. The missions start at Levo.
+  download_artifact: plugin-artifact1-sit
+  install: []
+- id: asdom2
+  label: Asdom2
+  description: >-
+    Welcome to Asdom. We are part of the Orclev system. We are a newly created
+    goverment, now that we have teamed up with Acrous shipyards, we are now a force to be
+    reckoned with. We are located in the west by the Pirate system. Feel free to
+    stop by anytime and...
+  download_artifact: plugin-asdom2
+  install: []
+- id: asteridian-3-0-sit
+  label: Asteridian 3.0.sit
+  description: "Fixes about 3 billion bugs from the last version. It runs pretty clean and safely now.Adds so many planets I forgot how many I added, around 20 new ship (forgot that too!),and 3 new governments. (I actually remembered how many!)Well worth the download. : )"
+  download_artifact: plugin-asteridian-3-0-sit
+  install: []
+- id: asteroidbeam-sit
+  label: AsteroidBeam.sit
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-asteroidbeam-sit
+  install: []
+- id: asteroidships10-sit
+  label: AsteroidShips10.sit
+  description: >-
+    Contains the Asteriod Ship! Very hard to spot when fighting but a lot of fun to
+    fight. ADDS 9 ships, over 12 outfits, 20 missions (five must be unlocked after
+    playing the first fifteen). Compatible with version 1.0.5 of EV.
+  download_artifact: plugin-asteroidships10-sit
+  install: []
+- id: astex2-01-sit
+  label: astex2.01.sit
+  description: >-
+    Adds a new system with two new spaceports, some new weapons, a lot of missions,
+    and a new ship (the Astex Hulk).
+  download_artifact: plugin-astex2-01-sit
+  install: []
+- id: avichai1-0-sit
+  label: avichai1.0.sit
+  description: "Adds several new ships, with new graphics: Asp Heavy Fighter, Starfall Mark IX and the Avichai War Cruiser in addition to a new government. The new ships can be found at some shipyards."
+  download_artifact: plugin-avichai1-0-sit
+  install: []
+- id: azertykeyboard-sit
+  label: azertykeyboard.sit
+  description: >-
+    Lets EV 1.0.2 (or later) support AZERTY keyboards (i.e keyboards used in France
+    and, probably, some other French speaking countries). Simply drop it in the EV
+    Plug-ins folder.
+  download_artifact: plugin-azertykeyboard-sit
+  install: []
+- id: babylon5
+  label: Babylon5
+  description: >-
+    The B5 plug-in adds 24+ systems, 24 missions, 14 ships, 8 govts, 40 outfits,
+    almost 24 sounds to EV, and the ability for several systems to CHANGE GOVERNMENTS
+    depending on the outcome of some missions! Core missions begin at the start of
+    Babylon 5s 3rd season.
+  download_artifact: plugin-babylon5
+  install: []
+- id: balatic1-01-sit
+  label: balatic1.01.sit
+  description: >-
+    Balatic currently adds 1 ship, 1 system ,1 new government, and 1 mission. I
+    hope to soon add weapons, sounds, and missions. So enjoy flying!
+  download_artifact: plugin-balatic1-01-sit
+  install: []
+- id: battle-front-sit
+  label: Battle_Front.sit
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-battle-front-sit
+  install: []
+- id: battleofvalhalla091-sit
+  label: BattleOfValhalla091.sit
+  description: >-
+    With 1.5 MB of graphics 21 ships, 10 systems, 16 stellars, 4 governments, 10
+    outfits, 10 weapons and lots more, this plug should keep you busy for decades! Join
+    the Blissex Corporation and their allies in the war against the returning
+    Aliens, or uncover sec...
+  download_artifact: plugin-battleofvalhalla091-sit
+  install: []
+- id: beefyships1-sea
+  label: BeefyShips1.sea
+  description: >-
+    Welcome to the twenty-third century! Beefy Ships thrusts you into a parallel EV
+    universe where the arms trade is booming, and kinder, gentler traders are found
+    only in reminiscences of the past. You must try to make a living in the crossfire
+    of merchants, m...
+  download_artifact: plugin-beefyships1-sea
+  install: []
+- id: behemothpluginpack2-sit
+  label: BehemothPluginPack2.sit
+  description: >-
+    The Behemoth plug-in package includes six new ships, one new weapon, one new
+    outfit and three new systems with five new planets and spaceports. The sequel
+    "Valhalla", will soon arrive, with even more ships, etc. and missions!
+  download_artifact: plugin-behemothpluginpack2-sit
+  install: []
+- id: betterramscoop-sit
+  label: BetterRamscoop.sit
+  description: >-
+    941.00 B | By Anonymous A simple plug that will increase fuel regeneration 4
+    times over the normal ramscoop. Helpful if you use my style of planetary conquest
+    or if you are one to often make your last jump into an uninhabited or unfriendly
+    system and dont w...
+  download_artifact: plugin-betterramscoop-sit
+  install: []
+- id: betweentimeandspaceteaser-sit
+  label: BetweenTimeAndSpaceTeaser.sit
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-betweentimeandspaceteaser-sit
+  install: []
+- id: bigevplug-sit
+  label: bigevplug.sit
+  description: >-
+    This package includes four new ships and six new weapons, all very cool. Rebel
+    Striker, Strikefighter, Blockade Runner and Sweep Mine Fighter.
+  download_artifact: plugin-bigevplug-sit
+  install: []
+- id: black-pearl-1-0-1-sit
+  label: Black_Pearl_1.0.1.sit
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-black-pearl-1-0-1-sit
+  install: []
+- id: blackdrek1-0-sit
+  label: blackdrek1.0.sit
+  description: >-
+    Legend has it that in the core of Blackdrek a very little-known-about community
+    of monks live. They brew Qwertz and sit around pondering the meaning of life the
+    whole day.
+  download_artifact: plugin-blackdrek1-0-sit
+  install: []
+- id: blackpanel-sit
+  label: BlackPanel.sit
+  description: "Black Panel sticks to its name: it changes the control panel in EV to be mostly black. Plus, it includes a special edition of E3DT (my 3D target plug) that has them with black backgrounds. Enjoy!"
+  download_artifact: plugin-blackpanel-sit
+  install: []
+- id: blackthornekestrel-sit
+  label: BlackthorneKestrel.sit
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-blackthornekestrel-sit
+  install: []
+- id: bladez-sit
+  label: bladez.sit
+  description: >-
+    A far off group of aliens has come to the Rebellions side to help the fight
+    against the evil Confederation scums, join them! It has 3 ships, a few missions, no
+    weapons, no graphics and no sound.
+  download_artifact: plugin-bladez-sit
+  install: []
+- id: bmw-sea
+  label: BMW.sea
+  description: >-
+    Battle of Milky Way is a decent plug in by any standards. This has taken me
+    over 7 months to make and its my 1st. You have to give me a little credit. This is
+    my 1st plug-in ever making. It contains a crapload amount of ships, outfits,
+    weapons, governments,...
+  download_artifact: plugin-bmw-sea
+  install: []
+- id: borg1-00-sit
+  label: borg1.00.sit
+  description: This Plug adds a borg cube and some weapons with it.
+  download_artifact: plugin-borg1-00-sit
+  install: []
+- id: botkupdater1-1-sit
+  label: BOTKupdater1.1.sit
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-botkupdater1-1-sit
+  install: []
+- id: bountyplus201-1
+  label: bountyplus201-1
+  description: >-
+    Bounty Plus takes you inside the mysterious organization known as the Bounty
+    Hunters Guild, a loose association of soldiers of fortune, hot-shot fighter pilots,
+    wealthy, powerful merchant princes, and outlaws looking for a second chance...
+    Latest version fi...
+  download_artifact: plugin-bountyplus201-1
+  install: []
+- id: bountyplus201
+  label: BountyPlus201
+  description: >-
+    The Bounty Hunters -- weve seen them, fought them, hacked them to fly
+    shuttlecraft. . . Now we can join them. Bounty Plus takes you inside the mysterious
+    organization known as the Bounty Hunters Guild, a loose association of soldiers of
+    fortune, hot-shot f...
+  download_artifact: plugin-bountyplus201
+  install: []
+- id: bountyplus21-sit
+  label: bountyplus21.sit
+  description: >-
+    0.00 B | By Anonymous Bounty Plus takes you inside the mysterious organization
+    known as the Bounty Hunters Guild, a loose association of soldiers of fortune,
+    hot-shot fighter pilots, wealthy, powerful merchant princes, and outlaws looking
+    for a second chan...
+  download_artifact: plugin-bountyplus21-sit
+  install: []
+- id: bountyplusgraphics2
+  label: BountyPlusGraphics2
+  description: Contains the graphics for the plug-in "BountyPlus" it is required to play.
+  download_artifact: plugin-bountyplusgraphics2
+  install: []

@@ -10,7 +10,7 @@ pub mod r2;
 pub mod validate;
 pub mod yaml;
 
-pub use catalogue::{build, load, parse_document, Catalogue, Document, Mode};
+pub use catalogue::{build, load, parse_document, Catalogue, Document, Mode, PluginDocument};
 pub use model::*;
 
 pub mod site;

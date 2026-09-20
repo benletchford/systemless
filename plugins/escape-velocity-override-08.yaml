@@ -1,0 +1,173 @@
+schema_version: 1
+entry: escape-velocity-override
+artifacts:
+- id: plugin-xtreme-tech-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Xtreme%20Tech.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Xtreme%20Tech.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-xtremetechcompletread-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/XtremeTechcompletread.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/XtremeTechcompletread.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-zachit-missions
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Zachit%20Missions.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Zachit%20Missions.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-zachit-ships-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Zachit_Ships.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Zachit_Ships.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-zachitcruiser-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/ZachitCruiser.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/ZachitCruiser.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-zachitships1-0-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/ZachitShips1.0.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/ZachitShips1.0.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-zachitships14-sit
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/ZachitShips14.sit.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/ZachitShips14.sit.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+plugins:
+- id: xtreme-tech-sit
+  label: Xtreme Tech.sit
+  description: >-
+    This plug-in adds a lot of new outfits like Xentronium armor and Torpedo
+    turret, etc. a very cool new ship, the Extreme Warship and other features.I hope you
+    enjoy it.
+  download_artifact: plugin-xtreme-tech-sit
+  install: []
+- id: xtremetechcompletread-sit
+  label: XtremeTechcompletread.sit
+  description: >-
+    This is the complete read-me file of Xtreme Tech.If you downloaded this plug,
+    download this too.Sorry, I put a resumed read-me in the plug-in folder, but this
+    is the complete one.Enjoy my plug.
+  download_artifact: plugin-xtremetechcompletread-sit
+  install: []
+- id: zachit-missions
+  label: Zachit Missions
+  description: >-
+    Did you ever feel that the Zachit mission string kinda leaves you hanging?
+    Well, if you answered yes, then this is the plug for you! Zachit Missions adds 14 new
+    missions to the Zachit string. The graphics in this plug-in were created by Ian
+    Raymond, and I t...
+  download_artifact: plugin-zachit-missions
+  install: []
+- id: zachit-ships-sit
+  label: Zachit_Ships.sit
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-zachit-ships-sit
+  install: []
+- id: zachitcruiser-sit
+  label: ZachitCruiser.sit
+  description: >-
+    This plugin adds a new ship, the Zachit Cruiser, available on New Mira. The
+    Zachit Cruiser has two disco machine guns, a zachit fighter bay with 10 zachit
+    fighters, a zachit cloak, a zachit marine upgrade, and a zachit ECM system. Fuel is
+    set to regenerate...
+  download_artifact: plugin-zachitcruiser-sit
+  install: []
+- id: zachitships1-0-sit
+  label: ZachitShips1.0.sit
+  description: >-
+    Zachit Ships 1.0 adds Zachit Ships so you can buy their ships after doing a few
+    of the Zachit Missions. Version 1.0 -By Taylor (AKA Onii7)
+  download_artifact: plugin-zachitships1-0-sit
+  install: []
+- id: zachitships14-sit
+  label: ZachitShips14.sit
+  description: >-
+    As with my other plugs this is the latest version and it fixes some bugs and
+    compatability issues. This plug just adds six new ships and a couple outfits (no
+    new graphics, yet) available at Zachit Outpost after the completion of the Miranu
+    Gunship missions....
+  download_artifact: plugin-zachitships14-sit
+  install: []

@@ -90,6 +90,19 @@ pub struct PluginInstall {
     pub mount_path: String,
 }
 
+/// A chunk of plugins for one catalogue entry. Multiple files may target the
+/// same entry so large collections can stay reviewable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginCollection {
+    pub schema_version: u32,
+    pub entry: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<Artifact>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plugins: Vec<Plugin>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LaunchModifier {

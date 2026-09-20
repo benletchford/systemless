@@ -66,6 +66,7 @@ fn aliases_metadata_plugins_and_contribution_links_exist_before_javascript() {
     assert!(game.contains("Extra &amp; more"));
     assert!(game.contains("download=\"sample-app.png\""));
     assert!(game.contains("download=\"sample-app-extra.bin\""));
+    assert!(game.contains("/tree/master/plugins"));
     assert!(game.contains("/app-123.js"));
     assert!(pages["_redirects"].contains("/old-example/ /example/ 301"));
     assert!(pages["sitemap.xml"].contains("https://systemless.org/example/"));

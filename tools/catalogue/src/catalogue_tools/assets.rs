@@ -474,7 +474,7 @@ pub fn promote(
             edits.push(EntryEdit {
                 id: old.entry.id.clone(),
                 before: old.original.clone(),
-                after: catalogue::serialize_document(&new.entry, &new.markdown)?,
+                after: catalogue::serialize_entry_document(&updated, new)?,
             });
         }
     }
@@ -492,10 +492,16 @@ pub fn promote(
     ensure!(
         fresh.config == c.config
             && fresh.documents.len() == c.documents.len()
+            && fresh.plugin_documents.len() == c.plugin_documents.len()
             && fresh
                 .documents
                 .iter()
                 .zip(&c.documents)
+                .all(|(a, b)| a.original == b.original)
+            && fresh
+                .plugin_documents
+                .iter()
+                .zip(&c.plugin_documents)
                 .all(|(a, b)| a.original == b.original),
         "catalogue changed during promotion; retry"
     );
@@ -640,9 +646,11 @@ fn finish_transaction(root: &Path, transaction: &PromotionTransaction) -> Result
             path,
         });
     }
+    let plugin_documents = catalogue::load_plugins(root, &mut documents)?;
     let proposed = Catalogue {
         config,
         documents,
+        plugin_documents,
         root: root.into(),
     };
     catalogue::validate_catalogue(&proposed)?;

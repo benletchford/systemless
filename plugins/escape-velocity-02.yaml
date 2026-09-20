@@ -1,0 +1,1192 @@
+schema_version: 1
+entry: escape-velocity
+artifacts:
+- id: plugin-brotherhoodofthekestrel-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BrotherhoodOfTheKestrel.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BrotherhoodOfTheKestrel.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-button-changer-1-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Button_Changer_1.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Button_Changer_1.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-bvgraphicsaddon-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BVGraphicsAddOn.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/BVGraphicsAddOn.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-cascadeindustries-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/CascadeIndustries.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/CascadeIndustries.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-claviusandbeyond32s-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/ClaviusAndBeyond32s.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/ClaviusAndBeyond32s.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-claviusandbeyond-333-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/ClaviusAndBeyond_333.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/ClaviusAndBeyond_333.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-claviusandbeyondhints-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/ClaviusAndBeyondHints.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/ClaviusAndBeyondHints.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-cleanrecordv10-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/CleanRecordv10.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/CleanRecordv10.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-cleanrecordv11-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/CleanRecordv11.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/CleanRecordv11.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-cleanrecordv13-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/CleanRecordv13.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/CleanRecordv13.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-cloakedships-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/CloakedShips.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/CloakedShips.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-colossus1-0-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/colossus1.0.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/colossus1.0.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-conex12-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/ConEx12.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/ConEx12.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-conex12u-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/ConEx12u.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/ConEx12u.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-confed-crusier-fix
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Confed_Crusier_Fix.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Confed_Crusier_Fix.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-cool-ships-are-added-ne-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Cool_Ships_are_Added__NE.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Cool_Ships_are_Added__NE.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-coolerbutton101
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/CoolerButton101.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/CoolerButton101.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-corvettebay0-6b3-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/corvettebay0.6b3.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/corvettebay0.6b3.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-crazy-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Crazy%21.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Crazy%21.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-cssplug-in-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/CSSPlug-in.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/CSSPlug-in.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-cydonianmissions-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/cydonianmissions.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/cydonianmissions.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-darkstorm1-02-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/darkstorm1.02.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/darkstorm1.02.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-davonia1-0-2-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Davonia1.0.2.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Davonia1.0.2.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-deathstar2-9-8-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/deathstar2.9.8.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/deathstar2.9.8.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-deathstar20-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DeathStar20.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DeathStar20.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-deathstarenv-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/deathstarenv.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/deathstarenv.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-decoy-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/decoy.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/decoy.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-delorean2-3-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DeLorean2.3.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DeLorean2.3.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-destroyer-bay
+  role: supplement
+  format: opaque
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Destroyer%20Bay
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Destroyer%20Bay
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-destroyerwars
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DestroyerWars.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DestroyerWars.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-destroyerwars1-1
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DestroyerWars1.1.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DestroyerWars1.1.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-destroyerwars2-1
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DestroyerWars2.1.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DestroyerWars2.1.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-destroyerwars5-1
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DestroyerWars5.1.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DestroyerWars5.1.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-destroyerwars5-2
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DestroyerWars5.2.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DestroyerWars5.2.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-devins-ev-programs-zip
+  role: supplement
+  format: zip
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Devins%20EV%20Programs.zip
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Devins%20EV%20Programs.zip
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-dialogexpander1-0-sea
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DialogExpander1.0.sea.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DialogExpander1.0.sea.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-dilithium1-0-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/dilithium1.0.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/dilithium1.0.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-ds9vsdominion-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DS9vsDominion.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/DS9vsDominion.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-e1-war-without-end-sea
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/E1-WAR_WITHOUT_END.sea.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/E1-WAR_WITHOUT_END.sea.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-e1updater-sit
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/E1updater.sit.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/E1updater.sit.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-e2-dark-horizons-sit
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/E2-DARK_HORIZONS.sit.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/E2-DARK_HORIZONS.sit.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-e2updater-sit
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/E2updater.sit.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/E2updater.sit.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-e2updater-sit-2
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/E2updater.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/E2updater.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-e3-endgame-sit
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/E3-ENDGAME.sit.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/E3-ENDGAME.sit.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-e3updater1-2
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/E3updater1.2.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/E3updater1.2.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-electronium-1-0-sit
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Electronium%201.0.sit.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Electronium%201.0.sit.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-elitefrontiers-sea
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/EliteFrontiers.sea.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/EliteFrontiers.sea.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-elphan-iv1-1-sit
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Elphan_Iv1.1.sit.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Elphan_Iv1.1.sit.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-empire-sea-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Empire.sea.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/Empire.sea.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-empireofcrime-sea
+  role: supplement
+  format: opaque
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/EmpireOfCrime.sea
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EV.zip/EV/Plugins/EmpireOfCrime.sea
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+plugins:
+- id: brotherhoodofthekestrel-sit
+  label: BrotherhoodOfTheKestrel.sit
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-brotherhoodofthekestrel-sit
+  install: []
+- id: button-changer-1-sit
+  label: Button_Changer_1.sit
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-button-changer-1-sit
+  install: []
+- id: bvgraphicsaddon-sit
+  label: BVGraphicsAddOn.sit
+  description: >-
+    BV Graphics add-on allows to see the graphics of Battle Velocity 3.0 when
+    actually playing the classic Escape Velocity or other plug-ins.
+  download_artifact: plugin-bvgraphicsaddon-sit
+  install: []
+- id: cascadeindustries-sit
+  label: CascadeIndustries.sit
+  description: >-
+    Pirates a large threat. Help the tiny chemical industry Cascade Industries in
+    their struggle against pirates and encounter the mighty S.P.A.F.. Over twenty new
+    missions, fifteen of them available throughout a very important plot, and a
+    brandnew bar for Scor...
+  download_artifact: plugin-cascadeindustries-sit
+  install: []
+- id: claviusandbeyond32s-sit
+  label: ClaviusAndBeyond32s.sit
+  description: >-
+    Fight against a pro-Confed extremist movement and use new weapons, beat off an
+    alien invasion, discover an ancient civilization... Land on Clavius Station, and
+    depending on your combat skills, you will be able to pilot the famous Neutronic
+    Kestrel Intercept...
+  download_artifact: plugin-claviusandbeyond32s-sit
+  install: []
+- id: claviusandbeyond-333-sit
+  label: ClaviusAndBeyond_333.sit
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-claviusandbeyond-333-sit
+  install: []
+- id: claviusandbeyondhints-sit
+  label: ClaviusAndBeyondHints.sit
+  description: >-
+    Hints on installing and using the "Clavius and Beyond" plugin successfully, as
+    well as some mission hints.
+  download_artifact: plugin-claviusandbeyondhints-sit
+  install: []
+- id: cleanrecordv10-sit
+  label: CleanRecordv10.sit
+  description: >-
+    This plugin adds a single outfit, the False Transponder, which is a cheaper
+    version of the false ID papers.
+  download_artifact: plugin-cleanrecordv10-sit
+  install: []
+- id: cleanrecordv11-sit
+  label: CleanRecordv11.sit
+  description: >-
+    This is an upgrade for my plug-in, Clean Record v1.0. It has cooler graphics
+    and descriptions. For those of you who dont know, Clean Record clears your records
+    with every government in the galaxy.
+  download_artifact: plugin-cleanrecordv11-sit
+  install: []
+- id: cleanrecordv13-sit
+  label: CleanRecordv13.sit
+  description: >-
+    This is an upgrade to my great plug-in, Clean Record. It adds an outfit that
+    clears all of the bad records you have with every governmnet in the galaxy. This
+    edition adds another new outfit, the HGFC, that allows you to make a hyperspace
+    jump anyware in the...
+  download_artifact: plugin-cleanrecordv13-sit
+  install: []
+- id: cloakedships-sit
+  label: CloakedShips.sit
+  description: >-
+    This plug-in adds ships that uncloak to the Rebelion and to the Confederation
+    fleets.
+  download_artifact: plugin-cloakedships-sit
+  install: []
+- id: colossus1-0-sit
+  label: colossus1.0.sit
+  description: >-
+    Its a very straight-forward plug in it replaces a system and it adds 2 ships
+    and a weapon (plus a neat graphic for a wormhole).
+  download_artifact: plugin-colossus1-0-sit
+  install: []
+- id: conex12-sit
+  label: ConEx12.sit
+  description: >-
+    ConEx 1.2 fixes all the bugs in ConEx 1.1, and gives the ship Dart a sleeker
+    new look! It is equiped with 10 all new ships for the government called
+    Consolidated Express, which is now 11 systems strong. Let the 35 new missions make you
+    travel throught the g...
+  download_artifact: plugin-conex12-sit
+  install: []
+- id: conex12u-sit
+  label: ConEx12u.sit
+  description: >-
+    A patch to bring ConEx 1.1 up to ConEx 1.2. If you dont already have ConEx1.1,
+    download the complete ConEx 1.2 package, not this update.
+  download_artifact: plugin-conex12u-sit
+  install: []
+- id: confed-crusier-fix
+  label: Confed Crusier Fix
+  description: >-
+    Have you turned down EVs game speed only to discover your Confed Crusier wont
+    turn anymore? This will fix it.
+  download_artifact: plugin-confed-crusier-fix
+  install: []
+- id: cool-ships-are-added-ne-sit
+  label: Cool_Ships_are_Added__NE.sit
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-cool-ships-are-added-ne-sit
+  install: []
+- id: coolerbutton101
+  label: CoolerButton101
+  description: >-
+    Cooler EV Buttons replaces the standard interface buttons in Escape Velocity
+    with Pontus Ilbrings own version.
+  download_artifact: plugin-coolerbutton101
+  install: []
+- id: corvettebay0-6b3-sit
+  label: corvettebay0.6b3.sit
+  description: >-
+    Star Hackers Industrial Technologies is a new firm that specializes in
+    extending existing technologies to unheard of limits and beyond. Runs fine with Velocity
+    Plus 2.x, and may be OK with others.
+  download_artifact: plugin-corvettebay0-6b3-sit
+  install: []
+- id: crazy-sit
+  label: Crazy!.sit
+  description: >-
+    Crazy! is not your regular plug-in it adds the most absurd of ships and
+    weapons. You can even fly around in a plunger while shooting Kestrels!
+  download_artifact: plugin-crazy-sit
+  install: []
+- id: cssplug-in-sit
+  label: CSSPlug-in.sit
+  description: >-
+    Ever wondered why Confed ships have the U.S.S prefix and not C.S.S.? Ever
+    wondered if you were the only person playing EV who wasnt a patriotic American? Well,
+    this plugin solves that. It changes the U.S.S. prefix to C.S.S.
+  download_artifact: plugin-cssplug-in-sit
+  install: []
+- id: cydonianmissions-sit
+  label: cydonianmissions.sit
+  description: >-
+    This is a set of six missions that you perform for the Cydonian Government. The
+    mission series develops the plot of the Cydonian-Lethean war.
+  download_artifact: plugin-cydonianmissions-sit
+  install: []
+- id: darkstorm1-02-sit
+  label: darkstorm1.02.sit
+  description: >-
+    This creates the galaxy in my own image, with one new system. The systems have
+    been better spaced and some of the obvious planet picture to descriptions have
+    been made more congruent.
+  download_artifact: plugin-darkstorm1-02-sit
+  install: []
+- id: davonia1-0-2-sit
+  label: Davonia1.0.2.sit
+  description: >-
+    0.00 B | By Anonymous This is my first plug. It has 1 new planet and 1 new
+    ship. If it messes up send your complaint (s) to
+  download_artifact: plugin-davonia1-0-2-sit
+  install: []
+- id: deathstar2-9-8-sit
+  label: deathstar2.9.8.sit
+  description: >-
+    Here comes the latest and greatest version on the DeathStar. Due to popular
+    demand, here comes DeathStar 2.9.8 with improved everything new ships, worlds,
+    missions, sounds and even a few new tricks. May the Force be with you!
+  download_artifact: plugin-deathstar2-9-8-sit
+  install: []
+- id: deathstar20-sit
+  label: DeathStar20.sit
+  description: >-
+    Death Star 2.0 plug package constists of several plugins that all go together.
+    In Death Star 2.0 you can fly around in the extreamly strong Death Star wile
+    destroying ships by the dozens with your super laser. This plug is well worth the
+    download.
+  download_artifact: plugin-deathstar20-sit
+  install: []
+- id: deathstarenv-sit
+  label: deathstarenv.sit
+  description: >-
+    Integrates several plugs with DeathStar 2.0.1, required but not itself
+    included. This includes Star Wars, Velocity Plus, raised limits to the DS scale and much
+    more...
+  download_artifact: plugin-deathstarenv-sit
+  install: []
+- id: decoy-sit
+  label: decoy.sit
+  description: >-
+    If youre annoyed that the Decoy Flares are difficult to get to work, this
+    plug-in adds a missle destroyer. Simply aim, point and click. No more missile!
+  download_artifact: plugin-decoy-sit
+  install: []
+- id: delorean2-3-sit
+  label: DeLorean2.3.sit
+  description: >-
+    This is the DeLorean Plug-In, which adds a few missions to EV, mainly to let
+    you use different ships, and to get you a bunch of money. It also adds a new ship,
+    called the DeLorean, based on the Back to the Future movies. It was created on a
+    68LC040 Macintos...
+  download_artifact: plugin-delorean2-3-sit
+  install: []
+- id: destroyer-bay
+  label: Destroyer Bay
+  description: "\"Destroyer Bay\" adds a fighter/bay for the Confederation. The Destroyer fighter (available only in bay form) is expensive, but quite powerful. It can only be purchased upon completion of the Confed Alien missions."
+  download_artifact: plugin-destroyer-bay
+  install: []
+- id: destroyerwars
+  label: DestroyerWars
+  description: >-
+    Destroyer Wars is when there are only destroyers and frigate class ships. But
+    you had better be careful otherwise you just might get blast away!! Prepare for
+    the fight of your life! Made by Alex Wouters. Have Fun!
+  download_artifact: plugin-destroyerwars
+  install: []
+- id: destroyerwars1-1
+  label: DestroyerWars1.1
+  description: >-
+    Destroyer Wars 1.1 is the upgrade from Destroyer Wars. It has a few bug fixes
+    like when you take off from Levo you dont get shot down by pirate corvetts.
+    Another fix is when you go to Rigel you can go back to Levo in one jump. So dont
+    download the other one...
+  download_artifact: plugin-destroyerwars1-1
+  install: []
+- id: destroyerwars2-1
+  label: DestroyerWars2.1
+  description: >-
+    This is the next upgrade to Destroyer Wars. I really didnt have the problem
+    with the linking of the systems fixed. A few other things have been added. Have Fun.
+    Made By Alex Wouters. Oh and if the program crashes when you hyper into Apollo,
+    it only happens...
+  download_artifact: plugin-destroyerwars2-1
+  install: []
+- id: destroyerwars5-1
+  label: DestroyerWars5.1
+  description: >-
+    Destroyer Wars 5.1 is the next upgrade to Destroyer Wars. This makes it
+    impossible to win when you demand tribute of any planet. So be careful. And you must
+    read the documents to know how to play. Have fun.
+  download_artifact: plugin-destroyerwars5-1
+  install: []
+- id: destroyerwars5-2
+  label: DestroyerWars5.2
+  description: >-
+    This Destroyer Wars is better graphicaly inclined. The systems only send out
+    one ship now and the ship is more powerful than it used to be. E-mail me if you
+    want me to change something. My E-mail address is . Please at all costs read the
+    read me. Have a gre...
+  download_artifact: plugin-destroyerwars5-2
+  install: []
+- id: devins-ev-programs-zip
+  label: Devins EV Programs.zip
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-devins-ev-programs-zip
+  install: []
+- id: dialogexpander1-0-sea
+  label: DialogExpander1.0.sea
+  description: >-
+    Dialog Expander 1.0 by Coraxus - This contains sets of plug-ins that expand the
+    windows of dialog boxes when you are viewing the galaxy map, hailing a planet,
+    or checking your player info. Each plug-ins are designed to cover various ranges
+    from 640x480 to 1...
+  download_artifact: plugin-dialogexpander1-0-sea
+  install: []
+- id: dilithium1-0-sit
+  label: dilithium1.0.sit
+  description: >-
+    This adds 2 phaser weapons, a new power plant, and missions that allow you to
+    buy the power plant.
+  download_artifact: plugin-dilithium1-0-sit
+  install: []
+- id: ds9vsdominion-sit
+  label: DS9vsDominion.sit
+  description: >-
+    Have you ever wanted to play a Star Trek plug and just fight? Then this plug is
+    for you. Start off in the DS9 system, go to the bar and learn about the Dominion
+    invasion comin your way. Take the Defiant along with a few of the Stations
+    defences and try to d...
+  download_artifact: plugin-ds9vsdominion-sit
+  install: []
+- id: e1-war-without-end-sea
+  label: E1-WAR WITHOUT END.sea
+  description: >-
+    (version 2.0) This is the plug-in that started it all! As outlined previously,
+    it centers on the conflict between the oppressive Terran Star Empire and a ragtag
+    group of aliens known as The Weave who have formed a temporary alliance to fight
+    off Empire anne...
+  download_artifact: plugin-e1-war-without-end-sea
+  install: []
+- id: e1updater-sit
+  label: E1updater.sit
+  description: >-
+    This is a simple update to E1-WAR WITHOUT END that repairs a problem with the
+    Empire storyline that causes a certain fleet not to appear at a pivotal battle. If
+    you are having problems with the mission "No Turning Back", simply install this
+    update in the pl...
+  download_artifact: plugin-e1updater-sit
+  install: []
+- id: e2-dark-horizons-sit
+  label: E2-DARK HORIZONS.sit
+  description: >-
+    (version 1.0) This is a truly massive sequel to the plug-in EMPIRE, which
+    centered on a ragtag group of alien sentients who formed an alliance to fight off
+    domination by the evil Terran Star Empire. E2:DH takes place several years following
+    an Empire victor...
+  download_artifact: plugin-e2-dark-horizons-sit
+  install: []
+- id: e2updater-sit
+  label: E2updater.sit
+  description: "This updater performs some minor cosmetic fixes and repairs an out of order mission. To use, simply place the enclosed update in the same Plug-ins folder as EMPIRE 2: DARK HORIZONS. Please remove and trash any previous updater you may be using. At version 1..."
+  download_artifact: plugin-e2updater-sit
+  install: []
+- id: e2updater-sit-2
+  label: E2updater.sit
+  description: "This updater performs some minor cosmetic fixes and repairs an out of order mission. To use, simply place the enclosed update in the same Plug-ins folder as EMPIRE 2: DARK HORIZONS. Please remove and trash any previous updater you may be using. At version 1..."
+  download_artifact: plugin-e2updater-sit-2
+  install: []
+- id: e3-endgame-sit
+  label: E3-ENDGAME.sit
+  description: >-
+    (version 1.0) In this scenario, the malevolent Terran Star Empire has been
+    completely defeated by the Weave Alliance. After literally decades of war the galaxy
+    is finally at peace, but all is not what it seems as new regional powers,
+    revenge-minded factions...
+  download_artifact: plugin-e3-endgame-sit
+  install: []
+- id: e3updater1-2
+  label: E3updater1.2
+  description: >-
+    This updater is to replace the "cheater" already posted at Ambrosia which
+    contains some problems. This fixes a mistake which made certain battlestations and
+    sentinels indestructible and also performs some minor cosmetic fixes. To use, simply
+    place the enclo...
+  download_artifact: plugin-e3updater1-2
+  install: []
+- id: electronium-1-0-sit
+  label: Electronium 1.0.sit
+  description: >-
+    This plug has no missions yet but it does have 5 new ships, 6 new weapons, and
+    a system in the south west part of the map
+  download_artifact: plugin-electronium-1-0-sit
+  install: []
+- id: elitefrontiers-sea
+  label: EliteFrontiers.sea
+  description: >-
+    The Elite Frontiers Galaxy is much larger than the standard Escape Velocity
+    one.There are three main govenments, two of which are at war. This war forms the
+    core ofthe missions in Elite Frontiers.In addition though, there are several smaller
+    independent gov...
+  download_artifact: plugin-elitefrontiers-sea
+  install: []
+- id: elphan-iv1-1-sit
+  label: Elphan Iv1.1.sit
+  description: >-
+    The rumbling of Georges World was discovered to be Alien weapons tests. The
+    Confederation and Rebellion, aided by a mercenary captain, banded together and wiped
+    out the Alien interlopers on Georges World. Scientists discovered a hyperspace
+    fluxpoint off of...
+  download_artifact: plugin-elphan-iv1-1-sit
+  install: []
+- id: empire-sea-sit
+  label: Empire.sea.sit
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-empire-sea-sit
+  install: []
+- id: empireofcrime-sea
+  label: EmpireOfCrime.sea
+  description: >-
+    Original EV plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-empireofcrime-sea
+  install: []
