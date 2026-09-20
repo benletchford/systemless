@@ -38,6 +38,7 @@ artifacts:
     sources:
     - https://www.vintageapplemac.com/software/games/
     - https://www.vintageapplemac.com/files/games/Asterax.sit
+    license: Asterax non-profit distribution grant
     rights_holder: Arvandor Software
     permission: >-
       The bundled Asterax README permits free distribution when the README and all
