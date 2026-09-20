@@ -1648,18 +1648,17 @@ impl super::TrapDispatcher {
             // MaxMem ($A01D): Per IM:II II-39 and Memory 1992 2-74, the
             // largest contiguous block is returned in D0 and the number of
             // bytes by which the application zone can grow is returned in
-            // A0. Systemless launches expand the application zone to its
-            // ApplLimit during startup, so A0 is normally zero; retain the
-            // low-memory calculation for tests or clients that leave a gap
-            // between bkLim and ApplLimit. $A11D dispatches to this arm via
-            // the OS-trap low-byte (0x1D) decode.
+            // A0. The launcher exposes the current application-zone extent
+            // through HeapEnd; MaxApplZone advances it to ApplLimit. The zone
+            // header's bkLim may already cover directly loaded resources, so
+            // it cannot represent the remaining launch-time growth allowance.
+            // $A11D dispatches here via the OS-trap low-byte (0x1D) decode.
             (false, 0x1D) => {
                 let free = free_heap_estimate(bus);
                 cpu.write_reg(Register::D0, free);
-                let zone = bus.read_long(addr::APP_L_ZONE);
-                let bk_lim = if zone != 0 { bus.read_long(zone) } else { 0 };
+                let heap_end = bus.read_long(addr::HEAP_END);
                 let appl_limit = bus.read_long(addr::APPL_LIMIT);
-                let grow = appl_limit.saturating_sub(bk_lim);
+                let grow = appl_limit.saturating_sub(heap_end);
                 cpu.write_reg(Register::A0, grow);
                 Ok(())
             }
@@ -10323,6 +10322,7 @@ mod tests {
         let zone = 0x180000;
         bus.write_long(crate::memory::globals::addr::APP_L_ZONE, zone);
         bus.write_long(zone, zone + 0x1000); // bkLim
+        bus.write_long(crate::memory::globals::addr::HEAP_END, zone + 0x1000);
         bus.write_long(crate::memory::globals::addr::APPL_LIMIT, zone + 0x3000);
 
         let result = dispatcher.dispatch_memory(false, 0x1D, &mut cpu, &mut bus);
@@ -10333,6 +10333,23 @@ mod tests {
             0x2000,
             "MaxMem should return the application-zone growth allowance in A0"
         );
+    }
+
+    #[test]
+    fn max_mem_uses_heap_end_when_zone_header_covers_loaded_resources() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let zone = 0x180000;
+        let heap_end = zone + 0x2000;
+        let appl_limit = zone + 0x5000;
+        bus.write_long(crate::memory::globals::addr::APP_L_ZONE, zone);
+        bus.write_long(zone, appl_limit); // bkLim covers directly loaded resources
+        bus.write_long(crate::memory::globals::addr::HEAP_END, heap_end);
+        bus.write_long(crate::memory::globals::addr::APPL_LIMIT, appl_limit);
+
+        let result = dispatcher.dispatch_memory(false, 0x1D, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A0), appl_limit - heap_end);
     }
 
     #[test]
