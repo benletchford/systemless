@@ -5631,7 +5631,7 @@ fn process_owner_shares_one_retained_menu_continuation_between_adapters() {
     let mut classic = TrapDispatcher::new_with_migrated_handles(context.migrated_handles());
     classic
         .scrap
-        .set_clipboard_writable(prepared.scrap.clipboard_writable);
+        .set_clipboard_writable(prepared.scrap.clipboard_writable_for_test());
     let (base, row_bytes, width, height, depth) = prepared.screen_mode;
     classic.set_screen_mode_for_test(base, row_bytes, width, height, depth);
     classic.read_tick_count(&classic_bus);
