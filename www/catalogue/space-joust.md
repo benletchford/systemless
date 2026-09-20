@@ -27,11 +27,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/Space%20Joust%202.0.sit
-    download_page: https://www.vintageapplemac.com/software/games/s/
-    expected_sha256: c3ff69bde46cd5147939565d4143341669b8bba6db845040711ce92c0c50070e
-    expected_size: 852613
+    type: sha256
+    sha256: c3ff69bde46cd5147939565d4143341669b8bba6db845040711ce92c0c50070e
+    size_bytes: 852613
   provenance:
     redistribution: permitted
     original: true
