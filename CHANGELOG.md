@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.43.0](https://github.com/benletchford/systemless/compare/v0.42.4...v0.43.0) (2026-09-20)
+
+
+### Features
+
+* **catalogue:** add 100 licensed classic Macintosh game demos ([#2226](https://github.com/benletchford/systemless/issues/2226)) ([e2eea8c](https://github.com/benletchford/systemless/commit/e2eea8cb3e589d5574912d67e99a844b8fa21921))
+* **catalogue:** add GNU Chess 3.0 ([#2275](https://github.com/benletchford/systemless/issues/2275)) ([1834d59](https://github.com/benletchford/systemless/commit/1834d59ca97f1dcdf85315f94580cf446867af45))
+* **catalogue:** add JSokoban ([#2280](https://github.com/benletchford/systemless/issues/2280)) ([97f6241](https://github.com/benletchford/systemless/commit/97f624152069c46e49d32bb377be62c60e72bd54))
+* **catalogue:** add Xconq ([#2272](https://github.com/benletchford/systemless/issues/2272)) ([9936f33](https://github.com/benletchford/systemless/commit/9936f33e4af4985a020d0f57ed38281de236340c))
+
+
+### Bug Fixes
+
+* **ci:** validate pending catalogue sources in preview mode ([#2257](https://github.com/benletchford/systemless/issues/2257)) ([f18a4c3](https://github.com/benletchford/systemless/commit/f18a4c39340f09d649afc505396884b85fd0bd2a))
+* **dialog:** refresh user item port state per callback ([#2269](https://github.com/benletchford/systemless/issues/2269)) ([3ec9db0](https://github.com/benletchford/systemless/commit/3ec9db0129dbfd7e890a087e927a7098626be44b))
+* **textedit:** redraw TEInsert output ([#2283](https://github.com/benletchford/systemless/issues/2283)) ([e983d44](https://github.com/benletchford/systemless/commit/e983d4409fd9bc8dc37f6bca34aabbacd612e874))
+
+
+### Performance Improvements
+
+* accelerate PowerPC browser gameplay ([ade2f64](https://github.com/benletchford/systemless/commit/ade2f64617fee19fea98ee731bcb91b446b0125d))
+* **memory:** inline common scalar write checks ([#2270](https://github.com/benletchford/systemless/issues/2270)) ([0c60872](https://github.com/benletchford/systemless/commit/0c6087280d7e85d943373d1999c88946ebee7af7))
+* reduce browser frame presentation overhead ([#2268](https://github.com/benletchford/systemless/issues/2268)) ([aa263cc](https://github.com/benletchford/systemless/commit/aa263cce66081ed2dce403e65a54c9a11e5383b8))
+
+
+### Code Refactoring
+
+* **process:** seal Callback Scheduling handle ([52ab4ae](https://github.com/benletchford/systemless/commit/52ab4aec315f01f1dfdecdc38210bd6ae6e598aa))
+* **process:** seal Dialog Text handle ([15fefe3](https://github.com/benletchford/systemless/commit/15fefe3b58e32d6cc3df09f21987aa2f618eb6d4))
+* **process:** seal Display Gamma handle ([9d55c71](https://github.com/benletchford/systemless/commit/9d55c71f7d68d07838b2e4e1c2169cf15e857622))
+* **process:** seal Event Queue handle ([b95a7e1](https://github.com/benletchford/systemless/commit/b95a7e199a704d2e26d7974bcad64365581cc8d3))
+
 ## [0.42.4](https://github.com/benletchford/systemless/compare/v0.42.3...v0.42.4) (2026-09-20)
 
 
