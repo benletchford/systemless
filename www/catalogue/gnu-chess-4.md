@@ -30,11 +30,9 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://www.gryphel.com/d/sw/games/chess/c/gnuchessMAC40b5.hqx
-    download_page: https://www.gryphel.com/c/sw/games/chess/
-    expected_sha256: 346158a881746632ff6ec74eefab43bc0fc1afea503725645f32a712fed5f0e7
-    expected_size: 232547
+    type: sha256
+    sha256: 346158a881746632ff6ec74eefab43bc0fc1afea503725645f32a712fed5f0e7
+    size_bytes: 232547
   provenance:
     redistribution: permitted
     original: true
