@@ -52,11 +52,7 @@ impl PresentationSlot {
     ) {
         pixels.identity = next_snapshot_identity();
         if let Some(p) = self.as_ref() {
-            for byte in 0..len {
-                if let Some(detail) = p.detail(address + byte as u32) {
-                    pixels.detail.insert(offset + byte, detail);
-                }
-            }
+            p.capture_detail_range(pixels, offset, address, len);
         }
     }
     pub(crate) fn restore_detail<T>(
@@ -820,6 +816,75 @@ impl Presentation {
         let cell = Arc::new(cell);
         self.detail_cache.borrow_mut()[index] = Some(cell.clone());
         Some(cell)
+    }
+
+    /// Collect the detail cells covering `[address, address + len)` into
+    /// `pixels`, keyed by `offset + byte`.
+    ///
+    /// Equivalent to [`Presentation::detail`] per byte, but shaped for the
+    /// range. Screen bytes walk a row at a time, hoisting the address
+    /// arithmetic out of the byte loop and reducing the per-byte test to one
+    /// `text_cells` bool; bytes outside the screen take one ordered range
+    /// query per span, visiting retained glyphs instead of addresses.
+    fn capture_detail_range<T>(
+        &self,
+        pixels: &mut SavedPixels<T>,
+        offset: usize,
+        address: u32,
+        len: usize,
+    ) {
+        let start = u64::from(address);
+        let end = start + len as u64;
+        let has_offscreen = self.may_have_offscreen_detail(address, end);
+
+        // Retained glyphs outside the framebuffer, over one address span.
+        let offscreen_span = |pixels: &mut SavedPixels<T>, from: u64, to: u64| {
+            if !has_offscreen || from >= to {
+                return;
+            }
+            let (Ok(from), Ok(to)) = (u32::try_from(from), u32::try_from(to)) else {
+                return;
+            };
+            for (&key, cell) in self.offscreen.range(from..to) {
+                pixels
+                    .detail
+                    .insert(offset + (key - address) as usize, cell.clone());
+            }
+        };
+
+        let screen_start = u64::from(self.base);
+        let screen_end = screen_start + u64::from(self.row_bytes) * u64::from(self.height);
+        offscreen_span(pixels, start, end.min(screen_start));
+        offscreen_span(pixels, start.max(screen_end), end);
+
+        let mut cursor = start.max(screen_start);
+        let screen_end = end.min(screen_end);
+        while cursor < screen_end {
+            let row_offset = cursor - screen_start;
+            let y = (row_offset / u64::from(self.row_bytes)) as u32;
+            let x = (row_offset % u64::from(self.row_bytes)) as u32;
+            let row_start = cursor - u64::from(x);
+            if x >= self.width {
+                // Row padding carries no cell; it can still hold a glyph.
+                let next_row = (row_start + u64::from(self.row_bytes)).min(screen_end);
+                offscreen_span(pixels, cursor, next_row);
+                cursor = next_row;
+                continue;
+            }
+            let run = (u64::from(self.width - x)).min(screen_end - cursor) as usize;
+            let cell_base = (y * self.width + x) as usize;
+            for index in self.text_cells[cell_base..cell_base + run]
+                .iter()
+                .enumerate()
+                .filter_map(|(index, set)| set.then_some(index))
+            {
+                let byte = cursor + index as u64;
+                if let Some(detail) = self.detail(byte as u32) {
+                    pixels.detail.insert(offset + (byte - start) as usize, detail);
+                }
+            }
+            cursor += run as u64;
+        }
     }
 
     fn matches_detail(&self, address: u32, detail: Option<&Arc<DetailCell>>) -> bool {

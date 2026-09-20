@@ -5623,8 +5623,23 @@ impl ProcessNativeMemoryManager {
         required: u32,
         clear: bool,
     ) -> bool {
-        let fully_mapped =
-            (0..required).all(|offset| PpcMemory::read_u8(memory, ptr + offset).is_some());
+        // Probe and clear a chunk at a time rather than a byte at a time,
+        // matching `preflight_writable_range` between them.
+        const CHUNK: u32 = 4096;
+        let mut scratch = vec![0u8; required.min(CHUNK) as usize];
+        let mut fully_mapped = true;
+        let mut offset = 0;
+        while offset < required {
+            let len = (required - offset).min(CHUNK) as usize;
+            let mapped = ptr
+                .checked_add(offset)
+                .is_some_and(|address| memory.read_bytes_into(address, &mut scratch[..len]).is_some());
+            if !mapped {
+                fully_mapped = false;
+                break;
+            }
+            offset += len as u32;
+        }
         if !fully_mapped {
             let Ok(required) = usize::try_from(required) else {
                 return false;
@@ -5636,9 +5651,15 @@ impl ProcessNativeMemoryManager {
             return false;
         }
         if clear {
-            for offset in 0..required {
-                PpcMemory::write_u8(memory, ptr + offset, 0)
+            // The probe left the guest's own bytes here.
+            scratch.fill(0);
+            let mut offset = 0;
+            while offset < required {
+                let len = (required - offset).min(CHUNK) as usize;
+                memory
+                    .write_bytes(ptr + offset, &scratch[..len])
                     .expect("preflighted native allocation remains writable");
+                offset += len as u32;
             }
         }
         true

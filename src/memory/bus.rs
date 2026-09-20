@@ -708,14 +708,63 @@ impl SharedRamRegion {
         Some(())
     }
 
+    /// Copy `dst.len()` bytes starting at `offset` out of the shared subrange.
+    ///
+    /// Bulk counterpart to [`SharedRamRegion::read`]: one bounds check and one
+    /// `copy_nonoverlapping` instead of re-proving the bound per byte.
+    ///
+    /// # Safety
+    ///
+    /// The caller must serialize access with the source [`MacMemoryBus`] and
+    /// must not retain a source RAM slice or fast-memory window.
+    #[inline]
+    pub(crate) unsafe fn read_into(&self, offset: usize, dst: &mut [u8]) -> Option<()> {
+        if offset.checked_add(dst.len())? > self.len {
+            return None;
+        }
+        // SAFETY: the caller upholds serialization, the span was checked
+        // against the shared subrange, and `dst` cannot alias the shared
+        // allocation because it is an exclusive borrow held by the caller.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.ram.as_ptr().add(self.offset + offset),
+                dst.as_mut_ptr(),
+                dst.len(),
+            );
+        }
+        Some(())
+    }
+
+    /// Copy `src` into the shared subrange starting at `offset`.
+    ///
+    /// Bulk counterpart to [`SharedRamRegion::write`].
+    ///
+    /// # Safety
+    ///
+    /// The caller must serialize access with the source [`MacMemoryBus`] and
+    /// must not retain a source RAM slice or fast-memory window.
+    #[inline]
+    pub(crate) unsafe fn write_from(&self, offset: usize, src: &[u8]) -> Option<()> {
+        if offset.checked_add(src.len())? > self.len {
+            return None;
+        }
+        // SAFETY: as `read_into`, with the copy direction reversed.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                src.as_ptr(),
+                self.ram.as_mut_ptr().add(self.offset + offset),
+                src.len(),
+            );
+        }
+        Some(())
+    }
+
     pub(crate) fn snapshot(&self) -> Vec<u8> {
-        (0..self.len)
-            .map(|offset| {
-                // SAFETY: snapshotting occurs while the address-space clone
-                // has exclusive access to its runtime-owned mapping.
-                unsafe { self.read(offset).expect("bounded shared RAM read") }
-            })
-            .collect()
+        let mut bytes = vec![0u8; self.len];
+        // SAFETY: snapshotting occurs while the address-space clone
+        // has exclusive access to its runtime-owned mapping.
+        unsafe { self.read_into(0, &mut bytes) }.expect("bounded shared RAM read");
+        bytes
     }
 
     pub(crate) fn detached_clone(&self) -> Self {

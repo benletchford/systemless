@@ -28,6 +28,47 @@ struct OrdinaryRegionMapping {
     len: usize,
 }
 
+/// A span of addresses that provably resolve to one shared mapping.
+///
+/// `index` indexes `shared_regions`, which only ever grows by appending. The
+/// span excludes every later mapping that would shadow part of it, so
+/// `shared_mapping_at` names `index` for every address in `start..end`.
+#[derive(Debug, Clone, Copy)]
+struct SharedRun {
+    index: usize,
+    start: u64,
+    end: u64,
+}
+
+impl SharedRun {
+    #[inline]
+    fn covers(&self, start: u64, end: u64) -> bool {
+        self.start <= start && end <= self.end
+    }
+}
+
+/// What the shared-mapping ledger says about a maximal interval of addresses:
+/// the mapping backing it, or a proof that no mapping touches it. Both answers
+/// let a later access in the same interval skip the ledger.
+#[derive(Debug, Clone, Copy)]
+enum SharedLookup {
+    Owned(SharedRun),
+    Gap { start: u64, end: u64 },
+}
+
+impl SharedLookup {
+    #[inline]
+    fn covers(&self, start: u64, end: u64) -> bool {
+        match self {
+            Self::Owned(run) => run.covers(start, end),
+            Self::Gap {
+                start: gap_start,
+                end: gap_end,
+            } => *gap_start <= start && end <= *gap_end,
+        }
+    }
+}
+
 /// The backing selected by the process address-space router for an access.
 ///
 /// `Shared` and `SharedReadOnly` identify process mappings whose bytes are
@@ -62,6 +103,12 @@ struct GuestAddressSpaceState {
     /// and copied with detached snapshots. It only rejects impossible hits.
     shared_bounds: std::ops::Range<u64>,
     readonly_allocation_exclusions: Vec<(u32, u32)>,
+    /// Last ledger answer, for an instruction fetch and for a data access.
+    /// Two slots because code and data addresses interleave. Appending a
+    /// mapping can shadow an `Owned` span or fall inside a `Gap`, so
+    /// `push_shared_mapping` clears both.
+    instruction_lookup: Option<SharedLookup>,
+    data_lookup: Option<SharedLookup>,
 }
 
 impl GuestAddressSpaceState {
@@ -76,6 +123,9 @@ impl GuestAddressSpaceState {
                 self.shared_bounds.end = self.shared_bounds.end.max(end);
             }
         }
+        // A new mapping can shadow a cached span or fall inside a cached gap.
+        self.instruction_lookup = None;
+        self.data_lookup = None;
         self.shared_regions.push(mapping);
     }
 
@@ -198,6 +248,166 @@ fn shared_range_route(state: &GuestAddressSpaceState, start: u64, end: u64) -> G
         Some(false) => GuestMemoryRoute::SharedReadOnly,
         None => GuestMemoryRoute::Mixed,
     }
+}
+
+/// Resolve the maximal span around `address` owned by one shared mapping.
+///
+/// The owner is the last mapping covering `address`. Only mappings appended
+/// after it can shadow it, and none of those can contain `address` itself, so
+/// each bounds the span below or above.
+#[inline]
+fn shared_run_at(state: &GuestAddressSpaceState, address: u32) -> Option<SharedRun> {
+    if !state.may_overlap_shared(u64::from(address), u64::from(address) + 1) {
+        return None;
+    }
+    let at = u64::from(address);
+    let (index, owner) = state
+        .shared_regions
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, mapping)| {
+            address
+                .checked_sub(mapping.base)
+                .is_some_and(|offset| (offset as usize) < mapping.region.len())
+        })?;
+    let mut start = u64::from(owner.base);
+    let mut end = mapping_end(owner.base, owner.region.len())?;
+    for later in &state.shared_regions[index + 1..] {
+        let later_start = u64::from(later.base);
+        let Some(later_end) = mapping_end(later.base, later.region.len()) else {
+            continue;
+        };
+        if later_start >= later_end {
+            continue;
+        }
+        if later_end <= at {
+            start = start.max(later_end);
+        } else if later_start > at {
+            end = end.min(later_start);
+        }
+    }
+    (start <= at && at < end).then_some(SharedRun { index, start, end })
+}
+
+/// The maximal interval around `address` the ledger answers uniformly: the
+/// span one mapping owns, or the gap between mappings.
+#[inline]
+fn shared_lookup_at(state: &GuestAddressSpaceState, address: u32) -> SharedLookup {
+    if let Some(run) = shared_run_at(state, address) {
+        return SharedLookup::Owned(run);
+    }
+    // No mapping contains `address`, so each lies wholly below or above it
+    // and bounds the empty interval on one side.
+    let at = u64::from(address);
+    let mut start = 0;
+    let mut end = ADDRESS_SPACE_SIZE;
+    for mapping in &state.shared_regions {
+        let mapping_start = u64::from(mapping.base);
+        let Some(mapping_end) = mapping_end(mapping.base, mapping.region.len()) else {
+            continue;
+        };
+        if mapping_start >= mapping_end {
+            continue;
+        }
+        if mapping_end <= at {
+            start = start.max(mapping_end);
+        } else if mapping_start > at {
+            end = end.min(mapping_start);
+        }
+    }
+    SharedLookup::Gap { start, end }
+}
+
+/// Ledger answer covering `[start, end)`, reusing `cached` when it already
+/// does. Always worth storing back: it describes the interval either way.
+#[inline]
+fn resolve_lookup(
+    state: &GuestAddressSpaceState,
+    cached: Option<SharedLookup>,
+    address: u32,
+    start: u64,
+    end: u64,
+) -> SharedLookup {
+    match cached {
+        Some(cached) if cached.covers(start, end) => cached,
+        _ => shared_lookup_at(state, address),
+    }
+}
+
+/// Read the four bytes at `start` out of the mapping `run` names. Equivalent
+/// to the routed read, which classifies a wholly shared word as
+/// `Shared`/`SharedReadOnly` and returns these same bytes.
+#[inline]
+fn read_shared_word(
+    state: &GuestAddressSpaceState,
+    run: SharedRun,
+    start: u64,
+) -> Option<[u8; 4]> {
+    let mapping = &state.shared_regions[run.index];
+    let offset = (start - u64::from(mapping.base)) as usize;
+    let mut word = [0; 4];
+    // SAFETY: see `read_shared_bytes`; the span proves the word lies wholly
+    // inside this mapping.
+    unsafe { mapping.region.read_into(offset, &mut word) }?;
+    Some(word)
+}
+
+/// Call `run` for each maximal single-mapping span of `[address, address +
+/// len)`, ascending.
+///
+/// The split mirrors [`shared_range_route`]: a byte is owned by the last
+/// mapping covering it, and a mapping starting inside a span truncates it so
+/// ownership is re-proved at the new cursor. Returns `None` once a byte is
+/// unmapped or `run` rejects a span, so callers that must not partially
+/// commit validate in one walk before acting in another.
+#[inline]
+fn for_each_shared_run(
+    state: &GuestAddressSpaceState,
+    address: u32,
+    len: usize,
+    mut run: impl FnMut(&SharedRegionMapping, usize, usize, usize) -> Option<()>,
+) -> Option<()> {
+    let end = range_end(address, len)?;
+    let mut cursor = u64::from(address);
+    let mut consumed = 0usize;
+    while cursor < end {
+        let at = u32::try_from(cursor).ok()?;
+        let (mapping, offset) = shared_mapping_at(state, at)?;
+        let mapping_end = mapping_end(mapping.base, mapping.region.len())?;
+        let mut span_end = mapping_end.min(end);
+        for other in &state.shared_regions {
+            let other_start = u64::from(other.base);
+            if other_start > cursor && other_start < span_end {
+                span_end = other_start;
+            }
+        }
+        if span_end <= cursor {
+            return None;
+        }
+        let span_len = usize::try_from(span_end - cursor).ok()?;
+        run(mapping, offset, consumed, span_len)?;
+        consumed += span_len;
+        cursor = span_end;
+    }
+    Some(())
+}
+
+/// Copy a wholly shared-mapped range into `dst`, one bulk copy per mapping
+/// span; `None` when the range is not wholly shared. Equivalent to the
+/// byte-wise routed read. `dst` may be partially written on `None`, so callers
+/// fall back to a path that overwrites all of it.
+fn read_shared_bytes(
+    state: &GuestAddressSpaceState,
+    address: u32,
+    dst: &mut [u8],
+) -> Option<()> {
+    let len = dst.len();
+    for_each_shared_run(state, address, len, |mapping, offset, consumed, span| {
+        // SAFETY: all shared views are accessed only while their process
+        // runner serializes the source allocation.
+        unsafe { mapping.region.read_into(offset, &mut dst[consumed..consumed + span]) }
+    })
 }
 
 #[inline]
@@ -768,6 +978,9 @@ impl Clone for GuestAddressSpace {
                 })
                 .collect(),
             readonly_allocation_exclusions: state.readonly_allocation_exclusions.clone(),
+            // Detached regions are fresh allocations; let the clone re-resolve.
+            instruction_lookup: None,
+            data_lookup: None,
         })))
     }
 }
@@ -1143,6 +1356,12 @@ impl GuestAddressSpace {
         if !state.overlaps_shared(u64::from(addr), end) {
             return state.regions.read_bytes_into(addr, dst);
         }
+        // The hot case: a wholly shared range, copied in bulk per span. This
+        // also skips the separate `route_range_state` coverage walk; only a
+        // range the walk rejects needs the classification below.
+        if read_shared_bytes(state, addr, dst).is_some() {
+            return Some(());
+        }
         match route_range_state(state, addr, dst.len(), None) {
             GuestMemoryRoute::Sparse => state.regions.read_bytes_into(addr, dst),
             GuestMemoryRoute::Shared
@@ -1166,6 +1385,27 @@ impl GuestAddressSpace {
         let state = self.state_mut();
         if !state.overlaps_shared(u64::from(addr), end) {
             state.regions.write_bytes(addr, src)?;
+            state.presentation.write_bytes(addr, src);
+            return Some(());
+        }
+        // Wholly shared and writable: preflight every span before copying
+        // any, so a read-only span cannot leave a partial store behind.
+        // Presentation sees one call, as on the sparse path below.
+        let writable_shared = for_each_shared_run(state, addr, src.len(), |mapping, _, _, _| {
+            mapping.writable.then_some(())
+        })
+        .is_some();
+        if writable_shared {
+            for_each_shared_run(state, addr, src.len(), |mapping, offset, consumed, span| {
+                // SAFETY: see `read_shared_bytes`; the preflight walk above
+                // proved every span of this range writable.
+                unsafe {
+                    mapping
+                        .region
+                        .write_from(offset, &src[consumed..consumed + span])
+                }
+            })
+            .expect("preflighted shared range remains mapped and writable");
             state.presentation.write_bytes(addr, src);
             return Some(());
         }
@@ -1371,8 +1611,17 @@ impl PpcMemory for GuestAddressSpace {
             return None;
         };
         let state = self.state_mut();
-        if !state.overlaps_shared(u64::from(addr), end) {
-            return PpcMemory::read_u32_be(&mut state.regions, addr);
+        let start = u64::from(addr);
+        let cached = state.data_lookup;
+        let lookup = resolve_lookup(state, cached, addr, start, end);
+        state.data_lookup = Some(lookup);
+        if lookup.covers(start, end) {
+            return match lookup {
+                SharedLookup::Gap { .. } => PpcMemory::read_u32_be(&mut state.regions, addr),
+                SharedLookup::Owned(run) => {
+                    read_shared_word(state, run, start).map(u32::from_be_bytes)
+                }
+            };
         }
         match route_range_state(state, addr, 4, None) {
             GuestMemoryRoute::Sparse
@@ -1415,7 +1664,21 @@ impl PpcMemory for GuestAddressSpace {
             return None;
         };
         let state = self.state_mut();
-        if !state.overlaps_shared(u64::from(addr), end) {
+        let start = u64::from(addr);
+        // Prove where this word lives once per interval, not per fetch. A
+        // `Gap` is the `!overlaps_shared` early-out below, without the walk.
+        let cached = state.instruction_lookup;
+        let lookup = resolve_lookup(state, cached, addr, start, end);
+        state.instruction_lookup = Some(lookup);
+        if lookup.covers(start, end) {
+            return match lookup {
+                SharedLookup::Gap { .. } => state.regions.read_instruction_u32_be(addr),
+                SharedLookup::Owned(run) => {
+                    read_shared_word(state, run, start).map(u32::from_be_bytes)
+                }
+            };
+        }
+        if !state.overlaps_shared(start, end) {
             return state.regions.read_instruction_u32_be(addr);
         }
         match route_range_state(state, addr, 4, None) {
@@ -1484,10 +1747,31 @@ impl PpcMemory for GuestAddressSpace {
             return None;
         };
         let state = self.state_mut();
-        if !state.overlaps_shared(u64::from(addr), end) {
-            PpcMemory::write_u32_be(&mut state.regions, addr, value)?;
-            state.presentation.write_bytes(addr, &value.to_be_bytes());
-            return Some(());
+        let start = u64::from(addr);
+        let bytes = value.to_be_bytes();
+        let cached = state.data_lookup;
+        let lookup = resolve_lookup(state, cached, addr, start, end);
+        state.data_lookup = Some(lookup);
+        if lookup.covers(start, end) {
+            return match lookup {
+                SharedLookup::Gap { .. } => {
+                    PpcMemory::write_u32_be(&mut state.regions, addr, value)?;
+                    state.presentation.write_bytes(addr, &bytes);
+                    Some(())
+                }
+                SharedLookup::Owned(run) => {
+                    let mapping = &state.shared_regions[run.index];
+                    if !mapping.writable {
+                        return None;
+                    }
+                    let offset = (start - u64::from(mapping.base)) as usize;
+                    // SAFETY: see `read_shared_bytes`; the span proves the
+                    // word lies wholly inside this writable mapping.
+                    unsafe { mapping.region.write_from(offset, &bytes) }?;
+                    state.presentation.write_bytes(addr, &bytes);
+                    Some(())
+                }
+            };
         }
         match route_range_state(state, addr, 4, None) {
             GuestMemoryRoute::Sparse
@@ -2055,6 +2339,107 @@ mod tests {
         assert_eq!(detached.system_code_isa(0x1000), Some(GuestIsa::PowerPc));
         assert_eq!(detached.system_code_isa(0x3000), None);
         assert_eq!(detached.system_code_isa(0x4000), Some(GuestIsa::M68k));
+    }
+
+    /// A later mapping takes ownership of the addresses it overlays, so a
+    /// cached span must not survive it.
+    #[test]
+    fn instruction_fetch_span_cache_follows_later_overlay_mappings() {
+        let mut memory = GuestAddressSpace::new();
+        let mut bus = MacMemoryBus::new(0x10000);
+        for offset in (0..0x40).step_by(4) {
+            MemoryBus::write_long(&mut bus, offset, 0x1111_1111);
+        }
+        // SAFETY: all source and address-space accesses are serialized here.
+        unsafe { memory.add_shared_region(0x1000, bus.shared_ram_region(0, 0x40).unwrap()) };
+
+        // Warm the cache on the low word, then fetch across the span.
+        assert_eq!(memory.read_instruction_u32_be(0x1000), Some(0x1111_1111));
+        assert_eq!(memory.read_instruction_u32_be(0x1020), Some(0x1111_1111));
+        assert_eq!(memory.read_instruction_u32_be(0x103c), Some(0x1111_1111));
+
+        // Overlay the middle of that mapping; the overlay now owns 0x1020.
+        let mut overlay = MacMemoryBus::new(0x10000);
+        MemoryBus::write_long(&mut overlay, 0, 0x2222_2222);
+        // SAFETY: as above.
+        unsafe { memory.add_shared_region(0x1020, overlay.shared_ram_region(0, 4).unwrap()) };
+
+        assert_eq!(
+            memory.read_instruction_u32_be(0x1020),
+            Some(0x2222_2222),
+            "a later mapping must shadow the cached span"
+        );
+        // Spans either side of the overlay still resolve to the original.
+        assert_eq!(memory.read_instruction_u32_be(0x101c), Some(0x1111_1111));
+        assert_eq!(memory.read_instruction_u32_be(0x1024), Some(0x1111_1111));
+        // A word straddling the boundary must decline the cached-span path.
+        assert_eq!(memory.read_instruction_u32_be(0x101e), Some(0x1111_2222));
+    }
+
+    /// A cached `Gap` asserts no mapping touches an interval; publishing one
+    /// into it must invalidate that.
+    #[test]
+    fn cached_gap_is_invalidated_by_a_mapping_published_into_it() {
+        let mut memory = GuestAddressSpace::new();
+        let mut bus = MacMemoryBus::new(0x10000);
+        MemoryBus::write_long(&mut bus, 0, 0x4444_4444);
+        // SAFETY: all source and address-space accesses are serialized here.
+        unsafe { memory.add_shared_region(0x8000, bus.shared_ram_region(0, 4).unwrap()) };
+
+        // Prove the gap below the mapping, for both the fetch and data slots.
+        assert_eq!(memory.read_instruction_u32_be(0x3000), None);
+        assert_eq!(memory.read_u32_be(0x3000), None);
+        assert_eq!(memory.write_u32_be(0x3000, 0x5555_5555), None);
+
+        // Publish into the middle of that proven-empty interval.
+        let mut overlay = MacMemoryBus::new(0x10000);
+        MemoryBus::write_long(&mut overlay, 0, 0x6666_6666);
+        // SAFETY: as above.
+        unsafe { memory.add_shared_region(0x3000, overlay.shared_ram_region(0, 4).unwrap()) };
+
+        assert_eq!(
+            memory.read_u32_be(0x3000),
+            Some(0x6666_6666),
+            "a cached gap must not survive a mapping published into it"
+        );
+        assert_eq!(memory.read_instruction_u32_be(0x3000), Some(0x6666_6666));
+        assert_eq!(memory.write_u32_be(0x3000, 0x7777_7777), Some(()));
+        assert_eq!(memory.read_u32_be(0x3000), Some(0x7777_7777));
+        // The mapping published first is still reachable and unchanged.
+        assert_eq!(memory.read_u32_be(0x8000), Some(0x4444_4444));
+    }
+
+    /// A cached span must not wave a write through to a read-only mapping.
+    #[test]
+    fn cached_data_span_still_refuses_writes_to_readonly_mappings() {
+        let mut memory = GuestAddressSpace::new();
+        memory
+            .publish_system_code(GuestIsa::M68k, 0x5000, vec![0xAB; 8])
+            .unwrap();
+
+        assert_eq!(memory.read_u32_be(0x5000), Some(0xABAB_ABAB));
+        assert_eq!(memory.write_u32_be(0x5000, 0), None, "read-only mapping");
+        assert_eq!(memory.write_u32_be(0x5004, 0), None, "same cached span");
+        assert_eq!(
+            memory.read_u32_be(0x5000),
+            Some(0xABAB_ABAB),
+            "a refused write must not have landed"
+        );
+    }
+
+    #[test]
+    fn instruction_fetch_matches_the_routed_read_across_a_mapping_gap() {
+        let mut memory = GuestAddressSpace::new();
+        let mut bus = MacMemoryBus::new(0x10000);
+        MemoryBus::write_long(&mut bus, 0, 0x3333_3333);
+        // SAFETY: all source and address-space accesses are serialized here.
+        unsafe { memory.add_shared_region(0x2000, bus.shared_ram_region(0, 4).unwrap()) };
+
+        assert_eq!(memory.read_instruction_u32_be(0x2000), Some(0x3333_3333));
+        // Running off the end of the mapping is unmapped, not a stale hit.
+        assert_eq!(memory.read_instruction_u32_be(0x2004), None);
+        assert_eq!(memory.read_instruction_u32_be(0x2002), None);
+        assert_eq!(memory.read_instruction_u32_be(0x2000), Some(0x3333_3333));
     }
 
     #[test]
