@@ -18,7 +18,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://download.classicmacdemos.com/Descent%20Shareware.sit
+    url: https://classicmacdemos.com/download/descent/
     download_page: https://classicmacdemos.com/descent
     expected_sha256: f45c338df4bc4ceda38e6541f14b8dc93b543fd07d90a2c5d5118d2001c12ad2
     expected_size: 4735288

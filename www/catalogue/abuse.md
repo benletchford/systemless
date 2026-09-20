@@ -26,7 +26,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://download.classicmacdemos.com/Abuse.sit
+    url: https://classicmacdemos.com/download/abuse/
     download_page: https://classicmacdemos.com/abuse
     expected_sha256: 77a8512d02f84c5e973167aeaed023a1fc63b147c79730c24455d319a8ed1521
     expected_size: 3290510

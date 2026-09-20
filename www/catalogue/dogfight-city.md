@@ -18,7 +18,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://download.classicmacdemos.com/DogfightCity.sea.sit
+    url: https://classicmacdemos.com/download/dogfight-city/
     download_page: https://classicmacdemos.com/dogfight-city
     expected_sha256: 8406ff2058bb0a65d81d72824c6f85b750734b116824e2396af603816e747eb0
     expected_size: 1018941

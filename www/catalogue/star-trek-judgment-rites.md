@@ -26,7 +26,7 @@ artifacts:
   format: hqx
   source:
     type: url
-    url: https://download.classicmacdemos.com/Star%20Trek%20JR.img.hqx
+    url: https://classicmacdemos.com/download/star-trek-judgment-rites/
     download_page: https://classicmacdemos.com/star-trek-judgment-rites
     expected_sha256: 17009e954bea6de2d775a543ec39dd404288f6da5fb4ad223c94b9197dc6d6ce
     expected_size: 98550322

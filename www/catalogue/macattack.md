@@ -26,7 +26,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://download.classicmacdemos.com/MacAttack%20Demo.sit
+    url: https://classicmacdemos.com/download/macattack/
     download_page: https://classicmacdemos.com/macattack
     expected_sha256: 0367d87cc9cc84df5aa28085834ad6c7a36d70325f2e07060d4abd18581f40f0
     expected_size: 848461

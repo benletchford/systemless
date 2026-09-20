@@ -26,7 +26,7 @@ artifacts:
   format: hqx
   source:
     type: url
-    url: https://download.classicmacdemos.com/Gridz%201.2%20Demo%20Installer.hqx
+    url: https://classicmacdemos.com/download/gridz/
     download_page: https://classicmacdemos.com/gridz
     expected_sha256: a3eb2f24f75f01944dd7f7816ec7720e5250023e57bd7198c49e2d2abb1567a9
     expected_size: 5453841

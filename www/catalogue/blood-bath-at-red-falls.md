@@ -26,7 +26,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://download.classicmacdemos.com/Blood%20Bath%20Demo%201.70.sit
+    url: https://classicmacdemos.com/download/blood-bath-at-red-falls/
     download_page: https://classicmacdemos.com/blood-bath-at-red-falls
     expected_sha256: ea4b211ee5da6005dfa5739776923de8c288127de5b8018155e13318b1e9e003
     expected_size: 1434552

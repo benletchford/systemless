@@ -26,7 +26,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://download.classicmacdemos.com/Warcraft%20II%20Demo.sit
+    url: https://classicmacdemos.com/download/warcraft-ii-tides-of-darkness/
     download_page: https://classicmacdemos.com/warcraft-ii-tides-of-darkness
     expected_sha256: 7b480153a0c15dcb084a201cd53edb35a99bbc0aea250c2e28e807ed6290ef3b
     expected_size: 10136636

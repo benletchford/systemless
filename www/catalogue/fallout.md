@@ -18,7 +18,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://download.classicmacdemos.com/Fallout%20Demo%20PPC.sit
+    url: https://classicmacdemos.com/download/fallout/
     download_page: https://classicmacdemos.com/fallout
     expected_sha256: cc2d3f7b0651b302856ac9d3ed5faef2b6f7546eec53f418003ccbaf8f264ba8
     expected_size: 21417380

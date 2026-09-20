@@ -26,7 +26,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://download.classicmacdemos.com/battle-girl.sit
+    url: https://classicmacdemos.com/download/battle-girl/
     download_page: https://classicmacdemos.com/battle-girl
     expected_sha256: 07fafefccf87eaaccea627926cb8c01031a5ea36a61d6b16a98b9fe3287c31da
     expected_size: 1378744
