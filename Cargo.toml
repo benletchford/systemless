@@ -30,6 +30,7 @@ include = [
 
 [workspace]
 members = ["tools/catalogue", "www"]
+exclude = ["tests/toolbox-showcase/packer"]
 default-members = ["."]
 resolver = "2"
 

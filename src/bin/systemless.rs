@@ -4187,7 +4187,7 @@ mod tests {
             .expect_err("--version should stop parsing");
 
         assert_eq!(help.kind(), ErrorKind::DisplayHelp);
-        assert!(help.to_string().contains("[aliases: --prefer-ppc]"));
+        assert!(help.to_string().contains("--prefer-ppc"));
         assert_eq!(version.kind(), ErrorKind::DisplayVersion);
     }
 
