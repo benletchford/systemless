@@ -28,10 +28,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/Asterax.sit
-    expected_sha256: 78bb57247d88f731426aaaa60e501b5cb41bc8d484268c5ff78fab20b70340d8
-    expected_size: 401668
+    type: sha256
+    sha256: 78bb57247d88f731426aaaa60e501b5cb41bc8d484268c5ff78fab20b70340d8
+    size_bytes: 401668
   provenance:
     redistribution: permitted
     original: true
