@@ -7035,7 +7035,7 @@ impl TrapDispatcher {
             kind,
             |operation| match operation {
                 TrapManagerMemoryOp::ReadLong(address) => bus
-                    .try_read_long(address)
+                    .try_read_trap_manager_long(address)
                     .map(TrapManagerMemoryResult::Long),
                 TrapManagerMemoryOp::WriteLong { .. }
                 | TrapManagerMemoryOp::WriteProtectedLong { .. } => None,
@@ -7074,7 +7074,7 @@ impl TrapDispatcher {
             handler,
             |operation| match operation {
                 TrapManagerMemoryOp::ReadLong(address) => bus
-                    .try_read_long(address)
+                    .try_read_trap_manager_long(address)
                     .map(TrapManagerMemoryResult::Long),
                 TrapManagerMemoryOp::WriteLong { address, value } => bus
                     .try_write_long(address, value)

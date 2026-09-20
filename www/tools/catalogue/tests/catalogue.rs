@@ -1432,7 +1432,10 @@ fn promotion_does_not_inline_separate_plugins() {
 #[test]
 fn shipped_games_retain_their_mobile_keyboard_controls() {
     let repository_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let source = load(&repository_root, Mode::Production).unwrap();
+    // This regression inspects committed controls, including while a draft
+    // catalogue PR still contains source-pinned entries awaiting promotion.
+    // The workflow's explicit `check --production` remains the release gate.
+    let source = load(&repository_root, Mode::Preview).unwrap();
     let games = compiled(&source);
     for id in [
         "marathon",

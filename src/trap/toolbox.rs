@@ -14120,6 +14120,50 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
+            // ========== Image Compression Manager Dispatch ($AAA3) ==========
+            (true, 0x2A3) => {
+                let sp = cpu.read_reg(Register::A7);
+                let dispatch = cpu.read_reg(Register::D0);
+                let arg_bytes = dispatch >> 16;
+                let selector = dispatch as u16;
+                match selector {
+                    // AlignScreenRect ($AAA3, selector $004C)
+                    // Aligns a global rectangle to the strictest intersecting screen.
+                    // pascal void AlignScreenRect(Rect *rp, AlignmentProcRecordPtr alignmentProc);
+                    // Inside Macintosh: QuickTime (1993), pp. 3-142, 3-146, and 3-155.
+                    // Stack: alignmentProc(4), rp(4). No result slot.
+                    0x004C if arg_bytes == 8 => {
+                        let alignment_proc = bus.read_long(sp);
+                        let rect_ptr = bus.read_long(sp + 4);
+                        if alignment_proc != 0 {
+                            eprintln!(
+                                "[IMAGE-COMPRESSION] AlignScreenRect custom alignment procedures are not implemented"
+                            );
+                            return Some(Err(Error::Halted));
+                        }
+                        if rect_ptr != 0 {
+                            let left = bus.read_word(rect_ptr + 2) as i16;
+                            let right = bus.read_word(rect_ptr + 6) as i16;
+                            // Systemless exposes an 8-bit screen. The standard
+                            // ICM behavior uses the nearest four-pixel grid.
+                            let aligned_left = (((left as i32) + 2) & !3) as i16;
+                            let delta = aligned_left - left;
+                            bus.write_word(rect_ptr + 2, aligned_left as u16);
+                            bus.write_word(rect_ptr + 6, right.wrapping_add(delta) as u16);
+                        }
+                        cpu.write_reg(Register::A7, sp + 8);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    _ => {
+                        eprintln!(
+                            "[IMAGE-COMPRESSION] Unimplemented selector ${selector:04X} frame={arg_bytes}"
+                        );
+                        return Some(Err(Error::Halted));
+                    }
+                }
+                Ok(())
+            }
+
             // ========== Movie Toolbox Dispatch ($AAAA) ==========
             // Inside Macintosh: QuickTime (1993), pp. 2-33, 2-82 to 2-84.
             // Public MPW declarations:

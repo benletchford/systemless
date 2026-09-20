@@ -1,9 +1,11 @@
-# Systemless web frontend
+# Systemless website
 
-The browser frontend for Systemless is a public package in this repository's
-Cargo workspace, built with Leptos and Trunk. It compiles the runtime directly
-from the repository root and shares the repository release version, but is not
-published as a crate.
+This directory contains the public [systemless.org](https://systemless.org/)
+website: the browser frontend, community catalogue, catalogue maintenance
+tools, and production build scripts. The frontend is built with Leptos and
+Trunk as the `systemless-org` member of this repository's Cargo workspace. It
+uses the runtime from the repository root and shares the repository release
+version; the website package itself is not published to crates.io.
 
 The authoritative catalogue lives in [`catalogue/`](catalogue/). Each
 Markdown file contains YAML metadata followed by the page content. Native

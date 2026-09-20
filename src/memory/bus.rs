@@ -525,29 +525,24 @@ pub struct MacMemoryBus {
 /// retaining exact 24-bit translation and range-union semantics.
 #[derive(Clone, Debug)]
 pub(crate) struct ProtectedCodeOwnership {
-    addressing_32_bit: bool,
     ranges: Vec<(u32, u32)>,
 }
 
 impl ProtectedCodeOwnership {
     #[inline]
     pub(crate) fn contains(&self, address: u32) -> bool {
-        protected_code_covers_long(self.addressing_32_bit, &self.ranges, address)
+        protected_code_owns_long(&self.ranges, address)
     }
 }
 
-/// Whether the longword at `address` lies entirely inside protected code
-/// (`ranges` are half-open `(start, stop)` translated addresses). Shared by
-/// the ownership snapshot and the bus's borrowed check so both answer alike.
+/// Whether the raw system-code identity at `address` belongs to a protected
+/// range. Trap Manager provenance is independent of the guest's current MMU
+/// width: a 24-bit application can switch modes while the HLE's synthetic
+/// table heads retain their stable 32-bit system identities.
 #[inline]
-fn protected_code_covers_long(addressing_32_bit: bool, ranges: &[(u32, u32)], address: u32) -> bool {
-    let translated = if addressing_32_bit {
-        address
-    } else {
-        address & 0x00FF_FFFF
-    };
-    let end = u64::from(translated) + 4;
-    end <= (1u64 << 32) && protected_ranges_cover(ranges, u64::from(translated), end)
+fn protected_code_owns_long(ranges: &[(u32, u32)], address: u32) -> bool {
+    let end = u64::from(address) + 4;
+    end <= (1u64 << 32) && protected_ranges_cover(ranges, u64::from(address), end)
 }
 
 /// Insert `[start, end)` into a list kept sorted by start with no overlapping
@@ -1588,6 +1583,20 @@ impl MacMemoryBus {
             .then(|| self.read_long(address))
     }
 
+    /// Read a Trap Manager longword while preserving raw system-code
+    /// identities across guest MMU mode changes. Writable table cells and
+    /// application handlers still use ordinary guest address translation;
+    /// only a registered protected-code address bypasses that translation.
+    pub(crate) fn try_read_trap_manager_long(&self, address: u32) -> Option<u32> {
+        if self.readonly_code_contains(address, 4)
+            && u64::from(address) + 4 <= u64::from(self.ram_size)
+        {
+            Some(self.ram.read_long_in_bounds(address as usize))
+        } else {
+            self.try_read_long(address)
+        }
+    }
+
     /// Commit one byte through the same route and protection policy used by
     /// the public bus writer, while retaining the success status needed by
     /// atomic service operations.
@@ -2009,7 +2018,6 @@ impl MacMemoryBus {
     /// reads/writes without sharing an immutable borrow of this bus.
     pub(crate) fn protected_code_ownership(&self) -> ProtectedCodeOwnership {
         ProtectedCodeOwnership {
-            addressing_32_bit: self.addressing_32_bit,
             ranges: self.readonly_code_ranges.clone(),
         }
     }
@@ -2019,7 +2027,7 @@ impl MacMemoryBus {
     /// Trap Manager call, such as every trap dispatch's table lookup.
     #[inline]
     pub(crate) fn protected_code_contains(&self, address: u32) -> bool {
-        protected_code_covers_long(self.addressing_32_bit, &self.readonly_code_ranges, address)
+        protected_code_owns_long(&self.readonly_code_ranges, address)
     }
 
     /// Privileged, status-bearing longword write for a known system-owned
@@ -2027,16 +2035,13 @@ impl MacMemoryBus {
     /// protected code before either halfword is changed, so holes, wrapping
     /// addresses, and partial protections cannot leave a torn chain edge.
     pub(crate) fn try_write_protected_code_long(&mut self, address: u32, value: u32) -> bool {
-        let Some(translated) = self.range_translates_contiguously(address, 4) else {
-            return false;
-        };
-        if (u64::from(translated) + 4) > u64::from(self.ram_size)
-            || !self.readonly_code_contains(translated, 4)
+        if (u64::from(address) + 4) > u64::from(self.ram_size)
+            || !self.readonly_code_contains(address, 4)
         {
             return false;
         }
-        self.write_readonly_code_word(translated, (value >> 16) as u16);
-        self.write_readonly_code_word(translated + 2, value as u16);
+        self.write_readonly_code_word(address, (value >> 16) as u16);
+        self.write_readonly_code_word(address + 2, value as u16);
         true
     }
 
