@@ -30,11 +30,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/Ultima%20III%201.3.sit
-    download_page: https://www.vintageapplemac.com/software/games/u/
-    expected_sha256: 298a95b39093c135b1a885f9999f7f0afd8d2bb10e5265ee1f40d634709d5a8b
-    expected_size: 1993800
+    type: sha256
+    sha256: 298a95b39093c135b1a885f9999f7f0afd8d2bb10e5265ee1f40d634709d5a8b
+    size_bytes: 1993800
   provenance:
     redistribution: permitted
     original: true
