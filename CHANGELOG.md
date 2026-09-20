@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.42.2](https://github.com/benletchford/systemless/compare/v0.42.1...v0.42.2) (2026-09-20)
+
+
+### Bug Fixes
+
+* **web:** complete menu tracking while guest ticks are frozen ([a9f7e37](https://github.com/benletchford/systemless/commit/a9f7e378378a4b4259d868e53b10d6bae2af197c))
+
+
+### Performance Improvements
+
+* **ppc:** accelerate guest memory access and retained detail capture ([b612438](https://github.com/benletchford/systemless/commit/b612438c46eebb377aeb7a29096d289b03faf8b7))
+* **quickdraw:** retain span copying for saved outline sources ([#2208](https://github.com/benletchford/systemless/issues/2208)) ([0e2a936](https://github.com/benletchford/systemless/commit/0e2a936237479176423b0d7237d99477b1d4fab4))
+* **windows:** reuse compact frames until the visible image changes ([#2119](https://github.com/benletchford/systemless/issues/2119)) ([c1dd94f](https://github.com/benletchford/systemless/commit/c1dd94f68d50995597fac92fd4d367e758b0a3ca))
+* **windows:** skip redundant logical images during compact GPU export ([#2113](https://github.com/benletchford/systemless/issues/2113)) ([827d4fc](https://github.com/benletchford/systemless/commit/827d4fcc214b89d55264bbc5807c890c74e973f5))
+
+
+### Code Refactoring
+
+* **process:** seal TextEdit manager handle ([9c1ddcb](https://github.com/benletchford/systemless/commit/9c1ddcb92c0a1eb089d55025ce5cc5d048a10183))
+
 ## [0.42.1](https://github.com/benletchford/systemless/compare/v0.42.0...v0.42.1) (2026-09-20)
 
 
