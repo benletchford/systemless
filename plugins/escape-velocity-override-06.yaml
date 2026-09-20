@@ -1,0 +1,1176 @@
+schema_version: 1
+entry: escape-velocity-override
+artifacts:
+- id: plugin-renegade-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/renegade.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/renegade.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-renegadevessels1-0-1-sea
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/RenegadeVessels1.0.1.sea.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/RenegadeVessels1.0.1.sea.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-rengade-pocket-warship-zip
+  role: supplement
+  format: zip
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/rengade%20pocket%20warship.zip
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/rengade%20pocket%20warship.zip
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-rotue-invincinought-fix
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/ROTUE_InvinciNought_Fix.Bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/ROTUE_InvinciNought_Fix.Bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-saboteursrealm-sea
+  role: supplement
+  format: opaque
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SaboteursRealm.sea
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SaboteursRealm.sea
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-saboteursrealm10b4r3
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SaboteursRealm10b4r3.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SaboteursRealm10b4r3.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-sadefixer-sit
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SADEFixer.sit.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SADEFixer.sit.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-seans-wacky-world
+  role: supplement
+  format: opaque
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/seans_wacky_world
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/seans_wacky_world
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-secession-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Secession.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Secession.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-secession15-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Secession15.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Secession15.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-shifter-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Shifter.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Shifter.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-shifter2-0-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Shifter2.0.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Shifter2.0.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-ships-r-us-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Ships%20R%20Us.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Ships%20R%20Us.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-ships-r-us1-1-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Ships%20R%20Us1.1.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Ships%20R%20Us1.1.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-shortcuts-plug-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Shortcuts%20plug.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Shortcuts%20plug.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-shuttle-dx-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Shuttle_DX.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Shuttle_DX.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-silent-killer-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/silent%20killer.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/silent%20killer.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-solgraphs-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SolGraphs.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SolGraphs.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-soundsgalore-sea
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SoundsGalore.sea.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SoundsGalore.sea.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-space-amoeba-1-0-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Space%20Amoeba%201.0.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Space%20Amoeba%201.0.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-spaceballs-the-plug-in
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Spaceballs-%20The%20Plug-In.Bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Spaceballs-%20The%20Plug-In.Bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-speed-plug-1-0-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Speed%20Plug%201.0.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Speed%20Plug%201.0.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-speedchange-sea
+  role: supplement
+  format: opaque
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SpeedChange.sea
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SpeedChange.sea
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-speedchange-2-0-sea
+  role: supplement
+  format: opaque
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SpeedChange_2.0.sea
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SpeedChange_2.0.sea
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-spodiaships-sit
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SpodiaShips.sit.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SpodiaShips.sit.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-star-wars-sea
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Star%20Wars.sea.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Star%20Wars.sea.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-star-trek-preview-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Star_Trek_Preview.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Star_Trek_Preview.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-starclashov10
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/StarclashOv10.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/StarclashOv10.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-starring-zip
+  role: supplement
+  format: zip
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/starring.zip
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/starring.zip
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-starterplug1-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/StarterPlug1.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/StarterPlug1.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-starwars2103-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/StarWars2103.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/StarWars2103.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-stockerpods-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/StockerPods.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/StockerPods.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-strandvessel1-0-1-sea
+  role: supplement
+  format: opaque
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Strandvessel1.0.1.sea
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Strandvessel1.0.1.sea
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-strandvessels1-1-sea
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/StrandVessels1.1.sea.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/StrandVessels1.1.sea.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-strangeasteroid-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/StrangeAsteroid.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/StrangeAsteroid.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-stressrelease-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/StressRelease.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/StressRelease.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-striker-plug-in-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Striker%20plug-in.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Striker%20plug-in.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-super-plug-in-pak-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Super%20Plug-In%20pak.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Super%20Plug-In%20pak.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-super-stuff-2-0-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Super_Stuff_2.0.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Super_Stuff_2.0.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-superlazira-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SuperLazira.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SuperLazira.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-superships-1-2-sea
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Superships%201.2.sea.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Superships%201.2.sea.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-sw-conf-plug-in-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SW%20Conf.%20plug-in.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SW%20Conf.%20plug-in.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-sw2-2-0-0
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SW2%202.0.0.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SW2%202.0.0.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-sw2-2-1-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SW2%202.1.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SW2%202.1.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-sw221-sit
+  role: supplement
+  format: hqx
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SW221.sit.hqx
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SW221.sit.hqx
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-swextraships-sit
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SWextraShips.sit.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SWextraShips.sit.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-swextrashipsv-2-sit
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SWextraShipsV.2.sit.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/SWextraShipsV.2.sit.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-tbfl-test-version-sit
+  role: supplement
+  format: bin
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/TBFL%20test%20version.sit.bin
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/TBFL%20test%20version.sit.bin
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-teddy-trouble-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Teddy-Trouble.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/Teddy-Trouble.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+- id: plugin-the-traders-union-1-0-sit
+  role: supplement
+  format: sit
+  source:
+    type: external
+    url: >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/The%20Traders%20Union%201.0.sit
+  provenance:
+    redistribution: unknown
+    sources:
+    - https://archive.org/details/EscapeVelocityPluginCollection
+    - >-
+      https://archive.org/download/EscapeVelocityPluginCollection/EVO.zip/EVO/Plugins/The%20Traders%20Union%201.0.sit
+    notes: >-
+      Original package independently retrieved from the upstream collection and
+      inspected. Download remains with the original provider.
+plugins:
+- id: renegade-sit
+  label: renegade.sit
+  description: >-
+    This plugin is for renegades. It adds one ship, The Renegade Destroyer. It can
+    take down a UE Destroyer fairly easily. I think I got most of the bugs out so Im
+    posting it. Expect more soon.
+  download_artifact: plugin-renegade-sit
+  install: []
+- id: renegadevessels1-0-1-sea
+  label: RenegadeVessels1.0.1.sea
+  description: >-
+    RenegadeVessels1.0.1 -by Coraxus. This new version with a set of three new
+    ships for the independent government and the human renegades comes with 2 more
+    compatible plug-ins for EVOSI and 45ºSprite.
+  download_artifact: plugin-renegadevessels1-0-1-sea
+  install: []
+- id: rengade-pocket-warship-zip
+  label: rengade pocket warship.zip
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-rengade-pocket-warship-zip
+  install: []
+- id: rotue-invincinought-fix
+  label: ROTUE InvinciNought Fix
+  description: >-
+    Ever wonder why, while playing "Reign of the UE," and you must destroy the
+    InvinciNought, it flies off to the side of the screen just after you disabled it? It
+    was an oversight by the designer (Mea culpa), but this plug fixes it! Compatible
+    with any version...
+  download_artifact: plugin-rotue-invincinought-fix
+  install: []
+- id: saboteursrealm-sea
+  label: SaboteursRealm.sea
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-saboteursrealm-sea
+  install: []
+- id: saboteursrealm10b4r3
+  label: SaboteursRealm10b4r3
+  description: >-
+    The story of an Earth exploration mission gone wrong, which evolves in to a
+    huge epic of war, betrayal, sacrifice, and redemption. With 50 missions of plot
+    twists, mission forks, and main characters, as well as tons of custom ships,
+    weaponry, and graphics,...
+  download_artifact: plugin-saboteursrealm10b4r3
+  install: []
+- id: sadefixer-sit
+  label: SADEFixer.sit
+  description: "768.00 B | By Anonymous Although EVO v1.0.2 brought a lot of cool features, it also carried a bizarre bug: SADs and SAEs would flicker occasionally while in flight. After a little work in ResEdit, I created this plug to fix that problem. Send in all comment..."
+  download_artifact: plugin-sadefixer-sit
+  install: []
+- id: seans-wacky-world
+  label: seans wacky world
+  description: >-
+    Adds a large, intentionally chaotic set of changes. Expect the differences to
+    show up after starting a pilot and exploring altered content.
+  download_artifact: plugin-seans-wacky-world
+  install: []
+- id: secession-sit
+  label: Secession.sit
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-secession-sit
+  install: []
+- id: secession15-sit
+  label: Secession15.sit
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-secession15-sit
+  install: []
+- id: shifter-sit
+  label: Shifter.sit
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-shifter-sit
+  install: []
+- id: shifter2-0-sit
+  label: Shifter2.0.sit
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-shifter2-0-sit
+  install: []
+- id: ships-r-us-sit
+  label: Ships R Us.sit
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-ships-r-us-sit
+  install: []
+- id: ships-r-us1-1-sit
+  label: Ships R Us1.1.sit
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-ships-r-us1-1-sit
+  install: []
+- id: shortcuts-plug-sit
+  label: Shortcuts plug.sit
+  description: >-
+    This plug in adds a lot of shortcuts very helpful in most of the missions.Its
+    not very compatible, so I recomend you to use it alone.Hope you enjoy it.
+  download_artifact: plugin-shortcuts-plug-sit
+  install: []
+- id: shuttle-dx-sit
+  label: Shuttle_DX.sit
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-shuttle-dx-sit
+  install: []
+- id: silent-killer-sit
+  label: silent killer.sit
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-silent-killer-sit
+  install: []
+- id: solgraphs-sit
+  label: SolGraphs.sit
+  description: "This plug-in adds new graphics to the Sol system, made with real photos and others created artificially. If you have any problems with my plug, e-mail me at: you enjoy it."
+  download_artifact: plugin-solgraphs-sit
+  install: []
+- id: soundsgalore-sea
+  label: SoundsGalore.sea
+  description: >-
+    SoundsGalore1.0.0 -by Coraxus. While I have not submitted anything for a long
+    while, here is something I made long ago but didnt release it until now. Its
+    basically a plug-in that replaces the general sound effects, mostly explosions and
+    weapons fire. I hop...
+  download_artifact: plugin-soundsgalore-sea
+  install: []
+- id: space-amoeba-1-0-sit
+  label: Space Amoeba 1.0.sit
+  description: >-
+    Where did they come from? Why are they here? What do they hope to achieve? No
+    one knows. They are the Space Amoebas, and they lurk in the most desolate corners
+    of the Galaxy. Their deadly Crystal Rays are feared by all. This plug-in adds one
+    ship, (or shoul...
+  download_artifact: plugin-space-amoeba-1-0-sit
+  install: []
+- id: spaceballs-the-plug-in
+  label: Spaceballs- The Plug-In
+  description: >-
+    Adds two Spaceballs-themed planets in a new system one jump from Sol, plus
+    related outfits and local trade opportunities.
+  download_artifact: plugin-spaceballs-the-plug-in
+  install: []
+- id: speed-plug-1-0-sit
+  label: Speed Plug 1.0.sit
+  description: >-
+    WARNING! This plug is for expert pilots only! May cause newbies to melt upon
+    startup! It speeds all the ships up making it an extra challenge to those whove
+    mastered the game.
+  download_artifact: plugin-speed-plug-1-0-sit
+  install: []
+- id: speedchange-sea
+  label: SpeedChange.sea
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-speedchange-sea
+  install: []
+- id: speedchange-2-0-sea
+  label: SpeedChange_2.0.sea
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-speedchange-2-0-sea
+  install: []
+- id: spodiaships-sit
+  label: SpodiaShips.sit
+  description: >-
+    Spodia Ships- v1.0.0by Nick KasprakThank you for downloading the Spodia Ships
+    plugin. It adds 6 new ships and a few weapons (with original graphics) to the EVO
+    universe. I am not good at storylines or descriptions or systems or anything like
+    that, so I have...
+  download_artifact: plugin-spodiaships-sit
+  install: []
+- id: star-wars-sea
+  label: Star Wars.sea
+  description: >-
+    This is a fix for the infamous circle of lasers and torpedoes spinning in a
+    halo around the player. The problem was caused by too many separate plugs in the
+    Star Wars set. I combined the separate plugs into one plug and it now works fine.
+    Problem solved. Th...
+  download_artifact: plugin-star-wars-sea
+  install: []
+- id: star-trek-preview-sit
+  label: Star Trek Preview.sit
+  description: >-
+    This plug-in is a preview for a plug that could contain an entire Star Trek
+    galaxy, if its well received. Adds the Galaxy, Sovereign, Miranda, Intrepid, and
+    Defiant class starships as well as Phaser Banks, Arrays, Photon, and Quantum Torps.
+    Feedback is appr...
+  download_artifact: plugin-star-trek-preview-sit
+  install: []
+- id: starclashov10
+  label: StarclashOv10
+  description: >-
+    This plug-in adds the Protoss carrier and Terran Battlecruiser to Override. Its
+    sort of a port of the one I made for Nova. You Stuffit Expander 6.5.1 to
+    unstuff. Contact me -David "Kings Knight" Freeman
+  download_artifact: plugin-starclashov10
+  install: []
+- id: starring-zip
+  label: starring.zip
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-starring-zip
+  install: []
+- id: starterplug1-sit
+  label: StarterPlug1.sit
+  description: >-
+    The Starter Plug adds a few missions (with high rewards) tied into the Destroy
+    Voinian Dreadnought mission series, and makes a few modifications (e.g. to the
+    Miranu Heavy Freighter), all to aid players who don19t have 20 hours a day free to
+    play EV Override.
+  download_artifact: plugin-starterplug1-sit
+  install: []
+- id: starwars2103-sit
+  label: StarWars2103.sit
+  description: This is a port of the EV scenario Star Wars 2.01 to EV Override.
+  download_artifact: plugin-starwars2103-sit
+  install: []
+- id: stockerpods-sit
+  label: StockerPods.sit
+  description: >-
+    This is my first plug-in ever so I hope it works the plug adds one new ship the
+    X-Caper and a weapon that you get with the ship the amazign Stocker Pods an
+    extremling intelligent homing device. sorry about the graphics I copy the all from
+    other ships and we...
+  download_artifact: plugin-stockerpods-sit
+  install: []
+- id: strandvessel1-0-1-sea
+  label: Strandvessel1.0.1.sea
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-strandvessel1-0-1-sea
+  install: []
+- id: strandvessels1-1-sea
+  label: StrandVessels1.1.sea
+  description: "StrandVessels1.1 -by Coraxus. This plug-in that contains a number of new ships for each strands including Zachit, now has improved more than ever. Other than correcting mistakes and configurating one ship, Ive also added bonus plug-ins as well. Important: R..."
+  download_artifact: plugin-strandvessels1-1-sea
+  install: []
+- id: strangeasteroid-sit
+  label: StrangeAsteroid.sit
+  description: >-
+    This mission replaces the placeholder graphics for the Strange Asteroid in the
+    Miranu/Igadzra mission sequences to make the mission, as EV Override designer
+    Peter Cartwright put it, "make sense at last (or at least...make as little sense as
+    it was meant to...
+  download_artifact: plugin-strangeasteroid-sit
+  install: []
+- id: stressrelease-sit
+  label: StressRelease.sit
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-stressrelease-sit
+  install: []
+- id: striker-plug-in-sit
+  label: Striker plug-in.sit
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-striker-plug-in-sit
+  install: []
+- id: super-plug-in-pak-sit
+  label: Super Plug-In pak.sit
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-super-plug-in-pak-sit
+  install: []
+- id: super-stuff-2-0-sit
+  label: Super Stuff 2.0.sit
+  description: >-
+    Super Stuff 2.0Hi! Sorry about the bugs in the first version, hopefully they
+    have been eliminated.
+  download_artifact: plugin-super-stuff-2-0-sit
+  install: []
+- id: superlazira-sit
+  label: SuperLazira.sit
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-superlazira-sit
+  install: []
+- id: superships-1-2-sea
+  label: Superships 1.2.sea
+  description: "This plug will make it so you you can see Voinian dreadnoughts and UE Cruisers flying around, attacking outposts,etc. It will also give the Hinwar dreadnoughts. WARNING: this plug may not function correctly unless you have done the following: completed the..."
+  download_artifact: plugin-superships-1-2-sea
+  install: []
+- id: sw-conf-plug-in-sit
+  label: SW Conf. plug-in.sit
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-sw-conf-plug-in-sit
+  install: []
+- id: sw2-2-0-0
+  label: SW2 2.0.0
+  description: >-
+    SW2 2.0! This is a fixed(hopefully) version of Chris Hausers SW2. It fixes
+    those annoying things and broken things and should work better than Version 1.0.3.
+    Please email bug reports to
+  download_artifact: plugin-sw2-2-0-0
+  install: []
+- id: sw2-2-1-sit
+  label: SW2 2.1.sit
+  description: >-
+    Now, hopefully this loads right. I have tried about two times to put this on
+    this site. Maybe third times the charm! Alright. This is an update for SW2 1.0.3.
+    IT fixes a few things, blah blah blah...
+  download_artifact: plugin-sw2-2-1-sit
+  install: []
+- id: sw221-sit
+  label: SW221.sit
+  description: >-
+    Alright, hopefully this will upload correctly. SW2 2.1 is a major bug fix for
+    SW2 1.0. You do not need SW2 1.0.0-3. You need EVO 1.0.2 to run this though. This
+    should fix many of the bugs that were either hindering or annoying.Reeves Software
+  download_artifact: plugin-sw221-sit
+  install: []
+- id: swextraships-sit
+  label: SWextraShips.sit
+  description: >-
+    Adds TIE Advance x1, TIE Defender, Corellian Transport/freighter to SW2, This
+    is just a plug to spice up your gameplay(need target Pics though, this is not
+    finished) Will add more ships, outfits, fleets, persons, dudes, in later versions if
+    you like this. P...
+  download_artifact: plugin-swextraships-sit
+  install: []
+- id: swextrashipsv-2-sit
+  label: SWextraShipsV.2.sit
+  description: >-
+    Adds Target Pics,TIE Defender,TIE Advance,Medium Transport,corellian freighter,
+    and Y-wing to SW2.Questions or Comments to , my other e-mail was down. Looking
+    for someone to make some new SW ships, respond if interested.(All ships added were
+    created by Kris...
+  download_artifact: plugin-swextrashipsv-2-sit
+  install: []
+- id: tbfl-test-version-sit
+  label: TBFL test version.sit
+  description: >-
+    This is The Better Fork-Lift Testing Version. It is also my first submission. I
+    really want to spend more timne designing than testing so any one who wants to
+    help, please do.
+  download_artifact: plugin-tbfl-test-version-sit
+  install: []
+- id: teddy-trouble-sit
+  label: Teddy-Trouble.sit
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-teddy-trouble-sit
+  install: []
+- id: the-traders-union-1-0-sit
+  label: The Traders Union 1.0.sit
+  description: >-
+    Original EVO plugin package from the Archive.org Escape Velocity Plugin
+    Collection.
+  download_artifact: plugin-the-traders-union-1-0-sit
+  install: []

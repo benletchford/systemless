@@ -1,0 +1,64 @@
+name: Compatibility report
+description: Report a reproducible result for a catalogue title.
+title: "[entry-id] Compatibility: "
+body:
+  - type: input
+    id: entry
+    attributes:
+      label: Catalogue entry ID
+      description: Stable ID from catalogue/<id>.md. Keep [id] in the issue title so reports are discoverable.
+      placeholder: marathon
+    validations:
+      required: true
+  - type: dropdown
+    id: status
+    attributes:
+      label: Observed status
+      options:
+        - Broken
+        - Boots
+        - Playable
+        - Works
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Systemless version or commit
+    validations:
+      required: true
+  - type: dropdown
+    id: architecture
+    attributes:
+      label: Architecture tested
+      options:
+        - 68k
+        - PPC
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Browser, OS and device
+    validations:
+      required: true
+  - type: input
+    id: artifact
+    attributes:
+      label: Software version or asset SHA-256
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps, expected result and observed result
+      description: Include configuration, how far you tested, and reproducible steps.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Attach screenshots and relevant logs. Remove private information first.
+    validations:
+      required: true

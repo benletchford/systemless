@@ -1,0 +1,52 @@
+name: R2 connection check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r2-connection-check
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    # Credentials are available only to explicitly dispatched default-branch code.
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Build trusted CLI without R2 credentials
+        run: cargo +stable build --locked --release -p systemless-catalogue-tools --bin catalogue
+      - name: Read managed R2 inventory
+        shell: bash
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          for name in R2_ACCOUNT_ID R2_BUCKET R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing repository secret: $name"
+              exit 1
+            fi
+          done
+          ./target/release/catalogue r2 inventory --output "$RUNNER_TEMP/r2-inventory.json"
+      - name: Summarize connection check
+        shell: bash
+        run: |
+          count=$(jq '.objects | length' "$RUNNER_TEMP/r2-inventory.json")
+          {
+            echo '### R2 connection successful'
+            echo
+            echo "Authenticated and listed both managed catalogue prefixes: $count objects."
+            echo 'No objects were uploaded or deleted. No entries were changed.'
+            echo 'This verifies authentication and listing, not upload permissions or public downloads.'
+          } >> "$GITHUB_STEP_SUMMARY"

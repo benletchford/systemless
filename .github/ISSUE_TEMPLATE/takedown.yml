@@ -1,0 +1,44 @@
+name: Takedown request
+description: Request removal of a catalogue entry, download, screenshot or other content.
+title: "Takedown request: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Maintainers review these requests and follow up in this issue.
+        Treat this as a public report: do not include private contact details,
+        identity documents, signatures or confidential evidence.
+        Describe the concern and link evidence that is already public.
+  - type: input
+    id: entry
+    attributes:
+      label: Catalogue entry ID (if known)
+      description: Keep [id] in the issue title when reporting a specific entry.
+  - type: textarea
+    id: urls
+    attributes:
+      label: Affected URLs
+      description: List the exact pages, downloads or images you want reviewed, one URL per line.
+    validations:
+      required: true
+  - type: textarea
+    id: relationship
+    attributes:
+      label: Your relationship to the content
+      description: Explain whether you hold the rights, represent someone affected, or are reporting another concern. Share only public information.
+    validations:
+      required: true
+  - type: textarea
+    id: reason
+    attributes:
+      label: Reason and supporting evidence
+      description: Describe the rights, permission, privacy or other concern. Include public source links and identify the affected work where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: action
+    attributes:
+      label: Requested action
+      description: Specify what should be removed or changed, such as an entry, download link, hosted file or screenshot.
+    validations:
+      required: true

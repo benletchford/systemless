@@ -1,0 +1,97 @@
+[package]
+name = "systemless-org"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.93"
+description = "Browser frontend for Systemless"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/benletchford/systemless"
+publish = false
+default-run = "systemless-org"
+
+[[bin]]
+name = "systemless-org"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.22"
+gloo-net = { version = "0.6", features = ["http"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+js-sys = "0.3"
+leptos = { version = "0.8", features = ["csr"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+systemless = { path = "..", default-features = false }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "AddEventListenerOptions",
+    "Document",
+    "Element",
+    "EventTarget",
+    "CssStyleDeclaration",
+    "Event",
+    "File",
+    "FileList",
+    "DomRect",
+    "History",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "HtmlInputElement",
+    "HtmlSelectElement",
+    "Location",
+    "CanvasRenderingContext2d",
+    "ImageData",
+    "WebGlBuffer",
+    "WebGlProgram",
+    "WebGlRenderingContext",
+    "WebGlShader",
+    "WebGlTexture",
+    "WebGlUniformLocation",
+    "MouseEvent",
+    "MediaQueryList",
+    "Navigator",
+    "PointerEvent",
+    "Touch",
+    "TouchEvent",
+    "TouchList",
+    "KeyboardEvent",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "ReadableStreamReadResult",
+    "Storage",
+    "Performance",
+    "AudioContext",
+    "AudioContextOptions",
+    "AudioContextLatencyCategory",
+    "AudioContextState",
+    "AudioWorklet",
+    "AudioWorkletNode",
+    "BaseAudioContext",
+    "AudioBuffer",
+    "AudioDestinationNode",
+    "AudioProcessingEvent",
+    "AudioNode",
+    "MessagePort",
+    "MessageEvent",
+    "Worker",
+    "ScriptProcessorNode",
+    "Worklet",
+    "Blob",
+    "BlobPropertyBag",
+    "DomStringList",
+    "HtmlAnchorElement",
+    "IdbDatabase",
+    "IdbFactory",
+    "IdbObjectStore",
+    "IdbOpenDbRequest",
+    "IdbRequest",
+    "IdbTransaction",
+    "IdbTransactionMode",
+    "IdbVersionChangeEvent",
+    "Url",
+] }
+
+[build-dependencies]
+systemless-catalogue-tools = { path = "../tools/catalogue" }
