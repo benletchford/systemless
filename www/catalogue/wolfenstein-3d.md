@@ -52,8 +52,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/wolfenstein-3d/gameplay.png
+    type: sha256
+    sha256: e64efb536c20594a3619ccdec4915cb512dfad0677ed8846e9e886fa90b69a3e
+    size_bytes: 24037
   provenance:
     redistribution: permitted
     content_only: true
@@ -91,4 +92,4 @@ Holding Up changes the view and Control fires the weapon, verifying movement
 and gameplay interaction beyond launch. The deterministic checkpoints and
 framebuffer evidence are documented in [issue #2299](https://github.com/benletchford/systemless/issues/2299).
 
-![Wolfenstein 3D gameplay](incoming/wolfenstein-3d/gameplay.png)
+![Wolfenstein 3D gameplay](https://assets.systemless.org/catalogue/media/sha256/e6/e64efb536c20594a3619ccdec4915cb512dfad0677ed8846e9e886fa90b69a3e.png)

@@ -62,8 +62,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/antibody/gameplay.png
+    type: sha256
+    sha256: 6a170ee1dbd35fe21eabf469723e4acd994780df3e9d74c94c4acd4cd175d423
+    size_bytes: 232572
   provenance:
     redistribution: permitted
     content_only: true
@@ -83,7 +84,7 @@ references:
 
 ## A mission inside the bloodstream
 
-![Antibody gameplay](incoming/antibody/gameplay.png)
+![Antibody gameplay](https://assets.systemless.org/catalogue/media/sha256/6a/6a170ee1dbd35fe21eabf469723e4acd994780df3e9d74c94c4acd4cd175d423.png)
 
 Antibody puts the player inside a sick research subject, shrinking the ES-21 to
 the size of a cell and sending it through a living bloodstream. Clear the viral
