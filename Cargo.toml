@@ -118,6 +118,21 @@ tempfile = "3"
 lto = "fat"
 codegen-units = 1
 
+# Optimized builds for performance iteration, where `release`'s whole-program
+# LTO in a single codegen unit costs minutes per rebuild. Thin LTO keeps the
+# cross-crate inlining that matters here — the hot paths call through
+# `PpcMemory`/`AddressBus` into the `ppc` and `m68k` crates.io crates, so
+# disabling LTO outright would change the very code being measured — while
+# parallel codegen units and incremental reuse make rebuilds practical.
+#
+# Timings differ from `release`; use it to A/B your own changes, and confirm
+# final numbers on `release`.
+[profile.fast]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+incremental = true
+
 # Execute emulator-heavy integration tests efficiently without production LTO
 # costs or dropping the runtime checks exercised by ordinary debug tests.
 [profile.ci-test]
