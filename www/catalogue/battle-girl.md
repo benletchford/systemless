@@ -11,7 +11,15 @@ default_architecture: ppc
 category: Arcade
 launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
+  verified:
+  - date: 2026-09-20
+    tester: Catalogue maintainer
+    systemless_version: 0.42.2
+    architecture: ppc
+    environment: Deterministic headless gameplay run from the original StuffIt archive
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2222
 artifacts:
 - id: archive
   role: archive
@@ -47,5 +55,5 @@ Battle-Girl is an overhead arcade shooter built around quick turns, dense
 projectiles and compact arenas. This is the original PowerPC demonstration,
 kept complete and unchanged under the distribution terms in its README.
 
-Systemless compatibility has not yet been verified, so this entry records the
-authentic package without promising that it reaches play today.
+Systemless launches the original PowerPC demo, enters Program 1 and responds to
+mouse movement and directional fire in a deterministic gameplay run.
