@@ -54,8 +54,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/adventure-island/gameplay.png
+    type: sha256
+    sha256: 9a1eb3a313cde695b54f1ad51307b1a5f215b63d05765529cae695f5883267ea
+    size_bytes: 18739
   provenance:
     redistribution: permitted
     content_only: true
@@ -89,7 +90,7 @@ unchanged 131,259-byte archive and keeps its application and ReadMe together.
 
 ## Live command parsing
 
-![Adventure Island gameplay](incoming/adventure-island/gameplay.png)
+![Adventure Island gameplay](https://assets.systemless.org/catalogue/media/sha256/9a/9a1eb3a313cde695b54f1ad51307b1a5f215b63d05765529cae695f5883267ea.png)
 
 Systemless reaches the text-adventure window from the exact archive. A
 deterministic run clicked the command area, entered `n`, pressed Return, and
