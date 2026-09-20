@@ -55,6 +55,25 @@ artifacts:
       Junkie 1.2, Register Me, and the application icon. The bundled hardware
       requirements support 68020-or-later Macs and Power Macs; this entry
       declares the verified Systemless 68k path only.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: incoming
+    path: catalogue/incoming/space-junkie/gameplay.png
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/2314
+    permission: >-
+      Original screenshot captured from the exact Space Junkie archive during a
+      deterministic gameplay run for this catalogue. Underlying game artwork
+      remains the property of its rights holders.
+    notes: >-
+      Fresh capture during live Wave 1 after movement and fire input, cropped to
+      the 800-by-600 game content surface. It excludes the host desktop, emulator
+      margins and Classic Mac menu bar.
 references:
 - https://www.vintageapplemac.com/software/games/s/
 - https://www.vintageapplemac.com/files/games/Space%20Junkie%201.2.sit
@@ -67,6 +86,8 @@ compact 1.2 release adds a larger 640-by-480 playfield, 256-color graphics,
 digitized sounds, easier play, and a Power Macintosh-compatible build.
 
 ## Wave 1
+
+![Space Junkie gameplay](incoming/space-junkie/gameplay.png)
 
 The complete archive keeps the game, About document, registration application,
 and icon together. A deterministic Systemless run dismissed the registration

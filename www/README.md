@@ -29,6 +29,12 @@ description. Keep the stable ID, filename, route, and referenced artifact IDs
 consistent. Put large optional plugin collections in one or more
 `catalogue/plugins/<stable-id>-NN.yaml` files instead of expanding the entry.
 
+Every game must include a real gameplay screenshot before it is approved or
+released. Capture it from the exact archive tested with Systemless, crop it to
+the game's content surface, and exclude emulator framing, host UI, and the
+Classic Mac menu bar. Record it as a `screenshot` artifact with
+`content_only: true`, and include it in the entry's Markdown description.
+
 Stage assets that still need promotion under
 `catalogue/incoming/<stable-id>/`; do not commit large software archives. Run
 the preview and production validation commands below, then use

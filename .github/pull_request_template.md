@@ -5,6 +5,7 @@
 ## Validation
 
 <!-- List the checks you ran and any relevant manual testing. -->
+<!-- Catalogue additions must include a real content-only gameplay screenshot before merge. -->
 
 ## Contributor agreement
 

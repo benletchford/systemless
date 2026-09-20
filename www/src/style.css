@@ -621,6 +621,25 @@ input {
   image-rendering: pixelated;
 }
 
+.game-thumb--placeholder {
+  display: grid;
+  place-items: center;
+  color: var(--paper);
+  background: var(--screen);
+}
+
+.game-thumb__placeholder-mark {
+  display: grid;
+  width: clamp(44px, 18%, 72px);
+  aspect-ratio: 1;
+  place-items: center;
+  border: 2px solid currentColor;
+  border-radius: 18%;
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: clamp(28px, 8vw, 48px);
+  line-height: 1;
+}
+
 .library-card__title {
   grid-column: 1;
   font-family: "Instrument Serif", Georgia, serif;

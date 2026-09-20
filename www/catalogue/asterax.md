@@ -47,6 +47,25 @@ artifacts:
     notes: >-
       Unchanged 401668-byte StuffIt archive, pinned by SHA-256
       78bb57247d88f731426aaaa60e501b5cb41bc8d484268c5ff78fab20b70340d8.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: incoming
+    path: catalogue/incoming/asterax/gameplay.png
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/2305
+    permission: >-
+      Original screenshot captured from the exact Asterax archive during a
+      deterministic gameplay run for this catalogue. Underlying game artwork
+      remains the property of its rights holders.
+    notes: >-
+      Fresh capture after ship selection, fire, thrust and turn input, using
+      the full 800-by-600 Asterax gameplay surface. It excludes emulator chrome,
+      host margins and the Classic Mac menu bar.
 references:
 - https://www.vintageapplemac.com/software/games/
 - https://www.vintageapplemac.com/files/games/Asterax.sit
@@ -59,6 +78,8 @@ and all standard application files remain together so the archive preserves the
 author's non-profit distribution condition.
 
 ## In the asteroid field
+
+![Asterax gameplay](incoming/asterax/gameplay.png)
 
 Asterax begins with a ship-selection screen and opens into a fast asteroid field
 where pilots mine emeraldium while avoiding rival ships and hazards. The original

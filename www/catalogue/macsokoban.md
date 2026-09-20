@@ -52,6 +52,26 @@ artifacts:
       Unchanged 91,557-byte StuffIt archive, SHA-256
       af0286028e29cb9a9c8b257dce9c75a68bbd3ae72379a29006d52f6771db82fe.
       It contains the game, its notes and the MacSokoban Score Mover utility.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: incoming
+    path: catalogue/incoming/macsokoban/gameplay.png
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/2303
+    permission: >-
+      Original gameplay screenshot captured from the exact unchanged archive for
+      this catalogue entry. Underlying game artwork remains the property of its
+      rights holder.
+    notes: >-
+      Fresh deterministic capture after creating a named player, starting level 1
+      and sending arrow-key input. The crop contains only the live puzzle surface
+      and level strip; emulator menu, host margins and desktop furniture are
+      excluded.
 references:
 - https://www.vintageapplemac.com/software/games/m
 ---
@@ -80,3 +100,5 @@ Systemless was tested beyond startup. A deterministic 68K run created a
 player, entered the first puzzle, processed several arrow-key moves and showed
 the keeper moving across the board without a crash, trap failure or rendering
 fault.
+
+![MacSokoban gameplay](incoming/macsokoban/gameplay.png)

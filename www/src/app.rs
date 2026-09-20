@@ -822,7 +822,9 @@ fn set_document_head_for_next() {
 
 fn set_document_head_for_game(game: &Game) {
     let canonical = absolute_url(&browser_path_for_route(&canonical_path_for_game(game), "/"));
-    let image = absolute_url(&asset_path(game.assets.screenshot_path));
+    let image = crate::paths::optional_asset_path(game.assets.screenshot_path)
+        .map(|path| absolute_url(&path))
+        .unwrap_or_else(|| absolute_url("/assets/icons/favicon.svg"));
     set_document_head(HeadMeta {
         title: format!("{}{} ({}) | Systemless", if game.approved { "Play " } else { "" }, game.title, game.year),
         description: game.description.to_string(),

@@ -53,12 +53,33 @@ artifacts:
       The bundled README documents the 68020-and-later requirement and describes
       the application as a fat binary native on Power Macs; the verified
       catalogue path is its 68k application slice.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: incoming
+    path: catalogue/incoming/ultima-iii/gameplay.png
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/2310
+    permission: >-
+      Original screenshot captured from the exact Ultima III archive during a
+      deterministic gameplay run for this catalogue. Underlying game artwork
+      remains the property of its rights holders.
+    notes: >-
+      Fresh capture after entering Journey Onward and moving the party, cropped
+      to the 640-by-384 game content surface. It excludes the host desktop,
+      emulator margins and Classic Mac menu bar.
 references:
 - https://www.vintageapplemac.com/software/games/u/
 - https://www.vintageapplemac.com/files/games/Ultima%20III%201.3.sit
 ---
 
 ## Exodus in Sosaria
+
+![Ultima III gameplay](incoming/ultima-iii/gameplay.png)
 
 *Ultima III* is a classic party-based fantasy adventure. Create and organize a
 party, equip its members, then journey across Sosaria through towns, wilderness,
