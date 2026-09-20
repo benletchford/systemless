@@ -44,6 +44,11 @@ cargo run --locked -p systemless-catalogue-tools -- --root www check
 cargo run --locked -p systemless-catalogue-tools -- --root www check --production
 ```
 
+Preview validation accepts integrity-pinned HTTPS sources while a contribution
+is being reviewed. Before a release, promote every managed URL or incoming
+artifact and commit the generated immutable SHA-256 source rewrites so that
+production validation passes.
+
 Pending assets are staged under `www/catalogue/incoming/<entry-id>/`. An entry
 records the website-relative source path, such as
 `catalogue/incoming/example/game.sit`; Markdown in the same entry refers to it
