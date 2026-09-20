@@ -1439,7 +1439,6 @@ const DEFAULT_LAUNCH_TICKS: u32 = 600;
 /// the low-memory `DoubleTime` global.
 const DEFAULT_DOUBLE_TIME_TICKS: u32 = 20;
 const MAC_EPOCH_OFFSET_FROM_UNIX: u64 = 2_082_844_800;
-const CURSOR_TASK_NOOP_ADDR: u32 = 0x0000_0060;
 
 fn current_mac_epoch_seconds() -> u32 {
     let unix_now = SystemTime::now()
@@ -1717,6 +1716,8 @@ pub struct FixtureRunner {
     /// Guest-memory address of the low-memory `JCrsrTask` callback trampoline.
     /// Allocated once on first use and reused for cursor task callbacks.
     cursor_task_trampoline: u32,
+    /// Callable default cursor updater, also retained when guests wrap JCrsrTask.
+    default_cursor_task: u32,
     /// Guest-memory trampoline and packet buffer for ADB service routines.
     adb_callback_trampoline: u32,
     adb_packet_buffer: u32,
@@ -1949,6 +1950,7 @@ impl FixtureRunner {
             timer_trampoline: 0,
             vbl_trampoline: 0,
             cursor_task_trampoline: 0,
+            default_cursor_task: 0,
             adb_callback_trampoline: 0,
             adb_packet_buffer: 0,
             active_interrupt_callback: None,
@@ -3472,7 +3474,9 @@ impl FixtureRunner {
         if self.guest_work_is_suspended() {
             return StepResult::Blocked;
         }
+        let previous_mouse = self.bus.read_long(crate::memory::globals::addr::MOUSE_LOC2);
         let result = self.m68k.cpu.step(&mut self.bus);
+        self.sync_guest_mouse_position(previous_mouse);
         self.dispatcher
             .retire_returned_native_trap_call(&mut self.m68k.cpu);
         result
@@ -3933,15 +3937,7 @@ impl FixtureRunner {
         // GetKeys. Keep it explicitly clear at launch for direct pollers.
         // Inside Macintosh Volume I, I-260; MPW SysEqu.h `KeyMapLM`.
         self.sync_key_map_lowmem();
-        // JCrsrTask ($08EE): address of the cursor VBL task routine.
-        // MPW Interfaces/AIncludes/LowMemEqu.a lists `JCrsrTask EQU $8EE`.
-        // Classic applications can wrap this low-memory vector and then wait
-        // for their wrapper to run at interrupt time, so the default must be
-        // both non-NIL and callable. `$0060` is one of Systemless's low-memory
-        // RTS stubs for direct-call compatibility.
-        self.bus.write_word(CURSOR_TASK_NOOP_ADDR, 0x4E75);
-        self.bus
-            .write_long(addr::J_CRSR_TASK, CURSOR_TASK_NOOP_ADDR);
+        self.install_cursor_task();
         // MBarHeight: 20 pixels (standard Roman system script value).
         // Games may set this to 0 to hide the menu bar for full-screen mode.
         // Inside Macintosh Volume V, V-245
@@ -5775,6 +5771,7 @@ impl FixtureRunner {
         sound_work_only: bool,
         finish_frame: FrameFinalization,
     ) -> (usize, bool) {
+        let previous_mouse = self.bus.read_long(crate::memory::globals::addr::MOUSE_LOC2);
         let result = self.run_steps_internal_impl(
             max_steps,
             tick_cap,
@@ -5783,6 +5780,7 @@ impl FixtureRunner {
             sound_work_only,
             finish_frame,
         );
+        self.sync_guest_mouse_position(previous_mouse);
         // Returning to the embedding is a scheduler safe point. Publish any
         // context transition that occurred during this execution chunk.
         self.debug_note_active_context();
@@ -6396,7 +6394,14 @@ impl FixtureRunner {
             self.dispatcher
                 .append_pending_native_trap_return_pcs(&mut watch_buf);
             watch_buf.extend(self.debug_m68k_breakpoint_addresses());
-            let batch = self.m68k.cpu.run_batch(&mut self.bus, batch_max, &watch_buf);
+            let previous_mouse = self.bus.read_long(crate::memory::globals::addr::MOUSE_LOC2);
+            let batch = self
+                .m68k
+                .cpu
+                .run_batch(&mut self.bus, batch_max, &watch_buf);
+            // Publish guest-written Mouse before dispatching an event/input
+            // trap, even when the cursor task was called inside this batch.
+            self.sync_guest_mouse_position(previous_mouse);
             self.dispatcher
                 .retire_returned_native_trap_call(&mut self.m68k.cpu);
             // Trap exits consumed their opcode word too; count it like the
@@ -9646,6 +9651,49 @@ impl FixtureRunner {
         }
     }
 
+    fn install_cursor_task(&mut self) {
+        use crate::memory::globals::addr;
+        // Apple Technical Note DV520, "How the Macintosh mouse/cursor
+        // mechanism works": an absolute warp sets MTemp = RawMouse and
+        // CrsrNew = CrsrCouple. Cursor VBL maintenance publishes Mouse.
+        // https://developer.apple.com/library/archive/technotes/dv/dv_520.html
+        // Keep a real callable routine for direct calls and wrappers that
+        // defer the original task (Inside Macintosh: Processes, 1994, 6-9).
+        let words = [
+            0x4A38,
+            addr::CRSR_NEW as u16, // TST.B CrsrNew.W
+            0x6710,                // BEQ.S done
+            0x21F8,
+            addr::M_TEMP as u16,
+            addr::MOUSE_LOC as u16, // MOVE.L MTemp.W,RawMouse.W
+            0x21F8,
+            addr::M_TEMP as u16,
+            addr::MOUSE_LOC2 as u16, // MOVE.L MTemp.W,Mouse.W
+            0x4238,
+            addr::CRSR_NEW as u16, // CLR.B CrsrNew.W
+            0x4E75,                // done: RTS
+        ];
+        if self.default_cursor_task == 0 {
+            self.default_cursor_task = self.bus.alloc_synthetic((words.len() * 2) as u32);
+        }
+        for (index, word) in words.into_iter().enumerate() {
+            self.bus
+                .write_word(self.default_cursor_task + index as u32 * 2, word);
+        }
+        self.bus
+            .write_long(addr::J_CRSR_TASK, self.default_cursor_task);
+        self.bus.write_byte(addr::CRSR_NEW, 0);
+        self.bus.write_byte(addr::CRSR_COUPLE, 1);
+    }
+
+    fn sync_guest_mouse_position(&mut self, previous_mouse: u32) {
+        let mouse = self.bus.read_long(crate::memory::globals::addr::MOUSE_LOC2);
+        if mouse != previous_mouse {
+            self.dispatcher
+                .set_mouse_position((mouse >> 16) as i16, mouse as i16);
+        }
+    }
+
     /// Fire the low-memory cursor task vector, if an app has installed one.
     ///
     /// JCrsrTask runs from interrupt-time cursor/VBL maintenance. MPW
@@ -9668,7 +9716,21 @@ impl FixtureRunner {
         let callback_addr = self
             .bus
             .read_long(crate::memory::globals::addr::J_CRSR_TASK);
-        if callback_addr == 0 || callback_addr == CURSOR_TASK_NOOP_ADDR {
+        if callback_addr == 0 {
+            return;
+        }
+        if callback_addr == self.default_cursor_task {
+            use crate::memory::globals::addr;
+            // Same work as the callable routine, without injecting a guest
+            // interrupt on every tick when the vector has not been patched.
+            if self.bus.read_byte(addr::CRSR_NEW) != 0 {
+                let previous_mouse = self.bus.read_long(addr::MOUSE_LOC2);
+                let point = self.bus.read_long(addr::M_TEMP);
+                self.bus.write_long(addr::MOUSE_LOC, point);
+                self.bus.write_long(addr::MOUSE_LOC2, point);
+                self.bus.write_byte(addr::CRSR_NEW, 0);
+                self.sync_guest_mouse_position(previous_mouse);
+            }
             return;
         }
 

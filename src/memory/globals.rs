@@ -156,7 +156,7 @@ pub mod addr {
     // Reference: Executor docs/globals.cpp
     pub const M_TEMP: u32 = 0x0828; // Temporary mouse position (Point) - interrupt level
     pub const MOUSE_LOC: u32 = 0x082C; // Mouse location (Point) - "RawMouse"
-    pub const MOUSE_LOC2: u32 = 0x0830; // Secondary mouse location (Point)
+    pub const MOUSE_LOC2: u32 = 0x0830; // Current global mouse position (Point)
     /// JHideCursor: QuickDraw glue vector for HideCursor.
     ///
     /// The classic low-memory vector table places the argument-free
@@ -179,6 +179,9 @@ pub mod addr {
     /// Applications may call the vector directly instead of issuing the
     /// `_InitCursor` trap.
     pub const J_INIT_CRSR: u32 = 0x0814;
+    /// Cursor update request and cursor/mouse coupling flag (Apple TN DV520).
+    pub const CRSR_NEW: u32 = 0x08CE;
+    pub const CRSR_COUPLE: u32 = 0x08CF;
     /// JSwapFont: address of the Font Manager's FMSwapFont routine (ProcPtr).
     ///
     /// This private vector is called directly by QuickDraw text code. Executor's

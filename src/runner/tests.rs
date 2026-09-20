@@ -12441,6 +12441,140 @@
         );
     }
 
+    fn cursor_warp_runner() -> FixtureRunner {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = LoadedApp {
+            ppc: None,
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            loaded_image_end: 0,
+            initial_sp: 0x007F_FFC0,
+            size_resource: None,
+        };
+
+        runner.init_app(&app);
+
+        runner.set_mouse_position(352, 380);
+        let return_pc = 0x0002_0000;
+        runner.bus.write_word(return_pc, 0x60FE); // BRA.S *
+        runner.m68k.cpu.write_reg(Register::PC, return_pc);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007F_FE00);
+        runner
+    }
+
+    fn request_cursor_warp(runner: &mut FixtureRunner) {
+        use crate::memory::globals::addr;
+        runner.bus.write_long(addr::M_TEMP, (140 << 16) | 300);
+        runner.bus.write_long(addr::MOUSE_LOC, (140 << 16) | 300);
+        runner.bus.write_byte(0x08CE, 1); // CrsrNew
+    }
+
+    #[test]
+    fn cursor_task_direct_call_adopts_guest_warp() {
+        use crate::memory::globals::addr;
+        let mut runner = cursor_warp_runner();
+        request_cursor_warp(&mut runner);
+        let task = runner.bus.read_long(addr::J_CRSR_TASK);
+        let sp = runner.m68k.cpu.read_reg(Register::A7);
+        let pc = runner.m68k.cpu.read_reg(Register::PC);
+        runner.bus.write_long(sp - 4, pc);
+        runner.m68k.cpu.write_reg(Register::A7, sp - 4);
+        runner.m68k.cpu.write_reg(Register::PC, task);
+        runner.m68k.cpu.write_reg(Register::D0, 0x12345678);
+        runner.m68k.cpu.write_reg(Register::A0, 0x87654321);
+
+        assert!(runner.run_steps(30, None).1);
+
+        assert_eq!(runner.bus.read_long(addr::MOUSE_LOC2), (140 << 16) | 300);
+        assert_eq!(runner.dispatcher.mouse_position(), (140, 300));
+        assert_eq!(runner.bus.read_byte(0x08CE), 0);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0x12345678);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A0), 0x87654321);
+        runner.advance_guest_tick();
+        assert_eq!(runner.dispatcher.mouse_position(), (140, 300));
+        runner.set_mouse_position(150, 310);
+        assert_eq!(runner.dispatcher.mouse_position(), (150, 310));
+        assert_eq!(runner.bus.read_long(addr::MOUSE_LOC2), (150 << 16) | 310);
+    }
+
+    #[test]
+    fn cursor_task_vbl_adopts_pending_guest_warp() {
+        let mut runner = cursor_warp_runner();
+        request_cursor_warp(&mut runner);
+        runner.advance_guest_tick();
+        runner.run_steps(30, None);
+        assert_eq!(runner.dispatcher.mouse_position(), (140, 300));
+        assert_eq!(runner.bus.read_byte(0x08CE), 0);
+    }
+
+    #[test]
+    fn cursor_task_warp_reaches_event_trap_in_same_batch() {
+        use crate::memory::globals::addr;
+        let mut runner = cursor_warp_runner();
+        request_cursor_warp(&mut runner);
+        let task = runner.bus.read_long(addr::J_CRSR_TASK);
+        let sp = runner.m68k.cpu.read_reg(Register::A7);
+        let pc = runner.m68k.cpu.read_reg(Register::PC);
+        let event = 0x0003_0000;
+        runner.bus.write_word(pc, 0xA970); // GetNextEvent
+        runner.bus.write_word(pc + 2, 0x60FE);
+        runner.bus.write_long(sp - 4, pc);
+        runner.bus.write_long(sp, event);
+        runner.bus.write_word(sp + 4, 0); // null event only
+        runner.m68k.cpu.write_reg(Register::A7, sp - 4);
+        runner.m68k.cpu.write_reg(Register::PC, task);
+        runner.run_steps(30, None);
+        assert_eq!(runner.bus.read_word(event), 0);
+        assert_eq!(runner.bus.read_word(event + 10), 140);
+        assert_eq!(runner.bus.read_word(event + 12), 300);
+    }
+
+    #[test]
+    fn cursor_task_guest_wrapper_can_chain_to_default_task() {
+        use crate::memory::globals::addr;
+        let mut runner = cursor_warp_runner();
+        let task = runner.bus.read_long(addr::J_CRSR_TASK);
+        let wrapper = runner.bus.alloc(8);
+        runner.bus.write_word(wrapper, 0x4EB9); // JSR default cursor task
+        runner.bus.write_long(wrapper + 2, task);
+        runner.bus.write_word(wrapper + 6, 0x4E75);
+        runner.bus.write_long(addr::J_CRSR_TASK, wrapper);
+        request_cursor_warp(&mut runner);
+        runner.advance_guest_tick();
+        assert!(runner.active_interrupt_callback.is_some());
+        runner.run_steps(40, None);
+        assert!(runner.active_interrupt_callback.is_none());
+        assert_eq!(runner.dispatcher.mouse_position(), (140, 300));
+        assert_eq!(runner.bus.read_byte(addr::CRSR_NEW), 0);
+    }
+
+    #[test]
+    fn cursor_task_waits_for_request_and_respects_interrupt_mask() {
+        use crate::memory::globals::addr;
+        let mut runner = cursor_warp_runner();
+        request_cursor_warp(&mut runner);
+        runner.bus.write_byte(addr::CRSR_NEW, 0);
+        runner.advance_guest_tick();
+        assert_eq!(runner.dispatcher.mouse_position(), (352, 380));
+        runner.bus.write_byte(addr::CRSR_NEW, 1);
+        runner.m68k.cpu.core.set_sr_noint_nosp(0x2100);
+        runner.advance_guest_tick();
+        assert_eq!(runner.dispatcher.mouse_position(), (352, 380));
+        assert_eq!(runner.bus.read_byte(addr::CRSR_NEW), 1);
+        runner.m68k.cpu.core.set_sr_noint_nosp(0x2000);
+        runner.advance_guest_tick();
+        assert_eq!(runner.dispatcher.mouse_position(), (140, 300));
+        assert_eq!(runner.bus.read_byte(addr::CRSR_NEW), 0);
+    }
+
     #[test]
     fn init_app_seeds_cursor_task_low_memory_vector() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -12463,16 +12597,16 @@
         runner.init_app(&app);
 
         assert_eq!(
-            runner.bus.read_word(CURSOR_TASK_NOOP_ADDR),
-            0x4E75,
-            "default cursor task target should be a callable RTS stub"
+            runner.bus.read_word(runner.default_cursor_task),
+            0x4A38,
+            "default cursor task should test the pending update flag"
         );
         assert_eq!(
             runner
                 .bus
                 .read_long(crate::memory::globals::addr::J_CRSR_TASK),
-            CURSOR_TASK_NOOP_ADDR,
-            "JCrsrTask ($08EE) should boot to a callable no-op vector"
+            runner.default_cursor_task,
+            "JCrsrTask ($08EE) should boot to the callable cursor updater"
         );
     }
 
@@ -12757,14 +12891,15 @@
     }
 
     #[test]
-    fn cursor_task_noop_vector_does_not_fire_on_guest_tick() {
+    fn cursor_task_default_vector_does_not_inject_interrupt_on_guest_tick() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.install_cursor_task();
         let interrupted_pc = 0x0002_0000;
         let interrupted_sp = 0x007F_FFC0;
 
         runner.bus.write_long(
             crate::memory::globals::addr::J_CRSR_TASK,
-            CURSOR_TASK_NOOP_ADDR,
+            runner.default_cursor_task,
         );
         runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
         runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
