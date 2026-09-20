@@ -18,6 +18,20 @@ Plugin and artifact IDs remain unique within the resolved entry. Plugin
 artifacts currently stay with their original HTTPS provider; the catalogue
 asset-promotion pipeline does not copy them into managed storage.
 
+## Contribute a catalogue entry
+
+Create `catalogue/<stable-id>.md` by following the structure of an existing
+entry: YAML metadata between the `---` markers, followed by the public Markdown
+description. Keep the stable ID, filename, route, and referenced artifact IDs
+consistent. Put large optional plugin collections in one or more
+`catalogue/plugins/<stable-id>-NN.yaml` files instead of expanding the entry.
+
+Stage assets that still need promotion under
+`catalogue/incoming/<stable-id>/`; do not commit large software archives. Run
+the preview and production validation commands below, then use
+`trunk serve --port 8080` from this directory to inspect the generated route
+before opening a pull request.
+
 ## Validate the catalogue
 
 From the repository root:

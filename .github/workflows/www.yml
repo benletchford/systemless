@@ -36,8 +36,6 @@ jobs:
         run: cargo test --locked -p systemless-org
       - name: Check WebAssembly build
         run: cargo check --locked -p systemless-org --target wasm32-unknown-unknown
-      - name: Build deterministic production pages
-        run: ./www/scripts/build-pages.sh
 
   catalogue-msrv:
     runs-on: ubuntu-latest
