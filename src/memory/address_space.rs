@@ -124,6 +124,9 @@ struct GuestAddressSpaceState {
     /// tokens; a clear bit proves the write cannot have touched executed code
     /// and costs the write path one word test.
     executed_pages: PageIndex,
+    /// Last writable-code token, with the page it answers for. Every
+    /// rotation clears it, so a stale token cannot outlive its generation.
+    instruction_token_cache: Option<(u32, u64)>,
     /// Per-page half of the token generation, bumped by a write to an
     /// executed page. Guest data shares 4 KiB pages with guest code, so one
     /// global counter would let data traffic retire every block in the
@@ -147,6 +150,7 @@ impl GuestAddressSpaceState {
         // A new mapping can shadow a cached span or fall inside a cached gap.
         self.instruction_lookup = None;
         self.data_lookup = None;
+        self.instruction_token_cache = None;
         self.shared_regions.push(mapping);
     }
 
@@ -176,6 +180,7 @@ impl GuestAddressSpaceState {
     /// Retire the tokens issued for the pages `start..end` touches.
     #[cold]
     fn rotate_page_generations(&mut self, start: u64, end: u64) {
+        self.instruction_token_cache = None;
         let Some(generations) = self.page_generations.as_deref_mut() else {
             return;
         };
@@ -197,6 +202,7 @@ impl GuestAddressSpaceState {
     /// Retire every instruction-cache token issued for writable guest code.
     fn rotate_code_generation(&mut self) {
         self.code_generation = self.code_generation.wrapping_add(1);
+        self.instruction_token_cache = None;
     }
 
     /// Report a completed write to the observers of guest memory: the
@@ -622,10 +628,38 @@ const CODE_GENERATION_INDEX_MASK: usize = CODE_GENERATION_SLOTS - 1;
 /// page we have executed from rotates the generation on its own.
 #[inline]
 fn sparse_instruction_token(state: &mut GuestAddressSpaceState, addr: u32) -> Option<u64> {
+    // The interpreter asks once per block start and once per word while it
+    // builds one; a page's answer only changes with a rotation.
+    let page = addr >> CODE_PAGE_SHIFT;
+    if let Some((cached_page, token)) = state.instruction_token_cache {
+        if cached_page == page {
+            return Some(token);
+        }
+    }
+    resolve_sparse_instruction_token(state, addr, page)
+}
+
+fn resolve_sparse_instruction_token(
+    state: &mut GuestAddressSpaceState,
+    addr: u32,
+    page: u32,
+) -> Option<u64> {
     if state.regions.writable_span(addr, 4).is_some() {
         let start = u64::from(addr);
         state.executed_pages.mark(start, start + 4);
-        return Some(state.writable_code_token(addr));
+        let token = state.writable_code_token(addr);
+        // Only remember the answer when one writable region covers the whole
+        // page. Otherwise the fast path above could hand out a token for an
+        // address past that region's end.
+        let page_start = page << CODE_PAGE_SHIFT;
+        if state
+            .regions
+            .writable_span(page_start, 1 << CODE_PAGE_SHIFT)
+            .is_some()
+        {
+            state.instruction_token_cache = Some((page, token));
+        }
+        return Some(token);
     }
     state.regions.instruction_cache_token(addr)
 }
@@ -1091,6 +1125,8 @@ impl Clone for GuestAddressSpace {
             code_generation: state.code_generation,
             executed_pages: state.executed_pages.clone(),
             page_generations: state.page_generations.clone(),
+            // Detached regions are fresh allocations; let the clone re-resolve.
+            instruction_token_cache: None,
         })))
     }
 }
@@ -2313,6 +2349,21 @@ mod tests {
         assert_ne!(
             PpcMemory::instruction_cache_token(&mut memory, PPC_CODE),
             Some(token)
+        );
+    }
+
+    #[test]
+    fn token_reuse_stops_at_a_region_that_ends_inside_its_page() {
+        const PPC_CODE: u32 = 0x0300_0000;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(PPC_CODE, vec![0; 0x100]);
+        assert!(PpcMemory::instruction_cache_token(&mut memory, PPC_CODE).is_some());
+        // Same page, past the end of the region: answering from a per-page
+        // cache here would let a block run off the end of its mapping.
+        assert_eq!(
+            PpcMemory::instruction_cache_token(&mut memory, PPC_CODE + 0x200),
+            None
         );
     }
 
