@@ -180,7 +180,7 @@ impl super::TrapDispatcher {
         self.flushed_update_events
             .retain(|event| event.what == 6 && known_windows.contains(&event.message));
 
-        for &window in self.window_list.iter() {
+        for window in self.window_list.windows() {
             if !self.window_visible(bus, window) || !self.window_has_pending_update(bus, window) {
                 continue;
             }

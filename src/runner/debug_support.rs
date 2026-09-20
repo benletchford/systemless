@@ -213,14 +213,15 @@ impl FixtureRunner {
 
     #[doc(hidden)]
     pub(crate) fn debug_window_snapshot(&self, limit: usize) -> (Vec<WindowSnapshot>, bool) {
-        let windows = &self.dispatcher.window_list;
-        (
-            crate::window_manager::snapshot_window_stack(
-                &windows[..windows.len().min(limit)],
-                |address| self.bus.read_byte(address),
-            ),
-            windows.len() > limit,
-        )
+        self.dispatcher.window_list.with_ref(|windows| {
+            (
+                crate::window_manager::snapshot_window_stack(
+                    &windows[..windows.len().min(limit)],
+                    |address| self.bus.read_byte(address),
+                ),
+                windows.len() > limit,
+            )
+        })
     }
 
     pub(crate) fn debug_screen_mode(&self) -> (u32, u32, u16, u16, u16) {

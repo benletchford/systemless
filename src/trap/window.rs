@@ -677,7 +677,7 @@ impl super::TrapDispatcher {
         // the Window Manager also updates windows uncovered by geometry changes.
         // Inside Macintosh Volume I (1985), I-278 and I-287--I-293.
         let behind = self.visible_windows_behind(bus, window);
-        let structures: Vec<_> = self.window_list.iter().copied()
+        let structures: Vec<_> = self.window_list.windows().into_iter()
             .filter(|&window| self.window_visible(bus, window))
             .filter_map(|window| self.window_structure_rect(bus, window))
             .collect();
@@ -1911,7 +1911,7 @@ impl super::TrapDispatcher {
 
     fn window_is_active_for_standard_go_away(&self, bus: &MacMemoryBus, window_ptr: u32) -> bool {
         let ghost_window = bus.read_long(crate::memory::globals::addr::GHOST_WINDOW);
-        for &candidate in self.window_list.iter() {
+        for candidate in self.window_list.windows() {
             if candidate == ghost_window || !self.window_visible(bus, candidate) {
                 continue;
             }
@@ -2007,12 +2007,12 @@ impl super::TrapDispatcher {
                 && self.fullscreen_locked
                 && menu_bar_height == 0
                 && *self.current_port == window_ptr
-                && self
-                    .window_list
-                    .iter()
-                    .filter(|&&window| self.window_visible(bus, window))
-                    .count()
-                    == 1
+                && self.window_list.with_ref(|windows| {
+                    windows
+                        .iter()
+                        .filter(|&&window| self.window_visible(bus, window))
+                        .count() == 1
+                })
                 && front_rect.0 <= 0
                 && front_rect.1 <= 0
                 && front_rect.2 >= screen_height
@@ -2216,7 +2216,7 @@ impl super::TrapDispatcher {
                 // old structure would overwrite a background window with the
                 // desktop pattern. Inside Macintosh Volume I (1985), I-296--I-297.
                 let mut desktop = vec![old_structure];
-                for &window in self.window_list.iter() {
+                for window in self.window_list.windows() {
                     if !self.window_visible(bus, window) {
                         continue;
                     }
@@ -2279,7 +2279,7 @@ impl super::TrapDispatcher {
         pt_h: i16,
         mbar_h: i16,
     ) -> (i16, u32) {
-        for &window_ptr in self.window_list.iter() {
+        for window_ptr in self.window_list.windows() {
             if !self.window_visible(bus, window_ptr) {
                 continue;
             }
@@ -2539,7 +2539,7 @@ impl super::TrapDispatcher {
 
         let ghost_window = bus.read_long(crate::memory::globals::addr::GHOST_WINDOW);
         let occluders = crate::window_manager::window_occluders(
-            self.window_list.iter().copied(),
+            self.window_list.windows().into_iter(),
             window_ptr,
             |front| {
                 front != ghost_window
@@ -2607,7 +2607,7 @@ impl super::TrapDispatcher {
     /// PROCEDURE CalcVisBehind (startWindow: WindowPeek; clobberedRgn: RgnHandle);
     /// Inside Macintosh Volume I, I-297
     pub(crate) fn recalculate_window_vis_regions(&self, bus: &mut MacMemoryBus) {
-        for &window_ptr in self.window_list.iter() {
+        for window_ptr in self.window_list.windows() {
             // A window inside BeginUpdate/EndUpdate has a temporarily narrowed
             // visRgn that EndUpdate restores; recomputing it here would drop
             // the update clip. IM:I I-292.
@@ -2750,11 +2750,13 @@ impl super::TrapDispatcher {
 
     fn frontmost_visible_window_in_list(&self, bus: &MacMemoryBus) -> u32 {
         let ghost_window = bus.read_long(crate::memory::globals::addr::GHOST_WINDOW);
-        self.window_list
-            .iter()
-            .copied()
-            .find(|&w| w != ghost_window && self.window_visible(bus, w))
-            .unwrap_or(0)
+        self.window_list.with_ref(|windows| {
+            windows
+                .iter()
+                .copied()
+                .find(|&w| w != ghost_window && self.window_visible(bus, w))
+                .unwrap_or(0)
+        })
     }
 
     fn front_window_for_internal_state(&self, bus: &MacMemoryBus) -> u32 {
@@ -2762,7 +2764,7 @@ impl super::TrapDispatcher {
         if visible_window != 0 {
             visible_window
         } else {
-            self.window_list.first().copied().unwrap_or(0)
+            self.window_list.first().unwrap_or(0)
         }
     }
 
@@ -2772,11 +2774,13 @@ impl super::TrapDispatcher {
 
     fn frontmost_tracked_window(&self, bus: &MacMemoryBus) -> u32 {
         let ghost_window = bus.read_long(crate::memory::globals::addr::GHOST_WINDOW);
-        self.window_list
-            .iter()
-            .copied()
-            .find(|&w| w != ghost_window)
-            .unwrap_or(0)
+        self.window_list.with_ref(|windows| {
+            windows
+                .iter()
+                .copied()
+                .find(|&w| w != ghost_window)
+                .unwrap_or(0)
+        })
     }
 
     fn window_proc_id(&self, window_ptr: u32) -> i16 {
@@ -2822,24 +2826,23 @@ impl super::TrapDispatcher {
     }
 
     fn sync_window_list_links(&self, bus: &mut MacMemoryBus) {
-        for (index, &window_ptr) in self.window_list.iter().enumerate() {
-            let next = self.window_list.get(index + 1).copied().unwrap_or(0);
-            bus.write_long(window_ptr + Self::WINDOW_NEXT_WINDOW_OFFSET, next);
-        }
-        bus.write_long(
-            Self::LOWMEM_WINDOW_LIST,
-            self.window_list.first().copied().unwrap_or(0),
-        );
+        self.window_list.with_ref(|windows| {
+            for (index, &window_ptr) in windows.iter().enumerate() {
+                let next = windows.get(index + 1).copied().unwrap_or(0);
+                bus.write_long(window_ptr + Self::WINDOW_NEXT_WINDOW_OFFSET, next);
+            }
+            bus.write_long(
+                Self::LOWMEM_WINDOW_LIST,
+                windows.first().copied().unwrap_or(0),
+            );
+        });
         // Reordering the window list changes who occludes whom, so every
         // tracked window's visRgn has to be recalculated. IM:I I-297.
         self.recalculate_window_vis_regions(bus);
     }
 
     pub(crate) fn track_window_front(&mut self, bus: &mut MacMemoryBus, window_ptr: u32) {
-        self.window_list.with_mut(|windows| {
-            windows.retain(|&tracked| tracked != window_ptr);
-            windows.insert(0, window_ptr);
-        });
+        self.window_list.bring_to_front(window_ptr);
         self.sync_window_list_links(bus);
     }
 
@@ -3028,16 +3031,7 @@ impl super::TrapDispatcher {
             bus,
             bus.read_long(window_ptr + Self::WINDOW_STRUC_RGN_OFFSET),
         );
-        self.window_list.with_mut(|windows| {
-            windows.retain(|&w| w != window_ptr);
-            if behind == 0 {
-                windows.push(window_ptr);
-            } else if let Some(idx) = windows.iter().position(|&w| w == behind) {
-                windows.insert(idx + 1, window_ptr);
-            } else {
-                windows.push(window_ptr);
-            }
-        });
+        self.window_list.send_behind(window_ptr, behind);
         self.sync_window_list_links(bus);
         if self.document_should_remain_active_behind_custom_utility(bus, window_ptr, behind) {
             // Floating utility windows/palettes remain visually above document
@@ -3151,8 +3145,7 @@ impl super::TrapDispatcher {
     }
 
     pub(crate) fn untrack_window(&mut self, bus: &mut MacMemoryBus, window_ptr: u32) {
-        self.window_list
-            .with_mut(|windows| windows.retain(|&tracked| tracked != window_ptr));
+        self.window_list.remove_window(window_ptr);
         self.sync_window_list_links(bus);
         self.dialog_visible_snapshots.remove(&window_ptr);
         self.saved_vis_regions.remove(&window_ptr);
@@ -3187,7 +3180,7 @@ impl super::TrapDispatcher {
             self.front_window = list
                 .into_iter()
                 .find(|&w| self.window_visible(bus, w))
-                .unwrap_or_else(|| self.window_list.first().copied().unwrap_or(0));
+                .unwrap_or_else(|| self.window_list.first().unwrap_or(0));
             self.sync_cached_front_window_render_state(bus);
         }
         if *self.current_port == window_ptr {
@@ -3244,18 +3237,16 @@ impl super::TrapDispatcher {
     }
 
     pub(super) fn visible_windows_behind(&self, bus: &MacMemoryBus, window_ptr: u32) -> Vec<u32> {
-        let Some(index) = self
-            .window_list
-            .iter()
-            .position(|&window| window == window_ptr)
-        else {
-            return Vec::new();
-        };
-        self.window_list[index + 1..]
-            .iter()
-            .copied()
-            .filter(|&window| self.window_visible(bus, window))
-            .collect()
+        self.window_list.with_ref(|windows| {
+            let Some(index) = windows.iter().position(|&window| window == window_ptr) else {
+                return Vec::new();
+            };
+            windows[index + 1..]
+                .iter()
+                .copied()
+                .filter(|&window| self.window_visible(bus, window))
+                .collect()
+        })
     }
 
     pub(super) fn invalidate_exposed_windows(
@@ -3441,8 +3432,8 @@ impl super::TrapDispatcher {
         };
 
         self.window_list
-            .iter()
-            .copied()
+            .windows()
+            .into_iter()
             .chain(fallback)
             .find(|&window_ptr| {
                 self.window_visible(bus, window_ptr)
@@ -5491,7 +5482,7 @@ impl super::TrapDispatcher {
                     };
 
                     let mut window_ptr = if start_window == 0 {
-                        self.window_list.first().copied().unwrap_or(0)
+                        self.window_list.first().unwrap_or(0)
                     } else {
                         start_window
                     };
@@ -5540,19 +5531,21 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 };
 
-                if let Some(start_idx) = self.window_list.iter().position(|&w| w == start_window) {
-                    for &front_window in self.window_list.iter().take(start_idx) {
-                        if !self.window_visible(bus, front_window) {
-                            continue;
-                        }
-                        let front_rect = self.window_port_rect(bus, front_window);
-                        clip_rect = Self::rect_difference_bbox(clip_rect, front_rect)
-                            .unwrap_or((0, 0, 0, 0));
-                        if Self::rect_is_empty(clip_rect) {
-                            break;
+                self.window_list.with_ref(|windows| {
+                    if let Some(start_idx) = windows.iter().position(|&w| w == start_window) {
+                        for &front_window in windows.iter().take(start_idx) {
+                            if !self.window_visible(bus, front_window) {
+                                continue;
+                            }
+                            let front_rect = self.window_port_rect(bus, front_window);
+                            clip_rect = Self::rect_difference_bbox(clip_rect, front_rect)
+                                .unwrap_or((0, 0, 0, 0));
+                            if Self::rect_is_empty(clip_rect) {
+                                break;
+                            }
                         }
                     }
-                }
+                });
 
                 Self::write_region_handle_rect(bus, clip_handle, Some(clip_rect));
                 Ok(())
@@ -5830,7 +5823,7 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 8);
                 if the_window != 0 && self.window_list.contains(&the_window) {
                     let mut old_visibility = Vec::new();
-                    for &window in self.window_list.iter() {
+                    for window in self.window_list.windows() {
                         if self.window_visible(bus, window) {
                             old_visibility.push((window, self.snapshot_window_visibility(bus, window)));
                         }
@@ -5843,22 +5836,7 @@ impl super::TrapDispatcher {
                     } else {
                         None
                     };
-                    self.window_list.with_mut(|windows| {
-                        windows.retain(|&w| w != the_window);
-                        if behind == 0 {
-                            // Move to back
-                            windows.push(the_window);
-                        } else if let Some(behind_idx) =
-                            windows.iter().position(|&w| w == behind)
-                        {
-                            // Insert just after behindWindow so theWindow
-                            // is immediately behind it.
-                            windows.insert(behind_idx + 1, the_window);
-                        } else {
-                            // behindWindow not tracked — treat as move-to-back.
-                            windows.push(the_window);
-                        }
-                    });
+                    self.window_list.send_behind(the_window, behind);
                     self.sync_window_list_links(bus);
                     if was_active {
                         let new_active = self.front_window_for_internal_state(bus);
@@ -6301,7 +6279,7 @@ mod tests {
         cpu.write_reg(Register::A7, sp);
         bus.write_long(sp, raised);
         disp.dispatch(0xA920, &mut cpu, &mut bus).unwrap();
-        assert_eq!(disp.window_list[0], raised);
+        assert_eq!(disp.window_list.first(), Some(raised));
 
         // Even an unrelated trap must not silently activate the raised window.
         cpu.write_reg(Register::A7, sp);
@@ -8244,7 +8222,7 @@ mod tests {
         let window_ptr = bus.read_long(new_sp);
 
         assert_eq!(
-            disp.window_list.first().copied(),
+            disp.window_list.first(),
             Some(window_ptr),
             "GetNewCWindow(behind=-1) must keep the new visible window frontmost"
         );
@@ -9418,7 +9396,7 @@ mod tests {
         disp.event_queue.clear();
 
         assert_eq!(
-            disp.window_list.first().copied(),
+            disp.window_list.first(),
             Some(dialog),
             "the hidden dialog must be first in Window Manager order"
         );
@@ -11577,7 +11555,7 @@ mod tests {
         );
 
         assert_eq!(
-            disp.window_list.first().copied(),
+            disp.window_list.first(),
             Some(front),
             "the newly created window should be frontmost"
         );
@@ -14467,7 +14445,7 @@ mod tests {
         assert_eq!(*disp.current_port, front);
         assert_eq!(*disp.current_gdevice, saved_device);
         assert_eq!(disp.front_window, front, "preserve activation");
-        assert_eq!(disp.window_list[0], target);
+        assert_eq!(disp.window_list.first(), Some(target));
         assert!(disp.window_has_pending_update(&bus, target));
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
     }

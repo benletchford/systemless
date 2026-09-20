@@ -2240,9 +2240,11 @@ impl FixtureRunner {
 
     #[doc(hidden)]
     pub fn window_stack_snapshot(&mut self) -> Vec<WindowSnapshot> {
-        crate::window_manager::snapshot_window_stack(&self.dispatcher.window_list, |address| {
-            self.bus.read_byte(address)
-        })
+        self.dispatcher
+            .window_list
+            .with_ref(|windows| crate::window_manager::snapshot_window_stack(windows, |address| {
+                self.bus.read_byte(address)
+            }))
     }
 
     /// Returns the selected UI theme provider. `classic-system7` is the

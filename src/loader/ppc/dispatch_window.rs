@@ -1298,7 +1298,7 @@ pub(super) fn ppc_draw_standard_window_frame(
 pub(super) fn ppc_draw_grow_icon(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
-    window_list: &[u32],
+    window_list: &SharedProcessWindowList,
     window: u32,
 ) {
     if window == 0 || !matches!(ppc_window_proc_id(memory, window), 0 | 8) {
@@ -1342,7 +1342,7 @@ pub(super) fn ppc_draw_grow_icon(
 pub(super) fn ppc_draw_existing_window_frame(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
-    window_list: &[u32],
+    window_list: &SharedProcessWindowList,
     window: u32,
     host_menu_bar_hidden: bool,
 ) {
@@ -1387,17 +1387,18 @@ pub(crate) struct PpcOccludedWindowPixels {
 pub(super) fn ppc_front_window_occlusion_pixels(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
-    window_list: &[u32],
+    window_list: &SharedProcessWindowList,
     window: u32,
 ) -> Option<PpcOccludedWindowPixels> {
     let front_buffer = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD)?;
     let target_structure = ppc_window_global_structure_bounds(memory, gworlds, window)?;
     let mut pixels = Vec::new();
-    for front in
-        crate::window_manager::window_occluders(window_list.iter().copied(), window, |candidate| {
+    let occluders = window_list.with_ref(|windows| {
+        crate::window_manager::window_occluders(windows.iter().copied(), window, |candidate| {
             ppc_window_is_visible(memory, candidate)
         })
-    {
+    });
+    for front in occluders {
         let Some(front_structure) = ppc_window_global_structure_bounds(memory, gworlds, front)
         else {
             continue;
@@ -1439,7 +1440,7 @@ pub(super) fn ppc_front_window_occlusion_pixels(
 pub(super) fn ppc_redraw_visible_window_frame(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
-    window_list: &[u32],
+    window_list: &SharedProcessWindowList,
     window: u32,
     host_menu_bar_hidden: bool,
 ) {
@@ -1606,7 +1607,7 @@ pub(super) fn ppc_standard_desktop_color(
 pub(super) fn ppc_repaint_window_geometry_transition(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
-    window_list: &[u32],
+    window_list: &SharedProcessWindowList,
     window: u32,
     was_visible: bool,
     previous_structure: Option<(i16, i16, i16, i16)>,
@@ -1641,7 +1642,7 @@ pub(super) fn ppc_repaint_window_geometry_transition(
 pub(super) fn ppc_restore_window_removal_exposure(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
-    window_list: &[u32],
+    window_list: &SharedProcessWindowList,
     exposed: Option<(i16, i16, i16, i16)>,
     host_menu_bar_hidden: bool,
     event_queue: &mut VecDeque<PpcQueuedEvent>,
@@ -1682,7 +1683,7 @@ pub(super) fn ppc_restore_window_removal_exposure(
     // Repaint every remaining visible window whose structure intersects the
     // exposed area. The update events let guest code redraw only its visible
     // content, while redrawing the WDEF here restores title bars and frames.
-    for &window in window_list {
+    for window in window_list.windows() {
         if !ppc_window_is_visible(memory, window) {
             continue;
         }
@@ -1703,26 +1704,31 @@ pub(super) fn ppc_restore_window_removal_exposure(
     }
 }
 
-pub(super) fn ppc_sync_process_window_list(memory: &mut PpcSectionMem, window_list: &[u32]) {
+pub(super) fn ppc_sync_process_window_list(
+    memory: &mut PpcSectionMem,
+    window_list: &SharedProcessWindowList,
+) {
     const WINDOW_NEXT_WINDOW_OFFSET: u32 = 144;
     const LOWMEM_WINDOW_LIST: u32 = 0x09D6;
 
-    for (index, &window) in window_list.iter().enumerate() {
-        let next = window_list.get(index + 1).copied().unwrap_or(0);
-        if memory.read_u32_be(window.wrapping_add(WINDOW_NEXT_WINDOW_OFFSET)) != Some(next) {
-            let _ = memory.write_u32_be(window.wrapping_add(WINDOW_NEXT_WINDOW_OFFSET), next);
+    window_list.with_ref(|windows| {
+        for (index, &window) in windows.iter().enumerate() {
+            let next = windows.get(index + 1).copied().unwrap_or(0);
+            if memory.read_u32_be(window.wrapping_add(WINDOW_NEXT_WINDOW_OFFSET)) != Some(next) {
+                let _ = memory.write_u32_be(window.wrapping_add(WINDOW_NEXT_WINDOW_OFFSET), next);
+            }
         }
-    }
-    let head = window_list.first().copied().unwrap_or(0);
-    if memory.read_u32_be(LOWMEM_WINDOW_LIST) != Some(head) {
-        let _ = memory.write_u32_be(LOWMEM_WINDOW_LIST, head);
-    }
+        let head = windows.first().copied().unwrap_or(0);
+        if memory.read_u32_be(LOWMEM_WINDOW_LIST) != Some(head) {
+            let _ = memory.write_u32_be(LOWMEM_WINDOW_LIST, head);
+        }
+    });
 }
 
 pub(super) fn ppc_transition_front_window_chrome(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
-    window_list: &[u32],
+    window_list: &SharedProcessWindowList,
     previous_front: Option<u32>,
     host_menu_bar_hidden: bool,
 ) {
@@ -1753,7 +1759,7 @@ pub(super) fn ppc_transition_front_window_chrome(
 pub(super) fn ppc_recalculate_window_vis_regions(
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
-    window_list: &[u32],
+    window_list: &SharedProcessWindowList,
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
@@ -1762,7 +1768,7 @@ pub(super) fn ppc_recalculate_window_vis_regions(
     let mut allocator = PpcProcessAllocatorView {
         memory_manager: process_memory_manager,
     };
-    let front_to_back = window_list.to_vec();
+    let front_to_back = window_list.windows();
     for window in front_to_back.iter().copied() {
         let Some(vis_rgn) = memory.read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET) else {
             continue;
@@ -2491,12 +2497,14 @@ pub(super) fn ppc_front_visible_window(
 
 pub(super) fn ppc_front_visible_process_window(
     memory: &mut PpcSectionMem,
-    window_list: &[u32],
+    window_list: &SharedProcessWindowList,
 ) -> Option<u32> {
-    window_list
-        .iter()
-        .copied()
-        .find(|window| ppc_window_is_visible(memory, *window))
+    window_list.with_ref(|windows| {
+        windows
+            .iter()
+            .copied()
+            .find(|window| ppc_window_is_visible(memory, *window))
+    })
 }
 
 pub(super) fn ppc_window_global_content_bounds(
@@ -2518,13 +2526,13 @@ pub(super) fn ppc_window_global_content_bounds(
 pub(super) fn ppc_find_window_at_point(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
-    window_list: &[u32],
+    window_list: &SharedProcessWindowList,
     v: i16,
     h: i16,
     menu_bar_height: i16,
 ) -> (i16, u32) {
     let front_window = ppc_front_visible_process_window(memory, window_list);
-    for &window in window_list {
+    for window in window_list.windows() {
         if !ppc_window_is_visible(memory, window) {
             continue;
         }
@@ -3543,18 +3551,7 @@ pub(super) fn ppc_reorder_window(
     behind: u32,
     front: bool,
 ) {
-    window_list.with_mut(|windows| {
-        windows.retain(|candidate| *candidate != window);
-        if front || behind == u32::MAX {
-            windows.insert(0, window);
-        } else if behind == 0 {
-            windows.push(window);
-        } else if let Some(index) = windows.iter().position(|candidate| *candidate == behind) {
-            windows.insert(index + 1, window);
-        } else {
-            windows.push(window);
-        }
-    });
+    window_list.reorder(window, behind, front);
 
     let Some(index) = gworlds.iter().position(|record| {
         record.port == window && !matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)

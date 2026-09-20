@@ -2170,15 +2170,15 @@
 
         let ppc_app = runner.native.application_mut().expect("PPC app installed");
         let detached = ppc_app.window_list.clone();
-        assert_eq!(&*ppc_app.window_list, &[0x1000, 0x2000]);
+        assert_eq!(ppc_app.window_list, [0x1000, 0x2000]);
         ppc_app.window_list.insert(0, 0x3000);
-        assert_eq!(&*runner.dispatcher.window_list, &[0x3000, 0x1000, 0x2000]);
+        assert_eq!(runner.dispatcher.window_list, [0x3000, 0x1000, 0x2000]);
         runner
             .dispatcher
             .window_list
             .retain(|window| *window != 0x1000);
-        assert_eq!(&*ppc_app.window_list, &[0x3000, 0x2000]);
-        assert_eq!(&*detached, &[0x1000, 0x2000]);
+        assert_eq!(ppc_app.window_list, [0x3000, 0x2000]);
+        assert_eq!(detached, [0x1000, 0x2000]);
     }
 
     fn write_snapshot_rect(bus: &mut MacMemoryBus, address: u32, rect: WindowRect) {
@@ -2496,7 +2496,7 @@
         context.adapter_mut().window_list.replace(vec![window]);
         assert!(runner.native.restore(context).is_ok());
         assert_eq!(runner.bus.read_byte(window + 110), 0x7F);
-        assert_eq!(&*runner.dispatcher.window_list, &[window]);
+        assert_eq!(runner.dispatcher.window_list, [window]);
 
         for (index, word) in [
             0x303c, 0x0205, // MOVE.W #YieldToThread,D0
@@ -2542,7 +2542,7 @@
     fn window_snapshot_poll_is_read_only() {
         let (mut runner, window) = create_native_snapshot_window(b"Read only");
         configure_snapshot_window(&mut runner, window, true);
-        let list = (*runner.dispatcher.window_list).clone();
+        let list = runner.dispatcher.window_list.windows();
         let events = runner.event_manager_snapshot();
         let m68k = CpuArchitecturalSnapshot::capture(&runner.m68k.cpu.core);
         let calls = runner.dispatcher.guest_calls.shared_handle();
@@ -2558,7 +2558,7 @@
         let second = runner.window_stack_snapshot();
         assert!(runner.bus.finish_write_probe_unchanged());
         assert_eq!(first, second);
-        assert_eq!(&*runner.dispatcher.window_list, list.as_slice());
+        assert_eq!(runner.dispatcher.window_list, list.as_slice());
         assert_eq!(runner.event_manager_snapshot(), events);
         assert_eq!(
             CpuArchitecturalSnapshot::capture(&runner.m68k.cpu.core),
