@@ -11275,8 +11275,8 @@ mod tests {
 
         assert!(panic_result.is_err());
         assert_eq!(context.event_queue().len(), 2);
-        assert_eq!(context.event_queue()[0].message, 0x1111);
-        assert_eq!(context.event_queue()[1].message, 0x2222);
+        assert_eq!(context.event_queue().get(0).unwrap().message, 0x1111);
+        assert_eq!(context.event_queue().get(1).unwrap().message, 0x2222);
         assert!(context.event_queue().menu_bar_is_invalid());
         assert_eq!(dispatcher.event_queue.len(), 2);
         assert!(dispatcher.event_queue.menu_bar_is_invalid());

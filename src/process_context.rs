@@ -1534,7 +1534,8 @@ impl SharedProcessTickState {
         current
     }
 }
-pub(crate) type SharedProcessEventQueue = SharedProcessValue<EventQueue>;
+#[derive(Clone, Default, Eq, PartialEq)]
+pub(crate) struct SharedProcessEventQueue(SharedProcessValue<EventQueue>);
 pub(crate) type SharedProcessMenuTracking = crate::guest_call::SharedMenuTracking;
 #[derive(Clone, Default)]
 pub(crate) struct SharedProcessWindowList(SharedProcessValue<Vec<u32>>);
@@ -2971,7 +2972,86 @@ impl SharedProcessDialogText {
     }
 }
 
+impl fmt::Debug for SharedProcessEventQueue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.with_ref(|queue| {
+            formatter
+                .debug_tuple("SharedProcessEventQueue")
+                .field(queue)
+                .finish()
+        })
+    }
+}
+
+impl PartialEq<EventQueue> for SharedProcessEventQueue {
+    fn eq(&self, other: &EventQueue) -> bool {
+        self.with_ref(|queue| queue == other)
+    }
+}
+
+impl PartialEq<std::collections::VecDeque<QueuedEvent>> for SharedProcessEventQueue {
+    fn eq(&self, other: &std::collections::VecDeque<QueuedEvent>) -> bool {
+        self.with_ref(|queue| **queue == *other)
+    }
+}
+
+impl PartialEq<&std::collections::VecDeque<QueuedEvent>> for SharedProcessEventQueue {
+    fn eq(&self, other: &&std::collections::VecDeque<QueuedEvent>) -> bool {
+        self.with_ref(|queue| **queue == **other)
+    }
+}
+
+#[allow(dead_code)]
 impl SharedProcessEventQueue {
+    #[allow(dead_code)]
+    pub(crate) fn from_value(queue: EventQueue) -> Self {
+        Self(SharedProcessValue::from_value(queue))
+    }
+
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn attach_to(&mut self, process_state: &Self) {
+        self.0.attach_to(&process_state.0, EventQueue::is_pristine);
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&EventQueue) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut EventQueue) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.with_ref(|queue| queue.is_empty())
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.with_ref(|queue| queue.len())
+    }
+
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.with_ref(EventQueue::is_pristine)
+    }
+
+    pub(crate) fn front(&self) -> Option<QueuedEvent> {
+        self.with_ref(|queue| queue.front().copied())
+    }
+
+    pub(crate) fn back(&self) -> Option<QueuedEvent> {
+        self.with_ref(|queue| queue.back().copied())
+    }
+
+    pub(crate) fn get(&self, index: usize) -> Option<QueuedEvent> {
+        self.with_ref(|queue| queue.get(index).copied())
+    }
+
     pub(crate) fn clear(&self) {
         self.with_mut(|queue| queue.clear());
     }
@@ -3029,6 +3109,19 @@ impl SharedProcessEventQueue {
 
     pub(crate) fn take_menu_bar_invalidation(&self) -> bool {
         self.with_mut(EventQueue::take_menu_bar_invalidation)
+    }
+
+    pub(crate) fn menu_bar_is_invalid(&self) -> bool {
+        self.with_ref(EventQueue::menu_bar_is_invalid)
+    }
+
+    pub(crate) fn snapshot(&self) -> EventQueue {
+        self.with_ref(|queue| queue.clone())
+    }
+
+    pub(crate) fn iter(&self) -> std::vec::IntoIter<QueuedEvent> {
+        self.with_ref(|queue| queue.iter().copied().collect::<Vec<_>>())
+            .into_iter()
     }
 }
 
@@ -8504,7 +8597,7 @@ impl ProcessContext {
         // current process. GetNextEvent removes the first matching event while
         // EventAvail observes it in place. Inside Macintosh Volume I (1985),
         // pp. I-244--I-245 and I-257--I-259; Processes (1994), pp. 2-15--2-16.
-        adapter.attach_to(&self.event_queue, EventQueue::is_pristine);
+        adapter.attach_to(&self.event_queue);
     }
 
     /// Attach the Window Manager's canonical front-to-back process list.
@@ -8619,7 +8712,7 @@ impl ProcessContext {
             .collect()
     }
 
-    pub(crate) fn event_queue(&self) -> &EventQueue {
+    pub(crate) fn event_queue(&self) -> &SharedProcessEventQueue {
         &self.event_queue
     }
 
@@ -11705,6 +11798,96 @@ mod tests {
 
         list.clear();
         assert!(list.is_empty());
+    }
+
+    #[test]
+    fn process_event_queue_encapsulation() {
+        let queue = SharedProcessEventQueue::default();
+        assert!(queue.is_empty());
+        assert_eq!(queue.len(), 0);
+        assert!(queue.is_pristine());
+        assert_eq!(queue.front(), None);
+        assert_eq!(queue.back(), None);
+        assert_eq!(queue.get(0), None);
+        assert!(!queue.menu_bar_is_invalid());
+
+        let ev1 = QueuedEvent {
+            what: 1,
+            message: 0x1000,
+            when: 10,
+            where_v: 20,
+            where_h: 30,
+            modifiers: 0,
+        };
+        let ev2 = QueuedEvent {
+            what: 2,
+            message: 0x2000,
+            when: 20,
+            where_v: 40,
+            where_h: 50,
+            modifiers: 0x0100,
+        };
+        let ev3 = QueuedEvent {
+            what: 3,
+            message: 0x3000,
+            when: 30,
+            where_v: 60,
+            where_h: 70,
+            modifiers: 0x0200,
+        };
+
+        queue.push_back(ev1);
+        queue.push_back(ev2);
+        queue.push_front(ev3);
+        assert_eq!(queue.len(), 3);
+        assert!(!queue.is_empty());
+        assert!(!queue.is_pristine());
+        assert_eq!(queue.front(), Some(ev3));
+        assert_eq!(queue.back(), Some(ev2));
+        assert_eq!(queue.get(0), Some(ev3));
+        assert_eq!(queue.get(1), Some(ev1));
+        assert_eq!(queue.get(2), Some(ev2));
+
+        queue.invalidate_menu_bar();
+        assert!(queue.menu_bar_is_invalid());
+
+        let snapshot = queue.snapshot();
+        assert_eq!(snapshot.len(), 3);
+        assert!(snapshot.menu_bar_is_invalid());
+
+        let collected: Vec<_> = queue.iter().collect();
+        assert_eq!(collected, vec![ev3, ev1, ev2]);
+
+        assert_eq!(queue.remove(1), Some(ev1));
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue.get(1), Some(ev2));
+
+        queue.retain(|e| e.what != 3);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.front(), Some(ev2));
+
+        assert!(queue.take_menu_bar_invalidation());
+        assert!(!queue.menu_bar_is_invalid());
+
+        assert_eq!(queue.pop_front(), Some(ev2));
+        assert!(queue.is_empty());
+        assert!(queue.is_pristine());
+
+        queue.push_back(ev1);
+        assert_eq!(queue.pop_back_event(), Some(ev1));
+        assert!(queue.is_empty());
+
+        let mut other = EventQueue::default();
+        other.push_back(ev2);
+        other.invalidate_menu_bar();
+        queue.merge(other);
+        assert_eq!(queue.len(), 1);
+        assert!(queue.menu_bar_is_invalid());
+
+        let taken = queue.take();
+        assert_eq!(taken.len(), 1);
+        assert!(queue.is_empty());
+        assert!(!queue.menu_bar_is_invalid());
     }
 
     #[test]

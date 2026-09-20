@@ -4415,7 +4415,8 @@ impl PpcLoadedApp {
         self.event_queue.extend(events);
     }
 
-    pub fn event_queue(&self) -> &VecDeque<PpcQueuedEvent> {
+    #[cfg(test)]
+    pub(crate) fn event_queue(&self) -> &SharedProcessEventQueue {
         &self.event_queue
     }
 
@@ -8465,14 +8466,18 @@ impl PpcLoadedApp {
                             dispatch_button_import(cpu, input, Some(&mut idle_poll_counts))
                         }
                         PpcImportDispatcherTarget::StillDown => {
-                            toolbox_startup.last_still_down_result =
-                                Some(ppc_still_down_result(input, &event_queue));
-                            dispatch_still_down_import(
-                                cpu,
-                                input,
-                                &event_queue,
-                                Some(&mut idle_poll_counts),
-                            )
+                            let (still_down, action) = event_queue.with_ref(|queue| {
+                                let still_down = ppc_still_down_result(input, queue);
+                                let action = dispatch_still_down_import(
+                                    cpu,
+                                    input,
+                                    queue,
+                                    Some(&mut idle_poll_counts),
+                                );
+                                (still_down, action)
+                            });
+                            toolbox_startup.last_still_down_result = Some(still_down);
+                            action
                         }
                         PpcImportDispatcherTarget::WaitMouseUp => {
                             let result = event_queue

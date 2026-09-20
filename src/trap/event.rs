@@ -216,7 +216,6 @@ impl super::TrapDispatcher {
         self.event_queue
             .iter()
             .find(|event| event.what == 6 && !self.window_list.contains(&event.message))
-            .cloned()
             .map(|event| (event, false))
     }
 
@@ -515,8 +514,7 @@ impl super::TrapDispatcher {
         let pending_menu = self.peek_pending_native_menu_event(event_mask);
         let queued = self
             .matching_toolbox_event_index(event_mask)
-            .and_then(|index| self.event_queue.get(index))
-            .cloned();
+            .and_then(|index| self.event_queue.get(index));
         let update = self
             .preferred_marked_update_event(bus, event_mask)
             .map(|(event, _)| event);
@@ -565,8 +563,7 @@ impl super::TrapDispatcher {
             .find(|event| {
                 Self::is_low_level_os_event(event.what)
                     && Self::event_matches_mask(event_mask, event.what)
-            })
-            .cloned();
+            });
         match (pending, queued) {
             (Some(_), Some(queued)) if !self.pending_native_menu_wins_fifo_tie() => Some(queued),
             (pending, queued) => pending.or(queued),
@@ -650,7 +647,7 @@ impl super::TrapDispatcher {
         }
         if let Some(first_idx) = first_idx {
             let idx = first_idx;
-            let event = self.event_queue[idx].clone();
+            let event = self.event_queue.get(idx).expect("event queue index");
             if self.consume_retained_modal_dialog_event(cpu, bus, &event) {
                 self.event_queue.remove(idx);
                 self.acknowledge_window_activation_event(bus, &event);
@@ -2719,8 +2716,8 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(read_event_record(&bus, EVENT_PTR).0, 3);
         assert_eq!(disp.event_queue.len(), 2);
-        assert_eq!(disp.event_queue[0].what, 6);
-        assert_eq!(disp.event_queue[1].what, 23);
+        assert_eq!(disp.event_queue.get(0).unwrap().what, 6);
+        assert_eq!(disp.event_queue.get(1).unwrap().what, 23);
 
         cpu.write_reg(Register::D0, 0xFFFF);
         let result = disp.dispatch_event(false, 0x30, &mut cpu, &mut bus);

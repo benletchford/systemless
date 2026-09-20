@@ -5748,8 +5748,8 @@ fn attached_68k_and_powerpc_event_adapters_share_fifo_and_menu_bar_invalidation(
     classic.event_queue.invalidate_menu_bar();
 
     assert_eq!(context.event_queue().len(), 2);
-    assert_eq!(native.event_queue[0].message, 0x1111);
-    assert_eq!(native.event_queue[1].message, 0x2222);
+    assert_eq!(native.event_queue.get(0).unwrap().message, 0x1111);
+    assert_eq!(native.event_queue.get(1).unwrap().message, 0x2222);
     assert!(context.event_queue().menu_bar_is_invalid());
 
     assert_eq!(native.event_queue.pop_front().unwrap().message, 0x1111);
@@ -6400,8 +6400,8 @@ fn attached_ppc_event_queue_remains_shared_through_panic() {
 
     assert!(panic_result.is_err());
     assert_eq!(context.event_queue().len(), 2);
-    assert_eq!(context.event_queue()[0].message, 0x1111);
-    assert_eq!(context.event_queue()[1].message, 0x2222);
+    assert_eq!(context.event_queue().get(0).unwrap().message, 0x1111);
+    assert_eq!(context.event_queue().get(1).unwrap().message, 0x2222);
     assert!(context.event_queue().menu_bar_is_invalid());
     assert_eq!(native.event_queue.len(), 2);
     assert!(native.event_queue.menu_bar_is_invalid());
@@ -62926,7 +62926,7 @@ fn hle_post_event_uses_current_button_and_modifier_state() {
 
     assert_eq!(
         loaded.event_queue().front(),
-        Some(&PpcQueuedEvent {
+        Some(PpcQueuedEvent {
             what: 3,
             message: 0xA1B2_C3D4,
             when: expected_when,
