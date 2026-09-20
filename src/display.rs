@@ -360,9 +360,9 @@ pub fn render_screen_with_rgba_palette_into(
     let w = scrn_w as u32;
     let h = scrn_h as u32;
     pixels.resize((w * h * 4) as usize, 0);
-    fill_black_rgba(pixels);
 
     let Some(framebuffer_len) = validated_screen_framebuffer_len(bus, screen_mode) else {
+        fill_black_rgba(pixels);
         return;
     };
     if w == 0 || h == 0 {
@@ -1900,6 +1900,36 @@ mod tests {
         render_screen_with_rgba_palette_into(&bus, (base, 4, 3, 1, 8), &palette, &mut precomputed);
 
         assert_eq!(precomputed, direct);
+    }
+
+    #[test]
+    fn render_screen_reuses_rgba_storage_without_retaining_old_pixels() {
+        let mut bus = MacMemoryBus::new(1024);
+        for base in [128, 136, 144, 152, 160] {
+            bus.write_byte(base, 0xA5);
+            bus.write_byte(base + 1, 0x3C);
+        }
+        bus.write_word(160, 0x7FFF);
+        let palette = std::array::from_fn(|index| {
+            super::rgba_word(index as u8, index.wrapping_mul(3) as u8, 0x5A)
+        });
+        let screen_modes = [
+            (128, 1, 8, 1, 1),
+            (136, 1, 4, 1, 2),
+            (144, 1, 2, 1, 4),
+            (152, 1, 2, 1, 8),
+            (160, 2, 1, 1, 16),
+        ];
+
+        for screen_mode in screen_modes {
+            let mut fresh = Vec::new();
+            render_screen_with_rgba_palette_into(&bus, screen_mode, &palette, &mut fresh);
+
+            let mut reused = vec![0x13; fresh.len()];
+            render_screen_with_rgba_palette_into(&bus, screen_mode, &palette, &mut reused);
+
+            assert_eq!(reused, fresh, "pixel depth {}", screen_mode.4);
+        }
     }
 
     #[test]

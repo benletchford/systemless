@@ -63675,7 +63675,7 @@ fn microseconds_poll_fast_forward_preserves_the_reported_clock() {
     let mut memory = PpcSectionMem::new();
     memory.add_region(cpu.gpr[3], vec![0; 8]);
     let mut idle_poll_counts = HashMap::new();
-    let microseconds = 12_345_678u64;
+    let microseconds = 0x1122_3344_5566_7788u64;
 
     for _ in 0..PPC_MICROSECONDS_IDLE_POLL_FAST_FORWARD_THRESHOLD {
         assert_eq!(

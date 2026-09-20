@@ -920,8 +920,50 @@ impl Presentation {
         if y != last_y {
             return false;
         }
+        let Some(length) = u32::try_from(len).ok() else {
+            return false;
+        };
+        let Some(end_x) = x.checked_add(length) else {
+            return false;
+        };
+        if end_x > self.width {
+            return false;
+        }
         let start = (y * self.width + x) as usize;
         !self.text_cells[start..start + len].iter().any(|&set| set)
+    }
+
+    /// Update ordinary framebuffer bytes without walking presentation state
+    /// one cell at a time. The caller has already proved that this is a
+    /// plain, single-row span with no source detail to transfer.
+    pub(crate) fn can_sync_plain_screen_row(&self, address: u32, len: usize) -> bool {
+        !self.cpu_drawing
+            && self.cpu_recolor.is_none()
+            && self.glyph.is_none()
+            && self.plain_screen_row(address, len)
+    }
+
+    pub(crate) fn sync_plain_screen_row(&mut self, address: u32, bytes: &[u8]) {
+        if !self.can_sync_plain_screen_row(address, bytes.len()) {
+            return;
+        }
+        let Some((x, y)) = self.position(address) else {
+            return;
+        };
+        let start = (y * self.width + x) as usize;
+        let changed = bytes
+            .iter()
+            .enumerate()
+            .any(|(offset, &value)| self.guest_values[start + offset] != u16::from(value));
+        if !changed {
+            return;
+        }
+        self.changed(true);
+        for (offset, &value) in bytes.iter().enumerate() {
+            let cell = start + offset;
+            self.detail_cache.get_mut()[cell] = None;
+            self.guest_values[cell] = u16::from(value);
+        }
     }
 
     fn matches_detail(&self, address: u32, detail: Option<&Arc<DetailCell>>) -> bool {
@@ -1303,6 +1345,19 @@ impl MacMemoryBus {
             self.write_bytes(destination, bytes);
             return;
         }
+        let source_end = u64::from(source) + bytes.len() as u64;
+        let destination_address = self.translate_guest_address(destination);
+        let plain_row = self.presentation.as_ref().is_some_and(|p| {
+            p.can_sync_plain_screen_row(destination_address, bytes.len())
+                && (!p.may_have_offscreen_detail(source, source_end)
+                    || p.offscreen
+                        .range(source..source + bytes.len() as u32)
+                        .next()
+                        .is_none())
+        });
+        if plain_row && self.write_plain_presented_bytes(destination, bytes) {
+            return;
+        }
         // Most mirror rows are unchanged. Compare contiguous RAM once while
         // retaining the routed/traced fallback and changed-byte write behavior.
         if !self
@@ -1317,7 +1372,6 @@ impl MacMemoryBus {
             }
         }
         if let Some(mut p) = self.presentation.as_mut() {
-            let source_end = u64::from(source) + bytes.len() as u64;
             if p.plain_screen_row(destination, bytes.len())
                 && (!p.may_have_offscreen_detail(source, source_end)
                     || p.offscreen
@@ -2180,6 +2234,72 @@ mod tests {
         assert_eq!(bus.presentation_epoch(), epoch);
         bus.sync_presented_bytes(0x1000, 0x8000, &[1, 2, 3, 4, 5, 6, 7, 8]);
         assert_eq!(bus.read_bytes(0x1000, 8), [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert!(bus
+            .presentation
+            .as_ref()
+            .unwrap()
+            .plain_screen_row(0x1000, 8));
+        assert!(!bus
+            .presentation
+            .as_ref()
+            .unwrap()
+            .plain_screen_row(0x1007, 2));
+    }
+
+    #[test]
+    fn framebuffer_sync_plain_row_bulk_path_translates_addresses_and_revises_once() {
+        let mut bus = bus();
+        bus.set_addressing_32_bit(false);
+        let epoch = bus.presentation_epoch().unwrap();
+        bus.sync_presented_bytes(0x0100_1000, 0x8000, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(bus.read_bytes(0x1000, 8), [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(bus.presentation_epoch(), Some(epoch + 1));
+    }
+
+    #[test]
+    fn framebuffer_sync_plain_row_falls_back_while_cpu_drawing() {
+        let mut bus = bus();
+        bus.begin_cpu_drawing();
+        let epoch = bus.presentation_epoch().unwrap();
+        bus.sync_presented_bytes(0x1000, 0x8000, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        bus.end_cpu_drawing(false);
+        assert_eq!(bus.read_bytes(0x1000, 8), [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(bus.presentation_epoch(), Some(epoch + 8));
+    }
+
+    #[test]
+    fn framebuffer_sync_plain_row_finishes_pending_cpu_recolor_before_writing() {
+        let mut bus = bus();
+        bus.begin_cpu_drawing();
+        bus.write_byte(0x1000, 254);
+        bus.end_cpu_drawing(false);
+        let epoch = bus.presentation_epoch().unwrap();
+        bus.sync_presented_bytes(0x1000, 0x8000, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(bus.read_bytes(0x1000, 8), [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(bus.presentation_epoch(), Some(epoch + 8));
+    }
+
+    #[test]
+    fn framebuffer_sync_plain_row_respects_readonly_and_write_probes() {
+        let mut readonly_bus = bus();
+        readonly_bus.protect_readonly_code(0x1000, 8);
+        let epoch = readonly_bus.presentation_epoch();
+        readonly_bus.sync_presented_bytes(0x1000, 0x8000, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(readonly_bus.read_bytes(0x1000, 8), [255; 8]);
+        assert_eq!(readonly_bus.presentation_epoch(), epoch);
+
+        let mut probe_bus = bus();
+        probe_bus.begin_uncapped_write_probe();
+        probe_bus.sync_presented_bytes(0x1000, 0x8000, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(probe_bus.read_bytes(0x1000, 8), [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert!(!probe_bus.finish_write_probe_unchanged());
+    }
+
+    #[test]
+    fn plain_screen_row_rejects_framebuffer_padding() {
+        let mut bus = MacMemoryBus::new(1024 * 1024);
+        let palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.enable_outline_presentation((0x1000, 12, 8, 2, 8), palette, 2);
         assert!(bus
             .presentation
             .as_ref()

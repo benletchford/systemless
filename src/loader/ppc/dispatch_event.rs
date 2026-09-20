@@ -222,8 +222,7 @@ fn ppc_write_microseconds_value(cpu: &PpcCpu, memory: &mut PpcSectionMem, usecs:
     if microseconds_ptr == 0 || !ppc_memory_can_write_bytes(memory, microseconds_ptr, 8) {
         return;
     }
-    let _ = memory.write_u32_be(microseconds_ptr, (usecs >> 32) as u32);
-    let _ = memory.write_u32_be(microseconds_ptr + 4, usecs as u32);
+    let _ = memory.write_u64_be(microseconds_ptr, usecs);
 }
 
 fn ppc_seconds_to_date(memory: &mut PpcSectionMem, seconds: u32, date_ptr: u32) {

@@ -8342,11 +8342,10 @@ impl PpcLoadedApp {
                     clock_cycle_phase,
                     elapsed,
                 );
-                let is_tick_count_import = import_run_state
-                    .binding_cloned(index)
-                    .is_some_and(|binding| {
-                        binding.dispatcher_target == PpcImportDispatcherTarget::TickCount
-                    });
+                let binding = import_run_state.binding_cloned(index);
+                let is_tick_count_import = binding.as_ref().is_some_and(|binding| {
+                    binding.dispatcher_target == PpcImportDispatcherTarget::TickCount
+                });
                 if !is_tick_count_import {
                     tick_count_idle_poll.reset();
                 }
@@ -8395,7 +8394,6 @@ impl PpcLoadedApp {
                         );
                     }
                 }
-                let binding = import_run_state.binding_cloned(index);
                 let Some(binding) = binding else {
                     unsupported_import_index = Some(index);
                     if trace_ppc {
