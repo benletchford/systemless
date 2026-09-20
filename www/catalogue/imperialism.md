@@ -17,11 +17,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://classicmacdemos.com/download/imperialism/
-    download_page: https://classicmacdemos.com/imperialism
-    expected_sha256: 479bbb595f342ee208810b5e745b6032e803011043c195a0a708b368ef14ad13
-    expected_size: 27147625
+    type: sha256
+    sha256: 479bbb595f342ee208810b5e745b6032e803011043c195a0a708b368ef14ad13
+    size_bytes: 27147625
   provenance:
     redistribution: permitted
     original: true

@@ -17,11 +17,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://classicmacdemos.com/download/dogfight-city/
-    download_page: https://classicmacdemos.com/dogfight-city
-    expected_sha256: 8406ff2058bb0a65d81d72824c6f85b750734b116824e2396af603816e747eb0
-    expected_size: 1018941
+    type: sha256
+    sha256: 8406ff2058bb0a65d81d72824c6f85b750734b116824e2396af603816e747eb0
+    size_bytes: 1018941
   provenance:
     redistribution: permitted
     original: true

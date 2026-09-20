@@ -17,11 +17,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://classicmacdemos.com/download/the-journeyman-project-1-pegasus-prime/
-    download_page: https://classicmacdemos.com/the-journeyman-project-1-pegasus-prime
-    expected_sha256: 2078981f70a35bb38709ffbd807b5325c36bbcb9e619f8b6f6f066da093ccda3
-    expected_size: 48359549
+    type: sha256
+    sha256: 2078981f70a35bb38709ffbd807b5325c36bbcb9e619f8b6f6f066da093ccda3
+    size_bytes: 48359549
   provenance:
     redistribution: permitted
     original: true
