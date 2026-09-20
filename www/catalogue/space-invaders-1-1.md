@@ -27,11 +27,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/Space%20Invaders%201.1%20%C6%92.sit
-    download_page: https://www.vintageapplemac.com/software/games/s/
-    expected_sha256: c052d868750e3083684eb0f5248c9e7c07ac399787f5d65195cfbb2392140794
-    expected_size: 198535
+    type: sha256
+    sha256: c052d868750e3083684eb0f5248c9e7c07ac399787f5d65195cfbb2392140794
+    size_bytes: 198535
   provenance:
     redistribution: permitted
     original: true
@@ -55,8 +53,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/space-invaders-1-1/gameplay.png
+    type: sha256
+    sha256: fe37e9adf0697b894f439fa192bb55cac745089daad285ac8b89acdd5a4eb776
+    size_bytes: 11978
   provenance:
     redistribution: permitted
     content_only: true
@@ -91,7 +90,7 @@ Icon.
 
 ## In Wave 1
 
-![Space Invaders gameplay](incoming/space-invaders-1-1/gameplay.png)
+![Space Invaders gameplay](https://assets.systemless.org/catalogue/media/sha256/fe/fe37e9adf0697b894f439fa192bb55cac745089daad285ac8b89acdd5a4eb776.png)
 
 Systemless reaches a live Wave 1 from the exact archive, with the defender,
 invaders and projectiles visible. A deterministic mouse-input run moved the
