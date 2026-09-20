@@ -2092,7 +2092,7 @@ impl FixtureRunner {
             button_result,
             still_down_result,
             wait_mouse_up_result,
-            key_map: self.dispatcher.input_state.key_map,
+            key_map: self.dispatcher.input_state.key_map_snapshot(),
             lifecycle_activation_seen: self.dispatcher.debug_activation_event_seen
                 || ppc_state.is_some_and(|state| state.activation_event_seen),
             lifecycle_update_seen: self.dispatcher.debug_update_event_seen
@@ -3069,7 +3069,7 @@ impl FixtureRunner {
         use crate::memory::globals::addr;
 
         self.bus
-            .write_bytes(addr::KEY_MAP_LM, self.dispatcher.key_map_bytes());
+            .write_bytes(addr::KEY_MAP_LM, &self.dispatcher.key_map_bytes());
     }
 
     /// Inject a key-down event, applying arrow→numpad remapping if configured.
@@ -7851,7 +7851,7 @@ impl FixtureRunner {
 
     fn ppc_input_snapshot(&self) -> PpcInputSnapshot {
         PpcInputSnapshot {
-            key_map: self.dispatcher.input_state.key_map,
+            key_map: self.dispatcher.input_state.key_map_snapshot(),
             mouse_button: self.dispatcher.input_state.mouse_button,
             mouse_v: self.dispatcher.input_state.mouse_pos.0,
             mouse_h: self.dispatcher.input_state.mouse_pos.1,
