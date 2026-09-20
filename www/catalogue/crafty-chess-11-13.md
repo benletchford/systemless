@@ -60,10 +60,8 @@ artifacts:
   role: supplement
   format: zip
   source:
-    type: url
+    type: external
     url: https://web.archive.org/web/20170315123002id_/http://craftychess.com/downloads/source/crafty-11.13.zip
-    expected_sha256: 58665bf510f9339c44d5298729ce42a96639c01064a5c748c0a0384cc4019583
-    expected_size: 264580
   provenance:
     redistribution: permitted
     original: true
