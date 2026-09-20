@@ -105,19 +105,41 @@ impl ProcessListManagerState {
     ) -> Option<R> {
         self.records.get_mut(&handle).map(f)
     }
-}
 
-impl std::ops::Deref for ProcessListManagerState {
-    type Target = HashMap<u32, ProcessListRecord>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.records
+    pub(crate) fn with_record_ref<R>(
+        &self,
+        handle: u32,
+        f: impl FnOnce(&ProcessListRecord) -> R,
+    ) -> Option<R> {
+        self.records.get(&handle).map(f)
     }
-}
 
-impl std::ops::DerefMut for ProcessListManagerState {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.records
+    pub(crate) fn get_record(&self, handle: u32) -> Option<ProcessListRecord> {
+        self.records.get(&handle).cloned()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_handle(&self, handle: u32) -> bool {
+        self.records.contains_key(&handle)
+    }
+
+    pub(crate) fn records(&self) -> Vec<ProcessListRecord> {
+        self.records.values().cloned().collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn clear(&mut self) {
+        self.records.clear();
     }
 }
 
@@ -155,5 +177,44 @@ mod tests {
         assert_eq!(list.scrollbar_limits(true), (4, 0, 6));
         list.set_visible_origin(100, 100);
         assert_eq!(list.visible, (6, 0, 12, 1));
+    }
+
+    #[test]
+    fn process_list_manager_state_encapsulation() {
+        let mut state = ProcessListManagerState::default();
+        assert!(state.is_pristine());
+        assert!(state.is_empty());
+        assert_eq!(state.len(), 0);
+
+        let record = ProcessListRecord {
+            handle: 0x1000,
+            cells_handle: 0x2000,
+            view_rect: (0, 0, 40, 100),
+            data_bounds: (0, 0, 2, 1),
+            cell_size: (20, 100),
+            visible: (0, 0, 2, 1),
+            port: 0,
+            draw_enabled: true,
+            active: true,
+            cells: HashMap::new(),
+            selected: BTreeSet::new(),
+            last_click: (0, 0),
+            last_click_tick: 0,
+        };
+        state.insert_record(0x1000, record.clone());
+        assert!(!state.is_pristine());
+        assert!(!state.is_empty());
+        assert_eq!(state.len(), 1);
+        assert!(state.contains_handle(0x1000));
+        assert_eq!(state.get_record(0x1000), Some(record.clone()));
+        assert_eq!(
+            state.with_record_ref(0x1000, |rec| rec.cells_handle),
+            Some(0x2000)
+        );
+        state.with_record_mut(0x1000, |rec| rec.active = false);
+        assert!(!state.get_record(0x1000).unwrap().active);
+        assert_eq!(state.records().len(), 1);
+        assert_eq!(state.remove_record(0x1000).unwrap().handle, 0x1000);
+        assert!(state.is_empty());
     }
 }

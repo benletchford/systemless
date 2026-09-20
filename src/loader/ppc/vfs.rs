@@ -1,12 +1,12 @@
 //! PowerPC Virtual File System, Volume, Scrap, and List records.
 
+use crate::list_manager::ProcessListRecord;
 use crate::process_context::{
     ProcessForkBytes, ProcessOpenFileRecord, ProcessResourceFileRecord, ProcessStdioStreamRecord,
     ProcessVfsDirectory, ProcessVfsFileRecord, ProcessVfsResourceFileRecord,
-    ProcessVfsResourceRecord, ProcessVfsVolumeRecord, SharedProcessScrapState,
-    SharedProcessTextEditManager, SharedProcessValue,
+    ProcessVfsResourceRecord, ProcessVfsVolumeRecord, SharedProcessListManager,
+    SharedProcessScrapState, SharedProcessTextEditManager,
 };
-use crate::list_manager::{ProcessListManagerState, ProcessListRecord};
 
 pub type PpcVfsDirectory = ProcessVfsDirectory;
 pub type PpcVfsVolumeRecord = ProcessVfsVolumeRecord;
@@ -52,4 +52,4 @@ pub struct PpcScrapState {
 }
 
 pub(crate) type PpcListRecord = ProcessListRecord;
-pub type PpcListManagerState = SharedProcessValue<ProcessListManagerState>;
+pub(crate) type PpcListManagerState = SharedProcessListManager;

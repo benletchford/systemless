@@ -3836,7 +3836,7 @@ pub struct PpcLoadedApp {
     pub(crate) cursor_state: SharedProcessCursorState,
     pub param_text: SharedProcessDialogText,
     pub scrap: PpcScrapState,
-    pub list_manager: PpcListManagerState,
+    pub(crate) list_manager: PpcListManagerState,
     pub halt_pc: u32,
     pub import_trap_base: u32,
     pub import_count: u32,

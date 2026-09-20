@@ -81,7 +81,7 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             } else {
                 PPC_NO_ERR
             };
-            if let Some(record) = list_manager.get(&list) {
+            list_manager.with_record_ref(list, |record| {
                 if record.draw_enabled {
                     ppc_list_redraw(
                         memory,
@@ -93,11 +93,11 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                         record,
                     );
                 }
-            }
+            });
             Some(PpcImportAction::Return(list))
         }
         PpcImportDispatcherTarget::LDispose => {
-            if let Some(record) = list_manager.remove(&cpu.gpr[3]) {
+            if let Some(record) = list_manager.remove_record(cpu.gpr[3]) {
                 let mut allocator = PpcProcessAllocatorView {
                     memory_manager: process_memory_manager,
                 };
@@ -152,7 +152,7 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             let count = cpu.gpr[3] as u16 as i16;
             let requested_row = cpu.gpr[4] as u16 as i16;
             let mut added_row = requested_row;
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
+            list_manager.with_record_mut(cpu.gpr[5], |record| {
                 let row = requested_row.clamp(record.data_bounds.0, record.data_bounds.2);
                 added_row = row;
                 if count > 0 {
@@ -207,13 +207,13 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                         );
                     }
                 }
-            }
+            });
             Some(PpcImportAction::Return(ppc_i16_result(added_row)))
         }
         PpcImportDispatcherTarget::LDelRow => {
             let count = cpu.gpr[3] as u16 as i16;
             let row = cpu.gpr[4] as u16 as i16;
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
+            list_manager.with_record_mut(cpu.gpr[5], |record| {
                 let (_, rows) = ppc_list_dimensions(record.data_bounds);
                 if count == 0 || (row >= record.data_bounds.0 && row < record.data_bounds.2) {
                     // More Macintosh Toolbox (1993), p. 4-91: zero removes
@@ -291,15 +291,14 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                         );
                     }
                 }
-            }
+            });
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LGetSelect => {
             let next = cpu.gpr[3] != 0;
             let cell_ptr = cpu.gpr[4];
             let result = list_manager
-                .get(&cpu.gpr[5])
-                .and_then(|record| {
+                .with_record_ref(cpu.gpr[5], |record| {
                     let v = memory.read_u16_be(cell_ptr)? as i16;
                     let h = memory.read_u16_be(cell_ptr + 2)? as i16;
                     let found = if next {
@@ -316,13 +315,14 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                     }
                     Some(1)
                 })
+                .flatten()
                 .unwrap_or(0);
             Some(PpcImportAction::Return(result))
         }
         PpcImportDispatcherTarget::LSetSelect => {
             let v = (cpu.gpr[4] >> 16) as u16 as i16;
             let h = cpu.gpr[4] as u16 as i16;
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
+            list_manager.with_record_mut(cpu.gpr[5], |record| {
                 if ppc_list_cell_index(record, v, h).is_some() {
                     if cpu.gpr[3] != 0 {
                         record.selected.insert((v, h));
@@ -354,7 +354,7 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                         );
                     }
                 }
-            }
+            });
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LSetCell => {
@@ -362,34 +362,36 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             let bytes = ppc_memory_read_bytes(memory, cpu.gpr[3], length as u32);
             let v = (cpu.gpr[5] >> 16) as u16 as i16;
             let h = cpu.gpr[5] as u16 as i16;
-            if let (Some(bytes), Some(record)) = (bytes, list_manager.get_mut(&cpu.gpr[6])) {
-                if ppc_list_cell_index(record, v, h).is_some() {
-                    record.cells.insert((v, h), bytes);
-                    let mut allocator = PpcProcessAllocatorView {
-                        memory_manager: process_memory_manager,
-                    };
-                    let result = ppc_list_sync_guest_storage(
-                        Some(&mut allocator),
-                        memory,
-                        heap_cursor,
-                        heap_limit,
-                        last_mem_error,
-                        handles,
-                        record,
-                    );
-                    *last_mem_error = result;
-                    if record.draw_enabled {
-                        ppc_list_redraw(
+            if let Some(bytes) = bytes {
+                list_manager.with_record_mut(cpu.gpr[6], |record| {
+                    if ppc_list_cell_index(record, v, h).is_some() {
+                        record.cells.insert((v, h), bytes);
+                        let mut allocator = PpcProcessAllocatorView {
+                            memory_manager: process_memory_manager,
+                        };
+                        let result = ppc_list_sync_guest_storage(
+                            Some(&mut allocator),
                             memory,
+                            heap_cursor,
+                            heap_limit,
+                            last_mem_error,
                             handles,
-                            controls,
-                            gworlds,
-                            vfs_resources,
-                            current_resource_refnum,
                             record,
                         );
+                        *last_mem_error = result;
+                        if record.draw_enabled {
+                            ppc_list_redraw(
+                                memory,
+                                handles,
+                                controls,
+                                gworlds,
+                                vfs_resources,
+                                current_resource_refnum,
+                                record,
+                            );
+                        }
                     }
-                }
+                });
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -398,20 +400,20 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             let requested = usize::from(memory.read_u16_be(length_ptr).unwrap_or(0));
             let v = (cpu.gpr[5] >> 16) as u16 as i16;
             let h = cpu.gpr[5] as u16 as i16;
-            if let Some(bytes) = list_manager.get(&cpu.gpr[6]).and_then(|record| {
-                ppc_list_cell_index(record, v, h)?;
-                Some(record.cells.get(&(v, h)).map(Vec::as_slice).unwrap_or(&[]))
-            }) {
-                // More Macintosh Toolbox (1993), pp. 4-82--4-83: dataLen is
-                // an in/out buffer capacity. A short buffer is left
-                // untouched, including its original capacity, rather than
-                // receiving a truncated cell.
-                if bytes.len() <= requested
-                    && (bytes.is_empty() || memory.write_bytes(cpu.gpr[3], bytes).is_some())
-                {
-                    let _ = memory.write_u16_be(length_ptr, bytes.len() as u16);
+            list_manager.with_record_ref(cpu.gpr[6], |record| {
+                if ppc_list_cell_index(record, v, h).is_some() {
+                    let bytes = record.cells.get(&(v, h)).map(Vec::as_slice).unwrap_or(&[]);
+                    // More Macintosh Toolbox (1993), pp. 4-82--4-83: dataLen is
+                    // an in/out buffer capacity. A short buffer is left
+                    // untouched, including its original capacity, rather than
+                    // receiving a truncated cell.
+                    if bytes.len() <= requested
+                        && (bytes.is_empty() || memory.write_bytes(cpu.gpr[3], bytes).is_some())
+                    {
+                        let _ = memory.write_u16_be(length_ptr, bytes.len() as u16);
+                    }
                 }
-            }
+            });
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LClick => {
@@ -419,7 +421,7 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             let h = cpu.gpr[3] as u16 as i16;
             let modifiers = cpu.gpr[4] as u16;
             let mut double_click = false;
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
+            list_manager.with_record_mut(cpu.gpr[5], |record| {
                 if let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) {
                     let active = memory
                         .read_u8(list_ptr + PPC_LIST_ACTIVE_OFFSET)
@@ -518,12 +520,12 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                         }
                     }
                 }
-            }
+            });
             Some(PpcImportAction::Return(u32::from(double_click)))
         }
         PpcImportDispatcherTarget::LActivate => {
             let active = cpu.gpr[3] != 0;
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[4]) {
+            list_manager.with_record_mut(cpu.gpr[4], |record| {
                 record.active = active;
                 if let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) {
                     let _ = memory.write_u8(list_ptr + PPC_LIST_ACTIVE_OFFSET, u8::from(active));
@@ -551,12 +553,12 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                         );
                     }
                 }
-            }
+            });
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LSetDrawingMode => {
             let draw_enabled = cpu.gpr[3] != 0;
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[4]) {
+            list_manager.with_record_mut(cpu.gpr[4], |record| {
                 record.draw_enabled = draw_enabled;
                 if let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) {
                     for offset in [PPC_LIST_VSCROLL_OFFSET, PPC_LIST_HSCROLL_OFFSET] {
@@ -581,7 +583,7 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                         record,
                     );
                 }
-            }
+            });
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LScroll => {
@@ -589,7 +591,7 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             // pinned to dataBounds and redraws when automatic drawing is on.
             let d_cols = cpu.gpr[3] as u16 as i16;
             let d_rows = cpu.gpr[4] as u16 as i16;
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
+            list_manager.with_record_mut(cpu.gpr[5], |record| {
                 ppc_list_set_visible_origin(
                     record,
                     record.visible.0.saturating_add(d_rows),
@@ -608,7 +610,7 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                         record,
                     );
                 }
-            }
+            });
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LSize => {
@@ -616,7 +618,7 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             // visible rectangle and redraw its contents as necessary.
             let width = cpu.gpr[3] as u16 as i16;
             let height = cpu.gpr[4] as u16 as i16;
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
+            list_manager.with_record_mut(cpu.gpr[5], |record| {
                 record.view_rect.2 = record.view_rect.0.saturating_add(height.max(0));
                 record.view_rect.3 = record.view_rect.1.saturating_add(width.max(0));
                 ppc_list_recompute_visible(record);
@@ -633,11 +635,11 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                         record,
                     );
                 }
-            }
+            });
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LUpdate => {
-            if let Some(record) = list_manager.get(&cpu.gpr[4]) {
+            list_manager.with_record_ref(cpu.gpr[4], |record| {
                 if record.draw_enabled {
                     ppc_list_redraw(
                         memory,
@@ -649,11 +651,11 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                         record,
                     );
                 }
-            }
+            });
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LAutoScroll => {
-            if let Some(record) = list_manager.get_mut(&cpu.gpr[3]) {
+            list_manager.with_record_mut(cpu.gpr[3], |record| {
                 if let (Some(&(row, column)), Some(list_ptr)) = (
                     record.selected.iter().next(),
                     memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0),
@@ -688,29 +690,31 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                         );
                     }
                 }
-            }
+            });
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LSearch => {
             let requested = ppc_memory_read_bytes(memory, cpu.gpr[3], u32::from(cpu.gpr[4] as u16))
                 .unwrap_or_default();
             let cell_ptr = cpu.gpr[6];
-            let result = list_manager.get(&cpu.gpr[7]).and_then(|record| {
-                let start_v = memory.read_u16_be(cell_ptr)? as i16;
-                let start_h = memory.read_u16_be(cell_ptr + 2)? as i16;
-                let start = ppc_list_cell_index(record, start_v, start_h)?;
-                let (columns, rows) = ppc_list_dimensions(record.data_bounds);
-                (start..columns.saturating_mul(rows)).find_map(|index| {
-                    let cell = ppc_list_cell_for_index(record, index)?;
-                    let bytes = record.cells.get(&cell).map(Vec::as_slice).unwrap_or(&[]);
-                    (bytes.len() == requested.len()
-                        && bytes
-                            .iter()
-                            .zip(&requested)
-                            .all(|(left, right)| left.eq_ignore_ascii_case(right)))
-                    .then_some(cell)
+            let result = list_manager
+                .with_record_ref(cpu.gpr[7], |record| {
+                    let start_v = memory.read_u16_be(cell_ptr)? as i16;
+                    let start_h = memory.read_u16_be(cell_ptr + 2)? as i16;
+                    let start = ppc_list_cell_index(record, start_v, start_h)?;
+                    let (columns, rows) = ppc_list_dimensions(record.data_bounds);
+                    (start..columns.saturating_mul(rows)).find_map(|index| {
+                        let cell = ppc_list_cell_for_index(record, index)?;
+                        let bytes = record.cells.get(&cell).map(Vec::as_slice).unwrap_or(&[]);
+                        (bytes.len() == requested.len()
+                            && bytes
+                                .iter()
+                                .zip(&requested)
+                                .all(|(left, right)| left.eq_ignore_ascii_case(right)))
+                        .then_some(cell)
+                    })
                 })
-            });
+                .flatten();
             if let Some((v, h)) = result {
                 let _ = memory.write_u16_be(cell_ptr, v as u16);
                 let _ = memory.write_u16_be(cell_ptr + 2, h as u16);
@@ -1236,7 +1240,7 @@ fn ppc_list_new(
     {
         return 0;
     }
-    list_manager.insert(list_handle, record);
+    list_manager.insert_record(list_handle, record);
     list_handle
 }
 
