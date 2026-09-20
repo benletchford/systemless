@@ -18272,6 +18272,36 @@
     }
 
     #[test]
+    fn teinsert_redraws_active_text_after_inserting_into_visible_record() {
+        // TextEdit redraws the active edit record when TEInsert mutates it.
+        // Console-style applications rely on this after their initial
+        // TEUpdate, so a correct hText alone is not sufficient.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 1);
+
+        let (screen_base, row_bytes, _screen_w, _screen_h, _pixel_size) = disp.screen_mode;
+        for offset in 0..(row_bytes * 80) {
+            bus.write_byte(screen_base + offset, 0);
+        }
+
+        let insert_ptr = bus.alloc(1);
+        bus.write_byte(insert_ptr, b'X');
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_long(TEST_SP + 4, 1);
+        bus.write_long(TEST_SP + 8, insert_ptr);
+        let result = disp.dispatch_dialog(true, 0x1DE, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(TrapDispatcher::te_text_bytes(&bus, te_handle), b"X".to_vec());
+        assert!(
+            (0..(row_bytes * 80)).any(|offset| bus.read_byte(screen_base + offset) != 0),
+            "TEInsert should redraw visible inserted text"
+        );
+    }
+
+    #[test]
     fn tesetalignment_writes_just_field_and_pops_args() {
         // IM:I I-388 (TESetJust) and Inside Macintosh: Text 1993, 2-87.
         let (mut disp, mut cpu, mut bus) = setup();

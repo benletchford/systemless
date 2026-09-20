@@ -15872,6 +15872,12 @@ impl super::TrapDispatcher {
                         let shifted_end = (sel_end + text.len()).min(u16::MAX as usize) as u16;
                         bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, shifted_start);
                         bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, shifted_end);
+                        // TEInsert is a TextEdit drawing operation as well as
+                        // a text-buffer mutation. Console windows commonly
+                        // append output with TEInsert after their one-time
+                        // TEUpdate; without this redraw the guest hText is
+                        // correct but the window stays blank.
+                        self.draw_te_contents(cpu, bus, te_handle, true);
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 12);
