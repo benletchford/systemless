@@ -4626,11 +4626,8 @@ impl PpcLoadedApp {
         let _ = self
             .memory
             .write_u32_be(crate::memory::globals::addr::TICKS, tick_count);
-        self.callback_scheduling.with_mut(|scheduling| {
-            scheduling.current_subtick = scheduling
-                .current_subtick
-                .max(u64::from(tick_count) * 1_000_000);
-        });
+        self.callback_scheduling
+            .advance_current_subtick_min(u64::from(tick_count) * 1_000_000);
     }
 
     pub(crate) fn current_tick(&mut self) -> u32 {
@@ -7480,9 +7477,8 @@ impl PpcLoadedApp {
         for tick_offset in 0..elapsed_ticks {
             let current_tick = start_tick.wrapping_add(tick_offset).wrapping_add(1);
             let current_tick = self.publish_tick(current_tick);
-            self.callback_scheduling.with_mut(|scheduling| {
-                scheduling.current_subtick = u64::from(current_tick) * 1_000_000;
-            });
+            self.callback_scheduling
+                .set_current_subtick(u64::from(current_tick) * 1_000_000);
             loop {
                 if probes.len() >= max_callbacks {
                     return probes;
@@ -7651,9 +7647,8 @@ impl PpcLoadedApp {
             let current_tick = self.publish_tick(
                 start_tick.wrapping_add(tick_offset).wrapping_add(1),
             );
-            self.callback_scheduling.with_mut(|scheduling| {
-                scheduling.current_subtick = u64::from(current_tick) * 1_000_000;
-            });
+            self.callback_scheduling
+                .set_current_subtick(u64::from(current_tick) * 1_000_000);
             if let (Some(context), Some(vbl_proc)) = (
                 self.draw_sprocket.active_context,
                 self.draw_sprocket.vbl_proc,

@@ -9986,7 +9986,7 @@ impl FixtureRunner {
         if let Some((task_ptr, tm_addr)) = due_task {
             self.dispatcher
                 .callback_scheduling
-                .with_mut(|scheduling| scheduling.current_subtick = current_subtick);
+                .set_current_subtick(current_subtick);
             // The revised Time Manager clears the qType active bit when the
             // delay expires, before invoking tmAddr. A callback can therefore
             // observe that its task is inactive and safely PrimeTime it again.
@@ -10077,7 +10077,7 @@ impl FixtureRunner {
         } else {
             self.dispatcher
                 .callback_scheduling
-                .with_mut(|scheduling| scheduling.current_subtick = current_subtick);
+                .set_current_subtick(current_subtick);
         }
     }
 

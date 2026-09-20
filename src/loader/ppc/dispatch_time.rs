@@ -50,11 +50,8 @@ pub(super) fn dispatch_time_import(context: PpcTimeDispatchContext<'_>) -> Optio
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::RmvTime => {
-            callback_scheduling.with_mut(|scheduling| {
-                scheduling.current_subtick = scheduling
-                    .current_subtick
-                    .max(u64::from(tick_count) * 1_000_000);
-            });
+            callback_scheduling
+                .advance_current_subtick_min(u64::from(tick_count) * 1_000_000);
             timer_tasks.with_mut(|timer_tasks| {
                 ppc_remove_time_task(memory, timer_tasks, callback_scheduling, cpu.gpr[3]);
             });
@@ -157,9 +154,7 @@ pub(crate) fn ppc_install_time_task(
     let _ = memory.write_u32_be(task_ptr, 0);
     let _ = memory.write_u16_be(task_ptr + 4, q_type);
     if !extended || memory.read_u32_be(task_ptr + 14).unwrap_or(0) == 0 {
-        scheduling.with_mut(|scheduling| {
-            scheduling.extended_wakeups.remove(&task_ptr);
-        });
+        scheduling.remove_extended_wakeup(task_ptr);
     }
     timer_tasks.retain(|task| task.task_ptr != task_ptr);
     timer_tasks.push(PpcTimerTaskRecord {
@@ -205,13 +200,8 @@ pub(crate) fn ppc_prime_time_task(
     } else {
         (u64::from(count.unsigned_abs()) * 60).max(1)
     };
-    let current_subtick = scheduling.with_mut(|scheduling| {
-        let current_subtick = scheduling
-            .current_subtick
-            .max(u64::from(current_tick) * SUBTICKS_PER_TICK);
-        scheduling.current_subtick = current_subtick;
-        current_subtick
-    });
+    let current_subtick = scheduling
+        .advance_current_subtick_min(u64::from(current_tick) * SUBTICKS_PER_TICK);
     if let Some(task) = timer_tasks
         .iter_mut()
         .find(|task| task.task_ptr == task_ptr)
@@ -222,16 +212,12 @@ pub(crate) fn ppc_prime_time_task(
             let prior_wakeup = if memory.read_u32_be(task_ptr + 14).unwrap_or(0) == 0 {
                 None
             } else {
-                scheduling.extended_wakeups.get(&task_ptr).copied()
+                scheduling.extended_wakeup(task_ptr)
             };
             let intended_wakeup = prior_wakeup
                 .unwrap_or(current_subtick)
                 .saturating_add(requested_delay_subticks);
-            scheduling.with_mut(|scheduling| {
-                scheduling
-                    .extended_wakeups
-                    .insert(task_ptr, intended_wakeup);
-            });
+            scheduling.set_extended_wakeup(task_ptr, intended_wakeup);
             let opaque_wakeup = ((intended_wakeup / 60) as u32).max(1);
             let _ = memory.write_u32_be(task_ptr + 14, opaque_wakeup);
             intended_wakeup.max(current_subtick)
@@ -267,7 +253,7 @@ pub(crate) fn ppc_remove_time_task(
     if task_ptr == 0 || !ppc_memory_can_write_bytes(memory, task_ptr, 14) {
         return;
     }
-    let current_subtick = scheduling.current_subtick;
+    let current_subtick = scheduling.current_subtick();
     let remaining_subticks = timer_tasks
         .iter()
         .find(|task| task.task_ptr == task_ptr && task.active)
