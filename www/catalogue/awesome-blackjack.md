@@ -28,11 +28,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/Awesome%20BlackJack.sit
-    download_page: https://www.vintageapplemac.com/software/games/a/
-    expected_sha256: cb2e7c0d5f125664f615eafcf78c1214f9058f1b0bc4003a4ed6947bb814a19a
-    expected_size: 542035
+    type: sha256
+    sha256: cb2e7c0d5f125664f615eafcf78c1214f9058f1b0bc4003a4ed6947bb814a19a
+    size_bytes: 542035
   provenance:
     redistribution: permitted
     original: true
@@ -56,8 +54,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/awesome-blackjack/gameplay.png
+    type: sha256
+    sha256: e7cfa0d515888647712552a737d76f2f2d9379461b3144e6b1e1130ff96d1080
+    size_bytes: 16833
   provenance:
     redistribution: permitted
     content_only: true
@@ -94,4 +93,4 @@ deterministic run dismissed the support window, opened Place Your Bet, selected
 the $5 chip, and changed the displayed bet from 10 to 15, verifying gameplay
 beyond launch and menu navigation.
 
-![Awesome BlackJack gameplay](incoming/awesome-blackjack/gameplay.png)
+![Awesome BlackJack gameplay](https://assets.systemless.org/catalogue/media/sha256/e7/e7cfa0d515888647712552a737d76f2f2d9379461b3144e6b1e1130ff96d1080.png)
