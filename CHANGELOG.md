@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.42.4](https://github.com/benletchford/systemless/compare/v0.42.3...v0.42.4) (2026-09-20)
+
+
+### Performance Improvements
+
+* filter guest memory hot paths through a page index ([f11a776](https://github.com/benletchford/systemless/commit/f11a776ddade117fe016fb5a19c550856059959e))
+
 ## [0.42.3](https://github.com/benletchford/systemless/compare/v0.42.2...v0.42.3) (2026-09-20)
 
 
