@@ -62902,13 +62902,17 @@ fn ppc_materialize_resource_records_for_path(
     };
     let mut sorted_resources = fork.resources().values().collect::<Vec<_>>();
     sorted_resources.sort_by_key(|resource| (resource.res_type, resource.id));
+    // Existing records win over the raw fork (they may contain live edits).
+    // Index their keys once rather than scanning the entire record list for
+    // every resource each time this fork is materialized.
+    let mut existing_keys = vfs_resources
+        .iter()
+        .filter(|resource| resource.path.eq_ignore_ascii_case(path))
+        .map(|resource| (resource.res_type, resource.res_id))
+        .collect::<std::collections::HashSet<_>>();
     for resource in sorted_resources {
         let res_type = u32::from_be_bytes(resource.res_type);
-        if vfs_resources.iter().any(|existing| {
-            existing.path.eq_ignore_ascii_case(path)
-                && existing.res_type == res_type
-                && existing.res_id == resource.id
-        }) {
+        if !existing_keys.insert((res_type, resource.id)) {
             continue;
         }
         vfs_resources.push(PpcVfsResourceRecord {

@@ -9608,6 +9608,83 @@ fn ppc_recover_handle_rejects_a_directly_disposed_native_handle() {
 }
 
 #[test]
+fn resource_fork_materialization_preserves_live_edits_and_other_paths() {
+    let fork = serialize_resource_fork(&[
+        ResourceForkEntry {
+            res_type: *b"TEST",
+            id: 1,
+            name: vec![],
+            data: b"raw".to_vec(),
+            attrs: 0,
+        },
+        ResourceForkEntry {
+            res_type: *b"TEST",
+            id: 2,
+            name: vec![],
+            data: b"second".to_vec(),
+            attrs: 0,
+        },
+        ResourceForkEntry {
+            res_type: *b"DATA",
+            id: 1,
+            name: vec![],
+            data: b"data".to_vec(),
+            attrs: 0,
+        },
+    ])
+    .unwrap();
+    let files = [PpcVfsResourceFileRecord {
+        path: "App".into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        resource_len: fork.len() as u32,
+        raw_data: Some(fork.into()),
+        map_attrs: 0,
+        dirty: false,
+    }];
+    let edited = PpcVfsResourceRecord {
+        ref_num: 7,
+        path: "APP".into(),
+        res_type: u32::from_be_bytes(*b"TEST"),
+        res_id: 1,
+        name: b"edited name".to_vec(),
+        data: b"edited".to_vec(),
+        raw_data: None,
+        raw_attrs: None,
+        attrs: 2,
+        handle: 0x1234,
+    };
+    let mut other = edited.clone();
+    other.path = "Other".into();
+    other.res_id = 2;
+    let mut resources = vec![edited, other];
+    ppc_materialize_resource_records_for_path(&files, &mut resources, "app");
+    ppc_materialize_resource_records_for_path(&files, &mut resources, "APP");
+    assert_eq!(resources.len(), 4);
+    assert_eq!(resources[0].data, b"edited");
+    assert_eq!(resources[0].name, b"edited name");
+    assert_eq!(
+        (
+            resources[0].ref_num,
+            resources[0].attrs,
+            resources[0].handle
+        ),
+        (7, 2, 0x1234)
+    );
+    assert_eq!(resources[1].path, "Other");
+    assert_eq!(
+        (resources[2].res_type, resources[2].res_id),
+        (u32::from_be_bytes(*b"DATA"), 1)
+    );
+    assert_eq!(
+        (resources[3].res_type, resources[3].res_id),
+        (u32::from_be_bytes(*b"TEST"), 2)
+    );
+    assert_eq!(resources[3].data, b"second");
+}
+
+#[test]
 fn ppc_resource_materialization_mutates_process_manager_immediately() {
     let pef = synthetic_pef_with_import(b"GetResource");
     let mut native = load_pef_application(&pef).unwrap();
