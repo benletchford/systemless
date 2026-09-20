@@ -111,8 +111,20 @@ pub struct Machine {
     last_steps: usize,
     last_cpu_budget_ms: f64,
     last_audio_queue_ms: Option<f64>,
+    /// Logical framebuffer retained between browser paints. The runner marks
+    /// every CPU slice as visual work, so the presentation epoch lets us
+    /// avoid decoding an unchanged guest screen before drawing host overlays.
     frame_rgba: Vec<u8>,
+    overlay_rgba: Vec<u8>,
     presented_rgba: Vec<u8>,
+    frame_epoch: Option<u64>,
+    frame_screen_mode: Option<(u32, u32, u16, u16, u16)>,
+    rendered_epoch: Option<u64>,
+    rendered_screen_mode: Option<(u32, u32, u16, u16, u16)>,
+    rendered_scale: u32,
+    rendered_outline: bool,
+    rendered_cursor: Option<display::CursorImage>,
+    rendered_mouse_pos: (i16, i16),
     output_scale: u32,
     presented_size: (u32, u32),
     frame_palette: display::RgbaPalette,
@@ -310,7 +322,16 @@ impl Machine {
             last_cpu_budget_ms: 0.0,
             last_audio_queue_ms: None,
             frame_rgba: Vec::new(),
+            overlay_rgba: Vec::new(),
             presented_rgba: Vec::new(),
+            frame_epoch: None,
+            frame_screen_mode: None,
+            rendered_epoch: None,
+            rendered_screen_mode: None,
+            rendered_scale: 0,
+            rendered_outline: false,
+            rendered_cursor: None,
+            rendered_mouse_pos: (0, 0),
             output_scale: 1,
             presented_size: (0, 0),
             frame_palette: [0; 256],
@@ -663,30 +684,78 @@ impl Machine {
         &mut self,
         debug_stats: Option<DebugOverlayFrameStats>,
     ) -> ((u32, u32), &[u8]) {
-        let dispatcher = self.runner.dispatcher();
-        let screen_mode = dispatcher.screen_mode;
-        let clut = *dispatcher.device_clut;
-        let cursor = dispatcher.cursor().cloned();
-        let mouse_pos = dispatcher.mouse_position();
-        if !self.frame_palette_valid || self.frame_palette_clut != clut {
+        let (screen_mode, clut, mouse_pos, cursor_matches) = {
+            let dispatcher = self.runner.dispatcher();
+            let cursor_matches = match (&self.rendered_cursor, dispatcher.cursor()) {
+                (None, None) => true,
+                (Some(previous), Some(current)) => previous == current,
+                _ => false,
+            };
+            (
+                dispatcher.screen_mode,
+                *dispatcher.device_clut,
+                dispatcher.mouse_position(),
+                cursor_matches,
+            )
+        };
+        let presentation_epoch = self.runner.bus().presentation_epoch();
+        let outline = self.runner.bus().has_visible_outline_detail();
+        let palette_changed = !self.frame_palette_valid || self.frame_palette_clut != clut;
+
+        // `run_frame` reports any guest CPU work as visual work. In practice
+        // many of those paints leave the framebuffer unchanged, so return the
+        // previous fully composed image when all guest and host inputs match.
+        if debug_stats.is_none()
+            && presentation_epoch.is_some()
+            && self.rendered_epoch == presentation_epoch
+            && self.rendered_screen_mode == Some(screen_mode)
+            && self.rendered_scale == self.output_scale
+            && self.rendered_outline == outline
+            && self.rendered_mouse_pos == mouse_pos
+            && cursor_matches
+            && !palette_changed
+        {
+            if self.rendered_outline {
+                return (self.presented_size, &self.presented_rgba);
+            }
+            if self.rendered_cursor.is_some() {
+                return (self.presented_size, &self.overlay_rgba);
+            }
+            return (self.presented_size, &self.frame_rgba);
+        }
+
+        if palette_changed {
             self.frame_palette = display::rgba_palette_from_clut(&clut);
             self.frame_palette_clut = clut;
             self.frame_palette_valid = true;
         }
-        display::render_screen_with_rgba_palette_into(
-            self.runner.bus(),
-            screen_mode,
-            &self.frame_palette,
-            &mut self.frame_rgba,
-        );
-        let guest = self
-            .runner
-            .bus()
-            .has_visible_outline_detail()
-            .then(|| self.frame_rgba.clone());
+
+        // The presentation epoch advances for visible framebuffer and
+        // palette changes. Retain the decoded logical screen across cursor or
+        // debug-overlay paints, which otherwise pay the full conversion cost.
+        let frame_cached = presentation_epoch.is_some()
+            && !palette_changed
+            && self.frame_epoch == presentation_epoch
+            && self.frame_screen_mode == Some(screen_mode);
+        if !frame_cached {
+            display::render_screen_with_rgba_palette_into(
+                self.runner.bus(),
+                screen_mode,
+                &self.frame_palette,
+                &mut self.frame_rgba,
+            );
+            self.frame_epoch = presentation_epoch;
+            self.frame_screen_mode = Some(screen_mode);
+        }
+
+        let cursor = self.runner.dispatcher().cursor().cloned();
+        let has_overlay = cursor.is_some() || debug_stats.is_some();
+        if has_overlay {
+            self.overlay_rgba.clone_from(&self.frame_rgba);
+        }
         if let Some(cursor) = cursor.as_ref() {
             display::render_cursor(
-                &mut self.frame_rgba,
+                &mut self.overlay_rgba,
                 screen_mode.2 as u32,
                 screen_mode.3 as u32,
                 cursor,
@@ -696,26 +765,54 @@ impl Machine {
         if let Some(debug_stats) = debug_stats {
             let lines = self.runner.debug_overlay_snapshot(debug_stats).lines();
             display::render_debug_overlay_rgba(
-                &mut self.frame_rgba,
+                &mut self.overlay_rgba,
                 screen_mode.2 as u32,
                 screen_mode.3 as u32,
                 &lines,
             );
         }
         self.presented_size = (screen_mode.2 as u32, screen_mode.3 as u32);
-        if let Some(size) = guest.as_ref().and_then(|guest| {
-            self.runner.bus().presented_rgba_scaled(
+        let (size, pixels) = if outline {
+            let guest = &self.frame_rgba;
+            let with_overlays = if has_overlay {
+                &self.overlay_rgba
+            } else {
+                guest
+            };
+            if let Some(size) = self.runner.bus().presented_rgba_scaled(
                 guest,
-                &self.frame_rgba,
+                with_overlays,
                 self.output_scale,
                 &mut self.presented_rgba,
-            )
-        }) {
-            self.presented_size = size;
-            (self.presented_size, &self.presented_rgba)
+            ) {
+                self.presented_size = size;
+                (size, &self.presented_rgba)
+            } else if has_overlay {
+                (self.presented_size, &self.overlay_rgba)
+            } else {
+                (self.presented_size, &self.frame_rgba)
+            }
+        } else if has_overlay {
+            (self.presented_size, &self.overlay_rgba)
         } else {
             (self.presented_size, &self.frame_rgba)
+        };
+
+        if debug_stats.is_none() && presentation_epoch.is_some() {
+            self.rendered_epoch = presentation_epoch;
+            self.rendered_screen_mode = Some(screen_mode);
+            self.rendered_scale = self.output_scale;
+            self.rendered_outline = outline;
+            self.rendered_cursor = cursor;
+            self.rendered_mouse_pos = mouse_pos;
+        } else {
+            // The debug panel changes every frame and is drawn into the
+            // reusable overlay buffer. Do not let it become the cached image.
+            self.rendered_epoch = None;
+            self.rendered_cursor = None;
         }
+
+        (size, pixels)
     }
 
     pub fn mouse_down(&mut self, v: i16, h: i16) {

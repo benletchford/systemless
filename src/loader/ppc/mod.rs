@@ -8342,10 +8342,16 @@ impl PpcLoadedApp {
                     clock_cycle_phase,
                     elapsed,
                 );
-                let binding = import_run_state.binding_cloned(index);
-                let is_tick_count_import = binding.as_ref().is_some_and(|binding| {
-                    binding.dispatcher_target == PpcImportDispatcherTarget::TickCount
+                let dispatcher_target = import_run_state.dispatcher_target_cloned(index);
+                let is_tick_count_import = dispatcher_target.as_ref().is_some_and(|target| {
+                    *target == PpcImportDispatcherTarget::TickCount
                 });
+                // Most per-frame imports are handled by the small fast path
+                // below. Defer cloning their library and symbol strings until
+                // tracing or the general dispatcher actually needs them.
+                let mut binding = trace_recent_on_halt
+                    .then(|| import_run_state.binding_cloned(index))
+                    .flatten();
                 if !is_tick_count_import {
                     tick_count_idle_poll.reset();
                 }
@@ -8394,7 +8400,7 @@ impl PpcLoadedApp {
                         );
                     }
                 }
-                let Some(binding) = binding else {
+                let Some(dispatcher_target) = dispatcher_target.as_ref() else {
                     unsupported_import_index = Some(index);
                     if trace_ppc {
                         eprintln!(
@@ -8406,8 +8412,10 @@ impl PpcLoadedApp {
                     }
                     return PpcImportAction::Halt;
                 };
-                let binding = &binding;
                 if trace_recent_on_halt {
+                    let binding = binding
+                        .as_ref()
+                        .expect("recent import tracing resolves a known binding");
                     let entry = PpcHleImportTraceEntry {
                         import_index: index,
                         library_name: binding.library_name.clone(),
@@ -8430,10 +8438,10 @@ impl PpcLoadedApp {
                     }
                 }
                 if !trace_ppc
-                    && (binding.dispatcher_target != PpcImportDispatcherTarget::TickCount
+                    && (*dispatcher_target != PpcImportDispatcherTarget::TickCount
                         || !trace_imports)
                     && matches!(
-                        binding.dispatcher_target,
+                        dispatcher_target,
                         PpcImportDispatcherTarget::Button
                             | PpcImportDispatcherTarget::StillDown
                             | PpcImportDispatcherTarget::WaitMouseUp
@@ -8443,6 +8451,12 @@ impl PpcLoadedApp {
                     )
                 {
                     if trace_imports {
+                        if binding.is_none() {
+                            binding = import_run_state.binding_cloned(index);
+                        }
+                        let binding = binding
+                            .as_ref()
+                            .expect("import tracing resolves a known binding");
                         push_ppc_hle_import_trace_entry(
                             &mut import_trace,
                             PpcHleImportTraceEntry {
@@ -8453,12 +8467,12 @@ impl PpcLoadedApp {
                                 lr: cpu.lr,
                                 rtoc: cpu.gpr[2],
                                 sp: cpu.gpr[1],
-                                dispatcher_target: binding.dispatcher_target.clone(),
+                                dispatcher_target: dispatcher_target.clone(),
                                 repeat_count: 1,
                             },
                         );
                     }
-                    let action = match binding.dispatcher_target {
+                    let action = match dispatcher_target {
                         PpcImportDispatcherTarget::Button => {
                             toolbox_startup.last_button_result = Some(input.mouse_button);
                             dispatch_button_import(cpu, input, Some(&mut idle_poll_counts))
@@ -8513,6 +8527,19 @@ impl PpcLoadedApp {
                     handled_import_count = handled_import_count.saturating_add(1);
                     return action;
                 }
+                let Some(binding) = binding.or_else(|| import_run_state.binding_cloned(index)) else {
+                    unsupported_import_index = Some(index);
+                    if trace_ppc {
+                        eprintln!(
+                            "{}",
+                            format_ppc_trace_unknown_import(
+                                index, cpu.pc, cpu.lr, cpu.gpr[2], cpu.gpr[1]
+                            )
+                        );
+                    }
+                    return PpcImportAction::Halt;
+                };
+                let binding = &binding;
                 if !trace_ppc && !trace_qd3d {
                     if q3_start_rendering_import_index == Some(index) {
                         if trace_imports {
