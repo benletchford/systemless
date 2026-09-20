@@ -1805,7 +1805,7 @@ pub(crate) struct ProcessInputState {
     pub(crate) mouse_pos: (i16, i16),
     pub(crate) mouse_button: bool,
     pub(crate) key_map: [u8; 16],
-    pub(crate) caps_lock_physically_pressed: bool,
+    caps_lock_physically_pressed: bool,
     key_repeat: Option<ProcessKeyRepeatState>,
 }
 
@@ -1935,6 +1935,25 @@ impl SharedProcessMixedModeM68kState {
 }
 
 impl SharedProcessInputState {
+    pub(crate) fn caps_lock_physically_pressed(&self) -> bool {
+        self.with_ref(|state| state.caps_lock_physically_pressed)
+    }
+
+    pub(crate) fn press_caps_lock(&self) -> bool {
+        self.with_mut(|state| {
+            if state.caps_lock_physically_pressed {
+                false
+            } else {
+                state.caps_lock_physically_pressed = true;
+                true
+            }
+        })
+    }
+
+    pub(crate) fn release_caps_lock(&self) {
+        self.with_mut(|state| state.caps_lock_physically_pressed = false);
+    }
+
     pub(crate) fn key_repeat(&self) -> Option<ProcessKeyRepeatState> {
         self.with_ref(|state| state.key_repeat)
     }
@@ -1989,10 +2008,6 @@ impl SharedProcessInputState {
 
     pub(crate) fn set_key_map_byte_for_test(&self, index: usize, value: u8) {
         self.with_mut(|state| state.key_map[index] = value);
-    }
-
-    pub(crate) fn set_caps_lock_pressed_for_test(&self, pressed: bool) {
-        self.with_mut(|state| state.caps_lock_physically_pressed = pressed);
     }
 
 }
@@ -11050,18 +11065,18 @@ mod tests {
 
         native.set_mouse_button_for_test(true);
         native.set_mouse_position_for_test((56, 78));
-        native.set_caps_lock_pressed_for_test(true);
+        assert!(native.press_caps_lock());
         native.arm_key_repeat(0x24, b'\r', 90);
 
         assert!(classic.ptr_eq(&native));
         assert_eq!(classic.mouse_pos, (56, 78));
         assert!(classic.mouse_button);
         assert_eq!(classic.key_map[2], 0x40);
-        assert!(classic.caps_lock_physically_pressed);
+        assert!(classic.caps_lock_physically_pressed());
         assert_eq!(classic.key_repeat().unwrap().next_tick(), 90);
         assert_eq!(detached.mouse_pos, (12, 34));
         assert!(!detached.mouse_button);
-        assert!(!detached.caps_lock_physically_pressed);
+        assert!(!detached.caps_lock_physically_pressed());
         assert!(!detached.has_key_repeat());
     }
 
