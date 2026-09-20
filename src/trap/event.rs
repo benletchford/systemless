@@ -258,7 +258,12 @@ impl super::TrapDispatcher {
         }
 
         if Self::region_bbox(bus, mouse_rgn).is_none()
-            || Self::region_contains_point(bus, mouse_rgn, self.input_state.mouse_pos.0, self.input_state.mouse_pos.1)
+            || Self::region_contains_point(
+                bus,
+                mouse_rgn,
+                self.input_state.mouse_position().0,
+                self.input_state.mouse_position().1,
+            )
         {
             return None;
         }
@@ -267,8 +272,8 @@ impl super::TrapDispatcher {
             what: Self::OS_EVENT,
             message: Self::MOUSE_MOVED_MESSAGE,
             when: self.current_tick(),
-            where_v: self.input_state.mouse_pos.0,
-            where_h: self.input_state.mouse_pos.1,
+            where_v: self.input_state.mouse_position().0,
+            where_h: self.input_state.mouse_position().1,
             modifiers: self.current_event_modifiers(),
         })
     }
@@ -296,8 +301,8 @@ impl super::TrapDispatcher {
             what,
             message,
             when: self.current_tick(),
-            where_v: self.input_state.mouse_pos.0,
-            where_h: self.input_state.mouse_pos.1,
+            where_v: self.input_state.mouse_position().0,
+            where_h: self.input_state.mouse_position().1,
             modifiers: self.current_event_modifiers(),
         }
     }
@@ -445,8 +450,8 @@ impl super::TrapDispatcher {
             what: Self::AUTO_KEY_EVENT,
             message,
             when: tick,
-            where_v: self.input_state.mouse_pos.0,
-            where_h: self.input_state.mouse_pos.1,
+            where_v: self.input_state.mouse_position().0,
+            where_h: self.input_state.mouse_position().1,
             modifiers,
         });
     }
@@ -659,8 +664,8 @@ impl super::TrapDispatcher {
                     0,
                     0,
                     self.current_tick(),
-                    self.input_state.mouse_pos.0,
-                    self.input_state.mouse_pos.1,
+                    self.input_state.mouse_position().0,
+                    self.input_state.mouse_position().1,
                     self.current_event_modifiers(),
                     false,
                 );
@@ -723,8 +728,8 @@ impl super::TrapDispatcher {
             0,
             0,
             self.current_tick(),
-            self.input_state.mouse_pos.0,
-            self.input_state.mouse_pos.1,
+            self.input_state.mouse_position().0,
+            self.input_state.mouse_position().1,
             self.current_event_modifiers(),
             false,
         )
@@ -789,8 +794,9 @@ impl super::TrapDispatcher {
         bus.write_byte(0x0172, mb_state);
         // MTemp, MouseLocation, MouseLocation2 are 12 contiguous bytes at $0828
         // (3 × Point = 3 × (i16 v, i16 h)). Single packed write.
-        let v = self.input_state.mouse_pos.0 as u16;
-        let h = self.input_state.mouse_pos.1 as u16;
+        let (mouse_v, mouse_h) = self.input_state.mouse_position();
+        let v = mouse_v as u16;
+        let h = mouse_h as u16;
         let mouse_globals: [u8; 12] = [
             (v >> 8) as u8,
             v as u8,
@@ -865,8 +871,8 @@ impl super::TrapDispatcher {
                 0,
                 0,
                 self.current_tick(),
-                self.input_state.mouse_pos.0,
-                self.input_state.mouse_pos.1,
+                self.input_state.mouse_position().0,
+                self.input_state.mouse_position().1,
                 self.current_event_modifiers(),
                 false,
             )
@@ -1305,8 +1311,8 @@ impl super::TrapDispatcher {
                         0,
                         0,
                         self.current_tick(),
-                        self.input_state.mouse_pos.0,
-                        self.input_state.mouse_pos.1,
+                        self.input_state.mouse_position().0,
+                        self.input_state.mouse_position().1,
                         self.current_event_modifiers(),
                     );
                     self.debug_event_queue_probe.os_event_avail = Some(EventProbeResult {
@@ -1315,8 +1321,8 @@ impl super::TrapDispatcher {
                             what: 0,
                             message: 0,
                             when: self.current_tick(),
-                            where_v: self.input_state.mouse_pos.0,
-                            where_h: self.input_state.mouse_pos.1,
+                            where_v: self.input_state.mouse_position().0,
+                            where_h: self.input_state.mouse_position().1,
                             modifiers: self.current_event_modifiers(),
                         },
                     });

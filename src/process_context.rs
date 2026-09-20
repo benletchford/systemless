@@ -1802,7 +1802,7 @@ impl ProcessMixedModeM68kState {
 /// I (1985), pp. I-259--I-263 and I-273--I-275.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ProcessInputState {
-    pub(crate) mouse_pos: (i16, i16),
+    mouse_pos: (i16, i16),
     mouse_button: bool,
     key_map: [u8; 16],
     caps_lock_physically_pressed: bool,
@@ -1957,6 +1957,14 @@ impl SharedProcessMixedModeM68kState {
 }
 
 impl SharedProcessInputState {
+    pub(crate) fn mouse_position(&self) -> (i16, i16) {
+        self.with_ref(|state| state.mouse_pos)
+    }
+
+    pub(crate) fn set_mouse_position(&self, position: (i16, i16)) {
+        self.with_mut(|state| state.mouse_pos = position);
+    }
+
     pub(crate) fn mouse_button_pressed(&self) -> bool {
         self.with_ref(|state| state.mouse_button)
     }
@@ -2056,7 +2064,7 @@ impl SharedProcessInputState {
 #[cfg(test)]
 impl SharedProcessInputState {
     pub(crate) fn set_mouse_position_for_test(&self, position: (i16, i16)) {
-        self.with_mut(|state| state.mouse_pos = position);
+        self.set_mouse_position(position);
     }
 
     pub(crate) fn set_mouse_button_for_test(&self, pressed: bool) {
@@ -11126,12 +11134,12 @@ mod tests {
         native.arm_key_repeat(0x24, b'\r', 90);
 
         assert!(classic.ptr_eq(&native));
-        assert_eq!(classic.mouse_pos, (56, 78));
+        assert_eq!(classic.mouse_position(), (56, 78));
         assert!(classic.mouse_button_pressed());
         assert_eq!(classic.key_map_snapshot()[2], 0x40);
         assert!(classic.caps_lock_physically_pressed());
         assert_eq!(classic.key_repeat().unwrap().next_tick(), 90);
-        assert_eq!(detached.mouse_pos, (12, 34));
+        assert_eq!(detached.mouse_position(), (12, 34));
         assert!(!detached.mouse_button_pressed());
         assert!(!detached.caps_lock_physically_pressed());
         assert!(!detached.has_key_repeat());

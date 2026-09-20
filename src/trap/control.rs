@@ -118,13 +118,14 @@ impl super::TrapDispatcher {
         // IM:I I-323 / MTE 1992 5-89..5-90: TrackControl takes the
         // mouse-down point in the control window's local coordinates and
         // returns the release part code, or 0 when no control part remains hit.
+        let (mouse_v, mouse_h) = self.input_state.mouse_position();
         self.record_input_trace_line(format!(
             "A968 action={} start={} action_proc={} live_mouse=({},{}) {} {} part={} highlighted_item={} outcome={}",
             action,
             start,
             Self::control_trace_nonzero(action_proc),
-            self.input_state.mouse_pos.0,
-            self.input_state.mouse_pos.1,
+            mouse_v,
+            mouse_h,
             self.input_trace_state_fields(),
             self.control_trace_control_fields(bus, ctrl_handle),
             part,
@@ -151,7 +152,7 @@ impl super::TrapDispatcher {
         if v != 0 || h != 0 {
             (v, h)
         } else {
-            self.input_state.mouse_pos
+            self.input_state.mouse_position()
         }
     }
 

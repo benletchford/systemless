@@ -351,7 +351,7 @@ impl super::TrapDispatcher {
     }
 
     fn current_mouse_local_point(&self, bus: &MacMemoryBus) -> (i16, i16) {
-        let (v, h) = self.input_state.mouse_pos;
+        let (v, h) = self.input_state.mouse_position();
         if *self.current_port == 0 {
             return (v, h);
         }
@@ -1634,7 +1634,7 @@ impl super::TrapDispatcher {
         if (v, h) != (0, 0) {
             (v, h)
         } else {
-            self.input_state.mouse_pos
+            self.input_state.mouse_position()
         }
     }
 

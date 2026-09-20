@@ -2097,7 +2097,7 @@
             "GetMouse must honor a guest-updated Mouse global before converting to local coordinates"
         );
         assert_eq!(
-            disp.input_state.mouse_pos,
+            disp.input_state.mouse_position(),
             (300, 400),
             "GetMouse must synchronize the dispatcher with the guest-updated Mouse global"
         );

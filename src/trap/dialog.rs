@@ -214,8 +214,8 @@ impl super::TrapDispatcher {
         self.record_input_trace_line(format!(
             "A991 action={} live_mouse=({},{}) {} dialog={} bounds=({},{},{},{}) item_hit={} item_type={} highlighted={} result={} outcome={}",
             action,
-            self.input_state.mouse_pos.0,
-            self.input_state.mouse_pos.1,
+            self.input_state.mouse_position().0,
+            self.input_state.mouse_position().1,
             self.input_trace_state_fields(),
             input_trace_nonzero(dialog_ptr),
             bounds.0,
@@ -253,8 +253,8 @@ impl super::TrapDispatcher {
         self.record_input_trace_line(format!(
             "A991 action={} live_mouse=({},{}) {} dialog={} bounds=({},{},{},{}) edit_item={} item_type={} key_code=${:02X} char_code=${:02X} text_before={} text_after={} result={} outcome={}",
             action,
-            self.input_state.mouse_pos.0,
-            self.input_state.mouse_pos.1,
+            self.input_state.mouse_position().0,
+            self.input_state.mouse_position().1,
             self.input_trace_state_fields(),
             input_trace_nonzero(dialog_ptr),
             bounds.0,
@@ -310,8 +310,8 @@ impl super::TrapDispatcher {
         self.record_input_trace_line(format!(
             "A991 action={} live_mouse=({},{}) {} dialog={} bounds=({},{},{},{}) filter_proc={} event={} message={} where={} modifiers={} item_hit={} item_type={} handled_mouse_down={} dialog_retained={} result={} outcome={}",
             action,
-            self.input_state.mouse_pos.0,
-            self.input_state.mouse_pos.1,
+            self.input_state.mouse_position().0,
+            self.input_state.mouse_position().1,
             self.input_trace_state_fields(),
             input_trace_nonzero(dialog_ptr),
             bounds.0,
@@ -9542,8 +9542,8 @@ impl super::TrapDispatcher {
         Self::dialog_button_hit_test(
             &tracking.items,
             tracking.bounds,
-            self.input_state.mouse_pos.0,
-            self.input_state.mouse_pos.1,
+            self.input_state.mouse_position().0,
+            self.input_state.mouse_position().1,
         ) > 0
     }
 
@@ -9555,7 +9555,11 @@ impl super::TrapDispatcher {
             return false;
         };
         tracking.active_user_item.is_some()
-            || self.dialog_plain_user_item_hit_test(tracking, self.input_state.mouse_pos.0, self.input_state.mouse_pos.1)
+            || self.dialog_plain_user_item_hit_test(
+                tracking,
+                self.input_state.mouse_position().0,
+                self.input_state.mouse_position().1,
+            )
                 > 0
     }
 
@@ -9820,7 +9824,8 @@ impl super::TrapDispatcher {
                 }
             }
             self.input_state.set_mouse_button_pressed(false);
-            self.adb.note_mouse_state(self.input_state.mouse_pos, false);
+            self.adb
+                .note_mouse_state(self.input_state.mouse_position(), false);
             bus.write_byte(0x0172, 0x80);
         }
 
@@ -10470,7 +10475,7 @@ impl super::TrapDispatcher {
 
     fn handle_dialog_popup_tracking<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
         if self.input_state.mouse_button_pressed() {
-            let (mv, mh) = self.input_state.mouse_pos;
+            let (mv, mh) = self.input_state.mouse_position();
             let new_item = self.dialog_popup_item_at_point(bus, mh, mv);
             let old_item = self
                 .dialog_tracking
@@ -10586,7 +10591,7 @@ impl super::TrapDispatcher {
         };
 
         let (top, left, bottom, right) = Self::dialog_item_screen_rect(bounds, rect);
-        let (mouse_v, mouse_h) = self.input_state.mouse_pos;
+        let (mouse_v, mouse_h) = self.input_state.mouse_position();
         let inside = mouse_v >= top && mouse_v < bottom && mouse_h >= left && mouse_h < right;
 
         if self.input_state.mouse_button_pressed() {
@@ -10700,7 +10705,7 @@ impl super::TrapDispatcher {
         }
 
         let (top, left, bottom, right) = Self::dialog_item_screen_rect(bounds, rect);
-        let (mouse_v, mouse_h) = self.input_state.mouse_pos;
+        let (mouse_v, mouse_h) = self.input_state.mouse_position();
         let inside = mouse_v >= top && mouse_v < bottom && mouse_h >= left && mouse_h < right;
         if !inside {
             return;
@@ -12397,8 +12402,8 @@ impl super::TrapDispatcher {
                     if let Some(mut e) = event {
                         if e.what == 0 && self.input_state.mouse_button_pressed() {
                             e.what = 1;
-                            e.where_v = self.input_state.mouse_pos.0;
-                            e.where_h = self.input_state.mouse_pos.1;
+                            e.where_v = self.input_state.mouse_position().0;
+                            e.where_h = self.input_state.mouse_position().1;
                         }
                         match e.what {
                             // updateEvt — re-snapshot rendered_pixels.

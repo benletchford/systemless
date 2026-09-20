@@ -5635,14 +5635,15 @@ impl super::TrapDispatcher {
                         );
                     }
                 } else {
+                    let (mouse_v, mouse_h) = self.input_state.mouse_position();
                     self.write_event_record(
                         bus,
                         event_ptr,
                         0,
                         0,
                         self.current_tick(),
-                        self.input_state.mouse_pos.0,
-                        self.input_state.mouse_pos.1,
+                        mouse_v,
+                        mouse_h,
                         self.current_event_modifiers(),
                     );
                     bus.write_word(sp + 6, 0);
@@ -5652,8 +5653,8 @@ impl super::TrapDispatcher {
                             what: 0,
                             message: 0,
                             when: self.current_tick(),
-                            where_v: self.input_state.mouse_pos.0,
-                            where_h: self.input_state.mouse_pos.1,
+                            where_v: mouse_v,
+                            where_h: mouse_h,
                             modifiers: self.current_event_modifiers(),
                         },
                     });
@@ -5684,8 +5685,7 @@ impl super::TrapDispatcher {
                 // the host dispatcher's last injected position.
                 let global_v = bus.read_word(crate::memory::globals::addr::MOUSE_LOC2) as i16;
                 let global_h = bus.read_word(crate::memory::globals::addr::MOUSE_LOC2 + 2) as i16;
-                self.input_state
-                    .with_mut(|state| state.mouse_pos = (global_v, global_h));
+                self.input_state.set_mouse_position((global_v, global_h));
 
                 let a5 = cpu.read_reg(Register::A5);
                 let global_ptr = bus.read_long(a5);

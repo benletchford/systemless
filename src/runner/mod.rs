@@ -3037,7 +3037,7 @@ impl FixtureRunner {
     /// RawMouse $082C, Mouse $0830) from the process input state.
     /// Inside Macintosh Volume I, I-258.
     fn sync_mouse_position_lowmem(&mut self) {
-        let (v, h) = self.dispatcher.input_state.mouse_pos;
+        let (v, h) = self.dispatcher.input_state.mouse_position();
         self.bus.write_word(0x0828, v as u16);
         self.bus.write_word(0x082A, h as u16);
         self.bus.write_word(0x082C, v as u16);
@@ -3584,7 +3584,7 @@ impl FixtureRunner {
         let launch_tick = self.guest_tick();
         let launch_time = self.bus.read_long(addr::TIME);
         let launch_rnd_seed = self.bus.read_long(addr::RND_SEED);
-        let mouse_pos = self.dispatcher.input_state.mouse_pos;
+        let mouse_pos = self.dispatcher.input_state.mouse_position();
         let mouse_button = self.dispatcher.input_state.mouse_button_pressed();
         let output_dir = self.dispatcher.output_dir.clone();
         let file_system = self.process_context.detached_vfs_snapshot();
@@ -7850,11 +7850,12 @@ impl FixtureRunner {
     }
 
     fn ppc_input_snapshot(&self) -> PpcInputSnapshot {
+        let (mouse_v, mouse_h) = self.dispatcher.input_state.mouse_position();
         PpcInputSnapshot {
             key_map: self.dispatcher.input_state.key_map_snapshot(),
             mouse_button: self.dispatcher.input_state.mouse_button_pressed(),
-            mouse_v: self.dispatcher.input_state.mouse_pos.0,
-            mouse_h: self.dispatcher.input_state.mouse_pos.1,
+            mouse_v,
+            mouse_h,
         }
     }
 
