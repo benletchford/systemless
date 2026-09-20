@@ -1405,13 +1405,37 @@ mod tests {
     }
 
     #[test]
+    fn slow_worker_services_latest_missed_refresh_without_another_raf() {
+        let mut requests = super::WorkerFrameRequests::default();
+        assert_eq!(requests.request("first"), Some("first"));
+        assert_eq!(requests.request("stale scale"), None);
+        assert_eq!(requests.request("latest scale"), None);
+        assert_eq!(requests.complete(true), Some("latest scale"));
+        assert_eq!(requests.request("next"), None);
+        assert_eq!(requests.complete(true), Some("next"));
+        assert_eq!(requests.complete(true), None);
+    }
+
+    #[test]
+    fn fast_worker_waits_for_display_demand_and_halt_discards_pending_work() {
+        let mut requests = super::WorkerFrameRequests::default();
+        assert_eq!(requests.request(1), Some(1));
+        assert_eq!(requests.complete(true), None);
+        assert_eq!(requests.request(2), Some(2));
+        assert_eq!(requests.request(3), None);
+        assert_eq!(requests.complete(false), None);
+        assert!(requests.pending.is_none());
+        assert!(!requests.in_flight);
+    }
+
+    #[test]
     fn worker_visual_frame_uses_software_frame_without_a_second_borrow() {
         let mut state = super::WorkerFrameState {
             output_scale: 1,
             frame: Some((640, 480, vec![1, 2, 3, 4])),
             gpu_frame: None,
             running: true,
-            in_flight: false,
+            requests: super::WorkerFrameRequests::default(),
         };
 
         let frame = super::take_worker_visual_frame(&mut state);
@@ -1770,7 +1794,47 @@ struct WorkerFrameState {
     frame: Option<(u32, u32, Vec<u8>)>,
     gpu_frame: Option<JsValue>,
     running: bool,
+    requests: WorkerFrameRequests<Object>,
+}
+
+// Keep one latest display request while the worker is busy. A completion can
+// service a missed refresh immediately instead of idling until the next rAF.
+// Demand still comes from rAF, so a fast worker never runs an unbounded loop.
+struct WorkerFrameRequests<T> {
     in_flight: bool,
+    pending: Option<T>,
+}
+
+impl<T> Default for WorkerFrameRequests<T> {
+    fn default() -> Self {
+        Self {
+            in_flight: false,
+            pending: None,
+        }
+    }
+}
+
+impl<T> WorkerFrameRequests<T> {
+    fn request(&mut self, request: T) -> Option<T> {
+        if self.in_flight {
+            self.pending = Some(request);
+            None
+        } else {
+            self.in_flight = true;
+            Some(request)
+        }
+    }
+
+    fn complete(&mut self, running: bool) -> Option<T> {
+        self.in_flight = false;
+        if !running {
+            self.pending = None;
+            return None;
+        }
+        let next = self.pending.take()?;
+        self.in_flight = true;
+        Some(next)
+    }
 }
 
 enum WorkerVisualFrame {
@@ -1878,11 +1942,12 @@ async fn boot_catalogue_worker(
         frame: None,
         gpu_frame: None,
         running: true,
-        in_flight: false,
+        requests: WorkerFrameRequests::default(),
     }));
     let audio = Rc::new(RefCell::new(WebAudioBackend::new().await));
     let state_for_message = state.clone();
     let audio_for_message = audio.clone();
+    let worker_for_message = worker.clone();
     let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
         let data = event.data();
         if js_string_property(&data, "type").as_deref() == Some("saveFiles") {
@@ -1895,7 +1960,6 @@ async fn boot_catalogue_worker(
             return;
         }
         let mut state = state_for_message.borrow_mut();
-        state.in_flight = false;
         state.running = js_bool_property(&data, "running").unwrap_or(false);
         if let Ok(audio_bytes) = Reflect::get(&data, &JsValue::from_str("audio")) {
             if !audio_bytes.is_undefined() {
@@ -1919,6 +1983,19 @@ async fn boot_catalogue_worker(
             if !frame.is_undefined() {
                 state.gpu_frame = Some(frame);
             }
+        }
+        let running = state.running;
+        let next = state.requests.complete(running);
+        drop(state);
+        if let Some(message) = next {
+            // Audio was just queued above; use its current depth rather than
+            // the snapshot taken at the missed display refresh.
+            set_js_property(
+                &message,
+                "queuedAudioSamples",
+                &JsValue::from_f64(worker_audio_queue_samples(&audio_for_message) as f64),
+            );
+            let _ = worker_for_message.post_message(message.as_ref());
         }
     }) as Box<dyn FnMut(MessageEvent)>);
     worker.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
@@ -1999,14 +2076,8 @@ fn start_worker_render_loop(
             None => {}
         }
         let mut state = runtime.state.borrow_mut();
-        if state.running && !state.in_flight {
-            state.in_flight = true;
-            let queued = runtime
-                .audio
-                .borrow_mut()
-                .as_mut()
-                .and_then(WebAudioBackend::queued_source_samples)
-                .map_or(-1, |samples| samples.min(i32::MAX as usize) as i32);
+        if state.running {
+            let queued = worker_audio_queue_samples(&runtime.audio);
             let message = Object::new();
             set_js_property(&message, "type", &JsValue::from_str("frame"));
             let scale = canvas_backing_scale(&canvas);
@@ -2026,7 +2097,9 @@ fn start_worker_render_loop(
                 "debug",
                 &JsValue::from_bool(debug_visible.get_untracked()),
             );
-            let _ = runtime.worker.post_message(message.as_ref());
+            if let Some(message) = state.requests.request(message) {
+                let _ = runtime.worker.post_message(message.as_ref());
+            }
         }
         let running = state.running;
         drop(state);
@@ -2037,6 +2110,14 @@ fn start_worker_render_loop(
         }
     }) as Box<dyn FnMut()>));
     schedule_raf(&callback_cell);
+}
+
+fn worker_audio_queue_samples(audio: &RefCell<Option<WebAudioBackend>>) -> i32 {
+    audio
+        .borrow_mut()
+        .as_mut()
+        .and_then(WebAudioBackend::queued_source_samples)
+        .map_or(-1, |samples| samples.min(i32::MAX as usize) as i32)
 }
 
 fn set_js_property(object: &Object, name: &str, value: &JsValue) {
