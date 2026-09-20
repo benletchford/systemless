@@ -1436,6 +1436,7 @@ mod tests {
         let mut state = super::WorkerFrameState {
             output_scale: 1,
             frame: None,
+            js_frame: None,
             gpu_frame: None,
             running: true,
             requests: super::WorkerFrameRequests::default(),
@@ -1473,6 +1474,7 @@ mod tests {
         let mut state = super::WorkerFrameState {
             output_scale: 1,
             frame: Some((640, 480, vec![1, 2, 3, 4])),
+            js_frame: None,
             gpu_frame: None,
             running: true,
             requests: super::WorkerFrameRequests::default(),
@@ -1832,6 +1834,9 @@ fn start_render_loop(
 struct WorkerFrameState {
     output_scale: u32,
     frame: Option<(u32, u32, Vec<u8>)>,
+    // Keep transferred RGBA buffers as JS views so WebGL can upload them
+    // without copying through Wasm memory first.
+    js_frame: Option<(u32, u32, Uint8Array)>,
     gpu_frame: Option<JsValue>,
     running: bool,
     requests: WorkerFrameRequests<Object>,
@@ -1880,6 +1885,7 @@ impl<T> WorkerFrameRequests<T> {
 enum WorkerVisualFrame {
     Gpu(JsValue),
     Software(u32, u32, Vec<u8>),
+    SoftwareJs(u32, u32, Uint8Array),
 }
 
 fn replace_worker_visual_frame(state: &mut WorkerFrameState, frame: WorkerVisualFrame) {
@@ -1888,11 +1894,18 @@ fn replace_worker_visual_frame(state: &mut WorkerFrameState, frame: WorkerVisual
     match frame {
         WorkerVisualFrame::Gpu(frame) => {
             state.frame = None;
+            state.js_frame = None;
             state.gpu_frame = Some(frame);
         }
         WorkerVisualFrame::Software(width, height, pixels) => {
             state.gpu_frame = None;
+            state.js_frame = None;
             state.frame = Some((width, height, pixels));
+        }
+        WorkerVisualFrame::SoftwareJs(width, height, pixels) => {
+            state.gpu_frame = None;
+            state.frame = None;
+            state.js_frame = Some((width, height, pixels));
         }
     }
 }
@@ -1900,6 +1913,8 @@ fn replace_worker_visual_frame(state: &mut WorkerFrameState, frame: WorkerVisual
 fn take_worker_visual_frame(state: &mut WorkerFrameState) -> Option<WorkerVisualFrame> {
     if let Some(frame) = state.gpu_frame.take() {
         Some(WorkerVisualFrame::Gpu(frame))
+    } else if let Some((width, height, pixels)) = state.js_frame.take() {
+        Some(WorkerVisualFrame::SoftwareJs(width, height, pixels))
     } else {
         state
             .frame
@@ -1995,6 +2010,7 @@ async fn boot_catalogue_worker(
     let state = Rc::new(RefCell::new(WorkerFrameState {
         output_scale: 1,
         frame: None,
+        js_frame: None,
         gpu_frame: None,
         running: true,
         requests: WorkerFrameRequests::default(),
@@ -2033,7 +2049,7 @@ async fn boot_catalogue_worker(
                 state.output_scale = js_number_property(&data, "outputScale").unwrap_or(1.0) as u32;
                 replace_worker_visual_frame(
                     &mut state,
-                    WorkerVisualFrame::Software(width, height, Uint8Array::new(&frame).to_vec()),
+                    WorkerVisualFrame::SoftwareJs(width, height, Uint8Array::new(&frame)),
                 );
             }
         }
@@ -2127,6 +2143,23 @@ fn start_worker_render_loop(
                 }
                 sync_canvas_aspect(&canvas, width, height);
                 renderer.paint(width, height, &pixels);
+                if let Some(callback) = first_paint.borrow_mut().take() {
+                    callback();
+                }
+            }
+            Some(WorkerVisualFrame::SoftwareJs(width, height, pixels)) => {
+                let _ = canvas.set_attribute(
+                    "data-output-scale",
+                    &runtime.state.borrow().output_scale.to_string(),
+                );
+                if canvas.width() != width.max(1) {
+                    canvas.set_width(width.max(1));
+                }
+                if canvas.height() != height.max(1) {
+                    canvas.set_height(height.max(1));
+                }
+                sync_canvas_aspect(&canvas, width, height);
+                renderer.paint_js(width, height, &pixels);
                 if let Some(callback) = first_paint.borrow_mut().take() {
                     callback();
                 }
@@ -2508,6 +2541,13 @@ impl CanvasFrame {
         }
     }
 
+    fn paint_js(&mut self, width: u32, height: u32, rgba: &Uint8Array) {
+        match self {
+            Self::WebGl(frame) => frame.paint_js(width, height, rgba),
+            Self::Canvas2d(frame) => frame.paint_js(width, height, rgba),
+        }
+    }
+
     fn supports_q3_gpu(&self) -> bool {
         matches!(self, Self::WebGl(_))
     }
@@ -2583,6 +2623,10 @@ impl Canvas2dFrame {
         }
         self.pixels.copy_from(rgba);
         let _ = self.context.put_image_data(&self.image_data, 0.0, 0.0);
+    }
+
+    fn paint_js(&mut self, width: u32, height: u32, rgba: &Uint8Array) {
+        self.paint(width, height, &rgba.to_vec());
     }
 }
 
@@ -2791,6 +2835,73 @@ void main() {
         } else {
             self.gl
                 .tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_u8_array(
+                    WebGlRenderingContext::TEXTURE_2D,
+                    0,
+                    0,
+                    0,
+                    width as i32,
+                    height as i32,
+                    WebGlRenderingContext::RGBA,
+                    WebGlRenderingContext::UNSIGNED_BYTE,
+                    Some(rgba),
+                )
+        };
+        if result.is_err() {
+            return;
+        }
+        self.gl.viewport(0, 0, width as i32, height as i32);
+        self.gl
+            .draw_arrays(WebGlRenderingContext::TRIANGLE_STRIP, 0, 4);
+    }
+
+    fn paint_js(&mut self, width: u32, height: u32, rgba: &Uint8Array) {
+        let width = width.max(1);
+        let height = height.max(1);
+        if rgba.length() as usize != width as usize * height as usize * 4 {
+            return;
+        }
+        self.gl.use_program(Some(&self.frame_program));
+        self.gl.bind_buffer(
+            WebGlRenderingContext::ARRAY_BUFFER,
+            Some(&self.frame_vertices),
+        );
+        for (location, offset) in [
+            (self.frame_position, 0),
+            (self.frame_texture_coordinate, 2 * 4),
+        ] {
+            self.gl.enable_vertex_attrib_array(location);
+            self.gl.vertex_attrib_pointer_with_i32(
+                location,
+                2,
+                WebGlRenderingContext::FLOAT,
+                false,
+                4 * 4,
+                offset,
+            );
+        }
+        self.gl.active_texture(WebGlRenderingContext::TEXTURE0);
+        self.gl
+            .bind_texture(WebGlRenderingContext::TEXTURE_2D, Some(&self.frame_texture));
+        self.gl.disable(WebGlRenderingContext::DEPTH_TEST);
+        self.gl.disable(WebGlRenderingContext::BLEND);
+        let result = if self.width != width || self.height != height {
+            self.width = width;
+            self.height = height;
+            self.gl
+                .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_js_u8_array(
+                    WebGlRenderingContext::TEXTURE_2D,
+                    0,
+                    WebGlRenderingContext::RGBA as i32,
+                    width as i32,
+                    height as i32,
+                    0,
+                    WebGlRenderingContext::RGBA,
+                    WebGlRenderingContext::UNSIGNED_BYTE,
+                    Some(rgba),
+                )
+        } else {
+            self.gl
+                .tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_js_u8_array(
                     WebGlRenderingContext::TEXTURE_2D,
                     0,
                     0,

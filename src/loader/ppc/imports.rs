@@ -208,10 +208,18 @@ impl PpcImportRunState {
     }
 
     pub(super) fn binding_cloned(&self, symbol_index: u32) -> Option<PpcImportBinding> {
-        let binding_index = usize::try_from(symbol_index)
-            .ok()
-            .and_then(|index| self.indices.get(index).copied().flatten())?;
-        self.bindings.get(binding_index).cloned()
+        self.binding_index(symbol_index)
+            .and_then(|binding_index| self.bindings.get(binding_index))
+            .cloned()
+    }
+
+    pub(super) fn dispatcher_target_cloned(
+        &self,
+        symbol_index: u32,
+    ) -> Option<PpcImportDispatcherTarget> {
+        self.binding_index(symbol_index)
+            .and_then(|binding_index| self.bindings.get(binding_index))
+            .map(|binding| binding.dispatcher_target.clone())
     }
 
     pub(super) fn bindings(&self) -> &[PpcImportBinding] {
@@ -277,6 +285,12 @@ impl PpcImportRunState {
         self.bindings.push(pending.binding);
         self.count += 1;
         self.indices = pending.next_indices;
+    }
+
+    fn binding_index(&self, symbol_index: u32) -> Option<usize> {
+        usize::try_from(symbol_index)
+            .ok()
+            .and_then(|index| self.indices.get(index).copied().flatten())
     }
 }
 
@@ -699,8 +713,14 @@ mod tests {
             PpcImportRunState::from_parts(vec![first.clone(), duplicate, outside], 4, LAYOUT);
 
         assert_eq!(state.binding_cloned(2), Some(first));
+        assert_eq!(
+            state.dispatcher_target_cloned(2),
+            Some(PpcImportDispatcherTarget::TickCount)
+        );
         assert_eq!(state.binding_cloned(0), None);
+        assert_eq!(state.dispatcher_target_cloned(0), None);
         assert_eq!(state.binding_cloned(9), None);
+        assert_eq!(state.dispatcher_target_cloned(9), None);
     }
 
     #[test]

@@ -1332,7 +1332,10 @@ impl MacMemoryBus {
 
     // Only actual drawing invalidates an idle modal filter. Borrowing the store
     // to refresh an unchanged palette or save a snapshot is not a drawing event.
-    pub(crate) fn presentation_epoch(&self) -> Option<u64> {
+    /// Revision of the retained presentation state for frontend frame caches.
+    /// It is a conservative invalidation token: offscreen retained detail may
+    /// advance it even when the currently visible image is unchanged.
+    pub fn presentation_epoch(&self) -> Option<u64> {
         self.presentation.as_ref().map(|p| p.revision)
     }
 
@@ -1803,15 +1806,17 @@ impl MacMemoryBus {
         output.clear();
         output.extend_from_slice(&p.resolved_argb(scale));
         let width = p.logical_width() * scale;
-        for (index, (&before, &after)) in guest.iter().zip(with_overlays).enumerate() {
-            if before == after {
-                continue;
-            }
-            let x = index as u32 % p.logical_width();
-            let y = index as u32 / p.logical_width();
-            for dy in 0..scale {
-                let start = ((y * scale + dy) * width + x * scale) as usize;
-                output[start..start + scale as usize].fill(after);
+        if !std::ptr::eq(guest.as_ptr(), with_overlays.as_ptr()) {
+            for (index, (&before, &after)) in guest.iter().zip(with_overlays).enumerate() {
+                if before == after {
+                    continue;
+                }
+                let x = index as u32 % p.logical_width();
+                let y = index as u32 / p.logical_width();
+                for dy in 0..scale {
+                    let start = ((y * scale + dy) * width + x * scale) as usize;
+                    output[start..start + scale as usize].fill(after);
+                }
             }
         }
         Some((width, p.height * scale))
@@ -1838,20 +1843,22 @@ impl MacMemoryBus {
             rgba.copy_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, pixel as u8, 255]);
         }
         let width = p.logical_width() * scale;
-        for (index, (before, after)) in guest
-            .chunks_exact(4)
-            .zip(with_overlays.chunks_exact(4))
-            .enumerate()
-        {
-            if before == after {
-                continue;
-            }
-            let x = index as u32 % p.logical_width();
-            let y = index as u32 / p.logical_width();
-            for dy in 0..scale {
-                let start = ((y * scale + dy) * width + x * scale) as usize * 4;
-                for pixel in output[start..start + scale as usize * 4].chunks_exact_mut(4) {
-                    pixel.copy_from_slice(after);
+        if !std::ptr::eq(guest.as_ptr(), with_overlays.as_ptr()) {
+            for (index, (before, after)) in guest
+                .chunks_exact(4)
+                .zip(with_overlays.chunks_exact(4))
+                .enumerate()
+            {
+                if before == after {
+                    continue;
+                }
+                let x = index as u32 % p.logical_width();
+                let y = index as u32 / p.logical_width();
+                for dy in 0..scale {
+                    let start = ((y * scale + dy) * width + x * scale) as usize * 4;
+                    for pixel in output[start..start + scale as usize * 4].chunks_exact_mut(4) {
+                        pixel.copy_from_slice(after);
+                    }
                 }
             }
         }
@@ -2611,6 +2618,7 @@ mod tests {
                     })
                     .collect::<Vec<_>>()
             };
+            let rgba_guest = rgba(&guest);
             for scale in 1..=4 {
                 let mut expected = Vec::new();
                 crate::display::resize_argb_coverage(
@@ -2626,9 +2634,21 @@ mod tests {
                 );
                 assert_eq!(actual, expected, "depth={depth} scale={scale}");
                 let mut actual_rgba = Vec::new();
-                bus.presented_rgba_scaled(&rgba(&guest), &rgba(&overlay), scale, &mut actual_rgba)
+                let rgba_overlay = rgba(&overlay);
+                bus.presented_rgba_scaled(&rgba_guest, &rgba_overlay, scale, &mut actual_rgba)
                     .unwrap();
                 assert_eq!(actual_rgba, rgba(&expected));
+
+                // The browser passes the same logical buffer when there are
+                // no host overlays. Keep that path pixel-identical while it
+                // skips the redundant guest/overlay comparison.
+                let mut expected_no_overlay = Vec::new();
+                bus.presented_argb_scaled(&guest, &guest, scale, &mut expected_no_overlay)
+                    .unwrap();
+                let mut actual_no_overlay = Vec::new();
+                bus.presented_rgba_scaled(&rgba_guest, &rgba_guest, scale, &mut actual_no_overlay)
+                    .unwrap();
+                assert_eq!(actual_no_overlay, rgba(&expected_no_overlay));
             }
         }
     }
