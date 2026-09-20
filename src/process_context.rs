@@ -1544,7 +1544,8 @@ pub(crate) struct SharedProcessMixedModeM68kState(SharedProcessValue<ProcessMixe
 pub(crate) struct SharedProcessScrapState(SharedProcessValue<ProcessScrapState>);
 pub(crate) type SharedProcessControlManager = SharedProcessValue<ProcessControlManagerState>;
 pub(crate) type SharedProcessListManager = SharedProcessValue<ProcessListManagerState>;
-pub(crate) type SharedProcessTextEditManager = SharedProcessValue<ProcessTextEditManagerState>;
+#[derive(Clone, Default, Eq, PartialEq)]
+pub(crate) struct SharedProcessTextEditManager(SharedProcessValue<ProcessTextEditManagerState>);
 /// Detached-by-default attachment handle for Dialog Manager `ParamText` slots.
 pub type SharedProcessDialogText = SharedProcessValue<[Vec<u8>; 4]>;
 
@@ -2792,8 +2793,34 @@ impl SharedProcessControlManager {
 }
 
 impl SharedProcessTextEditManager {
+    fn with_ref<R>(&self, operation: impl FnOnce(&ProcessTextEditManagerState) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    fn with_mut<R>(&self, operation: impl FnOnce(&mut ProcessTextEditManagerState) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    fn attach_to(&mut self, process_state: &Self) {
+        self.0
+            .attach_to(&process_state.0, ProcessTextEditManagerState::is_pristine);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
     pub(crate) fn register(&self, handle: u32) {
         self.with_mut(|manager| manager.register(handle));
+    }
+
+    pub(crate) fn handles(&self) -> Vec<u32> {
+        self.with_ref(ProcessTextEditManagerState::handles)
+    }
+
+    pub(crate) fn feature_bit(&self, handle: u32, feature: u16) -> bool {
+        self.with_ref(|manager| manager.feature_bit(handle, feature))
     }
 
     pub(crate) fn set_feature_bit(&self, handle: u32, feature: u16, enabled: bool) {
@@ -2812,19 +2839,26 @@ impl SharedProcessTextEditManager {
         self.with_mut(ProcessTextEditManagerState::take_click_tracking)
     }
 
-    pub(crate) fn retain_click_tracking(
-        &self,
-        tracking: TextEditClickTracking,
-    ) {
+    pub(crate) fn retain_click_tracking(&self, tracking: TextEditClickTracking) {
         self.with_mut(|manager| manager.retain_click_tracking(tracking));
     }
 
     pub(crate) fn has_click_tracking(&self) -> bool {
-        ProcessTextEditManagerState::has_click_tracking(self)
+        self.with_ref(ProcessTextEditManagerState::has_click_tracking)
     }
 
     pub(crate) fn has_classic_click_tracking(&self) -> bool {
-        ProcessTextEditManagerState::has_classic_click_tracking(self)
+        self.with_ref(ProcessTextEditManagerState::has_classic_click_tracking)
+    }
+}
+
+impl std::fmt::Debug for SharedProcessTextEditManager {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let snapshot = self.with_ref(Clone::clone);
+        formatter
+            .debug_tuple("SharedProcessTextEditManager")
+            .field(&snapshot)
+            .finish()
     }
 }
 
@@ -8056,10 +8090,7 @@ impl ProcessContext {
     }
 
     pub(crate) fn attach_text_edit_manager(&self, adapter: &mut SharedProcessTextEditManager) {
-        adapter.attach_to(
-            &self.text_edit_manager,
-            ProcessTextEditManagerState::is_pristine,
-        );
+        adapter.attach_to(&self.text_edit_manager);
     }
 
     pub(crate) fn attach_dialog_text(&self, adapter: &mut SharedProcessDialogText) {
@@ -11423,5 +11454,29 @@ mod tests {
         assert!(!native.ptr_eq(&detached));
         assert_eq!(classic.flavor(*b"TEXT").unwrap().data, b"shared");
         assert_eq!(detached.flavor(*b"TEXT").unwrap().data, b"detached");
+    }
+
+    #[test]
+    fn attached_text_edit_managers_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessTextEditManager::default();
+        let mut native = SharedProcessTextEditManager::default();
+        context.attach_text_edit_manager(&mut classic);
+        classic.register(0x1000);
+        classic.set_feature_bit(0x1000, 2, true);
+        context.attach_text_edit_manager(&mut native);
+        let detached = native.clone();
+
+        assert!(classic.ptr_eq(&native));
+        assert_eq!(native.handles(), vec![0x1000]);
+        assert!(native.feature_bit(0x1000, 2));
+
+        detached.register(0x2000);
+        detached.set_feature_bit(0x2000, 3, true);
+        assert!(!native.ptr_eq(&detached));
+        assert_eq!(classic.handles(), vec![0x1000]);
+        assert!(!classic.feature_bit(0x2000, 3));
+        assert_eq!(detached.handles(), vec![0x1000, 0x2000]);
+        assert!(detached.feature_bit(0x2000, 3));
     }
 }
