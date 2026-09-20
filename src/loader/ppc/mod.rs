@@ -8729,6 +8729,7 @@ impl PpcLoadedApp {
                         dispatch_qd3d::PpcQ3ObjectRendererDispatchContext {
                             target: &binding.dispatcher_target,
                             cpu,
+                            memory,
                             stores: PpcQ3ObjectStores {
                                 q3_objects: &mut q3_objects,
                                 q3_object_refs: &mut q3_object_refs,
@@ -18590,64 +18591,13 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::Q3RendererFlush => {
             unreachable!("QuickDraw 3D object/renderer imports return through typed dispatch")
         }
-        PpcImportDispatcherTarget::Q3InteractiveRendererSetDoubleBufferBypass => {
-            Some(PpcImportAction::Return(u32::from(
-                ppc_q3_interactive_renderer_set_double_buffer_bypass(
-                    cpu,
-                    q3_objects,
-                    q3_error_state,
-                    q3_renderer_preferences,
-                ),
-            )))
-        }
-        PpcImportDispatcherTarget::Q3InteractiveRendererSetPreferences => Some(
-            PpcImportAction::Return(u32::from(ppc_q3_interactive_renderer_set_preferences(
-                cpu,
-                q3_objects,
-                q3_error_state,
-                q3_renderer_preferences,
-            ))),
-        ),
-        PpcImportDispatcherTarget::Q3InteractiveRendererSetRaveContextHints => {
-            Some(PpcImportAction::Return(u32::from(
-                ppc_q3_interactive_renderer_set_rave_context_hints(
-                    cpu,
-                    q3_objects,
-                    q3_error_state,
-                    q3_renderer_preferences,
-                ),
-            )))
-        }
-        PpcImportDispatcherTarget::Q3InteractiveRendererGetRaveContextHints => {
-            Some(PpcImportAction::Return(u32::from(
-                ppc_q3_interactive_renderer_get_rave_context_hints(
-                    cpu,
-                    memory,
-                    q3_objects,
-                    q3_error_state,
-                    q3_renderer_preferences,
-                ),
-            )))
-        }
-        PpcImportDispatcherTarget::Q3InteractiveRendererGetRaveDrawContexts => {
-            Some(PpcImportAction::Return(u32::from(
-                ppc_q3_interactive_renderer_get_rave_draw_contexts(
-                    cpu,
-                    memory,
-                    q3_objects,
-                    q3_error_state,
-                ),
-            )))
-        }
-        PpcImportDispatcherTarget::Q3InteractiveRendererSetRaveTextureFilter => {
-            Some(PpcImportAction::Return(u32::from(
-                ppc_q3_interactive_renderer_set_rave_texture_filter(
-                    cpu,
-                    q3_objects,
-                    q3_error_state,
-                    q3_renderer_preferences,
-                ),
-            )))
+        PpcImportDispatcherTarget::Q3InteractiveRendererSetDoubleBufferBypass
+        | PpcImportDispatcherTarget::Q3InteractiveRendererSetPreferences
+        | PpcImportDispatcherTarget::Q3InteractiveRendererSetRaveContextHints
+        | PpcImportDispatcherTarget::Q3InteractiveRendererGetRaveContextHints
+        | PpcImportDispatcherTarget::Q3InteractiveRendererGetRaveDrawContexts
+        | PpcImportDispatcherTarget::Q3InteractiveRendererSetRaveTextureFilter => {
+            unreachable!("QuickDraw 3D object/renderer imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3TextureShaderNew
         | PpcImportDispatcherTarget::Q3LambertIlluminationNew

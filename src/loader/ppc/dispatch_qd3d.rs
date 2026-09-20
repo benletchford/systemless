@@ -1551,6 +1551,7 @@ pub(super) fn dispatch_q3_group_view_import(
 pub(super) struct PpcQ3ObjectRendererDispatchContext<'a> {
     pub(super) target: &'a PpcImportDispatcherTarget,
     pub(super) cpu: &'a PpcCpu,
+    pub(super) memory: &'a mut PpcSectionMem,
     pub(super) stores: PpcQ3ObjectStores<'a>,
     pub(super) q3_error_state: &'a mut PpcQ3ErrorState,
     pub(super) next_q3_object: &'a mut u32,
@@ -1562,6 +1563,7 @@ pub(super) fn dispatch_q3_object_renderer_import_fast(
     let PpcQ3ObjectRendererDispatchContext {
         target,
         cpu,
+        memory,
         mut stores,
         q3_error_state,
         next_q3_object,
@@ -1676,6 +1678,65 @@ pub(super) fn dispatch_q3_object_renderer_import_fast(
         PpcImportDispatcherTarget::Q3RendererSync | PpcImportDispatcherTarget::Q3RendererFlush => {
             Some(PpcImportAction::Return(u32::from(
                 ppc_q3_renderer_is_valid(cpu, stores.q3_objects, q3_error_state),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3InteractiveRendererSetDoubleBufferBypass => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_interactive_renderer_set_double_buffer_bypass(
+                    cpu,
+                    stores.q3_objects,
+                    q3_error_state,
+                    stores.q3_renderer_preferences,
+                ),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3InteractiveRendererSetPreferences => Some(
+            PpcImportAction::Return(u32::from(ppc_q3_interactive_renderer_set_preferences(
+                cpu,
+                stores.q3_objects,
+                q3_error_state,
+                stores.q3_renderer_preferences,
+            ))),
+        ),
+        PpcImportDispatcherTarget::Q3InteractiveRendererSetRaveContextHints => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_interactive_renderer_set_rave_context_hints(
+                    cpu,
+                    stores.q3_objects,
+                    q3_error_state,
+                    stores.q3_renderer_preferences,
+                ),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3InteractiveRendererGetRaveContextHints => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_interactive_renderer_get_rave_context_hints(
+                    cpu,
+                    memory,
+                    stores.q3_objects,
+                    q3_error_state,
+                    stores.q3_renderer_preferences,
+                ),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3InteractiveRendererGetRaveDrawContexts => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_interactive_renderer_get_rave_draw_contexts(
+                    cpu,
+                    memory,
+                    stores.q3_objects,
+                    q3_error_state,
+                ),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3InteractiveRendererSetRaveTextureFilter => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_interactive_renderer_set_rave_texture_filter(
+                    cpu,
+                    stores.q3_objects,
+                    q3_error_state,
+                    stores.q3_renderer_preferences,
+                ),
             )))
         }
         _ => None,
