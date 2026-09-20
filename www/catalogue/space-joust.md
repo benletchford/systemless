@@ -52,6 +52,26 @@ artifacts:
       c3ff69bde46cd5147939565d4143341669b8bba6db845040711ce92c0c50070e. The
       complete package retains the 68k application, manual, story, ship files,
       backgrounds, sounds, sprites, data, icon and blueprint.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: sha256
+    sha256: e116763d22be409a72a8c606e5c5a025a9943b0cdd7c28825b59e0187f97d6cc
+    size_bytes: 8253
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/2312
+    permission: >-
+      Original screenshot captured from the exact Space Joust archive during a
+      deterministic gameplay run for this catalogue. Underlying game artwork
+      remains the property of its rights holders.
+    notes: >-
+      Fresh capture after entering Play mode and processing Up and Space input,
+      cropped to the 640-by-480 game content surface. It excludes the host
+      desktop, emulator margins and Classic Mac menu bar.
 references:
 - https://www.vintageapplemac.com/software/games/s/
 - https://www.vintageapplemac.com/files/games/Space%20Joust%202.0.sit
@@ -69,6 +89,8 @@ for-profit distribution, so this catalogue record is limited to the unchanged
 complete package for non-profit hosting and redistribution.
 
 ## In the live arena
+
+![Space Joust gameplay](https://assets.systemless.org/catalogue/media/sha256/e1/e116763d22be409a72a8c606e5c5a025a9943b0cdd7c28825b59e0187f97d6cc.png)
 
 Systemless reaches the shareware screen, main menu and Play mode from the exact
 archive. A deterministic run entered the live field with the player's ship and

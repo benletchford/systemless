@@ -81,6 +81,27 @@ artifacts:
       58665bf510f9339c44d5298729ce42a96639c01064a5c748c0a0384cc4019583.
       The archive's main.c header is the rights evidence for the source and
       executable distribution terms.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: sha256
+    sha256: 7a512b4937e7dc5c9a124f615e2e936f53ea7e0bd542439baf906f85928002c4
+    size_bytes: 5348
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/2293
+    permission: >-
+      Original gameplay screenshot captured from the exact unchanged archive for
+      this catalogue entry. Underlying chess artwork remains the property of its
+      rights holders.
+    notes: >-
+      Fresh deterministic realtime-tick capture after entering d and Return at
+      the Crafty prompt. The crop contains only the Crafty text output and live
+      ASCII board content; emulator menu, host margins and desktop furniture are
+      excluded.
 references:
 - https://www.vintageapplemac.com/files/misc/crafty-chess-1113.hqx
 - https://craftychess.com/downloads/source/crafty-11.13.zip
@@ -115,3 +136,5 @@ With realtime-tick pacing enabled, a deterministic run reached the Crafty
 prompt, entered `d` followed by Return, and produced the echoed `White(1): d`
 line together with the ASCII chess board. This is the interaction recorded in
 [issue #2293](https://github.com/benletchford/systemless/issues/2293).
+
+![Crafty Chess gameplay](https://assets.systemless.org/catalogue/media/sha256/7a/7a512b4937e7dc5c9a124f615e2e936f53ea7e0bd542439baf906f85928002c4.png)

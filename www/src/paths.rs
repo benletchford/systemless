@@ -2,6 +2,11 @@ pub fn asset_path(path: &str) -> String {
     path.trim().to_string()
 }
 
+pub fn optional_asset_path(path: &str) -> Option<String> {
+    let path = asset_path(path);
+    (!path.is_empty()).then_some(path)
+}
+
 pub fn browser_path_for_route(route: &str, location_path: &str) -> String {
     let _ = location_path;
     slash_terminated_route(route)
@@ -57,6 +62,16 @@ mod tests {
         assert_eq!(
             asset_path("https://assets.example.org/archive.sit"),
             "https://assets.example.org/archive.sit"
+        );
+    }
+
+    #[test]
+    fn missing_optional_assets_do_not_resolve_to_the_current_page() {
+        assert_eq!(optional_asset_path(""), None);
+        assert_eq!(optional_asset_path("   "), None);
+        assert_eq!(
+            optional_asset_path(" https://assets.example.org/screenshot.png "),
+            Some("https://assets.example.org/screenshot.png".to_string())
         );
     }
 }

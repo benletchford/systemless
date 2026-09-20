@@ -48,6 +48,27 @@ artifacts:
       Unchanged 1,379,613-byte Wolfenstein 3D: First Encounter 1.0.1 StuffIt
       archive from Classic Mac Demos. SHA-256
       99f1f2e1fd1a8e2fe53504ea38ec7017c234033cdbc19228778eb07ba3598256.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: sha256
+    sha256: e64efb536c20594a3619ccdec4915cb512dfad0677ed8846e9e886fa90b69a3e
+    size_bytes: 24037
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/2299
+    permission: >-
+      Original gameplay screenshot captured from the exact unchanged archive for
+      this catalogue entry. Underlying game artwork remains the property of its
+      rights holders.
+    notes: >-
+      Fresh deterministic capture after dismissing the shareware notice, selecting
+      a difficulty, entering Level 1, moving forward and firing. The crop is the
+      native 320-by-200 game surface and excludes emulator margins, host desktop
+      and Classic Mac menu/window furniture.
 references:
 - https://classicmacdemos.com/wolfenstein-3d
 - https://static.classicmacdemos.com/demos/wolfenstein-3d/README.txt
@@ -70,3 +91,5 @@ fade, Space opens the difficulty-selection dialog and Return starts Level 1.
 Holding Up changes the view and Control fires the weapon, verifying movement
 and gameplay interaction beyond launch. The deterministic checkpoints and
 framebuffer evidence are documented in [issue #2299](https://github.com/benletchford/systemless/issues/2299).
+
+![Wolfenstein 3D gameplay](https://assets.systemless.org/catalogue/media/sha256/e6/e64efb536c20594a3619ccdec4915cb512dfad0677ed8846e9e886fa90b69a3e.png)

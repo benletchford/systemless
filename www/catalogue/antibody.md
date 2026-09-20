@@ -58,11 +58,33 @@ artifacts:
       Pictures, Scores, Sounds and Sprites data, About Antibody, How to Register,
       Software License, Installer Log File and Icon. The verified Systemless path
       is the archive's 68k application slice.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: sha256
+    sha256: 6a170ee1dbd35fe21eabf469723e4acd994780df3e9d74c94c4acd4cd175d423
+    size_bytes: 232572
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/2308
+    permission: >-
+      Original screenshot captured from the exact Antibody archive during a
+      deterministic gameplay run for this catalogue. Underlying game artwork
+      remains the property of its rights holders.
+    notes: >-
+      Fresh capture after Level 1 movement and shooting input, cropped to the
+      650-by-490 game window. It excludes the host desktop, emulator margins and
+      Classic Mac menu bar.
 references:
 - https://www.vintageapplemac.com/software/games/a
 ---
 
 ## A mission inside the bloodstream
+
+![Antibody gameplay](https://assets.systemless.org/catalogue/media/sha256/6a/6a170ee1dbd35fe21eabf469723e4acd994780df3e9d74c94c4acd4cd175d423.png)
 
 Antibody puts the player inside a sick research subject, shrinking the ES-21 to
 the size of a cell and sending it through a living bloodstream. Clear the viral

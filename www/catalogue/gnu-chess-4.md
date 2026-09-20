@@ -77,6 +77,27 @@ artifacts:
       byte-identical to the binary archive's COPYING (17,976 bytes,
       SHA-256 bf0382942b51d24490ad2ecc0c2ae6be6340eca3ffb5e2cc31910ae519d96792),
       providing corresponding-source and licence evidence for this exact release.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: sha256
+    sha256: ca8dc6a31630b8e203330c1acbabe91256a78333a0d03c96488c67f81e7652fb
+    size_bytes: 14664
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/2290
+    permission: >-
+      Original gameplay screenshot captured from the exact unchanged archive for
+      this catalogue entry. Underlying chess artwork remains the property of its
+      rights holders.
+    notes: >-
+      Fresh deterministic capture after dragging the white pawn from e2 to e4 in
+      the unchanged GNU Chess Mac 4.0b5 archive. The crop contains only the live
+      chess board and move-status area; emulator menu, host margins and desktop
+      furniture are excluded.
 references:
 - https://www.gryphel.com/c/sw/games/chess/
 - https://www.gryphel.com/d/sw/games/chess/c/gnuchessMAC40b5.hqx
@@ -106,3 +127,5 @@ URL rather than being silently substituted with a later GNU Chess release. Its
 modules, and its GPL text is byte-identical to the copy shipped beside the binary.
 Together those records identify the source as the corresponding GPL source for this
 specific 4.0b5 Macintosh build.
+
+![GNU Chess Mac gameplay](https://assets.systemless.org/catalogue/media/sha256/ca/ca8dc6a31630b8e203330c1acbabe91256a78333a0d03c96488c67f81e7652fb.png)

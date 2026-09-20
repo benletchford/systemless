@@ -51,6 +51,26 @@ artifacts:
       785223705c65ebd6c9972a8d6d66fe5fa8397a2f7d4ea454a65fab074bd34954. The
       complete package retains the 68k application, Read Me, Release Note,
       comments and icon.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: sha256
+    sha256: 96c646e5a7bdcf643be5f7ad8b3cabb168790614f49e38b421d80c528b5a39e5
+    size_bytes: 26099
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/2316
+    permission: >-
+      Original screenshot captured from the exact War of Flowers archive during a
+      deterministic gameplay run for this catalogue. Underlying game artwork
+      remains the property of its rights holders.
+    notes: >-
+      Fresh capture of the live board after a card choice, cropped to the
+      632-by-441 game content surface. It excludes the host desktop, emulator
+      margins and Classic Mac menu bar.
 references:
 - https://www.vintageapplemac.com/software/games/w/
 - https://www.vintageapplemac.com/files/games/War%20of%20Flowers.sit
@@ -71,6 +91,8 @@ This entry references the unchanged complete archive with the application,
 documentation and icon intact.
 
 ## In the live board game
+
+![War of Flowers gameplay](https://assets.systemless.org/catalogue/media/sha256/96/96c646e5a7bdcf643be5f7ad8b3cabb168790614f49e38b421d80c528b5a39e5.png)
 
 Systemless reaches the first-player selection, the live board and the player's
 hand from the exact archive. After selecting the first player, a deterministic

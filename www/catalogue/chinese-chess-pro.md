@@ -55,6 +55,26 @@ artifacts:
       a9b0f0f8686d9f104fef15fa3d1994cdf5cec502e6ed02d5da902d35a769fb9f. The
       complete package retains all three 68k applications, cchess.book,
       Introduction to Chinese Chess, The Board and About Chinese Chess Pro.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: sha256
+    sha256: 092687984d7633dd9128e40eec627148dcc039f82bb2afc17deac1bc4e709994
+    size_bytes: 18441
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/2318
+    permission: >-
+      Original screenshot captured from the exact Chinese Chess Pro archive
+      during a deterministic gameplay run for this catalogue. Underlying game
+      artwork remains the property of its rights holders.
+    notes: >-
+      Fresh capture after the red soldier moved one rank forward, cropped to the
+      561-by-354 game content surface. It excludes the host desktop, emulator
+      margins and Classic Mac menu bar.
 references:
 - https://www.vintageapplemac.com/software/games/c/
 - https://www.vintageapplemac.com/files/games/Chinese%20Chess%20Pro%201.0.1.sit
@@ -79,6 +99,8 @@ The bundled MWII text resource visibly truncates the first sentence after
 keeps every original package component together.
 
 ## A real move on the live board
+
+![Chinese Chess Pro gameplay](https://assets.systemless.org/catalogue/media/sha256/09/092687984d7633dd9128e40eec627148dcc039f82bb2afc17deac1bc4e709994.png)
 
 Systemless reaches the live board from the exact archive using the verified
 Chinese Chess Pro Color 68k path. A deterministic run selected a red soldier at
