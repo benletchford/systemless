@@ -874,8 +874,8 @@ use super::*;
         assert_eq!(probe.unsupported_import_index, None);
         let element = loaded.memory.read_u32_be(elements_out_ptr).unwrap();
         loaded.set_input_snapshot(PpcInputSnapshot {
-            mouse_v: (PPC_MAIN_SCREEN_HEIGHT / 2) as i16,
-            mouse_h: (PPC_MAIN_SCREEN_WIDTH / 2) as i16 + 12,
+            mouse_v: (ppc_main_screen_height() / 2) as i16,
+            mouse_h: (ppc_main_screen_width() / 2) as i16 + 12,
             ..PpcInputSnapshot::default()
         });
         loaded.cpu.pc = loaded.entry_pc;

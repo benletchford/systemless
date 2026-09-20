@@ -1122,8 +1122,8 @@ fn ppc_position_dialog_bounds(
         return bounds;
     }
     let screen = gworlds.iter().find(|record| record.port == PPC_MAIN_GWORLD);
-    let screen_width = screen.map_or(PPC_MAIN_SCREEN_WIDTH, |record| record.width) as i32;
-    let screen_height = screen.map_or(PPC_MAIN_SCREEN_HEIGHT, |record| record.height) as i32;
+    let screen_width = screen.map_or(ppc_main_screen_width(), |record| record.width) as i32;
+    let screen_height = screen.map_or(ppc_main_screen_height(), |record| record.height) as i32;
     let height = i32::from(bounds.2) - i32::from(bounds.0);
     let width = i32::from(bounds.3) - i32::from(bounds.1);
     let top = (screen_height - height).max(0) / 2;

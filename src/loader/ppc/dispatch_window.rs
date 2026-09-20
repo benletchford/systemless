@@ -744,10 +744,10 @@ pub(super) fn dispatch_window_import(
             let front = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD);
             let screen_width = front
                 .map(|front| ppc_u32_to_i16_saturating(front.width))
-                .unwrap_or(PPC_MAIN_SCREEN_WIDTH as i16);
+                .unwrap_or(ppc_main_screen_width() as i16);
             let screen_height = front
                 .map(|front| ppc_u32_to_i16_saturating(front.height))
-                .unwrap_or(PPC_MAIN_SCREEN_HEIGHT as i16);
+                .unwrap_or(ppc_main_screen_height() as i16);
             let menu_bar_height = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16;
             let in_screen = (0..screen_height).contains(&v) && (0..screen_width).contains(&h);
             let in_menu_bar = in_screen && v < menu_bar_height.max(0).min(screen_height);
@@ -923,8 +923,8 @@ pub(super) fn ppc_new_cwindow(
                 ppc_main_screen_row_bytes(),
                 0,
                 0,
-                PPC_MAIN_SCREEN_HEIGHT as i16,
-                PPC_MAIN_SCREEN_WIDTH as i16,
+                ppc_main_screen_height() as i16,
+                ppc_main_screen_width() as i16,
                 PPC_MAIN_PIXEL_DEPTH,
             ));
     if row_bytes == 0 {
@@ -1668,8 +1668,8 @@ pub(super) fn ppc_restore_window_removal_exposure(
     let paint = (
         exposed.0.max(menu_bar_height).max(0),
         exposed.1.max(0),
-        exposed.2.min(PPC_MAIN_SCREEN_HEIGHT as i16),
-        exposed.3.min(PPC_MAIN_SCREEN_WIDTH as i16),
+        exposed.2.min(ppc_main_screen_height() as i16),
+        exposed.3.min(ppc_main_screen_width() as i16),
     );
     if paint.0 < paint.2 && paint.1 < paint.3 {
         for v in i32::from(paint.0)..i32::from(paint.2) {
@@ -2445,15 +2445,15 @@ pub(super) fn ppc_paint_behind(
             (
                 0,
                 0,
-                PPC_MAIN_SCREEN_HEIGHT as i16,
-                PPC_MAIN_SCREEN_WIDTH as i16,
+                ppc_main_screen_height() as i16,
+                ppc_main_screen_width() as i16,
             )
         } else {
             ppc_read_rgn_bbox(memory, PPC_GRAY_RGN_HANDLE).unwrap_or((
                 20,
                 0,
-                PPC_MAIN_SCREEN_HEIGHT as i16,
-                PPC_MAIN_SCREEN_WIDTH as i16,
+                ppc_main_screen_height() as i16,
+                ppc_main_screen_width() as i16,
             ))
         };
         let paint = (
@@ -3214,8 +3214,8 @@ pub(super) fn ppc_new_window_from_cpu(
             state + 8,
             20,
             0,
-            PPC_MAIN_SCREEN_HEIGHT as i16,
-            PPC_MAIN_SCREEN_WIDTH as i16,
+            ppc_main_screen_height() as i16,
+            ppc_main_screen_width() as i16,
         )
         .is_some()
         && memory

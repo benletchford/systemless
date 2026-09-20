@@ -135,7 +135,13 @@ impl MachineProfile {
     /// offscreen 16-byte quantum keeps direct full-row transfers coherent.
     /// Imaging With QuickDraw 1994, p. 4-5
     pub const fn screen_row_bytes(self) -> u32 {
-        let bytes = (self.screen_width as u32 * self.screen_depth as u32).div_ceil(8);
+        self.screen_row_bytes_at_depth(self.screen_depth)
+    }
+
+    /// Bytes per scanline for this profile's screen width at `depth`, padded
+    /// the same way as [`Self::screen_row_bytes`].
+    pub const fn screen_row_bytes_at_depth(self, depth: u16) -> u32 {
+        let bytes = (self.screen_width as u32 * depth as u32).div_ceil(8);
         (bytes / 16 + 1) * 16
     }
 }
@@ -183,15 +189,28 @@ pub(crate) const REFERENCE_POWERPC_EXECUTION_CAPABILITIES: GuestExecutionCapabil
 /// `SYSTEMLESS_SCREEN_WIDTH`, `SYSTEMLESS_SCREEN_HEIGHT`, and
 /// `SYSTEMLESS_RAM_SIZE` environment variables.
 pub fn reference_machine_profile() -> MachineProfile {
+    // Resolved once: callers include per-pixel geometry helpers, and parsing
+    // the environment on every query showed up as a frame-time regression.
+    static RESOLVED: std::sync::OnceLock<MachineProfile> = std::sync::OnceLock::new();
+    *RESOLVED.get_or_init(resolve_reference_machine_profile)
+}
+
+fn resolve_reference_machine_profile() -> MachineProfile {
     let mut p = REFERENCE_MACHINE_PROFILE;
+    // A zero dimension would leave callers dividing by or allocating nothing;
+    // keep the profile's default rather than honour it.
     if let Ok(w) = std::env::var("SYSTEMLESS_SCREEN_WIDTH") {
         if let Ok(w) = w.parse::<u16>() {
-            p.screen_width = w;
+            if w != 0 {
+                p.screen_width = w;
+            }
         }
     }
     if let Ok(h) = std::env::var("SYSTEMLESS_SCREEN_HEIGHT") {
         if let Ok(h) = h.parse::<u16>() {
-            p.screen_height = h;
+            if h != 0 {
+                p.screen_height = h;
+            }
         }
     }
     if let Ok(ram) = std::env::var("SYSTEMLESS_RAM_SIZE") {

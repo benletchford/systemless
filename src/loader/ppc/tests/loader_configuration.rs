@@ -82,7 +82,7 @@ fn load_pef_application_configures_every_supported_main_display_depth() {
             },
         )
         .unwrap();
-        let row_bytes = ppc_row_bytes(PPC_MAIN_SCREEN_WIDTH, depth).unwrap();
+        let row_bytes = ppc_row_bytes(ppc_main_screen_width(), depth).unwrap();
 
         assert_eq!(loaded.gworlds[0].depth, depth);
         assert_eq!(loaded.gworlds[0].row_bytes, row_bytes);

@@ -57,8 +57,8 @@ pub(super) fn dispatch_graphics_device_import(
                     // devices intersecting the supplied global rectangle.
                     bottom > 0
                         && right > 0
-                        && top < PPC_MAIN_SCREEN_HEIGHT as i16
-                        && left < PPC_MAIN_SCREEN_WIDTH as i16
+                        && top < ppc_main_screen_height() as i16
+                        && left < ppc_main_screen_width() as i16
                 })
                 .map_or(0, |_| PPC_MAIN_GDEVICE);
             Some(PpcImportAction::Return(device))

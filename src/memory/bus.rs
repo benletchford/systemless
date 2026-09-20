@@ -19,6 +19,37 @@ use crate::process_context::SharedClassicHeapAllocator;
 const LEGACY_SOUND_BUFFER_WORDS: u32 = 370;
 const LEGACY_SOUND_BUFFER_BYTES: u32 = LEGACY_SOUND_BUFFER_WORDS * 2;
 const SYNTHETIC_RESERVE_BYTES: u32 = 64 * 1024;
+/// Smallest top-of-RAM display reservation. The historical 512 KB window holds
+/// the default 800x600 8-bit framebuffer (816 * 600 = 489,600 bytes) plus the
+/// legacy sound buffer that sits just past it.
+const MIN_DISPLAY_RESERVE_BYTES: u32 = 0x80000;
+
+/// Bytes reserved at the top of RAM for the main framebuffer and the legacy
+/// sound buffer that follows it. Derived from the active machine profile so a
+/// screen larger than the 800x600 default still fits inside the reservation
+/// instead of running past the end of RAM.
+pub(crate) fn display_reservation_bytes() -> u32 {
+    let profile = crate::machine_profile::reference_machine_profile();
+    profile
+        .screen_row_bytes()
+        .saturating_mul(u32::from(profile.screen_height))
+        .saturating_add(LEGACY_SOUND_BUFFER_BYTES)
+        .next_multiple_of(0x10000)
+        .max(MIN_DISPLAY_RESERVE_BYTES)
+}
+
+/// Base address of the main framebuffer: the top of RAM, below the display
+/// reservation. Small RAM sizes (unit tests) fall back to a safe address.
+fn main_framebuffer_base(ram_size: usize) -> u32 {
+    if ram_size >= 0x100000 {
+        (ram_size as u32).saturating_sub(display_reservation_bytes())
+    } else if ram_size >= 0x20000 {
+        (ram_size as u32) - 0x10000
+    } else {
+        0
+    }
+}
+
 // System 7.5.3 on the Quadra 650 leaves exception vector 0 pointing to
 // $40810000. A BasiliskII oracle capture of that ROM establishes the word at
 // offset 6 as $0372. Keep the shadow deliberately narrow: bytes outside this
@@ -1293,12 +1324,9 @@ impl MacMemoryBus {
     /// Create a new memory bus with the given RAM size
     pub fn new(ram_size: usize) -> Self {
         // Screen buffer is at the top of RAM; heap must not grow into it.
-        let screen_buffer_start: u32 = if ram_size >= 0x100000 {
-            (ram_size as u32) - 0x80000
-        } else if ram_size >= 0x20000 {
-            (ram_size as u32) - 0x10000
-        } else {
-            ram_size as u32
+        let screen_buffer_start: u32 = match main_framebuffer_base(ram_size) {
+            0 => ram_size as u32,
+            base => base,
         };
         let synthetic_floor = screen_buffer_start.saturating_sub(SYNTHETIC_RESERVE_BYTES);
         let mut bus = Self {
@@ -1323,19 +1351,14 @@ impl MacMemoryBus {
         bus.write_word(super::globals::addr::ROM85, 0x7FFF);
 
         // Set up ScrnBase at $0824 to point to screen memory.
-        // Default to 800x600 8bpp color mode. The framebuffer is placed at
-        // the top of RAM minus 512KB (0x80000), which fits 800*600 = 480,000 bytes.
-        // For small RAM sizes (unit tests), fall back to a safe address.
-        let screen_base: u32 = if ram_size >= 0x100000 {
-            (ram_size as u32) - 0x80000
-        } else if ram_size >= 0x20000 {
-            (ram_size as u32) - 0x10000
-        } else {
-            0 // Fallback for unit tests with small RAM
-        };
-        let screen_row_bytes: u16 = 816;
-        let screen_width: u16 = 800;
-        let screen_height: u16 = 600;
+        // Geometry comes from the active machine profile (800x600 8bpp by
+        // default). The framebuffer is placed at the top of RAM, below a
+        // reservation sized to hold it plus the legacy sound buffer.
+        let screen_base = main_framebuffer_base(ram_size);
+        let profile = crate::machine_profile::reference_machine_profile();
+        let screen_width: u16 = profile.screen_width;
+        let screen_height: u16 = profile.screen_height;
+        let screen_row_bytes: u16 = profile.screen_row_bytes() as u16;
 
         // ScrnBase ($0824) - pointer to screen buffer
         bus.write_long(0x0824, screen_base);
@@ -1376,8 +1399,7 @@ impl MacMemoryBus {
     pub(crate) fn configure_screen_depth(&mut self, depth: u16) {
         debug_assert!(matches!(depth, 1 | 2 | 4 | 8));
         let profile = crate::machine_profile::reference_machine_profile();
-        let visible_row_bytes = (u32::from(profile.screen_width) * u32::from(depth)).div_ceil(8);
-        let row_bytes = (visible_row_bytes / 16 + 1) * 16;
+        let row_bytes = profile.screen_row_bytes_at_depth(depth);
         self.write_word(super::globals::addr::SCREEN_ROW, row_bytes as u16);
         self.write_word(super::globals::addr::SCREEN_BITS + 4, row_bytes as u16);
     }
@@ -1389,7 +1411,7 @@ impl MacMemoryBus {
     #[allow(dead_code)]
     pub unsafe fn wrap_external(ram_ptr: *mut u8, ram_size: usize, globals: LowMemGlobals) -> Self {
         let screen_buffer_start: u32 = if ram_size >= 0x100000 {
-            (ram_size as u32) - 0x80000
+            (ram_size as u32).saturating_sub(display_reservation_bytes())
         } else if ram_size >= 0x20000 {
             (ram_size as u32) - 0x10000
         } else {

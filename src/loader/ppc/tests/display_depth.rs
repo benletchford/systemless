@@ -144,7 +144,7 @@ fn hle_import_runner_set_depth_installs_each_advertised_screen_personality() {
             "SetDepth rejected {depth}-bit {}",
             if is_color { "color" } else { "grayscale" }
         );
-        let row_bytes = ppc_row_bytes(PPC_MAIN_SCREEN_WIDTH, depth).unwrap();
+        let row_bytes = ppc_row_bytes(ppc_main_screen_width(), depth).unwrap();
         assert_eq!(loaded.gworlds[0].depth, depth);
         assert_eq!(loaded.gworlds[0].row_bytes, row_bytes);
         assert_eq!(
@@ -254,8 +254,8 @@ fn hle_import_runner_set_depth_grows_private_screen_ctable_without_replacing_han
         ppc_main_screen_row_bytes(),
         0,
         0,
-        PPC_MAIN_SCREEN_HEIGHT as i16,
-        PPC_MAIN_SCREEN_WIDTH as i16,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
         8,
     )
     .unwrap();
@@ -269,8 +269,8 @@ fn hle_import_runner_set_depth_grows_private_screen_ctable_without_replacing_han
         pixmap_handle,
         0,
         0,
-        PPC_MAIN_SCREEN_HEIGHT as i16,
-        PPC_MAIN_SCREEN_WIDTH as i16,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
     )
     .unwrap();
     loaded.gworlds.push(PpcGWorldRecord {
@@ -280,8 +280,8 @@ fn hle_import_runner_set_depth_grows_private_screen_ctable_without_replacing_han
         pixmap,
         base_addr: PPC_MAIN_SCREEN_BASE,
         gdevice: PPC_MAIN_GDEVICE,
-        width: PPC_MAIN_SCREEN_WIDTH,
-        height: PPC_MAIN_SCREEN_HEIGHT,
+        width: ppc_main_screen_width(),
+        height: ppc_main_screen_height(),
         depth: 8,
         row_bytes: ppc_main_screen_row_bytes(),
         pixels_locked: false,
@@ -347,8 +347,8 @@ fn hle_import_runner_set_depth_private_ctable_growth_failure_is_atomic() {
         ppc_main_screen_row_bytes(),
         0,
         0,
-        PPC_MAIN_SCREEN_HEIGHT as i16,
-        PPC_MAIN_SCREEN_WIDTH as i16,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
         8,
     )
     .unwrap();
@@ -362,8 +362,8 @@ fn hle_import_runner_set_depth_private_ctable_growth_failure_is_atomic() {
         pixmap_handle,
         0,
         0,
-        PPC_MAIN_SCREEN_HEIGHT as i16,
-        PPC_MAIN_SCREEN_WIDTH as i16,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
     )
     .unwrap();
     loaded.gworlds.push(PpcGWorldRecord {
@@ -373,8 +373,8 @@ fn hle_import_runner_set_depth_private_ctable_growth_failure_is_atomic() {
         pixmap,
         base_addr: PPC_MAIN_SCREEN_BASE,
         gdevice: PPC_MAIN_GDEVICE,
-        width: PPC_MAIN_SCREEN_WIDTH,
-        height: PPC_MAIN_SCREEN_HEIGHT,
+        width: ppc_main_screen_width(),
+        height: ppc_main_screen_height(),
         depth: 8,
         row_bytes: ppc_main_screen_row_bytes(),
         pixels_locked: false,
@@ -495,8 +495,8 @@ fn hle_import_runner_set_depth_rejects_undersized_untracked_ctable_without_overw
         ppc_main_screen_row_bytes(),
         0,
         0,
-        PPC_MAIN_SCREEN_HEIGHT as i16,
-        PPC_MAIN_SCREEN_WIDTH as i16,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
         8,
     )
     .unwrap();
@@ -510,8 +510,8 @@ fn hle_import_runner_set_depth_rejects_undersized_untracked_ctable_without_overw
         pixmap_handle,
         0,
         0,
-        PPC_MAIN_SCREEN_HEIGHT as i16,
-        PPC_MAIN_SCREEN_WIDTH as i16,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
     )
     .unwrap();
     loaded.gworlds.push(PpcGWorldRecord {
@@ -521,8 +521,8 @@ fn hle_import_runner_set_depth_rejects_undersized_untracked_ctable_without_overw
         pixmap,
         base_addr: PPC_MAIN_SCREEN_BASE,
         gdevice: PPC_MAIN_GDEVICE,
-        width: PPC_MAIN_SCREEN_WIDTH,
-        height: PPC_MAIN_SCREEN_HEIGHT,
+        width: ppc_main_screen_width(),
+        height: ppc_main_screen_height(),
         depth: 8,
         row_bytes: ppc_main_screen_row_bytes(),
         pixels_locked: false,
@@ -920,8 +920,8 @@ fn hle_import_runner_set_depth_preserves_device_state_and_clear_bounds() {
         run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
 
-        let row_bytes = ppc_row_bytes(PPC_MAIN_SCREEN_WIDTH, depth).unwrap();
-        let clear_len = (row_bytes * PPC_MAIN_SCREEN_HEIGHT) as usize;
+        let row_bytes = ppc_row_bytes(ppc_main_screen_width(), depth).unwrap();
+        let clear_len = (row_bytes * ppc_main_screen_height()) as usize;
         let framebuffer = ppc_memory_read_bytes(
             &mut loaded.memory,
             PPC_MAIN_SCREEN_BASE,
@@ -1167,7 +1167,7 @@ fn hle_import_runner_set_depth_synchronizes_only_screen_backed_color_ports() {
         loaded.cpu.gpr[6] = u32::from(depth != 1);
         run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-        let row_bytes = ppc_row_bytes(PPC_MAIN_SCREEN_WIDTH, depth).unwrap();
+        let row_bytes = ppc_row_bytes(ppc_main_screen_width(), depth).unwrap();
 
         for (before, live_handle, live_pixmap, bounds, private_fields) in &screen_pixmaps {
             let record = loaded
@@ -1287,8 +1287,8 @@ fn hle_import_runner_set_depth_synchronizes_only_screen_backed_color_ports() {
             Some((
                 0,
                 0,
-                PPC_MAIN_SCREEN_HEIGHT as i16,
-                PPC_MAIN_SCREEN_WIDTH as i16,
+                ppc_main_screen_height() as i16,
+                ppc_main_screen_width() as i16,
             ))
         );
         assert_eq!(loaded.memory.read_u32_be(global_ptr), Some(PPC_MAIN_GWORLD));
@@ -1351,8 +1351,8 @@ fn hle_import_runner_set_depth_follows_live_set_port_pix_aliases() {
         ppc_main_screen_row_bytes(),
         0,
         0,
-        PPC_MAIN_SCREEN_HEIGHT as i16,
-        PPC_MAIN_SCREEN_WIDTH as i16,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
         8,
     )
     .unwrap();
@@ -1468,7 +1468,7 @@ fn hle_import_runner_set_depth_follows_live_set_port_pix_aliases() {
         loaded.cpu.gpr[6] = u32::from(depth != 1);
         run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-        let row_bytes = ppc_row_bytes(PPC_MAIN_SCREEN_WIDTH, depth).unwrap();
+        let row_bytes = ppc_row_bytes(ppc_main_screen_width(), depth).unwrap();
 
         for (port, before) in [first_port, second_port]
             .into_iter()
@@ -1867,16 +1867,16 @@ fn hle_import_runner_draw_menu_bar_matches_at_supported_depths() {
             ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (0, 19),),
             Some(black)
         );
-        let mut mask = Vec::with_capacity((PPC_MAIN_SCREEN_WIDTH * 20) as usize);
+        let mut mask = Vec::with_capacity((ppc_main_screen_width() * 20) as usize);
         for y in 0..20 {
-            for x in 0..PPC_MAIN_SCREEN_WIDTH as i32 {
+            for x in 0..ppc_main_screen_width() as i32 {
                 mask.push(
                     ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (x, y))
                         == Some(black),
                 );
             }
         }
-        assert!(mask.iter().filter(|pixel| **pixel).count() > PPC_MAIN_SCREEN_WIDTH as usize);
+        assert!(mask.iter().filter(|pixel| **pixel).count() > ppc_main_screen_width() as usize);
         masks.push(mask);
 
         if depth == 8 {
@@ -2046,7 +2046,7 @@ fn hle_import_runner_handles_set_depth() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     assert_eq!(loaded.gworlds[0].depth, 16);
-    assert_eq!(loaded.gworlds[0].row_bytes, PPC_MAIN_SCREEN_WIDTH * 2 + 16);
+    assert_eq!(loaded.gworlds[0].row_bytes, ppc_main_screen_width() * 2 + 16);
     assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 30), Some(16));
     assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 32), Some(16));
     assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 34), Some(3));
@@ -2062,7 +2062,7 @@ fn hle_import_runner_handles_set_depth() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     assert_eq!(loaded.gworlds[0].depth, 8);
-    assert_eq!(loaded.gworlds[0].row_bytes, PPC_MAIN_SCREEN_WIDTH + 16);
+    assert_eq!(loaded.gworlds[0].row_bytes, ppc_main_screen_width() + 16);
     assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 30), Some(0));
     assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 32), Some(8));
     assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 34), Some(1));
