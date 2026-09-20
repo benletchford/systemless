@@ -2,22 +2,27 @@
 id: xconq
 kind: game
 title: Xconq
-summary: Command armies across dozens of historical, fantastic and experimental turn-based scenarios.
+summary: >-
+  Command armies across dozens of historical, fantastic and experimental
+  turn-based scenarios.
 developer: Stan Shebs and contributors
 publisher: Cygnus Support
 year: 1995
-architectures: [68k]
+architectures:
+- 68k
 default_architecture: 68k
 category: Strategy
 launch_enabled: true
 compatibility:
   status: playable
   verified:
-  - date: 2026-09-21
+  - date: "2026-09-21"
     tester: Catalogue maintainer
-    systemless_version: 0.42.4
+    systemless_version: "0.42.4"
     architecture: 68k
-    environment: Deterministic headless gameplay run from the original Xconq 7.0.1 Macintosh archive
+    environment: >-
+      Deterministic headless gameplay run from the original Xconq 7.0.1 Macintosh
+      archive
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2264
 artifacts:
@@ -25,11 +30,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/Xconq%207.0.1.sit
-    download_page: https://www.vintageapplemac.com/software/games/x
-    expected_sha256: d83869c255a782e2df466f1fb5d0bcfa3dd262af6709b463bde629000d1d5585
-    expected_size: 1066669
+    type: sha256
+    sha256: d83869c255a782e2df466f1fb5d0bcfa3dd262af6709b463bde629000d1d5585
+    size_bytes: 1066669
   provenance:
     redistribution: permitted
     original: true
@@ -43,8 +46,8 @@ artifacts:
       The package includes the GNU General Public License version 2 and identifies
       Xconq as free software licensed under that license. Redistribution is permitted
       when recipients receive the same rights and corresponding source code remains
-      available. This entry therefore preserves the unmodified binary together with
-      the matching complete 7.0.1 source distribution.
+      available. This entry therefore preserves the unmodified binary together with the
+      matching complete 7.0.1 source distribution.
     notes: >-
       Unchanged 1,066,669-byte StuffIt archive, SHA-256
       d83869c255a782e2df466f1fb5d0bcfa3dd262af6709b463bde629000d1d5585.
@@ -62,9 +65,9 @@ artifacts:
     license: GPL-2.0-only
     rights_holder: Stan Shebs and contributors
     permission: >-
-      Xconq 7.0.1's README licenses the program under GNU GPL version 2 and
-      permits copying, modification and redistribution. This is the matching
-      complete upstream source archive for the hosted Macintosh binary.
+      Xconq 7.0.1's README licenses the program under GNU GPL version 2 and permits
+      copying, modification and redistribution. This is the matching complete upstream
+      source archive for the hosted Macintosh binary.
     notes: >-
       Unchanged 1,457,741-byte gzip-compressed source archive, SHA-256
       481939e53183699b5a0aa8bea68e85a0284ab9e6b94ff458fc8fe0de3a3ee0a6.
