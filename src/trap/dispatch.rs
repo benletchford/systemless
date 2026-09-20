@@ -5709,7 +5709,7 @@ impl TrapDispatcher {
             // resPreload; ordinary resource data stays on disk until requested.
             // SetResLoad(FALSE) also suppresses preloading.
             // Inside Macintosh Volume I (1985), I-111, I-115, I-118.
-            let ptr = if self.policy.res_load && res.attrs & RES_PRELOAD_ATTR != 0 {
+            let ptr = if self.policy.res_load() && res.attrs & RES_PRELOAD_ATTR != 0 {
                 let ptr = bus.alloc(res.data.len() as u32);
                 if ptr != 0 {
                     bus.write_bytes(ptr, &res.data);

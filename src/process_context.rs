@@ -778,8 +778,8 @@ pub struct ProcessResourceManagerState {
 /// resource map. Inside Macintosh Volume I (1985), pp. I-118 and I-126.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessResourcePolicyState {
-    pub(crate) res_load: bool,
-    pub(crate) res_purge: bool,
+    res_load: bool,
+    res_purge: bool,
 }
 
 /// Process-wide display transfer state shared by QuickDraw and the video
@@ -2794,7 +2794,12 @@ impl SharedProcessDisplayGamma {
 impl SharedProcessResourcePolicy {
     /// Return whether Resource Manager lookups automatically load data.
     pub(crate) fn res_load(&self) -> bool {
-        self.res_load
+        self.with_ref(|policy| policy.res_load)
+    }
+
+    /// Return whether released Resource Manager handles become purgeable.
+    pub(crate) fn res_purge(&self) -> bool {
+        self.with_ref(|policy| policy.res_purge)
     }
 
     /// Scope a `SetResLoad` policy update to one serialized operation.

@@ -6432,7 +6432,7 @@
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert!(!disp.policy.res_purge);
+        assert!(!disp.policy.res_purge());
         assert_eq!(cpu.read_reg(Register::A7), sp + 2);
         assert_eq!(bus.read_word(sp + 2), 0xBEEF);
     }
@@ -6448,14 +6448,14 @@
         let result = disp.dispatch_toolbox(true, 0x193, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
-        assert!(disp.policy.res_purge);
+        assert!(disp.policy.res_purge());
 
         cpu.write_reg(Register::A7, sp);
         bus.write_word(sp, 0x00FF);
         let result = disp.dispatch_toolbox(true, 0x193, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
-        assert!(!disp.policy.res_purge);
+        assert!(!disp.policy.res_purge());
     }
 
     fn write_drag_region_frame(
@@ -6579,7 +6579,7 @@
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert!(!disp.policy.res_load);
+        assert!(!disp.policy.res_load());
         assert_eq!(bus.read_word(0x0A60), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 2);
 
@@ -6591,7 +6591,7 @@
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert!(disp.policy.res_load);
+        assert!(disp.policy.res_load());
         assert_eq!(bus.read_word(0x0A60), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 2);
     }

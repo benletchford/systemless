@@ -902,7 +902,7 @@ impl super::TrapDispatcher {
                                 .insert(handle, (ptr, existing_type, existing_id));
                         });
                     }
-                    if bus.read_long(handle) == 0 && (self.policy.res_load || recorded_resident) {
+                    if bus.read_long(handle) == 0 && (self.policy.res_load() || recorded_resident) {
                         bus.write_long(handle, existing_ptr);
                         self.add_resource_materialization_tick_cost(bus, existing_ptr);
                     }
@@ -928,7 +928,7 @@ impl super::TrapDispatcher {
         // an empty handle (master pointer NIL) for resource data that is not
         // already in memory. Keep the true data pointer in loaded_handles so
         // LoadResource can populate the master pointer later.
-        let materialize = self.policy.res_load || recorded_resident;
+        let materialize = self.policy.res_load() || recorded_resident;
         bus.write_long(handle, if materialize { ptr } else { 0 });
         self.with_resource_manager_mut(|resource_manager| {
             resource_manager
@@ -1093,7 +1093,7 @@ impl super::TrapDispatcher {
         // resource-returning routines may return an empty handle; preserve
         // that contract while restoring released resources when automatic
         // loading is enabled.
-        if ptr != 0 || !self.policy.res_load {
+        if ptr != 0 || !self.policy.res_load() {
             return Some(ptr);
         }
 
@@ -7889,7 +7889,7 @@ impl super::TrapDispatcher {
 
         let identity = self.loaded_handles.get(&handle).copied();
         let ptr = match identity {
-            Some((0, res_type, res_id)) if self.policy.res_load => self
+            Some((0, res_type, res_id)) if self.policy.res_load() => self
                 .resource_handle_files
                 .get(&handle)
                 .copied()
@@ -9192,7 +9192,7 @@ mod tests {
         let result = disp.dispatch_toolbox(true, 0x193, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
-        assert!(!disp.policy.res_purge);
+        assert!(!disp.policy.res_purge());
 
         cpu.write_reg(Register::A7, sp);
         bus.write_long(sp, handle);
@@ -9219,7 +9219,7 @@ mod tests {
         let result = disp.dispatch_toolbox(true, 0x193, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
-        assert!(disp.policy.res_purge);
+        assert!(disp.policy.res_purge());
 
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::A0, handle);

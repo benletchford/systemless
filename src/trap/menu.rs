@@ -7105,7 +7105,10 @@ mod tests {
                 .is_ok(),
             "AddResMenu should succeed"
         );
-        assert!(disp.policy.res_load, "AppendResMenu must restore SetResLoad(TRUE)");
+        assert!(
+            disp.policy.res_load(),
+            "AppendResMenu must restore SetResLoad(TRUE)"
+        );
 
         let menu = disp
             .menus
