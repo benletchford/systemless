@@ -28,7 +28,6 @@ use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::process_context::{
     MigratedProcessHandles, PendingFileCompletion, ProcessContext, ProcessForkMap,
-    ProcessKeyRepeatState,
     ProcessLoadedResources, ProcessResourceFileMap, ProcessResourceManagerState,
     ProcessVfsDirectory, ProcessVfsMetadata, ProcessVfsVolumeRecord, ProcessWorkingDirectory,
     SharedProcessAppleEventHandlers, SharedProcessAppleEventLaunchState,
@@ -5480,13 +5479,8 @@ impl TrapDispatcher {
             let next_tick = self
                 .current_tick()
                 .wrapping_add(Self::AUTO_KEY_THRESHOLD_TICKS);
-            self.input_state.with_mut(|state| {
-                state.key_repeat = Some(ProcessKeyRepeatState {
-                    key_code,
-                    char_code,
-                    next_tick,
-                });
-            });
+            self.input_state
+                .arm_key_repeat(key_code, char_code, next_tick);
         }
     }
 
@@ -5512,13 +5506,7 @@ impl TrapDispatcher {
             self.input_state
                 .with_mut(|state| set_key_map_key(&mut state.key_map, key_code, false));
         }
-        if self
-            .input_state
-            .key_repeat
-            .is_some_and(|repeat| repeat.key_code == key_code)
-        {
-            self.input_state.with_mut(|state| state.key_repeat = None);
-        }
+        self.input_state.clear_key_repeat_for(key_code);
         let modifiers = self.current_event_modifiers();
         if trace_input_enabled() {
             eprintln!(

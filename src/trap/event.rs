@@ -422,25 +422,24 @@ impl super::TrapDispatcher {
         if !Self::posted_event_is_enabled(system_event_mask, Self::AUTO_KEY_EVENT) {
             return;
         }
-        let Some(repeat) = self.input_state.key_repeat else {
+        let Some(repeat) = self.input_state.key_repeat() else {
             return;
         };
-        if !Self::key_generates_auto_key(repeat.key_code) || !self.key_is_down(repeat.key_code) {
-            self.input_state.with_mut(|state| state.key_repeat = None);
+        if !Self::key_generates_auto_key(repeat.key_code())
+            || !self.key_is_down(repeat.key_code())
+        {
+            self.input_state.clear_key_repeat();
             return;
         }
-        if !Self::tick_has_reached(self.current_tick(), repeat.next_tick) {
+        if !Self::tick_has_reached(self.current_tick(), repeat.next_tick()) {
             return;
         }
 
         let tick = self.current_tick();
-        self.input_state.with_mut(|input| {
-            if let Some(state) = input.key_repeat.as_mut() {
-                state.next_tick = tick.wrapping_add(Self::AUTO_KEY_RATE_TICKS);
-            }
-        });
+        self.input_state
+            .advance_key_repeat(tick.wrapping_add(Self::AUTO_KEY_RATE_TICKS));
 
-        let message = ((repeat.key_code as u32) << 8) | (repeat.char_code as u32);
+        let message = repeat.message();
         let modifiers = self.current_event_modifiers();
         self.event_queue.push_back(super::dispatch::QueuedEvent {
             what: Self::AUTO_KEY_EVENT,
@@ -1632,16 +1631,21 @@ mod tests {
         disp.set_sent_open_app_event_for_test(true);
 
         disp.push_key_down(0x30, 9); // Tab
-        let first_repeat_tick = disp.input_state.key_repeat.expect("Tab should arm autoKey").next_tick;
+        let first_repeat_tick = disp
+            .input_state
+            .key_repeat()
+            .expect("Tab should arm autoKey")
+            .next_tick();
         let next_tick = disp.current_tick().wrapping_add(5);
         disp.set_tick_count_for_test(&mut bus, next_tick);
         disp.push_key_down(0x30, 9); // host repeat while still held
 
         assert_eq!(disp.event_queue.len(), 1, "only one keyDown may be queued");
         assert_eq!(
-            disp.input_state.key_repeat
+            disp.input_state
+                .key_repeat()
                 .expect("autoKey should remain armed")
-                .next_tick,
+                .next_tick(),
             first_repeat_tick,
             "a repeated host callback must not postpone autoKey"
         );
