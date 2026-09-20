@@ -547,6 +547,7 @@ impl Presentation {
 
     /// Only screen bytes and retained offscreen glyphs need write interception.
     /// Ordinary heap/stack ranges retain the bus's bulk memory paths.
+    #[inline]
     pub(super) fn observes_range(&self, address: u32, len: usize) -> bool {
         if len == 0 {
             return false;
@@ -561,8 +562,21 @@ impl Presentation {
         {
             return true;
         }
-        self.may_have_offscreen_detail(address, end)
-            && self.offscreen.range(address..=(end - 1) as u32).next().is_some()
+        self.offscreen_bounds
+            .is_some_and(|(first, last)| address <= last && end > u64::from(first))
+            && self.observes_offscreen_range(address, end)
+    }
+
+    // Most scalar stores are rejected by the screen/offscreen bounds above.
+    // Keep tree traversal and its stack frame out of those inline checks.
+    #[inline(never)]
+    fn observes_offscreen_range(&self, address: u32, end: u64) -> bool {
+        self.offscreen_pages.may_overlap(u64::from(address), end)
+            && self
+                .offscreen
+                .range(address..=(end - 1) as u32)
+                .next()
+                .is_some()
     }
 
     fn position(&self, address: u32) -> Option<(u32, u32)> {
