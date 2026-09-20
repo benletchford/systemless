@@ -28,11 +28,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/War%20of%20Flowers.sit
-    download_page: https://www.vintageapplemac.com/software/games/w/
-    expected_sha256: 785223705c65ebd6c9972a8d6d66fe5fa8397a2f7d4ea454a65fab074bd34954
-    expected_size: 105469
+    type: sha256
+    sha256: 785223705c65ebd6c9972a8d6d66fe5fa8397a2f7d4ea454a65fab074bd34954
+    size_bytes: 105469
   provenance:
     redistribution: permitted
     original: true
