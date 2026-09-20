@@ -7669,7 +7669,7 @@
                 .unwrap()
                 .is_ok());
             assert_eq!(bus.read_byte(v_scroll_ptr + 16), 255);
-            assert_eq!(disp.list_states[&list_handle].draw_enabled, draw);
+            assert_eq!(disp.list_states.get_record(list_handle).unwrap().draw_enabled, draw);
         }
 
         // Call LActivate(FALSE, list)
@@ -7761,7 +7761,7 @@
             assert_eq!(bus.read_word(control + 20), 0);
             assert_eq!(bus.read_word(control + 22), 6);
             assert_eq!(bus.read_long(window_ptr + 140), v_scroll);
-            assert!(!disp.list_states.get(&list_handle).unwrap().draw_enabled);
+            assert!(!disp.list_states.get_record(list_handle).unwrap().draw_enabled);
 
             cpu.write_reg(Register::A7, sp);
             bus.write_word(sp, 0x0050); // LScroll
@@ -8405,7 +8405,7 @@
             assert_eq!(bus.read_word(sp + 12), 0);
             assert!(disp
                 .list_states
-                .get(&list_handle)
+                .get_record(list_handle)
                 .unwrap()
                 .selected
                 .contains(&(0, 0)));
@@ -9118,7 +9118,7 @@
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(
-            &disp.list_states.get(&list_handle).unwrap().selected,
+            &disp.list_states.get_record(list_handle).unwrap().selected,
             &expected
         );
     }
@@ -9204,7 +9204,7 @@
         assert_eq!(bus.read_word(trampoline + 54), 0x4E75);
         assert!(disp
             .list_states
-            .get(&list_handle)
+            .get_record(list_handle)
             .unwrap()
             .selected
             .is_empty());
@@ -9269,7 +9269,7 @@
         assert!(dispose.is_some(), "Pack1 should be handled");
         assert!(dispose.unwrap().is_ok(), "Pack1 should return");
         assert_eq!(cpu.read_reg(Register::A7), sp + 6);
-        assert!(!disp.list_states.contains_key(&list_handle));
+        assert!(!disp.list_states.contains_handle(list_handle));
     }
 
     // Pack1 / List Manager ($A9E8) — LSearch selector $0054

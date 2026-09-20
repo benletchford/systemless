@@ -11768,8 +11768,10 @@ impl super::TrapDispatcher {
                             let max_len = bus.read_word(data_len_ptr) as usize;
                             let data = self
                                 .list_states
-                                .get(&list_handle)
-                                .and_then(|state| state.cells.get(&(cell.0, cell.1)).cloned())
+                                .with_record_ref(list_handle, |state| {
+                                    state.cells.get(&(cell.0, cell.1)).cloned()
+                                })
+                                .flatten()
                                 .unwrap_or_default();
                             let copy_len = data.len().min(max_len);
                             if copy_len > 0 && data_ptr != 0 {
@@ -11870,32 +11872,38 @@ impl super::TrapDispatcher {
                         let next = Self::stack_bool_slot(bus, sp + 10);
                         let result_addr = sp + 12;
 
-                        let mut found = None;
-                        if let Some(state) = self.list_states.get(&list_handle) {
-                            if next {
-                                let start = if cell_ptr != 0 {
-                                    (
+                        let found = self
+                            .list_states
+                            .with_record_ref(list_handle, |state| {
+                                if next {
+                                    let start = if cell_ptr != 0 {
+                                        (
+                                            bus.read_word(cell_ptr) as i16,
+                                            bus.read_word(cell_ptr + 2) as i16,
+                                        )
+                                    } else {
+                                        (state.data_bounds.0, state.data_bounds.1)
+                                    };
+                                    state
+                                        .selected
+                                        .iter()
+                                        .copied()
+                                        .find(|&(row, col)| (row, col) >= start)
+                                } else if cell_ptr != 0 {
+                                    let cell = (
                                         bus.read_word(cell_ptr) as i16,
                                         bus.read_word(cell_ptr + 2) as i16,
-                                    )
+                                    );
+                                    if state.selected.contains(&cell) {
+                                        Some(cell)
+                                    } else {
+                                        None
+                                    }
                                 } else {
-                                    (state.data_bounds.0, state.data_bounds.1)
-                                };
-                                found = state
-                                    .selected
-                                    .iter()
-                                    .copied()
-                                    .find(|&(row, col)| (row, col) >= start);
-                            } else if cell_ptr != 0 {
-                                let cell = (
-                                    bus.read_word(cell_ptr) as i16,
-                                    bus.read_word(cell_ptr + 2) as i16,
-                                );
-                                if state.selected.contains(&cell) {
-                                    found = Some(cell);
+                                    None
                                 }
-                            }
-                        }
+                            })
+                            .flatten();
 
                         if let Some(cell) = found {
                             if cell_ptr != 0 {
@@ -11919,8 +11927,7 @@ impl super::TrapDispatcher {
                         let result_addr = sp + 6;
                         let last_click = self
                             .list_states
-                            .get(&list_handle)
-                            .map(|state| state.last_click)
+                            .with_record_ref(list_handle, |state| state.last_click)
                             .unwrap_or_else(Self::list_no_click_cell);
                         Self::write_point_words(bus, result_addr, last_click);
                         cpu.write_reg(Register::A7, result_addr);
@@ -12015,7 +12022,7 @@ impl super::TrapDispatcher {
                     0x30 => {
                         let list_handle = bus.read_long(sp + 2);
                         let cell = Self::read_stack_point(bus, sp + 6);
-                        if let Some(state) = self.list_states.get(&list_handle).cloned() {
+                        if let Some(state) = self.list_states.get_record(list_handle) {
                             if self.draw_list_with_ldef(
                                 cpu,
                                 bus,
@@ -12040,7 +12047,7 @@ impl super::TrapDispatcher {
                     // Inside Macintosh Volume IV, IV-275
                     0x64 => {
                         let list_handle = bus.read_long(sp + 2);
-                        if let Some(state) = self.list_states.get(&list_handle).cloned() {
+                        if let Some(state) = self.list_states.get_record(list_handle) {
                             if state.draw_enabled {
                                 self.draw_list_scrollbars(cpu, bus, list_handle);
                                 if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 10)
@@ -12074,7 +12081,7 @@ impl super::TrapDispatcher {
                             .unwrap_or(false);
                         if should_draw {
                             self.draw_list_scrollbars(cpu, bus, list_handle);
-                            if let Some(state) = self.list_states.get(&list_handle).cloned() {
+                            if let Some(state) = self.list_states.get_record(list_handle) {
                                 if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 10)
                                 {
                                     return Some(Ok(()));
@@ -12109,7 +12116,7 @@ impl super::TrapDispatcher {
                             .unwrap_or(false);
                         if should_draw {
                             self.draw_list_scrollbars(cpu, bus, list_handle);
-                            if let Some(state) = self.list_states.get(&list_handle).cloned() {
+                            if let Some(state) = self.list_states.get_record(list_handle) {
                                 if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 10)
                                 {
                                     return Some(Ok(()));
@@ -12159,7 +12166,7 @@ impl super::TrapDispatcher {
                             .unwrap_or(false);
                         if should_draw {
                             self.draw_list_scrollbars(cpu, bus, list_handle);
-                            if let Some(state) = self.list_states.get(&list_handle).cloned() {
+                            if let Some(state) = self.list_states.get_record(list_handle) {
                                 if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 8)
                                 {
                                     return Some(Ok(()));
@@ -12772,7 +12779,7 @@ impl super::TrapDispatcher {
                     // + theRgn(4) = 10.
                     0x0064 => {
                         let list_handle = bus.read_long(sp + 2);
-                        if let Some(state) = self.list_states.get(&list_handle).cloned() {
+                        if let Some(state) = self.list_states.get_record(list_handle) {
                             if state.draw_enabled {
                                 self.draw_list_scrollbars(cpu, bus, list_handle);
                                 if self.draw_list_with_ldef(cpu, bus, list_handle, &state, None, 10)

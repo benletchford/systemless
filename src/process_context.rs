@@ -1547,7 +1547,8 @@ pub(crate) struct SharedProcessMixedModeM68kState(SharedProcessValue<ProcessMixe
 pub(crate) struct SharedProcessScrapState(SharedProcessValue<ProcessScrapState>);
 #[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessControlManager(SharedProcessValue<ProcessControlManagerState>);
-pub(crate) type SharedProcessListManager = SharedProcessValue<ProcessListManagerState>;
+#[derive(Clone, Default, Eq, PartialEq)]
+pub(crate) struct SharedProcessListManager(SharedProcessValue<ProcessListManagerState>);
 #[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessTextEditManager(SharedProcessValue<ProcessTextEditManagerState>);
 /// Detached-by-default attachment handle for Dialog Manager `ParamText` slots.
@@ -3084,7 +3085,37 @@ impl SharedProcessWindowList {
     }
 }
 
+impl fmt::Debug for SharedProcessListManager {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.with_ref(|manager| {
+            formatter
+                .debug_tuple("SharedProcessListManager")
+                .field(manager)
+                .finish()
+        })
+    }
+}
+
 impl SharedProcessListManager {
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&ProcessListManagerState) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut ProcessListManagerState) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    fn attach_to(&mut self, process_state: &Self) {
+        self.0
+            .attach_to(&process_state.0, ProcessListManagerState::is_pristine);
+    }
+
     pub(crate) fn insert_record(
         &self,
         handle: u32,
@@ -3106,6 +3137,51 @@ impl SharedProcessListManager {
         f: impl FnOnce(&mut crate::list_manager::ProcessListRecord) -> R,
     ) -> Option<R> {
         self.with_mut(|manager| manager.with_record_mut(handle, f))
+    }
+
+    pub(crate) fn with_record_ref<R>(
+        &self,
+        handle: u32,
+        f: impl FnOnce(&crate::list_manager::ProcessListRecord) -> R,
+    ) -> Option<R> {
+        self.with_ref(|manager| manager.with_record_ref(handle, f))
+    }
+
+    pub(crate) fn get_record(
+        &self,
+        handle: u32,
+    ) -> Option<crate::list_manager::ProcessListRecord> {
+        self.with_ref(|manager| manager.get_record(handle))
+    }
+
+    pub(crate) fn records(&self) -> Vec<crate::list_manager::ProcessListRecord> {
+        self.with_ref(ProcessListManagerState::records)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_handle(&self, handle: u32) -> bool {
+        self.with_ref(|manager| manager.contains_handle(handle))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.with_ref(ProcessListManagerState::len)
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.with_ref(ProcessListManagerState::is_empty)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn clear(&self) {
+        self.with_mut(ProcessListManagerState::clear);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
     }
 }
 
@@ -8180,7 +8256,7 @@ impl ProcessContext {
     }
 
     pub(crate) fn attach_list_manager(&self, adapter: &mut SharedProcessListManager) {
-        adapter.attach_to(&self.list_manager, ProcessListManagerState::is_pristine);
+        adapter.attach_to(&self.list_manager);
     }
 
     pub(crate) fn attach_text_edit_manager(&self, adapter: &mut SharedProcessTextEditManager) {
@@ -11596,5 +11672,59 @@ mod tests {
         assert_eq!(classic.popup_title_width(0x2000, 0), 75);
         assert_eq!(detached.proc_id(0x2000), 32);
         assert_eq!(detached.popup_title_width(0x2000, 0), 120);
+    }
+
+    #[test]
+    fn attached_list_managers_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessListManager::default();
+        let mut native = SharedProcessListManager::default();
+        context.attach_list_manager(&mut classic);
+        classic.insert_record(
+            0x1000,
+            crate::list_manager::ProcessListRecord {
+                handle: 0x1000,
+                cells_handle: 0x2000,
+                view_rect: (0, 0, 40, 100),
+                data_bounds: (0, 0, 2, 1),
+                cell_size: (20, 100),
+                visible: (0, 0, 2, 1),
+                port: 0,
+                draw_enabled: true,
+                active: true,
+                cells: [((0, 0), b"Test".to_vec())].into(),
+                selected: [(0, 0)].into(),
+                last_click: (0, 0),
+                last_click_tick: 10,
+            },
+        );
+        context.attach_list_manager(&mut native);
+        let detached = native.clone();
+
+        assert!(classic.ptr_eq(&native));
+        assert!(native.contains_handle(0x1000));
+        assert_eq!(
+            native
+                .with_record_ref(0x1000, |rec| rec.cells.get(&(0, 0)).cloned())
+                .flatten(),
+            Some(b"Test".to_vec())
+        );
+
+        detached.with_record_mut(0x1000, |rec| {
+            rec.cells.insert((0, 0), b"Detached".to_vec());
+        });
+        assert!(!native.ptr_eq(&detached));
+        assert_eq!(
+            classic
+                .with_record_ref(0x1000, |rec| rec.cells.get(&(0, 0)).cloned())
+                .flatten(),
+            Some(b"Test".to_vec())
+        );
+        assert_eq!(
+            detached
+                .with_record_ref(0x1000, |rec| rec.cells.get(&(0, 0)).cloned())
+                .flatten(),
+            Some(b"Detached".to_vec())
+        );
     }
 }

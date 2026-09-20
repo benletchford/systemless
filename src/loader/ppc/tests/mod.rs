@@ -58146,7 +58146,7 @@ fn native_list_manager_stores_cells_rows_selection_and_geometry_in_public_record
     assert_eq!(
         loaded
             .list_manager
-            .get(&list)
+            .get_record(list)
             .map(|record| record.cell_size),
         Some((20, 100))
     );
@@ -58178,7 +58178,7 @@ fn native_list_manager_stores_cells_rows_selection_and_geometry_in_public_record
     loaded.cpu.gpr[3] = 1;
     loaded.cpu.gpr[4] = list;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::LSetDrawingMode);
-    assert!(loaded.list_manager[&list].draw_enabled);
+    assert!(loaded.list_manager.get_record(list).unwrap().draw_enabled);
     assert_eq!(
         loaded
             .memory
@@ -58189,7 +58189,7 @@ fn native_list_manager_stores_cells_rows_selection_and_geometry_in_public_record
     loaded.cpu.gpr[3] = 0;
     loaded.cpu.gpr[4] = list;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::LSetDrawingMode);
-    assert!(!loaded.list_manager[&list].draw_enabled);
+    assert!(!loaded.list_manager.get_record(list).unwrap().draw_enabled);
     assert_eq!(loaded.memory.read_u8(vertical_scroll_ptr + PPC_CONTROL_VISIBLE_OFFSET), Some(0xff));
     loaded.cpu.gpr[3] = 1;
     loaded.cpu.gpr[4] = list;
@@ -58250,13 +58250,13 @@ fn native_list_manager_stores_cells_rows_selection_and_geometry_in_public_record
     assert_eq!(loaded.memory.read_u16_be(cell_ptr), Some(1));
     assert_eq!(loaded.memory.read_u16_be(cell_ptr + 2), Some(1));
 
-    let selected_before_rejected_clicks = loaded.list_manager[&list].selected.clone();
+    let selected_before_rejected_clicks = loaded.list_manager.get_record(list).unwrap().selected;
     loaded.cpu.gpr[3] = (9u32 << 16) | 20;
     loaded.cpu.gpr[4] = 0;
     loaded.cpu.gpr[5] = list;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::LClick);
     assert_eq!(
-        loaded.list_manager[&list].selected, selected_before_rejected_clicks,
+        loaded.list_manager.get_record(list).unwrap().selected, selected_before_rejected_clicks,
         "LClick must ignore points outside rView",
     );
 
@@ -58274,7 +58274,7 @@ fn native_list_manager_stores_cells_rows_selection_and_geometry_in_public_record
     loaded.cpu.gpr[5] = list;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::LClick);
     assert_eq!(
-        loaded.list_manager[&list].selected, selected_before_rejected_clicks,
+        loaded.list_manager.get_record(list).unwrap().selected, selected_before_rejected_clicks,
         "LClick must ignore inactive lists",
     );
     loaded.cpu.gpr[3] = 1;
@@ -58300,7 +58300,7 @@ fn native_list_manager_stores_cells_rows_selection_and_geometry_in_public_record
         Some((0, 0, 5, 2))
     );
     assert_eq!(
-        loaded.list_manager.get(&list).map(|record| record.visible),
+        loaded.list_manager.get_record(list).map(|record| record.visible),
         Some((0, 0, 4, 2))
     );
     assert_eq!(
@@ -58314,7 +58314,7 @@ fn native_list_manager_stores_cells_rows_selection_and_geometry_in_public_record
     run_test_import(&mut loaded, PpcImportDispatcherTarget::LScroll);
     let list_ptr = loaded.memory.read_u32_be(list).unwrap();
     assert_eq!(
-        loaded.list_manager.get(&list).map(|record| record.visible),
+        loaded.list_manager.get_record(list).map(|record| record.visible),
         Some((1, 0, 5, 2))
     );
     assert_eq!(
@@ -58336,12 +58336,12 @@ fn native_list_manager_stores_cells_rows_selection_and_geometry_in_public_record
     assert_eq!(
         loaded
             .list_manager
-            .get(&list)
+            .get_record(list)
             .map(|record| record.view_rect),
         Some((10, 20, 50, 120))
     );
     assert_eq!(
-        loaded.list_manager.get(&list).map(|record| record.visible),
+        loaded.list_manager.get_record(list).map(|record| record.visible),
         Some((1, 0, 3, 1))
     );
     assert_eq!(
@@ -58426,7 +58426,7 @@ fn native_list_manager_draws_cell_backgrounds_in_port_coordinates() {
         (0, 0, front.height as i16, front.width as i16),
         PPC_RGB_WHITE,
     ));
-    let record = loaded.list_manager.get(&list).unwrap().clone();
+    let record = loaded.list_manager.get_record(list).unwrap();
     ppc_list_draw(&mut loaded.memory, &loaded.gworlds, &record);
 
     // Row 0, column 0 is local (10,20)-(30,120), which maps to
@@ -58488,11 +58488,11 @@ fn attached_list_manager_mutations_and_lifetime_cross_isa_immediately() {
         .unwrap();
     native.run_with_hle_imports(128);
     let first_list = native.cpu.gpr[3];
-    assert!(classic.list_states.contains_key(&first_list));
+    assert!(classic.list_states.contains_handle(first_list));
     assert_eq!(
         native
             .list_manager
-            .get(&first_list)
+            .get_record(first_list)
             .map(|record| record.cell_size),
         Some((20, 100))
     );
@@ -58526,9 +58526,9 @@ fn attached_list_manager_mutations_and_lifetime_cross_isa_immediately() {
     assert_eq!(
         classic
             .list_states
-            .get(&first_list)
-            .and_then(|record| record.cells.get(&(0, 0)))
-            .map(Vec::as_slice),
+            .get_record(first_list)
+            .and_then(|record| record.cells.get(&(0, 0)).cloned())
+            .as_deref(),
         Some(b"Native".as_slice())
     );
 
@@ -58547,15 +58547,15 @@ fn attached_list_manager_mutations_and_lifetime_cross_isa_immediately() {
     assert_eq!(
         native
             .list_manager
-            .get(&second_list)
+            .get_record(second_list)
             .map(|record| record.cell_size),
         Some((20, 100))
     );
 
     native.cpu.gpr[3] = first_list;
     run_test_import(&mut native, PpcImportDispatcherTarget::LDispose);
-    assert!(!classic.list_states.contains_key(&first_list));
-    assert!(classic.list_states.contains_key(&second_list));
+    assert!(!classic.list_states.contains_handle(first_list));
+    assert!(classic.list_states.contains_handle(second_list));
 }
 
 #[test]
@@ -58607,13 +58607,20 @@ fn cloned_native_adapter_detaches_list_manager_state() {
     );
 
     assert_eq!(
-        original.list_manager[&0x0032_1000].cells[&(0, 0)],
+        original
+            .list_manager
+            .get_record(0x0032_1000)
+            .unwrap()
+            .cells[&(0, 0)],
         b"Original"
     );
-    assert!(original.list_manager[&0x0032_1000]
+    assert!(original
+        .list_manager
+        .get_record(0x0032_1000)
+        .unwrap()
         .selected
         .contains(&(0, 0)));
-    assert!(!original.list_manager.contains_key(&0x0032_3000));
+    assert!(!original.list_manager.contains_handle(0x0032_3000));
 }
 
 #[test]

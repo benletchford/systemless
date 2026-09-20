@@ -2871,7 +2871,7 @@ impl FixtureRunner {
         // ListRec.vScroll/hScroll: More Macintosh Toolbox, pp. 4-3--4-7.
         // ControlRecord.contrlVis/contrlHilite: Toolbox Essentials, pp. 5-61--5-63.
         let mut lists = if let Some(app) = self.native.application_mut() {
-            let records = app.list_manager.values().cloned().collect::<Vec<_>>();
+            let records = app.list_manager.records();
             records
                 .iter()
                 .map(|record| {
@@ -2888,9 +2888,9 @@ impl FixtureRunner {
                 })
                 .collect::<Vec<_>>()
         } else {
-            self.dispatcher
-                .list_states
-                .values()
+            let records = self.dispatcher.list_states.records();
+            records
+                .iter()
                 .map(|record| {
                     let bars = [28, 32].map(|offset| {
                         let ptr = self.bus.read_long(record.handle);
