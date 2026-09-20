@@ -59,9 +59,51 @@ impl MacMemoryBus {
         if guest.len() != count
             || overlays.len() != count
             || overlays.iter().any(|pixel| pixel >> 24 != 255)
-            || count
-                .checked_mul((p.scale * p.scale) as usize)
-                .is_none_or(|n| n >= 0x80000000)
+        {
+            return false;
+        }
+        p.export_compact(
+            guest
+                .iter()
+                .zip(overlays)
+                .map(|(&before, &after)| (before != after).then_some(after & 0xffffff)),
+            output,
+        )
+    }
+
+    /// Export the opaque retained image when the frontend has no software
+    /// overlays. No logical ARGB image or overlay-reference copy is needed.
+    /// Returns false without modifying `output` if the surface is absent or
+    /// does not match the current logical screen size.
+    pub fn compact_presentation_without_overlays(
+        &self,
+        size: (u32, u32),
+        output: &mut CompactPresentation,
+    ) -> bool {
+        let Some(p) = self.presentation.as_ref() else {
+            return false;
+        };
+        if (p.logical_width(), p.height) != size {
+            return false;
+        }
+        p.export_compact(std::iter::repeat(None), output)
+    }
+}
+
+impl Presentation {
+    // Monomorphized for either overlay differences or a constant absence of
+    // overlays, so the latter needs no input images, alpha scan or comparisons.
+    fn export_compact(
+        &self,
+        overlays: impl Iterator<Item = Option<u32>>,
+        output: &mut CompactPresentation,
+    ) -> bool {
+        let p = self;
+        let width = p.logical_width();
+        let count = width as usize * p.height as usize;
+        if count
+            .checked_mul((p.scale * p.scale) as usize)
+            .is_none_or(|n| n >= 0x80000000)
         {
             return false;
         }
@@ -81,16 +123,15 @@ impl MacMemoryBus {
             });
             let scale = p.scale as usize;
             let stride = width as usize * scale * 3;
-            for (cell, (((destination, &before), &after), (&text, &value))) in output
+            for (cell, ((destination, (&text, &value)), overlay)) in output
                 .cells
                 .iter_mut()
-                .zip(guest)
-                .zip(overlays)
                 .zip(p.text_cells.iter().zip(&p.guest_values))
+                .zip(overlays)
                 .enumerate()
             {
-                if before != after {
-                    *destination = after & 0xffffff;
+                if let Some(rgb) = overlay {
+                    *destination = rgb;
                 } else if !text {
                     *destination = palette[value as u8 as usize];
                 } else {
@@ -112,12 +153,13 @@ impl MacMemoryBus {
             return true;
         }
         let lanes = p.bytes_per_pixel() as usize;
+        let mut overlays = overlays;
         for y in 0..p.height as usize {
             for x in 0..width as usize {
                 let logical = y * width as usize + x;
                 let cell = y * p.width as usize + x * lanes;
-                if guest[logical] != overlays[logical] {
-                    output.cells[logical] = overlays[logical] & 0xffffff;
+                if let Some(rgb) = overlays.next().flatten() {
+                    output.cells[logical] = rgb;
                 } else if p.text_cells[cell..cell + lanes].iter().any(|&v| v) {
                     output.cells[logical] = 0x80000000 | output.detail.len() as u32;
                     for sy in 0..p.scale as usize {
@@ -138,6 +180,126 @@ impl MacMemoryBus {
 mod tests {
     use super::*;
     use crate::memory::MemoryBus;
+
+    #[test]
+    fn export_without_overlays_matches_validated_overlay_path() {
+        let mut bus = MacMemoryBus::new(1024 * 1024);
+        let mut before = CompactPresentation::default();
+        let mut after = CompactPresentation::default();
+        after.cells.push(123);
+        assert!(!bus.compact_presentation_without_overlays((8, 8), &mut after));
+        assert_eq!(after.cells, [123]);
+        for depth in [8u16, 16, 32] {
+            for scale in 2..=4 {
+                for (width, height) in [(8, 8), (3, 5), (11, 9)] {
+                    let lanes = u32::from(depth / 8);
+                    bus.enable_outline_presentation(
+                        (0x1000, width * lanes, width as u16, height as u16, depth),
+                        std::array::from_fn(|i| [i as u8, (i * 7) as u8, (255 - i) as u8]),
+                        scale,
+                    );
+                    // The old API uses these only to identify overlay changes;
+                    // equal images never supply RGB values to the transport.
+                    let logical = vec![0xff123456; (width * height) as usize];
+                    for step in 0..3 {
+                        match step {
+                            1 => super::super::tests::paint_detail(&mut bus, 0x1000),
+                            2 => bus.write_byte(0x1000, 27),
+                            _ => (),
+                        }
+                        assert!(bus.compact_presentation(&logical, &logical, &mut before));
+                        assert!(
+                            bus.compact_presentation_without_overlays((width, height), &mut after)
+                        );
+                        assert_eq!(
+                            (before.width, before.height, before.scale),
+                            (after.width, after.height, after.scale)
+                        );
+                        assert_eq!(
+                            before.cells, after.cells,
+                            "depth={depth} scale={scale} step={step}"
+                        );
+                        assert_eq!(before.detail, after.detail);
+                        // Reject stale geometry, including the same pixel count
+                        // in a different shape, without replacing a pending image.
+                        assert!(!bus.compact_presentation_without_overlays(
+                            (width * height, 1),
+                            &mut after
+                        ));
+                        assert_eq!(before.cells, after.cells);
+                        assert_eq!(before.detail, after.detail);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn switching_software_overlays_preserves_retained_image() {
+        use crate::display::{render_cursor_argb, render_debug_overlay_argb, CursorImage};
+
+        let (width, height) = (128u32, 48u32);
+        for depth in [8u16, 16, 32] {
+            let mut bus = MacMemoryBus::new(1024 * 1024);
+            bus.enable_outline_presentation(
+                (
+                    0x1000,
+                    width * u32::from(depth / 8),
+                    width as u16,
+                    height as u16,
+                    depth,
+                ),
+                std::array::from_fn(|i| [i as u8; 3]),
+                2,
+            );
+            super::super::tests::paint_detail(&mut bus, 0x1000);
+            let logical = vec![0xff123456; (width * height) as usize];
+            let cursor = CursorImage::mono([0x80; 32], [0xff; 32], 0, 0);
+            let mut compact = CompactPresentation::default();
+            for (cursor_visible, debug_visible) in [
+                (false, false),
+                (true, false),
+                (false, false),
+                (false, true),
+                (true, true),
+                (false, false),
+            ] {
+                let mut overlay = logical.clone();
+                if cursor_visible {
+                    render_cursor_argb(&mut overlay, width, height, &cursor, (-3, -2));
+                }
+                if debug_visible {
+                    render_debug_overlay_argb(&mut overlay, width, height, &["FPS 60".into()]);
+                }
+                if cursor_visible || debug_visible {
+                    assert_ne!(overlay, logical, "test overlay must affect pixels");
+                    assert!(bus.compact_presentation(&logical, &overlay, &mut compact));
+                } else {
+                    assert!(
+                        bus.compact_presentation_without_overlays((width, height), &mut compact)
+                    );
+                }
+                let (w, h, expected) = bus.presented_argb(&logical, &overlay).unwrap();
+                let mut actual = Vec::with_capacity((w * h) as usize);
+                for y in 0..h {
+                    for x in 0..w {
+                        let cell = compact.cells[((y / 2) * width + x / 2) as usize];
+                        let rgb = if cell >> 31 == 0 {
+                            cell
+                        } else {
+                            compact.detail
+                                [(cell & 0x7fffffff) as usize + ((y % 2) * 2 + x % 2) as usize]
+                        };
+                        actual.push(0xff000000 | rgb);
+                    }
+                }
+                assert_eq!(
+                    actual, expected,
+                    "depth={depth} cursor={cursor_visible} debug={debug_visible}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn reused_compact_cells_are_overwritten_after_size_and_depth_changes() {
@@ -172,12 +334,13 @@ mod tests {
                 .flat_map(|y| (0..w).map(move |x| (x, y)))
                 .map(|(x, y)| {
                     let cell = compact.cells[((y / 2) * width + x / 2) as usize];
-                    0xff000000 | if cell >> 31 == 0 {
-                        cell
-                    } else {
-                        compact.detail[(cell & 0x7fffffff) as usize
-                            + ((y % 2) * 2 + x % 2) as usize]
-                    }
+                    0xff000000
+                        | if cell >> 31 == 0 {
+                            cell
+                        } else {
+                            compact.detail
+                                [(cell & 0x7fffffff) as usize + ((y % 2) * 2 + x % 2) as usize]
+                        }
                 })
                 .collect();
             assert_eq!(actual, expected, "{width}x{height} depth={depth}");
