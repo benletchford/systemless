@@ -795,7 +795,7 @@ impl super::TrapDispatcher {
         if v != 0 || h != 0 {
             (v, h)
         } else {
-            self.input_state.mouse_pos
+            self.input_state.mouse_position()
         }
     }
 
@@ -851,12 +851,13 @@ impl super::TrapDispatcher {
             .unwrap_or_else(|| "pending".to_string());
         // IM:I I-355 documents MenuSelect as a mouse-tracking call that
         // returns menu ID in the high word and item number in the low word.
+        let (mouse_v, mouse_h) = self.input_state.mouse_position();
         self.record_input_trace_line(format!(
             "A93D action={} start={} live_mouse=({},{}) {} {} highlighted_item={} result={} outcome={}",
             action,
             start,
-            self.input_state.mouse_pos.0,
-            self.input_state.mouse_pos.1,
+            mouse_v,
+            mouse_h,
             self.input_trace_state_fields(),
             self.menu_trace_menu_fields(menu_idx),
             highlighted,

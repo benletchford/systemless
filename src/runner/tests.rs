@@ -19405,7 +19405,7 @@
 
         runner.set_mouse_position(123, 456);
 
-        assert_eq!(runner.dispatcher.input_state.mouse_pos, (123, 456));
+        assert_eq!(runner.dispatcher.input_state.mouse_position(), (123, 456));
         for off in [0x0828u32, 0x082C, 0x0830] {
             assert_eq!(runner.bus.read_word(off), 123u16, "v at ${:04X}", off);
             assert_eq!(runner.bus.read_word(off + 2), 456u16, "h at ${:04X}", off);

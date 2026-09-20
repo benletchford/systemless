@@ -1237,10 +1237,11 @@ fn scripted_record_modal_app_control_value_trace(
         .map(|value| format!("${value:02X}"))
         .unwrap_or_else(|| "none".to_string());
     let ctrl_ptr = bus.read_long(ctrl_handle);
+    let (mouse_v, mouse_h) = dispatcher.input_state.mouse_position();
     dispatcher.record_input_trace_line(format!(
         "A991 action=app_set_control_value live_mouse=({},{}) {} dialog={} bounds=({},{},{},{}) item_hit={} item_type={} control_handle={} control_ptr={} control_value={} result=app outcome={}",
-        dispatcher.input_state.mouse_pos.0,
-        dispatcher.input_state.mouse_pos.1,
+        mouse_v,
+        mouse_h,
         dispatcher.input_trace_state_fields(),
         scripted_trace_nonzero(dialog_ptr),
         bounds.0,

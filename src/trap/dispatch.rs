@@ -3271,6 +3271,7 @@ impl TrapDispatcher {
 
     pub(crate) fn input_trace_state_fields(&self) -> String {
         let key_map_snapshot = self.input_state.key_map_snapshot();
+        let (mouse_v, mouse_h) = self.input_state.mouse_position();
         let key_map = if key_map_snapshot.iter().any(|&byte| byte != 0) {
             key_map_snapshot
                 .iter()
@@ -3282,8 +3283,8 @@ impl TrapDispatcher {
         };
         format!(
             "state=mouse=({},{}) button={} live_modifiers=${:04X} key_map={} tracking=menu:{} dialog:{} control:{}",
-            self.input_state.mouse_pos.0,
-            self.input_state.mouse_pos.1,
+            mouse_v,
+            mouse_h,
             if self.input_state.mouse_button_pressed() {
                 "down"
             } else {
@@ -5348,9 +5349,9 @@ impl TrapDispatcher {
     /// Update the current mouse position (called from GUI layer).
     /// Coordinates are in Mac screen space (0,0 = top-left of screen).
     pub fn set_mouse_position(&mut self, v: i16, h: i16) {
-        self.input_state.with_mut(|state| state.mouse_pos = (v, h));
+        self.input_state.set_mouse_position((v, h));
         self.adb
-            .note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button_pressed());
+            .note_mouse_state((v, h), self.input_state.mouse_button_pressed());
     }
 
     pub(crate) fn has_unmatched_queued_mouse_down(&self) -> bool {
@@ -5445,12 +5446,13 @@ impl TrapDispatcher {
         }
         let message = ((key_code as u32) << 8) | (char_code as u32);
         let tick = self.current_tick();
+        let (mouse_v, mouse_h) = self.input_state.mouse_position();
         self.event_queue.push_back(QueuedEvent {
             what: 3, // keyDown
             message,
             when: tick,
-            where_v: self.input_state.mouse_pos.0,
-            where_h: self.input_state.mouse_pos.1,
+            where_v: mouse_v,
+            where_h: mouse_h,
             modifiers,
         });
 
@@ -5506,12 +5508,13 @@ impl TrapDispatcher {
         // Macintosh Toolbox Essentials 1992, pp. 2-28..2-29 and 2-99.
         if Self::posted_event_is_enabled(system_event_mask, 4) {
             let tick = self.current_tick();
+            let (mouse_v, mouse_h) = self.input_state.mouse_position();
             self.event_queue.push_back(QueuedEvent {
                 what: 4, // keyUp
                 message,
                 when: tick,
-                where_v: self.input_state.mouse_pos.0,
-                where_h: self.input_state.mouse_pos.1,
+                where_v: mouse_v,
+                where_h: mouse_h,
                 modifiers,
             });
         }
@@ -5590,7 +5593,7 @@ impl TrapDispatcher {
 
     /// Get the current mouse position.
     pub fn mouse_position(&self) -> (i16, i16) {
-        self.input_state.mouse_pos
+        self.input_state.mouse_position()
     }
 
     /// Number of Time Manager tasks currently in the queue.

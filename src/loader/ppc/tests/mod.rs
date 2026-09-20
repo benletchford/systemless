@@ -5992,7 +5992,7 @@ fn attached_68k_and_powerpc_adapters_share_live_input_without_runner_copy() {
     native.process_input.set_key_map_byte_for_test(1, 0x08);
 
     assert!(classic.input_state.ptr_eq(&native.process_input));
-    assert_eq!(classic.input_state.mouse_pos, (-20, 99));
+    assert_eq!(classic.input_state.mouse_position(), (-20, 99));
     assert!(!classic.input_state.mouse_button_pressed());
     assert_eq!(classic.input_state.key_map_snapshot()[1], 0x08);
     assert!(!native.process_input.ptr_eq(&detached.process_input));
