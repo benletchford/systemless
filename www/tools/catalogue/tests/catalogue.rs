@@ -100,9 +100,9 @@ fn plugin_collection(entry: &str) -> PluginCollection {
 }
 
 fn save_plugins(root: &Path, name: &str, collection: &PluginCollection) {
-    fs::create_dir_all(root.join("plugins")).unwrap();
+    fs::create_dir_all(root.join("catalogue/plugins")).unwrap();
     fs::write(
-        root.join(format!("plugins/{name}.yaml")),
+        root.join(format!("catalogue/plugins/{name}.yaml")),
         serde_saphyr::to_string(collection).unwrap(),
     )
     .unwrap();
@@ -496,7 +496,7 @@ fn canonical_routes_launch_gate_aliases_and_community_links() {
     assert!(e
         .community
         .history
-        .ends_with("/commits/master/catalogue/sample-game.md"));
+        .ends_with("/commits/master/www/catalogue/sample-game.md"));
 }
 
 #[test]
@@ -610,6 +610,10 @@ fn raw_html_is_inert_and_images_must_be_registered() {
 fn promotion_uploads_hashes_rewrites_and_cleans_up() {
     let root = repo();
     let (_, body) = screenshot(root.path(), "test");
+    let preview = compiled(&load(root.path(), Mode::Preview).unwrap());
+    assert!(preview.entries[0]
+        .content_html
+        .contains("/raw/master/www/catalogue/incoming/test/shot.png"));
     let store = tempfile::tempdir().unwrap();
     let before = fs::read(root.path().join("catalogue/test.md")).unwrap();
     let dry = assets::promote(root.path(), None, false, &mut assets::NoUpload).unwrap();
@@ -1398,7 +1402,7 @@ fn plugin_collection_boundaries_are_strict() {
     save_plugins(root.path(), "test-01", &collection);
     assert!(load(root.path(), Mode::Production).is_err());
 
-    fs::remove_dir_all(root.path().join("plugins")).unwrap();
+    fs::remove_dir_all(root.path().join("catalogue/plugins")).unwrap();
     entry.plugins = plugin_collection("test").plugins;
     save(root.path(), &entry, "");
     assert!(load(root.path(), Mode::Production).is_err());

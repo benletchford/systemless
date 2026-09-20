@@ -31,7 +31,7 @@ jobs:
         run: |
           cargo test --locked -p systemless-catalogue-tools
           cargo clippy --locked -p systemless-catalogue-tools --all-targets -- -D warnings
-          cargo run --locked -p systemless-catalogue-tools -- check --production
+          cargo run --locked -p systemless-catalogue-tools -- --root www check --production
       - name: Test website
         run: cargo test --locked -p systemless-org
       - name: Check WebAssembly build

@@ -59,14 +59,14 @@ fn aliases_metadata_plugins_and_contribution_links_exist_before_javascript() {
     assert!(game.contains("A &lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;quoted&quot; title"));
     assert!(!game.contains("<script>alert(1)</script>"));
     assert!(game.contains("\\u003cscript>"));
-    assert!(game.contains("/edit/master/catalogue/sample-app.md"));
+    assert!(game.contains("/edit/master/www/catalogue/sample-app.md"));
     assert!(game.contains("metadata.yml") && game.contains("takedown.yml"));
     assert!(game.contains("/benletchford/systemless/issues"));
     assert!(game.contains("label%3Asample-app"));
     assert!(game.contains("Extra &amp; more"));
     assert!(game.contains("download=\"sample-app.png\""));
     assert!(game.contains("download=\"sample-app-extra.bin\""));
-    assert!(game.contains("/tree/master/plugins"));
+    assert!(game.contains("/tree/master/www/catalogue/plugins"));
     assert!(game.contains("/app-123.js"));
     assert!(pages["_redirects"].contains("/old-example/ /example/ 301"));
     assert!(pages["sitemap.xml"].contains("https://systemless.org/example/"));

@@ -6,17 +6,17 @@ __pycache__/
 /www/.wrangler/
 /www/node_modules/
 /www/.home/
-/catalogue/.lock
-/catalogue/.promotion/
-/catalogue/.downloads/
+/www/catalogue/.lock
+/www/catalogue/.promotion/
+/www/catalogue/.downloads/
 
 # Large incoming software is staged and promoted locally, never committed.
-/catalogue/incoming/**/*.sit
-/catalogue/incoming/**/*.sitx
-/catalogue/incoming/**/*.zip
-/catalogue/incoming/**/*.hqx
-/catalogue/incoming/**/*.gz
-/catalogue/incoming/**/*.bin
-/catalogue/incoming/**/*.kpk
-/catalogue/incoming/**/*.img
-/catalogue/incoming/**/*.dat
+/www/catalogue/incoming/**/*.sit
+/www/catalogue/incoming/**/*.sitx
+/www/catalogue/incoming/**/*.zip
+/www/catalogue/incoming/**/*.hqx
+/www/catalogue/incoming/**/*.gz
+/www/catalogue/incoming/**/*.bin
+/www/catalogue/incoming/**/*.kpk
+/www/catalogue/incoming/**/*.img
+/www/catalogue/incoming/**/*.dat

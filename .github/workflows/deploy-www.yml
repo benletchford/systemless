@@ -8,8 +8,6 @@ on:
       - Cargo.toml
       - Cargo.lock
       - src/**
-      - catalogue/**
-      - tools/catalogue/**
       - www/**
       - .github/workflows/deploy-www.yml
   workflow_dispatch:
@@ -33,7 +31,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Validate catalogue
-        run: cargo run --locked -p systemless-catalogue-tools -- check --production
+        run: cargo run --locked -p systemless-catalogue-tools -- --root www check --production
       - name: Build production pages
         run: ./www/scripts/build-pages.sh
       - name: Deploy Cloudflare Pages

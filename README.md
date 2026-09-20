@@ -39,9 +39,9 @@ Play these and more classic Macintosh games in your browser at
 
 The browser frontend and its community catalogue are developed in this
 repository alongside the runtime. Website sources live in [`www/`](www/),
-catalogue entries live in [`catalogue/`](catalogue/), optional plugin collections
-live in [`plugins/`](plugins/), and catalogue maintenance tools live in
-[`tools/catalogue/`](tools/catalogue/). See
+catalogue entries and optional plugin collections live in
+[`www/catalogue/`](www/catalogue/), and catalogue maintenance tools live in
+[`www/tools/catalogue/`](www/tools/catalogue/). See
 [`www/README.md`](www/README.md) for local browser and catalogue workflows.
 
 ## Quick Start

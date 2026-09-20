@@ -113,7 +113,7 @@ pub fn load(root: &Path, mode: Mode) -> Result<Catalogue> {
             parse_document(&original).with_context(|| path.display().to_string())?;
         ensure!(
             entry.plugins.is_empty(),
-            "{}: plugins must be declared in plugins/*.yaml",
+            "{}: plugins must be declared in catalogue/plugins/*.yaml",
             path.display()
         );
         ensure!(
@@ -167,13 +167,13 @@ pub fn load(root: &Path, mode: Mode) -> Result<Catalogue> {
 }
 
 pub(crate) fn load_plugins(root: &Path, documents: &mut [Document]) -> Result<Vec<PluginDocument>> {
-    let directory = root.join("plugins");
+    let directory = root.join("catalogue/plugins");
     if !directory.exists() && fs::symlink_metadata(&directory).is_err() {
         return Ok(Vec::new());
     }
     ensure!(
         !fs::symlink_metadata(&directory)?.file_type().is_symlink() && directory.is_dir(),
-        "plugins must be a real directory"
+        "catalogue/plugins must be a real directory"
     );
     let mut paths = fs::read_dir(&directory)?
         .map(|p| p.map(|p| p.path()))
@@ -189,7 +189,7 @@ pub(crate) fn load_plugins(root: &Path, documents: &mut [Document]) -> Result<Ve
             let metadata = fs::symlink_metadata(&candidate)?;
             ensure!(
                 metadata.is_file() && metadata.len() == 0,
-                "plugins/.gitkeep must be an empty regular file"
+                "catalogue/plugins/.gitkeep must be an empty regular file"
             );
             continue;
         }
@@ -197,7 +197,7 @@ pub(crate) fn load_plugins(root: &Path, documents: &mut [Document]) -> Result<Ve
             candidate
                 .extension()
                 .is_some_and(|extension| extension == "yaml"),
-            "plugins/ may only contain <chunk-id>.yaml files and an empty .gitkeep: {}",
+            "catalogue/plugins/ may only contain <chunk-id>.yaml files and an empty .gitkeep: {}",
             candidate.display()
         );
         let stem = candidate
@@ -205,7 +205,7 @@ pub(crate) fn load_plugins(root: &Path, documents: &mut [Document]) -> Result<Ve
             .and_then(|p| p.to_str())
             .context("non UTF-8 plugin filename")?;
         validate::slug(stem)?;
-        let path = validate::safe_file(root, &format!("plugins/{name}"))?;
+        let path = validate::safe_file(root, &format!("catalogue/plugins/{name}"))?;
         let original = read_text(&path, 8 * 1024 * 1024)?;
         let collection: PluginCollection = crate::catalogue_tools::yaml::from_str(&original)
             .with_context(|| path.display().to_string())?;
@@ -409,7 +409,7 @@ fn rendered_url(config: &Config, entry: &Entry, url: &str) -> String {
     if let Some(a) = registered(config, entry, url) {
         if let AssetSource::Incoming { path } = &a.source {
             return format!(
-                "{}/raw/{}/{}",
+                "{}/raw/{}/www/{}",
                 config.repository.trim_end_matches('/'),
                 config.branch,
                 path
@@ -421,7 +421,7 @@ fn rendered_url(config: &Config, entry: &Entry, url: &str) -> String {
         return url.to_string();
     }
     let base = format!(
-        "{}/blob/{}/catalogue/{}.md",
+        "{}/blob/{}/www/catalogue/{}.md",
         config.repository.trim_end_matches('/'),
         config.branch,
         entry.id

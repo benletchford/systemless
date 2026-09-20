@@ -38,7 +38,7 @@ jobs:
               exit 1
             fi
           done
-          ./target/release/catalogue r2 inventory --output "$RUNNER_TEMP/r2-inventory.json"
+          ./target/release/catalogue --root www r2 inventory --output "$RUNNER_TEMP/r2-inventory.json"
       - name: Summarize connection check
         shell: bash
         run: |
