@@ -25,10 +25,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Wolfenstein%203D.sit
-    expected_sha256: 99f1f2e1fd1a8e2fe53504ea38ec7017c234033cdbc19228778eb07ba3598256
-    expected_size: 1379613
+    type: sha256
+    sha256: 99f1f2e1fd1a8e2fe53504ea38ec7017c234033cdbc19228778eb07ba3598256
+    size_bytes: 1379613
   provenance:
     redistribution: permitted
     original: true
