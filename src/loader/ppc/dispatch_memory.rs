@@ -543,6 +543,18 @@ pub(super) fn dispatch_memory_import(
             *last_mem_error = PPC_NO_ERR;
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::FlushCodeCache => {
+            // PowerPC separates its instruction and data caches, so an app
+            // that writes code must call this before branching into it.
+            // Inside Macintosh: PowerPC System Software (1994), MakeDataExecutable.
+            memory.flush_instruction_cache();
+            if ppc_hle_trace_enabled() {
+                eprintln!("[PPC-TRACE] {}", binding.symbol_name);
+            }
+            // `FlushCodeCacheRange` reports an OSStatus; the void variants
+            // ignore r3, which is volatile either way.
+            Some(PpcImportAction::Return(0))
+        }
         PpcImportDispatcherTarget::MoreMasters => {
             process_memory_manager.request_native_master_pointers();
             *last_mem_error = PPC_NO_ERR;

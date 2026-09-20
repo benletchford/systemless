@@ -1456,6 +1456,7 @@ pub enum PpcImportDispatcherTarget {
     ApplicationZone,
     MaxApplZone,
     MoreMasters,
+    FlushCodeCache,
     GetApplLimit,
     SetApplLimit,
     HeapFreeBytes,
@@ -15001,6 +15002,10 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::ApplicationZone
         }
         ("InterfaceLib", "MaxApplZone") => PpcImportDispatcherTarget::MaxApplZone,
+        ("InterfaceLib", "MakeDataExecutable")
+        | ("InterfaceLib", "FlushCodeCache")
+        | ("InterfaceLib", "FlushCodeCacheRange")
+        | ("InterfaceLib", "FlushInstructionCache") => PpcImportDispatcherTarget::FlushCodeCache,
         ("InterfaceLib", "MoreMasters") => PpcImportDispatcherTarget::MoreMasters,
         ("InterfaceLib", "GetApplLimit") => PpcImportDispatcherTarget::GetApplLimit,
         ("InterfaceLib", "SetApplLimit") => PpcImportDispatcherTarget::SetApplLimit,
@@ -17783,6 +17788,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::ApplicationZone
         | PpcImportDispatcherTarget::MaxApplZone
         | PpcImportDispatcherTarget::MoreMasters
+        | PpcImportDispatcherTarget::FlushCodeCache
         | PpcImportDispatcherTarget::GetApplLimit
         | PpcImportDispatcherTarget::SetApplLimit
         | PpcImportDispatcherTarget::HeapFreeBytes
