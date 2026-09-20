@@ -30,11 +30,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/Space%20Junkie%201.2.sit
-    download_page: https://www.vintageapplemac.com/software/games/s/
-    expected_sha256: c4d1e6c4ac930e213855f2cccb3d11c49a903975da065ef5ffc3381429f2c982
-    expected_size: 97063
+    type: sha256
+    sha256: c4d1e6c4ac930e213855f2cccb3d11c49a903975da065ef5ffc3381429f2c982
+    size_bytes: 97063
   provenance:
     redistribution: permitted
     original: true
