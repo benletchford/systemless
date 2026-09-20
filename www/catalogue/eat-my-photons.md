@@ -17,11 +17,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://classicmacdemos.com/download/eat-my-photons/
-    download_page: https://classicmacdemos.com/eat-my-photons
-    expected_sha256: ea9fd6bd23e06d8318681e0c341766e8a85cc42695fb66cc2d1d58b6ca8e9d79
-    expected_size: 1873536
+    type: sha256
+    sha256: ea9fd6bd23e06d8318681e0c341766e8a85cc42695fb66cc2d1d58b6ca8e9d79
+    size_bytes: 1873536
   provenance:
     redistribution: permitted
     original: true

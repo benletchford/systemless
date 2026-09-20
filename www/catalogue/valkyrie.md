@@ -25,11 +25,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://classicmacdemos.com/download/valkyrie/
-    download_page: https://classicmacdemos.com/valkyrie
-    expected_sha256: bf30b8d9de82f543f2f68ca0dcdb45d3dc915eccaa97c856473bcb499d62f030
-    expected_size: 383018
+    type: sha256
+    sha256: bf30b8d9de82f543f2f68ca0dcdb45d3dc915eccaa97c856473bcb499d62f030
+    size_bytes: 383018
   provenance:
     redistribution: permitted
     original: true

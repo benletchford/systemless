@@ -25,11 +25,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://classicmacdemos.com/download/blood-bath-at-red-falls/
-    download_page: https://classicmacdemos.com/blood-bath-at-red-falls
-    expected_sha256: ea4b211ee5da6005dfa5739776923de8c288127de5b8018155e13318b1e9e003
-    expected_size: 1434552
+    type: sha256
+    sha256: ea4b211ee5da6005dfa5739776923de8c288127de5b8018155e13318b1e9e003
+    size_bytes: 1434552
   provenance:
     redistribution: permitted
     original: true

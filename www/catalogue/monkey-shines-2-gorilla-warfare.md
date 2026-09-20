@@ -17,11 +17,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://classicmacdemos.com/download/monkey-shines-2-gorilla-warfare/
-    download_page: https://classicmacdemos.com/monkey-shines-2-gorilla-warfare
-    expected_sha256: a2d621e22ec386ab9146f1c3c508dcea9fa435ea49731db2c8c5486928064baa
-    expected_size: 9408456
+    type: sha256
+    sha256: a2d621e22ec386ab9146f1c3c508dcea9fa435ea49731db2c8c5486928064baa
+    size_bytes: 9408456
   provenance:
     redistribution: permitted
     original: true

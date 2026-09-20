@@ -17,11 +17,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://classicmacdemos.com/download/fallout/
-    download_page: https://classicmacdemos.com/fallout
-    expected_sha256: cc2d3f7b0651b302856ac9d3ed5faef2b6f7546eec53f418003ccbaf8f264ba8
-    expected_size: 21417380
+    type: sha256
+    sha256: cc2d3f7b0651b302856ac9d3ed5faef2b6f7546eec53f418003ccbaf8f264ba8
+    size_bytes: 21417380
   provenance:
     redistribution: permitted
     original: true

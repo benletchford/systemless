@@ -17,11 +17,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/Troubled%20Souls.sit
-    download_page: https://www.vintageapplemac.com/software/games/t/
-    expected_sha256: 58445790033e0e52ea20b3c9a86c84182cbeaa99fe3731fd013d4a38634cbbd0
-    expected_size: 1303848
+    type: sha256
+    sha256: 58445790033e0e52ea20b3c9a86c84182cbeaa99fe3731fd013d4a38634cbbd0
+    size_bytes: 1303848
   provenance:
     redistribution: permitted
     original: true

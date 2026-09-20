@@ -25,11 +25,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://classicmacdemos.com/download/wheels/
-    download_page: https://classicmacdemos.com/wheels
-    expected_sha256: 7fa61846ef8c26015b7570f0e97b834de1fd4b57ddb72429aab3c26ea2744f1a
-    expected_size: 1723677
+    type: sha256
+    sha256: 7fa61846ef8c26015b7570f0e97b834de1fd4b57ddb72429aab3c26ea2744f1a
+    size_bytes: 1723677
   provenance:
     redistribution: permitted
     original: true

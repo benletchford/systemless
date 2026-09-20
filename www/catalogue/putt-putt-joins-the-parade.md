@@ -17,11 +17,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://classicmacdemos.com/download/putt-putt-joins-the-parade/
-    download_page: https://classicmacdemos.com/putt-putt-joins-the-parade
-    expected_sha256: ec0e84dd0de278f6104f7aca9d71e23738745ee519cd9affdc30a4562ca17ce3
-    expected_size: 1141865
+    type: sha256
+    sha256: ec0e84dd0de278f6104f7aca9d71e23738745ee519cd9affdc30a4562ca17ce3
+    size_bytes: 1141865
   provenance:
     redistribution: permitted
     original: true

@@ -25,11 +25,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://classicmacdemos.com/download/macattack/
-    download_page: https://classicmacdemos.com/macattack
-    expected_sha256: 0367d87cc9cc84df5aa28085834ad6c7a36d70325f2e07060d4abd18581f40f0
-    expected_size: 848461
+    type: sha256
+    sha256: 0367d87cc9cc84df5aa28085834ad6c7a36d70325f2e07060d4abd18581f40f0
+    size_bytes: 848461
   provenance:
     redistribution: permitted
     original: true

@@ -25,11 +25,9 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://classicmacdemos.com/download/gridz/
-    download_page: https://classicmacdemos.com/gridz
-    expected_sha256: a3eb2f24f75f01944dd7f7816ec7720e5250023e57bd7198c49e2d2abb1567a9
-    expected_size: 5453841
+    type: sha256
+    sha256: a3eb2f24f75f01944dd7f7816ec7720e5250023e57bd7198c49e2d2abb1567a9
+    size_bytes: 5453841
   provenance:
     redistribution: permitted
     original: true
