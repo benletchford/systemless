@@ -3610,6 +3610,19 @@
     }
 
     #[test]
+    fn classic_app_stack_stays_addressable_in_twenty_four_bit_mode() {
+        let code0 = minimal_code0(0, 0x2000, 0, 0);
+        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0)]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(64 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let app = runner.load_app(&fork).expect("load app");
+
+        assert!(app.initial_sp < CLASSIC_24_BIT_ADDRESS_SPACE_END);
+        assert!(app.initial_sp > app.loaded_image_end + APP_HIGH_MEMORY_RESERVE);
+    }
+
+    #[test]
     fn load_app_relocates_exact_2mb_size_partition() {
         let below_a5 = 0x68E8;
         let code0 = minimal_code0(0x0D18, below_a5, 0, 0);
@@ -12343,6 +12356,50 @@
             0x1234_5678,
             "SwapMMUMode must change actual guest address translation"
         );
+    }
+
+    #[test]
+    fn swap_mmu_mode_returns_on_classic_stack_with_more_than_sixteen_megabytes() {
+        let code0 = minimal_code0(0, 0x2000, 0, 0);
+        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0)]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(64 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = runner.load_app(&fork).expect("load app");
+        runner.init_app(&app);
+
+        let call_site = 0x0002_0000;
+        let return_pc = call_site + 8;
+        let stack = app.initial_sp - 0x200;
+        runner.bus.write_word(call_site, 0xA05D); // SwapMMUMode
+        runner.bus.write_word(call_site + 2, 0x4E75); // RTS
+        runner.bus.write_long(stack, return_pc);
+        runner.m68k.cpu.write_reg(Register::PC, call_site);
+        runner.m68k.cpu.write_reg(Register::A7, stack);
+        runner.m68k.cpu.write_reg(Register::D0, 0);
+
+        let (steps, running) = runner.run_steps(2, None);
+
+        assert!(running);
+        assert_eq!(steps, 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), stack + 4);
+        assert!(!runner.bus.addressing_32_bit());
+
+        // PenMode has a permanent system-owned come-from head. Its raw
+        // synthetic identity remains protected provenance while 24-bit guest
+        // accesses are masked, so inline dispatch must not mistake the head
+        // for an application-installed native patch.
+        let pen_mode_site = call_site + 0x10;
+        runner.bus.write_word(pen_mode_site, 0xA89C);
+        runner.bus.write_word(stack + 4, 8);
+        runner.m68k.cpu.write_reg(Register::PC, pen_mode_site);
+
+        let (steps, running) = runner.run_steps(1, None);
+
+        assert!(running);
+        assert_eq!(steps, 1);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), pen_mode_site + 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), stack + 6);
     }
 
     #[test]

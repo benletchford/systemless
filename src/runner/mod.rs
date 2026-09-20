@@ -259,6 +259,7 @@ const PROCESS_LOW_MEMORY_SIZE: u32 = 0x0010_0000;
 const APP_QD_GLOBALS_RESERVE: u32 = 48 * 1024;
 const APP_LOADER_CLEAR_RESERVE: u32 = 0x40000;
 const APP_HIGH_MEMORY_RESERVE: u32 = 2 * 1024 * 1024;
+const CLASSIC_24_BIT_ADDRESS_SPACE_END: u32 = 0x0100_0000;
 const APPLICATION_RESOURCE_REFNUM: u16 = 2;
 const HFS_FCB_SIZE: u16 = 94;
 const HFS_FCB_BUFFER_SIZE: u16 = 2 + HFS_FCB_SIZE;
@@ -1468,6 +1469,24 @@ fn app_visible_zone_start_for_loaded_app(app: &LoadedApp) -> u32 {
         APP_HEAP_FLOOR
     } else {
         app_heap_start_for_loaded_app(app)
+    }
+}
+
+fn classic_stack_top(application_memory_limit: u32, loaded_image_end: u32) -> u32 {
+    let physical_top = application_memory_limit.saturating_sub(16);
+    let addressable_24_bit_top = physical_top.min(CLASSIC_24_BIT_ADDRESS_SPACE_END - 16);
+
+    // A 68K application can temporarily enter 24-bit addressing through
+    // SwapMMUMode even when it launches in 32-bit mode. Keep its ordinary
+    // stack addressable in both modes whenever the loaded image leaves the
+    // normal high-memory reserve below the 16 MiB boundary. Applications
+    // whose image genuinely requires 32-bit space retain the physical top.
+    // Inside Macintosh: Memory (1992), pp. 1-7 to 1-8; Inside Macintosh
+    // Volume V, p. V-593.
+    if loaded_image_end.saturating_add(APP_HIGH_MEMORY_RESERVE) <= addressable_24_bit_top {
+        addressable_24_bit_top
+    } else {
+        physical_top
     }
 }
 
@@ -3979,10 +3998,10 @@ impl FixtureRunner {
                 // allocates the application partition from the app's 'SIZE'
                 // resource preferred size when available. A scripted override
                 // represents the same Finder-style preferred-memory setting
-                // applied to a temporary launch. Systemless keeps the physical
-                // stack at the top of guest RAM, but narrows the observable
-                // heap limit so FreeMem/MaxMem/process info see the same
-                // partition pressure.
+                // applied to a temporary launch. Systemless places a compatible
+                // classic stack below the 24-bit boundary, but still narrows
+                // the observable heap limit so FreeMem/MaxMem/process info see
+                // the same partition pressure.
                 partition_size
                     .checked_sub(APP_STACK_SAFETY_MARGIN)
                     .and_then(|heap_span| visible_zone_start.checked_add(heap_span))
@@ -12043,8 +12062,9 @@ fn load_app_generic<M: MemoryBus>(
     }
 
     // Keep the application stack below Systemless-owned callback code and
-    // the framebuffer reservation at the top of RAM.
-    let stack_top = bus.application_memory_limit() - 16;
+    // the framebuffer reservation, while preserving a 24-bit-addressable
+    // stack for classic images that fit in that address space.
+    let stack_top = classic_stack_top(bus.application_memory_limit(), loaded_image_end);
 
     Some(LoadedApp {
         ppc: None,
