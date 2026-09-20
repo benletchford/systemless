@@ -29,11 +29,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.vintageapplemac.com/files/games/Chinese%20Chess%20Pro%201.0.1.sit
-    download_page: https://www.vintageapplemac.com/software/games/c/
-    expected_sha256: a9b0f0f8686d9f104fef15fa3d1994cdf5cec502e6ed02d5da902d35a769fb9f
-    expected_size: 242056
+    type: sha256
+    sha256: a9b0f0f8686d9f104fef15fa3d1994cdf5cec502e6ed02d5da902d35a769fb9f
+    size_bytes: 242056
   provenance:
     redistribution: permitted
     original: true
