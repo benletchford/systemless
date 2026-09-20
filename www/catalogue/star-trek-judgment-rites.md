@@ -11,7 +11,15 @@ default_architecture: 68k
 category: Puzzle
 launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
+  verified:
+  - date: 2026-09-20
+    tester: Catalogue maintainer
+    systemless_version: 0.42.1
+    architecture: 68k
+    environment: Deterministic headless gameplay run from the original BinHex demo image
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2234
 artifacts:
 - id: archive
   role: archive
@@ -45,4 +53,5 @@ references:
 
 Judgment Rites combines dialogue, investigation and away-team puzzles in an
 episode shaped like the original television series. This is Interplay's
-complete Macintosh preview image. Systemless compatibility remains unverified.
+complete Macintosh preview image. The original demo now reaches the bridge,
+accepts input and advances its interactive dialogue in Systemless.
