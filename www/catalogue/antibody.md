@@ -45,13 +45,13 @@ artifacts:
     permission: >-
       The bundled Software License section 2 states that non-profit distribution
       is permissible only when the software is not altered in any way and is
-      distributed in its entirety. It separately prohibits electronic transfer,
-      renting, leasing, loaning, selling, or any distribution for profit without
-      written consent from Slimyfrog Software, and prohibits modification or
-      alteration including decompiling, disassembling, reverse engineering, or
-      creation of works arising from the software. This entry therefore retains
-      the complete, unchanged archive and is limited to non-profit distribution;
-      use remains subject to the section 1 trial and registration terms.
+      distributed in its entirety. It requires written consent for electronic
+      transfer, renting, leasing, loaning, selling or other distribution when
+      done for profit, and prohibits modification or alteration including
+      decompiling, disassembling, reverse engineering, or creation of works
+      arising from the software. This entry therefore retains the complete,
+      unchanged archive and is limited to non-profit distribution; use remains
+      subject to the section 1 trial and registration terms.
     notes: >-
       Unchanged 2,145,256-byte StuffIt archive, SHA-256
       b08c2bdc602cd5e6888776376e52ef9e41a2875985a7de8a20222a573a4557b4.
