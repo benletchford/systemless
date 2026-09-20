@@ -5085,7 +5085,7 @@ impl FixtureRunner {
                 && self.bus.read_long(0x016A) == sleep.tick;
         let host_unchanged = sleep.host == IdleCycleHostSnapshot::capture(&self.dispatcher);
         let can_observe_events = self.active_interrupt_callback.is_none()
-            && self.dispatcher.input_state.key_repeat.is_none()
+            && !self.dispatcher.input_state.has_key_repeat()
             && self.dispatcher.pending_launch_app.is_none()
             && !self.dispatcher.system_task_has_periodic_work();
         let event_stream_empty = can_observe_events

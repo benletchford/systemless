@@ -1760,9 +1760,23 @@ impl ProcessScrapState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessKeyRepeatState {
-    pub(crate) key_code: u8,
-    pub(crate) char_code: u8,
-    pub(crate) next_tick: u32,
+    key_code: u8,
+    char_code: u8,
+    next_tick: u32,
+}
+
+impl ProcessKeyRepeatState {
+    pub(crate) fn key_code(self) -> u8 {
+        self.key_code
+    }
+
+    pub(crate) fn next_tick(self) -> u32 {
+        self.next_tick
+    }
+
+    pub(crate) fn message(self) -> u32 {
+        ((self.key_code as u32) << 8) | self.char_code as u32
+    }
 }
 
 /// Process-owned storage for the generated 68K gateway and compatibility
@@ -1792,7 +1806,7 @@ pub(crate) struct ProcessInputState {
     pub(crate) mouse_button: bool,
     pub(crate) key_map: [u8; 16],
     pub(crate) caps_lock_physically_pressed: bool,
-    pub(crate) key_repeat: Option<ProcessKeyRepeatState>,
+    key_repeat: Option<ProcessKeyRepeatState>,
 }
 
 impl ProcessInputState {
@@ -1920,6 +1934,49 @@ impl SharedProcessMixedModeM68kState {
     }
 }
 
+impl SharedProcessInputState {
+    pub(crate) fn key_repeat(&self) -> Option<ProcessKeyRepeatState> {
+        self.with_ref(|state| state.key_repeat)
+    }
+
+    pub(crate) fn has_key_repeat(&self) -> bool {
+        self.with_ref(|state| state.key_repeat.is_some())
+    }
+
+    pub(crate) fn arm_key_repeat(&self, key_code: u8, char_code: u8, next_tick: u32) {
+        self.with_mut(|state| {
+            state.key_repeat = Some(ProcessKeyRepeatState {
+                key_code,
+                char_code,
+                next_tick,
+            });
+        });
+    }
+
+    pub(crate) fn advance_key_repeat(&self, next_tick: u32) {
+        self.with_mut(|state| {
+            if let Some(repeat) = state.key_repeat.as_mut() {
+                repeat.next_tick = next_tick;
+            }
+        });
+    }
+
+    pub(crate) fn clear_key_repeat(&self) {
+        self.with_mut(|state| state.key_repeat = None);
+    }
+
+    pub(crate) fn clear_key_repeat_for(&self, key_code: u8) {
+        self.with_mut(|state| {
+            if state
+                .key_repeat
+                .is_some_and(|repeat| repeat.key_code == key_code)
+            {
+                state.key_repeat = None;
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 impl SharedProcessInputState {
     pub(crate) fn set_mouse_position_for_test(&self, position: (i16, i16)) {
@@ -1938,9 +1995,6 @@ impl SharedProcessInputState {
         self.with_mut(|state| state.caps_lock_physically_pressed = pressed);
     }
 
-    pub(crate) fn set_key_repeat_for_test(&self, repeat: Option<ProcessKeyRepeatState>) {
-        self.with_mut(|state| state.key_repeat = repeat);
-    }
 }
 
 impl<T: Default> Default for SharedProcessValue<T> {
@@ -10997,22 +11051,18 @@ mod tests {
         native.set_mouse_button_for_test(true);
         native.set_mouse_position_for_test((56, 78));
         native.set_caps_lock_pressed_for_test(true);
-        native.set_key_repeat_for_test(Some(ProcessKeyRepeatState {
-            key_code: 0x24,
-            char_code: b'\r',
-            next_tick: 90,
-        }));
+        native.arm_key_repeat(0x24, b'\r', 90);
 
         assert!(classic.ptr_eq(&native));
         assert_eq!(classic.mouse_pos, (56, 78));
         assert!(classic.mouse_button);
         assert_eq!(classic.key_map[2], 0x40);
         assert!(classic.caps_lock_physically_pressed);
-        assert_eq!(classic.key_repeat.unwrap().next_tick, 90);
+        assert_eq!(classic.key_repeat().unwrap().next_tick(), 90);
         assert_eq!(detached.mouse_pos, (12, 34));
         assert!(!detached.mouse_button);
         assert!(!detached.caps_lock_physically_pressed);
-        assert!(detached.key_repeat.is_none());
+        assert!(!detached.has_key_repeat());
     }
 
     #[test]
