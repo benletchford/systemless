@@ -7,7 +7,7 @@ use std::ops::{Deref, DerefMut};
 ///
 /// The Operating System Event Manager owns one queue, and `EventRecord.where`
 /// uses global coordinates. Inside Macintosh Volume I, I-244 and I-259.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QueuedEvent {
     /// Event type (1=mouseDown, 2=mouseUp, 3=keyDown, etc.).
     pub what: u16,
@@ -107,7 +107,7 @@ impl EventQueue {
         std::mem::take(&mut self.menu_bar_invalid)
     }
 
-    #[cfg(test)]
+    #[allow(dead_code)]
     pub fn menu_bar_is_invalid(&self) -> bool {
         self.menu_bar_invalid
     }

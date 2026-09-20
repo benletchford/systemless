@@ -10305,7 +10305,7 @@ impl super::TrapDispatcher {
             .event_queue
             .iter()
             .position(|event| matches!(event.what, 1 | 2));
-        if let Some(idx) = next_mouse_event.filter(|idx| self.event_queue[*idx].what == 2) {
+        if let Some(idx) = next_mouse_event.filter(|idx| self.event_queue.get(*idx).is_some_and(|e| e.what == 2)) {
             self.event_queue.remove(idx);
             true
         } else {

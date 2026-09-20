@@ -2085,11 +2085,11 @@
             let queue = runner.process_context.event_queue();
             assert_eq!(queue.len(), 2);
             assert_eq!(
-                queue[0].message, 0x1111,
+                queue.get(0).unwrap().message, 0x1111,
                 "canonical event must remain in front"
             );
             assert_eq!(
-                queue[1].message, 0x2222,
+                queue.get(1).unwrap().message, 0x2222,
                 "detached PPC event must be appended after canonical events"
             );
             assert!(
@@ -2098,8 +2098,8 @@
             );
             let native_queue = &runner.native.application().unwrap().event_queue;
             assert_eq!(native_queue.len(), 2);
-            assert_eq!(native_queue[0].message, 0x1111);
-            assert_eq!(native_queue[1].message, 0x2222);
+            assert_eq!(native_queue.get(0).unwrap().message, 0x1111);
+            assert_eq!(native_queue.get(1).unwrap().message, 0x2222);
             assert!(native_queue.menu_bar_is_invalid());
         }
 
@@ -2136,11 +2136,11 @@
             let queue = runner.process_context.event_queue();
             assert_eq!(queue.len(), 2);
             assert_eq!(
-                queue[0].message, 0x3333,
+                queue.get(0).unwrap().message, 0x3333,
                 "canonical event must remain in front"
             );
             assert_eq!(
-                queue[1].message, 0x4444,
+                queue.get(1).unwrap().message, 0x4444,
                 "detached PPC event must be appended after canonical events"
             );
             assert!(
@@ -2149,8 +2149,8 @@
             );
             let native_queue = &runner.native.application().unwrap().event_queue;
             assert_eq!(native_queue.len(), 2);
-            assert_eq!(native_queue[0].message, 0x3333);
-            assert_eq!(native_queue[1].message, 0x4444);
+            assert_eq!(native_queue.get(0).unwrap().message, 0x3333);
+            assert_eq!(native_queue.get(1).unwrap().message, 0x4444);
             assert!(native_queue.menu_bar_is_invalid());
         }
     }
@@ -9067,7 +9067,7 @@
             Some(180)
         );
         assert_eq!(runner.process_context.event_queue().len(), 1);
-        let posted = &runner.process_context.event_queue()[0];
+        let posted = runner.process_context.event_queue().get(0).unwrap();
         assert_eq!((posted.what, posted.message), (5, 0x5566_7788));
         assert_eq!((posted.where_v, posted.where_h), (17, 19));
         assert_eq!(

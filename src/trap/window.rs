@@ -9012,7 +9012,6 @@ mod tests {
             .event_queue
             .iter()
             .skip(queue_len_before)
-            .cloned()
             .collect();
         assert_eq!(events[0].what, 8, "first must be activate-event class");
         assert_eq!(events[0].message, win_a);
@@ -9045,7 +9044,6 @@ mod tests {
             .event_queue
             .iter()
             .filter(|event| event.what == 8)
-            .cloned()
             .collect();
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].message, middle);
@@ -9102,7 +9100,6 @@ mod tests {
             .event_queue
             .iter()
             .filter(|event| event.what == 8)
-            .cloned()
             .collect();
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].message, old_front);
