@@ -781,7 +781,7 @@ impl super::TrapDispatcher {
         // dispatcher state so guest callbacks that run during tracking can
         // release or hold the button between trap re-fires. Inside Macintosh
         // Volume II, p. II-371; Macintosh Toolbox Essentials 1992, p. 3-120.
-        self.input_state.mouse_button || bus.read_byte(addr::MB_STATE) == 0x00
+        self.input_state.mouse_button_pressed() || bus.read_byte(addr::MB_STATE) == 0x00
     }
 
     fn menu_tracking_mouse_pos(&self, bus: &MacMemoryBus) -> (i16, i16) {

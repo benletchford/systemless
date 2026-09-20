@@ -3223,7 +3223,7 @@ impl TrapDispatcher {
         const CONTROL_KEY: u16 = 4096;
 
         let mut modifiers = 0u16;
-        if !self.input_state.mouse_button {
+        if !self.input_state.mouse_button_pressed() {
             modifiers |= BTN_STATE;
         }
         if self.key_is_down(0x37) {
@@ -3284,7 +3284,11 @@ impl TrapDispatcher {
             "state=mouse=({},{}) button={} live_modifiers=${:04X} key_map={} tracking=menu:{} dialog:{} control:{}",
             self.input_state.mouse_pos.0,
             self.input_state.mouse_pos.1,
-            if self.input_state.mouse_button { "down" } else { "up" },
+            if self.input_state.mouse_button_pressed() {
+                "down"
+            } else {
+                "up"
+            },
             self.current_event_modifiers(),
             key_map,
             if self.is_menu_tracking() { "active" } else { "idle" },
@@ -5346,7 +5350,7 @@ impl TrapDispatcher {
     pub fn set_mouse_position(&mut self, v: i16, h: i16) {
         self.input_state.with_mut(|state| state.mouse_pos = (v, h));
         self.adb
-            .note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button);
+            .note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button_pressed());
     }
 
     pub(crate) fn has_unmatched_queued_mouse_down(&self) -> bool {
@@ -5363,12 +5367,8 @@ impl TrapDispatcher {
 
     /// Push a mouse-down event into the event queue.
     pub fn push_mouse_down(&mut self, v: i16, h: i16) {
-        self.input_state.with_mut(|state| {
-            state.mouse_button = true;
-            state.mouse_pos = (v, h);
-        });
-        self.adb
-            .note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button);
+        self.input_state.set_mouse_state((v, h), true);
+        self.adb.note_mouse_state((v, h), true);
         let modifiers = self.current_event_modifiers();
         let tick = self.current_tick();
         self.event_queue.push_back(QueuedEvent {
@@ -5387,12 +5387,8 @@ impl TrapDispatcher {
     /// combine that state with pending mouse events to decide whether the
     /// original click is still in progress.
     pub fn push_mouse_up(&mut self, v: i16, h: i16) {
-        self.input_state.with_mut(|state| {
-            state.mouse_pos = (v, h);
-            state.mouse_button = false;
-        });
-        self.adb
-            .note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button);
+        self.input_state.set_mouse_state((v, h), false);
+        self.adb.note_mouse_state((v, h), false);
         // The classic mouse has one button, so the first physical release
         // after a ModalDialog-owned press is its matching mouseUp. Consume it
         // at injection time so event masks or FlushEvents cannot leave stale

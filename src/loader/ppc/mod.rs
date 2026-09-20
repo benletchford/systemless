@@ -4392,16 +4392,13 @@ impl PpcLoadedApp {
         }
         self.input = input;
         self.process_input.set_key_map_snapshot(input.key_map);
-        self.process_input.with_mut(|state| {
-            state.mouse_button = input.mouse_button;
-            state.mouse_pos = (input.mouse_v, input.mouse_h);
-        });
+        self.process_input
+            .set_mouse_state((input.mouse_v, input.mouse_h), input.mouse_button);
     }
 
     fn current_input_snapshot(&self) -> PpcInputSnapshot {
         let key_map = self.process_input.key_map_snapshot();
-        let mouse_button = self.process_input.mouse_button;
-        let (mouse_v, mouse_h) = self.process_input.mouse_pos;
+        let ((mouse_v, mouse_h), mouse_button) = self.process_input.mouse_state_snapshot();
         PpcInputSnapshot {
             key_map,
             mouse_button,

@@ -5728,7 +5728,7 @@ impl super::TrapDispatcher {
             (true, 0x173) => {
                 let sp = cpu.read_reg(Register::A7);
                 let has_mouse_up_event = self.event_queue.iter().any(|e| e.what == 2);
-                let result = self.input_state.mouse_button && !has_mouse_up_event;
+                let result = self.input_state.mouse_button_pressed() && !has_mouse_up_event;
                 if result {
                     self.debug_still_down_true_count =
                         self.debug_still_down_true_count.saturating_add(1);
@@ -5741,7 +5741,9 @@ impl super::TrapDispatcher {
                     let pc = cpu.read_reg(Register::PC);
                     eprintln!(
                         "[INPUT] StillDown -> false (mouse_button={} has_mouse_up_event={}) PC=${:08X}",
-                        self.input_state.mouse_button, has_mouse_up_event, pc
+                        self.input_state.mouse_button_pressed(),
+                        has_mouse_up_event,
+                        pc
                     );
                 }
                 bus.write_word(sp, if result { 0x0100 } else { 0 });
@@ -5761,7 +5763,7 @@ impl super::TrapDispatcher {
                 let trap_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
                 let mb_state = bus.read_byte(0x0172);
                 let queued_mouse_down = self.event_queue.iter().any(|event| event.what == 1);
-                let mut pressed = mb_state == 0x00 || self.input_state.mouse_button;
+                let mut pressed = mb_state == 0x00 || self.input_state.mouse_button_pressed();
                 // Diagnostic: force pressed=true at a specific PC via
                 // SYSTEMLESS_FORCE_BUTTON_TRUE_AT_PC=0xADDR.
                 if let Some(target) = force_button_true_at_pc() {
@@ -5776,7 +5778,11 @@ impl super::TrapDispatcher {
                 if super::dispatch::trace_input_enabled() {
                     eprintln!(
                         "[INPUT] Button pc=${:08X} -> {} (MBState=${:02X} mouse_button={} queued_mouse_down={})",
-                        trap_pc, pressed, mb_state, self.input_state.mouse_button, queued_mouse_down
+                        trap_pc,
+                        pressed,
+                        mb_state,
+                        self.input_state.mouse_button_pressed(),
+                        queued_mouse_down
                     );
                 }
                 if pressed {
@@ -10589,7 +10595,7 @@ impl super::TrapDispatcher {
             (true, 0x177) => {
                 let sp = cpu.read_reg(Register::A7);
                 // Same logic as StillDown: button down and no pending mouseUp.
-                let still_down = if self.input_state.mouse_button {
+                let still_down = if self.input_state.mouse_button_pressed() {
                     !self.event_queue.iter().any(|e| e.what == 2)
                 } else {
                     false
@@ -10598,13 +10604,14 @@ impl super::TrapDispatcher {
                     // Remove the first mouseUp event from the queue (if any)
                     if let Some(idx) = self.event_queue.iter().position(|e| e.what == 2) {
                         self.event_queue.remove(idx);
-                        self.input_state.with_mut(|state| state.mouse_button = false);
+                        self.input_state.set_mouse_button_pressed(false);
                     }
                 }
                 if super::dispatch::trace_input_enabled() {
                     eprintln!(
                         "[INPUT] WaitMouseUp -> {} (mouse_button={})",
-                        still_down, self.input_state.mouse_button
+                        still_down,
+                        self.input_state.mouse_button_pressed()
                     );
                 }
                 if still_down {

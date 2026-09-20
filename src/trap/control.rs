@@ -138,7 +138,7 @@ impl super::TrapDispatcher {
         // MBState ($0172) is the classic low-memory button mirror (0=down,
         // $80=up), so guest callbacks/VBL tasks can hold or release tracking
         // between trap re-fires. Inside Macintosh Volume II, p. II-371.
-        self.input_state.mouse_button || bus.read_byte(addr::MB_STATE) == 0x00
+        self.input_state.mouse_button_pressed() || bus.read_byte(addr::MB_STATE) == 0x00
     }
 
     fn control_tracking_mouse_pos(&self, bus: &MacMemoryBus) -> (i16, i16) {
@@ -3630,7 +3630,7 @@ impl super::TrapDispatcher {
                                             return Some(Ok(()));
                                         }
                                     }
-                                    if part == 129 && self.input_state.mouse_button {
+                                    if part == 129 && self.input_state.mouse_button_pressed() {
                                         let window_ptr = bus.read_long(ctrl_ptr + 4);
                                         let (scr_top, scr_left, _, _) =
                                             Self::dialog_screen_bounds(bus, window_ptr);
@@ -3766,7 +3766,7 @@ impl super::TrapDispatcher {
                                 // Preserve the old immediate path when the
                                 // mouse is already up; scripted callers that
                                 // model a real mouse-down take the refire path.
-                                if self.input_state.mouse_button
+                                if self.input_state.mouse_button_pressed()
                                     && action_proc == 0
                                     && (matches!(proc_id, 0 | 1 | 2) || Self::is_popup_menu_proc_id(proc_id))
                                 {

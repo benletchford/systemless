@@ -674,7 +674,7 @@ impl super::TrapDispatcher {
                 );
             }
             if event.what == 2 {
-                self.input_state.with_mut(|state| state.mouse_button = false);
+                self.input_state.set_mouse_button_pressed(false);
             }
             self.begin_app_owned_modal_dialog_button_tracking(bus, &event);
             if matches!(event.what, 3 | 4 | 5) {
@@ -781,7 +781,11 @@ impl super::TrapDispatcher {
 
         // Update low-memory mouse globals
         // Reference: Executor docs/globals.cpp — MTemp=$0828, MouseLocation=$082C, MouseLocation2=$0830
-        let mb_state: u8 = if self.input_state.mouse_button { 0x00 } else { 0x80 };
+        let mb_state: u8 = if self.input_state.mouse_button_pressed() {
+            0x00
+        } else {
+            0x80
+        };
         bus.write_byte(0x0172, mb_state);
         // MTemp, MouseLocation, MouseLocation2 are 12 contiguous bytes at $0828
         // (3 × Point = 3 × (i16 v, i16 h)). Single packed write.
@@ -844,7 +848,7 @@ impl super::TrapDispatcher {
             // push_mouse_up() already updates the physical state immediately,
             // but keeping this assignment is harmless and mirrors event delivery.
             if ev.what == 2 {
-                self.input_state.with_mut(|state| state.mouse_button = false);
+                self.input_state.set_mouse_button_pressed(false);
             }
 
             (
