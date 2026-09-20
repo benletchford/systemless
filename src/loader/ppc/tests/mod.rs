@@ -18658,17 +18658,15 @@ fn native_extended_timer_uses_process_owned_scheduling_metadata() {
     native.run_with_hle_imports(64);
     assert_eq!(native.timer_tasks[0].fire_at_subtick, 100_300_000);
     assert_eq!(
-        classic.callback_scheduling.extended_wakeups.get(&task),
-        Some(&100_300_000)
+        classic.callback_scheduling.extended_wakeup(task),
+        Some(100_300_000)
     );
     assert_ne!(native.memory.read_u32_be(task + 14), Some(0));
 
     let detached = classic.callback_scheduling.clone();
-    classic.callback_scheduling.with_mut(|scheduling| {
-        scheduling.primary_vbl_slot = 7;
-        scheduling.current_subtick = 100_150_000;
-    });
-    assert_eq!(native.callback_scheduling.primary_vbl_slot, 7);
+    classic.callback_scheduling.set_primary_vbl_slot(7);
+    classic.callback_scheduling.set_current_subtick(100_150_000);
+    assert_eq!(native.callback_scheduling.primary_vbl_slot(), 7);
 
     native.imports[0].dispatcher_target = PpcImportDispatcherTarget::RmvTime;
     native.cpu.pc = native.entry_pc;
@@ -18676,8 +18674,8 @@ fn native_extended_timer_uses_process_owned_scheduling_metadata() {
     native.cpu.gpr[3] = task;
     native.run_with_hle_imports(64);
     assert_eq!(native.memory.read_u32_be(task + 10), Some((-2_500i32) as u32));
-    assert_eq!(detached.primary_vbl_slot, 0);
-    assert_eq!(detached.current_subtick, 100_000_000);
+    assert_eq!(detached.primary_vbl_slot(), 0);
+    assert_eq!(detached.current_subtick(), 100_000_000);
 }
 
 #[test]

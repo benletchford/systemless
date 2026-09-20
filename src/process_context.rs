@@ -1552,7 +1552,9 @@ pub(crate) struct SharedProcessWindowList(SharedProcessValue<Vec<u32>>);
 pub(crate) struct SharedProcessInputState(SharedProcessValue<ProcessInputState>);
 pub(crate) type SharedProcessTimerTasks = SharedProcessValue<Vec<ProcessTimerTask>>;
 pub(crate) type SharedProcessVblTasks = SharedProcessValue<Vec<ProcessVblTask>>;
-pub(crate) type SharedProcessCallbackScheduling = SharedProcessValue<ProcessCallbackScheduling>;
+/// Detached-by-default attachment handle for Time and Vertical Retrace Manager callback scheduling.
+#[derive(Clone, Default, Eq, PartialEq)]
+pub(crate) struct SharedProcessCallbackScheduling(SharedProcessValue<ProcessCallbackScheduling>);
 #[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessMixedModeM68kState(SharedProcessValue<ProcessMixedModeM68kState>);
 #[derive(Clone, Default, Eq, PartialEq)]
@@ -3612,6 +3614,112 @@ impl SharedProcessDisplayGamma {
 
     pub(crate) fn is_pristine(&self) -> bool {
         self.with_ref(ProcessDisplayGammaState::is_pristine)
+    }
+}
+
+impl fmt::Debug for SharedProcessCallbackScheduling {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.with_ref(|scheduling| {
+            formatter
+                .debug_struct("SharedProcessCallbackScheduling")
+                .field("current_subtick", &scheduling.current_subtick)
+                .field("system_vbl_queue_anchor", &scheduling.system_vbl_queue_anchor)
+                .field("primary_vbl_slot", &scheduling.primary_vbl_slot)
+                .field("extended_wakeups_count", &scheduling.extended_wakeups.len())
+                .finish_non_exhaustive()
+        })
+    }
+}
+
+#[allow(dead_code)]
+impl SharedProcessCallbackScheduling {
+    pub(crate) fn from_value(state: ProcessCallbackScheduling) -> Self {
+        Self(SharedProcessValue::from_value(state))
+    }
+
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn attach_to(&mut self, process_state: &Self) {
+        self.0
+            .attach_to(&process_state.0, ProcessCallbackScheduling::is_pristine);
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&ProcessCallbackScheduling) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut ProcessCallbackScheduling) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    pub(crate) fn snapshot(&self) -> ProcessCallbackScheduling {
+        self.with_ref(Clone::clone)
+    }
+
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.with_ref(ProcessCallbackScheduling::is_pristine)
+    }
+
+    pub(crate) fn current_subtick(&self) -> u64 {
+        self.with_ref(ProcessCallbackScheduling::current_subtick)
+    }
+
+    pub(crate) fn set_current_subtick(&self, subtick: u64) {
+        self.with_mut(|scheduling| scheduling.set_current_subtick(subtick));
+    }
+
+    pub(crate) fn advance_current_subtick_min(&self, min_subtick: u64) -> u64 {
+        self.with_mut(|scheduling| scheduling.advance_current_subtick_min(min_subtick))
+    }
+
+    pub(crate) fn extended_wakeup(&self, task_ptr: u32) -> Option<u64> {
+        self.with_ref(|scheduling| scheduling.extended_wakeup(task_ptr))
+    }
+
+    pub(crate) fn set_extended_wakeup(&self, task_ptr: u32, wakeup: u64) {
+        self.with_mut(|scheduling| scheduling.set_extended_wakeup(task_ptr, wakeup));
+    }
+
+    pub(crate) fn remove_extended_wakeup(&self, task_ptr: u32) -> Option<u64> {
+        self.with_mut(|scheduling| scheduling.remove_extended_wakeup(task_ptr))
+    }
+
+    pub(crate) fn system_vbl_queue_anchor(&self) -> u32 {
+        self.with_ref(ProcessCallbackScheduling::system_vbl_queue_anchor)
+    }
+
+    pub(crate) fn set_system_vbl_queue_anchor(&self, anchor: u32) {
+        self.with_mut(|scheduling| scheduling.set_system_vbl_queue_anchor(anchor));
+    }
+
+    pub(crate) fn primary_vbl_slot(&self) -> i16 {
+        self.with_ref(ProcessCallbackScheduling::primary_vbl_slot)
+    }
+
+    pub(crate) fn set_primary_vbl_slot(&self, slot: i16) {
+        self.with_mut(|scheduling| scheduling.set_primary_vbl_slot(slot));
+    }
+
+    pub(crate) fn reset(&self) {
+        self.with_mut(|scheduling| *scheduling = ProcessCallbackScheduling::default());
+    }
+}
+
+impl PartialEq<ProcessCallbackScheduling> for SharedProcessCallbackScheduling {
+    fn eq(&self, other: &ProcessCallbackScheduling) -> bool {
+        self.with_ref(|current| current == other)
+    }
+}
+
+impl PartialEq<&ProcessCallbackScheduling> for SharedProcessCallbackScheduling {
+    fn eq(&self, other: &&ProcessCallbackScheduling) -> bool {
+        self.with_ref(|current| current == *other)
     }
 }
 
@@ -8614,9 +8722,12 @@ impl ProcessContext {
     ) {
         timer_tasks.attach_to(&self.timer_tasks, Vec::is_empty);
         vbl_tasks.attach_to(&self.vbl_tasks, Vec::is_empty);
-        scheduling.attach_to(&self.callback_scheduling, |state| {
-            state == &Default::default()
-        });
+        scheduling.attach_to(&self.callback_scheduling);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn callback_scheduling(&self) -> &SharedProcessCallbackScheduling {
+        &self.callback_scheduling
     }
 
     pub(crate) fn attach_mixed_mode_m68k_state(
@@ -12382,5 +12493,106 @@ mod tests {
         assert_eq!(classic_gamma.table(), shared_table);
         assert_eq!(context.display_gamma().table(), shared_table);
         assert_eq!(detached.table(), detached_table);
+    }
+
+    #[test]
+    fn process_callback_scheduling_encapsulation() {
+        let scheduling = SharedProcessCallbackScheduling::default();
+        assert!(scheduling.is_pristine());
+        assert_eq!(scheduling.current_subtick(), 0);
+        assert_eq!(scheduling.system_vbl_queue_anchor(), 0);
+        assert_eq!(scheduling.primary_vbl_slot(), 0);
+        assert_eq!(scheduling.extended_wakeup(0x1000), None);
+
+        scheduling.set_current_subtick(100_000_000);
+        assert_eq!(scheduling.current_subtick(), 100_000_000);
+        assert!(!scheduling.is_pristine());
+
+        assert_eq!(
+            scheduling.advance_current_subtick_min(50_000_000),
+            100_000_000
+        );
+        assert_eq!(
+            scheduling.advance_current_subtick_min(150_000_000),
+            150_000_000
+        );
+        assert_eq!(scheduling.current_subtick(), 150_000_000);
+
+        scheduling.set_extended_wakeup(0x1000, 150_500_000);
+        assert_eq!(scheduling.extended_wakeup(0x1000), Some(150_500_000));
+        assert_eq!(
+            scheduling.remove_extended_wakeup(0x1000),
+            Some(150_500_000)
+        );
+        assert_eq!(scheduling.extended_wakeup(0x1000), None);
+
+        scheduling.set_system_vbl_queue_anchor(0x2000);
+        assert_eq!(scheduling.system_vbl_queue_anchor(), 0x2000);
+
+        scheduling.set_primary_vbl_slot(7);
+        assert_eq!(scheduling.primary_vbl_slot(), 7);
+
+        let snapshot = scheduling.snapshot();
+        assert_eq!(snapshot.current_subtick, 150_000_000);
+        assert_eq!(snapshot.system_vbl_queue_anchor, 0x2000);
+        assert_eq!(snapshot.primary_vbl_slot, 7);
+
+        let from_val = SharedProcessCallbackScheduling::from_value(snapshot);
+        assert_eq!(from_val.current_subtick(), 150_000_000);
+        assert_eq!(from_val.system_vbl_queue_anchor(), 0x2000);
+        assert_eq!(from_val.primary_vbl_slot(), 7);
+
+        scheduling.reset();
+        assert!(scheduling.is_pristine());
+        assert_eq!(scheduling.current_subtick(), 0);
+        assert_eq!(scheduling.system_vbl_queue_anchor(), 0);
+        assert_eq!(scheduling.primary_vbl_slot(), 0);
+    }
+
+    #[test]
+    fn attached_callback_schedulings_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic_timers = SharedProcessTimerTasks::default();
+        let mut classic_vbls = SharedProcessVblTasks::default();
+        let mut classic_sched = SharedProcessCallbackScheduling::default();
+        let mut native_timers = SharedProcessTimerTasks::default();
+        let mut native_vbls = SharedProcessVblTasks::default();
+        let mut native_sched = SharedProcessCallbackScheduling::default();
+
+        context.attach_callback_tasks(
+            &mut classic_timers,
+            &mut classic_vbls,
+            &mut classic_sched,
+        );
+        classic_sched.set_current_subtick(100_000_000);
+        classic_sched.set_primary_vbl_slot(5);
+        classic_sched.set_system_vbl_queue_anchor(0x3000);
+        classic_sched.set_extended_wakeup(0x1000, 100_500_000);
+
+        context.attach_callback_tasks(
+            &mut native_timers,
+            &mut native_vbls,
+            &mut native_sched,
+        );
+        let detached = native_sched.clone();
+
+        assert!(classic_sched.ptr_eq(&native_sched));
+        assert!(context.callback_scheduling().ptr_eq(&classic_sched));
+        assert_eq!(native_sched.current_subtick(), 100_000_000);
+        assert_eq!(native_sched.primary_vbl_slot(), 5);
+        assert_eq!(native_sched.system_vbl_queue_anchor(), 0x3000);
+        assert_eq!(native_sched.extended_wakeup(0x1000), Some(100_500_000));
+
+        detached.set_primary_vbl_slot(11);
+        assert!(!native_sched.ptr_eq(&detached));
+        assert_eq!(classic_sched.primary_vbl_slot(), 5);
+        assert_eq!(native_sched.primary_vbl_slot(), 5);
+        assert_eq!(context.callback_scheduling().primary_vbl_slot(), 5);
+        assert_eq!(detached.primary_vbl_slot(), 11);
+
+        native_sched.set_primary_vbl_slot(8);
+        assert_eq!(classic_sched.primary_vbl_slot(), 8);
+        assert_eq!(context.callback_scheduling().primary_vbl_slot(), 8);
+        assert_eq!(detached.primary_vbl_slot(), 11);
     }
 }

@@ -981,7 +981,7 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
                 self.callback_scheduling
-                    .with_mut(|scheduling| scheduling.primary_vbl_slot = slot);
+                    .set_primary_vbl_slot(slot);
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
             }
@@ -2128,7 +2128,7 @@ mod tests {
             "AttachVBL is register-based and should preserve A7"
         );
         assert_eq!(
-            disp.callback_scheduling.primary_vbl_slot, 10,
+            disp.callback_scheduling.primary_vbl_slot(), 10,
             "AttachVBL should record the newly selected primary slot"
         );
     }
@@ -2140,7 +2140,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let stack_ptr = 0x00F0_7000;
         disp.callback_scheduling
-            .with_mut(|scheduling| scheduling.primary_vbl_slot = 7);
+            .set_primary_vbl_slot(7);
         cpu.write_reg(Register::D0, 16);
         cpu.write_reg(Register::A7, stack_ptr);
 
@@ -2158,7 +2158,7 @@ mod tests {
             "AttachVBL should preserve A7 on an invalid-slot path"
         );
         assert_eq!(
-            disp.callback_scheduling.primary_vbl_slot, 7,
+            disp.callback_scheduling.primary_vbl_slot(), 7,
             "AttachVBL should not mutate the recorded primary slot on error"
         );
     }
