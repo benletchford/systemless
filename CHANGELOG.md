@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.45.0](https://github.com/benletchford/systemless/compare/v0.44.0...v0.45.0) (2026-09-20)
+
+
+### Features
+
+* **catalogue:** add Crafty Chess 11.13 ([#2296](https://github.com/benletchford/systemless/issues/2296)) ([682ee3d](https://github.com/benletchford/systemless/commit/682ee3db57bc2fedcbdb7113226b88d040db7fd5))
+* **catalogue:** add GNU Chess Mac 4.0b5 ([#2295](https://github.com/benletchford/systemless/issues/2295)) ([693f1a3](https://github.com/benletchford/systemless/commit/693f1a39fa03b13dcf2a7e50ef2f5a47e48b51cd))
+* **catalogue:** add Wolfenstein 3D First Encounter ([#2300](https://github.com/benletchford/systemless/issues/2300)) ([9363662](https://github.com/benletchford/systemless/commit/93636622d9abf5895856d23cf1bc28d664558567))
+
+
+### Performance Improvements
+
+* **web:** avoid full-frame cursor overlay copies ([ebe5f02](https://github.com/benletchford/systemless/commit/ebe5f0224eb8f4ae9f64d2bd60fdc19197beb759))
+
 ## [0.44.0](https://github.com/benletchford/systemless/compare/v0.43.0...v0.44.0) (2026-09-20)
 
 
