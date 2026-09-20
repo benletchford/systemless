@@ -20,3 +20,6 @@ __pycache__/
 /www/catalogue/incoming/**/*.kpk
 /www/catalogue/incoming/**/*.img
 /www/catalogue/incoming/**/*.dat
+
+# Experiment notes stay local.
+/docs/
