@@ -59,8 +59,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/space-junkie/gameplay.png
+    type: sha256
+    sha256: 732b63bb9d399b17480c2ce5ed60d01ba4bc09a58fe61067ef0fdd7dfc3a4baf
+    size_bytes: 14169
   provenance:
     redistribution: permitted
     content_only: true
@@ -87,7 +88,7 @@ digitized sounds, easier play, and a Power Macintosh-compatible build.
 
 ## Wave 1
 
-![Space Junkie gameplay](incoming/space-junkie/gameplay.png)
+![Space Junkie gameplay](https://assets.systemless.org/catalogue/media/sha256/73/732b63bb9d399b17480c2ce5ed60d01ba4bc09a58fe61067ef0fdd7dfc3a4baf.png)
 
 The complete archive keeps the game, About document, registration application,
 and icon together. A deterministic Systemless run dismissed the registration

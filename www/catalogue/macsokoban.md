@@ -56,8 +56,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/macsokoban/gameplay.png
+    type: sha256
+    sha256: f73d94b9880e8a657ad117313d5c9fb32d6d80f5e9624f89c93fd658a87d2d3e
+    size_bytes: 9596
   provenance:
     redistribution: permitted
     content_only: true
@@ -101,4 +102,4 @@ player, entered the first puzzle, processed several arrow-key moves and showed
 the keeper moving across the board without a crash, trap failure or rendering
 fault.
 
-![MacSokoban gameplay](incoming/macsokoban/gameplay.png)
+![MacSokoban gameplay](https://assets.systemless.org/catalogue/media/sha256/f7/f73d94b9880e8a657ad117313d5c9fb32d6d80f5e9624f89c93fd658a87d2d3e.png)

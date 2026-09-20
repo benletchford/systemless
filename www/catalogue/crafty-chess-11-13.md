@@ -85,8 +85,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/crafty-chess-11-13/gameplay.png
+    type: sha256
+    sha256: 7a512b4937e7dc5c9a124f615e2e936f53ea7e0bd542439baf906f85928002c4
+    size_bytes: 5348
   provenance:
     redistribution: permitted
     content_only: true
@@ -136,4 +137,4 @@ prompt, entered `d` followed by Return, and produced the echoed `White(1): d`
 line together with the ASCII chess board. This is the interaction recorded in
 [issue #2293](https://github.com/benletchford/systemless/issues/2293).
 
-![Crafty Chess gameplay](incoming/crafty-chess-11-13/gameplay.png)
+![Crafty Chess gameplay](https://assets.systemless.org/catalogue/media/sha256/7a/7a512b4937e7dc5c9a124f615e2e936f53ea7e0bd542439baf906f85928002c4.png)

@@ -56,8 +56,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/space-joust/gameplay.png
+    type: sha256
+    sha256: e116763d22be409a72a8c606e5c5a025a9943b0cdd7c28825b59e0187f97d6cc
+    size_bytes: 8253
   provenance:
     redistribution: permitted
     content_only: true
@@ -89,7 +90,7 @@ complete package for non-profit hosting and redistribution.
 
 ## In the live arena
 
-![Space Joust gameplay](incoming/space-joust/gameplay.png)
+![Space Joust gameplay](https://assets.systemless.org/catalogue/media/sha256/e1/e116763d22be409a72a8c606e5c5a025a9943b0cdd7c28825b59e0187f97d6cc.png)
 
 Systemless reaches the shareware screen, main menu and Play mode from the exact
 archive. A deterministic run entered the live field with the player's ship and

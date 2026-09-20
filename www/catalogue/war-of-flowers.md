@@ -55,8 +55,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/war-of-flowers/gameplay.png
+    type: sha256
+    sha256: 96c646e5a7bdcf643be5f7ad8b3cabb168790614f49e38b421d80c528b5a39e5
+    size_bytes: 26099
   provenance:
     redistribution: permitted
     content_only: true
@@ -91,7 +92,7 @@ documentation and icon intact.
 
 ## In the live board game
 
-![War of Flowers gameplay](incoming/war-of-flowers/gameplay.png)
+![War of Flowers gameplay](https://assets.systemless.org/catalogue/media/sha256/96/96c646e5a7bdcf643be5f7ad8b3cabb168790614f49e38b421d80c528b5a39e5.png)
 
 Systemless reaches the first-player selection, the live board and the player's
 hand from the exact archive. After selecting the first player, a deterministic

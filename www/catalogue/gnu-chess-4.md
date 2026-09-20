@@ -81,8 +81,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/gnu-chess-4/gameplay.png
+    type: sha256
+    sha256: ca8dc6a31630b8e203330c1acbabe91256a78333a0d03c96488c67f81e7652fb
+    size_bytes: 14664
   provenance:
     redistribution: permitted
     content_only: true
@@ -127,4 +128,4 @@ modules, and its GPL text is byte-identical to the copy shipped beside the binar
 Together those records identify the source as the corresponding GPL source for this
 specific 4.0b5 Macintosh build.
 
-![GNU Chess Mac gameplay](incoming/gnu-chess-4/gameplay.png)
+![GNU Chess Mac gameplay](https://assets.systemless.org/catalogue/media/sha256/ca/ca8dc6a31630b8e203330c1acbabe91256a78333a0d03c96488c67f81e7652fb.png)

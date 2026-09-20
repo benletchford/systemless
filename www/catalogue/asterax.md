@@ -51,8 +51,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/asterax/gameplay.png
+    type: sha256
+    sha256: 409a2ff74f43fc71cd2a34ade38bc67cb6549470b5e716431dd2f0dc45dfc565
+    size_bytes: 13133
   provenance:
     redistribution: permitted
     content_only: true
@@ -79,7 +80,7 @@ author's non-profit distribution condition.
 
 ## In the asteroid field
 
-![Asterax gameplay](incoming/asterax/gameplay.png)
+![Asterax gameplay](https://assets.systemless.org/catalogue/media/sha256/40/409a2ff74f43fc71cd2a34ade38bc67cb6549470b5e716431dd2f0dc45dfc565.png)
 
 Asterax begins with a ship-selection screen and opens into a fast asteroid field
 where pilots mine emeraldium while avoiding rival ships and hazards. The original

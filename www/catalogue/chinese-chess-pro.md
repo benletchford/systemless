@@ -59,8 +59,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/chinese-chess-pro/gameplay.png
+    type: sha256
+    sha256: 092687984d7633dd9128e40eec627148dcc039f82bb2afc17deac1bc4e709994
+    size_bytes: 18441
   provenance:
     redistribution: permitted
     content_only: true
@@ -99,7 +100,7 @@ keeps every original package component together.
 
 ## A real move on the live board
 
-![Chinese Chess Pro gameplay](incoming/chinese-chess-pro/gameplay.png)
+![Chinese Chess Pro gameplay](https://assets.systemless.org/catalogue/media/sha256/09/092687984d7633dd9128e40eec627148dcc039f82bb2afc17deac1bc4e709994.png)
 
 Systemless reaches the live board from the exact archive using the verified
 Chinese Chess Pro Color 68k path. A deterministic run selected a red soldier at

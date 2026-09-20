@@ -57,8 +57,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/ultima-iii/gameplay.png
+    type: sha256
+    sha256: dd5b43af1abbdc97ed1b121fac802b92b25f37e015314e86ada90be69a37328c
+    size_bytes: 47095
   provenance:
     redistribution: permitted
     content_only: true
@@ -79,7 +80,7 @@ references:
 
 ## Exodus in Sosaria
 
-![Ultima III gameplay](incoming/ultima-iii/gameplay.png)
+![Ultima III gameplay](https://assets.systemless.org/catalogue/media/sha256/dd/dd5b43af1abbdc97ed1b121fac802b92b25f37e015314e86ada90be69a37328c.png)
 
 *Ultima III* is a classic party-based fantasy adventure. Create and organize a
 party, equip its members, then journey across Sosaria through towns, wilderness,
