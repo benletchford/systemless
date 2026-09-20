@@ -15,6 +15,56 @@ pub struct CompactPresentation {
     pub detail: Vec<u32>,
 }
 
+/// Owns a reusable compact image and its visible-surface stamp.
+/// Obtain mutable access through [`Self::frame_mut`] when replacing pixels or
+/// adding software overlays; that invalidates reuse of the retained image.
+#[derive(Default)]
+pub struct CompactPresentationCache {
+    frame: CompactPresentation,
+    source: Option<super::VisibleImageStamp>,
+}
+
+impl CompactPresentationCache {
+    /// The most recently prepared image, ready for upload or resubmission.
+    pub fn frame(&self) -> &CompactPresentation {
+        &self.frame
+    }
+
+    /// Invalidate retained-image reuse before the caller changes the output.
+    pub fn frame_mut(&mut self) -> &mut CompactPresentation {
+        self.source = None;
+        &mut self.frame
+    }
+
+    /// Prepare the current opaque retained image without software overlays.
+    /// Reuse it if no visible writes, coverage or palette changes occurred.
+    /// Offscreen-only drawing does not invalidate this image. Returns false
+    /// for an absent or mismatched surface, leaving the previous pixels intact.
+    pub fn prepare(&mut self, bus: &MacMemoryBus, size: (u32, u32)) -> bool {
+        let Some(p) = bus.presentation.as_ref() else {
+            self.source = None;
+            return false;
+        };
+        if (p.logical_width(), p.height) != size {
+            self.source = None;
+            return false;
+        }
+        if self
+            .source
+            .as_ref()
+            .is_some_and(|source| source.matches(&p.visible_image))
+        {
+            return true;
+        }
+        self.source = None;
+        if !p.export_compact(std::iter::repeat(None), &mut self.frame) {
+            return false;
+        }
+        self.source = Some(p.visible_image.clone());
+        true
+    }
+}
+
 impl Presentation {
     fn compact_sample(&self, x: usize, y: usize, sx: usize, sy: usize) -> u32 {
         let lanes = self.bytes_per_pixel() as usize;
@@ -180,6 +230,155 @@ impl Presentation {
 mod tests {
     use super::*;
     use crate::memory::MemoryBus;
+
+    fn check_cached(bus: &MacMemoryBus, cache: &mut CompactPresentationCache, size: (u32, u32)) {
+        let mut fresh = CompactPresentation::default();
+        assert!(bus.compact_presentation_without_overlays(size, &mut fresh));
+        assert!(cache.prepare(bus, size));
+        assert_eq!((cache.frame().width, cache.frame().height), size);
+        assert_eq!(cache.frame().scale, fresh.scale);
+        assert_eq!(cache.frame().cells, fresh.cells);
+        assert_eq!(cache.frame().detail, fresh.detail);
+    }
+
+    #[test]
+    fn cached_export_tracks_visible_writes_and_retained_coverage() {
+        for depth in [8u16, 16, 32] {
+            for scale in 2..=4 {
+                let mut bus = MacMemoryBus::new(1024 * 1024);
+                bus.enable_outline_presentation(
+                    (0x1000, 8 * u32::from(depth / 8), 8, 8, depth),
+                    std::array::from_fn(|i| [i as u8; 3]),
+                    scale,
+                );
+                let mut cache = CompactPresentationCache::default();
+                let mut second = CompactPresentationCache::default();
+                check_cached(&bus, &mut cache, (8, 8));
+                check_cached(&bus, &mut second, (8, 8));
+                // Equal plain bytes preserve the visible stamp.
+                let initial = cache.source.clone().unwrap();
+                bus.write_byte(0x1000, bus.read_byte(0x1000));
+                assert!(initial.matches(&bus.presentation.as_ref().unwrap().visible_image));
+                check_cached(&bus, &mut cache, (8, 8));
+                bus.write_byte(0x1000, 77);
+                check_cached(&bus, &mut cache, (8, 8));
+                check_cached(&bus, &mut second, (8, 8));
+                // Coverage changes must invalidate even without a RAM write.
+                let value = bus.read_byte(0x1000);
+                bus.presentation.as_mut().unwrap().glyph = Some((
+                    super::super::OutlineGlyph {
+                        pixels: vec![64, 255, 0, 128],
+                        width: 2,
+                        height: 2,
+                        left: 0,
+                        top: 0,
+                    },
+                    0,
+                    0,
+                ));
+                bus.outline_glyph_pixel(0x1000, 0, 0, 0);
+                bus.end_outline_glyph();
+                assert_eq!(bus.read_byte(0x1000), value);
+                check_cached(&bus, &mut cache, (8, 8));
+                check_cached(&bus, &mut second, (8, 8));
+                let before = cache.source.clone().unwrap();
+                let saved = bus.save_pixel_bytes(0x1000, 2);
+                bus.write_byte(0x1000, value);
+                assert!(!before.matches(&bus.presentation.as_ref().unwrap().visible_image));
+                check_cached(&bus, &mut cache, (8, 8));
+                bus.restore_saved_pixels(0x1000, &saved, 0, 2);
+                check_cached(&bus, &mut cache, (8, 8));
+                check_cached(&bus, &mut second, (8, 8));
+            }
+        }
+    }
+
+    #[test]
+    fn cached_export_ignores_offscreen_changes_until_copied_visible() {
+        let mut bus = super::super::tests::bus();
+        let mut cache = CompactPresentationCache::default();
+        check_cached(&bus, &mut cache, (8, 8));
+        let source = cache.source.clone().unwrap();
+        let global = bus.presentation_epoch();
+        super::super::tests::paint_detail(&mut bus, 0x2000);
+        assert_ne!(bus.presentation_epoch(), global);
+        assert!(source.matches(&bus.presentation.as_ref().unwrap().visible_image));
+        check_cached(&bus, &mut cache, (8, 8));
+        let saved = bus.save_pixel_bytes(0x2000, 2);
+        bus.presentation.write_bytes(0x2000, &[255; 2]);
+        assert!(source.matches(&bus.presentation.as_ref().unwrap().visible_image));
+        bus.restore_saved_pixels(0x2000, &saved, 0, 2);
+        assert!(source.matches(&bus.presentation.as_ref().unwrap().visible_image));
+        bus.restore_saved_pixels(0x1000, &saved, 0, 2);
+        assert!(!source.matches(&bus.presentation.as_ref().unwrap().visible_image));
+        check_cached(&bus, &mut cache, (8, 8));
+    }
+
+    #[test]
+    fn cached_export_invalidates_palette_and_replacement_surfaces() {
+        let mut cache = CompactPresentationCache::default();
+        for depth in [8u16, 16, 32] {
+            let mut bus = MacMemoryBus::new(1024 * 1024);
+            for (width, height, scale) in [(8u16, 8u16, 4), (4, 16, 4), (4, 16, 2)] {
+                let screen = (
+                    0x1000,
+                    u32::from(width) * u32::from(depth / 8),
+                    width,
+                    height,
+                    depth,
+                );
+                let palette = std::array::from_fn(|i| [i as u8; 3]);
+                let size = (u32::from(width), u32::from(height));
+                bus.enable_outline_presentation(screen, palette, scale);
+                check_cached(&bus, &mut cache, size);
+                let source = cache.source.clone().unwrap();
+                // Replacing a surface with identical geometry/revision still
+                // needs a distinct identity, including after the old bus dies.
+                bus.enable_outline_presentation(screen, palette, scale);
+                assert!(!source.matches(&bus.presentation.as_ref().unwrap().visible_image));
+                check_cached(&bus, &mut cache, size);
+                let mut changed_palette = palette;
+                changed_palette[0] = [230, 17, 53];
+                super::super::tests::paint_detail(&mut bus, 0x1000);
+                bus.prepare_outline_presentation(screen, changed_palette);
+                check_cached(&bus, &mut cache, size);
+                assert!(!cache.prepare(&bus, (size.1 + 1, size.0)));
+                check_cached(&bus, &mut cache, size);
+                bus.presentation.set(None);
+                assert!(!cache.prepare(&bus, size));
+            }
+        }
+    }
+
+    #[test]
+    fn mutable_compact_output_invalidates_reuse_for_overlays() {
+        let bus = super::super::tests::bus();
+        let mut cache = CompactPresentationCache::default();
+        check_cached(&bus, &mut cache, (8, 8));
+        let logical = vec![0xff000000; 64];
+        let mut overlay = logical.clone();
+        overlay[0] = 0xffabcdef;
+        assert!(bus.compact_presentation(&logical, &overlay, cache.frame_mut()));
+        assert_eq!(cache.frame().cells[0], 0xabcdef);
+        check_cached(&bus, &mut cache, (8, 8));
+        *cache.frame_mut() = CompactPresentation::default();
+        check_cached(&bus, &mut cache, (8, 8));
+    }
+
+    #[test]
+    fn cached_export_cannot_alias_a_wrapped_revision() {
+        let mut bus = super::super::tests::bus();
+        let mut cache = CompactPresentationCache::default();
+        bus.presentation.as_mut().unwrap().visible_image.revision = 0;
+        check_cached(&bus, &mut cache, (8, 8));
+        let source = cache.source.clone().unwrap();
+        bus.presentation.as_mut().unwrap().revision = u64::MAX;
+        bus.write_byte(0x1000, 77);
+        let current = bus.presentation.as_ref().unwrap().visible_image.clone();
+        assert_eq!(source.revision, current.revision);
+        assert!(!source.matches(&current));
+        check_cached(&bus, &mut cache, (8, 8));
+    }
 
     #[test]
     fn export_without_overlays_matches_validated_overlay_path() {
