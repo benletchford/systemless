@@ -4238,6 +4238,21 @@ impl TrapDispatcher {
             .join("/")
     }
 
+    pub(crate) fn normalize_hfs_lookup_path(name: &str) -> String {
+        let normalized = Self::normalize_hfs_path(name);
+        if name.starts_with(':') || !name.contains(':') {
+            return normalized;
+        }
+        let Some((volume_name, remainder)) = normalized.split_once('/') else {
+            return normalized;
+        };
+        if volume_name.eq_ignore_ascii_case(Self::boot_volume_name()) {
+            remainder.to_string()
+        } else {
+            normalized
+        }
+    }
+
     pub(crate) fn hfs_name_from_vfs_component(component: &str) -> String {
         component
             .chars()
@@ -4999,7 +5014,7 @@ impl TrapDispatcher {
 
     pub(crate) fn find_vfs_file_in_directory(&mut self, dir_id: u32, name: &str) -> Option<String> {
         self.ensure_vfs_catalog();
-        let normalized = Self::normalize_hfs_path(name);
+        let normalized = Self::normalize_hfs_lookup_path(name);
         if let Some(dir_path) = self.directory_path_for_id(dir_id) {
             let candidate = if dir_path.is_empty() {
                 normalized.clone()
@@ -5072,7 +5087,7 @@ impl TrapDispatcher {
         name: &str,
     ) -> Option<String> {
         self.ensure_vfs_catalog();
-        let normalized = Self::normalize_hfs_path(name);
+        let normalized = Self::normalize_hfs_lookup_path(name);
         if let Some(dir_path) = self.directory_path_for_id(dir_id) {
             let candidate = if dir_path.is_empty() {
                 normalized.clone()
@@ -5124,7 +5139,7 @@ impl TrapDispatcher {
         name: &str,
     ) -> Option<String> {
         self.ensure_vfs_catalog();
-        let normalized = Self::normalize_hfs_path(name);
+        let normalized = Self::normalize_hfs_lookup_path(name);
         if normalized.is_empty() {
             return None;
         }
@@ -10705,6 +10720,24 @@ mod tests {
         assert_eq!(
             TrapDispatcher::normalize_hfs_path("Unix:Folder:100%/Done"),
             format!("Folder/100%{VFS_HFS_LITERAL_SLASH}Done")
+        );
+    }
+
+    #[test]
+    fn hfs_lookup_path_strips_only_complete_boot_volume_prefixes() {
+        assert_eq!(
+            TrapDispatcher::normalize_hfs_lookup_path(
+                "macintoshhd:System Folder:Preferences:Sierra"
+            ),
+            "System Folder/Preferences/Sierra"
+        );
+        assert_eq!(
+            TrapDispatcher::normalize_hfs_lookup_path(":MacintoshHD:Preferences"),
+            "MacintoshHD/Preferences"
+        );
+        assert_eq!(
+            TrapDispatcher::normalize_hfs_lookup_path("Games:Pinball:Scores"),
+            "Games/Pinball/Scores"
         );
     }
 
