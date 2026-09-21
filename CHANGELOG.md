@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.47.2](https://github.com/benletchford/systemless/compare/v0.47.1...v0.47.2) (2026-09-21)
+
+
+### Bug Fixes
+
+* **catalogue:** refresh Escape Velocity Nova screenshot ([#2360](https://github.com/benletchford/systemless/issues/2360)) ([3397e3c](https://github.com/benletchford/systemless/commit/3397e3c58830a39827db3277ed5ff72af5044402))
+
 ## [0.47.1](https://github.com/benletchford/systemless/compare/v0.47.0...v0.47.1) (2026-09-21)
 
 
