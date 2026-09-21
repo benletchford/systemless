@@ -823,6 +823,28 @@ impl Default for ProcessResourcePolicyState {
     }
 }
 
+impl ProcessResourcePolicyState {
+    pub(crate) fn res_load(&self) -> bool {
+        self.res_load
+    }
+
+    pub(crate) fn set_res_load(&mut self, enabled: bool) {
+        self.res_load = enabled;
+    }
+
+    pub(crate) fn res_purge(&self) -> bool {
+        self.res_purge
+    }
+
+    pub(crate) fn set_res_purge(&mut self, enabled: bool) {
+        self.res_purge = enabled;
+    }
+
+    pub(crate) fn is_pristine(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 fn process_resource_manager_runtime_is_empty(manager: &ProcessResourceManagerState) -> bool {
     manager.loaded_handles.is_empty()
         && manager.resource_handles_by_key.is_empty()
@@ -863,9 +885,7 @@ impl ProcessResourceManagerState {
         source
             .current_resource_file
             .attach_copy_to(&self.current_resource_file, |refnum| *refnum == 0);
-        source.policy.attach_copy_to(&self.policy, |policy| {
-            *policy == ProcessResourcePolicyState::default()
-        });
+        source.policy.attach_to(&self.policy);
 
         self.vfs_resource_files
             .merge_from(&mut source.vfs_resource_files);
@@ -1439,7 +1459,9 @@ pub(crate) struct SharedProcessFileSystem(Rc<UnsafeCell<ProcessFileSystemState>>
 pub struct SharedProcessValue<T>(Rc<UnsafeCell<T>>);
 
 pub(crate) type SharedProcessResourceManager = SharedProcessValue<ProcessResourceManagerState>;
-pub(crate) type SharedProcessResourcePolicy = SharedProcessValue<ProcessResourcePolicyState>;
+/// Detached-by-default attachment handle for Resource Manager policy switches.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SharedProcessResourcePolicy(SharedProcessValue<ProcessResourcePolicyState>);
 /// Process-wide 256-entry display color table shared by attached CPU adapters.
 pub(crate) type SharedProcessDisplayClut = SharedProcessValue<[[u16; 3]; 256]>;
 pub(crate) type SharedProcessSoundManager = SharedProcessValue<SoundManager>;
@@ -3727,24 +3749,69 @@ impl PartialEq<&ProcessCallbackScheduling> for SharedProcessCallbackScheduling {
 }
 
 impl SharedProcessResourcePolicy {
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    pub(crate) fn with_ref<R>(
+        &self,
+        operation: impl FnOnce(&ProcessResourcePolicyState) -> R,
+    ) -> R {
+        self.0.with_ref(operation)
+    }
+
+    pub(crate) fn with_mut<R>(
+        &self,
+        operation: impl FnOnce(&mut ProcessResourcePolicyState) -> R,
+    ) -> R {
+        self.0.with_mut(operation)
+    }
+
+    fn attach_to(&mut self, process_policy: &Self) {
+        self.0.attach_copy_to(
+            &process_policy.0,
+            ProcessResourcePolicyState::is_pristine,
+        );
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn snapshot(&self) -> ProcessResourcePolicyState {
+        self.with_ref(|policy| *policy)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn reset(&self) {
+        self.with_mut(|policy| *policy = ProcessResourcePolicyState::default());
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.with_ref(ProcessResourcePolicyState::is_pristine)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
     /// Return whether Resource Manager lookups automatically load data.
     pub(crate) fn res_load(&self) -> bool {
-        self.with_ref(|policy| policy.res_load)
+        self.with_ref(ProcessResourcePolicyState::res_load)
     }
 
     /// Return whether released Resource Manager handles become purgeable.
     pub(crate) fn res_purge(&self) -> bool {
-        self.with_ref(|policy| policy.res_purge)
+        self.with_ref(ProcessResourcePolicyState::res_purge)
     }
 
     /// Scope a `SetResLoad` policy update to one serialized operation.
     pub(crate) fn set_res_load(&self, enabled: bool) {
-        self.with_mut(|policy| policy.res_load = enabled);
+        self.with_mut(|policy| policy.set_res_load(enabled));
     }
 
     /// Scope a `SetResPurge` policy update to one serialized operation.
     pub(crate) fn set_res_purge(&self, enabled: bool) {
-        self.with_mut(|policy| policy.res_purge = enabled);
+        self.with_mut(|policy| policy.set_res_purge(enabled));
     }
 }
 
@@ -11770,6 +11837,40 @@ mod tests {
         assert!(detached.resident_resources.is_empty());
         assert!(detached.vfs_resources.is_empty());
         assert_eq!(*detached.current_resource_file, 7);
+    }
+
+    #[test]
+    fn resource_policy_handle_shares_across_adapters_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessResourceManager::default();
+        classic.policy.set_res_load(false);
+        let mut native = SharedProcessResourceManager::default();
+
+        context.attach_resource_manager(&mut classic);
+        context.attach_resource_manager(&mut native);
+        let detached = native.policy.clone();
+
+        assert!(classic.policy.ptr_eq(&native.policy));
+        assert!(!classic.policy.ptr_eq(&detached));
+        assert!(!native.policy.res_load());
+        assert!(!native.policy.res_purge());
+
+        native.policy.set_res_purge(true);
+        assert!(classic.policy.res_purge());
+        assert!(!detached.res_purge());
+
+        detached.with_mut(|policy| {
+            policy.set_res_load(true);
+            policy.set_res_purge(true);
+        });
+        let detached_snapshot = detached.snapshot();
+        assert!(detached_snapshot.res_load());
+        assert!(detached_snapshot.res_purge());
+
+        classic.policy.reset();
+        assert!(classic.policy.is_pristine());
+        assert!(native.policy.is_pristine());
+        assert!(!detached.is_pristine());
     }
 
     #[test]
