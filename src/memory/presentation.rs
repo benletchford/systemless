@@ -392,6 +392,24 @@ impl VisibleImageStamp {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResolvedOutputFormat {
+    Argb,
+    Rgba,
+}
+
+enum ResolvedOutput {
+    Argb(Vec<u32>),
+    Rgba(Vec<u8>),
+}
+
+struct ResolvedOutputCache {
+    revision: u64,
+    size: (u32, u32),
+    format: ResolvedOutputFormat,
+    pixels: ResolvedOutput,
+}
+
 pub(crate) struct Presentation {
     revision: u64,
     visible_image: VisibleImageStamp,
@@ -399,7 +417,7 @@ pub(crate) struct Presentation {
     cpu_recolor: Option<CpuRecolor>,
     cpu_copy: [Option<Arc<DetailCell>>; 4],
     restored_dialog: Option<(u64, (i16, i16, i16, i16), bool, u64)>,
-    output_cache: std::cell::RefCell<Option<(u64, (u32, u32), Vec<u32>)>>,
+    output_cache: std::cell::RefCell<Option<ResolvedOutputCache>>,
     offscreen: BTreeMap<u32, Arc<DetailCell>>,
     // Conservative bounds: deletion may leave false positives, never false negatives.
     offscreen_bounds: Option<(u32, u32)>,
@@ -587,16 +605,20 @@ impl Presentation {
 
     fn resolved_argb(&self, scale: u32) -> std::cell::Ref<'_, [u32]> {
         let size = (self.logical_width() * scale, self.height * scale);
-        if !self
-            .output_cache
-            .borrow()
-            .as_ref()
-            .is_some_and(|(revision, cached_size, _)| {
-                *revision == self.revision && *cached_size == size
-            })
-        {
+        let cache_matches = self.output_cache.borrow().as_ref().is_some_and(|cache| {
+            cache.revision == self.revision
+                && cache.size == size
+                && cache.format == ResolvedOutputFormat::Argb
+        });
+        if !cache_matches {
             let mut cache = self.output_cache.borrow_mut();
-            let (_, _, pixels) = cache.get_or_insert_with(|| (0, (0, 0), Vec::new()));
+            let mut pixels = match cache.take() {
+                Some(ResolvedOutputCache {
+                    pixels: ResolvedOutput::Argb(pixels),
+                    ..
+                }) => pixels,
+                _ => Vec::new(),
+            };
             pixels.clear();
             pixels.reserve((self.logical_width() * self.height * scale * scale) as usize);
             self.render_scaled(scale, |rgb, count| {
@@ -606,12 +628,56 @@ impl Presentation {
                     | u32::from(rgb[2]);
                 pixels.extend(std::iter::repeat_n(pixel, count as usize));
             });
-            let (revision, cached_size, _) = cache.as_mut().unwrap();
-            *revision = self.revision;
-            *cached_size = size;
+            *cache = Some(ResolvedOutputCache {
+                revision: self.revision,
+                size,
+                format: ResolvedOutputFormat::Argb,
+                pixels: ResolvedOutput::Argb(pixels),
+            });
         }
         std::cell::Ref::map(self.output_cache.borrow(), |cache| {
-            cache.as_ref().unwrap().2.as_slice()
+            match &cache.as_ref().unwrap().pixels {
+                ResolvedOutput::Argb(pixels) => pixels.as_slice(),
+                ResolvedOutput::Rgba(_) => unreachable!("resolved output cache format mismatch"),
+            }
+        })
+    }
+
+    fn resolved_rgba(&self, scale: u32) -> std::cell::Ref<'_, [u8]> {
+        let size = (self.logical_width() * scale, self.height * scale);
+        let cache_matches = self.output_cache.borrow().as_ref().is_some_and(|cache| {
+            cache.revision == self.revision
+                && cache.size == size
+                && cache.format == ResolvedOutputFormat::Rgba
+        });
+        if !cache_matches {
+            let mut cache = self.output_cache.borrow_mut();
+            let mut pixels = match cache.take() {
+                Some(ResolvedOutputCache {
+                    pixels: ResolvedOutput::Rgba(pixels),
+                    ..
+                }) => pixels,
+                _ => Vec::new(),
+            };
+            pixels.clear();
+            pixels.reserve((self.logical_width() * self.height * scale * scale * 4) as usize);
+            self.render_scaled(scale, |rgb, count| {
+                pixels.extend(
+                    std::iter::repeat_n([rgb[0], rgb[1], rgb[2], 255], count as usize).flatten(),
+                );
+            });
+            *cache = Some(ResolvedOutputCache {
+                revision: self.revision,
+                size,
+                format: ResolvedOutputFormat::Rgba,
+                pixels: ResolvedOutput::Rgba(pixels),
+            });
+        }
+        std::cell::Ref::map(self.output_cache.borrow(), |cache| {
+            match &cache.as_ref().unwrap().pixels {
+                ResolvedOutput::Rgba(pixels) => pixels.as_slice(),
+                ResolvedOutput::Argb(_) => unreachable!("resolved output cache format mismatch"),
+            }
         })
     }
 
@@ -1851,11 +1917,9 @@ impl MacMemoryBus {
         {
             return None;
         }
-        let pixels = p.resolved_argb(scale);
-        output.resize(pixels.len() * 4, 0);
-        for (rgba, &pixel) in output.chunks_exact_mut(4).zip(pixels.iter()) {
-            rgba.copy_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, pixel as u8, 255]);
-        }
+        let pixels = p.resolved_rgba(scale);
+        output.clear();
+        output.extend_from_slice(&pixels);
         let width = p.logical_width() * scale;
         if !std::ptr::eq(guest.as_ptr(), with_overlays.as_ptr()) {
             for (index, (before, after)) in guest
@@ -2680,6 +2744,14 @@ mod tests {
         bus.presented_argb_scaled(&guest, &guest, 2, &mut output)
             .unwrap();
         let expected = output.clone();
+        let (cached_ptr, cached_capacity) = {
+            let presentation = bus.presentation.as_ref().unwrap();
+            let cache = presentation.output_cache.borrow();
+            match &cache.as_ref().unwrap().pixels {
+                ResolvedOutput::Argb(pixels) => (pixels.as_ptr(), pixels.capacity()),
+                ResolvedOutput::Rgba(_) => unreachable!(),
+            }
+        };
         let mut overlay = guest;
         overlay[0] = 0xffabcdef;
         bus.presented_argb_scaled(&guest, &overlay, 2, &mut output)
@@ -2693,6 +2765,16 @@ mod tests {
         bus.presented_argb_scaled(&guest, &guest, 2, &mut output)
             .unwrap();
         assert_ne!(output, expected);
+        let (reused_ptr, reused_capacity) = {
+            let presentation = bus.presentation.as_ref().unwrap();
+            let cache = presentation.output_cache.borrow();
+            match &cache.as_ref().unwrap().pixels {
+                ResolvedOutput::Argb(pixels) => (pixels.as_ptr(), pixels.capacity()),
+                ResolvedOutput::Rgba(_) => unreachable!(),
+            }
+        };
+        assert_eq!(reused_ptr, cached_ptr);
+        assert_eq!(reused_capacity, cached_capacity);
         bus.restore_saved_pixels(0x1000, &saved, 0, 64);
         bus.presented_argb_scaled(&guest, &guest, 2, &mut output)
             .unwrap();
@@ -2703,6 +2785,41 @@ mod tests {
         bus.presented_argb_scaled(&guest, &guest, 2, &mut output)
             .unwrap();
         assert_ne!(output, expected);
+    }
+
+    #[test]
+    fn resolved_output_cache_switches_argb_rgba_without_stale_pixels() {
+        let mut bus = bus();
+        let screen = (0x1000, 8, 8, 8, 8);
+        let palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.prepare_outline_presentation(screen, palette);
+        paint_detail(&mut bus, 0x1000);
+
+        let guest_argb = [0; 64];
+        let guest_rgba = [0; 64 * 4];
+        let mut argb = Vec::new();
+        let mut rgba = Vec::new();
+        bus.presented_argb_scaled(&guest_argb, &guest_argb, 2, &mut argb)
+            .unwrap();
+        bus.presented_rgba_scaled(&guest_rgba, &guest_rgba, 2, &mut rgba)
+            .unwrap();
+        let expected_rgba = argb
+            .iter()
+            .flat_map(|pixel| {
+                [
+                    (*pixel >> 16) as u8,
+                    (*pixel >> 8) as u8,
+                    *pixel as u8,
+                    (*pixel >> 24) as u8,
+                ]
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rgba, expected_rgba);
+
+        bus.write_byte(0x1000, bus.read_byte(0x1000));
+        bus.presented_rgba_scaled(&guest_rgba, &guest_rgba, 2, &mut rgba)
+            .unwrap();
+        assert_ne!(rgba, expected_rgba);
     }
 
     #[test]
