@@ -8934,7 +8934,7 @@ impl super::TrapDispatcher {
         dir_id: u32,
         filename: &str,
     ) -> Option<String> {
-        let normalized = super::TrapDispatcher::normalize_hfs_path(filename);
+        let normalized = super::TrapDispatcher::normalize_hfs_lookup_path(filename);
         if normalized.is_empty() {
             return None;
         }
@@ -8947,10 +8947,6 @@ impl super::TrapDispatcher {
         // parent dirID, and the final name. If a multi-component pathname's
         // parent already exists from the volume root, prefer that canonical
         // VFS parent; otherwise resolve the pathname relative to vRefNum/dirID.
-        let normalized = normalized
-            .strip_prefix(&format!("{}/", super::TrapDispatcher::boot_volume_name()))
-            .unwrap_or(&normalized)
-            .to_string();
         if normalized.contains('/') {
             let absolute_parent = super::TrapDispatcher::vfs_parent_path(&normalized);
             if self.directory_id_for_vfs_path(absolute_parent).is_some() {
@@ -16887,6 +16883,37 @@ mod tests {
             "ioDrNmFls counts the Ben file in the Pilots directory"
         );
         assert_eq!(bus.read_long(pb + 100), app_dir_id);
+    }
+
+    #[test]
+    fn fsdispatch_pbgetcatinfo_resolves_full_boot_volume_directory_path() {
+        // Files 1992, 2-27 to 2-28: a pathname that starts with a volume name
+        // is complete and identifies its target independently of ioDirID.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let parent_dir_id = disp.ensure_vfs_directory("System Folder/Preferences");
+        let sierra_dir_id = disp.ensure_vfs_directory("System Folder/Preferences/Sierra");
+
+        let pb = 0x300000u32;
+        let name_ptr = setup_param_block(
+            &mut bus,
+            &mut cpu,
+            pb,
+            b"macintoshhd:System Folder:Preferences:Sierra",
+        );
+        bus.write_word(pb + 16, 0x3FFF);
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_word(pb + 28, 0);
+        bus.write_long(pb + 48, 0xFFD5_0000);
+        cpu.write_reg(Register::D0, 9);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        assert_eq!(bus.read_pstring(name_ptr), b"Sierra");
+        assert_eq!(bus.read_byte(pb + 30), 0x10);
+        assert_eq!(bus.read_long(pb + 48), sierra_dir_id);
+        assert_eq!(bus.read_long(pb + 100), parent_dir_id);
     }
 
     #[test]
