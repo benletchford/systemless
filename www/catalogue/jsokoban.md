@@ -3,8 +3,8 @@ id: jsokoban
 kind: game
 title: JSokoban
 summary: >-
-  Push every money bag onto its destination across 85 compact warehouse
-  puzzles in Jason Townsend's colourful Macintosh Sokoban.
+  Push every money bag onto its destination across 85 compact warehouse puzzles
+  in Jason Townsend's colourful Macintosh Sokoban.
 developer: Jason Townsend
 publisher: Jason Townsend
 year: 1994
@@ -21,8 +21,8 @@ compatibility:
     systemless_version: "0.42.4"
     architecture: 68k
     environment: >-
-      Deterministic headless gameplay run from the complete original JSokoban
-      1.0b13 Macintosh archive
+      Deterministic headless gameplay run from the complete original JSokoban 1.0b13
+      Macintosh archive
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2279
 artifacts:
@@ -43,14 +43,37 @@ artifacts:
     rights_holder: Jason Townsend and contributing level authors
     permission: >-
       The included JSokoban Doc identifies the game as freeware and permits
-      non-profit distribution when the documentation, Extra file and Bug Report
-      file are included. This unchanged archive contains the application,
-      JSokoban Doc, Extra and Bug Report Form together as required.
+      non-profit distribution when the documentation, Extra file and Bug Report file are
+      included. This unchanged archive contains the application, JSokoban Doc, Extra and Bug
+      Report Form together as required.
     notes: >-
       Unchanged 61,522-byte StuffIt archive, SHA-256
-      04452000ec19ec9a271f340e1ba1c936a3e56f3ea0ff70a0a30545060041ad91.
-      The documentation identifies the game, excluding its 85 bundled levels,
-      as copyright 1994 Jason Townsend.
+      04452000ec19ec9a271f340e1ba1c936a3e56f3ea0ff70a0a30545060041ad91. The documentation identifies the game,
+      excluding its 85 bundled levels, as copyright 1994 Jason Townsend.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: sha256
+    sha256: 1e519e84ca9491fe3cfd586b679dddd8b973e587dc4f6059dbe7bc18248bd214
+    size_bytes: 4361
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://www.vintageapplemac.com/software/games/j
+    - https://www.vintageapplemac.com/files/games/JSokoban_1.0b13.sit
+    - https://github.com/benletchford/systemless/issues/2335
+    permission: >-
+      Original gameplay screenshot captured from the exact unchanged archive for this
+      catalogue entry. Underlying puzzle artwork remains the property of Jason
+      Townsend and the contributing level authors.
+    notes: >-
+      Fresh deterministic Systemless capture after opening the first puzzle and
+      moving the warehouse keeper with the gameplay script. The 800x600 framebuffer was
+      cropped to the 308x180 puzzle surface, excluding the Mac menu bar, window chrome and
+      host desktop. PNG SHA-256
+      1e519e84ca9491fe3cfd586b679dddd8b973e587dc4f6059dbe7bc18248bd214, 4,361 bytes.
 references:
 - https://www.vintageapplemac.com/software/games/j
 ---
@@ -78,3 +101,5 @@ from the supporting files that explain its controls, history and licence.
 Systemless was tested beyond startup: a deterministic run displayed the puzzle
 board and moved the warehouse keeper one tile using mouse input, with the board
 updating normally and no trap, crash or rendering failure.
+
+![JSokoban gameplay](https://assets.systemless.org/catalogue/media/sha256/1e/1e519e84ca9491fe3cfd586b679dddd8b973e587dc4f6059dbe7bc18248bd214.png)

@@ -142,6 +142,24 @@ fn derived_launch_assets_and_unattested_captures_are_rejected() {
         .to_string()
         .contains("content_only: true"));
 }
+
+#[test]
+fn launch_enabled_entries_require_a_gameplay_screenshot() {
+    let root = repo();
+    let mut entry = simple("missing-screenshot");
+    entry.launch_enabled = true;
+    entry
+        .artifacts
+        .retain(|artifact| artifact.role != ArtifactRole::Screenshot);
+    save(root.path(), &entry, "\nGameplay notes.\n");
+
+    assert!(load(root.path(), Mode::Preview).is_ok());
+    assert!(load(root.path(), Mode::Production)
+        .unwrap_err()
+        .to_string()
+        .contains("launch-enabled entries require a gameplay screenshot"));
+}
+
 fn simple(id: &str) -> Entry {
     let mut e = common::catalogue().documents.remove(0).entry;
     e.id = id.into();

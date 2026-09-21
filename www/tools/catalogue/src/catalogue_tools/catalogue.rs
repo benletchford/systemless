@@ -162,6 +162,20 @@ pub fn load(root: &Path, mode: Mode) -> Result<Catalogue> {
         root: root.canonicalize()?,
     };
     validate_catalogue(&catalogue)?;
+    if mode == Mode::Production {
+        for document in &catalogue.documents {
+            ensure!(
+                !document.entry.launch_enabled
+                    || document
+                        .entry
+                        .artifacts
+                        .iter()
+                        .any(|artifact| artifact.role == ArtifactRole::Screenshot),
+                "{}: launch-enabled entries require a gameplay screenshot",
+                document.entry.id
+            );
+        }
+    }
     validate_incoming(&catalogue, mode)?;
     Ok(catalogue)
 }

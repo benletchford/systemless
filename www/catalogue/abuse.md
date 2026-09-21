@@ -2,20 +2,23 @@
 id: abuse
 kind: game
 title: Abuse
-summary: Run, aim and fight through the opening levels of Crack dot Com's dark science-fiction action game.
+summary: >-
+  Run, aim and fight through the opening levels of Crack dot Com's dark
+  science-fiction action game.
 developer: Crack dot Com
 publisher: Bungie
 year: 1996
-architectures: [68k]
+architectures:
+- 68k
 default_architecture: 68k
 category: Arcade
 launch_enabled: true
 compatibility:
   status: playable
   verified:
-  - date: 2026-09-20
+  - date: "2026-09-20"
     tester: Catalogue maintainer
-    systemless_version: 0.42.1
+    systemless_version: "0.42.1"
     architecture: 68k
     environment: Deterministic headless gameplay run from the original StuffIt archive
     status: playable
@@ -38,12 +41,36 @@ artifacts:
     rights_holder: Crack dot Com; sound effects by Bobby Prince
     permission: >-
       Crack dot Com's release notice places the shareware data other than its
-      third-party WAV files in the public domain. A notice included in this
-      demo permits its bundled Lisp, sound effects and artwork to be
-      distributed only as a complete package with no files missing or changed.
+      third-party WAV files in the public domain. A notice included in this demo permits its
+      bundled Lisp, sound effects and artwork to be distributed only as a complete
+      package with no files missing or changed.
     notes: >-
       Unchanged 3,290,510-byte Macintosh demo archive, SHA-256
       77a8512d02f84c5e973167aeaed023a1fc63b147c79730c24455d319a8ed1521.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: sha256
+    sha256: 73d9ec2fadc196a583671e5441ee35bd09dd6a7a3f92e9f32a11628c39653840
+    size_bytes: 36753
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://classicmacdemos.com/abuse
+    - https://static.classicmacdemos.com/demos/abuse/README.txt
+    - https://github.com/benletchford/systemless/issues/2222
+    permission: >-
+      Original gameplay screenshot captured from the exact unchanged archive for this
+      catalogue entry. Underlying game artwork remains the property of its rights
+      holders.
+    notes: >-
+      Fresh deterministic Systemless capture after starting a new game and accepting
+      movement input with the Abuse play script. The 800x600 framebuffer was cropped to
+      the 640x400 game surface; host margins and emulator chrome are excluded. PNG
+      SHA-256 73d9ec2fadc196a583671e5441ee35bd09dd6a7a3f92e9f32a11628c39653840, 36,753
+      bytes.
 references:
 - https://classicmacdemos.com/abuse
 - https://static.classicmacdemos.com/demos/abuse/README.txt
@@ -56,3 +83,5 @@ Abuse combines keyboard movement with independent mouse aiming in a fast,
 side-scrolling action game. This is the original Macintosh demo package,
 preserved unchanged. Systemless reaches a new game and responds to sustained
 movement through the first level in a deterministic gameplay run.
+
+![Abuse gameplay](https://assets.systemless.org/catalogue/media/sha256/73/73d9ec2fadc196a583671e5441ee35bd09dd6a7a3f92e9f32a11628c39653840.png)
