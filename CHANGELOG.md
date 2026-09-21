@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.47.1](https://github.com/benletchford/systemless/compare/v0.47.0...v0.47.1) (2026-09-21)
+
+
+### Performance Improvements
+
+* **web:** cache browser outline frames as RGBA ([#2358](https://github.com/benletchford/systemless/issues/2358)) ([ca47cd6](https://github.com/benletchford/systemless/commit/ca47cd6dc3a774df8d9e4230d29bc06b9c1004ec))
+
 ## [0.47.0](https://github.com/benletchford/systemless/compare/v0.46.0...v0.47.0) (2026-09-21)
 
 
