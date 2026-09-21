@@ -3209,9 +3209,9 @@ checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "ppc"
-version = "0.6.3"
+version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e291382ae02b148961eaaa5e2a8ceb099fd6fbcf78d022bb748804c0eaf1ca5"
+checksum = "f7c5c4292028319c27ac5460bc1327aedb65d4909240edfac02aaf0ac7d52bfe"
 dependencies = [
  "ieee-apsqrt",
  "rustc_apfloat",

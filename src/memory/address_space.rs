@@ -9,7 +9,7 @@ use super::page_index::PageIndex;
 use crate::guest_procedure::GuestIsa;
 use m68k::core::memory::{BusFault, BusFaultKind};
 use m68k::AddressBus;
-use ppc::{PpcMemory, PpcSectionMem, PpcSectionMemSpan};
+use ppc::{PpcMemory, PpcSectionMem, PpcSectionMemSpan, try_allocate_instruction_cache_token};
 use std::cell::UnsafeCell;
 use std::rc::Rc;
 
@@ -161,21 +161,29 @@ impl GuestAddressSpaceState {
     ///
     /// A page keeps its token until a write retires it, so the interpreter
     /// sees a stable answer while it builds a block. The value itself is
-    /// drawn from [`next_writable_code_token`], which cannot repeat across
-    /// pages, across revisions of one page, or across address spaces.
+    /// drawn from [`try_allocate_instruction_cache_token`], which cannot
+    /// repeat across pages, revisions, address spaces, or immutable mappings.
     #[inline]
-    fn writable_code_token(&mut self, addr: u32) -> u64 {
+    fn writable_code_token(&mut self, addr: u32) -> Option<u64> {
+        self.writable_code_token_with(addr, try_allocate_instruction_cache_token)
+    }
+
+    fn writable_code_token_with(
+        &mut self,
+        addr: u32,
+        allocate: impl FnOnce() -> Option<u64>,
+    ) -> Option<u64> {
         let page = addr >> CODE_PAGE_SHIFT;
-        let slots = self
-            .page_tokens
-            .get_or_insert_with(|| vec![CodeTokenSlot::default(); CODE_TOKEN_SLOTS].into_boxed_slice());
+        let slots = self.page_tokens.get_or_insert_with(|| {
+            vec![CodeTokenSlot::default(); CODE_TOKEN_SLOTS].into_boxed_slice()
+        });
         let slot = &mut slots[(page as usize) & CODE_TOKEN_INDEX_MASK];
         if slot.token != 0 && slot.page == page {
-            return slot.token;
+            return Some(slot.token);
         }
-        let token = next_writable_code_token();
+        let token = allocate()?;
         *slot = CodeTokenSlot { page, token };
-        token
+        Some(token)
     }
 
     /// Retire the tokens issued for the pages `start..end` touches. The next
@@ -608,10 +616,6 @@ fn routed_byte_is_writable_state(
     PpcMemory::write_u8(&mut state.regions, address, original).is_some()
 }
 
-/// Marks the instruction-cache tokens we mint ourselves, keeping them out of
-/// `PpcSectionMem`'s own token namespace (a counter that starts at one).
-const WRITABLE_CODE_TOKEN_TAG: u64 = 1 << 63;
-
 /// Page granularity of the writable-code token generations. It matches the
 /// shared-mapping filter so both sides of a write agree on what a page is.
 const CODE_PAGE_SHIFT: u32 = super::page_index::PAGE_SHIFT;
@@ -621,24 +625,6 @@ const CODE_PAGE_COUNT: usize = super::page_index::PAGE_COUNT;
 /// of pages, so collisions are rare and only cost a re-decode.
 const CODE_TOKEN_SLOTS: usize = 1024;
 const CODE_TOKEN_INDEX_MASK: usize = CODE_TOKEN_SLOTS - 1;
-
-/// Source of the tokens we mint for writable code.
-///
-/// A token may not alias across address spaces: `PpcMemory`'s contract lets
-/// the CPU reuse a decoded block whenever two tokens compare equal, and a
-/// detached clone starts out holding the same regions as its parent. Drawing
-/// every token from one process-wide counter makes each (space, page,
-/// revision) distinct by construction, so no space identity has to be packed
-/// into the value and no counter can wrap into an older token.
-static NEXT_WRITABLE_CODE_TOKEN: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(1);
-
-fn next_writable_code_token() -> u64 {
-    let issued = NEXT_WRITABLE_CODE_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    // 2^63 tokens at one per nanosecond is nearly three centuries.
-    debug_assert!(issued < WRITABLE_CODE_TOKEN_TAG, "writable-code tokens exhausted");
-    WRITABLE_CODE_TOKEN_TAG | issued
-}
 
 /// A cached writable span, paired with the guest address it starts at.
 ///
@@ -700,7 +686,7 @@ fn resolve_sparse_instruction_token(
     if state.regions.writable_span(addr, 4).is_some() {
         let start = u64::from(addr);
         state.executed_pages.mark(start, start + 4);
-        let token = state.writable_code_token(addr);
+        let token = state.writable_code_token(addr)?;
         // Only remember the answer when one writable region covers the whole
         // page. Otherwise the fast path above could hand out a token for an
         // address past that region's end.
@@ -2454,6 +2440,64 @@ mod tests {
         let mut cpu = PpcCpu::new();
         run_cached_add(&mut cpu, &mut CountingGuestAddressSpace::new(&mut parent), PPC_CODE, 1);
         run_cached_add(&mut cpu, &mut CountingGuestAddressSpace::new(&mut clone), PPC_CODE, 2);
+    }
+
+    #[test]
+    fn exhausted_token_allocation_disables_writable_code_caching() {
+        const PPC_CODE: u32 = 0x0300_0000;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(PPC_CODE, vec![0; 0x1000]);
+        let state = memory.state_mut();
+
+        assert_eq!(state.writable_code_token_with(PPC_CODE, || None), None);
+        assert_eq!(
+            state.writable_code_token_with(PPC_CODE, || Some(99)),
+            Some(99)
+        );
+        assert_eq!(
+            state.writable_code_token_with(PPC_CODE, || {
+                panic!("an allocated page must retain its token")
+            }),
+            Some(99)
+        );
+    }
+
+    fn assert_guest_store_redecodes_the_following_instruction(base: u32) {
+        const STORE_R4_AT_R5_PLUS_4: u32 = 0x9085_0004;
+        const ADD_ONE: u32 = 0x3863_0001;
+        const ADD_TWO: u32 = 0x3863_0002;
+        const BLR: u32 = 0x4e80_0020;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(
+            base,
+            [STORE_R4_AT_R5_PLUS_4, ADD_ONE, BLR]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+        let mut cpu = PpcCpu::new();
+        cpu.pc = base;
+        cpu.lr = 0;
+        cpu.gpr[4] = ADD_TWO;
+        cpu.gpr[5] = base;
+
+        assert_eq!(
+            cpu.run(&mut memory, 8, 0),
+            PpcRunResult::Halted { pc: 0, cycles: 3 }
+        );
+        assert_eq!(cpu.gpr[3], 2);
+    }
+
+    #[test]
+    fn guest_store_rewriting_the_next_instruction_revalidates_the_block() {
+        assert_guest_store_redecodes_the_following_instruction(0x0300_0000);
+    }
+
+    #[test]
+    fn guest_store_rewriting_the_next_page_revalidates_the_block() {
+        assert_guest_store_redecodes_the_following_instruction(0x0300_0ffc);
     }
 
     /// A span bypasses routing, so it must not also bypass invalidation --
