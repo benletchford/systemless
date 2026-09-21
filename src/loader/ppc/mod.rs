@@ -55,7 +55,7 @@ use crate::machine_profile::{
 use crate::managers::resource::{
     serialize_resource_fork_with_attrs, ResourceFork, ResourceForkEntry,
 };
-use crate::memory::{GuestAddressSpace as PpcSectionMem, MacMemoryBus, MemoryBus};
+use crate::memory::{GuestAddressSpace as PpcSectionMem, GuestWritableSpan, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{
     compiled_menu_color_entries, filter_menu_color_entries,
     for_each_standard_hierarchy_indicator_pixel, for_each_standard_menu_bar_corner_pixel,
@@ -128,7 +128,7 @@ use crate::ui_theme::{render_scrollbar_bitmap, Rgb8, ThemeBitmap, UiThemeId};
 use ppc::{
     PpcAlignmentPolicy, PpcCpu, PpcException, PpcExecutionContext, PpcFetchHistogram,
     PpcFetchObserver, PpcImportAction, PpcMemory, PpcMemoryWriteObserver, PpcNativeReturnGpr3,
-    PpcRunResult, PpcSectionMemSpan,
+    PpcRunResult,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -3508,7 +3508,7 @@ pub type PpcHandleStateRecord = ProcessHandleStateRecord;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PpcQ3SoftwareFrontBufferSurface {
     front_buffer: PpcFrontBuffer,
-    span: Option<PpcSectionMemSpan>,
+    span: Option<GuestWritableSpan>,
     indexed_clut: Option<[[u16; 3]; 256]>,
 }
 
