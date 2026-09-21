@@ -10893,25 +10893,20 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // X2Frac ($A846)
-            // Converts an Extended (80-bit SANE) to a Fract value.
+            // X2Frac (0xA846)
+            // Returns the best Fract approximation of an Extended value.
             // FUNCTION X2Frac(x: Extended): Fract;
-            // Operating System Utilities 1994, p. 3-46
-            // Pascal convention for function returning Fract (4 bytes):
-            //   SP+0: x (Extended, 10 bytes)
-            //   SP+10: 4 bytes reserved for Fract return
-            // Callee pops 10 bytes (x), leaves Fract at SP.
-            // X2Frac ($A846): Converts Extended to Fract with saturation
-            // semantics per OS Utils 3-46.
+            // Inside Macintosh Volume I, I-90–I-91; Operating System Utilities 1994, 3-46
             (true, 0x046) => {
                 let sp = cpu.read_reg(Register::A7);
-                let ext = super::extended80::Extended80::read_from_bus(bus, sp);
+                let ext_ptr = bus.read_long(sp);
+                let ext = super::extended80::Extended80::read_from_bus(bus, ext_ptr);
                 let val = f64::from(ext);
                 let fract = (val * (1u64 << 30) as f64)
                     .round()
                     .clamp(i32::MIN as f64, i32::MAX as f64) as i32;
-                bus.write_long(sp + 10, fract as u32);
-                cpu.write_reg(Register::A7, sp + 10);
+                bus.write_long(sp + 4, fract as u32);
+                cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
 

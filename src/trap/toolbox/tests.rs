@@ -17691,38 +17691,73 @@
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
 
-    // X2Frac ($A846)
-    // Operating System Utilities 1994, p. 3-46.
+    // X2Frac (0xA846)
+    // Inside Macintosh Volume I, I-90–I-91; Operating System Utilities 1994, 3-46.
     #[test]
-    fn x2frac_returns_best_fract_approximation_and_saturates_out_of_range() {
+    fn x2frac_dereferences_extended_pointer_and_preserves_pascal_frame() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
+        let ext_ptr = bus.alloc(10);
+        Extended80::from(1.75).write_to_bus(&mut bus, ext_ptr);
+        bus.write_long(sp, ext_ptr);
+        bus.write_long(sp + 4, 0xDEAD_BEEF);
+        bus.write_long(sp + 8, 0xCAFE_BABE);
+        let preserved = [
+            (Register::D3, 0xD300_0003),
+            (Register::D4, 0xD400_0004),
+            (Register::D5, 0xD500_0005),
+            (Register::D6, 0xD600_0006),
+            (Register::D7, 0xD700_0007),
+            (Register::A2, 0xA200_0002),
+            (Register::A3, ext_ptr),
+            (Register::A4, 0xA400_0004),
+            (Register::A5, 0xA500_0005),
+            (Register::A6, 0xA600_0006),
+        ];
+        for (register, value) in preserved {
+            cpu.write_reg(register, value);
+        }
 
-        Extended80::from(1.75).write_to_bus(&mut bus, sp);
-        bus.write_long(sp + 10, 0);
         let exact = disp.dispatch_toolbox(true, 0x046, &mut cpu, &mut bus);
         assert!(exact.is_some());
         assert!(exact.unwrap().is_ok());
-        assert_eq!(bus.read_long(sp + 10), 0x7000_0000);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_long(sp), ext_ptr);
+        assert_eq!(bus.read_long(sp + 4), 0x7000_0000);
+        assert_eq!(bus.read_long(sp + 8), 0xCAFE_BABE);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        for (register, value) in preserved {
+            assert_eq!(
+                cpu.read_reg(register),
+                value,
+                "stack-based X2Frac must preserve {register:?}"
+            );
+        }
+    }
 
-        cpu.write_reg(Register::A7, sp);
-        Extended80::from(3.0).write_to_bus(&mut bus, sp);
-        bus.write_long(sp + 10, 0);
+    #[test]
+    fn x2frac_saturates_out_of_range_pointer_values() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let ext_ptr = bus.alloc(10);
+
+        Extended80::from(3.0).write_to_bus(&mut bus, ext_ptr);
+        bus.write_long(sp, ext_ptr);
+        bus.write_long(sp + 4, 0);
         let high = disp.dispatch_toolbox(true, 0x046, &mut cpu, &mut bus);
         assert!(high.is_some());
         assert!(high.unwrap().is_ok());
-        assert_eq!(bus.read_long(sp + 10), 0x7FFF_FFFF);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_long(sp + 4), 0x7FFF_FFFF);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
 
         cpu.write_reg(Register::A7, sp);
-        Extended80::from(-3.0).write_to_bus(&mut bus, sp);
-        bus.write_long(sp + 10, 0);
+        Extended80::from(-3.0).write_to_bus(&mut bus, ext_ptr);
+        bus.write_long(sp, ext_ptr);
+        bus.write_long(sp + 4, 0);
         let low = disp.dispatch_toolbox(true, 0x046, &mut cpu, &mut bus);
         assert!(low.is_some());
         assert!(low.unwrap().is_ok());
-        assert_eq!(bus.read_long(sp + 10), 0x8000_0000);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_long(sp + 4), 0x8000_0000);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
 
     // FracCos ($A847)
