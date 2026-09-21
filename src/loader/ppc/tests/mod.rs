@@ -5517,6 +5517,14 @@ fn import_bindings_classify_menu_bar_imports() {
         PpcImportDispatcherTarget::LMGetMenuFlash
     );
     assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LMGetDefltStack"),
+        PpcImportDispatcherTarget::LMGetDefltStack
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LMGetCurStackBase"),
+        PpcImportDispatcherTarget::LMGetCurStackBase
+    );
+    assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "LMSetMenuFlash"),
         PpcImportDispatcherTarget::SetMenuFlash
     );
@@ -10283,6 +10291,37 @@ fn native_menu_flash_accessors_use_the_live_low_memory_word() {
         .unwrap();
     run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetMenuFlash);
     assert_eq!(loaded.cpu.gpr[3], u32::MAX);
+}
+
+#[test]
+fn native_lmgetdefltstack_reads_the_live_low_memory_long() {
+    let pef = synthetic_pef_with_import(b"LMGetDefltStack");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let address = crate::memory::globals::addr::DEFLT_STACK;
+
+    assert_eq!(
+        loaded.memory.read_u32_be(address),
+        Some(crate::memory::globals::DEFAULT_DEFLT_STACK_SIZE)
+    );
+
+    loaded.memory.write_u32_be(address, 0x1234_5678).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetDefltStack);
+    assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
+}
+
+#[test]
+fn native_lmgetcurstackbase_reads_the_live_low_memory_long() {
+    let pef = synthetic_pef_with_import(b"LMGetCurStackBase");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let address = crate::memory::globals::addr::CUR_STACK_BASE;
+
+    assert_eq!(loaded.memory.read_u32_be(address), Some(loaded.stack_base));
+
+    loaded.memory.write_u32_be(address, 0x2345_6780).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetCurStackBase);
+    assert_eq!(loaded.cpu.gpr[3], 0x2345_6780);
 }
 
 #[test]
