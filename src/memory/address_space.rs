@@ -116,9 +116,6 @@ struct GuestAddressSpaceState {
     /// `push_shared_mapping` clears both.
     instruction_lookup: Option<SharedLookup>,
     data_lookup: Option<SharedLookup>,
-    /// Generation stamped into the instruction-cache tokens we issue for
-    /// writable guest code. Rotating it retires every cached basic block.
-    code_generation: u64,
     /// Pages we have issued a writable-code token for. A write into one of
     /// them may have rewritten a cached decode, so it retires that page's
     /// tokens; a clear bit proves the write cannot have touched executed code
@@ -127,11 +124,10 @@ struct GuestAddressSpaceState {
     /// Last writable-code token, with the page it answers for. Every
     /// rotation clears it, so a stale token cannot outlive its generation.
     instruction_token_cache: Option<(u32, u64)>,
-    /// Per-page half of the token generation, bumped by a write to an
-    /// executed page. Guest data shares 4 KiB pages with guest code, so one
-    /// global counter would let data traffic retire every block in the
-    /// process. Direct-mapped: pages sharing a slot retire each other.
-    page_generations: Option<Box<[u32]>>,
+    /// Tokens issued per code page, retired by a write to that page. Guest
+    /// data shares 4 KiB pages with guest code, so retiring per page keeps
+    /// data traffic from invalidating every block in the process.
+    page_tokens: Option<Box<[CodeTokenSlot]>>,
 }
 
 impl GuestAddressSpaceState {
@@ -163,45 +159,54 @@ impl GuestAddressSpaceState {
 
     /// The token stamped on writable code in the page holding `addr`.
     ///
-    /// Both halves of the generation only count up, so their sum is unique
-    /// per page over the life of the process. Folding the page number in
-    /// keeps a cached block from spanning a page it did not prove.
+    /// A page keeps its token until a write retires it, so the interpreter
+    /// sees a stable answer while it builds a block. The value itself is
+    /// drawn from [`next_writable_code_token`], which cannot repeat across
+    /// pages, across revisions of one page, or across address spaces.
     #[inline]
     fn writable_code_token(&mut self, addr: u32) -> u64 {
-        let page = (addr >> CODE_PAGE_SHIFT) as usize;
-        let generations = self
-            .page_generations
-            .get_or_insert_with(|| vec![0u32; CODE_GENERATION_SLOTS].into_boxed_slice());
-        let generation =
-            u64::from(generations[page & CODE_GENERATION_INDEX_MASK]).wrapping_add(self.code_generation);
-        WRITABLE_CODE_TOKEN_TAG | ((page as u64) << 32) | (generation & 0xffff_ffff)
+        let page = addr >> CODE_PAGE_SHIFT;
+        let slots = self
+            .page_tokens
+            .get_or_insert_with(|| vec![CodeTokenSlot::default(); CODE_TOKEN_SLOTS].into_boxed_slice());
+        let slot = &mut slots[(page as usize) & CODE_TOKEN_INDEX_MASK];
+        if slot.token != 0 && slot.page == page {
+            return slot.token;
+        }
+        let token = next_writable_code_token();
+        *slot = CodeTokenSlot { page, token };
+        token
     }
 
-    /// Retire the tokens issued for the pages `start..end` touches.
+    /// Retire the tokens issued for the pages `start..end` touches. The next
+    /// fetch from such a page mints a fresh token, so any block decoded from
+    /// its previous contents can never be matched again.
     #[cold]
-    fn rotate_page_generations(&mut self, start: u64, end: u64) {
+    fn retire_code_tokens(&mut self, start: u64, end: u64) {
         self.instruction_token_cache = None;
-        let Some(generations) = self.page_generations.as_deref_mut() else {
+        let Some(slots) = self.page_tokens.as_deref_mut() else {
             return;
         };
         let first = (start >> CODE_PAGE_SHIFT) as usize;
         let last = (((end - 1) >> CODE_PAGE_SHIFT) as usize).min(CODE_PAGE_COUNT - 1);
-        if last - first >= CODE_GENERATION_SLOTS {
+        if last - first >= CODE_TOKEN_SLOTS {
             // A write that wide reaches every slot anyway.
-            for generation in generations.iter_mut() {
-                *generation = generation.wrapping_add(1);
-            }
+            slots.fill(CodeTokenSlot::default());
             return;
         }
         for page in first..=last {
-            let slot = &mut generations[page & CODE_GENERATION_INDEX_MASK];
-            *slot = slot.wrapping_add(1);
+            let slot = &mut slots[page & CODE_TOKEN_INDEX_MASK];
+            // A slot holding another page is that page's token, not this
+            // one's; leaving it alone keeps an unrelated write cheap.
+            if slot.page as usize == page {
+                *slot = CodeTokenSlot::default();
+            }
         }
     }
 
     /// Retire every instruction-cache token issued for writable guest code.
-    fn rotate_code_generation(&mut self) {
-        self.code_generation = self.code_generation.wrapping_add(1);
+    fn retire_all_code_tokens(&mut self) {
+        self.page_tokens = None;
         self.instruction_token_cache = None;
     }
 
@@ -213,7 +218,7 @@ impl GuestAddressSpaceState {
         let start = u64::from(addr);
         let end = start.saturating_add(bytes.len() as u64);
         if self.executed_pages.may_overlap(start, end) {
-            self.rotate_page_generations(start, end);
+            self.retire_code_tokens(start, end);
         }
     }
 
@@ -612,10 +617,58 @@ const WRITABLE_CODE_TOKEN_TAG: u64 = 1 << 63;
 const CODE_PAGE_SHIFT: u32 = super::page_index::PAGE_SHIFT;
 const CODE_PAGE_COUNT: usize = super::page_index::PAGE_COUNT;
 
-/// Slots in the direct-mapped generation table. Executed code occupies a
-/// handful of pages, so collisions are rare and only cost a re-decode.
-const CODE_GENERATION_SLOTS: usize = 4096;
-const CODE_GENERATION_INDEX_MASK: usize = CODE_GENERATION_SLOTS - 1;
+/// Slots in the direct-mapped token table. Executed code occupies a handful
+/// of pages, so collisions are rare and only cost a re-decode.
+const CODE_TOKEN_SLOTS: usize = 1024;
+const CODE_TOKEN_INDEX_MASK: usize = CODE_TOKEN_SLOTS - 1;
+
+/// Source of the tokens we mint for writable code.
+///
+/// A token may not alias across address spaces: `PpcMemory`'s contract lets
+/// the CPU reuse a decoded block whenever two tokens compare equal, and a
+/// detached clone starts out holding the same regions as its parent. Drawing
+/// every token from one process-wide counter makes each (space, page,
+/// revision) distinct by construction, so no space identity has to be packed
+/// into the value and no counter can wrap into an older token.
+static NEXT_WRITABLE_CODE_TOKEN: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+fn next_writable_code_token() -> u64 {
+    let issued = NEXT_WRITABLE_CODE_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // 2^63 tokens at one per nanosecond is nearly three centuries.
+    debug_assert!(issued < WRITABLE_CODE_TOKEN_TAG, "writable-code tokens exhausted");
+    WRITABLE_CODE_TOKEN_TAG | issued
+}
+
+/// A cached writable span, paired with the guest address it starts at.
+///
+/// [`PpcSectionMemSpan`] is opaque, so a write through one cannot say which
+/// guest address it landed on. Carrying the base alongside it lets
+/// [`GuestAddressSpace::write_u16_be_in_span`] report the write like any
+/// other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GuestWritableSpan {
+    span: PpcSectionMemSpan,
+    base: u32,
+}
+
+impl GuestWritableSpan {
+    /// The guest address `relative_offset` bytes into the span.
+    #[inline]
+    fn address_of(self, relative_offset: usize) -> Option<u32> {
+        u32::try_from(relative_offset)
+            .ok()
+            .and_then(|offset| self.base.checked_add(offset))
+    }
+}
+
+/// One direct-mapped token slot. `token == 0` marks it vacant; the page is
+/// stored so a slot holding a different page is re-minted rather than reused.
+#[derive(Clone, Copy, Debug, Default)]
+struct CodeTokenSlot {
+    page: u32,
+    token: u64,
+}
 
 /// Answer the instruction-cache token for an address served by sparse regions.
 ///
@@ -1122,9 +1175,12 @@ impl Clone for GuestAddressSpace {
             // Detached regions are fresh allocations; let the clone re-resolve.
             instruction_lookup: None,
             data_lookup: None,
-            code_generation: state.code_generation,
             executed_pages: state.executed_pages.clone(),
-            page_generations: state.page_generations.clone(),
+            // A detached clone holds independent copies of the same regions,
+            // which then diverge. Inheriting its parent's tokens would let a
+            // CPU that has run both reuse blocks decoded from the other's
+            // memory, so the clone mints its own from the first fetch.
+            page_tokens: None,
             // Detached regions are fresh allocations; let the clone re-resolve.
             instruction_token_cache: None,
         })))
@@ -1186,7 +1242,7 @@ impl GuestAddressSpace {
             len: bytes.len(),
         });
         state.regions.add_region(base, bytes);
-        state.rotate_code_generation();
+        state.retire_all_code_tokens();
     }
 
     /// Map a read-only region. Newer mappings take precedence over overlaps.
@@ -1197,7 +1253,7 @@ impl GuestAddressSpace {
             len: bytes.len(),
         });
         state.regions.add_readonly_region(base, bytes);
-        state.rotate_code_generation();
+        state.retire_all_code_tokens();
     }
 
     /// Publish runtime-generated code with system provenance in owned storage.
@@ -1284,7 +1340,7 @@ impl GuestAddressSpace {
     /// instruction cache the guest flushes with `MakeDataExecutable` or
     /// `FlushCodeCache`.
     pub(crate) fn flush_instruction_cache(&mut self) {
-        self.state_mut().rotate_code_generation();
+        self.state_mut().retire_all_code_tokens();
     }
 
     /// Overlay a runner-owned RAM range without copying it.
@@ -1682,37 +1738,48 @@ impl GuestAddressSpace {
     }
 
     /// Return a cached writable span contained in one mapped region.
-    pub fn writable_span(&mut self, addr: u32, len: usize) -> Option<PpcSectionMemSpan> {
+    pub fn writable_span(&mut self, addr: u32, len: usize) -> Option<GuestWritableSpan> {
         if self.state().presentation.observes(addr, len) {
             return None;
         }
         if self.route(addr, len, None) != GuestMemoryRoute::Sparse {
             return None;
         }
-        self.state_mut().regions.writable_span(addr, len)
+        let span = self.state_mut().regions.writable_span(addr, len)?;
+        Some(GuestWritableSpan { span, base: addr })
     }
 
     /// Read a big-endian word at an offset within a cached span.
     pub fn read_u16_be_in_span(
         &self,
-        span: PpcSectionMemSpan,
+        span: GuestWritableSpan,
         relative_offset: usize,
     ) -> Option<u16> {
         self.state()
             .regions
-            .read_u16_be_in_span(span, relative_offset)
+            .read_u16_be_in_span(span.span, relative_offset)
     }
 
     /// Write a big-endian word at an offset within a cached writable span.
+    ///
+    /// A span bypasses routing, but it may not bypass the observers of guest
+    /// memory: a span taken over a page before anything executed from it is
+    /// still a way to rewrite code that is executed later. The write is
+    /// reported exactly as a routed one, so an executed page is retired here
+    /// too.
     pub fn write_u16_be_in_span(
         &mut self,
-        span: PpcSectionMemSpan,
+        span: GuestWritableSpan,
         relative_offset: usize,
         value: u16,
     ) -> Option<()> {
-        self.state_mut()
+        let addr = span.address_of(relative_offset)?;
+        let state = self.state_mut();
+        state
             .regions
-            .write_u16_be_in_span(span, relative_offset, value)
+            .write_u16_be_in_span(span.span, relative_offset, value)?;
+        state.note_write(addr, &value.to_be_bytes());
+        Some(())
     }
 
     #[inline]
@@ -2321,6 +2388,107 @@ mod tests {
         // engage there or every guest instruction pays a fetch.
         run_cached_add(&mut cpu, &mut counted, PPC_CODE, 1);
         assert_eq!(counted.instruction_reads, 2);
+    }
+
+    /// Two address spaces holding different programs at the same address must
+    /// never answer with the same token. `PpcMemory`'s contract lets the CPU
+    /// reuse a decoded block whenever two tokens match, so an alias here would
+    /// run one space's instructions against the other's memory.
+    #[test]
+    fn one_cpu_keeps_two_address_spaces_at_the_same_address_apart() {
+        const PPC_CODE: u32 = 0x0300_0000;
+        const ADD_ONE: u32 = 0x3863_0001;
+        const ADD_TWO: u32 = 0x3863_0002;
+        const BLR: u32 = 0x4e80_0020;
+
+        fn space(first: u32) -> GuestAddressSpace {
+            let mut memory = GuestAddressSpace::new();
+            memory.add_region(
+                PPC_CODE,
+                [first, BLR].into_iter().flat_map(u32::to_be_bytes).collect(),
+            );
+            memory
+        }
+
+        let mut one = space(ADD_ONE);
+        let mut two = space(ADD_TWO);
+        // Both spaces are fresh, at the same page, with the same write and
+        // mapping history: the strongest case for an accidental alias.
+        let first_token = PpcMemory::instruction_cache_token(&mut one, PPC_CODE).unwrap();
+        let second_token = PpcMemory::instruction_cache_token(&mut two, PPC_CODE).unwrap();
+        assert_ne!(first_token, second_token);
+
+        // The same CPU runs both. The second program must execute its own
+        // instruction, not the block decoded from the first space.
+        let mut cpu = PpcCpu::new();
+        run_cached_add(&mut cpu, &mut CountingGuestAddressSpace::new(&mut one), PPC_CODE, 1);
+        run_cached_add(&mut cpu, &mut CountingGuestAddressSpace::new(&mut two), PPC_CODE, 2);
+        run_cached_add(&mut cpu, &mut CountingGuestAddressSpace::new(&mut one), PPC_CODE, 1);
+    }
+
+    /// A detached clone copies its parent's regions and then diverges, so it
+    /// is the same aliasing hazard reached through an in-tree API.
+    #[test]
+    fn a_detached_clone_does_not_inherit_its_parents_code_tokens() {
+        const PPC_CODE: u32 = 0x0300_0000;
+        const ADD_ONE: u32 = 0x3863_0001;
+        const ADD_TWO: u32 = 0x3863_0002;
+        const BLR: u32 = 0x4e80_0020;
+
+        let mut parent = GuestAddressSpace::new();
+        parent.add_region(
+            PPC_CODE,
+            [ADD_ONE, BLR]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+        let parent_token = PpcMemory::instruction_cache_token(&mut parent, PPC_CODE).unwrap();
+
+        let mut clone = parent.clone();
+        let clone_token = PpcMemory::instruction_cache_token(&mut clone, PPC_CODE).unwrap();
+        assert_ne!(parent_token, clone_token);
+
+        // Rewrite the clone's own copy and run both on one CPU.
+        PpcMemory::write_u32_be(&mut clone, PPC_CODE, ADD_TWO).unwrap();
+        let mut cpu = PpcCpu::new();
+        run_cached_add(&mut cpu, &mut CountingGuestAddressSpace::new(&mut parent), PPC_CODE, 1);
+        run_cached_add(&mut cpu, &mut CountingGuestAddressSpace::new(&mut clone), PPC_CODE, 2);
+    }
+
+    /// A span bypasses routing, so it must not also bypass invalidation --
+    /// including when it was taken before anything executed from the page.
+    #[test]
+    fn a_write_through_a_cached_span_retires_the_code_it_overwrites() {
+        const PPC_CODE: u32 = 0x0300_0000;
+        const ADD_ONE: u32 = 0x3863_0001;
+        const ADD_TWO: u32 = 0x3863_0002;
+        const BLR: u32 = 0x4e80_0020;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(
+            PPC_CODE,
+            [ADD_ONE, BLR]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+        // Taken first: the page has not been executed from, so acquisition
+        // cannot be what arms the invalidation.
+        let span = memory.writable_span(PPC_CODE, 4).expect("writable span");
+
+        let mut cpu = PpcCpu::new();
+        run_cached_add(&mut cpu, &mut CountingGuestAddressSpace::new(&mut memory), PPC_CODE, 1);
+
+        // `addi r3, r3, 2` differs from `addi r3, r3, 1` in its low half.
+        let before = PpcMemory::instruction_cache_token(&mut memory, PPC_CODE).unwrap();
+        memory
+            .write_u16_be_in_span(span, 2, (ADD_TWO & 0xffff) as u16)
+            .expect("span write");
+        let after = PpcMemory::instruction_cache_token(&mut memory, PPC_CODE).unwrap();
+        assert_ne!(before, after, "span write left the code token intact");
+
+        run_cached_add(&mut cpu, &mut CountingGuestAddressSpace::new(&mut memory), PPC_CODE, 2);
     }
 
     #[test]
