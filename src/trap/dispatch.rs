@@ -7512,7 +7512,11 @@ impl TrapDispatcher {
         }
     }
 
-    /// Find a file in vfs_rsrc by name (exact match, then basename match).
+    /// Find a file in vfs_rsrc by name, preserving explicit path components.
+    ///
+    /// Basename matching is retained for the classic search-path behavior of
+    /// basename-only requests, but an explicit nested pathname must not fall
+    /// through to an unrelated file with the same leaf name.
     pub(crate) fn find_vfs_rsrc_file(&self, name: &str) -> Option<String> {
         let normalized = Self::normalize_vfs_path(name);
         let hfs_normalized = Self::normalize_hfs_path(name);
@@ -7538,21 +7542,27 @@ impl TrapDispatcher {
         {
             return Some(found);
         }
-        let hfs_basename = hfs_normalized
-            .rsplit('/')
-            .next()
-            .unwrap_or(hfs_normalized.as_str());
-        for key in &sorted_keys {
-            let key_base = key.rsplit('/').next().unwrap_or(key);
-            if key_base.eq_ignore_ascii_case(hfs_basename) {
-                return Some((*key).clone());
+        // Do not discard explicit directory components after exact and
+        // relative-path matching fail. For example, a request for
+        // `:Data Files:Data CD` must not open `Character Files/Data CD`.
+        // Basename-only requests retain the historical search-path fallback.
+        if !hfs_normalized.contains('/') && !normalized.contains('/') {
+            let hfs_basename = hfs_normalized
+                .rsplit('/')
+                .next()
+                .unwrap_or(hfs_normalized.as_str());
+            for key in &sorted_keys {
+                let key_base = key.rsplit('/').next().unwrap_or(key);
+                if key_base.eq_ignore_ascii_case(hfs_basename) {
+                    return Some((*key).clone());
+                }
             }
-        }
-        let basename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
-        for key in &sorted_keys {
-            let key_base = key.rsplit('/').next().unwrap_or(key);
-            if key_base.eq_ignore_ascii_case(basename) {
-                return Some((*key).clone());
+            let basename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
+            for key in &sorted_keys {
+                let key_base = key.rsplit('/').next().unwrap_or(key);
+                if key_base.eq_ignore_ascii_case(basename) {
+                    return Some((*key).clone());
+                }
             }
         }
         None
