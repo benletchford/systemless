@@ -644,6 +644,94 @@ impl super::TrapDispatcher {
         tramp
     }
 
+    fn remove_notification_request(&mut self, bus: &mut MacMemoryBus, nm_rec: u32) -> i16 {
+        let Some(index) = self
+            .notification_requests
+            .iter()
+            .position(|&request| request == nm_rec)
+        else {
+            return -1; // qErr
+        };
+        self.notification_requests.remove(index);
+        bus.write_long(nm_rec, 0);
+        if index > 0 {
+            let previous = self.notification_requests[index - 1];
+            let next = self
+                .notification_requests
+                .get(index)
+                .copied()
+                .unwrap_or(0);
+            bus.write_long(previous, next);
+        }
+        0
+    }
+
+    fn arm_notification_response<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        nm_rec: u32,
+        response: u32,
+    ) {
+        if !Self::looks_like_callable_proc(bus, response) {
+            return;
+        }
+
+        let trampoline = bus.alloc(28);
+        if trampoline == 0 {
+            return;
+        }
+        let return_slot = cpu.read_reg(Register::A7).wrapping_sub(4);
+        let saved_regs_sp = return_slot.wrapping_sub(32);
+
+        // MyResponse(nmReqPtr) is a Pascal procedure. Reset A7 after the JSR
+        // so either RTS or RTD #4 response procedures return safely.
+        bus.write_word(trampoline, 0x48E7); // MOVEM.L D0-D3/A0-A3,-(SP)
+        bus.write_word(trampoline + 2, 0xF0F0);
+        bus.write_word(trampoline + 4, 0x2F3C); // MOVE.L #nmReqPtr,-(SP)
+        bus.write_long(trampoline + 6, nm_rec);
+        bus.write_word(trampoline + 10, 0x4EB9); // JSR abs.L
+        bus.write_long(trampoline + 12, response);
+        bus.write_word(trampoline + 16, 0x2E7C); // MOVEA.L #savedRegsSP,A7
+        bus.write_long(trampoline + 18, saved_regs_sp);
+        bus.write_word(trampoline + 22, 0x4CDF); // MOVEM.L (SP)+,D0-D3/A0-A3
+        bus.write_word(trampoline + 24, 0x0F0F);
+        bus.write_word(trampoline + 26, 0x4E75); // RTS
+
+        bus.write_long(return_slot, cpu.read_reg(Register::PC));
+        cpu.write_reg(Register::A7, return_slot);
+        cpu.write_reg(Register::PC, trampoline);
+    }
+
+    fn install_notification_request<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        nm_rec: u32,
+    ) -> i16 {
+        if nm_rec == 0 || bus.read_word(nm_rec + 4) != 8 {
+            return -299; // nmTypErr
+        }
+        if self.notification_requests.contains(&nm_rec) {
+            return 0;
+        }
+
+        if let Some(&tail) = self.notification_requests.last() {
+            bus.write_long(tail, nm_rec);
+        }
+        bus.write_long(nm_rec, 0);
+        self.notification_requests.push(nm_rec);
+
+        match bus.read_long(nm_rec + 28) {
+            u32::MAX => {
+                self.remove_notification_request(bus, nm_rec);
+            }
+            0 => {}
+            response => self.arm_notification_response(cpu, bus, nm_rec, response),
+        }
+        0
+    }
+
     fn install_vbl_task(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -3561,33 +3649,28 @@ impl super::TrapDispatcher {
             }
 
             // NMInstall ($A05E)
-            // Installs a notification request.
+            // Adds a notification request to the notification queue.
             // FUNCTION NMInstall(nmReqPtr: NMRecPtr): OSErr;
-            // Inside Macintosh Volume VI (1991), p. 24-10
-            //
-            // A0 = NMRecPtr. Returns noErr — notifications are not displayed
-            // in the emulator, but we accept the request silently.
-            //
-            // Regression coverage:
-            //   src/trap/memory.rs::tests::nminstall_returns_noerr_for_nominal_notification_request
-            //   src/trap/memory.rs::tests::nminstall_uses_a0_nmrecptr_register_calling_convention
-            // NMInstall ($A05E): Returns noErr on nominal requests; per IM:VI 24-10
+            // Inside Macintosh Volume VI (1991), pp. 24-6 to 24-10.
             (false, 0x5E) => {
-                cpu.write_reg(Register::D0, 0); // noErr
+                let nm_rec = cpu.read_reg(Register::A0);
+                let result = self.install_notification_request(cpu, bus, nm_rec);
+                cpu.write_reg(Register::D0, result as u16 as u32);
                 Ok(())
             }
 
             // NMRemove ($A05F)
-            // Removes a notification request.
+            // Removes a notification request from the notification queue.
             // FUNCTION NMRemove(nmReqPtr: NMRecPtr): OSErr;
-            // Inside Macintosh Volume VI (1991), p. 24-11
-            //
-            // Regression coverage:
-            //   src/trap/memory.rs::tests::nmremove_returns_noerr_for_nominal_notification_request
-            //   src/trap/memory.rs::tests::nmremove_uses_a0_nmrecptr_register_calling_convention
-            // NMRemove ($A05F): Returns noErr on nominal requests; per IM:VI 24-11
+            // Inside Macintosh Volume VI (1991), pp. 24-10 to 24-11.
             (false, 0x5F) => {
-                cpu.write_reg(Register::D0, 0); // noErr
+                let nm_rec = cpu.read_reg(Register::A0);
+                let result = if nm_rec == 0 || bus.read_word(nm_rec + 4) != 8 {
+                    -299 // nmTypErr
+                } else {
+                    self.remove_notification_request(bus, nm_rec)
+                };
+                cpu.write_reg(Register::D0, result as u16 as u32);
                 Ok(())
             }
 
@@ -9629,7 +9712,7 @@ mod tests {
         // Inside Macintosh Volume VI (1991), p. 24-10:
         // NMInstall returns noErr for valid notification requests.
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        let nm_rec = bus.alloc(32);
+        let nm_rec = bus.alloc(36);
         bus.write_word(nm_rec + 4, 8); // qType = ORD(nmType)
         cpu.write_reg(Register::A0, nm_rec);
 
@@ -9641,6 +9724,8 @@ mod tests {
             0,
             "NMInstall should return noErr in D0 for nominal input"
         );
+        assert_eq!(dispatcher.notification_requests, vec![nm_rec]);
+        assert_eq!(bus.read_long(nm_rec), 0, "the queue tail qLink is NIL");
     }
 
     #[test]
@@ -9648,7 +9733,7 @@ mod tests {
         // Inside Macintosh Volume VI (1991), p. 24-10:
         // NMInstall takes NMRecPtr in A0 and returns OSErr in D0.
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        let nm_rec = bus.alloc(32);
+        let nm_rec = bus.alloc(36);
         bus.write_word(nm_rec + 4, 8); // qType = ORD(nmType)
         let sp_before = cpu.read_reg(Register::A7);
         bus.write_long(sp_before, 0xFEED_FACE);
@@ -9679,9 +9764,13 @@ mod tests {
         // Inside Macintosh Volume VI (1991), p. 24-11:
         // NMRemove returns noErr for a successful request removal.
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        let nm_rec = bus.alloc(32);
+        let nm_rec = bus.alloc(36);
         bus.write_word(nm_rec + 4, 8); // qType = ORD(nmType)
         cpu.write_reg(Register::A0, nm_rec);
+        dispatcher
+            .dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
 
         let result = dispatcher.dispatch_memory(false, 0x5F, &mut cpu, &mut bus);
         assert!(result.is_some(), "NMRemove should be handled");
@@ -9691,6 +9780,7 @@ mod tests {
             0,
             "NMRemove should return noErr in D0 for nominal input"
         );
+        assert!(dispatcher.notification_requests.is_empty());
     }
 
     #[test]
@@ -9698,8 +9788,13 @@ mod tests {
         // Inside Macintosh Volume VI (1991), p. 24-11:
         // NMRemove takes NMRecPtr in A0 and returns OSErr in D0.
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        let nm_rec = bus.alloc(32);
+        let nm_rec = bus.alloc(36);
         bus.write_word(nm_rec + 4, 8); // qType = ORD(nmType)
+        cpu.write_reg(Register::A0, nm_rec);
+        dispatcher
+            .dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
         let sp_before = cpu.read_reg(Register::A7);
         bus.write_long(sp_before, 0xC0DE_CAFE);
         cpu.write_reg(Register::A0, nm_rec);
@@ -9722,6 +9817,170 @@ mod tests {
             0,
             "NMRemove should return noErr"
         );
+    }
+
+    #[test]
+    fn nminstall_rejects_invalid_queue_type() {
+        // Inside Macintosh Volume VI (1991), p. 24-10: qType must be 8.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let nm_rec = bus.alloc(36);
+        bus.write_word(nm_rec + 4, 7);
+        cpu.write_reg(Register::A0, nm_rec);
+
+        dispatcher
+            .dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as u16 as i16, -299);
+        assert!(dispatcher.notification_requests.is_empty());
+    }
+
+    #[test]
+    fn notification_queue_links_requests_and_nmremove_unlinks_them() {
+        // Inside Macintosh Volume VI (1991), pp. 24-6 and 24-10 to 24-11:
+        // NMRec is a QElem, and NMRemove reports qErr for a missing request.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let first = bus.alloc(36);
+        let second = bus.alloc(36);
+        bus.write_word(first + 4, 8);
+        bus.write_word(second + 4, 8);
+
+        for nm_rec in [first, second] {
+            cpu.write_reg(Register::A0, nm_rec);
+            dispatcher
+                .dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+        }
+        assert_eq!(dispatcher.notification_requests, vec![first, second]);
+        assert_eq!(bus.read_long(first), second);
+        assert_eq!(bus.read_long(second), 0);
+
+        cpu.write_reg(Register::A0, first);
+        dispatcher
+            .dispatch_memory(false, 0x5F, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(dispatcher.notification_requests, vec![second]);
+        assert_eq!(bus.read_long(first), 0);
+
+        dispatcher
+            .dispatch_memory(false, 0x5F, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0) as u16 as i16, -1);
+    }
+
+    #[test]
+    fn nminstall_minus_one_response_automatically_removes_request() {
+        // Inside Macintosh Volume VI (1991), pp. 24-7 to 24-8: nmResp=-1
+        // selects the predefined response that removes the queue element.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let nm_rec = bus.alloc(36);
+        bus.write_word(nm_rec + 4, 8);
+        bus.write_long(nm_rec + 28, u32::MAX);
+        cpu.write_reg(Register::A0, nm_rec);
+
+        dispatcher
+            .dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert!(dispatcher.notification_requests.is_empty());
+        assert_eq!(bus.read_long(nm_rec), 0);
+    }
+
+    #[test]
+    fn nminstall_arms_pascal_response_with_notification_record_argument() {
+        // Inside Macintosh Volume VI (1991), p. 24-8: MyResponse receives one
+        // NMRecPtr parameter after the notification has been posted.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let nm_rec = bus.alloc(36);
+        let response = bus.alloc(8);
+        bus.write_word(nm_rec + 4, 8);
+        bus.write_long(nm_rec + 28, response);
+        bus.write_word(response, 0x4E56); // LINK A6,#0
+        bus.write_word(response + 2, 0);
+        bus.write_word(response + 4, 0x4E74); // RTD #4
+        bus.write_word(response + 6, 4);
+        let resume_pc = 0x00BA_D200;
+        let initial_sp = cpu.read_reg(Register::A7);
+        cpu.write_reg(Register::PC, resume_pc);
+        cpu.write_reg(Register::A0, nm_rec);
+
+        dispatcher
+            .dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let trampoline = cpu.read_reg(Register::PC);
+        assert_ne!(trampoline, resume_pc);
+        assert_eq!(cpu.read_reg(Register::A7), initial_sp - 4);
+        assert_eq!(bus.read_long(initial_sp - 4), resume_pc);
+        assert_eq!(bus.read_word(trampoline + 4), 0x2F3C);
+        assert_eq!(bus.read_long(trampoline + 6), nm_rec);
+        assert_eq!(bus.read_word(trampoline + 10), 0x4EB9);
+        assert_eq!(bus.read_long(trampoline + 12), response);
+        assert_eq!(dispatcher.notification_requests, vec![nm_rec]);
+    }
+
+    #[test]
+    fn notification_response_executes_and_can_be_explicitly_removed() {
+        // Inside Macintosh Volume VI (1991), pp. 24-8 and 24-11: a response
+        // procedure receives NMRecPtr and may leave the request queued until
+        // the application explicitly passes that same pointer to NMRemove.
+        let (mut dispatcher, _, mut bus) = setup();
+        let mut cpu = crate::cpu::M68kCpu::new();
+        let nm_rec = bus.alloc(36);
+        let response = bus.alloc(24);
+        bus.write_word(nm_rec + 4, 8);
+        bus.write_long(nm_rec + 28, response);
+
+        bus.write_word(response, 0x4E56); // LINK A6,#0
+        bus.write_word(response + 2, 0);
+        bus.write_word(response + 4, 0x206E); // MOVEA.L 8(A6),A0
+        bus.write_word(response + 6, 8);
+        bus.write_word(response + 8, 0x217C); // MOVE.L #marker,32(A0)
+        bus.write_long(response + 10, 0x4E4D_5253);
+        bus.write_word(response + 14, 32);
+        bus.write_word(response + 16, 0x4E5E); // UNLK A6
+        bus.write_word(response + 18, 0x4E74); // RTD #4
+        bus.write_word(response + 20, 4);
+
+        let resume_pc = bus.alloc(2);
+        bus.write_word(resume_pc, 0x4E71); // NOP
+        let initial_sp = TEST_SP;
+        cpu.write_reg(Register::PC, resume_pc);
+        cpu.write_reg(Register::A7, initial_sp);
+        cpu.write_reg(Register::A0, nm_rec);
+        dispatcher
+            .dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        for _ in 0..16 {
+            if cpu.read_reg(Register::PC) == resume_pc {
+                break;
+            }
+            assert!(matches!(
+                cpu.step(&mut bus),
+                crate::cpu::StepResult::Ok { .. }
+            ));
+        }
+        assert_eq!(cpu.read_reg(Register::PC), resume_pc);
+        assert_eq!(cpu.read_reg(Register::A7), initial_sp);
+        assert_eq!(bus.read_long(nm_rec + 32), 0x4E4D_5253);
+        assert_eq!(dispatcher.notification_requests, vec![nm_rec]);
+
+        cpu.write_reg(Register::A0, nm_rec);
+        dispatcher
+            .dispatch_memory(false, 0x5F, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert!(dispatcher.notification_requests.is_empty());
     }
 
     #[test]

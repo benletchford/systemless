@@ -1301,6 +1301,9 @@ pub struct TrapDispatcher {
     /// to call a callable userFunction immediately. Holds
     /// `48E7 F0F0 207C xxxx xxxx 4EB9 xxxx xxxx 4CDF 0F0F 7000 4E75`.
     pub(crate) defer_user_fn_trampoline: u32,
+    /// Notification Manager requests in queue order. Each entry is the guest
+    /// address of its static NMRec; qLink mirrors this order in guest memory.
+    pub(crate) notification_requests: Vec<u32>,
     /// Ports that have already been queried through QDDone. BasiliskII
     /// reports TRUE for each query against a live port, so this state is
     /// currently unused by the HLE path.
@@ -3473,6 +3476,7 @@ impl TrapDispatcher {
             control_def_trampoline: 0,
             control_def_trampoline_chain: Vec::new(),
             defer_user_fn_trampoline: 0,
+            notification_requests: Vec::new(),
             qddone_seen_ports: HashSet::new(),
             pict_info_ids: HashSet::new(),
             ppc_initialized: false,
