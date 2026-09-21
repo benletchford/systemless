@@ -18,9 +18,9 @@ launch_enabled: true
 compatibility:
   status: playable
   verified:
-  - date: 2026-09-15
+  - date: "2026-09-15"
     tester: Catalogue maintainer
-    systemless_version: 0.41.1
+    systemless_version: "0.41.1"
     architecture: ppc
     environment: Local website preview in the in-app browser using the published crate
     status: playable
@@ -108,8 +108,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/escape-velocity-nova/gameplay.png
+    type: sha256
+    sha256: f717e2d7422ef3a59b43b09658006ddc4bec69f3a202087ed4d0780df647d067
+    size_bytes: 484050
   provenance:
     redistribution: permitted
     content_only: true
@@ -133,7 +134,7 @@ This entry keeps the original, unregistered [EV Nova 1.0.8 shareware archive](ht
 
 ## Gameplay
 
-![Escape Velocity Nova gameplay](incoming/escape-velocity-nova/gameplay.png)
+![Escape Velocity Nova gameplay](https://assets.systemless.org/catalogue/media/sha256/f7/f717e2d7422ef3a59b43b09658006ddc4bec69f3a202087ed4d0780df647d067.png)
 
 ## A larger galaxy
 
