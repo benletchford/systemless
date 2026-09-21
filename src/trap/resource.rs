@@ -5916,76 +5916,11 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // PBSetVol / PBHSetVol ($A015 / $A215)
-            // Sets the default volume and optionally the default directory.
+            // PBSetVol / PBHSetVol (0xA015 / 0xA215)
+            // Sets the default volume and directory from a parameter block.
             // FUNCTION PBSetVol  (paramBlock: ParmBlkPtr; async: Boolean): OSErr;
             // FUNCTION PBHSetVol (paramBlock: WDPBPtr;    async: Boolean): OSErr;
-            // Inside Macintosh: Files (1992), pp. 2-151 to 2-154.
-            //
-            // PBSetVol subsection: IM:Files 1992 pp. 2-151 to 2-153.
-            // PBHSetVol subsection: IM:Files 1992 pp. 2-153 to 2-154 (HFS
-            //   variant; trap macro `_HSetVol`, ONEWORDINLINE(0xA215)).
-            // The OS-trap dispatcher masks `trap & 0x00FF`, so $A215
-            // PBHSetVol and $A015 PBSetVol land on the same low byte and
-            // share this arm.
-            //
-            // Register convention (OS-bit FUNCTION, IM:II 1985 p. II-114):
-            //   On entry: A0 = ParmBlkPtr / WDPBPtr (paramBlock)
-            //   On exit:  D0 = OSErr (also mirrored to pb.ioResult @ pb+16)
-            //
-            // Parameter block field map (basic ParamBlockRec / WDPBRec):
-            //   pb+12 ioCompletion (→)  IOCompletionUPP, NIL for sync
-            //   pb+16 ioResult     (←)  OSErr (also returned in D0)
-            //   pb+18 ioNamePtr    (→)  StringPtr; NIL for vRefNum-only call
-            //   pb+22 ioVRefNum    (→)  Vol / working-directory refnum
-            //   pb+48 ioWDDirID    (→)  HFS dirID (WDPBRec only)
-            //
-            // Result codes (IM:Files 1992 p. 2-137 + pp. 2-153..2-154):
-            //   noErr     0   No error
-            //   nsvErr   -35  Volume not found
-            //   bdNamErr -37  Bad filename
-            //   paramErr -50  Bad ioVRefNum / ioWDDirID combination
-            //
-            // MPW Universal Headers Files.h:
-            //   #pragma parameter __D0 PBHSetVolSync(__A0)
-            //   EXTERN_API(OSErr) PBHSetVolSync(WDPBPtr paramBlock)
-            //       ONEWORDINLINE(0xA215);
-            //   #define PBHSetVol(pb, async) (async ? PBHSetVolAsync(pb)
-            //                                       : PBHSetVolSync(pb))
-            //
-            // Systemless HLE behaviour (this arm):
-            //   * Resolves ioVRefNum via working-directory table, then
-            //     dirID lookup, then default-directory fallback, then
-            //     boot-volume fallback, else returns nsvErr (-35) per
-            //     IM:Files 2-137 and 2-153..2-154 documented contract.
-            //   * On the success path, updates self.default_dir_id and
-            //     self.app_wd_refnum, and keeps the Standard File globals
-            //     (CurDirStore @ $0398, SFSaveDisk @ $0214) aligned with
-            //     the new default per IM:Files 1992 p. 3-65.
-            //   * Writes the OSErr to BOTH D0 AND pb.ioResult per the
-            //     File Manager basic-PB dispatcher convention, regardless
-            //     of whether the absolute value is noErr or nsvErr.
-            //
-            // Behavioral invariant:
-            //   * Dispatcher convention: D0 == ioResult after the call,
-            //     and ioResult overwrites any pre-call sentinel, regardless
-            //     of the absolute OSErr.
-            //   * Register-only OS-bit FUNCTION calling convention:
-            //     A0 input, D0 output, no Pascal stack frame consumed;
-            //     A7 preserved across the call.
-            //
-            // Absolute-OSErr divergence: Systemless returns nsvErr (-35)
-            // on the unrecognised-volume path; BasiliskII may return -35
-            // or another OSErr depending on its volume table state. The
-            // dispatcher-convention invariant holds either way.
-            //
-            // Regression coverage:
-            //   pbhsetvol_sets_default_directory_from_iowddirid_for_volume_refnum_calls
-            //   pbhsetvol_invalid_vrefnum_returns_nsverr
-            //   pbhsetvol_writes_same_oserr_to_d0_and_ioresult_preserving_stack
-            //
-            // trap-doc: $A015 | PBSetVol | Partial | File Manager & Gestalt — OS Traps | Updates default volume/directory; nsvErr for unrecognised vRefNum (IM:Files 1992, 2-162)
-            // PBHSetVol ($A215): HFS variant aliased onto $A015
+            // Inside Macintosh: Files 1992, 2-151 to 2-154
             (false, 0x15) => {
                 let pb = cpu.read_reg(Register::A0);
                 let name_ptr = bus.read_long(pb + 18);
@@ -6011,16 +5946,29 @@ impl super::TrapDispatcher {
                         }
                     })
                     .flatten();
+                let matching_basic_working_directory = (!is_hfs_set_vol)
+                    .then(|| self.working_directories.get(&requested_vref).copied())
+                    .flatten()
+                    .filter(|working_directory| {
+                        named_volume.is_none_or(|(volume_ref_num, _)| {
+                            volume_ref_num == working_directory.volume_ref_num
+                        })
+                    });
                 if requested_vref == 0 && !name.is_empty() && named_volume.is_none() {
                     let nsverr: i16 = -35;
                     bus.write_word(pb + 16, nsverr as u16);
                     cpu.write_reg(Register::D0, nsverr as u32);
                     return Some(Ok(()));
                 }
-                let mut target_volume_ref_num = named_volume
-                    .map(|(volume_ref_num, _)| volume_ref_num)
+                let mut target_volume_ref_num = matching_basic_working_directory
+                    .map(|working_directory| working_directory.volume_ref_num)
+                    .or_else(|| named_volume.map(|(volume_ref_num, _)| volume_ref_num))
                     .unwrap_or_else(|| self.resolve_volume_ref_num(requested_vref));
-                let mut target_dir_id = if let Some((_, root_dir_id)) = named_volume {
+                let mut target_dir_id = if let Some(working_directory) =
+                    matching_basic_working_directory
+                {
+                    working_directory.dir_id
+                } else if let Some((_, root_dir_id)) = named_volume {
                     root_dir_id
                 } else if let Some(working_directory) =
                     self.working_directories.get(&requested_vref)
@@ -17758,6 +17706,46 @@ mod tests {
             bus.read_word(addr::SF_SAVE_DISK),
             (-super::super::dispatch::BOOT_VOLUME_REF_NUM) as u16
         );
+    }
+
+    #[test]
+    fn pbsetvol_restores_pbgetvol_working_directory_when_name_is_also_present() {
+        // Files 1992, 2-150 to 2-151: PBGetVol returns the working-directory
+        // reference established by PBSetVol, and passing that reference back
+        // to PBSetVol makes the represented directory the default again.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let app_dir_id = disp.ensure_vfs_directory("Pinball Demo");
+        disp.vfs
+            .insert("Pinball Demo/Pinball Demo".to_string(), vec![]);
+        disp.set_launched_app_path("Pinball Demo/Pinball Demo");
+
+        let pb = 0x300000u32;
+        let name_buf = 0x300100u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 18, name_buf);
+
+        call_trap_word(&mut disp, 0xA014, &mut cpu, &mut bus).unwrap();
+        let saved_wd_refnum = bus.read_word(pb + 22) as i16;
+        assert_ne!(saved_wd_refnum, super::super::dispatch::BOOT_VOLUME_REF_NUM);
+        assert_eq!(bus.read_pstring(name_buf), b"MacintoshHD");
+
+        bus.write_long(pb + 18, 0);
+        bus.write_word(
+            pb + 22,
+            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16,
+        );
+        call_trap_word(&mut disp, 0xA015, &mut cpu, &mut bus).unwrap();
+        assert_eq!(*disp.default_dir_id, 2);
+
+        bus.write_long(pb + 18, name_buf);
+        bus.write_word(pb + 22, saved_wd_refnum as u16);
+        call_trap_word(&mut disp, 0xA015, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(*disp.default_dir_id, app_dir_id);
+        assert_eq!(*disp.app_wd_refnum, saved_wd_refnum);
+        assert_eq!(bus.read_long(addr::CUR_DIR_STORE), app_dir_id);
     }
 
     #[test]
