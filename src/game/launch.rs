@@ -2564,19 +2564,20 @@ fn load_powerpc_executable(
             executable.name
         )
     })?;
-    let mut loaded = crate::loader::ppc::load_pef_application_with_config_and_system_reservation(
-        pef,
-        ppc_config,
-        system_reservation,
-    )
-    .map_err(|error| {
-        format!(
-            "PowerPC PEF executable \"{}\" selected, but PPC loading failed: {error:?}",
-            executable.name
-        )
-    })?;
     let library_fragments = discover_ppc_cfm_library_fragments(&ppc_vfs);
-    loaded.seed_cfm_library_fragments(library_fragments);
+    let mut loaded =
+        crate::loader::ppc::load_pef_application_with_config_and_system_reservation_and_libraries(
+            pef,
+            ppc_config,
+            system_reservation,
+            library_fragments,
+        )
+        .map_err(|error| {
+            format!(
+                "PowerPC PEF executable \"{}\" selected, but PPC loading failed: {error:?}",
+                executable.name
+            )
+        })?;
     loaded.seed_vfs_volumes(ppc_vfs.volumes);
     loaded.seed_vfs_directories(
         ppc_vfs.directories,

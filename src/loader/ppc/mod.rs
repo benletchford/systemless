@@ -18,7 +18,8 @@ use super::pef::{
 use super::ApplicationSizeResource;
 use crate::callback_manager::CallbackTaskArchitecture;
 use crate::cfm::fragment::{
-    first_base_for_kind, first_data_base, section_bases, CfmSection as MappedSection,
+    first_base_for_kind, first_data_base, section_bases, CfmFragmentPlan,
+    CfmSection as MappedSection,
 };
 use crate::cfm::{CfmLoadId, CfmOperation, CfmResourceCall, CfmResourcePreparation};
 use crate::event_queue::{
@@ -245,6 +246,37 @@ impl PpcImportBindingPolicy for SystemlessPpcImportBindingPolicy {
     }
 }
 
+struct PpcInitialCfmBindingPolicy<'a> {
+    connections: &'a [PpcCfmConnection],
+}
+
+impl PpcImportBindingPolicy for PpcInitialCfmBindingPolicy<'_> {
+    fn dispatcher_target(&self, library: &str, symbol: &str) -> PpcImportDispatcherTarget {
+        dispatcher_target_for_import(library, symbol)
+    }
+
+    fn fixed_data_address(&self, library: &str, symbol: &str) -> Option<u32> {
+        import_data_address_for(library, symbol)
+    }
+
+    fn resolved_import_address(&self, library: &str, symbol: &str, class: u8) -> Option<u32> {
+        self.connections
+            .iter()
+            .find(|connection| connection.library_name.eq_ignore_ascii_case(library))
+            .and_then(|connection| {
+                connection.exports.iter().find(|export| {
+                    export.name == symbol && export.class == class
+                })
+            })
+            .map(|export| export.address)
+            .or_else(|| self.fixed_data_address(library, symbol))
+    }
+
+    fn is_explicit_hle_library(&self, library: &str) -> bool {
+        ppc_is_explicit_hle_cfm_library(library)
+    }
+}
+
 fn ppc_import_layout() -> PpcImportLayout {
     PpcImportLayout {
         capacity: PPC_IMPORT_CAPACITY,
@@ -436,6 +468,7 @@ const PPC_LINKAGE_SAVED_CR_OFFSET: u32 = 4;
 const PPC_LINKAGE_SAVED_LR_OFFSET: u32 = 8;
 const PPC_LINKAGE_SAVED_RTOC_OFFSET: u32 = 20;
 pub(super) const PPC_GUEST_CALL_RETURN_PC: u32 = PPC_IMPORT_TRAP_BASE + PPC_GUEST_CALL_RETURN_IMPORT_INDEX * 4;
+const PPC_INITIALIZERS_TRAMPOLINE_BASE: u32 = PPC_IMPORT_TRAP_BASE - 0x1_0000;
 const PPC_APPLICATION_INIT_RETURN_PC: u32 = PPC_IMPORT_TRAP_BASE - 0x100;
 const PPC_EXCEPTION_INFORMATION_SIZE: u32 = 24;
 const PPC_EXCEPTION_MACHINE_INFORMATION_SIZE: u32 = 64;
@@ -13384,7 +13417,205 @@ pub enum PpcLoadError {
     ScreenDepthOutOfRange {
         requested: u32,
     },
+    BundledLibraryLoad {
+        library_name: String,
+        error: i16,
+    },
     AddressOverflow,
+}
+
+struct PpcInitialCfmLibraryPlan {
+    library_name: String,
+    fragment_bytes: Vec<u8>,
+    plan: CfmFragmentPlan,
+}
+
+struct PpcInitialCfmPlan {
+    libraries: Vec<PpcInitialCfmLibraryPlan>,
+    connections: Vec<PpcCfmConnection>,
+    imports: Vec<PpcImportBinding>,
+    import_addresses: Vec<u32>,
+    import_count: u32,
+    heap_cursor: u32,
+    next_connection_id: u32,
+}
+
+fn initial_cfm_library_order(
+    fragments: &[PpcCfmLibraryFragment],
+    application_imports: &[crate::loader::pef::PefResolvedImport],
+) -> Vec<usize> {
+    fn visit(
+        index: usize,
+        fragments: &[PpcCfmLibraryFragment],
+        visiting: &mut HashSet<usize>,
+        visited: &mut HashSet<usize>,
+        order: &mut Vec<usize>,
+    ) {
+        if visited.contains(&index) || !visiting.insert(index) {
+            return;
+        }
+        let mut dependencies: Vec<_> = resolve_pef_imports(&fragments[index].bytes)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|import| {
+                fragments.iter().position(|fragment| {
+                    fragment.name.eq_ignore_ascii_case(&import.library_name)
+                })
+            })
+            .collect();
+        dependencies.sort_unstable();
+        dependencies.dedup();
+        for dependency in dependencies {
+            visit(dependency, fragments, visiting, visited, order);
+        }
+        visiting.remove(&index);
+        if visited.insert(index) {
+            order.push(index);
+        }
+    }
+
+    let mut roots: Vec<_> = application_imports
+        .iter()
+        .filter_map(|import| {
+            fragments.iter().position(|fragment| {
+                fragment.name.eq_ignore_ascii_case(&import.library_name)
+            })
+        })
+        .collect();
+    roots.sort_unstable();
+    roots.dedup();
+    let mut visiting = HashSet::new();
+    let mut visited = HashSet::new();
+    let mut order = Vec::new();
+    for root in roots {
+        visit(
+            root,
+            fragments,
+            &mut visiting,
+            &mut visited,
+            &mut order,
+        );
+    }
+    order
+}
+
+fn ppc_plan_initial_cfm_libraries(
+    mut fragments: Vec<PpcCfmLibraryFragment>,
+    application_imports: Vec<crate::loader::pef::PefResolvedImport>,
+    application_import_count: usize,
+    initial_imports: Vec<PpcImportBinding>,
+    heap_limit: u32,
+) -> Result<PpcInitialCfmPlan, PpcLoadError> {
+    fragments.sort_by(|left, right| {
+        left.name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase())
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    fragments.dedup_by(|left, right| left.name.eq_ignore_ascii_case(&right.name));
+    let order = initial_cfm_library_order(&fragments, &application_imports);
+    let initial_binding_count = initial_imports.len();
+    let mut import_run_state = PpcImportRunState::from_parts(
+        initial_imports,
+        application_import_count as u32,
+        ppc_import_layout(),
+    );
+    let mut libraries = Vec::new();
+    let mut connections = Vec::new();
+    let mut heap_cursor = PPC_HEAP_BASE;
+    let mut next_connection_id = PPC_FIRST_CFM_CONNECTION_ID;
+
+    for index in order {
+        let fragment = &fragments[index];
+        let imported_symbols = parse_pef_imported_symbols(&fragment.bytes).ok_or_else(|| {
+            PpcLoadError::BundledLibraryLoad {
+                library_name: fragment.name.clone(),
+                error: PPC_FRAG_CORRUPT_ERR,
+            }
+        })?;
+        let resolved_imports = resolve_pef_imports(&fragment.bytes).ok_or_else(|| {
+            PpcLoadError::BundledLibraryLoad {
+                library_name: fragment.name.clone(),
+                error: PPC_FRAG_CORRUPT_ERR,
+            }
+        })?;
+        let policy = PpcInitialCfmBindingPolicy {
+            connections: &connections,
+        };
+        let import_plan = import_run_state
+            .plan_resolved(resolved_imports, imported_symbols.len(), &policy)
+            .map_err(|error| PpcLoadError::BundledLibraryLoad {
+                library_name: fragment.name.clone(),
+                error: ppc_dynamic_import_error(error),
+            })?;
+        let pending = import_run_state
+            .stage_append(import_plan)
+            .map_err(|error| PpcLoadError::BundledLibraryLoad {
+                library_name: fragment.name.clone(),
+                error: ppc_dynamic_import_error(error),
+            })?;
+        let plan = CfmFragmentPlan::prepare(
+            &fragment.bytes,
+            pending.relocation_addresses(),
+            heap_cursor,
+            heap_limit,
+            PPC_HEAP_ALIGNMENT,
+            |cursor, size, alignment| {
+                let base = cursor.checked_add(alignment.checked_sub(1)?)? & !(alignment - 1);
+                let next = base.checked_add(size)?;
+                (next < heap_limit).then_some((base, next))
+            },
+        )
+        .map_err(|error| PpcLoadError::BundledLibraryLoad {
+            library_name: fragment.name.clone(),
+            error: error.os_error(),
+        })?;
+        heap_cursor = plan.next_heap_cursor();
+        pending.commit();
+        let prepared = plan.prepared_fragment();
+        connections.push(PpcCfmConnection {
+            id: next_connection_id,
+            library_name: fragment.name.clone(),
+            main_addr: prepared.main_addr,
+            init_addr: prepared.init_addr,
+            term_addr: prepared.term_addr,
+            exports: prepared.exports.clone(),
+        });
+        next_connection_id = next_connection_id
+            .checked_add(1)
+            .ok_or(PpcLoadError::AddressOverflow)?;
+        libraries.push(PpcInitialCfmLibraryPlan {
+            library_name: fragment.name.clone(),
+            fragment_bytes: fragment.bytes.clone(),
+            plan,
+        });
+    }
+
+    let policy = PpcInitialCfmBindingPolicy {
+        connections: &connections,
+    };
+    let rebound = PpcImportBindingPlan::prepare(
+        application_imports,
+        application_import_count,
+        0,
+        ppc_import_layout(),
+        &policy,
+    )
+    .map_err(ppc_initial_import_error)?;
+    let import_addresses = rebound.relocation_addresses().to_vec();
+    let rebound_imports = rebound.into_initial_bindings();
+    let (mut imports, import_count) = import_run_state.into_parts();
+    imports.splice(0..initial_binding_count, rebound_imports);
+
+    Ok(PpcInitialCfmPlan {
+        libraries,
+        connections,
+        imports,
+        import_addresses,
+        import_count,
+        heap_cursor,
+        next_connection_id,
+    })
 }
 
 pub fn load_pef_application(data: &[u8]) -> Result<PpcLoadedApp, PpcLoadError> {
@@ -13395,9 +13626,15 @@ pub fn load_pef_application_with_config(
     data: &[u8],
     config: PpcLoadConfig,
 ) -> Result<PpcLoadedApp, PpcLoadError> {
-    load_pef_application_with_config_and_optional_system_reservation(data, config, None)
+    load_pef_application_with_config_and_optional_system_reservation(
+        data,
+        config,
+        None,
+        Vec::new(),
+    )
 }
 
+#[cfg(test)]
 pub(crate) fn load_pef_application_with_config_and_system_reservation(
     data: &[u8],
     config: PpcLoadConfig,
@@ -13407,6 +13644,21 @@ pub(crate) fn load_pef_application_with_config_and_system_reservation(
         data,
         config,
         Some(system_reservation),
+        Vec::new(),
+    )
+}
+
+pub(crate) fn load_pef_application_with_config_and_system_reservation_and_libraries(
+    data: &[u8],
+    config: PpcLoadConfig,
+    system_reservation: (u32, u32),
+    library_fragments: Vec<PpcCfmLibraryFragment>,
+) -> Result<PpcLoadedApp, PpcLoadError> {
+    load_pef_application_with_config_and_optional_system_reservation(
+        data,
+        config,
+        Some(system_reservation),
+        library_fragments,
     )
 }
 
@@ -13414,6 +13666,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
     data: &[u8],
     config: PpcLoadConfig,
     system_reservation: Option<(u32, u32)>,
+    library_fragments: Vec<PpcCfmLibraryFragment>,
 ) -> Result<PpcLoadedApp, PpcLoadError> {
     if !matches!(config.screen_depth, 1 | 2 | 4 | 8 | 16) {
         return Err(PpcLoadError::ScreenDepthOutOfRange {
@@ -13425,21 +13678,41 @@ fn load_pef_application_with_config_and_optional_system_reservation(
     let loader = parse_pef_loader_header(data).ok_or(PpcLoadError::PefParse)?;
     let resolved_imports = resolve_pef_imports(data).unwrap_or_default();
     let imported_symbols = parse_pef_imported_symbols(data).unwrap_or_default();
+    let stack_size = normalize_stack_size(config.stack_size)?;
+    let stack_base =
+        PPC_STACK_TOP
+            .checked_sub(stack_size)
+            .ok_or(PpcLoadError::StackSizeOutOfRange {
+                requested: config.stack_size,
+            })?;
+    if stack_base <= PPC_HEAP_BASE {
+        return Err(PpcLoadError::StackSizeOutOfRange {
+            requested: config.stack_size,
+        });
+    }
     let import_plan = PpcImportBindingPlan::prepare(
-        resolved_imports,
+        resolved_imports.clone(),
         imported_symbols.len(),
         0,
         ppc_import_layout(),
         &SystemlessPpcImportBindingPolicy,
     )
     .map_err(ppc_initial_import_error)?;
-    let import_addrs = import_plan.relocation_addresses().to_vec();
-    let imports = import_plan.into_initial_bindings();
+    let initial_imports = import_plan.into_initial_bindings();
     let mut mapped_sections = map_instantiated_sections(data)?;
     let section_bases = section_bases(&mapped_sections);
     let code_base = first_base_for_kind(&mapped_sections, SECTION_KIND_CODE)
         .ok_or(PpcLoadError::NoCodeSection)?;
     let data_base = first_data_base(&mapped_sections).ok_or(PpcLoadError::NoDataSection)?;
+    let initial_cfm = ppc_plan_initial_cfm_libraries(
+        library_fragments.clone(),
+        resolved_imports,
+        imported_symbols.len(),
+        initial_imports,
+        stack_base,
+    )?;
+    let import_addrs = &initial_cfm.import_addresses;
+    let imports = &initial_cfm.imports;
 
     let reloc_headers = parse_pef_reloc_headers(data).unwrap_or_default();
     for reloc in &reloc_headers {
@@ -13456,12 +13729,12 @@ fn load_pef_application_with_config_and_optional_system_reservation(
             code_base,
             data_base,
             section_bases: &section_bases,
-            import_addrs: &import_addrs,
+            import_addrs,
         };
         apply_pef_relocations_detailed(&mut mapped.bytes, stream, &ctx).map_err(|failure| {
             let import_symbol = failure
                 .import_index
-                .and_then(|index| relocation_import_symbol(&imports, index));
+                .and_then(|index| relocation_import_symbol(imports, index));
             PpcLoadError::RelocationApply {
                 section_index: reloc.section_index,
                 reloc_instr_offset: reloc
@@ -13533,25 +13806,13 @@ fn load_pef_application_with_config_and_optional_system_reservation(
     }
     let main_tvector = main_section.base + loader.main_offset;
 
-    let stack_size = normalize_stack_size(config.stack_size)?;
-    let stack_base =
-        PPC_STACK_TOP
-            .checked_sub(stack_size)
-            .ok_or(PpcLoadError::StackSizeOutOfRange {
-                requested: config.stack_size,
-            })?;
-    if stack_base <= PPC_HEAP_BASE {
-        return Err(PpcLoadError::StackSizeOutOfRange {
-            requested: config.stack_size,
-        });
-    }
     maybe_write(&PefDumpContext {
         data_len: data.len(),
         header,
         loader,
         raw_sections: &raw_sections,
         mapped_sections: &mapped_sections,
-        imports: &imports,
+        imports,
         reloc_headers: &reloc_headers,
         entry_pc,
         rtoc,
@@ -13559,6 +13820,18 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         stack_size,
         stack_top: PPC_STACK_TOP,
     });
+    let PpcInitialCfmPlan {
+        libraries: initial_library_plans,
+        connections: mut cfm_connections,
+        imports,
+        import_count,
+        mut heap_cursor,
+        next_connection_id: mut next_cfm_connection_id,
+        ..
+    } = initial_cfm;
+    let has_initial_library_initializer = initial_library_plans
+        .iter()
+        .any(|library| library.plan.prepared_fragment().init_addr != 0);
 
     let mut memory = PpcSectionMem::new();
     if let Some((base, len)) = system_reservation {
@@ -13708,7 +13981,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
     );
     memory.add_region(PPC_DSP_CONTEXT, vec![0u8; PPC_QA_OBJECTS_SIZE]);
     ppc_seed_qa_rave_objects(&mut memory);
-    if init_tvector.is_some() {
+    if init_tvector.is_some() && !has_initial_library_initializer {
         memory
             .publish_system_code(
                 GuestIsa::PowerPc,
@@ -13739,11 +14012,64 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         PPC_HEAP_BASE,
         vec![0u8; usize::try_from(stack_base - PPC_HEAP_BASE).unwrap()],
     );
+    for library in &initial_library_plans {
+        if !library.plan.publish(&mut memory) {
+            return Err(PpcLoadError::BundledLibraryLoad {
+                library_name: library.library_name.clone(),
+                error: PPC_FRAG_NO_ADDR_SPACE,
+            });
+        }
+    }
+    ppc_update_zone_free_bytes(&mut memory, heap_cursor, stack_base);
 
-    let mut heap_cursor = PPC_HEAP_BASE;
-    let mut cfm_connections = Vec::new();
-    let mut next_cfm_connection_id = PPC_FIRST_CFM_CONNECTION_ID;
-    let startup = if let Some((init_addr, init_entry, init_rtoc)) = init_tvector {
+    let mut startup_initializers = Vec::new();
+    for library in &initial_library_plans {
+        let connection = cfm_connections
+            .iter()
+            .find(|connection| connection.library_name == library.library_name)
+            .expect("planned CFM library has a connection");
+        if connection.init_addr == 0 {
+            continue;
+        }
+        let fragment_size = u32::try_from(library.fragment_bytes.len())
+            .map_err(|_| PpcLoadError::AddressOverflow)?;
+        let fragment_addr = ppc_heap_alloc(
+            &mut memory,
+            &mut heap_cursor,
+            stack_base,
+            fragment_size,
+            false,
+        );
+        if fragment_addr == 0
+            || memory
+                .write_bytes(fragment_addr, &library.fragment_bytes)
+                .is_none()
+        {
+            return Err(PpcLoadError::BundledLibraryLoad {
+                library_name: library.library_name.clone(),
+                error: PPC_FRAG_NO_MEM,
+            });
+        }
+        let init_block = ppc_create_mem_fragment_init_block(
+            None,
+            &mut memory,
+            &mut heap_cursor,
+            stack_base,
+            connection.id,
+            fragment_addr,
+            fragment_size,
+            &library.library_name,
+        )
+        .map_err(|error| PpcLoadError::BundledLibraryLoad {
+            library_name: library.library_name.clone(),
+            error,
+        })?;
+        startup_initializers.push((connection.init_addr, init_block));
+    }
+    let library_initializer_count = startup_initializers.len();
+    let mut application_startup = None;
+
+    if let Some((init_addr, init_entry, init_rtoc)) = init_tvector {
         // Inside Macintosh: PowerPC System Software (1994), pp. 3-15--3-18
         // requires CFM to call a fragment initializer before its main routine.
         // Keep a guest-visible copy of the PEF as an in-memory fragment locator
@@ -13764,24 +14090,63 @@ fn load_pef_application_with_config_and_optional_system_reservation(
             &mut memory,
             &mut heap_cursor,
             stack_base,
-            PPC_FIRST_CFM_CONNECTION_ID,
+            next_cfm_connection_id,
             fragment_addr,
             fragment_size,
             "application",
         )
         .map_err(|_| PpcLoadError::AddressOverflow)?;
         cfm_connections.push(PpcCfmConnection {
-            id: PPC_FIRST_CFM_CONNECTION_ID,
+            id: next_cfm_connection_id,
             library_name: "application".to_string(),
             main_addr: main_tvector,
             init_addr,
             term_addr: term_tvector.map_or(0, |(addr, _, _)| addr),
             exports: Vec::new(),
         });
-        next_cfm_connection_id += 1;
-        Some((init_entry, init_rtoc, init_block))
+        next_cfm_connection_id = next_cfm_connection_id
+            .checked_add(1)
+            .ok_or(PpcLoadError::AddressOverflow)?;
+        application_startup = Some((init_addr, init_entry, init_rtoc, init_block));
+    }
+
+    let startup = if library_initializer_count == 0 {
+        if let Some((_, init_entry, init_rtoc, init_block)) = application_startup {
+            Some((
+                init_entry,
+                init_rtoc,
+                init_block,
+                PPC_APPLICATION_INIT_RETURN_PC,
+            ))
+        } else {
+            None
+        }
     } else {
-        None
+        if let Some((init_addr, _, _, init_block)) = application_startup {
+            startup_initializers.push((init_addr, init_block));
+        }
+        let bytes = ppc_initializers_trampoline(&startup_initializers, entry_pc, rtoc);
+        let size = u32::try_from(bytes.len()).map_err(|_| PpcLoadError::AddressOverflow)?;
+        if size > PPC_APPLICATION_INIT_RETURN_PC - PPC_INITIALIZERS_TRAMPOLINE_BASE
+            || memory
+                .readonly_allocation_overlap_end(PPC_INITIALIZERS_TRAMPOLINE_BASE, size)
+                .is_some()
+            || memory
+                .publish_system_code(
+                    GuestIsa::PowerPc,
+                    PPC_INITIALIZERS_TRAMPOLINE_BASE,
+                    bytes,
+                )
+                .is_none()
+        {
+            return Err(PpcLoadError::AddressOverflow);
+        }
+        Some((
+            PPC_INITIALIZERS_TRAMPOLINE_BASE,
+            rtoc,
+            0,
+            PPC_HALT_PC,
+        ))
     };
 
     let stack_pointer = PPC_STACK_TOP - PPC_INITIAL_STACK_FRAME_SIZE;
@@ -13791,11 +14156,11 @@ fn load_pef_application_with_config_and_optional_system_reservation(
     memory.add_region(stack_base, stack);
     let mut cpu = PpcCpu::new();
     cpu.alignment_policy = PpcAlignmentPolicy::EmulateData;
-    cpu.pc = startup.map_or(entry_pc, |(entry, _, _)| entry);
+    cpu.pc = startup.map_or(entry_pc, |startup| startup.0);
     cpu.gpr[1] = stack_pointer;
-    cpu.gpr[2] = startup.map_or(rtoc, |(_, init_rtoc, _)| init_rtoc);
-    cpu.gpr[3] = startup.map_or(0, |(_, _, init_block)| init_block);
-    cpu.lr = startup.map_or(PPC_HALT_PC, |_| PPC_APPLICATION_INIT_RETURN_PC);
+    cpu.gpr[2] = startup.map_or(rtoc, |startup| startup.1);
+    cpu.gpr[3] = startup.map_or(0, |startup| startup.2);
+    cpu.lr = startup.map_or(PPC_HALT_PC, |startup| startup.3);
     let mut toolbox_startup = PpcToolboxStartupState::default();
     let mut handles = Vec::new();
     let mut screen_clut = TrapDispatcher::standard_mac_8bpp_clut();
@@ -13858,7 +14223,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         apple_events: PpcAppleEventState::default(),
         cfm: Some(PpcCfmState {
             connections: cfm_connections,
-            library_fragments: Vec::new(),
+            library_fragments,
             next_connection_id: next_cfm_connection_id,
         }),
         controls: SharedProcessControlManager::default(),
@@ -13928,7 +14293,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         collections: SharedProcessCollectionManager::default(),
         halt_pc: PPC_HALT_PC,
         import_trap_base: PPC_IMPORT_TRAP_BASE,
-        import_count: imported_symbols.len() as u32,
+        import_count,
         imports,
         section_bases,
         input: PpcInputSnapshot::default(),
@@ -67293,10 +67658,44 @@ fn ppc_application_init_return_trampoline(main_entry: u32, main_rtoc: u32) -> Ve
         0x7d89_03a6, // mtctr r12
         0x4e80_0420, // bctr
     ];
-    words
-        .into_iter()
-        .flat_map(u32::to_be_bytes)
-        .collect::<Vec<_>>()
+    words.into_iter().flat_map(u32::to_be_bytes).collect()
+}
+
+fn ppc_initializers_trampoline(
+    initializers: &[(u32, u32)],
+    main_entry: u32,
+    main_rtoc: u32,
+) -> Vec<u8> {
+    // Each initializer receives its InitBlock in r3 through the descriptor's
+    // entry/TOC pair. A nonzero OSErr stops launch; only a fully initialized
+    // dependency chain reaches the application's main routine.
+    let mut words = Vec::new();
+    for (descriptor, init_block) in initializers {
+        words.extend_from_slice(&[
+            0x3c60_0000 | (init_block >> 16),
+            0x6063_0000 | (init_block & 0xffff),
+            0x3d80_0000 | (descriptor >> 16),
+            0x618c_0000 | (descriptor & 0xffff),
+            0x800c_0000, // lwz r0, 0(r12)
+            0x804c_0004, // lwz r2, 4(r12)
+            0x7c09_03a6, // mtctr r0
+            0x4e80_0421, // bctrl
+            0x2c03_0000, // cmpwi r3, 0
+            0x4182_0010, // beq next initializer/main
+            0x3980_0000, // li r12, 0
+            0x7d89_03a6, // mtctr r12
+            0x4e80_0420, // bctr
+        ]);
+    }
+    words.extend_from_slice(&[
+        0x3c40_0000 | (main_rtoc >> 16),
+        0x6042_0000 | (main_rtoc & 0xffff),
+        0x3d80_0000 | (main_entry >> 16),
+        0x618c_0000 | (main_entry & 0xffff),
+        0x7d89_03a6, // mtctr r12
+        0x4e80_0420, // bctr
+    ]);
+    words.into_iter().flat_map(u32::to_be_bytes).collect()
 }
 
 fn alignment_bytes(power: u8) -> Result<u32, PpcLoadError> {

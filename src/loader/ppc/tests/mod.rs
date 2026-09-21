@@ -18457,6 +18457,21 @@ fn ppc_loader_rejects_system_reservation_layout_collisions() {
         PpcLoadError::AddressOverflow
     );
 
+    let (_bus, initializers_reservation) = reservation_at(PPC_INITIALIZERS_TRAMPOLINE_BASE);
+    assert_eq!(
+        load_pef_application_with_config_and_optional_system_reservation(
+            &synthetic_pef_with_library_import(b"BundledInitializer", b"Missing"),
+            PpcLoadConfig::default(),
+            Some(initializers_reservation),
+            vec![PpcCfmLibraryFragment {
+                name: "BundledInitializer".to_string(),
+                bytes: synthetic_pef_with_initializer(),
+            }],
+        )
+        .unwrap_err(),
+        PpcLoadError::AddressOverflow
+    );
+
     let stack_base = PPC_HEAP_BASE + 0x1000;
     let (_bus, stack_reservation) = reservation_at(stack_base);
     assert_eq!(
@@ -23289,6 +23304,163 @@ pub(crate) fn synthetic_pef_with_enumerable_exports() -> Vec<u8> {
     write_u32(&mut loader, symbol_offset + 4, 0x1234_5678);
     write_u16(&mut loader, symbol_offset + 8, (-2i16) as u16); // absolute export
     synthetic_pef_with_loader_and_data(loader, &[0; 8])
+}
+
+fn synthetic_pef_with_single_export(
+    name: &[u8],
+    class: u8,
+    value: u32,
+    section_index: i16,
+) -> Vec<u8> {
+    let strings_offset = 56usize;
+    let hash_offset = strings_offset + name.len() + 1;
+    let key_offset = hash_offset + 4;
+    let symbol_offset = key_offset + 4;
+    let mut loader = vec![0; symbol_offset + 10];
+    write_i32(&mut loader, 0, -1);
+    write_i32(&mut loader, 8, -1);
+    write_i32(&mut loader, 16, -1);
+    write_u32(&mut loader, 40, strings_offset as u32);
+    write_u32(&mut loader, 44, hash_offset as u32);
+    write_u32(&mut loader, 52, 1);
+    loader[strings_offset..strings_offset + name.len()].copy_from_slice(name);
+    write_u32(&mut loader, hash_offset, 1 << 18);
+    write_u32(&mut loader, key_offset, (name.len() as u32) << 16);
+    write_u32(&mut loader, symbol_offset, u32::from(class) << 24);
+    write_u32(&mut loader, symbol_offset + 4, value);
+    write_u16(&mut loader, symbol_offset + 8, section_index as u16);
+    synthetic_pef_with_loader_and_data(loader, &[0; 8])
+}
+
+#[test]
+fn initial_application_imports_bind_bundled_library_data_and_tvectors() {
+    for (symbol, class, value, section_index) in [
+        (b"SharedData".as_slice(), 1, 0x1234_5678, -2),
+        (b"SharedRoutine".as_slice(), 2, 0, 1),
+    ] {
+        let application = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+            b"BundledLibrary",
+            symbol,
+            class,
+            &[sm_index_reloc(0x30, 0)],
+        ));
+        let library = synthetic_pef_with_single_export(symbol, class, value, section_index);
+        let mut loaded = load_pef_application_with_config_and_optional_system_reservation(
+            &application,
+            PpcLoadConfig::default(),
+            None,
+            vec![PpcCfmLibraryFragment {
+                name: "BundledLibrary".to_string(),
+                bytes: library,
+            }],
+        )
+        .unwrap();
+
+        let binding_address = loaded.import_binding(0).unwrap().address;
+        assert_ne!(binding_address, 0);
+        assert_eq!(loaded.memory.read_u32_be(PPC_DATA_BASE), Some(binding_address));
+        assert_eq!(
+            loaded.cfm.as_ref().unwrap().connections[0]
+                .exports
+                .iter()
+                .find(|export| export.name == decode_mac_roman(symbol))
+                .map(|export| (export.class, export.address)),
+            Some((class, binding_address))
+        );
+        if section_index == -2 {
+            assert_eq!(binding_address, value);
+        } else {
+            assert!(binding_address >= PPC_HEAP_BASE);
+        }
+    }
+}
+
+#[test]
+fn initial_bundled_libraries_bind_dependencies_in_deterministic_order() {
+    let application = synthetic_pef_with_library_import(b"RootLibrary", b"Missing");
+    let root = PpcCfmLibraryFragment {
+        name: "RootLibrary".to_string(),
+        bytes: synthetic_pef_with_library_import(b"DependencyLibrary", b"SharedRoutine"),
+    };
+    let dependency = PpcCfmLibraryFragment {
+        name: "DependencyLibrary".to_string(),
+        bytes: synthetic_pef_with_single_export(b"SharedRoutine", 2, 0, 1),
+    };
+
+    for fragments in [
+        vec![root.clone(), dependency.clone()],
+        vec![dependency.clone(), root.clone()],
+    ] {
+        let mut loaded = load_pef_application_with_config_and_optional_system_reservation(
+            &application,
+            PpcLoadConfig::default(),
+            None,
+            fragments,
+        )
+        .unwrap();
+        let cfm = loaded.cfm.as_ref().unwrap();
+
+        assert_eq!(
+            cfm.connections
+                .iter()
+                .map(|connection| connection.library_name.as_str())
+                .collect::<Vec<_>>(),
+            ["DependencyLibrary", "RootLibrary"]
+        );
+        let export_address = cfm.connections[0]
+            .exports
+            .iter()
+            .find(|export| export.name == "SharedRoutine")
+            .unwrap()
+            .address;
+        let dependency_binding = loaded
+            .imports
+            .iter()
+            .find(|binding| binding.library_name == "DependencyLibrary")
+            .unwrap();
+        assert_eq!(dependency_binding.address, export_address);
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_APPLICATION_ZONE + 12),
+            Some(
+                ppc_heap_free_capacity(
+                    &loaded.memory,
+                    loaded.heap_cursor(),
+                    test_heap_limit!(loaded),
+                )
+                .0
+            )
+        );
+    }
+}
+
+#[test]
+fn initial_bundled_library_initializer_runs_before_application_main() {
+    let application = synthetic_pef_with_library_import(b"BundledInitializer", b"Missing");
+    let mut library = synthetic_pef_with_initializer();
+    let code_offset = parse_pef_sections(&library).unwrap()[0].container_offset as usize;
+    write_u32(&mut library, code_offset, d_form_u(14, 3, 0, 0));
+    write_u32(&mut library, code_offset + 4, BLR);
+    let mut loaded = load_pef_application_with_config_and_optional_system_reservation(
+        &application,
+        PpcLoadConfig::default(),
+        None,
+        vec![PpcCfmLibraryFragment {
+            name: "BundledInitializer".to_string(),
+            bytes: library,
+        }],
+    )
+    .unwrap();
+
+    assert_ne!(loaded.cpu.pc, loaded.entry_pc);
+    assert_eq!(
+        loaded.memory.system_code_isa(loaded.cpu.pc),
+        Some(GuestIsa::PowerPc)
+    );
+    let probe = loaded.run_with_hle_imports(128);
+
+    assert_eq!(probe.unsupported_import_index, Some(0));
+    assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+    assert_eq!(loaded.cpu.gpr[3], 0);
 }
 
 #[test]
