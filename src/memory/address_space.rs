@@ -89,7 +89,6 @@ pub(crate) enum GuestMemoryRoute {
     Mixed,
 }
 
-
 /// A sparse guest address space that can be executed by either CPU backend.
 ///
 /// The region implementation remains private so loaders and runtime services
@@ -117,6 +116,22 @@ struct GuestAddressSpaceState {
     /// `push_shared_mapping` clears both.
     instruction_lookup: Option<SharedLookup>,
     data_lookup: Option<SharedLookup>,
+    /// Generation stamped into the instruction-cache tokens we issue for
+    /// writable guest code. Rotating it retires every cached basic block.
+    code_generation: u64,
+    /// Pages we have issued a writable-code token for. A write into one of
+    /// them may have rewritten a cached decode, so it retires that page's
+    /// tokens; a clear bit proves the write cannot have touched executed code
+    /// and costs the write path one word test.
+    executed_pages: PageIndex,
+    /// Last writable-code token, with the page it answers for. Every
+    /// rotation clears it, so a stale token cannot outlive its generation.
+    instruction_token_cache: Option<(u32, u64)>,
+    /// Per-page half of the token generation, bumped by a write to an
+    /// executed page. Guest data shares 4 KiB pages with guest code, so one
+    /// global counter would let data traffic retire every block in the
+    /// process. Direct-mapped: pages sharing a slot retire each other.
+    page_generations: Option<Box<[u32]>>,
 }
 
 impl GuestAddressSpaceState {
@@ -135,6 +150,7 @@ impl GuestAddressSpaceState {
         // A new mapping can shadow a cached span or fall inside a cached gap.
         self.instruction_lookup = None;
         self.data_lookup = None;
+        self.instruction_token_cache = None;
         self.shared_regions.push(mapping);
     }
 
@@ -143,6 +159,62 @@ impl GuestAddressSpaceState {
         start < self.shared_bounds.end
             && self.shared_bounds.start < end
             && self.shared_pages.may_overlap(start, end)
+    }
+
+    /// The token stamped on writable code in the page holding `addr`.
+    ///
+    /// Both halves of the generation only count up, so their sum is unique
+    /// per page over the life of the process. Folding the page number in
+    /// keeps a cached block from spanning a page it did not prove.
+    #[inline]
+    fn writable_code_token(&mut self, addr: u32) -> u64 {
+        let page = (addr >> CODE_PAGE_SHIFT) as usize;
+        let generations = self
+            .page_generations
+            .get_or_insert_with(|| vec![0u32; CODE_GENERATION_SLOTS].into_boxed_slice());
+        let generation =
+            u64::from(generations[page & CODE_GENERATION_INDEX_MASK]).wrapping_add(self.code_generation);
+        WRITABLE_CODE_TOKEN_TAG | ((page as u64) << 32) | (generation & 0xffff_ffff)
+    }
+
+    /// Retire the tokens issued for the pages `start..end` touches.
+    #[cold]
+    fn rotate_page_generations(&mut self, start: u64, end: u64) {
+        self.instruction_token_cache = None;
+        let Some(generations) = self.page_generations.as_deref_mut() else {
+            return;
+        };
+        let first = (start >> CODE_PAGE_SHIFT) as usize;
+        let last = (((end - 1) >> CODE_PAGE_SHIFT) as usize).min(CODE_PAGE_COUNT - 1);
+        if last - first >= CODE_GENERATION_SLOTS {
+            // A write that wide reaches every slot anyway.
+            for generation in generations.iter_mut() {
+                *generation = generation.wrapping_add(1);
+            }
+            return;
+        }
+        for page in first..=last {
+            let slot = &mut generations[page & CODE_GENERATION_INDEX_MASK];
+            *slot = slot.wrapping_add(1);
+        }
+    }
+
+    /// Retire every instruction-cache token issued for writable guest code.
+    fn rotate_code_generation(&mut self) {
+        self.code_generation = self.code_generation.wrapping_add(1);
+        self.instruction_token_cache = None;
+    }
+
+    /// Report a completed write to the observers of guest memory: the
+    /// presentation mirror, and the generation behind writable-code tokens.
+    #[inline]
+    fn note_write(&mut self, addr: u32, bytes: &[u8]) {
+        self.presentation.write_bytes(addr, bytes);
+        let start = u64::from(addr);
+        let end = start.saturating_add(bytes.len() as u64);
+        if self.executed_pages.may_overlap(start, end) {
+            self.rotate_page_generations(start, end);
+        }
     }
 
     #[inline]
@@ -531,6 +603,67 @@ fn routed_byte_is_writable_state(
     PpcMemory::write_u8(&mut state.regions, address, original).is_some()
 }
 
+/// Marks the instruction-cache tokens we mint ourselves, keeping them out of
+/// `PpcSectionMem`'s own token namespace (a counter that starts at one).
+const WRITABLE_CODE_TOKEN_TAG: u64 = 1 << 63;
+
+/// Page granularity of the writable-code token generations. It matches the
+/// shared-mapping filter so both sides of a write agree on what a page is.
+const CODE_PAGE_SHIFT: u32 = super::page_index::PAGE_SHIFT;
+const CODE_PAGE_COUNT: usize = super::page_index::PAGE_COUNT;
+
+/// Slots in the direct-mapped generation table. Executed code occupies a
+/// handful of pages, so collisions are rare and only cost a re-decode.
+const CODE_GENERATION_SLOTS: usize = 4096;
+const CODE_GENERATION_INDEX_MASK: usize = CODE_GENERATION_SLOTS - 1;
+
+/// Answer the instruction-cache token for an address served by sparse regions.
+///
+/// `PpcSectionMem` tokenizes only read-only regions, treating a writable one
+/// as possibly self-modifying. Classic Mac OS has no memory protection and
+/// CFM publishes fragments into the writable application heap, so that gate
+/// refuses every instruction a PowerPC app executes. Issue our own token for
+/// writable code and keep the hardware contract instead: code written by the
+/// guest is stale until it flushes its instruction cache, and a write to a
+/// page we have executed from rotates the generation on its own.
+#[inline]
+fn sparse_instruction_token(state: &mut GuestAddressSpaceState, addr: u32) -> Option<u64> {
+    // The interpreter asks once per block start and once per word while it
+    // builds one; a page's answer only changes with a rotation.
+    let page = addr >> CODE_PAGE_SHIFT;
+    if let Some((cached_page, token)) = state.instruction_token_cache {
+        if cached_page == page {
+            return Some(token);
+        }
+    }
+    resolve_sparse_instruction_token(state, addr, page)
+}
+
+fn resolve_sparse_instruction_token(
+    state: &mut GuestAddressSpaceState,
+    addr: u32,
+    page: u32,
+) -> Option<u64> {
+    if state.regions.writable_span(addr, 4).is_some() {
+        let start = u64::from(addr);
+        state.executed_pages.mark(start, start + 4);
+        let token = state.writable_code_token(addr);
+        // Only remember the answer when one writable region covers the whole
+        // page. Otherwise the fast path above could hand out a token for an
+        // address past that region's end.
+        let page_start = page << CODE_PAGE_SHIFT;
+        if state
+            .regions
+            .writable_span(page_start, 1 << CODE_PAGE_SHIFT)
+            .is_some()
+        {
+            state.instruction_token_cache = Some((page, token));
+        }
+        return Some(token);
+    }
+    state.regions.instruction_cache_token(addr)
+}
+
 /// Select a backing for a contiguous access. Wide ranges avoid a byte loop so
 /// a flat-RAM read/write can retain its single-slice fast path. A `Mixed`
 /// result deliberately sends the adapter through its byte-granular path,
@@ -731,7 +864,7 @@ fn write_routed_u8_state(
         GuestMemoryRoute::Flat | GuestMemoryRoute::Unmapped | GuestMemoryRoute::Mixed => None,
     };
     if result.is_some() {
-        state.presentation.write_bytes(address, &[value]);
+        state.note_write(address, &[value]);
     }
     result
 }
@@ -746,9 +879,7 @@ fn write_routed_u16_state(
     let end = range_end(address, 2)?;
     if !state.overlaps_shared(u64::from(address), end) {
         PpcMemory::write_u16_be(&mut state.regions, address, value)?;
-        state
-            .presentation
-            .write_bytes(address, &value.to_be_bytes());
+        state.note_write(address, &value.to_be_bytes());
         return Some(());
     }
     let bytes = value.to_be_bytes();
@@ -771,9 +902,7 @@ fn write_routed_u32_state(
     let end = range_end(address, 4)?;
     if !state.overlaps_shared(u64::from(address), end) {
         PpcMemory::write_u32_be(&mut state.regions, address, value)?;
-        state
-            .presentation
-            .write_bytes(address, &value.to_be_bytes());
+        state.note_write(address, &value.to_be_bytes());
         return Some(());
     }
     let bytes = value.to_be_bytes();
@@ -993,6 +1122,11 @@ impl Clone for GuestAddressSpace {
             // Detached regions are fresh allocations; let the clone re-resolve.
             instruction_lookup: None,
             data_lookup: None,
+            code_generation: state.code_generation,
+            executed_pages: state.executed_pages.clone(),
+            page_generations: state.page_generations.clone(),
+            // Detached regions are fresh allocations; let the clone re-resolve.
+            instruction_token_cache: None,
         })))
     }
 }
@@ -1052,6 +1186,7 @@ impl GuestAddressSpace {
             len: bytes.len(),
         });
         state.regions.add_region(base, bytes);
+        state.rotate_code_generation();
     }
 
     /// Map a read-only region. Newer mappings take precedence over overlaps.
@@ -1062,6 +1197,7 @@ impl GuestAddressSpace {
             len: bytes.len(),
         });
         state.regions.add_readonly_region(base, bytes);
+        state.rotate_code_generation();
     }
 
     /// Publish runtime-generated code with system provenance in owned storage.
@@ -1140,6 +1276,15 @@ impl GuestAddressSpace {
             merged.push((base, end));
         }
         merged
+    }
+
+    /// Retire every cached decode of writable guest code.
+    ///
+    /// The tokens minted by `sparse_instruction_token` stand in for the
+    /// instruction cache the guest flushes with `MakeDataExecutable` or
+    /// `FlushCodeCache`.
+    pub(crate) fn flush_instruction_cache(&mut self) {
+        self.state_mut().rotate_code_generation();
     }
 
     /// Overlay a runner-owned RAM range without copying it.
@@ -1397,7 +1542,7 @@ impl GuestAddressSpace {
         let state = self.state_mut();
         if !state.overlaps_shared(u64::from(addr), end) {
             state.regions.write_bytes(addr, src)?;
-            state.presentation.write_bytes(addr, src);
+            state.note_write(addr, src);
             return Some(());
         }
         // Wholly shared and writable: preflight every span before copying
@@ -1418,13 +1563,13 @@ impl GuestAddressSpace {
                 }
             })
             .expect("preflighted shared range remains mapped and writable");
-            state.presentation.write_bytes(addr, src);
+            state.note_write(addr, src);
             return Some(());
         }
         match route_range_state(state, addr, src.len(), None) {
             GuestMemoryRoute::Sparse => {
                 state.regions.write_bytes(addr, src)?;
-                state.presentation.write_bytes(addr, src);
+                state.note_write(addr, src);
                 return Some(());
             }
             GuestMemoryRoute::Shared => {
@@ -1709,10 +1854,10 @@ impl PpcMemory for GuestAddressSpace {
         };
         let state = self.state_mut();
         if !state.overlaps_shared(u64::from(addr), end) {
-            return state.regions.instruction_cache_token(addr);
+            return sparse_instruction_token(state, addr);
         }
         match route_range_state(state, addr, 4, None) {
-            GuestMemoryRoute::Sparse => state.regions.instruction_cache_token(addr),
+            GuestMemoryRoute::Sparse => sparse_instruction_token(state, addr),
             GuestMemoryRoute::Shared
             | GuestMemoryRoute::SharedReadOnly
             | GuestMemoryRoute::Flat
@@ -1727,7 +1872,7 @@ impl PpcMemory for GuestAddressSpace {
         let start = u64::from(addr);
         if !state.overlaps_shared(start, start + 1) {
             PpcMemory::write_u8(&mut state.regions, addr, value)?;
-            state.presentation.write_bytes(addr, &[value]);
+            state.note_write(addr, &[value]);
             return Some(());
         }
         write_routed_u8_state(state, addr, value, None)
@@ -1741,7 +1886,7 @@ impl PpcMemory for GuestAddressSpace {
         let state = self.state_mut();
         if !state.overlaps_shared(u64::from(addr), end) {
             PpcMemory::write_u16_be(&mut state.regions, addr, value)?;
-            state.presentation.write_bytes(addr, &value.to_be_bytes());
+            state.note_write(addr, &value.to_be_bytes());
             return Some(());
         }
         match route_range_state(state, addr, 2, None) {
@@ -1768,7 +1913,7 @@ impl PpcMemory for GuestAddressSpace {
             return match lookup {
                 SharedLookup::Gap { .. } => {
                     PpcMemory::write_u32_be(&mut state.regions, addr, value)?;
-                    state.presentation.write_bytes(addr, &bytes);
+                    state.note_write(addr, &bytes);
                     Some(())
                 }
                 SharedLookup::Owned(run) => {
@@ -1780,7 +1925,7 @@ impl PpcMemory for GuestAddressSpace {
                     // SAFETY: see `read_shared_bytes`; the span proves the
                     // word lies wholly inside this writable mapping.
                     unsafe { mapping.region.write_from(offset, &bytes) }?;
-                    state.presentation.write_bytes(addr, &bytes);
+                    state.note_write(addr, &bytes);
                     Some(())
                 }
             };
@@ -1802,13 +1947,13 @@ impl PpcMemory for GuestAddressSpace {
         let state = self.state_mut();
         if !state.overlaps_shared(u64::from(addr), end) {
             state.regions.write_u64_be(addr, value)?;
-            state.presentation.write_bytes(addr, &value.to_be_bytes());
+            state.note_write(addr, &value.to_be_bytes());
             return Some(());
         }
         match route_range_state(state, addr, 8, None) {
             GuestMemoryRoute::Sparse => {
                 state.regions.write_u64_be(addr, value)?;
-                state.presentation.write_bytes(addr, &value.to_be_bytes());
+                state.note_write(addr, &value.to_be_bytes());
                 Some(())
             }
             GuestMemoryRoute::Shared
@@ -1893,7 +2038,6 @@ mod tests {
     use crate::memory::{MacMemoryBus, MemoryBus};
     use m68k::{AddressBus, BatchExit, CpuCore, StepResult};
     use ppc::{PpcCpu, PpcMemory, PpcRunResult};
-
 
     const M68K_TRACE_HEAD: u32 = 0x1000;
     const M68K_TRACE_WORDS: [u16; 5] = [0x5280, 0x5281, 0x5347, 0x66f8, 0xa000];
@@ -2110,10 +2254,10 @@ mod tests {
                 .flat_map(u32::to_be_bytes)
                 .collect(),
         );
-        assert_eq!(
-            PpcMemory::instruction_cache_token(&mut memory, PPC_CODE),
-            None
-        );
+        // Writable guest code is cacheable: classic Mac OS publishes every
+        // fragment into the writable heap.
+        let original_token =
+            PpcMemory::instruction_cache_token(&mut memory, PPC_CODE).expect("token for heap code");
 
         let mut ppc = PpcCpu::new();
         ppc.pc = PPC_CODE;
@@ -2137,9 +2281,11 @@ mod tests {
         m68k.pc = M68K_WRITER;
         assert!(matches!(m68k.step(&mut bus), StepResult::Ok { .. }));
         assert_eq!(memory.read_u32_be(PPC_CODE), Some(0x3863_0002));
-        assert_eq!(
+        // The store landed on a page the interpreter has executed, so the
+        // token rotates and the cached decode is retired.
+        assert_ne!(
             PpcMemory::instruction_cache_token(&mut memory, PPC_CODE),
-            None
+            Some(original_token)
         );
 
         ppc.pc = PPC_CODE;
@@ -2150,6 +2296,118 @@ mod tests {
             PpcRunResult::Halted { pc: 0, cycles: 2 }
         );
         assert_eq!(ppc.gpr[3], 2);
+    }
+
+    #[test]
+    fn writable_heap_code_is_decoded_once_across_repeated_runs() {
+        const PPC_CODE: u32 = 0x0300_0000;
+        const ADD_ONE: u32 = 0x3863_0001;
+        const BLR: u32 = 0x4e80_0020;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(
+            PPC_CODE,
+            [ADD_ONE, BLR]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+        let mut cpu = PpcCpu::new();
+        let mut counted = CountingGuestAddressSpace::new(&mut memory);
+
+        run_cached_add(&mut cpu, &mut counted, PPC_CODE, 1);
+        assert_eq!(counted.instruction_reads, 2);
+        // A CFM fragment lives in the writable heap; the block cache has to
+        // engage there or every guest instruction pays a fetch.
+        run_cached_add(&mut cpu, &mut counted, PPC_CODE, 1);
+        assert_eq!(counted.instruction_reads, 2);
+    }
+
+    #[test]
+    fn writes_clear_of_executed_code_leave_the_decode_cache_alone() {
+        const PPC_CODE: u32 = 0x0300_0000;
+        const DATA: u32 = 0x0300_4000;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(PPC_CODE, vec![0; 0x8000]);
+        let token =
+            PpcMemory::instruction_cache_token(&mut memory, PPC_CODE).expect("token for heap code");
+
+        // Far from any page the interpreter has fetched from: ordinary guest
+        // data traffic must not retire cached decodes.
+        assert_eq!(PpcMemory::write_u32_be(&mut memory, DATA, 0x1234_5678), Some(()));
+        assert_eq!(
+            PpcMemory::instruction_cache_token(&mut memory, PPC_CODE),
+            Some(token)
+        );
+
+        // The same page is another matter, flush or no flush.
+        assert_eq!(
+            PpcMemory::write_u32_be(&mut memory, PPC_CODE + 4, 0x6000_0000),
+            Some(())
+        );
+        assert_ne!(
+            PpcMemory::instruction_cache_token(&mut memory, PPC_CODE),
+            Some(token)
+        );
+    }
+
+    #[test]
+    fn token_reuse_stops_at_a_region_that_ends_inside_its_page() {
+        const PPC_CODE: u32 = 0x0300_0000;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(PPC_CODE, vec![0; 0x100]);
+        assert!(PpcMemory::instruction_cache_token(&mut memory, PPC_CODE).is_some());
+        // Same page, past the end of the region: answering from a per-page
+        // cache here would let a block run off the end of its mapping.
+        assert_eq!(
+            PpcMemory::instruction_cache_token(&mut memory, PPC_CODE + 0x200),
+            None
+        );
+    }
+
+    #[test]
+    fn rewriting_one_code_page_leaves_the_other_pages_cached() {
+        const PPC_CODE: u32 = 0x0300_0000;
+        const SECOND_PAGE: u32 = PPC_CODE + 0x1000;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(PPC_CODE, vec![0; 0x2000]);
+        let first = PpcMemory::instruction_cache_token(&mut memory, PPC_CODE).expect("first page");
+        let second =
+            PpcMemory::instruction_cache_token(&mut memory, SECOND_PAGE).expect("second page");
+        assert_ne!(first, second);
+
+        assert_eq!(
+            PpcMemory::write_u32_be(&mut memory, SECOND_PAGE, 0x6000_0000),
+            Some(())
+        );
+        // Self-modifying code retires its own page, not the whole process.
+        assert_eq!(
+            PpcMemory::instruction_cache_token(&mut memory, PPC_CODE),
+            Some(first)
+        );
+        assert_ne!(
+            PpcMemory::instruction_cache_token(&mut memory, SECOND_PAGE),
+            Some(second)
+        );
+    }
+
+    #[test]
+    fn guest_instruction_cache_flush_retires_writable_code_tokens() {
+        const PPC_CODE: u32 = 0x0300_0000;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(PPC_CODE, vec![0; 0x1000]);
+        let token =
+            PpcMemory::instruction_cache_token(&mut memory, PPC_CODE).expect("token for heap code");
+
+        memory.flush_instruction_cache();
+        assert_ne!(
+            PpcMemory::instruction_cache_token(&mut memory, PPC_CODE),
+            Some(token)
+        );
     }
 
     #[test]
