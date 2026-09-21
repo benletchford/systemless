@@ -8970,7 +8970,11 @@ impl super::TrapDispatcher {
         Some(candidate)
     }
 
-    /// Find a file in VFS by name, trying exact match then basename match.
+    /// Find a file in VFS by name, preserving explicit path components.
+    ///
+    /// Basename matching is retained for the classic search-path behavior of
+    /// basename-only requests, but an explicit nested pathname must not fall
+    /// through to an unrelated file with the same leaf name.
     pub(crate) fn find_vfs_file(&self, name: &str) -> Option<String> {
         let normalized = super::TrapDispatcher::normalize_vfs_path(name);
         let hfs_normalized = super::TrapDispatcher::normalize_hfs_path(name);
@@ -8995,21 +8999,27 @@ impl super::TrapDispatcher {
         ) {
             return Some(found);
         }
-        let hfs_basename = hfs_normalized
-            .rsplit('/')
-            .next()
-            .unwrap_or(hfs_normalized.as_str());
-        for key in &sorted_keys {
-            let key_base = key.rsplit('/').next().unwrap_or(key);
-            if key_base.eq_ignore_ascii_case(hfs_basename) {
-                return Some((*key).clone());
+        // Do not discard explicit directory components after exact and
+        // relative-path matching fail. For example, a request for
+        // `:Data Files:Data CD` must not open `Character Files/Data CD`.
+        // Basename-only requests retain the historical search-path fallback.
+        if !hfs_normalized.contains('/') && !normalized.contains('/') {
+            let hfs_basename = hfs_normalized
+                .rsplit('/')
+                .next()
+                .unwrap_or(hfs_normalized.as_str());
+            for key in &sorted_keys {
+                let key_base = key.rsplit('/').next().unwrap_or(key);
+                if key_base.eq_ignore_ascii_case(hfs_basename) {
+                    return Some((*key).clone());
+                }
             }
-        }
-        let basename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
-        for key in &sorted_keys {
-            let key_base = key.rsplit('/').next().unwrap_or(key);
-            if key_base.eq_ignore_ascii_case(basename) {
-                return Some((*key).clone());
+            let basename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
+            for key in &sorted_keys {
+                let key_base = key.rsplit('/').next().unwrap_or(key);
+                if key_base.eq_ignore_ascii_case(basename) {
+                    return Some((*key).clone());
+                }
             }
         }
         None
@@ -9373,6 +9383,19 @@ mod tests {
     }
 
     #[test]
+    fn find_vfs_file_does_not_discard_explicit_path_components() {
+        let disp = super::super::TrapDispatcher::new();
+        disp.vfs
+            .insert("Character Files/Data CD".to_string(), vec![1]);
+
+        assert_eq!(disp.find_vfs_file(":Data Files:Data CD"), None);
+        assert_eq!(
+            disp.find_vfs_file("Data CD"),
+            Some("Character Files/Data CD".to_string())
+        );
+    }
+
+    #[test]
     fn find_vfs_rsrc_file_prefers_relative_path_components_before_basename() {
         let disp = super::super::TrapDispatcher::new();
         disp.vfs_rsrc
@@ -9383,6 +9406,19 @@ mod tests {
         assert_eq!(
             disp.find_vfs_rsrc_file(":ColourData:load.pic"),
             Some("MacPopulous/ColourData/LOAD.PIC".to_string())
+        );
+    }
+
+    #[test]
+    fn find_vfs_rsrc_file_does_not_discard_explicit_path_components() {
+        let disp = super::super::TrapDispatcher::new();
+        disp.vfs_rsrc
+            .insert("Character Files/Data CD".to_string(), vec![1]);
+
+        assert_eq!(disp.find_vfs_rsrc_file(":Data Files:Data CD"), None);
+        assert_eq!(
+            disp.find_vfs_rsrc_file("Data CD"),
+            Some("Character Files/Data CD".to_string())
         );
     }
 
