@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.47.3](https://github.com/benletchford/systemless/compare/v0.47.2...v0.47.3) (2026-09-21)
+
+
+### Performance Improvements
+
+* retain visible frame caches across offscreen drawing ([9095747](https://github.com/benletchford/systemless/commit/9095747a8e0dbf8637a8acb49325423bb376e763))
+
 ## [0.47.2](https://github.com/benletchford/systemless/compare/v0.47.1...v0.47.2) (2026-09-21)
 
 
