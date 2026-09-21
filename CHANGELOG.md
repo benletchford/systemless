@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.47.5](https://github.com/benletchford/systemless/compare/v0.47.4...v0.47.5) (2026-09-21)
+
+
+### Bug Fixes
+
+* **dialog:** honor PowerPC dialog item lifecycle ([#2371](https://github.com/benletchford/systemless/issues/2371)) ([6c91ebd](https://github.com/benletchford/systemless/commit/6c91ebd34b9ff45a5316e5a9ca4e7d14df45170d))
+* **files:** render native Standard File dialog ([#2373](https://github.com/benletchford/systemless/issues/2373)) ([31ae54e](https://github.com/benletchford/systemless/commit/31ae54ed55af223b09ab7c34b40163e9cc0b7aa2))
+
+
+### Performance Improvements
+
+* **web:** skip unchanged frame transfers ([#2374](https://github.com/benletchford/systemless/issues/2374)) ([27d5cc5](https://github.com/benletchford/systemless/commit/27d5cc51a43dbc0ccecb473776077bfa7325c36c))
+
 ## [0.47.4](https://github.com/benletchford/systemless/compare/v0.47.3...v0.47.4) (2026-09-21)
 
 
