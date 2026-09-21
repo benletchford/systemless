@@ -231,9 +231,9 @@ pub struct Machine {
     overlay_rgba: Vec<u8>,
     cursor_backup: CursorBackup,
     presented_rgba: Vec<u8>,
-    frame_epoch: Option<u64>,
+    frame_epoch: Option<systemless::memory::VisibleImageStamp>,
     frame_screen_mode: Option<(u32, u32, u16, u16, u16)>,
-    rendered_epoch: Option<u64>,
+    rendered_epoch: Option<systemless::memory::VisibleImageStamp>,
     rendered_screen_mode: Option<(u32, u32, u16, u16, u16)>,
     rendered_scale: u32,
     rendered_outline: bool,
@@ -815,7 +815,7 @@ impl Machine {
             (Some(previous), Some(current)) => previous == current,
             _ => false,
         };
-        let presentation_epoch = self.runner.bus().presentation_epoch();
+        let presentation_epoch = self.runner.bus().presentation_visible_epoch();
         let outline = self.runner.bus().has_visible_outline_detail();
         let palette_changed = !self.frame_palette_valid || self.frame_palette_clut != clut;
 
@@ -867,7 +867,7 @@ impl Machine {
                 &mut self.frame_rgba,
             );
             self.cursor_backup.discard();
-            self.frame_epoch = presentation_epoch;
+            self.frame_epoch = presentation_epoch.clone();
             self.frame_screen_mode = Some(screen_mode);
         }
 
