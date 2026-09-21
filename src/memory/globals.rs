@@ -59,6 +59,11 @@ pub mod addr {
     /// Inside Macintosh Volume I, I-260 documents the value and global name;
     /// MPW SysEqu.h defines `DoubleTime` at $02F0.
     pub const DOUBLE_TIME: u32 = 0x02F0;
+    /// DefltStack: default stack allocation in bytes (long).
+    /// Inside Macintosh Volume III (1985), low-memory globals table, lists
+    /// `DefltStack` at `$0322`; Volume II, II-17, describes it as the default
+    /// stack size used when an application is launched.
+    pub const DEFLT_STACK: u32 = 0x0322;
     pub const ROM85: u32 = 0x028E; // Version number of ROM (word) - Inside Macintosh V, V-578
 
     /// SdVolume: current speaker volume (1 byte, low-order three bits).
@@ -320,6 +325,11 @@ pub mod addr {
 /// Initial MenuFlash value installed by the General Controls panel.
 /// Macintosh Toolbox Essentials (1992), p. 3-142.
 pub const DEFAULT_MENU_FLASH_COUNT: u16 = 3;
+
+/// Initial stack reservation used for a newly launched application.
+/// Inside Macintosh Volume II (1985), II-17, says the application heap limit
+/// is initialized to reserve 8 KiB for the stack.
+pub const DEFAULT_DEFLT_STACK_SIZE: u32 = 8 * 1024;
 
 /// Manager for low-memory globals
 pub struct LowMemGlobals {

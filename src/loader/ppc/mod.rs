@@ -1698,6 +1698,8 @@ pub enum PpcImportDispatcherTarget {
     LMGetMenuFlash,
     LMGetPaintWhite,
     LMGetSysMap,
+    LMGetDefltStack,
+    LMGetCurStackBase,
     LMSetPaintWhite,
     LMSetResumeProc,
     LMSetACount,
@@ -13508,6 +13510,14 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         crate::memory::globals::addr::MENU_FLASH,
         crate::memory::globals::DEFAULT_MENU_FLASH_COUNT,
     );
+    let _ = memory.write_u32_be(
+        crate::memory::globals::addr::DEFLT_STACK,
+        crate::memory::globals::DEFAULT_DEFLT_STACK_SIZE,
+    );
+    let _ = memory.write_u32_be(
+        crate::memory::globals::addr::CUR_STACK_BASE,
+        stack_base,
+    );
     let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 20);
     let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
     // PaintOne normally starts with PaintWhite enabled. Carbon's generated
@@ -15159,6 +15169,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "LMGetMenuFlash") => PpcImportDispatcherTarget::LMGetMenuFlash,
         ("InterfaceLib", "LMGetPaintWhite") => PpcImportDispatcherTarget::LMGetPaintWhite,
         ("InterfaceLib", "LMGetSysMap") => PpcImportDispatcherTarget::LMGetSysMap,
+        ("InterfaceLib", "LMGetDefltStack") => PpcImportDispatcherTarget::LMGetDefltStack,
+        ("InterfaceLib", "LMGetCurStackBase") => PpcImportDispatcherTarget::LMGetCurStackBase,
         ("InterfaceLib", "LMSetPaintWhite") => PpcImportDispatcherTarget::LMSetPaintWhite,
         ("InterfaceLib", "LMSetResumeProc") => PpcImportDispatcherTarget::LMSetResumeProc,
         ("InterfaceLib", "LMSetACount") => PpcImportDispatcherTarget::LMSetACount,
@@ -19020,6 +19032,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::LMGetMenuFlash
         | PpcImportDispatcherTarget::LMGetPaintWhite
         | PpcImportDispatcherTarget::LMGetSysMap
+        | PpcImportDispatcherTarget::LMGetDefltStack
+        | PpcImportDispatcherTarget::LMGetCurStackBase
         | PpcImportDispatcherTarget::LMSetPaintWhite
         | PpcImportDispatcherTarget::LMSetResumeProc
         | PpcImportDispatcherTarget::LMSetACount
