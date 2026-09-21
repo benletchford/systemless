@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.46.0](https://github.com/benletchford/systemless/compare/v0.45.0...v0.46.0) (2026-09-21)
+
+
+### Features
+
+* **catalogue:** add Adventure Island ([16f8421](https://github.com/benletchford/systemless/commit/16f84211a82cd2336c96fbffc60156ccbe3c2703))
+* **catalogue:** add Antibody 1.0.0 ([#2309](https://github.com/benletchford/systemless/issues/2309)) ([b3f12c9](https://github.com/benletchford/systemless/commit/b3f12c971fcca3b7601fb3e0087eb7fb54b202da))
+* **catalogue:** add Asterax 1.0.1 ([#2306](https://github.com/benletchford/systemless/issues/2306)) ([2cb7c7e](https://github.com/benletchford/systemless/commit/2cb7c7e9eb1a2fa8a1e9197fef41e78d55d11ae9))
+* **catalogue:** add Awesome BlackJack 1.5 ([#2323](https://github.com/benletchford/systemless/issues/2323)) ([3278119](https://github.com/benletchford/systemless/commit/3278119bd928528034161a401cf212d06c10536e))
+* **catalogue:** add Chinese Chess Pro 1.0.1 ([#2320](https://github.com/benletchford/systemless/issues/2320)) ([023b908](https://github.com/benletchford/systemless/commit/023b90873f99e5f8ee11d9adb84037b25b02c374))
+* **catalogue:** add MacSokoban 3.0.2 ([#2304](https://github.com/benletchford/systemless/issues/2304)) ([6089e0c](https://github.com/benletchford/systemless/commit/6089e0cca39a64eaefa40def5ea7c2f27e09d001))
+* **catalogue:** add Space Invaders 1.1 ([0200feb](https://github.com/benletchford/systemless/commit/0200feb75fa9942de93b98afc8efeb36ac94577e))
+* **catalogue:** add Space Joust 2.0 ([#2313](https://github.com/benletchford/systemless/issues/2313)) ([9738820](https://github.com/benletchford/systemless/commit/97388202884dfbaa0b373483916b9c30f1cd491d))
+* **catalogue:** add Space Junkie 1.2 ([#2315](https://github.com/benletchford/systemless/issues/2315)) ([1173c7c](https://github.com/benletchford/systemless/commit/1173c7c68be0b54615f6071b2b160b0256969843))
+* **catalogue:** add Ultima III 1.3 ([#2311](https://github.com/benletchford/systemless/issues/2311)) ([8b37317](https://github.com/benletchford/systemless/commit/8b373178e9de1b03887b8aac33d2f89c1eba5e5f))
+* **catalogue:** add War of Flowers 1.1 ([#2317](https://github.com/benletchford/systemless/issues/2317)) ([ca2d88b](https://github.com/benletchford/systemless/commit/ca2d88b2a1dc829b02db79b3d694b1eafd06b1bc))
+
+
+### Bug Fixes
+
+* **catalogue:** remove rejected game additions ([#2332](https://github.com/benletchford/systemless/issues/2332)) ([f96b3a2](https://github.com/benletchford/systemless/commit/f96b3a2e051e2ec5d0a5c07eb32b3a5c94b1b6b5))
+* **ci:** promote multiple catalogue entries ([94291b4](https://github.com/benletchford/systemless/commit/94291b499f81f45866dd212353be75e87eaf50f8))
+* **files:** preserve explicit VFS path components ([#2333](https://github.com/benletchford/systemless/issues/2333)) ([b6149e5](https://github.com/benletchford/systemless/commit/b6149e5a850e004a2e188cfd85b654cd3fd8fcc9))
+* **web:** replace broken catalogue images with gameplay screenshots ([a991b54](https://github.com/benletchford/systemless/commit/a991b54e7d3209465ec331fc3d75486574a807be))
+* **web:** require screenshots before catalogue launch ([#2345](https://github.com/benletchford/systemless/issues/2345)) ([6ef3545](https://github.com/benletchford/systemless/commit/6ef3545039afb71fafb825742a987703047bbceb))
+
 ## [0.45.0](https://github.com/benletchford/systemless/compare/v0.44.0...v0.45.0) (2026-09-20)
 
 
