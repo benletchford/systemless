@@ -9,7 +9,7 @@ year: 1995
 architectures: [68k]
 default_architecture: 68k
 category: Arcade
-launch_enabled: true
+launch_enabled: false
 compatibility:
   status: unknown
 artifacts:

@@ -9,7 +9,7 @@ year: 2001
 architectures: [ppc]
 default_architecture: ppc
 category: Arcade
-launch_enabled: true
+launch_enabled: false
 compatibility:
   status: unknown
 artifacts:

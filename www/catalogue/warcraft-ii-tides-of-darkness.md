@@ -9,7 +9,7 @@ year: 1996
 architectures: [68k, ppc]
 default_architecture: 68k
 category: Strategy
-launch_enabled: true
+launch_enabled: false
 compatibility:
   status: playable
   verified:

@@ -9,7 +9,7 @@ year: 1997
 architectures: [ppc]
 default_architecture: ppc
 category: Strategy
-launch_enabled: true
+launch_enabled: false
 compatibility:
   status: unknown
 artifacts:

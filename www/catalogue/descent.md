@@ -9,7 +9,7 @@ year: 1995
 architectures: [ppc]
 default_architecture: ppc
 category: FPS
-launch_enabled: true
+launch_enabled: false
 compatibility:
   status: unknown
 artifacts:
