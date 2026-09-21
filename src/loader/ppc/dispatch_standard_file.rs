@@ -151,9 +151,13 @@ pub(super) fn dispatch_standard_file_import(
 
 pub(super) const PPC_STANDARD_FILE_GET_DIALOG_WIDTH: i16 = 356;
 pub(super) const PPC_STANDARD_FILE_GET_DIALOG_HEIGHT: i16 = 178;
+pub(super) const PPC_STANDARD_FILE_GET_VOLUME_RECT: (i16, i16, i16, i16) = (12, 90, 31, 164);
+pub(super) const PPC_STANDARD_FILE_GET_VOLUME_LABEL_RECT: (i16, i16, i16, i16) = (12, 268, 31, 352);
 pub(super) const PPC_STANDARD_FILE_GET_LIST_RECT: (i16, i16, i16, i16) = (35, 18, 163, 236);
 pub(super) const PPC_STANDARD_FILE_GET_SCROLL_RECT: (i16, i16, i16, i16) = (35, 235, 163, 251);
+pub(super) const PPC_STANDARD_FILE_GET_EJECT_RECT: (i16, i16, i16, i16) = (38, 258, 59, 338);
 pub(super) const PPC_STANDARD_FILE_GET_DESKTOP_RECT: (i16, i16, i16, i16) = (66, 258, 87, 338);
+pub(super) const PPC_STANDARD_FILE_GET_SEPARATOR_RECT: (i16, i16, i16, i16) = (98, 258, 99, 338);
 pub(super) const PPC_STANDARD_FILE_GET_CANCEL_RECT: (i16, i16, i16, i16) = (110, 258, 131, 338);
 pub(super) const PPC_STANDARD_FILE_GET_OPEN_RECT: (i16, i16, i16, i16) = (138, 258, 159, 338);
 pub(super) const PPC_STANDARD_FILE_GET_ROW_HEIGHT: i16 = 14;
@@ -550,6 +554,7 @@ pub(super) fn ppc_standard_file_draw_button(
     bounds: (i16, i16, i16, i16),
     rect: (i16, i16, i16, i16),
     label: &[u8],
+    enabled: bool,
     is_default: bool,
 ) {
     let global = (
@@ -558,57 +563,100 @@ pub(super) fn ppc_standard_file_draw_button(
         bounds.0.saturating_add(rect.2),
         bounds.1.saturating_add(rect.3),
     );
-    if !ppc_draw_themed_control_rect(
+    if ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7 {
+        let _ = ppc_fill_front_rect(memory, front, global, PPC_RGB_WHITE);
+        let color = if enabled {
+            PPC_RGB_BLACK
+        } else {
+            PpcRgbColor {
+                red: 0xaaaa,
+                green: 0xaaaa,
+                blue: 0xaaaa,
+            }
+        };
+        if is_default {
+            let outer = (
+                global.0.saturating_sub(4),
+                global.1.saturating_sub(4),
+                global.2.saturating_add(4),
+                global.3.saturating_add(4),
+            );
+            let _ = ppc_frame_front_round_rect(memory, front, outer, 8, 3, PPC_RGB_BLACK);
+        }
+        let _ = ppc_frame_front_round_rect(memory, front, global, 7, 1, color);
+    } else {
+        ppc_draw_retained_control_rect(
+            memory,
+            gworlds,
+            PPC_MAIN_GWORLD,
+            global,
+            crate::ui_theme::ControlKind::PushButton,
+            enabled,
+            is_default,
+        );
+    }
+    let advance =
+        ppc_text_bytes_advance_for_font(label, PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
+    let label_left = global
+        .1
+        .saturating_add((global.3.saturating_sub(global.1).saturating_sub(advance)) / 2);
+    ppc_draw_dialog_text(
         memory,
         gworlds,
-        PPC_MAIN_GWORLD,
-        global,
-        crate::ui_theme::ControlKind::PushButton,
-        true,
-        is_default,
-    ) {
-        let _ = ppc_fill_front_rect(memory, front, global, PPC_RGB_WHITE);
-        let _ = ppc_frame_front_rect(memory, front, global, PPC_RGB_BLACK, 1);
-    }
-    ppc_draw_dialog_text(memory, gworlds, global, label, PPC_RGB_BLACK);
+        (global.0, label_left, global.2, global.3),
+        label,
+        if enabled {
+            PPC_RGB_BLACK
+        } else {
+            PpcRgbColor {
+                red: 0xaaaa,
+                green: 0xaaaa,
+                blue: 0xaaaa,
+            }
+        },
+    );
 }
 
 fn ppc_standard_file_draw_scrollbar(
     memory: &mut PpcSectionMem,
     front: PpcFrontBuffer,
     gworlds: &[PpcGWorldRecord],
-    bounds: (i16, i16, i16, i16),
+    tracking: &PpcStandardFileGetTrackingState,
 ) {
-    let palette = ppc_ui_theme(gworlds).provider().palette();
+    let bounds = tracking.bounds;
     let rect = (
         bounds.0.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.0),
         bounds.1.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.1),
         bounds.0.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.2),
         bounds.1.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.3),
     );
-    let _ = ppc_fill_front_rect(memory, front, rect, ppc_theme_rgb(palette.frame_light));
-    let _ = ppc_frame_front_rect(memory, front, rect, ppc_theme_rgb(palette.frame_dark), 1);
-    let middle = rect.0.saturating_add((rect.2 - rect.0) / 2);
-    let _ = ppc_fill_front_rect(
-        memory,
-        front,
-        (middle, rect.1, middle.saturating_add(1), rect.3),
-        ppc_theme_rgb(palette.frame_dark),
-    );
-    ppc_draw_dialog_text(
+    let visible_rows = 8usize;
+    let max = tracking.entries.len().saturating_sub(visible_rows);
+    let first_visible = tracking
+        .selected
+        .saturating_sub(visible_rows.saturating_sub(1));
+    let _ = front;
+    ppc_draw_retained_scrollbar_rect(
         memory,
         gworlds,
-        (rect.0, rect.1, middle, rect.3),
-        b"^",
-        ppc_theme_rgb(palette.frame_dark),
+        PPC_MAIN_GWORLD,
+        rect,
+        first_visible.min(i16::MAX as usize) as i16,
+        0,
+        max.min(i16::MAX as usize) as i16,
     );
-    ppc_draw_dialog_text(
-        memory,
-        gworlds,
-        (middle, rect.1, rect.2, rect.3),
-        b"v",
-        ppc_theme_rgb(palette.frame_dark),
-    );
+}
+
+fn ppc_standard_file_global_rect(
+    bounds: (i16, i16, i16, i16),
+    rect: (i16, i16, i16, i16),
+) -> (i16, i16, i16, i16) {
+    (
+        bounds.0.saturating_add(rect.0),
+        bounds.1.saturating_add(rect.1),
+        bounds.0.saturating_add(rect.2),
+        bounds.1.saturating_add(rect.3),
+    )
 }
 
 fn ppc_standard_file_draw_get_dialog(
@@ -618,22 +666,7 @@ fn ppc_standard_file_draw_get_dialog(
 ) {
     let front = tracking.front_buffer;
     let bounds = tracking.bounds;
-    if !ppc_draw_themed_dialog_frame(memory, gworlds, bounds, bounds, 2) {
-        let _ = ppc_fill_front_rect(memory, front, bounds, PPC_RGB_WHITE);
-        let _ = ppc_frame_front_rect(memory, front, bounds, PPC_RGB_BLACK, 2);
-    }
-    ppc_draw_dialog_text(
-        memory,
-        gworlds,
-        (
-            bounds.0.saturating_add(14),
-            bounds.1.saturating_add(18),
-            bounds.0.saturating_add(32),
-            bounds.1.saturating_add(330),
-        ),
-        b"Open File",
-        PPC_RGB_BLACK,
-    );
+    ppc_draw_retained_dialog_frame(memory, gworlds, bounds, bounds, 2);
     let list = (
         bounds.0.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.0),
         bounds.1.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.1),
@@ -688,27 +721,35 @@ fn ppc_standard_file_draw_get_dialog(
             },
         );
     }
-    let filter = tracking
-        .file_types
-        .as_ref()
-        .and_then(|types| types.first().copied())
-        .map(|value| value.to_be_bytes())
-        .unwrap_or(*b"ALL ");
-    let mut filter_label = b"Filter: ".to_vec();
-    filter_label.extend_from_slice(&filter);
+    let volume_rect = ppc_standard_file_global_rect(bounds, PPC_STANDARD_FILE_GET_VOLUME_RECT);
+    ppc_draw_retained_control_rect(
+        memory,
+        gworlds,
+        PPC_MAIN_GWORLD,
+        volume_rect,
+        crate::ui_theme::ControlKind::PopupButton,
+        true,
+        false,
+    );
+    ppc_draw_dialog_text(memory, gworlds, volume_rect, b"Maci...", PPC_RGB_BLACK);
     ppc_draw_dialog_text(
         memory,
         gworlds,
-        (
-            bounds.0.saturating_add(14),
-            bounds.1.saturating_add(190),
-            bounds.0.saturating_add(34),
-            bounds.1.saturating_add(330),
-        ),
-        &filter_label,
+        ppc_standard_file_global_rect(bounds, PPC_STANDARD_FILE_GET_VOLUME_LABEL_RECT),
+        crate::trap::dispatch::BOOT_VOLUME_NAME.as_bytes(),
         PPC_RGB_BLACK,
     );
-    ppc_standard_file_draw_scrollbar(memory, front, gworlds, bounds);
+    ppc_standard_file_draw_scrollbar(memory, front, gworlds, tracking);
+    ppc_standard_file_draw_button(
+        memory,
+        front,
+        gworlds,
+        bounds,
+        PPC_STANDARD_FILE_GET_EJECT_RECT,
+        b"Eject",
+        false,
+        false,
+    );
     ppc_standard_file_draw_button(
         memory,
         front,
@@ -716,8 +757,11 @@ fn ppc_standard_file_draw_get_dialog(
         bounds,
         PPC_STANDARD_FILE_GET_DESKTOP_RECT,
         b"Desktop",
+        true,
         false,
     );
+    let separator = ppc_standard_file_global_rect(bounds, PPC_STANDARD_FILE_GET_SEPARATOR_RECT);
+    let _ = ppc_fill_front_rect(memory, front, separator, PPC_RGB_BLACK);
     ppc_standard_file_draw_button(
         memory,
         front,
@@ -725,8 +769,13 @@ fn ppc_standard_file_draw_get_dialog(
         bounds,
         PPC_STANDARD_FILE_GET_CANCEL_RECT,
         b"Cancel",
+        true,
         false,
     );
+    let open_enabled = tracking
+        .entries
+        .get(tracking.selected)
+        .is_some_and(|entry| entry.is_directory || entry.file_type != 0);
     ppc_standard_file_draw_button(
         memory,
         front,
@@ -734,6 +783,7 @@ fn ppc_standard_file_draw_get_dialog(
         bounds,
         PPC_STANDARD_FILE_GET_OPEN_RECT,
         b"Open",
+        open_enabled,
         true,
     );
 }
@@ -817,6 +867,7 @@ fn ppc_standard_file_draw_put_dialog(
         bounds,
         PPC_STANDARD_FILE_PUT_CANCEL_RECT,
         b"Cancel",
+        true,
         false,
     );
     ppc_standard_file_draw_button(
@@ -826,6 +877,7 @@ fn ppc_standard_file_draw_put_dialog(
         bounds,
         PPC_STANDARD_FILE_PUT_SAVE_RECT,
         b"Save",
+        true,
         true,
     );
 }
@@ -1128,6 +1180,8 @@ fn ppc_standard_file_get_service(
         .iter()
         .position(|event| matches!(event.what, 1 | 3 | 5))
         .and_then(|index| event_queue.remove(index));
+    let previous_dir_id = tracking.current_dir_id;
+    let previous_selection = tracking.selected;
     let mut open = false;
     if let Some(event) = event {
         if event.what == 1 {
@@ -1172,12 +1226,17 @@ fn ppc_standard_file_get_service(
             } else if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_SCROLL_RECT)
                 && !tracking.entries.is_empty()
             {
-                let halfway =
-                    (PPC_STANDARD_FILE_GET_SCROLL_RECT.2 - PPC_STANDARD_FILE_GET_SCROLL_RECT.0) / 2;
-                tracking.selected = if local.0 < PPC_STANDARD_FILE_GET_SCROLL_RECT.0 + halfway {
+                let relative_v = local.0 - PPC_STANDARD_FILE_GET_SCROLL_RECT.0;
+                let height =
+                    PPC_STANDARD_FILE_GET_SCROLL_RECT.2 - PPC_STANDARD_FILE_GET_SCROLL_RECT.0;
+                tracking.selected = if relative_v < 16 {
                     tracking.selected.saturating_sub(1)
-                } else {
+                } else if relative_v >= height - 16 {
                     (tracking.selected + 1).min(tracking.entries.len() - 1)
+                } else if relative_v < height / 2 {
+                    tracking.selected.saturating_sub(8)
+                } else {
+                    (tracking.selected + 8).min(tracking.entries.len() - 1)
                 };
             }
         } else {
@@ -1231,7 +1290,9 @@ fn ppc_standard_file_get_service(
             }
         }
     }
-    ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
+    if tracking.current_dir_id != previous_dir_id || tracking.selected != previous_selection {
+        ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
+    }
     startup.standard_file_get_tracking = Some(tracking);
     PpcImportAction::Yield(u64::MAX)
 }

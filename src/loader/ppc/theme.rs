@@ -1,7 +1,10 @@
 //! Native Toolbox presentation using the shared Systemless theme provider.
 
 use super::*;
-use crate::ui_theme::{ControlKind, ControlState, ThemeDrawCtx, ThemeRect};
+use crate::ui_theme::{
+    ControlKind, ControlState, ScrollbarOrientation, ScrollbarPart, ScrollbarState, ThemeDrawCtx,
+    ThemeRect,
+};
 
 pub(super) fn ppc_ui_theme(gworlds: &[PpcGWorldRecord]) -> UiThemeId {
     gworlds
@@ -211,6 +214,17 @@ pub(super) fn ppc_draw_themed_dialog_frame(
     if theme == UiThemeId::ClassicSystem7 {
         return false;
     }
+    ppc_draw_retained_dialog_frame(memory, gworlds, content, frame, proc_id)
+}
+
+pub(super) fn ppc_draw_retained_dialog_frame(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    content: (i16, i16, i16, i16),
+    frame: (i16, i16, i16, i16),
+    proc_id: i16,
+) -> bool {
+    let theme = ppc_ui_theme(gworlds);
     let width = frame.3.saturating_sub(frame.1);
     let height = frame.2.saturating_sub(frame.0);
     if width <= 0 || height <= 0 {
@@ -259,6 +273,19 @@ pub(super) fn ppc_draw_themed_control_rect(
     if theme == UiThemeId::ClassicSystem7 {
         return false;
     }
+    ppc_draw_retained_control_rect(memory, gworlds, owner, bounds, kind, enabled, is_default)
+}
+
+pub(super) fn ppc_draw_retained_control_rect(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    owner: u32,
+    bounds: (i16, i16, i16, i16),
+    kind: ControlKind,
+    enabled: bool,
+    is_default: bool,
+) -> bool {
+    let theme = ppc_ui_theme(gworlds);
     let provider = theme.provider();
     let pad = if is_default {
         provider.dialog_metrics().default_button_outline.max(0)
@@ -294,4 +321,45 @@ pub(super) fn ppc_draw_themed_control_rect(
     );
     ppc_blit_theme_bitmap(memory, gworlds, owner, top - pad, left - pad, &bitmap);
     true
+}
+
+pub(super) fn ppc_draw_retained_scrollbar_rect(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    owner: u32,
+    bounds: (i16, i16, i16, i16),
+    value: i16,
+    min: i16,
+    max: i16,
+) -> bool {
+    let (top, left, bottom, right) = bounds;
+    let width = right.saturating_sub(left);
+    let height = bottom.saturating_sub(top);
+    if width <= 0 || height <= 0 {
+        return false;
+    }
+    let provider = ppc_ui_theme(gworlds).provider();
+    let mut bitmap = ThemeBitmap::new(
+        width as u32,
+        height as u32,
+        provider.palette().window_background,
+    );
+    provider.draw_scrollbar(
+        &mut ThemeDrawCtx::new(&mut bitmap),
+        ScrollbarState {
+            rect: ThemeRect {
+                top: 0,
+                left: 0,
+                bottom: height,
+                right: width,
+            },
+            orientation: ScrollbarOrientation::Vertical,
+            enabled: max > min,
+            value,
+            min,
+            max,
+            highlighted_part: ScrollbarPart::None,
+        },
+    );
+    ppc_blit_theme_bitmap(memory, gworlds, owner, top, left, &bitmap)
 }

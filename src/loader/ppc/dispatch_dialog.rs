@@ -2517,7 +2517,7 @@ pub(super) fn ppc_frame_front_rect(
     wrote
 }
 
-fn ppc_frame_front_round_rect(
+pub(super) fn ppc_frame_front_round_rect(
     memory: &mut PpcSectionMem,
     front: PpcFrontBuffer,
     rect: (i16, i16, i16, i16),
