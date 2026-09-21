@@ -159,7 +159,7 @@ impl Presentation {
 
     fn resolved_argb_resized(&self, size: (u32, u32)) -> std::cell::Ref<'_, [u32]> {
         let cache_matches = self.output_cache.borrow().as_ref().is_some_and(|cache| {
-            cache.revision == self.revision
+            cache.source == self.visible_image
                 && cache.size == size
                 && cache.format == ResolvedOutputFormat::Argb
         });
@@ -175,7 +175,7 @@ impl Presentation {
             pixels.clear();
             self.render_resized::<3>(size, None, &mut pixels);
             *cache = Some(ResolvedOutputCache {
-                revision: self.revision,
+                source: self.visible_image.clone(),
                 size,
                 format: ResolvedOutputFormat::Argb,
                 pixels: ResolvedOutput::Argb(pixels),

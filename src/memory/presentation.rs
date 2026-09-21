@@ -379,16 +379,25 @@ impl Hasher for SampleOffsetHasher {
 
 // The owned identity prevents an old cache entry from matching a replacement
 // surface, including when its geometry and initial revision are identical.
-#[derive(Clone)]
-struct VisibleImageStamp {
+/// An owned token identifying the visible retained image across surface replacement.
+#[derive(Clone, Debug)]
+pub struct VisibleImageStamp {
     identity: std::rc::Rc<()>,
     revision: u64,
 }
 
-impl VisibleImageStamp {
-    fn matches(&self, other: &Self) -> bool {
+impl PartialEq for VisibleImageStamp {
+    fn eq(&self, other: &Self) -> bool {
         self.revision == other.revision
             && std::rc::Rc::ptr_eq(&self.identity, &other.identity)
+    }
+}
+
+impl Eq for VisibleImageStamp {}
+
+impl VisibleImageStamp {
+    fn matches(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
@@ -404,7 +413,7 @@ enum ResolvedOutput {
 }
 
 struct ResolvedOutputCache {
-    revision: u64,
+    source: VisibleImageStamp,
     size: (u32, u32),
     format: ResolvedOutputFormat,
     pixels: ResolvedOutput,
@@ -606,7 +615,7 @@ impl Presentation {
     fn resolved_argb(&self, scale: u32) -> std::cell::Ref<'_, [u32]> {
         let size = (self.logical_width() * scale, self.height * scale);
         let cache_matches = self.output_cache.borrow().as_ref().is_some_and(|cache| {
-            cache.revision == self.revision
+            cache.source == self.visible_image
                 && cache.size == size
                 && cache.format == ResolvedOutputFormat::Argb
         });
@@ -629,7 +638,7 @@ impl Presentation {
                 pixels.extend(std::iter::repeat_n(pixel, count as usize));
             });
             *cache = Some(ResolvedOutputCache {
-                revision: self.revision,
+                source: self.visible_image.clone(),
                 size,
                 format: ResolvedOutputFormat::Argb,
                 pixels: ResolvedOutput::Argb(pixels),
@@ -646,7 +655,7 @@ impl Presentation {
     fn resolved_rgba(&self, scale: u32) -> std::cell::Ref<'_, [u8]> {
         let size = (self.logical_width() * scale, self.height * scale);
         let cache_matches = self.output_cache.borrow().as_ref().is_some_and(|cache| {
-            cache.revision == self.revision
+            cache.source == self.visible_image
                 && cache.size == size
                 && cache.format == ResolvedOutputFormat::Rgba
         });
@@ -667,7 +676,7 @@ impl Presentation {
                 );
             });
             *cache = Some(ResolvedOutputCache {
-                revision: self.revision,
+                source: self.visible_image.clone(),
                 size,
                 format: ResolvedOutputFormat::Rgba,
                 pixels: ResolvedOutput::Rgba(pixels),
@@ -1417,6 +1426,14 @@ impl MacMemoryBus {
     /// advance it even when the currently visible image is unchanged.
     pub fn presentation_epoch(&self) -> Option<u64> {
         self.presentation.as_ref().map(|p| p.revision)
+    }
+
+    /// Identity and revision of the currently visible retained image.
+    /// Offscreen-only drawing deliberately leaves this token unchanged.
+    pub fn presentation_visible_epoch(&self) -> Option<VisibleImageStamp> {
+        self.presentation
+            .as_ref()
+            .map(|p| p.visible_image.clone())
     }
 
     /// Synchronize a native framebuffer mirror without erasing unchanged coverage.
@@ -2785,6 +2802,110 @@ mod tests {
         bus.presented_argb_scaled(&guest, &guest, 2, &mut output)
             .unwrap();
         assert_ne!(output, expected);
+    }
+
+    #[test]
+    fn cached_visible_rgba_composes_moving_cursor_and_removes_overlays() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x1000);
+        let token = bus.presentation_visible_epoch();
+        let guest = vec![0; 64 * 4];
+        let mut output = Vec::new();
+        bus.presented_rgba_scaled(&guest, &guest, 2, &mut output)
+            .unwrap();
+        let clean = output.clone();
+        let cursor = crate::display::CursorImage::mono([255; 32], [255; 32], 0, 0);
+        let mut previous = clean.clone();
+        for position in [(0, 0), (3, 4)] {
+            let mut overlay = guest.clone();
+            crate::display::render_cursor(&mut overlay, 8, 8, &cursor, position);
+            bus.presented_rgba_scaled(&guest, &overlay, 2, &mut output)
+                .unwrap();
+            assert_ne!(output, previous);
+            previous = output.clone();
+            assert_eq!(bus.presentation_visible_epoch(), token);
+        }
+        bus.presented_rgba_scaled(&guest, &guest, 2, &mut output)
+            .unwrap();
+        assert_eq!(output, clean);
+        assert_eq!(bus.presentation_visible_epoch(), token);
+    }
+
+    #[test]
+    fn visible_epoch_tracks_surface_palette_coverage_and_offscreen_drawing() {
+        let mut bus = bus();
+        let initial = bus.presentation_visible_epoch();
+        paint_detail(&mut bus, 0x2000);
+        assert_eq!(bus.presentation_visible_epoch(), initial);
+        let saved = bus.save_pixel_bytes(0x2000, 2);
+        bus.restore_saved_pixels(0x1000, &saved, 0, 2);
+        let retained = bus.presentation_visible_epoch();
+        assert_ne!(retained, initial);
+        bus.write_byte(0x1000, bus.read_byte(0x1000));
+        let erased = bus.presentation_visible_epoch();
+        assert_ne!(erased, retained);
+        bus.write_byte(0x1000, 77);
+        let written = bus.presentation_visible_epoch();
+        assert_ne!(written, erased);
+        let mut palette = std::array::from_fn(|i| [i as u8; 3]);
+        palette[77] = [255, 0, 0];
+        let screen = (0x1000, 8, 8, 8, 8);
+        bus.prepare_outline_presentation(screen, palette);
+        let recolored = bus.presentation_visible_epoch();
+        assert_ne!(recolored, written);
+        bus.enable_outline_presentation(screen, palette, 4);
+        let replaced = bus.presentation_visible_epoch();
+        assert_ne!(replaced, recolored);
+        bus.enable_outline_presentation(screen, palette, 4);
+        assert_ne!(bus.presentation_visible_epoch(), replaced);
+    }
+
+    #[test]
+    fn resolved_outputs_ignore_offscreen_drawing_and_reject_wrapped_revisions() {
+        for format in 0..3 {
+            let mut bus = bus();
+            // Force a cache at revision zero, then mutate through a wrap to zero.
+            bus.presentation.as_mut().unwrap().visible_image.revision = 0;
+            let resolve = |bus: &MacMemoryBus| -> Vec<u8> {
+                let p = bus.presentation.as_ref().unwrap();
+                match format {
+                    0 => p.resolved_rgba(2).to_vec(),
+                    1 => p
+                        .resolved_argb(2)
+                        .iter()
+                        .flat_map(|p| p.to_le_bytes())
+                        .collect(),
+                    _ => {
+                        let guest = [0; 64];
+                        let mut output = Vec::new();
+                        bus.presented_argb_resized(&guest, &guest, (13, 11), &mut output)
+                            .unwrap();
+                        output.iter().flat_map(|p| p.to_le_bytes()).collect()
+                    }
+                }
+            };
+            let before = resolve(&bus);
+            let token = bus.presentation_visible_epoch();
+            paint_detail(&mut bus, 0x2000);
+            assert_eq!(bus.presentation_visible_epoch(), token);
+            assert_eq!(resolve(&bus), before);
+            assert_eq!(
+                bus.presentation
+                    .as_ref()
+                    .unwrap()
+                    .output_cache
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .source,
+                token.clone().unwrap()
+            );
+            bus.presentation.as_mut().unwrap().revision = u64::MAX;
+            bus.write_byte(0x1000, 77);
+            assert_eq!(bus.presentation.as_ref().unwrap().visible_image.revision, 0);
+            assert_ne!(bus.presentation_visible_epoch(), token);
+            assert_ne!(resolve(&bus), before);
+        }
     }
 
     #[test]
