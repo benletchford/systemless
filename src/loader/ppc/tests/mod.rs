@@ -17286,7 +17286,6 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ("KeyTranslate", PpcSystemCompatibilityOperation::KeyTranslate),
         ("LaunchApplication", PpcSystemCompatibilityOperation::LaunchApplication),
         ("LMGetCurApName", PpcSystemCompatibilityOperation::LmGetCurApName),
-        ("LMGetSFSaveDisk", PpcSystemCompatibilityOperation::LmGetSfSaveDisk),
         ("LMGetSysFontFam", PpcSystemCompatibilityOperation::LmGetSysFontFam),
         ("LMGetSysFontSize", PpcSystemCompatibilityOperation::LmGetSysFontSize),
         ("MIDIAddPort", PpcSystemCompatibilityOperation::MidiAddPort),
@@ -59126,6 +59125,42 @@ fn hle_import_runner_gets_and_sets_cur_dir_store_low_memory_global() {
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 0x5566_7788);
+}
+
+#[test]
+fn hle_import_runner_gets_and_sets_sf_save_disk_low_memory_global() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LMSetSFSaveDisk"),
+        PpcImportDispatcherTarget::LMSetSFSaveDisk
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LMGetSFSaveDisk"),
+        PpcImportDispatcherTarget::LMGetSFSaveDisk
+    );
+
+    let pef = synthetic_pef_with_import(b"LMSetSFSaveDisk");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = (-7_i16) as u16 as u32;
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(crate::memory::globals::addr::SF_SAVE_DISK),
+        Some((-7_i16) as u16)
+    );
+
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LMGetSFSaveDisk;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], (-7_i16) as u32);
 }
 
 #[test]

@@ -1248,7 +1248,6 @@ pub enum PpcSystemCompatibilityOperation {
     KeyTranslate,
     LaunchApplication,
     LmGetCurApName,
-    LmGetSfSaveDisk,
     LmGetSysFontFam,
     LmGetSysFontSize,
     MidiAddPort,
@@ -2000,6 +1999,8 @@ pub enum PpcImportDispatcherTarget {
     AEGetInteractionAllowed,
     LMGetCurDirStore,
     LMSetCurDirStore,
+    LMGetSFSaveDisk,
+    LMSetSFSaveDisk,
     LMGetRndSeed,
     LMSetRndSeed,
     SetCurrentA5,
@@ -15668,6 +15669,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "LMGetUTableBase") => PpcImportDispatcherTarget::LMGetUTableBase,
         ("InterfaceLib", "LMGetCurDirStore") => PpcImportDispatcherTarget::LMGetCurDirStore,
         ("InterfaceLib", "LMSetCurDirStore") => PpcImportDispatcherTarget::LMSetCurDirStore,
+        ("InterfaceLib", "LMGetSFSaveDisk") => PpcImportDispatcherTarget::LMGetSFSaveDisk,
+        ("InterfaceLib", "LMSetSFSaveDisk") => PpcImportDispatcherTarget::LMSetSFSaveDisk,
         ("InterfaceLib", "LMGetRndSeed") => PpcImportDispatcherTarget::LMGetRndSeed,
         ("InterfaceLib", "LMSetRndSeed") => PpcImportDispatcherTarget::LMSetRndSeed,
         ("InterfaceLib", "SetCurrentA5") => PpcImportDispatcherTarget::SetCurrentA5,
@@ -16130,7 +16133,6 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "InitCTBUtilities") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::InitCtbUtilities),
         ("InterfaceLib", "KeyTranslate") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::KeyTranslate),
         ("InterfaceLib", "LMGetCurApName") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::LmGetCurApName),
-        ("InterfaceLib", "LMGetSFSaveDisk") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::LmGetSfSaveDisk),
         ("InterfaceLib", "LMGetSysFontFam") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::LmGetSysFontFam),
         ("InterfaceLib", "LMGetSysFontSize") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::LmGetSysFontSize),
         ("InterfaceLib", "LaunchApplication") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::LaunchApplication),
@@ -19029,6 +19031,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::LMGetUTableBase
         | PpcImportDispatcherTarget::LMGetCurDirStore
         | PpcImportDispatcherTarget::LMSetCurDirStore
+        | PpcImportDispatcherTarget::LMGetSFSaveDisk
+        | PpcImportDispatcherTarget::LMSetSFSaveDisk
         | PpcImportDispatcherTarget::LMGetRndSeed
         | PpcImportDispatcherTarget::LMSetRndSeed
         | PpcImportDispatcherTarget::SetCurrentA5
@@ -20183,7 +20187,6 @@ fn ppc_dispatch_system_compatibility(
         }
         PpcSystemCompatibilityOperation::LmGetSysFontFam => PpcImportAction::Return(0),
         PpcSystemCompatibilityOperation::LmGetSysFontSize => PpcImportAction::Return(12),
-        PpcSystemCompatibilityOperation::LmGetSfSaveDisk => PpcImportAction::Return(0),
         PpcSystemCompatibilityOperation::GetSysBeepVolume => {
             let result = if memory.write_u32_be(cpu.gpr[3], 0x0100_0100).is_some() {
                 PPC_NO_ERR
