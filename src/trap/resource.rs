@@ -1910,6 +1910,19 @@ impl super::TrapDispatcher {
                     }
                 }
 
+                if res_type == *b"PAT#" {
+                    if let Some(ptr) = self.synthesize_system_pattern_list(bus, res_id) {
+                        let handle = self
+                            .get_or_create_resource_handle_in_file(bus, res_type, res_id, ptr, 0);
+                        cpu.write_reg(Register::A0, handle);
+                        cpu.write_reg(Register::D0, 0);
+                        bus.write_word(0x0A60, 0); // ResErr = noErr
+                        bus.write_long(sp + 6, handle);
+                        cpu.write_reg(Register::A7, sp + 6);
+                        return Some(Ok(()));
+                    }
+                }
+
                 if res_type == *b"clut" {
                     if let Some(ptr) = self.synthesize_system_clut(bus, res_id) {
                         if trace_getresource_enabled() {
@@ -9575,6 +9588,63 @@ mod tests {
         assert_eq!(bus.read_bytes(intl + 16, 4), b" PM\0");
         assert_eq!(bus.read_byte(intl + 20), b':');
         assert_eq!(bus.read_word(intl + 30), 0);
+    }
+
+    #[test]
+    fn get_resource_synthesizes_standard_system_pattern_list() {
+        // IM:I pp. I-475..I-476: PAT# ID 0 is a count word followed by the
+        // 38 eight-byte patterns in the standard MacPaint palette.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        bus.write_word(TEST_SP, 0);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"PAT#"));
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        let handle = bus.read_long(TEST_SP + 6);
+        assert_ne!(handle, 0);
+        assert_eq!(disp.resource_handle_files.get(&handle), Some(&0));
+        assert_eq!(bus.read_word(0x0A60), 0);
+
+        let list = bus.read_long(handle);
+        assert_eq!(bus.get_alloc_size(list), Some(306));
+        assert_eq!(bus.read_word(list), 38);
+        let body_hash = bus
+            .read_bytes(list, 306)
+            .iter()
+            .fold(0xCBF2_9CE4_8422_2325u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01B3)
+            });
+        assert_eq!(body_hash, 0x3A52_B0D8_76F0_2FE3);
+        assert_eq!(bus.read_bytes(list + 2, 8), &[0xFF; 8]);
+        assert_eq!(
+            bus.read_bytes(list + 2 + 19 * 8, 8),
+            &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+        );
+        assert_eq!(
+            bus.read_bytes(list + 2 + 37 * 8, 8),
+            &[0x00, 0x08, 0x14, 0x2A, 0x55, 0x2A, 0x14, 0x08]
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"PAT#"));
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_long(TEST_SP + 6), handle);
+    }
+
+    #[test]
+    fn get_resource_does_not_synthesize_unknown_system_pattern_list() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"PAT#"));
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(bus.read_long(TEST_SP + 6), 0);
+        // Match the observed System 7.5.3 GetResource miss contract.
+        assert_eq!(bus.read_word(0x0A60), 0);
+        assert_eq!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
     #[test]
