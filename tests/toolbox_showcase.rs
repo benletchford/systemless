@@ -1814,12 +1814,13 @@ fn test_toolbox_showcase() {
     // 6a. Open Modal Preferences Dialog via button: local (317, 130)
     click_point(&mut runner, win_top + 317, win_left + 130);
     run_ticks(&mut runner, "Modal preferences dialog to open", 2);
+    // Dialog bounds: {100, 130, 315, 470}. The two stacked edit fields
+    // reproduce the layout that previously exposed cross-field glyphs.
     assert_reference_frame(&mut runner, "07-modal-dialog.png");
-    // Dialog bounds: {100, 130, 290, 470}
     // Click Checkbox item 4 (Enable 3D): global (155, 300)
     click_point(&mut runner, 155, 300);
     // Click OK button item 1: global (260, 405)
-    click_point(&mut runner, 260, 405);
+    click_point(&mut runner, 285, 405);
     run_ticks(&mut runner, "Modal dialog to close", 2);
 
     // 6b. Display About Alert via button: local (317, 325)

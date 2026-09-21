@@ -259,7 +259,7 @@ resource 'WIND' (rMainWindow, preload) {
 };
 
 resource 'DLOG' (rPrefDialog, preload) {
-    {100, 130, 290, 470},
+    {100, 130, 315, 470},
     dBoxProc,
     invisible,
     noGoAway,
@@ -271,13 +271,17 @@ resource 'DLOG' (rPrefDialog, preload) {
 
 resource 'DITL' (rPrefDialog, preload) {
     {
-        {150, 240, 170, 310}, Button { enabled, "OK" };
-        {150, 150, 170, 220}, Button { enabled, "Cancel" };
+        {175, 240, 195, 310}, Button { enabled, "OK" };
+        {175, 150, 195, 220}, Button { enabled, "Cancel" };
         {15, 20, 35, 320}, StaticText { disabled, "Game Engine Configuration" };
         {45, 20, 65, 320}, CheckBox { enabled, "Enable 3D Hardware Acceleration" };
         {70, 20, 90, 320}, CheckBox { enabled, "High-Resolution Texture Filtering" };
-        {100, 20, 120, 100}, StaticText { disabled, "Callsign:" };
-        {100, 105, 120, 300}, EditText { enabled, "Ace Pilot" }
+        {100, 20, 120, 100}, StaticText { disabled, "Pilot name:" };
+        {100, 105, 120, 300}, EditText { enabled, "Cade Connelly" };
+        {125, 20, 145, 100}, StaticText { disabled, "Nickname:" };
+        {125, 105, 145, 300}, EditText { enabled, "Maverick" };
+        /* Nova keeps inactive edit items beyond the dialog portRect. */
+        {300, 105, 320, 300}, EditText { disabled, "Hidden Edit Text" }
     }
 };
 
