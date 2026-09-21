@@ -180,6 +180,10 @@ impl CfmFragmentPlan {
         self.next_heap_cursor
     }
 
+    pub(crate) fn prepared_fragment(&self) -> &CfmPreparedFragment {
+        &self.fragment
+    }
+
     pub(crate) fn publish(&self, memory: &mut impl CfmMemory) -> bool {
         let writes: Vec<_> = self
             .sections

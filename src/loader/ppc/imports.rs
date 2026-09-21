@@ -26,6 +26,10 @@ pub(super) trait PpcImportBindingPolicy {
 
     fn fixed_data_address(&self, library: &str, symbol: &str) -> Option<u32>;
 
+    fn resolved_import_address(&self, library: &str, symbol: &str, _class: u8) -> Option<u32> {
+        self.fixed_data_address(library, symbol)
+    }
+
     fn is_explicit_hle_library(&self, library: &str) -> bool;
 }
 
@@ -98,15 +102,19 @@ impl PpcImportBindingPlan {
                 policy.dispatcher_target(&import.library_name, &import.symbol_name);
             // PowerPC System Software (1994), pp. 1-25--1-26: an unavailable
             // soft import receives kUnresolvedSymbolAddress rather than a thunk.
-            let unresolved_weak =
-                import.weak && dispatcher_target == PpcImportDispatcherTarget::Unsupported;
-            let fixed_data_address =
-                policy.fixed_data_address(&import.library_name, &import.symbol_name);
-            let address = if unresolved_weak {
+            let resolved_address = policy.resolved_import_address(
+                &import.library_name,
+                &import.symbol_name,
+                import.class,
+            );
+            let unresolved_weak = import.weak
+                && dispatcher_target == PpcImportDispatcherTarget::Unsupported
+                && resolved_address.is_none();
+            let address = if let Some(address) = resolved_address {
+                address
+            } else if unresolved_weak {
                 dispatcher_target = PpcImportDispatcherTarget::UnresolvedWeak;
                 0
-            } else if let Some(address) = fixed_data_address {
-                address
             } else {
                 match import.class {
                     2 => checked_slot_address(layout.tvector_base, symbol_index, 8)?,
@@ -124,7 +132,7 @@ impl PpcImportBindingPlan {
                 address,
                 tvector_address: (import.class == 2
                     && !unresolved_weak
-                    && fixed_data_address.is_none())
+                    && resolved_address.is_none())
                 .then_some(address),
                 trap_pc,
                 dispatcher_target,
@@ -555,9 +563,36 @@ mod tests {
             (library == "StdCLib" && symbol == "errno").then_some(0x0300_0000)
         }
 
+        fn resolved_import_address(&self, library: &str, symbol: &str, class: u8) -> Option<u32> {
+            (library == "BundledLibrary" && symbol == "Available" && class == 2)
+                .then_some(0x0400_0000)
+                .or_else(|| self.fixed_data_address(library, symbol))
+        }
+
         fn is_explicit_hle_library(&self, library: &str) -> bool {
             matches!(library, "InterfaceLib" | "StdCLib")
         }
+    }
+
+    #[test]
+    fn import_binding_plan_resolves_available_weak_external_symbols() {
+        let plan = PpcImportBindingPlan::prepare(
+            vec![resolved(0, "BundledLibrary", "Available", 2, true)],
+            1,
+            0,
+            LAYOUT,
+            &TestPolicy,
+        )
+        .unwrap();
+
+        assert_eq!(plan.relocation_addresses(), &[0x0400_0000]);
+        let binding = &plan.into_initial_bindings()[0];
+        assert_eq!(binding.address, 0x0400_0000);
+        assert_eq!(binding.tvector_address, None);
+        assert_eq!(
+            binding.dispatcher_target,
+            PpcImportDispatcherTarget::Unsupported
+        );
     }
 
     fn resolved(
