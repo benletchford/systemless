@@ -108,9 +108,8 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: sha256
-    sha256: 33d984f20940b192fb1cefc87d5a9e951dc2024d0bed6ebe2b942b77ddf408a9
-    size_bytes: 721020
+    type: incoming
+    path: catalogue/incoming/escape-velocity-nova/gameplay.png
   provenance:
     redistribution: permitted
     content_only: true
@@ -120,9 +119,10 @@ artifacts:
       Original screenshot captured for this catalogue at the maintainer’s request.
       Underlying game artwork remains the property of its respective rights holders.
     notes: >-
-      Unedited 800×600 game framebuffer captured headlessly on 2026-09-15 from the
-      untouched EV Nova 1.0.8 shareware archive. It shows the PowerPC main menu with no
-      browser, operating-system frame, or catalogue controls.
+      Unedited 800×600 game framebuffer captured headlessly on 2026-09-21 from the
+      untouched EV Nova 1.0.8 shareware archive using the v0.45.0 browser runtime at its
+      deterministic 1400-tick main-menu checkpoint. It shows the PowerPC main menu with
+      no browser, operating-system frame, or catalogue controls.
 references:
 - https://macintoshgarden.org/games/escape-velocity-nova
 ---
@@ -133,7 +133,7 @@ This entry keeps the original, unregistered [EV Nova 1.0.8 shareware archive](ht
 
 ## Gameplay
 
-![Escape Velocity Nova gameplay](https://assets.systemless.org/catalogue/media/sha256/33/33d984f20940b192fb1cefc87d5a9e951dc2024d0bed6ebe2b942b77ddf408a9.png)
+![Escape Velocity Nova gameplay](incoming/escape-velocity-nova/gameplay.png)
 
 ## A larger galaxy
 
