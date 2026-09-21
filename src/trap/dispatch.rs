@@ -31,8 +31,8 @@ use crate::process_context::{
     ProcessLoadedResources, ProcessResourceFileMap, ProcessResourceManagerState,
     ProcessVfsDirectory, ProcessVfsMetadata, ProcessVfsVolumeRecord, ProcessWorkingDirectory,
     SharedProcessAppleEventHandlers, SharedProcessAppleEventLaunchState,
-    SharedProcessControlManager, SharedProcessCursorState, SharedProcessDialogText,
-    SharedProcessDisplayClut,
+    SharedProcessCollectionManager, SharedProcessControlManager, SharedProcessCursorState,
+    SharedProcessDialogText, SharedProcessDisplayClut,
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessInputState,
     SharedProcessListManager, SharedProcessMemoryManager, SharedProcessMenuTracking,
     SharedProcessOpenFilePositions, SharedProcessOpenFiles, SharedProcessQuickDrawHiliteColors,
@@ -1105,6 +1105,7 @@ pub(crate) enum TrapAdapterId {
     Sane,
     Unimplemented,
     Nonterminal,
+    Collection,
 }
 
 impl TrapAdapterId {
@@ -1304,6 +1305,8 @@ pub struct TrapDispatcher {
     /// Notification Manager requests in queue order. Each entry is the guest
     /// address of its static NMRec; qLink mirrors this order in guest memory.
     pub(crate) notification_requests: Vec<u32>,
+    pub(crate) collection_callback_stack: Vec<super::collection::CollectionCallbackState>,
+    pub(crate) collection_callback_trampoline: u32,
     /// Ports that have already been queried through QDDone. BasiliskII
     /// reports TRUE for each query against a live port, so this state is
     /// currently unused by the HLE path.
@@ -2117,6 +2120,7 @@ pub struct TrapDispatcher {
     pub(crate) saved_vis_regions: HashMap<u32, (i16, i16, i16, i16)>,
     /// Process-owned List Manager state shared with native execution.
     pub(crate) list_states: SharedProcessListManager,
+    pub(crate) collections: SharedProcessCollectionManager,
     /// Process-owned TextEdit feature state shared with native execution.
     pub(crate) textedit_states: SharedProcessTextEditManager,
     /// Process-owned Control Manager metadata shared with native execution.
@@ -2460,6 +2464,7 @@ impl TrapDispatcher {
         context.attach_scrap_state(&mut self.scrap);
         context.attach_control_manager(&mut self.control_manager);
         context.attach_list_manager(&mut self.list_states);
+        context.attach_collection_manager(&mut self.collections);
         context.attach_text_edit_manager(&mut self.textedit_states);
         context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
@@ -3483,6 +3488,8 @@ impl TrapDispatcher {
             control_def_trampoline_chain: Vec::new(),
             defer_user_fn_trampoline: 0,
             notification_requests: Vec::new(),
+            collection_callback_stack: Vec::new(),
+            collection_callback_trampoline: 0,
             qddone_seen_ports: HashSet::new(),
             pict_info_ids: HashSet::new(),
             ppc_initialized: false,
@@ -3752,6 +3759,7 @@ impl TrapDispatcher {
             window_stack: Vec::new(),
             saved_vis_regions: HashMap::new(),
             list_states: SharedProcessListManager::default(),
+            collections: SharedProcessCollectionManager::default(),
             textedit_states: SharedProcessTextEditManager::default(),
             control_manager: SharedProcessControlManager::default(),
             last_inserted_menu_id: None,
@@ -8150,6 +8158,13 @@ impl TrapDispatcher {
                 self.dispatch_dialog(is_tool, trap_num, cpu, bus)
                     .map(|result| {
                         selected_adapter = TrapAdapterId::Dialog;
+                        result
+                    })
+            })
+            .or_else(|| {
+                self.dispatch_collection(is_tool, trap_num, cpu, bus)
+                    .map(|result| {
+                        selected_adapter = TrapAdapterId::Collection;
                         result
                     })
             })

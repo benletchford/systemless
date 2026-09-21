@@ -93,8 +93,8 @@ use crate::process_context::{
     ProcessResourceManagerState, ProcessVfsFileRecords,
     ProcessVfsResourceFileRecords, ProcessWorkingDirectory, SharedProcessAppleEventHandlers,
     SharedProcessAppleEventLaunchState,
-    SharedProcessCallbackScheduling, SharedProcessCursorState, SharedProcessDialogText,
-    SharedProcessDisplayClut,
+    SharedProcessCallbackScheduling, SharedProcessCollectionManager, SharedProcessCursorState,
+    SharedProcessDialogText, SharedProcessDisplayClut,
     SharedProcessControlManager, SharedProcessEventQueue,
     SharedProcessFileSystem, SharedProcessInputState, SharedProcessMemoryManager,
     DEFAULT_QUICKDRAW_HILITE_COLOR,
@@ -140,6 +140,7 @@ mod dispatch_apple_events;
 use dispatch_apple_events::*;
 mod dispatch_bit_transfers;
 mod dispatch_color_tables;
+mod dispatch_collection;
 mod dispatch_control;
 mod dispatch_cursor;
 mod dispatch_desk;
@@ -182,6 +183,7 @@ mod dispatch_window;
 mod dispatch_display;
 use dispatch_control::*;
 pub(crate) use dispatch_dialog::PpcDialogCallbackState;
+pub(crate) use dispatch_collection::PpcCollectionCallbackState;
 use dispatch_dialog::*;
 pub(crate) use dispatch_stdc::{PpcQsortState, PpcStdSignalState};
 pub(in crate::loader::ppc) use dispatch_mixed_mode::*;
@@ -1431,8 +1433,52 @@ pub enum PpcAppleTalkCompatibilityOperation {
     StandardNbp,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcCollectionOperation {
+    Version,
+    New,
+    Dispose,
+    Clone,
+    CountOwners,
+    Copy,
+    GetDefaultAttributes,
+    SetDefaultAttributes,
+    CountItems,
+    AddItem,
+    GetItem,
+    RemoveItem,
+    SetItemInfo,
+    GetItemInfo,
+    ReplaceIndexedItem,
+    GetIndexedItem,
+    RemoveIndexedItem,
+    SetIndexedItemInfo,
+    GetIndexedItemInfo,
+    TagExists,
+    CountTags,
+    GetIndexedTag,
+    CountTaggedItems,
+    GetTaggedItem,
+    GetTaggedItemInfo,
+    Purge,
+    PurgeTag,
+    Empty,
+    Flatten,
+    FlattenPartial,
+    Unflatten,
+    GetExceptionProc,
+    SetExceptionProc,
+    AddItemHandle,
+    GetItemHandle,
+    ReplaceIndexedItemHandle,
+    GetIndexedItemHandle,
+    FlattenToHandle,
+    UnflattenFromHandle,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PpcImportDispatcherTarget {
+    Collection(PpcCollectionOperation),
     InstallExceptionHandler,
     NewPtr { clear: bool },
     DisposePtr,
@@ -3779,6 +3825,7 @@ pub struct PpcLoadedApp {
     pub(crate) native_exception_stack: Vec<PpcNativeExceptionContext>,
     pub(crate) stdc_qsort_stack: Vec<PpcQsortState>,
     pub(crate) dialog_callback_stack: Vec<PpcDialogCallbackState>,
+    pub(crate) collection_callback_stack: Vec<PpcCollectionCallbackState>,
     pub(crate) apple_events: PpcAppleEventState,
     /// Standalone CFM seed; None after a runner moves it into its process.
     /// Installed execution must receive the process service explicitly.
@@ -3851,6 +3898,7 @@ pub struct PpcLoadedApp {
     pub(crate) param_text: SharedProcessDialogText,
     pub scrap: PpcScrapState,
     pub(crate) list_manager: PpcListManagerState,
+    pub(crate) collections: SharedProcessCollectionManager,
     pub halt_pc: u32,
     pub import_trap_base: u32,
     pub import_count: u32,
@@ -4489,6 +4537,7 @@ impl PpcLoadedApp {
         context.attach_text_edit_manager(&mut self.scrap.text_edit);
         context.attach_control_manager(&mut self.controls);
         context.attach_list_manager(&mut self.list_manager);
+        context.attach_collection_manager(&mut self.collections);
         context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
         context.activate_quickdraw_selection(&mut self.current_gworld, &mut self.current_gdevice);
@@ -8059,6 +8108,7 @@ impl PpcLoadedApp {
         let mut native_exception_stack = std::mem::take(&mut self.native_exception_stack);
         let mut stdc_qsort_stack = std::mem::take(&mut self.stdc_qsort_stack);
         let mut dialog_callback_stack = std::mem::take(&mut self.dialog_callback_stack);
+        let mut collection_callback_stack = std::mem::take(&mut self.collection_callback_stack);
         let mut apple_events = std::mem::take(&mut self.apple_events);
         let mut standalone_cfm = if process_cfm.is_none() {
             self.cfm.take()
@@ -8170,6 +8220,7 @@ impl PpcLoadedApp {
         let param_text = self.param_text.shared_handle();
         let mut scrap = std::mem::take(&mut self.scrap);
         let list_manager = std::mem::take(&mut self.list_manager);
+        let collections = self.collections.shared_handle();
         let mut draw_sprocket = self.draw_sprocket;
         let mut handled_import_count = 0u32;
         let mut last_import_index = None;
@@ -8911,6 +8962,7 @@ impl PpcLoadedApp {
                                             native_exception_handler: &native_exception_handler,
                                             stdc_qsort_stack: &mut stdc_qsort_stack,
                                             dialog_callback_stack: &mut dialog_callback_stack,
+                                            collection_callback_stack: &mut collection_callback_stack,
                                             apple_events: &mut apple_events,
                                             cfm_connections: &mut cfm_connections,
                                             cfm_library_fragments: &mut cfm_library_fragments,
@@ -8998,6 +9050,7 @@ impl PpcLoadedApp {
                                             param_text: &param_text,
                                             scrap: &mut scrap,
                                             list_manager,
+                                            collections: &collections,
                                             input,
                                             event_queue,
                                             draw_sprocket: &mut draw_sprocket,
@@ -9314,6 +9367,7 @@ impl PpcLoadedApp {
         self.native_exception_stack = native_exception_stack;
         self.stdc_qsort_stack = stdc_qsort_stack;
         self.dialog_callback_stack = dialog_callback_stack;
+        self.collection_callback_stack = collection_callback_stack;
         self.apple_events = apple_events;
         self.cfm = standalone_cfm;
         (self.imports, self.import_count) = import_run_state.into_parts();
@@ -13800,6 +13854,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         native_exception_stack: Vec::new(),
         stdc_qsort_stack: Vec::new(),
         dialog_callback_stack: Vec::new(),
+        collection_callback_stack: Vec::new(),
         apple_events: PpcAppleEventState::default(),
         cfm: Some(PpcCfmState {
             connections: cfm_connections,
@@ -13870,6 +13925,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         param_text: SharedProcessDialogText::default(),
         scrap: PpcScrapState::default(),
         list_manager: PpcListManagerState::default(),
+        collections: SharedProcessCollectionManager::default(),
         halt_pc: PPC_HALT_PC,
         import_trap_base: PPC_IMPORT_TRAP_BASE,
         import_count: imported_symbols.len() as u32,
@@ -13940,6 +13996,48 @@ fn dispatcher_target_for_import(
     symbol_name: &str,
 ) -> PpcImportDispatcherTarget {
     match (library_name, symbol_name) {
+        ("ColMgrLib", symbol) => match symbol {
+            "getCollectionMgrLibVersion" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Version),
+            "NewCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::New),
+            "DisposeCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Dispose),
+            "CloneCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Clone),
+            "CountCollectionOwners" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::CountOwners),
+            "CopyCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Copy),
+            "GetCollectionDefaultAttributes" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetDefaultAttributes),
+            "SetCollectionDefaultAttributes" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::SetDefaultAttributes),
+            "CountCollectionItems" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::CountItems),
+            "AddCollectionItem" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::AddItem),
+            "GetCollectionItem" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetItem),
+            "RemoveCollectionItem" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::RemoveItem),
+            "SetCollectionItemInfo" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::SetItemInfo),
+            "GetCollectionItemInfo" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetItemInfo),
+            "ReplaceIndexedCollectionItem" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::ReplaceIndexedItem),
+            "GetIndexedCollectionItem" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetIndexedItem),
+            "RemoveIndexedCollectionItem" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::RemoveIndexedItem),
+            "SetIndexedCollectionItemInfo" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::SetIndexedItemInfo),
+            "GetIndexedCollectionItemInfo" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetIndexedItemInfo),
+            "CollectionTagExists" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::TagExists),
+            "CountCollectionTags" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::CountTags),
+            "GetIndexedCollectionTag" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetIndexedTag),
+            "CountTaggedCollectionItems" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::CountTaggedItems),
+            "GetTaggedCollectionItem" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetTaggedItem),
+            "GetTaggedCollectionItemInfo" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetTaggedItemInfo),
+            "PurgeCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Purge),
+            "PurgeCollectionTag" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::PurgeTag),
+            "EmptyCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Empty),
+            "FlattenCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Flatten),
+            "FlattenPartialCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::FlattenPartial),
+            "UnflattenCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Unflatten),
+            "GetCollectionExceptionProc" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetExceptionProc),
+            "SetCollectionExceptionProc" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::SetExceptionProc),
+            "AddCollectionItemHdl" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::AddItemHandle),
+            "GetCollectionItemHdl" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetItemHandle),
+            "ReplaceIndexedCollectionItemHdl" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::ReplaceIndexedItemHandle),
+            "GetIndexedCollectionItemHdl" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetIndexedItemHandle),
+            "FlattenCollectionToHdl" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::FlattenToHandle),
+            "UnflattenCollectionFromHdl" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::UnflattenFromHandle),
+            _ => PpcImportDispatcherTarget::Unsupported,
+        },
         ("InterfaceLib" | "ProcessMgrSupport", "InstallExceptionHandler") => {
             PpcImportDispatcherTarget::InstallExceptionHandler
         }
@@ -16586,6 +16684,7 @@ struct PpcDispatchContext<'a> {
     native_exception_handler: &'a Cell<u32>,
     stdc_qsort_stack: &'a mut Vec<PpcQsortState>,
     dialog_callback_stack: &'a mut Vec<PpcDialogCallbackState>,
+    collection_callback_stack: &'a mut Vec<PpcCollectionCallbackState>,
     apple_events: &'a mut PpcAppleEventState,
     cfm_connections: &'a mut Vec<PpcCfmConnection>,
     cfm_library_fragments: &'a mut Vec<PpcCfmLibraryFragment>,
@@ -16671,6 +16770,7 @@ struct PpcDispatchContext<'a> {
     param_text: &'a SharedProcessDialogText,
     scrap: &'a mut PpcScrapState,
     list_manager: &'a mut ProcessListManagerState,
+    collections: &'a SharedProcessCollectionManager,
     input: PpcInputSnapshot,
     event_queue: &'a mut EventQueue,
     draw_sprocket: &'a mut PpcDrawSprocketState,
@@ -16694,6 +16794,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         native_exception_handler,
         stdc_qsort_stack,
         dialog_callback_stack,
+        collection_callback_stack,
         apple_events,
         cfm_connections,
         cfm_library_fragments,
@@ -16779,6 +16880,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         param_text,
         scrap,
         list_manager,
+        collections,
         input,
         event_queue,
         draw_sprocket,
@@ -17552,6 +17654,22 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         return Some(action);
     }
 
+    if let Some(action) = dispatch_collection::dispatch_collection_import(
+        dispatch_collection::PpcCollectionDispatchContext {
+            binding,
+            cpu,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            collections,
+            callback_stack: collection_callback_stack,
+        },
+    ) {
+        return Some(action);
+    }
+
     if let Some(action) = dispatch_dialog::dispatch_dialog_import(
         dispatch_dialog::PpcDialogDispatchContext {
             binding,
@@ -17767,6 +17885,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     }
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::Collection(_) => {
+            unreachable!("collection imports return through dispatch_collection_import")
+        }
         PpcImportDispatcherTarget::InstallExceptionHandler => {
             unreachable!(
                 "native exception imports return through dispatch_native_exception_import"

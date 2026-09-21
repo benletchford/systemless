@@ -258,6 +258,7 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
             | b"ttsc"
             | b"te  "
             | b"teat"
+            | b"cltn"
             | b"tmgr"
             | b"thds"
             | b"dplv"
@@ -3648,6 +3649,14 @@ impl super::TrapDispatcher {
                     // the low-order word.
                     b"vers" => {
                         cpu.write_reg(Register::A0, 0x0001);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltCollectionMgrVersion ('cltn') returns a
+                    // NumVersion-style 1.0 value. The Collection Manager
+                    // chapter requires callers to gate use of `_CollectionMgr`
+                    // with this selector.
+                    b"cltn" => {
+                        cpu.write_reg(Register::A0, 0x0100_0000);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltSystemVersion ('sysv') -> the canonical profile version.

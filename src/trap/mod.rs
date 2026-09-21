@@ -14,6 +14,7 @@
 //! - `framebuffer` — Framebuffer helpers + chrome rendering
 
 mod cinepak;
+mod collection;
 mod control;
 mod dialog;
 pub mod dispatch;
