@@ -52411,6 +52411,7 @@ fn native_toolbox_theme_changes_chrome_without_changing_guest_geometry() {
             (320, 100, 340, 180),
             b"Open",
             true,
+            true,
         );
         let expected_button = ppc_physical_screen_color_pixel(
             front,
