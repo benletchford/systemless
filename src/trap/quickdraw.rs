@@ -19720,7 +19720,7 @@ impl super::TrapDispatcher {
             return false;
         };
         let ram_size = bus.ram_size();
-        let color_screen_base = ram_size - 0x80000;
+        let color_screen_base = ram_size - crate::memory::bus::display_reservation_bytes();
         let Some((_, entry_count)) = Self::standard_screen_depth_clut(depth, is_color) else {
             return false;
         };

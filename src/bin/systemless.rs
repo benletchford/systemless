@@ -128,9 +128,17 @@ impl Drop for FramePhaseTimer {
     }
 }
 
-/// Initial screen dimensions: 800x600 8bpp color mode by default.
-const INITIAL_SCREEN_WIDTH: u32 = 800;
-const INITIAL_SCREEN_HEIGHT: u32 = 600;
+/// Initial screen dimensions, taken from the active machine profile
+/// (800x600 8bpp by default, overridable through `SYSTEMLESS_SCREEN_WIDTH`
+/// and `SYSTEMLESS_SCREEN_HEIGHT`).
+fn initial_screen_width() -> u32 {
+    u32::from(systemless::machine_profile::reference_machine_profile().screen_width)
+}
+
+fn initial_screen_height() -> u32 {
+    u32::from(systemless::machine_profile::reference_machine_profile().screen_height)
+}
+
 /// Frame duration at 60.15 Hz (Compact Mac VBL rate).
 const FRAME_DURATION: std::time::Duration = std::time::Duration::from_micros(16_625);
 const MIN_RENDER_HEADROOM: std::time::Duration = std::time::Duration::from_micros(1_500);
@@ -588,9 +596,13 @@ fn viewport_cache_path(game_path: &std::path::Path) -> PathBuf {
 #[cfg(target_os = "macos")]
 fn valid_cached_content_rect(cache: &CachedContentRect) -> bool {
     let content = cache.content;
+    // A rect learned under a different guest screen size says nothing about
+    // where this run's guest draws; sizing the window from it would letterbox
+    // the new mode inside the old one.
+    let profile = systemless::machine_profile::reference_machine_profile();
     cache.version == 2
-        && cache.screen_width != 0
-        && cache.screen_height != 0
+        && cache.screen_width == profile.screen_width
+        && cache.screen_height == profile.screen_height
         && content.width != 0
         && content.height != 0
         && content.left.saturating_add(content.width) <= u32::from(cache.screen_width)
@@ -1040,8 +1052,8 @@ impl App {
             last_audio_mix_time: None,
             mouse_physical: (0.0, 0.0),
             mouse_release_latch: HostMouseReleaseLatch::default(),
-            current_screen_width: INITIAL_SCREEN_WIDTH,
-            current_screen_height: INITIAL_SCREEN_HEIGHT,
+            current_screen_width: initial_screen_width(),
+            current_screen_height: initial_screen_height(),
             frame_count: 0,
             last_presented_guest_tick: None,
             force_next_render: true,
@@ -2857,18 +2869,18 @@ impl ApplicationHandler for App {
                     self.content_rect.unwrap_or(ContentRect {
                         left: 0,
                         top: 0,
-                        width: INITIAL_SCREEN_WIDTH,
-                        height: INITIAL_SCREEN_HEIGHT,
+                        width: initial_screen_width(),
+                        height: initial_screen_height(),
                     }),
                     None,
-                    INITIAL_SCREEN_WIDTH,
-                    INITIAL_SCREEN_HEIGHT,
+                    initial_screen_width(),
+                    initial_screen_height(),
                     native_menu_bar_height(self.runner.as_ref(), self.native_integrations),
                 );
                 (content.width, content.height)
             };
             #[cfg(not(target_os = "macos"))]
-            let initial_size = (INITIAL_SCREEN_WIDTH, INITIAL_SCREEN_HEIGHT);
+            let initial_size = (initial_screen_width(), initial_screen_height());
             #[cfg(target_os = "macos")]
             let window_title = if self.native_integrations {
                 self.native_app_name.as_str()

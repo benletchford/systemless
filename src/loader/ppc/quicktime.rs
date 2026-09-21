@@ -4,13 +4,23 @@ use super::{
     ppc_i16_result, ppc_qt_record_error, ppc_qt_reset_movie_video_decode_cache, PpcCpu,
     PpcImportAction, PpcSectionMem, PPC_PARAM_ERR, PPC_QT_MOVIE,
 };
-use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use ppc::PpcMemory;
 
 pub const PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE: u32 = 3;
-pub const PPC_MAIN_SCREEN_WIDTH: u32 = REFERENCE_MACHINE_PROFILE.screen_width as u32;
-pub const PPC_MAIN_SCREEN_HEIGHT: u32 = REFERENCE_MACHINE_PROFILE.screen_height as u32;
 pub const PPC_NO_ERR: i16 = 0;
+
+/// Width of the synthesized PowerPC main screen. Reads the active machine
+/// profile so a `SYSTEMLESS_SCREEN_WIDTH` override reaches the GDevice,
+/// window, and DrawSprocket geometry the guest sees.
+pub fn ppc_main_screen_width() -> u32 {
+    u32::from(crate::machine_profile::reference_machine_profile().screen_width)
+}
+
+/// Height of the synthesized PowerPC main screen. See
+/// [`ppc_main_screen_width`].
+pub fn ppc_main_screen_height() -> u32 {
+    u32::from(crate::machine_profile::reference_machine_profile().screen_height)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcQuickTimeCompatibilityOperation {
@@ -186,8 +196,8 @@ impl Default for PpcQuickTimeState {
             movie_box: (
                 0,
                 0,
-                PPC_MAIN_SCREEN_HEIGHT as i16,
-                PPC_MAIN_SCREEN_WIDTH as i16,
+                ppc_main_screen_height() as i16,
+                ppc_main_screen_width() as i16,
             ),
             movie_set_box_count: 0,
             movie_beginning_count: 0,

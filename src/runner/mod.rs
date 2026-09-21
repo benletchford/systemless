@@ -8616,13 +8616,10 @@ impl FixtureRunner {
 
     fn ppc_host_canvas_dimensions(front_buffer: PpcFrontBuffer) -> (u32, u32) {
         if front_buffer.width >= 512 && front_buffer.height >= 342 {
+            let profile = crate::machine_profile::reference_machine_profile();
             (
-                front_buffer.width.max(u32::from(
-                    crate::machine_profile::REFERENCE_MACHINE_PROFILE.screen_width,
-                )),
-                front_buffer.height.max(u32::from(
-                    crate::machine_profile::REFERENCE_MACHINE_PROFILE.screen_height,
-                )),
+                front_buffer.width.max(u32::from(profile.screen_width)),
+                front_buffer.height.max(u32::from(profile.screen_height)),
             )
         } else {
             (front_buffer.width, front_buffer.height)

@@ -14267,8 +14267,8 @@ fn hle_import_runner_creates_window_title_and_zoom_state() {
         Some((
             20,
             0,
-            PPC_MAIN_SCREEN_HEIGHT as i16,
-            PPC_MAIN_SCREEN_WIDTH as i16,
+            ppc_main_screen_height() as i16,
+            ppc_main_screen_width() as i16,
         ))
     );
 
@@ -14281,8 +14281,8 @@ fn hle_import_runner_creates_window_title_and_zoom_state() {
         Some((
             20,
             0,
-            PPC_MAIN_SCREEN_HEIGHT as i16,
-            PPC_MAIN_SCREEN_WIDTH as i16,
+            ppc_main_screen_height() as i16,
+            ppc_main_screen_width() as i16,
         ))
     );
 }
@@ -21600,8 +21600,8 @@ fn init_graf_initializes_application_quickdraw_globals() {
         Some((
             0,
             0,
-            PPC_MAIN_SCREEN_HEIGHT as i16,
-            PPC_MAIN_SCREEN_WIDTH as i16,
+            ppc_main_screen_height() as i16,
+            ppc_main_screen_width() as i16,
         ))
     );
     assert_eq!(
@@ -50394,8 +50394,8 @@ fn hle_import_runner_handles_quicktime_importer_and_movie_outputs() {
         Some((
             0,
             0,
-            PPC_MAIN_SCREEN_HEIGHT as i16,
-            PPC_MAIN_SCREEN_WIDTH as i16
+            ppc_main_screen_height() as i16,
+            ppc_main_screen_width() as i16
         ))
     );
 
@@ -50457,8 +50457,8 @@ fn hle_import_runner_handles_quicktime_importer_and_movie_outputs() {
         Some((
             0,
             0,
-            PPC_MAIN_SCREEN_HEIGHT as i16,
-            PPC_MAIN_SCREEN_WIDTH as i16
+            ppc_main_screen_height() as i16,
+            ppc_main_screen_width() as i16
         ))
     );
 
@@ -53736,7 +53736,7 @@ fn ppc_zoom_window_recalculates_visibility_and_queues_redraw() {
 
     assert_eq!(
         ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
-        Some((20, 0, PPC_MAIN_SCREEN_HEIGHT as i16, PPC_MAIN_SCREEN_WIDTH as i16)),
+        Some((20, 0, ppc_main_screen_height() as i16, ppc_main_screen_width() as i16)),
     );
     assert_ne!(
         ppc_read_rgn_bbox(&mut loaded.memory, vis_rgn),
@@ -54022,7 +54022,7 @@ fn hle_import_runner_new_cwindow_uses_current_screen_depth() {
         .unwrap();
     assert_eq!(record.depth, 8);
     assert_eq!(record.base_addr, PPC_MAIN_SCREEN_BASE);
-    assert_eq!(record.row_bytes, PPC_MAIN_SCREEN_WIDTH + 16);
+    assert_eq!(record.row_bytes, ppc_main_screen_width() + 16);
     assert_eq!(loaded.memory.read_u16_be(record.pixmap + 32), Some(8));
 }
 
@@ -61950,8 +61950,8 @@ fn onscreen_color_port_keeps_its_logical_pm_table_during_a_hardware_fade() {
         ppc_main_screen_row_bytes(),
         0,
         0,
-        PPC_MAIN_SCREEN_HEIGHT as i16,
-        PPC_MAIN_SCREEN_WIDTH as i16,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
         8,
     )
     .unwrap();
@@ -61984,8 +61984,8 @@ fn onscreen_color_port_keeps_its_logical_pm_table_during_a_hardware_fade() {
         pixmap,
         base_addr: PPC_MAIN_SCREEN_BASE,
         gdevice: PPC_MAIN_GDEVICE,
-        width: PPC_MAIN_SCREEN_WIDTH,
-        height: PPC_MAIN_SCREEN_HEIGHT,
+        width: ppc_main_screen_width(),
+        height: ppc_main_screen_height(),
         depth: 8,
         row_bytes: ppc_main_screen_row_bytes(),
         pixels_locked: false,
@@ -64264,8 +64264,8 @@ fn hle_import_runner_get_max_device_requires_screen_intersection() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], PPC_MAIN_GDEVICE);
 
-    let top = PPC_MAIN_SCREEN_HEIGHT as i16 + 20;
-    let left = PPC_MAIN_SCREEN_WIDTH as i16 + 20;
+    let top = ppc_main_screen_height() as i16 + 20;
+    let left = ppc_main_screen_width() as i16 + 20;
     ppc_write_rect(
         &mut loaded.memory,
         rect_ptr,

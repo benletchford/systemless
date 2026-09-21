@@ -594,7 +594,14 @@ const PPC_ZONE_STORAGE_SIZE: usize = 64;
 const PPC_ZONE_HEAP_TYPE_OFFSET: u32 = 30;
 const PPC_ZONE_32_BIT_HEAP: u8 = 1;
 const PPC_ZONE_NEW_STYLE_HEAP: u8 = 2;
-pub(super) const PPC_MAIN_SCREEN_BASE: u32 = 0x02f1_0000;
+/// Main framebuffer. Placed in the free span below the toolbox structures at
+/// [`PPC_MAIN_GWORLD`] rather than in the 960 KB hole under [`PPC_HEAP_BASE`]:
+/// that hole held only an 800x600 16-bit buffer (969,600 bytes), so a larger
+/// screen ran into the guest heap. Overlapping regions are not an error in
+/// `PpcSectionMem` — they set a sticky flag that drops every read and write in
+/// the process onto a per-byte path — so the collision cost far more than it
+/// announced. `ppc_main_screen_fits` keeps this span honest.
+pub(super) const PPC_MAIN_SCREEN_BASE: u32 = 0x02a0_0000;
 const PPC_DSP_BACK_PIXMAP_HANDLE: u32 = 0x0501_0300;
 const PPC_DSP_BACK_PIXMAP: u32 = 0x0501_0400;
 const PPC_DSP_BACK_VIS_RGN_HANDLE: u32 = 0x0501_0500;
@@ -602,6 +609,8 @@ const PPC_DSP_BACK_VIS_RGN: u32 = 0x0501_0600;
 const PPC_DSP_BACK_CLIP_RGN_HANDLE: u32 = 0x0501_0700;
 const PPC_DSP_BACK_CLIP_RGN: u32 = 0x0501_0800;
 const PPC_DSP_BACK_SCREEN_BASE: u32 = 0x0502_0000;
+/// Span available to the DrawSprocket back buffer above [`PPC_STACK_TOP`].
+const PPC_DSP_BACK_SCREEN_SPAN: u32 = 0x0080_0000;
 const PPC_MAIN_PIXEL_DEPTH: u32 = REFERENCE_MACHINE_PROFILE.screen_depth as u32;
 pub const PPC_QD_TEXT_FONT_DEFAULT: i16 = 0;
 pub const PPC_QD_TEXT_MODE_SRC_OR: i16 = 1;
@@ -13624,6 +13633,9 @@ fn load_pef_application_with_config_and_optional_system_reservation(
     let _ = memory.write_u32_be(PPC_THE_ZONE_ADDR, PPC_APPLICATION_ZONE);
     let _ = memory.write_u32_be(PPC_APPL_ZONE_ADDR, PPC_APPLICATION_ZONE);
     let _ = memory.write_u32_be(PPC_SYS_ZONE_ADDR, PPC_SYSTEM_ZONE);
+    if !ppc_main_screen_fits() {
+        return Err(PpcLoadError::AddressOverflow);
+    }
     memory.add_region(
         PPC_MAIN_SCREEN_BASE,
         vec![0u8; ppc_main_screen_buffer_size() as usize],
@@ -22003,7 +22015,7 @@ fn ppc_q3_draw_context_get_pane(
                 .iter()
                 .find(|gworld| gworld.port == port)
                 .map(|gworld| (gworld.width, gworld.height))
-                .unwrap_or((PPC_MAIN_SCREEN_WIDTH, PPC_MAIN_SCREEN_HEIGHT));
+                .unwrap_or((ppc_main_screen_width(), ppc_main_screen_height()));
             ppc_write_q3_area(memory, pane_out_ptr, 0.0, 0.0, width as f32, height as f32).is_some()
         }
         _ => false,
@@ -33943,8 +33955,8 @@ fn ppc_qt_graphics_import_get_bounds_rect(
     let (top, left, bottom, right) = quicktime.graphics_importer_bounds.unwrap_or((
         0,
         0,
-        PPC_MAIN_SCREEN_HEIGHT as i16,
-        PPC_MAIN_SCREEN_WIDTH as i16,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
     ));
     if ppc_write_rect(memory, bounds_ptr, top, left, bottom, right).is_none() {
         PPC_PARAM_ERR
@@ -37889,13 +37901,26 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
     }
 }
 
+/// True when both screen buffers fit in their spans at the active profile's
+/// geometry. A false here would alias guest memory, so the loader refuses the
+/// launch rather than silently corrupting the heap.
+fn ppc_main_screen_fits() -> bool {
+    let size = ppc_main_screen_buffer_size();
+    PPC_MAIN_SCREEN_BASE
+        .checked_add(size)
+        .is_some_and(|end| end <= PPC_MAIN_GWORLD)
+        && PPC_DSP_BACK_SCREEN_BASE
+            .checked_add(size)
+            .is_some_and(|end| end <= PPC_STACK_TOP.saturating_add(PPC_DSP_BACK_SCREEN_SPAN))
+}
+
 pub(super) fn ppc_main_screen_buffer_size() -> u32 {
-    ppc_row_bytes(PPC_MAIN_SCREEN_WIDTH, PPC_MAIN_SCREEN_STORAGE_DEPTH).unwrap()
-        * PPC_MAIN_SCREEN_HEIGHT
+    ppc_row_bytes(ppc_main_screen_width(), PPC_MAIN_SCREEN_STORAGE_DEPTH).unwrap()
+        * ppc_main_screen_height()
 }
 
 pub(super) fn ppc_main_screen_row_bytes() -> u32 {
-    ppc_row_bytes(PPC_MAIN_SCREEN_WIDTH, PPC_MAIN_PIXEL_DEPTH).unwrap()
+    ppc_row_bytes(ppc_main_screen_width(), PPC_MAIN_PIXEL_DEPTH).unwrap()
 }
 
 fn ppc_seed_main_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
@@ -37907,14 +37932,14 @@ fn ppc_seed_main_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
     // Macintosh Toolbox Essentials (1992), pp. 3-112 and 4-16: GrayRgn is
     // the desktop area below the menu bar, whose live height is MBarHeight.
     let menu_bar_height = u32::from(memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20))
-        .min(PPC_MAIN_SCREEN_HEIGHT) as i16;
+        .min(ppc_main_screen_height()) as i16;
     let _ = ppc_write_rect(
         memory,
         PPC_GRAY_RGN + 2,
         menu_bar_height,
         0,
-        PPC_MAIN_SCREEN_HEIGHT as i16,
-        PPC_MAIN_SCREEN_WIDTH as i16,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
     );
     let _ = memory.write_u32_be(PPC_MAIN_DCE_HANDLE, PPC_MAIN_DCE);
     let _ = memory.write_u16_be(PPC_MAIN_DCE + 24, 0);
@@ -37927,8 +37952,8 @@ fn ppc_seed_main_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
         row_bytes,
         0,
         0,
-        PPC_MAIN_SCREEN_HEIGHT as i16,
-        PPC_MAIN_SCREEN_WIDTH as i16,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
         PPC_MAIN_PIXEL_DEPTH,
     );
     let _ = memory.write_u32_be(PPC_MAIN_PIXMAP + 42, PPC_MAIN_CTABLE_HANDLE);
@@ -37938,8 +37963,8 @@ fn ppc_seed_main_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
         PPC_MAIN_PIXMAP_HANDLE,
         0,
         0,
-        PPC_MAIN_SCREEN_HEIGHT as i16,
-        PPC_MAIN_SCREEN_WIDTH as i16,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
     );
     // Inside Macintosh: Imaging With QuickDraw (1994), pp. 2-38--2-42:
     // every open graphics port owns valid visible and clipping regions.
@@ -37958,8 +37983,8 @@ fn ppc_seed_main_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
         PPC_MAIN_VIS_RGN_HANDLE,
         0,
         0,
-        PPC_MAIN_SCREEN_HEIGHT as i16,
-        PPC_MAIN_SCREEN_WIDTH as i16,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
     );
     let _ = ppc_write_rgn_bbox(
         memory,
@@ -37976,8 +38001,8 @@ fn ppc_seed_main_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
         PPC_MAIN_PIXMAP_HANDLE,
         0,
         0,
-        PPC_MAIN_SCREEN_HEIGHT as i16,
-        PPC_MAIN_SCREEN_WIDTH as i16,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
     );
     let record = PpcGWorldRecord {
         ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
@@ -37986,8 +38011,8 @@ fn ppc_seed_main_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
         pixmap: PPC_MAIN_PIXMAP,
         base_addr: PPC_MAIN_SCREEN_BASE,
         gdevice: PPC_MAIN_GDEVICE,
-        width: PPC_MAIN_SCREEN_WIDTH,
-        height: PPC_MAIN_SCREEN_HEIGHT,
+        width: ppc_main_screen_width(),
+        height: ppc_main_screen_height(),
         depth: PPC_MAIN_PIXEL_DEPTH,
         row_bytes,
         pixels_locked: false,
@@ -38015,9 +38040,11 @@ fn ppc_seed_main_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
         &clut,
         entry_count,
     ));
-    for v in i32::from(menu_bar_height)..PPC_MAIN_SCREEN_HEIGHT as i32 {
+    let screen_width = ppc_main_screen_width() as i32;
+    let screen_height = ppc_main_screen_height() as i32;
+    for v in i32::from(menu_bar_height)..screen_height {
         if front_buffer.depth == 8 {
-            let row = (0..PPC_MAIN_SCREEN_WIDTH as i32)
+            let row = (0..screen_width)
                 .map(|h| {
                     if crate::window_manager::standard_desktop_pattern_is_ink(h, v) {
                         black as u8
@@ -38031,7 +38058,7 @@ fn ppc_seed_main_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
                 &row,
             );
         } else {
-            for h in 0..PPC_MAIN_SCREEN_WIDTH as i32 {
+            for h in 0..screen_width {
                 let pixel = if crate::window_manager::standard_desktop_pattern_is_ink(h, v) {
                     black
                 } else {
@@ -38130,8 +38157,8 @@ fn ppc_seed_dsp_back_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
         row_bytes,
         0,
         0,
-        PPC_MAIN_SCREEN_HEIGHT as i16,
-        PPC_MAIN_SCREEN_WIDTH as i16,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
         PPC_MAIN_PIXEL_DEPTH,
     );
     let _ = memory.write_u32_be(PPC_DSP_BACK_PIXMAP + 42, PPC_MAIN_CTABLE_HANDLE);
@@ -38141,8 +38168,8 @@ fn ppc_seed_dsp_back_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
         PPC_DSP_BACK_PIXMAP_HANDLE,
         0,
         0,
-        PPC_MAIN_SCREEN_HEIGHT as i16,
-        PPC_MAIN_SCREEN_WIDTH as i16,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
     );
     let _ = memory.write_u32_be(PPC_DSP_BACK_VIS_RGN_HANDLE, PPC_DSP_BACK_VIS_RGN);
     let _ = memory.write_u32_be(PPC_DSP_BACK_CLIP_RGN_HANDLE, PPC_DSP_BACK_CLIP_RGN);
@@ -38159,8 +38186,8 @@ fn ppc_seed_dsp_back_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
         PPC_DSP_BACK_VIS_RGN_HANDLE,
         0,
         0,
-        PPC_MAIN_SCREEN_HEIGHT as i16,
-        PPC_MAIN_SCREEN_WIDTH as i16,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
     );
     let _ = ppc_write_rgn_bbox(
         memory,
@@ -38177,8 +38204,8 @@ fn ppc_seed_dsp_back_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
         pixmap: PPC_DSP_BACK_PIXMAP,
         base_addr: PPC_DSP_BACK_SCREEN_BASE,
         gdevice: PPC_MAIN_GDEVICE,
-        width: PPC_MAIN_SCREEN_WIDTH,
-        height: PPC_MAIN_SCREEN_HEIGHT,
+        width: ppc_main_screen_width(),
+        height: ppc_main_screen_height(),
         depth: PPC_MAIN_PIXEL_DEPTH,
         row_bytes,
         pixels_locked: false,
@@ -38212,10 +38239,10 @@ fn ppc_open_port(
         row_bytes: ppc_main_screen_row_bytes(),
         top: 0,
         left: 0,
-        bottom: PPC_MAIN_SCREEN_HEIGHT as i16,
-        right: PPC_MAIN_SCREEN_WIDTH as i16,
-        width: PPC_MAIN_SCREEN_WIDTH,
-        height: PPC_MAIN_SCREEN_HEIGHT,
+        bottom: ppc_main_screen_height() as i16,
+        right: ppc_main_screen_width() as i16,
+        width: ppc_main_screen_width(),
+        height: ppc_main_screen_height(),
         depth: PPC_MAIN_PIXEL_DEPTH,
     });
     let vis_rgn = ppc_allocator_view_new_rgn(
@@ -38357,10 +38384,10 @@ fn ppc_open_cport(
         row_bytes: ppc_main_screen_row_bytes(),
         top: 0,
         left: 0,
-        bottom: PPC_MAIN_SCREEN_HEIGHT as i16,
-        right: PPC_MAIN_SCREEN_WIDTH as i16,
-        width: PPC_MAIN_SCREEN_WIDTH,
-        height: PPC_MAIN_SCREEN_HEIGHT,
+        bottom: ppc_main_screen_height() as i16,
+        right: ppc_main_screen_width() as i16,
+        width: ppc_main_screen_width(),
+        height: ppc_main_screen_height(),
         depth: PPC_MAIN_PIXEL_DEPTH,
     });
     if bits.row_bytes == 0 || !matches!(bits.depth, 1 | 2 | 4 | 8 | 16 | 32) {
@@ -45036,8 +45063,8 @@ fn ppc_dsp_find_context_from_point(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> 
     }
     if global_v < 0
         || global_h < 0
-        || global_v >= PPC_MAIN_SCREEN_HEIGHT as i16
-        || global_h >= PPC_MAIN_SCREEN_WIDTH as i16
+        || global_v >= ppc_main_screen_height() as i16
+        || global_h >= ppc_main_screen_width() as i16
     {
         return PPC_DSP_CONTEXT_NOT_FOUND_ERR;
     }
@@ -46683,8 +46710,8 @@ fn ppc_isp_mouse_delta_fixed(
     input: PpcInputSnapshot,
     action_binding: PpcInputSprocketActionBinding,
 ) -> i32 {
-    let center_h = (PPC_MAIN_SCREEN_WIDTH / 2) as i32;
-    let center_v = (PPC_MAIN_SCREEN_HEIGHT / 2) as i32;
+    let center_h = (ppc_main_screen_width() / 2) as i32;
+    let center_v = (ppc_main_screen_height() / 2) as i32;
     let pixel_delta = if action_binding == PpcInputSprocketActionBinding::DeltaPitch {
         center_v.saturating_sub(i32::from(input.mouse_v))
     } else {
@@ -54311,7 +54338,7 @@ fn ppc_calc_menu_size_with_resources(
     let rows = ppc_menu_rows_for_appearances(&appearances);
     let height = standard_menu_height(
         &rows,
-        (PPC_MAIN_SCREEN_HEIGHT as i16)
+        (ppc_main_screen_height() as i16)
             .saturating_sub(memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16),
     );
     let _ = memory.write_u16_be(menu + 2, width as u16);
