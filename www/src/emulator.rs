@@ -224,9 +224,9 @@ pub struct Machine {
     last_steps: usize,
     last_cpu_budget_ms: f64,
     last_audio_queue_ms: Option<f64>,
-    /// Logical framebuffer retained between browser paints. The runner marks
-    /// every CPU slice as visual work, so the presentation epoch lets us
-    /// avoid decoding an unchanged guest screen before drawing host overlays.
+    /// Logical framebuffer retained between browser paints. The presentation
+    /// epoch avoids decoding an unchanged guest screen before drawing host
+    /// overlays.
     frame_rgba: Vec<u8>,
     overlay_rgba: Vec<u8>,
     cursor_backup: CursorBackup,
@@ -642,11 +642,12 @@ impl Machine {
 
         let input_dirty = self.input_dirty;
         self.input_dirty = false;
-        let visual_work = visual_steps > 0 || input_dirty;
-        if visual_work {
+        let candidate_visual_work = visual_steps > 0 || input_dirty;
+        if candidate_visual_work {
             self.runner.prepare_text_presentation();
             self.runner.composite_frame();
         }
+        let visual_work = self.has_unpainted_visual_change(candidate_visual_work);
 
         // Drain whatever was mixed into the runner's audio buffer. Keep this
         // batched to one browser queue post per frame; Sound Manager still
@@ -661,6 +662,27 @@ impl Machine {
             running: running && !self.runner.is_halted(),
             visual_work,
         }
+    }
+
+    /// Return whether the current guest and host presentation inputs differ
+    /// from the last frame delivered to the browser. CPU slices often leave
+    /// the final image unchanged, so they should not force another full RGBA
+    /// allocation and worker transfer.
+    fn has_unpainted_visual_change(&self, fallback_visual_work: bool) -> bool {
+        let dispatcher = self.runner.dispatcher();
+        let presentation_epoch = self.runner.bus().presentation_visible_epoch();
+        if presentation_epoch.is_none() {
+            return fallback_visual_work;
+        }
+
+        self.rendered_epoch != presentation_epoch
+            || self.rendered_screen_mode != Some(dispatcher.screen_mode)
+            || self.rendered_scale != self.output_scale
+            || self.rendered_outline != self.runner.bus().has_visible_outline_detail()
+            || self.rendered_mouse_pos != dispatcher.mouse_position()
+            || self.rendered_cursor.as_ref() != dispatcher.cursor()
+            || !self.frame_palette_valid
+            || self.frame_palette_clut != *dispatcher.device_clut
     }
 
     fn frontload_browser_audio(
@@ -819,9 +841,8 @@ impl Machine {
         let outline = self.runner.bus().has_visible_outline_detail();
         let palette_changed = !self.frame_palette_valid || self.frame_palette_clut != clut;
 
-        // `run_frame` reports any guest CPU work as visual work. In practice
-        // many of those paints leave the framebuffer unchanged, so return the
-        // previous fully composed image when all guest and host inputs match.
+        // Return the previous fully composed image when all guest and host
+        // inputs match.
         if debug_stats.is_none()
             && presentation_epoch.is_some()
             && self.rendered_epoch == presentation_epoch
