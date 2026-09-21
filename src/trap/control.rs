@@ -259,11 +259,12 @@ impl super::TrapDispatcher {
     }
 
     fn control_def_proc_handle(&mut self, bus: &mut MacMemoryBus, proc_id: i16) -> u32 {
-        if proc_id <= 0 {
+        let definition_id = proc_id as u16;
+        let cdef_id = (definition_id >> 4) as i16;
+        if cdef_id == 0 {
             return 0;
         }
 
-        let cdef_id = proc_id >> 4;
         self.find_or_load_resource_any(bus, *b"CDEF", cdef_id)
             .map(|(_, ptr)| ptr)
             .map(|ptr| self.get_or_create_resource_handle(bus, *b"CDEF", cdef_id, ptr))
@@ -4929,6 +4930,53 @@ mod tests {
         assert_eq!(bus.read_word(draw_tramp + 60), 0xA873);
         assert_eq!(bus.read_word(draw_tramp + 68), 0xAA31);
         assert_eq!(bus.read_word(draw_tramp + 70), 0x4E75);
+    }
+
+    #[test]
+    fn high_bit_control_definition_id_loads_and_dispatches_unsigned_cdef_resource() {
+        // Macintosh Toolbox Essentials (1992), pp. 5-12 to 5-13: the upper
+        // 12 bits of the control definition ID are the CDEF resource ID.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let cdef_id = 0x0800i16;
+        let variant = 0x000B;
+        let proc_id = ((cdef_id as u16) << 4 | variant) as i16;
+        let cdef_proc =
+            disp.install_test_resource(&mut bus, *b"CDEF", cdef_id, &[0x4E, 0x56, 0, 0]);
+        let ctrl_ptr = bus.alloc(296);
+        let ctrl_handle = bus.alloc(4);
+        bus.write_long(ctrl_handle, ctrl_ptr);
+        disp.initialize_control_record(
+            &mut bus,
+            ctrl_ptr,
+            0,
+            (10, 20, 40, 100),
+            b"High",
+            true,
+            0,
+            0,
+            1,
+            proc_id,
+            0,
+        );
+
+        let cdef_handle = bus.read_long(ctrl_ptr + 24);
+        assert_ne!(cdef_handle, 0);
+        assert_eq!(bus.read_long(cdef_handle), cdef_proc);
+
+        let sp = 0x300000u32;
+        let return_pc = 0x1234_5678;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, return_pc);
+        bus.write_long(sp, ctrl_handle);
+        disp.dispatch_control(true, 0x16D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let trampoline = disp.control_def_trampoline;
+        assert_eq!(cpu.read_reg(Register::PC), trampoline);
+        assert_eq!(bus.read_word(trampoline + 12), variant);
+        assert_eq!(bus.read_long(trampoline + 16), ctrl_handle);
+        assert_eq!(bus.read_long(trampoline + 32), cdef_proc);
     }
 
     // IM:I I-332: DisposeControl takes one ControlHandle argument.
