@@ -1,6 +1,8 @@
 //! Integrate retained coverage directly into the drawable. Group samples in
 //! ordinary guest pixels so bitmap content does not require a full 4x image.
-use super::{MacMemoryBus, Presentation};
+use super::{
+    MacMemoryBus, Presentation, ResolvedOutput, ResolvedOutputCache, ResolvedOutputFormat,
+};
 use crate::display::coverage_quotient;
 
 struct Span {
@@ -156,23 +158,34 @@ impl Presentation {
     }
 
     fn resolved_argb_resized(&self, size: (u32, u32)) -> std::cell::Ref<'_, [u32]> {
-        if !self
-            .output_cache
-            .borrow()
-            .as_ref()
-            .is_some_and(|(revision, cached_size, _)| {
-                *revision == self.revision && *cached_size == size
-            })
-        {
+        let cache_matches = self.output_cache.borrow().as_ref().is_some_and(|cache| {
+            cache.revision == self.revision
+                && cache.size == size
+                && cache.format == ResolvedOutputFormat::Argb
+        });
+        if !cache_matches {
             let mut cache = self.output_cache.borrow_mut();
-            let (revision, cached_size, pixels) =
-                cache.get_or_insert_with(|| (0, (0, 0), Vec::new()));
-            self.render_resized::<3>(size, None, pixels);
-            *revision = self.revision;
-            *cached_size = size;
+            let mut pixels = match cache.take() {
+                Some(ResolvedOutputCache {
+                    pixels: ResolvedOutput::Argb(pixels),
+                    ..
+                }) => pixels,
+                _ => Vec::new(),
+            };
+            pixels.clear();
+            self.render_resized::<3>(size, None, &mut pixels);
+            *cache = Some(ResolvedOutputCache {
+                revision: self.revision,
+                size,
+                format: ResolvedOutputFormat::Argb,
+                pixels: ResolvedOutput::Argb(pixels),
+            });
         }
         std::cell::Ref::map(self.output_cache.borrow(), |cache| {
-            cache.as_ref().unwrap().2.as_slice()
+            match &cache.as_ref().unwrap().pixels {
+                ResolvedOutput::Argb(pixels) => pixels.as_slice(),
+                ResolvedOutput::Rgba(_) => unreachable!("resolved output cache format mismatch"),
+            }
         })
     }
 }
