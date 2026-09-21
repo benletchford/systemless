@@ -98,6 +98,24 @@ pub(super) fn dispatch_low_memory_import(
             let _ = memory.write_u32_be(crate::memory::globals::addr::CUR_DIR_STORE, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::LMGetSFSaveDisk => {
+            // Inside Macintosh: Files (1992), p. 3-65: SFSaveDisk is the
+            // signed word at $0214 containing the negative volume refnum.
+            Some(PpcImportAction::Return(ppc_i16_result(
+                memory
+                    .read_u16_be(crate::memory::globals::addr::SF_SAVE_DISK)
+                    .unwrap_or_default() as i16,
+            )))
+        }
+        PpcImportDispatcherTarget::LMSetSFSaveDisk => {
+            // Inside Macintosh: Files (1992), p. 3-65: SFSaveDisk is the
+            // signed word at $0214 containing the negative volume refnum.
+            let _ = memory.write_u16_be(
+                crate::memory::globals::addr::SF_SAVE_DISK,
+                cpu.gpr[3] as u16,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::LMGetRndSeed => Some(PpcImportAction::Return(
             memory.read_u32_be(PPC_RAND_SEED_ADDR).unwrap_or(1),
         )),
