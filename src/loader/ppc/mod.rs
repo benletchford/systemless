@@ -1977,6 +1977,7 @@ pub enum PpcImportDispatcherTarget {
     LSearch,
     FlushEvents,
     SetEventMask,
+    CloseDialog,
     DisposeDialog,
     GetNextEvent(PpcEventPollOperation),
     GetOSEvent,
@@ -15671,7 +15672,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "LSearch") => PpcImportDispatcherTarget::LSearch,
         ("InterfaceLib", "FlushEvents") => PpcImportDispatcherTarget::FlushEvents,
         ("InterfaceLib", "SetEventMask") => PpcImportDispatcherTarget::SetEventMask,
-        ("InterfaceLib", "DisposeDialog" | "CloseDialog") => {
+        ("InterfaceLib", "CloseDialog") => PpcImportDispatcherTarget::CloseDialog,
+        ("InterfaceLib", "DisposeDialog" | "DisposDialog") => {
             PpcImportDispatcherTarget::DisposeDialog
         }
         ("InterfaceLib", "GetNextEvent") => PpcImportDispatcherTarget::GetNextEvent(
@@ -18298,7 +18300,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::CloseWindow => {
             unreachable!("window imports return through dispatch_window_import")
         }
-        PpcImportDispatcherTarget::DisposeDialog => {
+        PpcImportDispatcherTarget::CloseDialog | PpcImportDispatcherTarget::DisposeDialog => {
             unreachable!("dialog imports return through dispatch_dialog_import")
         }
         PpcImportDispatcherTarget::FrontWindow

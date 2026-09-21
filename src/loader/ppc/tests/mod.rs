@@ -17007,7 +17007,9 @@ fn import_bindings_classify_dialog_and_utility_imports() {
         ("TEInit", PpcImportDispatcherTarget::TEInit),
         ("InitDialogs", PpcImportDispatcherTarget::InitDialogs),
         ("FlushEvents", PpcImportDispatcherTarget::FlushEvents),
+        ("CloseDialog", PpcImportDispatcherTarget::CloseDialog),
         ("DisposeDialog", PpcImportDispatcherTarget::DisposeDialog),
+        ("DisposDialog", PpcImportDispatcherTarget::DisposeDialog),
     ] {
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", symbol),
@@ -55287,6 +55289,7 @@ fn dialog_select_reports_enabled_item_hit_in_front_dialog() {
         Some(PPC_MAIN_GWORLD)
     );
     assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(1));
+
 }
 
 #[test]
@@ -58861,7 +58864,8 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
     dlog[6..8].copy_from_slice(&260i16.to_be_bytes());
     dlog[10] = 1;
     dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
-    let mut ditl = vec![0; 22];
+    let mut ditl = vec![0; 42];
+    ditl[0..2].copy_from_slice(&1u16.to_be_bytes());
     ditl[6..8].copy_from_slice(&12i16.to_be_bytes());
     ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
     ditl[10..12].copy_from_slice(&32i16.to_be_bytes());
@@ -58869,6 +58873,13 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
     ditl[14] = PPC_DIALOG_ITEM_EDIT_TEXT;
     ditl[15] = 5;
     ditl[16..21].copy_from_slice(b"Pilot");
+    ditl[26..28].copy_from_slice(&40i16.to_be_bytes());
+    ditl[28..30].copy_from_slice(&20i16.to_be_bytes());
+    ditl[30..32].copy_from_slice(&60i16.to_be_bytes());
+    ditl[32..34].copy_from_slice(&220i16.to_be_bytes());
+    ditl[34] = PPC_DIALOG_ITEM_EDIT_TEXT;
+    ditl[35] = 5;
+    ditl[36..41].copy_from_slice(b"Alias");
     for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
         let current_resource_refnum = *loaded.process_file_system.current_resource_file;
         loaded
@@ -58896,6 +58907,7 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
         .unwrap();
     let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
     let item_text_handle = loaded.memory.read_u32_be(items_ptr + 2).unwrap();
+    let second_item_text_handle = loaded.memory.read_u32_be(items_ptr + 22).unwrap();
     let te_handle = loaded
         .memory
         .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
@@ -58945,6 +58957,33 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
         .current_gworld
         .with_mut(|current_gworld| *current_gworld = dialog);
     loaded.set_event_queue([PpcQueuedEvent {
+        what: 1,
+        message: 0,
+        when: 10,
+        where_v: 50,
+        where_h: 30,
+        modifiers: 0,
+    }]);
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+    let second_te_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+        .unwrap();
+    let second_te_ptr = loaded.memory.read_u32_be(second_te_handle).unwrap();
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET),
+        Some(1)
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(second_te_ptr + PPC_TE_HTEXT_OFFSET),
+        Some(second_item_text_handle)
+    );
+    loaded.set_event_queue([PpcQueuedEvent {
         what: 3,
         message: (2 << 8) | u32::from(b'D'),
         when: 0,
@@ -58957,8 +58996,12 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
 
     assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
     assert_eq!(
-        ppc_te_text_bytes(&mut loaded.memory, &test_handle_records!(loaded), te_handle),
-        Some(b"D".to_vec())
+        ppc_te_text_bytes(
+            &mut loaded.memory,
+            &test_handle_records!(loaded),
+            second_te_handle
+        ),
+        Some(b"ADlias".to_vec())
     );
     assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(0));
 
@@ -58980,6 +59023,27 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
         }
     ));
     assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(1));
+
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DisposeDialog;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = dialog;
+    let probe = loaded.run_with_hle_imports(128);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert!(!loaded.gworlds.iter().any(|record| record.port == dialog));
+    assert!(!test_handle_records!(loaded).iter().any(|record| {
+        matches!(record.handle, h if h == te_handle
+            || h == second_te_handle
+            || h == item_text_handle
+            || h == second_item_text_handle
+            || h == items_handle)
+    }));
+    assert_eq!(loaded.memory.read_u32_be(te_handle), Some(0));
+    assert!(loaded
+        .free_ptr_blocks()
+        .iter()
+        .any(|record| record.ptr == dialog));
 }
 
 #[test]

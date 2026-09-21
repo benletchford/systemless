@@ -257,11 +257,17 @@ pub(super) fn dispatch_dialog_import(
             }
             Some(PpcImportAction::Return(dialog))
         }
-        PpcImportDispatcherTarget::DisposeDialog => {
+        PpcImportDispatcherTarget::CloseDialog | PpcImportDispatcherTarget::DisposeDialog => {
             let window = cpu.gpr[3];
+            let dispose_record =
+                binding.dispatcher_target == PpcImportDispatcherTarget::DisposeDialog;
             toolbox_startup.dispose_dialog_count =
                 toolbox_startup.dispose_dialog_count.saturating_add(1);
             toolbox_startup.last_disposed_dialog = window;
+            let items_handle = memory
+                .read_u32_be(window.wrapping_add(PPC_DIALOG_ITEMS_OFFSET))
+                .unwrap_or(0);
+            let items = ppc_dialog_items_for_dialog(memory, handles, window).unwrap_or_default();
             ppc_close_window(
                 window,
                 memory,
@@ -283,6 +289,23 @@ pub(super) fn dispatch_dialog_import(
                 quickdraw_fore_color,
                 quickdraw_back_color,
                 quickdraw_fore_indices,
+            );
+            ppc_release_dialog_storage(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                controls,
+                gworlds,
+                window_list,
+                current_gworld,
+                current_gdevice,
+                window,
+                items_handle,
+                &items,
+                dispose_record,
             );
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -596,6 +619,116 @@ pub(super) fn dispatch_dialog_import(
             ))
         }
         _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_release_dialog_storage(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    controls: &mut Vec<PpcControlRecord>,
+    gworlds: &mut Vec<PpcGWorldRecord>,
+    window_list: &SharedProcessWindowList,
+    current_gworld: &mut u32,
+    current_gdevice: &mut u32,
+    dialog: u32,
+    items_handle: u32,
+    items: &[PpcDialogItemView],
+    dispose_record: bool,
+) {
+    if dialog == 0 {
+        return;
+    }
+
+    // Macintosh Toolbox Essentials (1992), pp. 6-119--6-120: CloseDialog
+    // releases the dialog's standard items and their supporting structures;
+    // DisposeDialog additionally releases the copied DITL and DialogRecord.
+    // A DialogRecord TERec borrows its active edit item's text handle, so
+    // detach that handle before disposing the TERec and then release each
+    // manager-created text item exactly once.
+    let te_handle = memory
+        .read_u32_be(dialog.wrapping_add(PPC_DIALOG_TEXT_HANDLE_OFFSET))
+        .unwrap_or(0);
+    if let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) {
+        let _ = memory.write_u32_be(te_ptr + PPC_TE_HTEXT_OFFSET, 0);
+    }
+    {
+        let mut allocator = PpcProcessAllocatorView {
+            memory_manager: process_memory_manager,
+        };
+        ppc_te_dispose(
+            Some(&mut allocator),
+            None,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            te_handle,
+        );
+
+        ppc_dispose_window(
+            &mut allocator,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            controls,
+            gworlds,
+            window_list,
+            current_gworld,
+            current_gdevice,
+            dialog,
+        );
+
+        let items_ptr = memory.read_u32_be(items_handle).unwrap_or(0);
+        for item in items {
+            let base_type = item.item_type & !PPC_DIALOG_ITEM_DISABLED;
+            if matches!(
+                base_type,
+                PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_EDIT_TEXT
+            ) {
+                let _ = allocator.dispose_handle(
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    item.handle,
+                );
+                if items_ptr != 0 {
+                    let _ = memory.write_u32_be(items_ptr.wrapping_add(item.item_offset as u32), 0);
+                }
+            }
+        }
+        if dispose_record {
+            let _ = allocator.dispose_handle(
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                items_handle,
+            );
+        }
+    }
+
+    let _ = memory.write_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET, 0);
+    let _ = memory.write_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET, u16::MAX);
+    let _ = memory.write_u16_be(dialog + PPC_DIALOG_EDIT_OPEN_OFFSET, 0);
+    if dispose_record {
+        let _ = process_memory_manager.dispose_native_ptr(dialog);
+        ppc_apply_process_native_allocator(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+        );
     }
 }
 
@@ -1447,13 +1580,14 @@ fn ppc_new_dialog(
     }
 
     let storage = if requested_storage == 0 {
-        ppc_process_heap_alloc(
+        let storage = process_memory_manager.new_native_ptr(memory, PPC_DIALOG_RECORD_SIZE, true);
+        ppc_apply_process_native_allocator(
             process_memory_manager,
             memory,
             heap_cursor,
-            PPC_DIALOG_RECORD_SIZE,
-            true,
-        )
+            last_mem_error,
+        );
+        storage
     } else if ppc_memory_can_write_bytes(memory, requested_storage, PPC_DIALOG_RECORD_SIZE) {
         let _ = memory.write_bytes(requested_storage, &vec![0; PPC_DIALOG_RECORD_SIZE as usize]);
         requested_storage
@@ -2570,6 +2704,14 @@ pub(super) fn ppc_draw_dialog(
         .unwrap_or(1) as usize;
     for (index, item) in items.iter().enumerate() {
         let rect = ppc_dialog_rect_to_global(bounds, item.rect);
+        // Imaging With QuickDraw (1994), pp. 2-20--2-21: drawing is clipped
+        // to the port's visible region. Some applications deliberately keep
+        // inactive DITL items beyond the DialogRecord's portRect; the native
+        // dialog renderer targets the screen directly, so reject those items
+        // here rather than letting their placeholder text escape the window.
+        if rect.0 >= bounds.2 || rect.2 <= bounds.0 || rect.1 >= bounds.3 || rect.3 <= bounds.1 {
+            continue;
+        }
         match item.item_type & !PPC_DIALOG_ITEM_DISABLED {
             PPC_DIALOG_ITEM_BUTTON | PPC_DIALOG_ITEM_CHECKBOX | PPC_DIALOG_ITEM_RADIO => {
                 // Macintosh Toolbox Essentials (1992), pp. 5-4--5-6 and
@@ -2611,6 +2753,16 @@ pub(super) fn ppc_draw_dialog(
             PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_EDIT_TEXT => {
                 let text = ppc_dialog_item_title(memory, handles, item);
                 if (item.item_type & !PPC_DIALOG_ITEM_DISABLED) == PPC_DIALOG_ITEM_EDIT_TEXT {
+                    // Text (1993), p. 2-88: TEUpdate redraws within the view
+                    // rectangle. Clear this manager-owned edit item before
+                    // repainting so focus changes cannot retain a previous
+                    // selection or duplicate glyphs in the field.
+                    let _ = ppc_fill_front_rect(
+                        memory,
+                        front,
+                        rect,
+                        ppc_theme_rgb(palette.window_background),
+                    );
                     let outer = (
                         rect.0.saturating_sub(3),
                         rect.1.saturating_sub(3),
@@ -2910,6 +3062,42 @@ fn ppc_modal_dialog(
                 ppc_dialog_item_at_global_point(&items, bounds, event.where_v, event.where_h)?;
             let item = items.get(usize::from(hit).checked_sub(1)?)?;
             if item.item_type & !PPC_DIALOG_ITEM_DISABLED == PPC_DIALOG_ITEM_EDIT_TEXT {
+                let item_index = usize::from(hit).saturating_sub(1);
+                let current_field = memory
+                    .read_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET)
+                    .unwrap_or(u16::MAX) as usize;
+                if current_field != item_index {
+                    let mut allocator = PpcProcessAllocatorView {
+                        memory_manager: process_memory_manager,
+                    };
+                    ppc_select_dialog_item_text(
+                        Some(&mut allocator),
+                        None,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        dialog,
+                        usize::from(hit),
+                        0,
+                        i16::MAX as u16,
+                        event.when,
+                        PPC_QD_TEXT_MODE_SRC_OR,
+                        PPC_QD_TEXT_SIZE_SYSTEM,
+                        fore_color,
+                    );
+                    let _ = ppc_draw_dialog(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        screen_clut,
+                        vfs_resources,
+                        current_resource_refnum,
+                        dialog,
+                    );
+                }
                 let te_handle = memory
                     .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
                     .unwrap_or(0);
