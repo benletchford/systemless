@@ -17500,6 +17500,8 @@ mod tests {
     fn guest_menu_snapshot_exposes_only_the_inserted_menu_list() {
         let (mut disp, mut cpu, mut bus) = setup();
         let inserted = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 100, 0x306A80, "File");
+        let inserted_ptr = bus.read_long(inserted);
+        bus.write_bytes(inserted_ptr + 15, b"Gam\xC9");
         let item_ptr = 0x306A90;
         let item = b"New Level\xC9/N";
         bus.write_byte(item_ptr, item.len() as u8);
@@ -17526,9 +17528,26 @@ mod tests {
         let _detached =
             new_menu_with_title(&mut disp, &mut cpu, &mut bus, 101, 0x306AB0, "Detached");
 
+        let live_items = super::menu_items_from_memory(&bus, inserted).unwrap();
+        assert_eq!(live_items.items[0].text, b"New Level\xC9");
+        let internal_text = super::macroman_to_string(&live_items.items[0].text);
+        assert_eq!(
+            TrapDispatcher::fb_measure_string(&internal_text, 0, 12),
+            crate::menu_manager::standard_menu_text_advance(&live_items.items[0].text),
+            "menu measurement and drawing must resolve the same Mac Roman glyphs"
+        );
+        let title_bytes = bus.read_bytes(inserted_ptr + 15, 4);
+        assert_eq!(title_bytes, b"Gam\xC9");
+        assert_eq!(
+            TrapDispatcher::fb_measure_string(&super::macroman_to_string(&title_bytes), 0, 12),
+            crate::menu_manager::standard_menu_title_advance(&title_bytes),
+            "menu-title measurement and drawing must resolve the same Mac Roman glyphs"
+        );
+
         let snapshot = disp.guest_menu_snapshot(&bus);
         assert_eq!(snapshot.menus.len(), 2);
         assert_eq!(snapshot.menus[0].id, 100);
+        assert_eq!(snapshot.menus[0].title, "Gam…");
         assert_eq!(snapshot.menus[0].items[0].number, 1);
         assert_eq!(snapshot.menus[0].items[0].text, "New Level…");
         assert_eq!(snapshot.menus[0].items[0].key_equivalent, Some('n'));

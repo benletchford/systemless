@@ -16063,41 +16063,38 @@ mod tests {
     }
 
     #[test]
-    fn pb_get_vinfo_does_not_write_past_the_basic_volume_parameter_block() {
-        let (mut disp, mut cpu, mut bus) = setup();
+    fn pb_get_vinfo_trap_variants_respect_basic_and_hfs_parameter_block_boundaries() {
+        // IM:IV pp. IV-129..IV-130: PBGetVInfo receives the 64-byte
+        // VolumeParam record, while PBHGetVInfo receives HVolumeParam and may
+        // populate the four HFS fields that follow it. The async bit changes
+        // completion routing, not which parameter-block layout the call uses.
+        for (trap_word, is_hfs) in [
+            (0xA007, false),
+            (0xA407, false),
+            (0xA207, true),
+            (0xA607, true),
+        ] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let pb = 0x300000u32;
+            let name_buf = 0x300100u32;
+            cpu.write_reg(Register::A0, pb);
+            bus.write_long(pb + 18, name_buf);
+            bus.write_long(pb + 64, 0xDEAD_BEEF);
+            bus.write_long(pb + 68, 0xCAFE_BABE);
 
-        let pb = 0x300000u32;
-        let name_buf = 0x300100u32;
-        cpu.write_reg(Register::A0, pb);
-        bus.write_long(pb + 18, name_buf);
-        bus.write_long(pb + 64, 0xDEAD_BEEF);
-        bus.write_long(pb + 68, 0xCAFE_BABE);
+            call_trap_word(&mut disp, trap_word, &mut cpu, &mut bus).unwrap();
 
-        call_trap_word(&mut disp, 0xA007, &mut cpu, &mut bus).unwrap();
-
-        assert_eq!(cpu.read_reg(Register::D0), 0);
-        assert_eq!(bus.read_long(pb + 64), 0xDEAD_BEEF);
-        assert_eq!(bus.read_long(pb + 68), 0xCAFE_BABE);
-    }
-
-    #[test]
-    fn pb_hget_vinfo_writes_the_extended_hfs_volume_fields() {
-        let (mut disp, mut cpu, mut bus) = setup();
-
-        let pb = 0x300000u32;
-        let name_buf = 0x300100u32;
-        cpu.write_reg(Register::A0, pb);
-        bus.write_long(pb + 18, name_buf);
-        bus.write_long(pb + 64, 0xDEAD_BEEF);
-        bus.write_long(pb + 68, 0xCAFE_BABE);
-
-        call_trap_word(&mut disp, 0xA207, &mut cpu, &mut bus).unwrap();
-
-        assert_eq!(cpu.read_reg(Register::D0), 0);
-        assert_eq!(bus.read_word(pb + 64), 0x4244, "ioVSigWord");
-        assert_eq!(bus.read_word(pb + 66), 0, "ioVDrvInfo");
-        assert_eq!(bus.read_word(pb + 68), 0, "ioVDRefNum");
-        assert_eq!(bus.read_word(pb + 70), 0, "ioVFSID");
+            assert_eq!(cpu.read_reg(Register::D0), 0, "trap ${trap_word:04X}");
+            if is_hfs {
+                assert_eq!(bus.read_word(pb + 64), 0x4244, "ioVSigWord");
+                assert_eq!(bus.read_word(pb + 66), 0, "ioVDrvInfo");
+                assert_eq!(bus.read_word(pb + 68), 0, "ioVDRefNum");
+                assert_eq!(bus.read_word(pb + 70), 0, "ioVFSID");
+            } else {
+                assert_eq!(bus.read_long(pb + 64), 0xDEAD_BEEF);
+                assert_eq!(bus.read_long(pb + 68), 0xCAFE_BABE);
+            }
+        }
     }
 
     #[test]
