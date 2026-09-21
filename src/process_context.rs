@@ -3,6 +3,7 @@
 use crate::callback_manager::{
     CallbackTaskArchitecture, ProcessCallbackScheduling, ProcessTimerTask, ProcessVblTask,
 };
+use crate::collection_manager::ProcessCollectionManagerState;
 use crate::control_manager::ProcessControlManagerState;
 #[cfg(test)]
 use crate::control_manager::ProcessControlRecord;
@@ -1442,6 +1443,8 @@ pub(crate) type SharedProcessResourcePolicy = SharedProcessValue<ProcessResource
 /// Process-wide 256-entry display color table shared by attached CPU adapters.
 pub(crate) type SharedProcessDisplayClut = SharedProcessValue<[[u16; 3]; 256]>;
 pub(crate) type SharedProcessSoundManager = SharedProcessValue<SoundManager>;
+pub(crate) type SharedProcessCollectionManager =
+    SharedProcessValue<ProcessCollectionManagerState>;
 #[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessCursorState(SharedProcessValue<ProcessCursorState>);
 /// Host pacing snapshot for the wrapping Macintosh clock.
@@ -8343,6 +8346,7 @@ pub(crate) struct ProcessContext {
     scrap_state: SharedProcessScrapState,
     control_manager: SharedProcessControlManager,
     list_manager: SharedProcessListManager,
+    collection_manager: SharedProcessCollectionManager,
     text_edit_manager: SharedProcessTextEditManager,
     dialog_text: SharedProcessDialogText,
     cursor_state: SharedProcessCursorState,
@@ -8513,6 +8517,7 @@ impl Default for ProcessContext {
             scrap_state: SharedProcessScrapState::default(),
             control_manager: SharedProcessControlManager::default(),
             list_manager: SharedProcessListManager::default(),
+            collection_manager: SharedProcessCollectionManager::default(),
             text_edit_manager: SharedProcessTextEditManager::default(),
             dialog_text: SharedProcessDialogText::default(),
             cursor_state: SharedProcessCursorState::default(),
@@ -8747,6 +8752,13 @@ impl ProcessContext {
 
     pub(crate) fn attach_list_manager(&self, adapter: &mut SharedProcessListManager) {
         adapter.attach_to(&self.list_manager);
+    }
+
+    pub(crate) fn attach_collection_manager(&self, adapter: &mut SharedProcessCollectionManager) {
+        adapter.attach_to(
+            &self.collection_manager,
+            ProcessCollectionManagerState::is_pristine,
+        );
     }
 
     pub(crate) fn attach_text_edit_manager(&self, adapter: &mut SharedProcessTextEditManager) {
@@ -12343,6 +12355,43 @@ mod tests {
                 .flatten(),
             Some(b"Detached".to_vec())
         );
+    }
+
+    #[test]
+    fn attached_collection_managers_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessCollectionManager::default();
+        let mut native = SharedProcessCollectionManager::default();
+        context.attach_collection_manager(&mut classic);
+        let collection = classic.with_mut(|manager| manager.new_collection());
+        assert_eq!(
+            classic.with_mut(|manager| {
+                manager.add_item(collection, u32::from_be_bytes(*b"test"), 1, b"shared".to_vec())
+            }),
+            0
+        );
+        context.attach_collection_manager(&mut native);
+        let detached = native.clone();
+
+        assert!(classic.ptr_eq(&native));
+        assert_eq!(
+            native.with_ref(|manager| {
+                manager
+                    .item_by_key(collection, u32::from_be_bytes(*b"test"), 1)
+                    .map(|(_, item)| item.data.clone())
+            }),
+            Some(b"shared".to_vec())
+        );
+
+        assert_eq!(
+            detached.with_mut(|manager| {
+                manager.add_item(collection, u32::from_be_bytes(*b"more"), 2, Vec::new())
+            }),
+            0
+        );
+        assert!(!native.ptr_eq(&detached));
+        assert_eq!(native.with_ref(|manager| manager.item_count(collection)), 1);
+        assert_eq!(detached.with_ref(|manager| manager.item_count(collection)), 2);
     }
 
     #[test]

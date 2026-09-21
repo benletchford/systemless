@@ -64386,6 +64386,8 @@ mod device_manager;
 #[path = "native_exceptions.rs"]
 mod native_exceptions;
 
+mod collection_manager;
+
 mod draw_sprocket;
 
 mod input_sprocket;
