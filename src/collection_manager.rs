@@ -448,7 +448,7 @@ impl ProcessCollectionManagerState {
 
     /// Decode the documented `'cltn'` resource format: count followed by
     /// tag, ID, attributes, a 16-bit byte count, data, and word alignment.
-    pub(crate) fn from_resource(&mut self, bytes: &[u8]) -> Option<u32> {
+    pub(crate) fn load_resource_collection(&mut self, bytes: &[u8]) -> Option<u32> {
         let (count, mut rest) = read_u32(bytes)?;
         let mut items = Vec::new();
         for _ in 0..count {
@@ -572,7 +572,7 @@ mod tests {
         resource.extend_from_slice(&3u16.to_be_bytes());
         resource.extend_from_slice(b"abc");
         resource.push(0);
-        let decoded = manager.from_resource(&resource).unwrap();
+        let decoded = manager.load_resource_collection(&resource).unwrap();
         let item = manager
             .item_by_key(decoded, u32::from_be_bytes(*b"name"), -4)
             .unwrap()

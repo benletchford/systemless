@@ -46,6 +46,15 @@ pub(crate) struct CollectionCallbackState {
     pub(crate) kind: CollectionCallbackKind,
 }
 
+struct CollectionCallbackRequest<'a> {
+    procedure_pointer: u32,
+    refcon: u32,
+    result_sp: u32,
+    data: Option<&'a [u8]>,
+    requested_size: u32,
+    kind: CollectionCallbackKind,
+}
+
 impl TrapDispatcher {
     fn collection_callback_trampoline(&mut self, bus: &mut MacMemoryBus) -> u32 {
         if self.collection_callback_trampoline == 0 {
@@ -322,13 +331,16 @@ impl TrapDispatcher {
         &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
-        procedure_pointer: u32,
-        refcon: u32,
-        result_sp: u32,
-        data: Option<&[u8]>,
-        requested_size: u32,
-        kind: CollectionCallbackKind,
+        request: CollectionCallbackRequest<'_>,
     ) -> Result<()> {
+        let CollectionCallbackRequest {
+            procedure_pointer,
+            refcon,
+            result_sp,
+            data,
+            requested_size,
+            kind,
+        } = request;
         let procedure = match resolve_guest_procedure(
             bus,
             procedure_pointer,
@@ -839,12 +851,14 @@ impl TrapDispatcher {
                     self.collection_begin_callback(
                         cpu,
                         bus,
-                        procedure,
-                        refcon,
-                        sp + argument_bytes,
-                        Some(&bytes),
-                        bytes.len() as u32,
-                        CollectionCallbackKind::Flatten { collection },
+                        CollectionCallbackRequest {
+                            procedure_pointer: procedure,
+                            refcon,
+                            result_sp: sp + argument_bytes,
+                            data: Some(&bytes),
+                            requested_size: bytes.len() as u32,
+                            kind: CollectionCallbackKind::Flatten { collection },
+                        },
                     )
                 } else {
                     Self::collection_finish(
@@ -858,16 +872,18 @@ impl TrapDispatcher {
             0x1D => self.collection_begin_callback(
                 cpu,
                 bus,
-                bus.read_long(sp + 4),
-                bus.read_long(sp),
-                sp + 12,
-                None,
-                12,
-                CollectionCallbackKind::Unflatten {
-                    collection: bus.read_long(sp + 8),
-                    bytes: Vec::new(),
-                    phase: CollectionUnflattenPhase::Header,
-                    remaining_items: 0,
+                CollectionCallbackRequest {
+                    procedure_pointer: bus.read_long(sp + 4),
+                    refcon: bus.read_long(sp),
+                    result_sp: sp + 12,
+                    data: None,
+                    requested_size: 12,
+                    kind: CollectionCallbackKind::Unflatten {
+                        collection: bus.read_long(sp + 8),
+                        bytes: Vec::new(),
+                        phase: CollectionUnflattenPhase::Header,
+                        remaining_items: 0,
+                    },
                 },
             ),
             0x1E => {
@@ -888,10 +904,10 @@ impl TrapDispatcher {
                     .find_or_load_resource_any(bus, *b"cltn", id)
                     .map(|(_, pointer)| pointer);
                 let collection = resource.and_then(|pointer| {
-                    let size = bus.get_alloc_size(pointer)? as u32;
+                    let size = bus.get_alloc_size(pointer)?;
                     let bytes = Self::collection_read_bytes(bus, pointer, size);
                     self.collections
-                        .with_mut(|manager| manager.from_resource(&bytes))
+                        .with_mut(|manager| manager.load_resource_collection(&bytes))
                 });
                 Self::collection_finish(cpu, bus, 2, Some((collection.unwrap_or(0), 4)))
             }

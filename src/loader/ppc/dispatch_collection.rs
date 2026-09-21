@@ -65,9 +65,7 @@ fn ppc_collection_call_callback(
         }
         _ => vec![state.requested_size, state.data_ptr, state.refcon],
     };
-    if install_powerpc_call_arguments(cpu, memory, &arguments).is_none() {
-        return None;
-    }
+    install_powerpc_call_arguments(cpu, memory, &arguments)?;
     GuestCallEffect::call_guest(
         GuestCallRequest::new(GuestCallTarget {
             isa: GuestIsa::PowerPc,

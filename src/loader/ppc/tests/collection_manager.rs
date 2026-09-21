@@ -68,7 +68,6 @@ fn hle_import_runner_collection_clone_shares_owner_count() {
     );
     let collection = loaded.cpu.gpr[3];
 
-    loaded.cpu.gpr[3] = collection;
     run_test_import(
         &mut loaded,
         PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Clone),
