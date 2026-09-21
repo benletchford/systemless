@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.47.0](https://github.com/benletchford/systemless/compare/v0.46.0...v0.47.0) (2026-09-21)
+
+
+### Features
+
+* **catalogue:** enable Xconq ([#2354](https://github.com/benletchford/systemless/issues/2354)) ([cb6d2b9](https://github.com/benletchford/systemless/commit/cb6d2b90c3eb2df08eeda92180c67e5106f6534b))
+
+
+### Bug Fixes
+
+* **catalogue:** remove low-value game additions ([#2351](https://github.com/benletchford/systemless/issues/2351)) ([66f5dbe](https://github.com/benletchford/systemless/commit/66f5dbe11821767696ed8a6f5d4f623d1f1efe51))
+* **ppc:** support SFSaveDisk low-memory accessors ([#2347](https://github.com/benletchford/systemless/issues/2347)) ([156b73b](https://github.com/benletchford/systemless/commit/156b73b64c3de6e3a62a50ea2d0fb8a6835e7d26))
+* **ppc:** support stack low-memory accessors ([#2352](https://github.com/benletchford/systemless/issues/2352)) ([b443bff](https://github.com/benletchford/systemless/commit/b443bff2fb66a4390235e768166485d3f233cb9a))
+
 ## [0.46.0](https://github.com/benletchford/systemless/compare/v0.45.0...v0.46.0) (2026-09-21)
 
 
