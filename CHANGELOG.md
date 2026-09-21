@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.47.4](https://github.com/benletchford/systemless/compare/v0.47.3...v0.47.4) (2026-09-21)
+
+
+### Bug Fixes
+
+* **ppc:** derive guest screen geometry from the machine profile ([d366539](https://github.com/benletchford/systemless/commit/d366539b426f18f38d32785310de31c134f6ccad))
+* **ppc:** keep writable-code tokens unique to their address space ([ef7b7ea](https://github.com/benletchford/systemless/commit/ef7b7ea956e587b91367d74468e03a1e92619aed))
+
+
+### Performance Improvements
+
+* **ppc:** cache decoded blocks for writable guest code ([0857fe3](https://github.com/benletchford/systemless/commit/0857fe3643ea60b376890eda1ad68709f4afcf4c))
+
 ## [0.47.3](https://github.com/benletchford/systemless/compare/v0.47.2...v0.47.3) (2026-09-21)
 
 
