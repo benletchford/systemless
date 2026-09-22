@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -106,6 +107,6 @@ contemporary magazine cover discs.
 Systemless opens the unchanged StuffIt archive, accepts the original startup
 options, plays the animated battle, navigates the main menu and campaign
 briefing, and reaches live Orc mission play with units, resources, construction
-and the minimap active. The same archive launches under BasiliskII. The launcher
-remains disabled until the archive and screenshot complete asset promotion and
-browser review.
+and the minimap active. The same archive launches under BasiliskII. Browser
+review of the promoted immutable archive confirmed correct startup, animation
+and input with no console errors.
