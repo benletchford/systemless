@@ -9,7 +9,7 @@ year: 1991
 architectures: [68k]
 default_architecture: 68k
 category: Strategy
-launch_enabled: false
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -27,10 +27,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Oregon%20Trail.sit
-    expected_sha256: 654a7a74a2bf4922638baa07096b744b49d24f5c6583e4bdffe5f37a65059357
-    expected_size: 960758
+    type: sha256
+    sha256: 654a7a74a2bf4922638baa07096b744b49d24f5c6583e4bdffe5f37a65059357
+    size_bytes: 960758
   provenance:
     redistribution: permitted
     original: true
@@ -58,8 +57,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/oregon-trail/gameplay.png
+    type: sha256
+    sha256: 4f23e8d58e36f2d7a6e0a578d906acfe11c06099b9aa391598166f7434c6e220
+    size_bytes: 23599
   provenance:
     redistribution: permitted
     original: true
@@ -87,7 +87,7 @@ references:
 
 ## Pack the wagon
 
-![The Oregon Trail gameplay](incoming/oregon-trail/gameplay.png)
+![The Oregon Trail gameplay](https://assets.systemless.org/catalogue/media/sha256/4f/4f23e8d58e36f2d7a6e0a578d906acfe11c06099b9aa391598166f7434c6e220.png)
 
 A journey begins with names and consequences. The demo asks the player to name
 the wagon leader, choose an occupation and assemble four companions before the
@@ -110,5 +110,5 @@ was cross-checked under BasiliskII.
 
 The preserved MECC product page explicitly offered a Macintosh demo download
 and instructions for running it. This catalogue keeps that unchanged package
-separate from every retail edition. The launcher remains disabled until the
-archive and screenshot complete asset promotion and browser review.
+separate from every retail edition. Browser startup and asset review confirmed
+the promoted immutable archive and screenshot.
