@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: FPS
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -111,6 +112,6 @@ players to retailers or LucasArts to purchase the complete game.
 Systemless opens the unchanged StuffIt archive, loads its original data,
 accepts the mission briefing and reaches interactive first-person play. A
 deterministic test moves Kyle forward and fires the blaster, reducing the ammo
-counter from 100 to 99. The same sequence completes under BasiliskII. The
-launcher remains disabled until the archive and screenshot complete asset
-promotion and browser review.
+counter from 100 to 99. The same sequence completes under BasiliskII. Browser
+review then confirmed the promoted immutable archive reaches the same playable
+mission through the public launcher.
