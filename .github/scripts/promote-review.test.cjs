@@ -1,6 +1,9 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {entryIds, validatePr, removalAllowed, authorizedSubmission} = require('./promote-review.cjs');
+const {entryIds, validatePr, removalAllowed, authorizedSubmission, CATALOGUE_WORKFLOW} = require('./promote-review.cjs');
+test('promotion explicitly dispatches the website and catalogue workflow', () => {
+  assert.equal(CATALOGUE_WORKFLOW, 'www.yml');
+});
 test('only actual changed entry paths become CLI arguments', () => {
   assert.deepEqual(entryIds([{filename:'www/catalogue/marathon.md'}, {filename:'www/catalogue/ev.md',status:'removed'},
     {filename:'www/catalogue/../../bad.md'}, {filename:'www/catalogue/a;echo.md'}, {filename:'.github/workflows/ci.yml'},

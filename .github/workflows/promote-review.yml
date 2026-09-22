@@ -101,6 +101,7 @@ jobs:
             submission/www/catalogue/.promotion/transaction.json
       - name: Report to PR
         if: always() && steps.authorize.outputs.sha != ''
+        continue-on-error: true
         uses: actions/github-script@v7
         env:
           RESULT: ${{ steps.commit.outputs.result }}
