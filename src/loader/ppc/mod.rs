@@ -1924,6 +1924,7 @@ pub enum PpcImportDispatcherTarget {
     FSpCreateResFile,
     HCreateResFile,
     FSpOpenDF,
+    PBOpen,
     PBHOpenDF,
     HOpen,
     FSOpen,
@@ -15949,6 +15950,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "FSpOpenDF") => PpcImportDispatcherTarget::FSpOpenDF,
         ("InterfaceLib", "HOpen") | ("InterfaceLib", "HOpenDF") => PpcImportDispatcherTarget::HOpen,
         ("InterfaceLib", "FSOpen") => PpcImportDispatcherTarget::FSOpen,
+        ("InterfaceLib", "PBOpen")
+        | ("InterfaceLib", "PBOpenSync")
+        | ("InterfaceLib", "PBOpenAsync") => PpcImportDispatcherTarget::PBOpen,
         ("InterfaceLib", "PBHOpenDF")
         | ("InterfaceLib", "PBHOpenDFSync")
         | ("InterfaceLib", "PBHOpenDFAsync")
@@ -18535,6 +18539,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::FSpOpenResFile
         | PpcImportDispatcherTarget::FSpOpenDF
         | PpcImportDispatcherTarget::HOpen
+        | PpcImportDispatcherTarget::PBOpen
         | PpcImportDispatcherTarget::PBHOpenDF
         | PpcImportDispatcherTarget::CurResFile
         | PpcImportDispatcherTarget::UseResFile
@@ -64078,11 +64083,23 @@ fn ppc_h_open(
     writable_refnums: &mut HashSet<u16>,
     next_file_ref_num: &mut i16,
     default_dir_id: u32,
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
 ) -> i16 {
     // Inside Macintosh: Files (1992), 2-181: HOpen takes vRefNum, dirID,
-    // fileName, permission, and a returned file reference number.
+    // fileName, permission, and a returned file reference number. A working
+    // directory reference can stand in for the volume reference; when dirID
+    // is zero it also supplies the directory to search.
     let vref = cpu.gpr[3] as u16 as i16;
     let dir_id = cpu.gpr[4];
+    let (volume_ref_num, effective_dir_id) = working_directories
+        .get(&vref)
+        .map(|record| {
+            (
+                record.volume_ref_num,
+                if dir_id == 0 { record.dir_id } else { dir_id },
+            )
+        })
+        .unwrap_or((vref, dir_id));
     ppc_open_data_fork_by_name(
         memory,
         vfs_directories,
@@ -64091,8 +64108,8 @@ fn ppc_h_open(
         writable_refnums,
         next_file_ref_num,
         default_dir_id,
-        vref,
-        dir_id,
+        volume_ref_num,
+        effective_dir_id,
         cpu.gpr[5],
         cpu.gpr[6] as u8,
         cpu.gpr[7],
@@ -64249,6 +64266,58 @@ fn ppc_pbh_open_df(
     }
     *next_file_ref_num = next_ref_num;
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
+}
+
+fn ppc_pb_open(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_volumes: &[PpcVfsVolumeRecord],
+    vfs_files: &[PpcVfsFileRecord],
+    files: &mut Vec<PpcFileRecord>,
+    writable_refnums: &mut HashSet<u16>,
+    next_file_ref_num: &mut i16,
+    default_dir_id: u32,
+    application_working_directory_ref_num: i16,
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
+) -> i16 {
+    let pb = cpu.gpr[3];
+    if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 28) {
+        return PPC_PARAM_ERR;
+    }
+    let Some(name_ptr) = memory.read_u32_be(pb + 18) else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    let Some(requested_vref) = memory.read_u16_be(pb + 22).map(|value| value as i16) else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    let Some(permission) = memory.read_u8(pb + 27) else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    let Some(working_directory) = dispatch_files::ppc_working_directory_info(
+        requested_vref,
+        application_working_directory_ref_num,
+        default_dir_id,
+        working_directories,
+        vfs_volumes,
+    ) else {
+        return ppc_complete_pb(memory, pb, PPC_NSV_ERR);
+    };
+    let result = ppc_open_data_fork_by_name(
+        memory,
+        vfs_directories,
+        vfs_files,
+        files,
+        writable_refnums,
+        next_file_ref_num,
+        default_dir_id,
+        working_directory.volume_ref_num,
+        working_directory.dir_id,
+        name_ptr,
+        permission,
+        pb + 24,
+    );
+    ppc_complete_pb(memory, pb, result)
 }
 
 fn ppc_fs_close(

@@ -2983,6 +2983,132 @@ use super::*;
     }
 
     #[test]
+    fn hle_import_runner_h_open_resolves_working_directory_refnum() {
+        let pef = synthetic_pef_with_import(b"HOpen");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let app_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
+        let wd_ref_num = 32;
+        let mut directories = initial_ppc_vfs_directories();
+        directories.push(PpcVfsDirectory {
+            dir_id: app_dir_id,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: "Game Folder".to_string(),
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.seed_vfs_directories(directories, app_dir_id, app_dir_id + 1);
+        loaded.working_directories.with_mut(|directories| {
+            directories.insert(
+                wd_ref_num,
+                ProcessWorkingDirectory {
+                    ref_num: wd_ref_num,
+                    volume_ref_num: PPC_BOOT_VOLUME_REF_NUM,
+                    dir_id: app_dir_id,
+                    proc_id: 0,
+                },
+            );
+        });
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Game Folder/High.Scores".to_string(),
+            data: (b"scores".to_vec()).into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        let scratch = PPC_DATA_BASE + 0x1000;
+        let ref_num_out_ptr = scratch + 64;
+        loaded.memory.add_region(scratch, vec![0; 128]);
+        write_ppc_pstring(&mut loaded.memory, scratch, b"High.Scores");
+        loaded.cpu.gpr[3] = wd_ref_num as u16 as u32;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = scratch;
+        loaded.cpu.gpr[6] = 1;
+        loaded.cpu.gpr[7] = ref_num_out_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.memory.read_u16_be(ref_num_out_ptr),
+            Some(PPC_FIRST_FILE_REF_NUM as u16)
+        );
+        assert_eq!(loaded.files.len(), 1);
+        assert_eq!(loaded.files[0].path, "Game Folder/High.Scores");
+    }
+
+    #[test]
+    fn hle_import_runner_pb_open_sync_uses_current_working_directory() {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "PBOpenSync"),
+            PpcImportDispatcherTarget::PBOpen
+        );
+        let pef = synthetic_pef_with_import(b"PBOpenSync");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let app_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
+        let wd_ref_num = 32;
+        let mut directories = initial_ppc_vfs_directories();
+        directories.push(PpcVfsDirectory {
+            dir_id: app_dir_id,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: "Game Folder".to_string(),
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.seed_vfs_directories(directories, app_dir_id, app_dir_id + 1);
+        loaded.working_directories.with_mut(|directories| {
+            directories.insert(
+                wd_ref_num,
+                ProcessWorkingDirectory {
+                    ref_num: wd_ref_num,
+                    volume_ref_num: PPC_BOOT_VOLUME_REF_NUM,
+                    dir_id: app_dir_id,
+                    proc_id: 0,
+                },
+            );
+        });
+        loaded
+            .application_working_directory_ref_num
+            .with_mut(|ref_num| *ref_num = wd_ref_num);
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Game Folder/Scores".to_string(),
+            data: (b"scores".to_vec()).into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        let pb = PPC_DATA_BASE + 0x1000;
+        let name_ptr = pb + 64;
+        loaded.memory.add_region(pb, vec![0; 128]);
+        write_ppc_pstring(&mut loaded.memory, name_ptr, b"Scores");
+        loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
+        loaded.memory.write_u16_be(pb + 22, 0).unwrap();
+        loaded.memory.write_u16_be(pb + 24, 0xcafe).unwrap();
+        loaded.memory.write_u8(pb + 27, 1).unwrap();
+        loaded.cpu.gpr[3] = pb;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(PPC_NO_ERR as u16));
+        assert_eq!(
+            loaded.memory.read_u16_be(pb + 24),
+            Some(PPC_FIRST_FILE_REF_NUM as u16)
+        );
+        assert_eq!(loaded.files.len(), 1);
+        assert_eq!(loaded.files[0].path, "Game Folder/Scores");
+    }
+
+    #[test]
     fn hle_import_runner_handles_fsp_open_df() {
         let pef = synthetic_pef_with_import(b"FSpOpenDF");
         let mut loaded = load_pef_application(&pef).unwrap();
