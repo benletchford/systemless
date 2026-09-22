@@ -221,7 +221,7 @@ async function runtimeProbe(sampleMs) {
   let debugEnabled = false;
 
   window.addEventListener("error", (event) => {
-    console.push(String(event.message || event.error || "error"));
+    console.push(String(event.error?.stack || event.message || event.error || "error"));
   });
   window.addEventListener("unhandledrejection", (event) => {
     console.push(String(event.reason || "unhandled rejection"));

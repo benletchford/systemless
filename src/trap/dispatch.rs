@@ -3375,14 +3375,21 @@ impl TrapDispatcher {
     }
 
     pub fn new() -> Self {
-        Self::new_inner(MigratedProcessHandles {
+        *Self::new_inner_boxed(MigratedProcessHandles {
             ticks: SharedProcessTickState::default(),
             execution: SharedGuestCallStack::default(),
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_migrated_handles(handles: MigratedProcessHandles) -> Self {
-        Self::new_inner(handles)
+        *Self::new_inner_boxed(handles)
+    }
+
+    pub(crate) fn new_boxed_with_migrated_handles(
+        handles: MigratedProcessHandles,
+    ) -> Box<Self> {
+        Self::new_inner_boxed(handles)
     }
 
     #[cfg(test)]
@@ -3395,7 +3402,7 @@ impl TrapDispatcher {
             && self.menu_tracking.is_view_of(&self.guest_calls)
     }
 
-    fn new_inner(handles: MigratedProcessHandles) -> Self {
+    fn new_inner_boxed(handles: MigratedProcessHandles) -> Box<Self> {
         let MigratedProcessHandles {
             ticks: tick_state,
             execution: guest_calls,
@@ -3428,7 +3435,7 @@ impl TrapDispatcher {
         let vfs_directories = process_file_system.vfs_directories.shared_handle();
         let file_positions = process_file_system.files.positions();
 
-        let mut dispatcher = Self {
+        let mut dispatcher = Box::new(Self {
             adb: crate::adb::AdbManager::new(),
             process_file_system,
             vm_held_page_counts: HashMap::new(),
@@ -3751,7 +3758,7 @@ impl TrapDispatcher {
             dialog_popup_candidate_items: HashSet::new(),
             scrap: SharedProcessScrapState::default(),
             last_init_pack_id: None,
-        };
+        });
         dispatcher.ensure_vfs_directory("System Folder");
         dispatcher.ensure_vfs_directory("System Folder/Preferences");
         dispatcher

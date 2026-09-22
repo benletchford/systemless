@@ -13,7 +13,10 @@ concurrency:
   cancel-in-progress: false
 jobs:
   promote:
-    if: github.event.workflow_run.event == 'pull_request_review' && github.event.workflow_run.conclusion == 'success'
+    if: >-
+      (github.event.workflow_run.event == 'pull_request_review' ||
+       github.event.workflow_run.event == 'pull_request') &&
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -55,7 +58,7 @@ jobs:
         with:
           script: |
             const state = JSON.parse(require('node:fs').readFileSync('promotion-state.json', 'utf8'));
-            const pr = await require('./.github/scripts/promote-review.cjs').approvedReview(github, context, state.number, state.reviewId, state.actor);
+            const pr = await require('./.github/scripts/promote-review.cjs').authorizedSubmission(github, context, state);
             if (pr.head.sha !== state.sha) throw new Error('PR changed after approval');
       - name: Promote pending assets
         if: steps.authorize.outputs.sha != ''
