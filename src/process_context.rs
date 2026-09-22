@@ -1608,6 +1608,40 @@ pub(crate) struct ProcessAppleEventLaunchState {
     open_application_event_sent: bool,
 }
 
+/// Semantic contents of an Apple Event Manager descriptor. Guest `AEDesc`
+/// records only contain a type and a handle; structured list, record, and
+/// event contents belong to the process and must survive crossings between
+/// the classic and native CPU gateways.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProcessAeDescriptor {
+    pub(crate) desc_type: u32,
+    pub(crate) data: Vec<u8>,
+    pub(crate) fields: HashMap<u32, ProcessAeDescriptor>,
+    pub(crate) items: Vec<(u32, ProcessAeDescriptor)>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProcessSyntheticAppleEvent {
+    pub(crate) event_class: u32,
+    pub(crate) event_id: u32,
+    pub(crate) params: HashMap<u32, ProcessAeDescriptor>,
+    pub(crate) items: Vec<(u32, ProcessAeDescriptor)>,
+}
+
+/// One process's descriptor records and handle-keyed structured backing.
+/// The handle index is deliberately distinct from the record-address index:
+/// applications routinely copy an `AEDesc` by value and expect both records
+/// to observe later list/record mutations through the shared data handle.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProcessAppleEventDescriptors {
+    pub(crate) events: HashMap<u32, ProcessSyntheticAppleEvent>,
+    pub(crate) descriptors: HashMap<u32, ProcessAeDescriptor>,
+    pub(crate) backing: HashMap<u32, ProcessAeDescriptor>,
+}
+
+pub(crate) type SharedProcessAppleEventDescriptors =
+    SharedProcessValue<ProcessAppleEventDescriptors>;
+
 impl ProcessAppleEventLaunchState {
     pub(crate) fn is_pristine(&self) -> bool {
         *self == Self::default()
@@ -8404,6 +8438,7 @@ pub(crate) struct ProcessContext {
     guest_calls: SharedGuestCallStack,
     apple_event_handlers: SharedProcessAppleEventHandlers,
     apple_event_launch_state: SharedProcessAppleEventLaunchState,
+    apple_event_descriptors: SharedProcessAppleEventDescriptors,
     file_system: SharedProcessFileSystem,
     sound_manager: SharedProcessSoundManager,
     timer_tasks: SharedProcessTimerTasks,
@@ -8575,6 +8610,7 @@ impl Default for ProcessContext {
             guest_calls,
             apple_event_handlers: SharedProcessAppleEventHandlers::default(),
             apple_event_launch_state: SharedProcessAppleEventLaunchState::default(),
+            apple_event_descriptors: SharedProcessAppleEventDescriptors::default(),
             file_system: SharedProcessFileSystem::default(),
             sound_manager: SharedProcessSoundManager::default(),
             timer_tasks: SharedProcessTimerTasks::default(),
@@ -9103,6 +9139,17 @@ impl ProcessContext {
         adapter: &mut SharedProcessAppleEventLaunchState,
     ) {
         adapter.attach_to(&self.apple_event_launch_state);
+    }
+
+    pub(crate) fn attach_apple_event_descriptors(
+        &self,
+        adapter: &mut SharedProcessAppleEventDescriptors,
+    ) {
+        adapter.attach_to(&self.apple_event_descriptors, |state| {
+            state.events.is_empty()
+                && state.descriptors.is_empty()
+                && state.backing.is_empty()
+        });
     }
 
     pub(crate) fn reset_apple_event_launch_state_for_launch(
@@ -11201,6 +11248,58 @@ mod tests {
         assert_eq!(classic.len(), 1);
         assert_eq!(native.len(), 1);
         assert_eq!(detached.len(), 0);
+    }
+
+    #[test]
+    fn attached_apple_event_descriptors_share_backing_and_detach_clones() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessAppleEventDescriptors::default();
+        let mut native = SharedProcessAppleEventDescriptors::default();
+        context.attach_apple_event_descriptors(&mut classic);
+        context.attach_apple_event_descriptors(&mut native);
+        let detached = native.clone();
+        let record = 0x1000;
+        let copied_record = 0x1010;
+        let handle = 0x2000;
+        let keyword = u32::from_be_bytes(*b"----");
+        let value = ProcessAeDescriptor {
+            desc_type: u32::from_be_bytes(*b"TEXT"),
+            data: b"shared".to_vec(),
+            fields: HashMap::new(),
+            items: Vec::new(),
+        };
+        let mut list = ProcessAeDescriptor {
+            desc_type: u32::from_be_bytes(*b"list"),
+            data: Vec::new(),
+            fields: HashMap::new(),
+            items: vec![(keyword, value.clone())],
+        };
+        classic.with_mut(|state| {
+            state.descriptors.insert(record, list.clone());
+            state.descriptors.insert(copied_record, list.clone());
+            state.backing.insert(handle, list.clone());
+        });
+
+        assert_eq!(native.backing.get(&handle).unwrap().items[0].1, value);
+        list.items.push((
+            u32::from_be_bytes(*b"pnam"),
+            ProcessAeDescriptor {
+                desc_type: u32::from_be_bytes(*b"long"),
+                data: 42u32.to_be_bytes().to_vec(),
+                fields: HashMap::new(),
+                items: Vec::new(),
+            },
+        ));
+        native.with_mut(|state| {
+            state.backing.insert(handle, list.clone());
+            state.descriptors.remove(&record);
+        });
+
+        assert_eq!(classic.backing.get(&handle).unwrap().items.len(), 2);
+        assert!(classic.descriptors.contains_key(&copied_record));
+        assert!(!classic.descriptors.contains_key(&record));
+        assert!(detached.backing.is_empty());
+        assert!(detached.descriptors.is_empty());
     }
 
     #[test]

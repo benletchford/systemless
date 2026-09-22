@@ -30,7 +30,8 @@ use crate::process_context::{
     MigratedProcessHandles, PendingFileCompletion, ProcessContext, ProcessForkMap,
     ProcessLoadedResources, ProcessResourceFileMap, ProcessResourceManagerState,
     ProcessVfsDirectory, ProcessVfsMetadata, ProcessVfsVolumeRecord, ProcessWorkingDirectory,
-    SharedProcessAppleEventHandlers, SharedProcessAppleEventLaunchState,
+    SharedProcessAppleEventDescriptors, SharedProcessAppleEventHandlers,
+    SharedProcessAppleEventLaunchState,
     SharedProcessCollectionManager, SharedProcessControlManager, SharedProcessCursorState,
     SharedProcessDialogText, SharedProcessDisplayClut,
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessInputState,
@@ -960,16 +961,10 @@ pub(crate) struct AeCallState {
     pub resolve_state: Option<AeResolveState>,
 }
 
-/// Minimal AppleEvent descriptor value tracked by Pack8. The real Apple Event
-/// Manager serializes descriptor records into handles; Systemless only needs
-/// enough structured state for caller-observable get/put routines.
-#[derive(Clone, Debug)]
-pub(crate) struct AeDescriptor {
-    pub desc_type: u32,
-    pub data: Vec<u8>,
-    pub fields: HashMap<u32, AeDescriptor>,
-    pub items: Vec<(u32, AeDescriptor)>,
-}
+pub(crate) use crate::process_context::{
+    ProcessAeDescriptor as AeDescriptor,
+    ProcessSyntheticAppleEvent as SyntheticAppleEvent,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AeObjectAccessor {
@@ -1000,17 +995,6 @@ pub(crate) struct AeResolveState {
     pub next_level: usize,
     pub current_token_desc: u32,
     pub container_class: u32,
-}
-
-/// Minimal AppleEvent descriptor state synthesized by Pack8. This records
-/// attributes that AEGetAttribute* must expose and parameters that
-/// AEGetParam* must return while dispatching AppleEvents.
-#[derive(Clone, Debug)]
-pub(crate) struct SyntheticAppleEvent {
-    pub event_class: u32,
-    pub event_id: u32,
-    pub params: HashMap<u32, AeDescriptor>,
-    pub items: Vec<(u32, AeDescriptor)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1214,17 +1198,8 @@ pub struct TrapDispatcher {
     pub(crate) ae_handlers: SharedProcessAppleEventHandlers,
     /// Process-owned launch awareness and one-shot synthetic OAPP state.
     pub(crate) apple_event_launch_state: SharedProcessAppleEventLaunchState,
-    /// Synthetic AppleEvent descriptors currently visible to guest
-    /// handlers. Key is the guest address of the AEDesc record.
-    pub(crate) ae_events: HashMap<u32, SyntheticAppleEvent>,
-    /// Non-event AEDesc records currently visible to guest AppleEvent code.
-    /// Key is the guest address of the AEDesc record.
-    pub(crate) ae_descriptors: HashMap<u32, AeDescriptor>,
-    /// Shared descriptor-list/record backing keyed by AEDesc data pointer.
-    /// AE records are often copied by value; the copied descriptor record
-    /// keeps the same data handle, so keyed fields must follow that backing
-    /// rather than the stack address of a single AEDesc variable.
-    pub(crate) ae_descriptor_backing: HashMap<u32, AeDescriptor>,
+    /// Process-owned AppleEvent event, descriptor, and shared-handle backing.
+    pub(crate) ae_descriptor_state: SharedProcessAppleEventDescriptors,
     /// Object accessor dispatch table entries registered through
     /// AEInstallObjectAccessor. Key is `(isSysHandler, desiredClass,
     /// containerType)`.
@@ -2497,6 +2472,7 @@ impl TrapDispatcher {
         context.attach_native_menu_selection(&mut self.pending_native_menu_selection);
         context.attach_apple_event_handlers(&mut self.ae_handlers);
         context.attach_apple_event_launch_state(&mut self.apple_event_launch_state);
+        context.attach_apple_event_descriptors(&mut self.ae_descriptor_state);
     }
 
     pub(crate) fn process_memory_manager(&self) -> SharedProcessMemoryManager {
@@ -3466,9 +3442,7 @@ impl TrapDispatcher {
             segment_map: HashMap::new(),
             ae_handlers: SharedProcessAppleEventHandlers::default(),
             apple_event_launch_state: SharedProcessAppleEventLaunchState::default(),
-            ae_events: HashMap::new(),
-            ae_descriptors: HashMap::new(),
-            ae_descriptor_backing: HashMap::new(),
+            ae_descriptor_state: SharedProcessAppleEventDescriptors::default(),
             ae_object_accessors: HashMap::new(),
             ae_private_hash_tables: HashMap::new(),
             ae_special_handlers: HashMap::new(),
