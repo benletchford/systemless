@@ -3764,6 +3764,8 @@ mod tests {
                 data_ulen: 0,
                 rsrc_ulen: 0,
                 finder_flags: 0,
+                creation_date: 0,
+                modification_date: 0,
                 is_compressed: false,
                 format: stuffit::ArchiveFormat::Sit5,
             });
@@ -4830,6 +4832,8 @@ mod tests {
             data_ulen: 0,
             rsrc_ulen: 0,
             finder_flags: 0,
+            creation_date: 0,
+            modification_date: 0,
             is_compressed: false,
             format: stuffit::ArchiveFormat::Sit5,
         });
