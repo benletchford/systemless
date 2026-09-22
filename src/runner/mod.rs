@@ -1658,7 +1658,7 @@ pub struct FixtureRunner {
     m68k: M68kExecution,
     native: NativeExecution<PpcLoadedApp>,
     bus: MacMemoryBus,
-    dispatcher: TrapDispatcher,
+    dispatcher: Box<TrapDispatcher>,
     /// Canonical owner for state shared by this process's CPU ABI adapters.
     process_context: ProcessContext,
     config: FixtureRunnerConfig,
@@ -1888,7 +1888,7 @@ impl FixtureRunner {
         );
         let mut process_context = ProcessContext::with_file_system(file_system);
         let mut dispatcher =
-            TrapDispatcher::new_with_migrated_handles(process_context.migrated_handles());
+            TrapDispatcher::new_boxed_with_migrated_handles(process_context.migrated_handles());
         dispatcher.attach_unconverted_process_services(&mut process_context);
         dispatcher.set_menu_bar_policy(config.menu_bar_policy);
         dispatcher.mmu_mode = u8::from(config.addressing_32_bit);
