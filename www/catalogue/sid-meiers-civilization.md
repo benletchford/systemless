@@ -9,7 +9,7 @@ year: 1992
 architectures: [68k]
 default_architecture: 68k
 category: Strategy
-launch_enabled: false
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -27,10 +27,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Civilisation%20Demo.sit
-    expected_sha256: 49fcc1db305f8dd40e4ee782ed9caf10832d36a897ad4727c0e628d1ee6a4f26
-    expected_size: 931124
+    type: sha256
+    sha256: 49fcc1db305f8dd40e4ee782ed9caf10832d36a897ad4727c0e628d1ee6a4f26
+    size_bytes: 931124
   provenance:
     redistribution: permitted
     original: true
@@ -59,8 +58,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/sid-meiers-civilization/gameplay.png
+    type: sha256
+    sha256: dad03e39586b9a68d2ba86685cef286f883926aa6e668fe4316242cda230e8c3
+    size_bytes: 142849
   provenance:
     redistribution: permitted
     original: true
@@ -87,7 +87,7 @@ references:
 
 ## An empire already in motion
 
-![Sid Meier's Civilization gameplay](incoming/sid-meiers-civilization/gameplay.png)
+![Sid Meier's Civilization gameplay](https://assets.systemless.org/catalogue/media/sha256/da/dad03e39586b9a68d2ba86685cef286f883926aa6e668fe4316242cda230e8c3.png)
 
 The demo opens in 2100 BC with a Roman civilization spread across a revealed
 island. London and Caesarea anchor the map, while chariots, settlers and other
@@ -112,5 +112,5 @@ cross-checked under BasiliskII.
 
 Take-Two continues the Civilization series through 2K. This catalogue preserves
 only MicroProse's intentionally limited promotional demonstration byte-for-byte;
-it does not provide the original retail game. The launcher remains disabled
-until the archive and screenshot complete asset promotion and browser review.
+it does not provide the original retail game. Browser startup and asset review
+confirmed the promoted immutable archive and screenshot.
