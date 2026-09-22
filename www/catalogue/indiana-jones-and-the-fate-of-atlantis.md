@@ -1,7 +1,7 @@
 ---
 id: indiana-jones-and-the-fate-of-atlantis
 kind: game
-title: "Indiana Jones and the Fate of Atlantis"
+title: Indiana Jones and the Fate of Atlantis
 summary: >-
   Talk, travel and trade your way through LucasArts' playable Macintosh
   demonstration of Indy's globe-spanning adventure.
@@ -12,12 +12,6 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
-launch_enabled: false
-runtime:
-  file_mappings:
-    INDYDEMO.000: Atlantis Demo/INDYDEMO.000
-    INDYDEMO.001: Atlantis Demo/INDYDEMO.001
-    INDYDEMO.002: Atlantis Demo/INDYDEMO.002
 compatibility:
   status: playable
   verified:
@@ -26,18 +20,24 @@ compatibility:
     systemless_version: "0.50.0"
     architecture: 68k
     environment: >-
-      Deterministic run through the original Macintosh demo's animated preview
-      and into its interactive balloon-seller scene, cross-checked with the same
-      script under BasiliskII
+      Deterministic run through the original Macintosh demo's animated preview and
+      into its interactive balloon-seller scene, cross-checked with the same script under
+      BasiliskII
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2425
+runtime:
+  file_mappings:
+    INDYDEMO.000: Atlantis Demo/INDYDEMO.000
+    INDYDEMO.001: Atlantis Demo/INDYDEMO.001
+    INDYDEMO.002: Atlantis Demo/INDYDEMO.002
 artifacts:
 - id: archive
   role: archive
   format: zip
   source:
-    type: incoming
-    path: catalogue/incoming/indiana-jones-and-the-fate-of-atlantis/atlantis-mac-demo.zip
+    type: sha256
+    sha256: ccaa0626d2fbcdcd90d1c0021c2707b958a149ded4a62e1dfd5566f88589d6da
+    size_bytes: 1529275
   provenance:
     redistribution: permitted
     original: true
@@ -47,24 +47,23 @@ artifacts:
     license: LucasArts Fate of Atlantis promotional demo distribution
     rights_holder: Lucasfilm Games / LucasArts and their successors
     permission: >-
-      LucasArts deliberately released this self-contained package as the
-      Macintosh demonstration of Indiana Jones and the Fate of Atlantis. It is
-      still distributed as such by ScummVM's official demo library. This entry
-      preserves only those demo files; it does not include or claim permission
-      for the retail game.
+      LucasArts deliberately released this self-contained package as the Macintosh
+      demonstration of Indiana Jones and the Fate of Atlantis. It is still distributed as
+      such by ScummVM's official demo library. This entry preserves only those demo
+      files; it does not include or claim permission for the retail game.
     notes: >-
       Unchanged 1,529,275-byte ZIP with SHA-256
-      ccaa0626d2fbcdcd90d1c0021c2707b958a149ded4a62e1dfd5566f88589d6da.
-      This is ScummVM's original download with all seven entries intact,
-      including both MacBinary files. At launch, catalogue runtime mappings
-      expose the three INDYDEMO data files under the Atlantis Demo directory
+      ccaa0626d2fbcdcd90d1c0021c2707b958a149ded4a62e1dfd5566f88589d6da. This is ScummVM's original download with all seven
+      entries intact, including both MacBinary files. At launch, catalogue runtime
+      mappings expose the three INDYDEMO data files under the Atlantis Demo directory
       expected by the application without modifying the hosted archive.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/indiana-jones-and-the-fate-of-atlantis/gameplay.png
+    type: sha256
+    sha256: 76585a9bc877b1a9968d7f5b382a2f3fe40d4aeb2ad4b65936447ab50c80953b
+    size_bytes: 138860
   provenance:
     redistribution: permitted
     original: true
@@ -72,23 +71,22 @@ artifacts:
     sources:
     - https://github.com/benletchford/systemless/issues/2425
     permission: >-
-      Original gameplay screenshot captured for this catalogue at the
-      maintainer's request. Underlying Indiana Jones and Fate of Atlantis
-      artwork remains the property of its rights holders.
+      Original gameplay screenshot captured for this catalogue at the maintainer's
+      request. Underlying Indiana Jones and Fate of Atlantis artwork remains the property
+      of its rights holders.
     notes: >-
-      Fresh deterministic Systemless 0.50.0 capture made from the staged demo
-      archive on 2026-09-23 after entering the interactive balloon-seller scene.
-      The complete 800x600 guest framebuffer is preserved without alteration or
-      host chrome. PNG SHA-256
-      76585a9bc877b1a9968d7f5b382a2f3fe40d4aeb2ad4b65936447ab50c80953b,
-      138,860 bytes.
+      Fresh deterministic Systemless 0.50.0 capture made from the staged demo archive
+      on 2026-09-23 after entering the interactive balloon-seller scene. The complete
+      800x600 guest framebuffer is preserved without alteration or host chrome. PNG
+      SHA-256 76585a9bc877b1a9968d7f5b382a2f3fe40d4aeb2ad4b65936447ab50c80953b, 138,860
+      bytes.
 references:
 - https://www.scummvm.org/demos/
 ---
 
 ## A ticket to adventure
 
-![Indiana Jones and the Fate of Atlantis demo](incoming/indiana-jones-and-the-fate-of-atlantis/gameplay.png)
+![Indiana Jones and the Fate of Atlantis demo](https://assets.systemless.org/catalogue/media/sha256/76/76585a9bc877b1a9968d7f5b382a2f3fe40d4aeb2ad4b65936447ab50c80953b.png)
 
 Indy's search for the lost city ranges from university archives to desert
 markets, but the Macintosh demonstration starts with a more immediate problem:
