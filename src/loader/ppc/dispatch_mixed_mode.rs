@@ -731,7 +731,7 @@ pub(super) fn ppc_prepare_resource_call(
     }
 }
 
-fn ppc_call_universal_proc(
+pub(super) fn ppc_call_universal_proc(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
