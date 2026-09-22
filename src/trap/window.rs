@@ -2075,7 +2075,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn move_window_to_global(
+    pub(crate) fn move_window_to_global(
         &mut self,
         bus: &mut MacMemoryBus,
         the_window: u32,
@@ -2270,6 +2270,40 @@ impl super::TrapDispatcher {
                 }
             }
         }
+    }
+
+    /// Align a window's selected local rectangle to the standard four-pixel
+    /// horizontal grid used by the Image Compression Manager on 8-bit screens.
+    ///
+    /// `alignment_rect` is in window coordinates; NIL selects the port bounds.
+    /// QuickTime (1993), pp. 3-142--3-143.
+    pub(crate) fn align_window_to_eight_bit_grid(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        the_window: u32,
+        front: bool,
+        alignment_rect: u32,
+    ) {
+        if the_window == 0 {
+            return;
+        }
+        let global_port = self.window_global_port_rect(bus, the_window);
+        let local_port = self.window_port_rect(bus, the_window);
+        let local_left = if alignment_rect == 0 {
+            local_port.1
+        } else {
+            bus.read_word(alignment_rect + 2) as i16
+        };
+        let alignment_left = global_port.1 as i32 + (local_left as i32 - local_port.1 as i32);
+        let aligned_left = (alignment_left + 2) & !3;
+        let delta = aligned_left - alignment_left;
+        self.move_window_to_global(
+            bus,
+            the_window,
+            (global_port.1 as i32 + delta) as i16,
+            global_port.0,
+            front,
+        );
     }
 
     fn find_window_at_point(

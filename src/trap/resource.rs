@@ -1789,6 +1789,32 @@ impl super::TrapDispatcher {
     ) -> Option<Result<()>> {
         self.read_tick_count(bus);
         Some(match (is_tool, trap_num) {
+            // ServerDispatch ($A094)
+            // Dispatches synchronous Macintosh File Sharing server-control calls.
+            // FUNCTION SyncServerDispatch(pb: SCParamBlockPtr): OSErr;
+            // AppleShare 3.0 File Server Controls, Appendix B, pp. 73; SCShutDown, pp. 58-59.
+            // Systemless does not run a file server, so valid control calls observe
+            // the documented absent-server result instead of a synthetic service.
+            (false, 0x94) => {
+                const IO_RESULT_OFFSET: u32 = 16;
+                const SC_CODE_OFFSET: u32 = 26;
+                const PARAM_ERR: i16 = -50;
+
+                let pb = cpu.read_reg(Register::A0);
+                let result = if pb == 0 {
+                    PARAM_ERR
+                } else {
+                    let sc_code = bus.read_word(pb + SC_CODE_OFFSET);
+                    eprintln!(
+                        "[SERVER] SyncServerDispatch pb=${pb:08X} scCode={sc_code} -> paramErr (server not running)"
+                    );
+                    bus.write_word(pb + IO_RESULT_OFFSET, PARAM_ERR as u16);
+                    PARAM_ERR
+                };
+                cpu.write_reg(Register::D0, result as i32 as u32);
+                Ok(())
+            }
+
             // GetResource ($A9A0)
             // Returns a handle to the resource with the given type and ID.
             // FUNCTION GetResource(theType: ResType; theID: INTEGER): Handle;
@@ -9028,6 +9054,35 @@ mod tests {
         bus: &mut crate::memory::MacMemoryBus,
     ) -> crate::Result<()> {
         dispatcher.dispatch(trap_word, cpu, bus)
+    }
+
+    #[test]
+    fn server_dispatch_reports_absent_file_server_in_parameter_block_and_d0() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pb = 0x2A_0000;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 16, 0x7FFF);
+        bus.write_word(pb + 26, 2); // SCShutDown
+
+        call_trap_word(&mut disp, 0xA094, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(bus.read_word(pb + 16) as i16, -50, "ioResult is paramErr");
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -50, "D0 is paramErr");
+        assert_eq!(
+            cpu.read_reg(Register::A0),
+            pb,
+            "parameter block is preserved"
+        );
+    }
+
+    #[test]
+    fn server_dispatch_rejects_a_null_parameter_block() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        cpu.write_reg(Register::A0, 0);
+
+        call(&mut disp, false, 0x94, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -50, "D0 is paramErr");
     }
 
     #[test]
