@@ -6,7 +6,11 @@
     use crate::trap::dispatch::{
         DialogItem, LoadedResources, RecentColorTableFetch, ResourceFileMap, ScreenCopyBitsRect,
     };
-    use crate::trap::quickdraw::CopyBitmapInfo;
+    use crate::trap::quickdraw::{
+        CopyBitmapInfo, DM_512_342_MODE_ID, DM_640_480_MODE_ID, DM_MODE_LIST_ENTRY_STRIDE,
+        DM_MODE_LIST_MAGIC, DM_MODE_LIST_RESOLUTION_INFO_OFFSET,
+        DM_MODE_LIST_SWITCH_INFO_OFFSET, DM_MODE_LIST_VP_BLOCK_OFFSET, DM_NATIVE_MODE_ID,
+    };
     use crate::trap::types::{Rect, ShapeOp};
     use crate::trap::TrapDispatcher;
     use crate::ui_theme::UiThemeId;
@@ -17504,10 +17508,84 @@
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert_eq!(bus.read_word(TEST_SP + 8), 0);
         assert_eq!(bus.read_word(switch_info), 0x0083);
-        assert_eq!(bus.read_long(switch_info + 2), 0x0000_0080);
+        assert_eq!(bus.read_long(switch_info + 2), DM_NATIVE_MODE_ID);
         assert_eq!(bus.read_word(switch_info + 6), 0);
         assert_eq!(bus.read_long(switch_info + 8), d.screen_mode.0);
         assert_eq!(bus.read_long(switch_info + 12), 0);
+    }
+
+    #[test]
+    fn displaydispatch_mode_list_advertises_compact_standard_and_native_geometries() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let list_out = 0x0031_1080u32;
+        let count_out = 0x0031_1084u32;
+
+        cpu.write_reg(Register::D0, 0x0A36);
+        bus.write_long(TEST_SP, list_out);
+        bus.write_long(TEST_SP + 4, count_out);
+        bus.write_long(TEST_SP + 8, 0);
+        bus.write_long(TEST_SP + 12, 0);
+        bus.write_long(TEST_SP + 16, 1);
+        let result = d.dispatch_quickdraw(true, 0x3EB, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 20), 0);
+        assert_eq!(bus.read_long(count_out), 3);
+        let list = bus.read_long(list_out);
+        assert_eq!(bus.read_long(list), DM_MODE_LIST_MAGIC);
+        for (index, (mode, width, height)) in [
+            (DM_512_342_MODE_ID, 512, 342),
+            (DM_640_480_MODE_ID, 640, 480),
+            (DM_NATIVE_MODE_ID, 800, 600),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let base = list + index as u32 * DM_MODE_LIST_ENTRY_STRIDE;
+            let resolution = base + DM_MODE_LIST_RESOLUTION_INFO_OFFSET;
+            let switch_info = base + DM_MODE_LIST_SWITCH_INFO_OFFSET;
+            let vp_block = base + DM_MODE_LIST_VP_BLOCK_OFFSET;
+            assert_eq!(bus.read_long(resolution + 4), mode);
+            assert_eq!(bus.read_long(resolution + 8), width);
+            assert_eq!(bus.read_long(resolution + 12), height);
+            assert_eq!(bus.read_long(switch_info + 2), mode);
+            assert_eq!(bus.read_word(vp_block + 4), width as u16);
+            assert_eq!(bus.read_word(vp_block + 10), height as u16);
+            assert_eq!(bus.read_word(vp_block + 12), width as u16);
+        }
+    }
+
+    #[test]
+    fn displaydispatch_check_accepts_only_advertised_geometry_and_depth() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let flags = 0x0031_1090u32;
+        let mode_ok = 0x0031_1094u32;
+        let main_gdevice = d.ensure_main_gdevice(&mut bus);
+
+        cpu.write_reg(Register::D0, 0x0C12);
+        bus.write_long(TEST_SP, mode_ok);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 8, flags);
+        bus.write_long(TEST_SP + 12, 0x83);
+        bus.write_long(TEST_SP + 16, DM_640_480_MODE_ID);
+        bus.write_long(TEST_SP + 20, main_gdevice);
+        let result = d.dispatch_quickdraw(true, 0x3EB, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_long(flags), 1);
+        assert_eq!(bus.read_byte(mode_ok), 1);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0C12);
+        bus.write_long(TEST_SP, mode_ok);
+        bus.write_long(TEST_SP + 8, flags);
+        bus.write_long(TEST_SP + 12, 0x83);
+        bus.write_long(TEST_SP + 16, 0xDEAD);
+        let rejected = d.dispatch_quickdraw(true, 0x3EB, &mut cpu, &mut bus);
+
+        assert!(rejected.unwrap().is_ok());
+        assert_eq!(bus.read_long(flags), 2);
+        assert_eq!(bus.read_byte(mode_ok), 0);
     }
 
     #[test]
@@ -17546,6 +17624,21 @@
         assert_eq!(bus.read_word(pm + 12), 640);
         assert_eq!(bus.read_word(gd + 38), 480);
         assert_eq!(bus.read_word(gd + 40), 640);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0A11);
+        bus.write_long(TEST_SP, 0);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 8, depth_mode);
+        bus.write_long(TEST_SP + 12, DM_NATIVE_MODE_ID);
+        bus.write_long(TEST_SP + 16, main_gdh);
+        let restore = d.dispatch_quickdraw(true, 0x3EB, &mut cpu, &mut bus);
+
+        assert!(restore.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 20), 0);
+        assert_eq!((d.screen_mode.2, d.screen_mode.3), (800, 600));
+        assert_eq!(bus.read_word(pm + 10), 600);
+        assert_eq!(bus.read_word(pm + 12), 800);
     }
 
     #[test]
@@ -17613,6 +17706,7 @@
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert_eq!(bus.read_word(TEST_SP + 8), 0);
         assert_eq!(bus.read_word(switch_info), 0x0083);
+        assert_eq!(bus.read_long(switch_info + 2), DM_640_480_MODE_ID);
     }
 
     #[test]

@@ -44832,6 +44832,35 @@ fn ppc_grow_ctables(
 
 pub(super) fn ppc_set_depth(
     cpu: &PpcCpu,
+    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    gworlds: &mut [PpcGWorldRecord],
+    toolbox_startup: &mut PpcToolboxStartupState,
+    screen_clut: &mut [[u16; 3]; 256],
+    color_manager_clut: &mut [[u16; 3]; 256],
+) -> i16 {
+    ppc_set_depth_with_geometry(
+        cpu,
+        allocator,
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        gworlds,
+        toolbox_startup,
+        screen_clut,
+        color_manager_clut,
+        None,
+    )
+}
+
+pub(super) fn ppc_set_depth_with_geometry(
+    cpu: &PpcCpu,
     mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -44842,6 +44871,7 @@ pub(super) fn ppc_set_depth(
     toolbox_startup: &mut PpcToolboxStartupState,
     screen_clut: &mut [[u16; 3]; 256],
     color_manager_clut: &mut [[u16; 3]; 256],
+    geometry: Option<(u32, u32)>,
 ) -> i16 {
     let Some(gdevice) = ppc_main_gdevice_record_for_depth(memory, cpu.gpr[3]) else {
         return PPC_PARAM_ERR;
@@ -44855,13 +44885,24 @@ pub(super) fn ppc_set_depth(
         return PPC_PARAM_ERR;
     };
 
-    let Some(main_record) = gworlds
+    let Some(mut main_record) = gworlds
         .iter()
         .find(|record| record.port == PPC_MAIN_GWORLD && record.gdevice == PPC_MAIN_GDEVICE)
         .copied()
     else {
         return PPC_PARAM_ERR;
     };
+    if let Some((width, height)) = geometry {
+        if width == 0
+            || height == 0
+            || width > ppc_main_screen_width()
+            || height > ppc_main_screen_height()
+        {
+            return PPC_PARAM_ERR;
+        }
+        main_record.width = width;
+        main_record.height = height;
+    }
     let Some(row_bytes) = ppc_row_bytes(main_record.width, depth).filter(|row| *row <= 0x3fff)
     else {
         return PPC_PARAM_ERR;
@@ -45104,7 +45145,18 @@ pub(super) fn ppc_set_depth(
     // describe the selected format so window bounds, resolutions, private
     // metadata, ColorTable contents, and unrelated GDevice flags survive.
     for (pixmap, indexed_ctable) in screen_pixmap_updates {
-        if ppc_update_pixmap_depth(memory, pixmap, row_bytes, depth, indexed_ctable).is_none() {
+        if ppc_update_pixmap_depth(memory, pixmap, row_bytes, depth, indexed_ctable).is_none()
+            || (geometry.is_some()
+                && ppc_write_rect(
+                    memory,
+                    pixmap + 6,
+                    0,
+                    0,
+                    ppc_u32_to_i16_saturating(main_record.height),
+                    ppc_u32_to_i16_saturating(main_record.width),
+                )
+                .is_none())
+        {
             return PPC_PARAM_ERR;
         }
     }
@@ -45117,6 +45169,10 @@ pub(super) fn ppc_set_depth(
         if record.pixmap_handle == pixmap_handle && record.pixmap == pixmap {
             record.depth = depth;
             record.row_bytes = row_bytes;
+            if geometry.is_some() {
+                record.width = main_record.width;
+                record.height = main_record.height;
+            }
         }
     }
 
@@ -45139,6 +45195,55 @@ pub(super) fn ppc_set_depth(
             .is_none()
     {
         return PPC_PARAM_ERR;
+    }
+    if geometry.is_some() {
+        if ppc_write_rect(
+            memory,
+            gdevice + 34,
+            0,
+            0,
+            ppc_u32_to_i16_saturating(main_record.height),
+            ppc_u32_to_i16_saturating(main_record.width),
+        )
+        .is_none()
+            || ppc_write_rect(
+                memory,
+                PPC_MAIN_GWORLD + 16,
+                0,
+                0,
+                ppc_u32_to_i16_saturating(main_record.height),
+                ppc_u32_to_i16_saturating(main_record.width),
+            )
+            .is_none()
+            || ppc_write_rgn_bbox(
+                memory,
+                PPC_MAIN_VIS_RGN_HANDLE,
+                0,
+                0,
+                ppc_u32_to_i16_saturating(main_record.height),
+                ppc_u32_to_i16_saturating(main_record.width),
+            )
+            .is_none()
+        {
+            return PPC_PARAM_ERR;
+        }
+        let menu_bar_height = i16::try_from(
+            u32::from(memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20))
+                .min(main_record.height),
+        )
+        .unwrap_or(20);
+        if ppc_write_rgn_bbox(
+            memory,
+            PPC_GRAY_RGN_HANDLE,
+            menu_bar_height,
+            0,
+            ppc_u32_to_i16_saturating(main_record.height),
+            ppc_u32_to_i16_saturating(main_record.width),
+        )
+        .is_none()
+        {
+            return PPC_PARAM_ERR;
+        }
     }
     if let Some(screen_bits) = screen_bits {
         if memory
