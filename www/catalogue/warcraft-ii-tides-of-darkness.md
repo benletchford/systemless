@@ -6,10 +6,11 @@ summary: Gather, build and command an army in Blizzard's classic real-time strat
 developer: Blizzard Entertainment
 publisher: Blizzard Entertainment
 year: 1996
-architectures: [68k, ppc]
+architectures:
+- 68k
+- ppc
 default_architecture: 68k
 category: Strategy
-launch_enabled: false
 compatibility:
   status: playable
   verified:
@@ -18,9 +19,9 @@ compatibility:
     systemless_version: "0.50.0"
     architecture: 68k
     environment: >-
-      Deterministic Human campaign run from the unchanged original StuffIt
-      archive, with the same archive also launched through the title and menu
-      sequence under BasiliskII
+      Deterministic Human campaign run from the unchanged original StuffIt archive,
+      with the same archive also launched through the title and menu sequence under
+      BasiliskII
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2416
 artifacts:
@@ -36,14 +37,14 @@ artifacts:
     original: true
     sources:
     - https://classicmacdemos.com/warcraft-ii-tides-of-darkness
-    - https://static.classicmacdemos.com/demos/warcraft-ii-tides-of-darkness/README.txt
+    - >-
+      https://static.classicmacdemos.com/demos/warcraft-ii-tides-of-darkness/README.txt
     license: Blizzard Entertainment shareware distribution license
     rights_holder: Blizzard Entertainment
     permission: >-
       The Vendor text included in the package grants a nonexclusive right to
-      distribute the complete, unchanged shareware program electronically at
-      no charge. Commercial, retail, CD and bundled distribution require
-      separate permission.
+      distribute the complete, unchanged shareware program electronically at no charge.
+      Commercial, retail, CD and bundled distribution require separate permission.
     notes: >-
       Unchanged 10,136,636-byte Macintosh demo archive, SHA-256
       7b480153a0c15dcb084a201cd53edb35a99bbc0aea250c2e28e807ed6290ef3b.
@@ -51,8 +52,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/warcraft-ii-tides-of-darkness/gameplay.png
+    type: sha256
+    sha256: 5bef60efe91af6696781c997373a97f762a245bd3e7ff42d896e3b2f0ac0fc34
+    size_bytes: 148956
   provenance:
     redistribution: permitted
     original: true
@@ -60,24 +62,22 @@ artifacts:
     sources:
     - https://github.com/benletchford/systemless/issues/2416
     permission: >-
-      Original gameplay screenshot captured for this catalogue at the
-      maintainer's request. Underlying Warcraft artwork remains the property
-      of Blizzard Entertainment.
+      Original gameplay screenshot captured for this catalogue at the maintainer's
+      request. Underlying Warcraft artwork remains the property of Blizzard Entertainment.
     notes: >-
-      Fresh deterministic Systemless 0.50.0 capture made from the exact
-      unchanged demo archive on 2026-09-23 after entering the first playable
-      Human mission and dismissing the tips panel. The 800x600 framebuffer was
-      cropped exactly to the 640x480 game surface, excluding only the Classic
-      Mac menu bar and uniform host margins; no game pixels were altered. PNG
-      SHA-256 5bef60efe91af6696781c997373a97f762a245bd3e7ff42d896e3b2f0ac0fc34,
-      148,956 bytes.
+      Fresh deterministic Systemless 0.50.0 capture made from the exact unchanged
+      demo archive on 2026-09-23 after entering the first playable Human mission and
+      dismissing the tips panel. The 800x600 framebuffer was cropped exactly to the 640x480
+      game surface, excluding only the Classic Mac menu bar and uniform host margins;
+      no game pixels were altered. PNG SHA-256
+      5bef60efe91af6696781c997373a97f762a245bd3e7ff42d896e3b2f0ac0fc34, 148,956 bytes.
 references:
 - https://classicmacdemos.com/warcraft-ii-tides-of-darkness
 ---
 
 ## Build, scout, attack
 
-![Warcraft II gameplay](incoming/warcraft-ii-tides-of-darkness/gameplay.png)
+![Warcraft II gameplay](https://assets.systemless.org/catalogue/media/sha256/5b/5bef60efe91af6696781c997373a97f762a245bd3e7ff42d896e3b2f0ac0fc34.png)
 
 Warcraft II turns a few workers and an unexplored map into a race for resources,
 technology and position. The Macintosh demo supports 68040 and PowerPC systems;
