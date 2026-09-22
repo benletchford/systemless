@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.51.0](https://github.com/benletchford/systemless/compare/v0.50.0...v0.51.0) (2026-09-22)
+
+
+### Features
+
+* **catalogue:** add Color Dark Castle demo ([#2435](https://github.com/benletchford/systemless/issues/2435)) ([d575235](https://github.com/benletchford/systemless/commit/d5752356a49eb59b612033cdf3d7323abfee3b86))
+* **catalogue:** add Crystal Quest sample ([#2441](https://github.com/benletchford/systemless/issues/2441)) ([65d1a7a](https://github.com/benletchford/systemless/commit/65d1a7ac2388f341fd6db7c822bb6da57a96d362))
+* **catalogue:** add Fate of Atlantis demo ([#2429](https://github.com/benletchford/systemless/issues/2429)) ([892639a](https://github.com/benletchford/systemless/commit/892639ad1369d5d3b5ab9a65bd50027f065b6ee3))
+* **catalogue:** add Pathways into Darkness demo ([#2437](https://github.com/benletchford/systemless/issues/2437)) ([a6dbddf](https://github.com/benletchford/systemless/commit/a6dbddf0cd16a642ca4470c15e30ca31c391eabd))
+* **catalogue:** add Sam and Max demo ([#2433](https://github.com/benletchford/systemless/issues/2433)) ([ea2455a](https://github.com/benletchford/systemless/commit/ea2455a120b9ad5017c73872c3c9376c7650a42e))
+* **runtime:** support catalogue file mappings ([#2427](https://github.com/benletchford/systemless/issues/2427)) ([83365cb](https://github.com/benletchford/systemless/commit/83365cb9a2bfee1dc02bdf91e924c09ec032eb8d))
+
+
+### Bug Fixes
+
+* **memory:** prevent allocations from crossing the 68K stack ([#2431](https://github.com/benletchford/systemless/issues/2431)) ([e606cf1](https://github.com/benletchford/systemless/commit/e606cf1877fdcef7f7a6fea1081fcd811c63499e))
+* **video:** honor video driver mode records and status ([#2440](https://github.com/benletchford/systemless/issues/2440)) ([faa30e1](https://github.com/benletchford/systemless/commit/faa30e1975f7f99321ea4a70d0382c6b98092989))
+
 ## [0.50.0](https://github.com/benletchford/systemless/compare/v0.49.0...v0.50.0) (2026-09-22)
 
 
