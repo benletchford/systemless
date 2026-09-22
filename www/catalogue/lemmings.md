@@ -9,7 +9,7 @@ year: 1992
 architectures: [68k]
 default_architecture: 68k
 category: Puzzle
-launch_enabled: false
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -27,10 +27,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Lemmings.sit
-    expected_sha256: c3e51e74044cdc15d82b5467d700dcdddae1d147ea9cc3dfb194d58fe82caa07
-    expected_size: 595722
+    type: sha256
+    sha256: c3e51e74044cdc15d82b5467d700dcdddae1d147ea9cc3dfb194d58fe82caa07
+    size_bytes: 595722
   provenance:
     redistribution: permitted
     original: true
@@ -59,8 +58,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/lemmings/gameplay.png
+    type: sha256
+    sha256: 84fd7a6e11c6eef350b161e32419d8b693bfc75ded779594f7f90510086c9929
+    size_bytes: 45220
   provenance:
     redistribution: permitted
     original: true
@@ -87,7 +87,7 @@ references:
 
 ## Save the crowd
 
-![Lemmings gameplay](incoming/lemmings/gameplay.png)
+![Lemmings gameplay](https://assets.systemless.org/catalogue/media/sha256/84/84fd7a6e11c6eef350b161e32419d8b693bfc75ded779594f7f90510086c9929.png)
 
 Fifty Lemmings pour from the trapdoor in the first demonstration level, and at
 least half must reach the exit. The landscape is impassable without help, so
@@ -111,5 +111,5 @@ its opening screen.
 Systemless opens the unchanged StuffIt archive, loads its original graphics,
 levels and music, passes through the promotional screens and reaches live
 Level 1 play. The same deterministic sequence matched BasiliskII at 99.1%
-overall perceptual parity. The launcher remains disabled until the archive and
-screenshot complete asset promotion and browser review.
+overall perceptual parity. Browser startup and asset review confirmed the
+promoted immutable archive and screenshot.
