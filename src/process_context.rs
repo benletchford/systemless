@@ -5310,9 +5310,30 @@ impl ProcessNativeMemoryManager {
     /// `NewPtr` returns a fixed block in the current heap or `NIL` with
     /// `memFullErr`. Inside Macintosh: Memory (1992), pp. 2-36--2-37.
     pub(crate) fn new_classic_ptr(&mut self, bus: &mut MacMemoryBus, size: u32) -> u32 {
+        self.new_classic_ptr_below(bus, size, self.classic_heap_ceiling())
+    }
+
+    /// Allocate a classic pointer below an ABI-owned upper bound.
+    ///
+    /// A 68K Memory Manager trap supplies the active stack pointer here so a
+    /// large fixed allocation cannot consume live stack frames. Native callers
+    /// without a 68K stack retain the process heap ceiling.
+    pub(crate) fn new_classic_ptr_below(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        size: u32,
+        upper_bound: u32,
+    ) -> u32 {
         self.assert_classic_memory_bus_attached(bus);
+        let process_ceiling = self.classic_heap_ceiling();
+        let heap_floor = self.classic_allocator().heap_bump_ptr();
+        let effective_ceiling = if upper_bound > heap_floor && upper_bound < process_ceiling {
+            upper_bound
+        } else {
+            process_ceiling
+        };
         self.classic_allocator()
-            .allocate(size, 4, self.classic_heap_ceiling())
+            .allocate(size, 4, effective_ceiling)
     }
 
     /// Release a native or classic nonrelocatable block owned by this process.
