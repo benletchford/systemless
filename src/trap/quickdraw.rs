@@ -154,6 +154,19 @@ const PM_8BPP_ALLOCATION_ORDER: [u8; 256] = [
 const DEFAULT_PALETTE_WINDOW: u32 = 0xFFFF_FFFF;
 const PM_ALL_UPDATES: i16 = -0x2000;
 const DM_SET_DISPLAY_MODE_REJECT_ERR: i16 = -330;
+const DM_640_480_MODE_ID: u32 = 0x80;
+const DM_512_342_MODE_ID: u32 = 0x81;
+const DM_NATIVE_MODE_ID: u32 = 0x85;
+const DM_MODE_LIST_MAGIC: u32 = u32::from_be_bytes(*b"DML1");
+const DM_MODE_LIST_ENTRY_STRIDE: u32 = 0x100;
+const DM_MODE_LIST_ENTRY_OFFSET: u32 = 0x10;
+const DM_MODE_LIST_SWITCH_INFO_OFFSET: u32 = 0x30;
+const DM_MODE_LIST_RESOLUTION_INFO_OFFSET: u32 = 0x40;
+const DM_MODE_LIST_TIMING_INFO_OFFSET: u32 = 0x60;
+const DM_MODE_LIST_DEPTH_BLOCK_OFFSET: u32 = 0x78;
+const DM_MODE_LIST_DEPTH_INFO_OFFSET: u32 = 0x90;
+const DM_MODE_LIST_VP_BLOCK_OFFSET: u32 = 0xA8;
+const DM_MODE_LIST_NAME_OFFSET: u32 = 0xD8;
 const SEEDFILL_MAX_PIXELS: usize = 4 * 1024 * 1024;
 
 // OnceLock-cache the tracer env-var lookups. CopyBits/DrawPicture/SetEntries
@@ -15300,80 +15313,49 @@ impl super::TrapDispatcher {
                         let result = if display_id != 1 || list_out == 0 || count_out == 0 {
                             -50i16
                         } else {
-                            const LIST_SIZE: u32 = 256;
-                            const ENTRY_OFFSET: u32 = 0x10;
-                            const SWITCH_INFO_OFFSET: u32 = 0x30;
-                            const RESOLUTION_INFO_OFFSET: u32 = 0x40;
-                            const TIMING_INFO_OFFSET: u32 = 0x60;
-                            const DEPTH_BLOCK_OFFSET: u32 = 0x78;
-                            const DEPTH_INFO_OFFSET: u32 = 0x90;
-                            const VP_BLOCK_OFFSET: u32 = 0xA8;
-                            const NAME_OFFSET: u32 = 0xD8;
-
-                            let list = bus.alloc(LIST_SIZE);
+                            let mut geometries = vec![
+                                (DM_512_342_MODE_ID, 512, 342),
+                                (DM_640_480_MODE_ID, 640, 480),
+                            ];
+                            if !matches!(self.native_screen_geometry, (512, 342) | (640, 480)) {
+                                geometries.push((
+                                    DM_NATIVE_MODE_ID,
+                                    self.native_screen_geometry.0,
+                                    self.native_screen_geometry.1,
+                                ));
+                            }
+                            let list_size = DM_MODE_LIST_ENTRY_STRIDE * geometries.len() as u32;
+                            let list = bus.alloc(list_size);
                             if list == 0 {
                                 -108i16 // memFullErr
                             } else {
-                                bus.fill_zeros(list, LIST_SIZE);
-                                let entry = list + ENTRY_OFFSET;
-                                let switch_info = list + SWITCH_INFO_OFFSET;
-                                let resolution = list + RESOLUTION_INFO_OFFSET;
-                                let timing = list + TIMING_INFO_OFFSET;
-                                let depth_block = list + DEPTH_BLOCK_OFFSET;
-                                let depth_info = list + DEPTH_INFO_OFFSET;
-                                let vp_block = list + VP_BLOCK_OFFSET;
-                                let name = list + NAME_OFFSET;
-                                let (_, row_bytes, width, height, pixel_size) = self.screen_mode;
-                                let depth_mode =
-                                    crate::display::classic_depth_mode(pixel_size).unwrap_or(0);
-
-                                bus.write_long(list, u32::from_be_bytes(*b"DML1"));
+                                bus.fill_zeros(list, list_size);
+                                let (screen_base, _, _, _, pixel_size) = self.screen_mode;
+                                bus.write_long(list, DM_MODE_LIST_MAGIC);
                                 bus.write_long(list + 4, display_id);
-                                bus.write_long(entry + 4, switch_info);
-                                bus.write_long(entry + 8, resolution);
-                                bus.write_long(entry + 12, timing);
-                                bus.write_long(entry + 16, depth_block);
-                                bus.write_long(entry + 20, 1);
-                                bus.write_long(entry + 24, name);
-
-                                bus.write_word(switch_info, depth_mode);
-                                bus.write_long(switch_info + 2, 0x80);
-                                bus.write_long(switch_info + 8, self.screen_mode.0);
-
-                                bus.write_long(resolution + 4, 0x80);
-                                bus.write_long(resolution + 8, u32::from(width));
-                                bus.write_long(resolution + 12, u32::from(height));
-                                bus.write_long(resolution + 16, 60 << 16);
-                                bus.write_long(resolution + 20, u32::from(depth_mode));
-                                bus.write_long(timing, 0x80);
-
-                                bus.write_long(depth_block, 1);
-                                bus.write_long(depth_block + 4, depth_info);
-                                bus.write_long(depth_info, switch_info);
-                                bus.write_long(depth_info + 4, vp_block);
-                                bus.write_word(vp_block + 4, row_bytes as u16);
-                                bus.write_word(vp_block + 6, 0);
-                                bus.write_word(vp_block + 8, 0);
-                                bus.write_word(vp_block + 10, height);
-                                bus.write_word(vp_block + 12, width);
-                                bus.write_long(vp_block + 22, 72 << 16);
-                                bus.write_long(vp_block + 26, 72 << 16);
-                                bus.write_word(vp_block + 32, u16::from(pixel_size));
-                                bus.write_word(vp_block + 34, 1);
-                                bus.write_word(vp_block + 36, u16::from(pixel_size));
-                                let mode_name = if pixel_size <= 8 {
-                                    format!("{} x {}, {} Colors", width, height, 1u32 << pixel_size)
+                                bus.write_long(list + 8, geometries.len() as u32);
+                                let wrote_all = geometries.iter().enumerate().all(
+                                    |(index, (mode, width, height))| {
+                                        Self::write_display_mode_list_entry(
+                                            bus,
+                                            list + index as u32 * DM_MODE_LIST_ENTRY_STRIDE,
+                                            *mode,
+                                            *width,
+                                            *height,
+                                            pixel_size,
+                                            screen_base,
+                                        )
+                                        .is_some()
+                                    },
+                                );
+                                if wrote_all {
+                                    bus.write_long(count_out, geometries.len() as u32);
+                                    bus.write_long(list_out, list);
+                                    0
                                 } else {
-                                    format!("{} x {}, {}-bit Color", width, height, pixel_size)
-                                };
-                                let mode_name = mode_name.as_bytes();
-                                let name_len = mode_name.len().min(31);
-                                bus.write_byte(name, name_len as u8);
-                                bus.write_bytes(name + 1, &mode_name[..name_len]);
-
-                                bus.write_long(count_out, 1);
-                                bus.write_long(list_out, list);
-                                0
+                                    bus.free(list);
+                                    -50i16
+                                }
                             }
                         };
                         bus.write_word(sp + 20, result as u16);
@@ -15383,7 +15365,7 @@ impl super::TrapDispatcher {
                     // DMDisposeList(DMListType) -> OSErr.
                     0x022C => {
                         let list = bus.read_long(sp);
-                        let result = if bus.read_long(list) == u32::from_be_bytes(*b"DML1") {
+                        let result = if bus.read_long(list) == DM_MODE_LIST_MAGIC {
                             bus.free(list);
                             0
                         } else {
@@ -15399,8 +15381,8 @@ impl super::TrapDispatcher {
                         let item_index = bus.read_long(sp + 12);
                         let list = bus.read_long(sp + 16);
                         if callback == 0
-                            || bus.read_long(list) != u32::from_be_bytes(*b"DML1")
-                            || !matches!(item_index, 0 | 1)
+                            || bus.read_long(list) != DM_MODE_LIST_MAGIC
+                            || item_index >= bus.read_long(list + 8)
                         {
                             bus.write_word(sp + 20, (-50i16) as u16);
                             cpu.write_reg(Register::A7, sp + 20);
@@ -15426,7 +15408,12 @@ impl super::TrapDispatcher {
                                 bus.write_word(resume_sp, 0);
                                 bus.write_long(sp + 16, user_data);
                                 bus.write_long(sp + 12, item_index);
-                                bus.write_long(sp + 8, list + 0x10);
+                                bus.write_long(
+                                    sp + 8,
+                                    list
+                                        + item_index * DM_MODE_LIST_ENTRY_STRIDE
+                                        + DM_MODE_LIST_ENTRY_OFFSET,
+                                );
                                 bus.write_long(sp + 4, cleanup);
                                 cpu.write_reg(Register::A7, sp + 4);
                                 cpu.write_reg(Register::PC, callback);
@@ -15481,14 +15468,25 @@ impl super::TrapDispatcher {
                         let mode = bus.read_long(sp + 12);
                         let gdh = bus.read_long(sp + 16);
                         let gd = if gdh != 0 { bus.read_long(gdh) } else { 0 };
-                        let result = if mode == 0 {
+                        let result = if mode == 0 || self.display_mode_geometry(mode).is_none() {
                             DM_SET_DISPLAY_MODE_REJECT_ERR
                         } else {
-                            let (width, height) = Self::display_mode_geometry(mode)
-                                .unwrap_or_else(|| self.current_screen_geometry());
-                            if self.do_setdepth_with_geometry(cpu, bus, 8, width, height) {
-                                let depth_mode = crate::display::classic_depth_mode(8)
-                                    .expect("8-bit display mode is defined by Video.h");
+                            let (width, height) = self
+                                .display_mode_geometry(mode)
+                                .expect("validated display mode has geometry");
+                            let requested_depth = (depth_mode_ptr != 0)
+                                .then(|| bus.read_long(depth_mode_ptr) as u16)
+                                .and_then(crate::display::classic_pixel_size)
+                                .unwrap_or(8);
+                            if self.do_setdepth_with_geometry(
+                                cpu,
+                                bus,
+                                requested_depth,
+                                width,
+                                height,
+                            ) {
+                                let depth_mode = crate::display::classic_depth_mode(requested_depth)
+                                    .expect("validated display depth has a Video.h mode");
                                 if depth_mode_ptr != 0 {
                                     bus.write_long(depth_mode_ptr, u32::from(depth_mode));
                                 }
@@ -15510,11 +15508,15 @@ impl super::TrapDispatcher {
                     0x0C12 => {
                         let mode_ok_ptr = bus.read_long(sp);
                         let switch_flags_ptr = bus.read_long(sp + 8);
+                        let depth_mode = bus.read_long(sp + 12) as u16;
+                        let mode = bus.read_long(sp + 16);
+                        let supported = self.display_mode_geometry(mode).is_some()
+                            && crate::display::classic_pixel_size(depth_mode).is_some();
                         if switch_flags_ptr != 0 {
-                            bus.write_long(switch_flags_ptr, 0);
+                            bus.write_long(switch_flags_ptr, if supported { 1 } else { 2 });
                         }
                         if mode_ok_ptr != 0 {
-                            bus.write_byte(mode_ok_ptr, 1);
+                            bus.write_byte(mode_ok_ptr, u8::from(supported));
                         }
                         bus.write_word(sp + 24, 0);
                         cpu.write_reg(Register::A7, sp + 24);
@@ -15559,7 +15561,13 @@ impl super::TrapDispatcher {
                                 );
                             }
                             bus.write_word(switch_info, current_depth_mode as u16);
-                            bus.write_long(switch_info + 2, 0x0000_0080);
+                            bus.write_long(
+                                switch_info + 2,
+                                Self::display_mode_id_for_geometry(
+                                    self.screen_mode.2,
+                                    self.screen_mode.3,
+                                ),
+                            );
                             bus.write_word(switch_info + 6, 0);
                             bus.write_long(switch_info + 8, screen_base);
                             bus.write_long(switch_info + 12, 0);
@@ -16865,7 +16873,7 @@ impl super::TrapDispatcher {
 
         let applied = if matches!(depth, 1 | 2 | 4 | 8) {
             if depth == 8 {
-                if let Some((width, height)) = Self::display_mode_geometry(u32::from(depth_or_mode))
+                if let Some((width, height)) = self.display_mode_geometry(u32::from(depth_or_mode))
                 {
                     self.do_setdepth_with_geometry_and_personality(
                         cpu, bus, depth, width, height, is_color,
@@ -19782,31 +19790,86 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn display_mode_geometry(mode: u32) -> Option<(u16, u16)> {
+    fn display_mode_geometry(&self, mode: u32) -> Option<(u16, u16)> {
         match mode {
+            DM_512_342_MODE_ID => Some((512, 342)),
             // Display Manager timing/display-mode ID observed from BasiliskII
             // when games request the 640x480 switch. This occupies `csData`,
             // separate from the Video.h depth token in `csMode`.
-            0x0000_0080 => Some((640, 480)),
+            DM_640_480_MODE_ID => Some((640, 480)),
             // Default 800x600 timing/display-mode ID used by the single-screen HLE.
-            0x0000_0085 => Some((
-                REFERENCE_MACHINE_PROFILE.screen_width,
-                REFERENCE_MACHINE_PROFILE.screen_height,
-            )),
+            DM_NATIVE_MODE_ID => Some(self.native_screen_geometry),
             _ => None,
         }
     }
 
-    fn current_screen_geometry(&self) -> (u16, u16) {
-        let (_, _, width, height, _) = self.screen_mode;
-        if width != 0 && height != 0 {
-            (width, height)
-        } else {
-            (
-                REFERENCE_MACHINE_PROFILE.screen_width,
-                REFERENCE_MACHINE_PROFILE.screen_height,
-            )
+    fn display_mode_id_for_geometry(width: u16, height: u16) -> u32 {
+        match (width, height) {
+            (512, 342) => DM_512_342_MODE_ID,
+            (640, 480) => DM_640_480_MODE_ID,
+            _ => DM_NATIVE_MODE_ID,
         }
+    }
+
+    fn write_display_mode_list_entry(
+        bus: &mut MacMemoryBus,
+        entry_base: u32,
+        mode: u32,
+        width: u16,
+        height: u16,
+        pixel_size: u16,
+        screen_base: u32,
+    ) -> Option<()> {
+        let row_bytes = Self::row_bytes_for_depth(width, pixel_size)?;
+        let depth_mode = crate::display::classic_depth_mode(pixel_size)?;
+        let entry = entry_base + DM_MODE_LIST_ENTRY_OFFSET;
+        let switch_info = entry_base + DM_MODE_LIST_SWITCH_INFO_OFFSET;
+        let resolution = entry_base + DM_MODE_LIST_RESOLUTION_INFO_OFFSET;
+        let timing = entry_base + DM_MODE_LIST_TIMING_INFO_OFFSET;
+        let depth_block = entry_base + DM_MODE_LIST_DEPTH_BLOCK_OFFSET;
+        let depth_info = entry_base + DM_MODE_LIST_DEPTH_INFO_OFFSET;
+        let vp_block = entry_base + DM_MODE_LIST_VP_BLOCK_OFFSET;
+        let name = entry_base + DM_MODE_LIST_NAME_OFFSET;
+
+        bus.write_long(entry + 4, switch_info);
+        bus.write_long(entry + 8, resolution);
+        bus.write_long(entry + 12, timing);
+        bus.write_long(entry + 16, depth_block);
+        bus.write_long(entry + 20, 1);
+        bus.write_long(entry + 24, name);
+        bus.write_word(switch_info, depth_mode);
+        bus.write_long(switch_info + 2, mode);
+        bus.write_long(switch_info + 8, screen_base);
+        bus.write_long(resolution + 4, mode);
+        bus.write_long(resolution + 8, u32::from(width));
+        bus.write_long(resolution + 12, u32::from(height));
+        bus.write_long(resolution + 16, 60 << 16);
+        bus.write_long(resolution + 20, u32::from(depth_mode));
+        bus.write_long(timing, mode);
+        bus.write_long(depth_block, 1);
+        bus.write_long(depth_block + 4, depth_info);
+        bus.write_long(depth_info, switch_info);
+        bus.write_long(depth_info + 4, vp_block);
+        bus.write_word(vp_block + 4, row_bytes as u16);
+        bus.write_word(vp_block + 6, 0);
+        bus.write_word(vp_block + 8, 0);
+        bus.write_word(vp_block + 10, height);
+        bus.write_word(vp_block + 12, width);
+        bus.write_long(vp_block + 22, 72 << 16);
+        bus.write_long(vp_block + 26, 72 << 16);
+        bus.write_word(vp_block + 32, pixel_size);
+        bus.write_word(vp_block + 34, 1);
+        bus.write_word(vp_block + 36, pixel_size);
+        let mode_name = if pixel_size <= 8 {
+            format!("{} x {}, {} Colors", width, height, 1u32 << pixel_size)
+        } else {
+            format!("{} x {}, {}-bit Color", width, height, pixel_size)
+        };
+        let mode_name = mode_name.as_bytes();
+        let name_len = mode_name.len().min(31);
+        bus.write_byte(name, name_len as u8);
+        bus.write_bytes(name + 1, &mode_name[..name_len]);
+        Some(())
     }
 
     fn sync_main_gdevice_geometry(

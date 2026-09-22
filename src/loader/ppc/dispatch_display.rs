@@ -1,6 +1,7 @@
 use super::*;
 
-pub(super) const PPC_DM_MODE_LIST_SIZE: u32 = 0x320;
+pub(super) const PPC_DM_MODE_LIST_ENTRY_STRIDE: u32 = 0x320;
+pub(super) const PPC_DM_MODE_LIST_SIZE: u32 = PPC_DM_MODE_LIST_ENTRY_STRIDE * 3;
 pub(super) const PPC_DM_MODE_LIST_MAGIC: u32 = u32::from_be_bytes(*b"DML1");
 pub(super) const PPC_DM_MODE_LIST_ENTRY_OFFSET: u32 = 0x10;
 pub(super) const PPC_DM_MODE_LIST_SWITCH_INFO_OFFSET: u32 = 0x30;
@@ -10,7 +11,11 @@ pub(super) const PPC_DM_MODE_LIST_DEPTH_BLOCK_OFFSET: u32 = 0xb8;
 pub(super) const PPC_DM_MODE_LIST_DEPTH_INFO_OFFSET: u32 = 0xd0;
 pub(super) const PPC_DM_MODE_LIST_VP_BLOCK_OFFSET: u32 = 0x140;
 pub(super) const PPC_DM_MODE_LIST_NAME_OFFSET: u32 = 0x220;
-pub(super) const PPC_DM_CURRENT_DISPLAY_MODE_ID: u32 = 0x80;
+pub(super) const PPC_DM_640_480_MODE_ID: u32 = 0x80;
+pub(super) const PPC_DM_512_342_MODE_ID: u32 = 0x81;
+pub(super) const PPC_DM_NATIVE_MODE_ID: u32 = 0x85;
+#[cfg(test)]
+pub(super) const PPC_DM_CURRENT_DISPLAY_MODE_ID: u32 = PPC_DM_NATIVE_MODE_ID;
 pub(super) const PPC_DM_NO_SWITCH_CONFIRM_MASK: u32 = 1;
 pub(super) const PPC_DM_DEPTH_NOT_AVAILABLE_MASK: u32 = 1 << 1;
 pub(super) const PPC_DM_MODE_NOT_FOUND_ERR: i16 = -330;
@@ -34,6 +39,35 @@ pub(super) struct PpcDmLiveDisplayMode {
     pub(super) component_count: u16,
     pub(super) component_size: u16,
     pub(super) plane_bytes: u32,
+}
+
+const PPC_DM_GEOMETRIES: [(u32, u32, u32); 3] = [
+    (PPC_DM_512_342_MODE_ID, 512, 342),
+    (PPC_DM_640_480_MODE_ID, 640, 480),
+    (PPC_DM_NATIVE_MODE_ID, 0, 0),
+];
+
+pub(super) fn ppc_dm_geometry(display_mode_id: u32) -> Option<(u32, u32)> {
+    match display_mode_id {
+        PPC_DM_512_342_MODE_ID => Some((512, 342)),
+        PPC_DM_640_480_MODE_ID => Some((640, 480)),
+        PPC_DM_NATIVE_MODE_ID => Some((ppc_main_screen_width(), ppc_main_screen_height())),
+        _ => None,
+    }
+}
+
+fn ppc_dm_mode_id_for_geometry(width: u32, height: u32) -> u32 {
+    PPC_DM_GEOMETRIES
+        .into_iter()
+        .find_map(|(mode, candidate_width, candidate_height)| {
+            let (candidate_width, candidate_height) = if candidate_width == 0 {
+                (ppc_main_screen_width(), ppc_main_screen_height())
+            } else {
+                (candidate_width, candidate_height)
+            };
+            (width == candidate_width && height == candidate_height).then_some(mode)
+        })
+        .unwrap_or(PPC_DM_NATIVE_MODE_ID)
 }
 
 pub(super) struct PpcDisplayDispatchContext<'a> {
@@ -128,8 +162,9 @@ pub(super) fn dispatch_display_import(
                 || !ppc_memory_can_write_bytes(memory, mode_ok, 1)
             {
                 PPC_PARAM_ERR
-            } else if let Some(mode) = ppc_dm_live_display_mode(memory, cpu.gpr[3]) {
-                let supported = cpu.gpr[4] == mode.display_mode_id && cpu.gpr[5] == mode.depth_mode;
+            } else if ppc_main_gdevice_record_for_depth(memory, cpu.gpr[3]).is_some() {
+                let supported = ppc_dm_geometry(cpu.gpr[4]).is_some()
+                    && crate::display::classic_pixel_size(cpu.gpr[5] as u16).is_some();
                 let flags = if supported {
                     PPC_DM_NO_SWITCH_CONFIRM_MASK
                 } else {
@@ -156,7 +191,7 @@ pub(super) fn dispatch_display_import(
                 PPC_PARAM_ERR
             } else if ppc_main_gdevice_record_for_depth(memory, cpu.gpr[3]).is_none() {
                 PPC_PARAM_ERR
-            } else if cpu.gpr[4] != PPC_DM_CURRENT_DISPLAY_MODE_ID {
+            } else if ppc_dm_geometry(cpu.gpr[4]).is_none() {
                 PPC_DM_MODE_NOT_FOUND_ERR
             } else if let Some(requested_depth_mode) = memory.read_u32_be(depth_mode) {
                 if crate::display::classic_pixel_size(requested_depth_mode as u16).is_none() {
@@ -169,7 +204,7 @@ pub(super) fn dispatch_display_import(
                     let mut allocator = PpcProcessAllocatorView {
                         memory_manager: process_memory_manager,
                     };
-                    let result = ppc_set_depth(
+                    let result = ppc_set_depth_with_geometry(
                         &set_depth_cpu,
                         Some(&mut allocator),
                         memory,
@@ -181,6 +216,7 @@ pub(super) fn dispatch_display_import(
                         toolbox_startup,
                         screen_clut,
                         color_manager_clut,
+                        ppc_dm_geometry(cpu.gpr[4]),
                     );
                     result
                 }
@@ -284,7 +320,7 @@ pub(super) fn ppc_dm_live_display_mode(
     // storage format, and depth, while gdMode is the device's current depth
     // mode. Keep the Display Manager view derived from those live records.
     Some(PpcDmLiveDisplayMode {
-        display_mode_id: PPC_DM_CURRENT_DISPLAY_MODE_ID,
+        display_mode_id: ppc_dm_mode_id_for_geometry(width, height),
         depth_mode,
         base_addr: memory.read_u32_be(pixmap)?,
         row_bytes,
@@ -335,6 +371,28 @@ pub(super) fn ppc_dm_mode_at_depth(
         pixel_size: depth,
         component_count,
         component_size,
+        ..mode
+    })
+}
+
+fn ppc_dm_mode_at_geometry(
+    mode: PpcDmLiveDisplayMode,
+    display_mode_id: u32,
+    width: u32,
+    height: u32,
+) -> Option<PpcDmLiveDisplayMode> {
+    let row_bytes = u16::try_from(ppc_row_bytes(width, u32::from(mode.pixel_size))?).ok()?;
+    Some(PpcDmLiveDisplayMode {
+        display_mode_id,
+        row_bytes,
+        bounds: (
+            0,
+            0,
+            i16::try_from(height).ok()?,
+            i16::try_from(width).ok()?,
+        ),
+        width,
+        height,
         ..mode
     })
 }
@@ -406,86 +464,117 @@ pub(super) fn ppc_dm_new_display_mode_list_values(
         return PPC_PARAM_ERR;
     };
     const DEPTHS: [u16; 5] = [1, 2, 4, 8, 16];
-    let Some(modes) = DEPTHS
-        .map(|depth| ppc_dm_mode_at_depth(live_mode, depth))
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-    else {
-        return PPC_PARAM_ERR;
-    };
+    let mut geometries = Vec::new();
+    for (display_mode_id, width, height) in PPC_DM_GEOMETRIES {
+        let (width, height) = if width == 0 {
+            (ppc_main_screen_width(), ppc_main_screen_height())
+        } else {
+            (width, height)
+        };
+        if !geometries
+            .iter()
+            .any(|(_, candidate_width, candidate_height)| {
+                *candidate_width == width && *candidate_height == height
+            })
+        {
+            geometries.push((display_mode_id, width, height));
+        }
+    }
     let list = process_memory_manager.new_native_ptr(memory, PPC_DM_MODE_LIST_SIZE, true);
     ppc_apply_process_native_allocator(process_memory_manager, memory, heap_cursor, last_mem_error);
     if list == 0 {
         return PPC_MEM_FULL_ERR;
     }
-    let entry = list + PPC_DM_MODE_LIST_ENTRY_OFFSET;
-    let resolution = list + PPC_DM_MODE_LIST_RESOLUTION_INFO_OFFSET;
-    let timing = list + PPC_DM_MODE_LIST_TIMING_INFO_OFFSET;
-    let depth_block = list + PPC_DM_MODE_LIST_DEPTH_BLOCK_OFFSET;
-    let name = list + PPC_DM_MODE_LIST_NAME_OFFSET;
-
     // Universal Interfaces 3.4.1 Displays.h defines one
     // DMDisplayModeListEntryRec per timing and one DMDepthInfoRec per
-    // supported depth. The software display exposes one timing with every
-    // indexed and direct mode supported by SetDepth,
-    // regardless of which depth happens to be active while the caller asks.
+    // supported depth. Expose the compact Macintosh geometry, the common
+    // 13-inch geometry, and the user-selected native geometry. Applications
+    // can therefore choose a compatible logical screen without a title-
+    // specific host heuristic, while the native/user override remains active
+    // until a guest explicitly requests another advertised mode.
     let _ = memory.write_u32_be(list, PPC_DM_MODE_LIST_MAGIC);
     let _ = memory.write_u32_be(list + 4, display_id);
-    let _ = memory.write_u32_be(entry, 0);
-    let live_depth_index = DEPTHS
-        .iter()
-        .position(|depth| *depth == live_mode.pixel_size)
-        .unwrap_or(0) as u32;
-    let _ = memory.write_u32_be(
-        entry + 4,
-        list + PPC_DM_MODE_LIST_SWITCH_INFO_OFFSET + live_depth_index * 16,
-    );
-    let _ = memory.write_u32_be(entry + 8, resolution);
-    let _ = memory.write_u32_be(entry + 12, timing);
-    let _ = memory.write_u32_be(entry + 16, depth_block);
-    let _ = memory.write_u32_be(entry + 20, DEPTHS.len() as u32);
-    let _ = memory.write_u32_be(entry + 24, name);
-    let _ = memory.write_u32_be(entry + 28, 0);
+    let _ = memory.write_u32_be(list + 8, geometries.len() as u32);
+    for (geometry_index, (display_mode_id, width, height)) in geometries.iter().copied().enumerate()
+    {
+        let entry_base = list + geometry_index as u32 * PPC_DM_MODE_LIST_ENTRY_STRIDE;
+        let entry = entry_base + PPC_DM_MODE_LIST_ENTRY_OFFSET;
+        let resolution = entry_base + PPC_DM_MODE_LIST_RESOLUTION_INFO_OFFSET;
+        let timing = entry_base + PPC_DM_MODE_LIST_TIMING_INFO_OFFSET;
+        let depth_block = entry_base + PPC_DM_MODE_LIST_DEPTH_BLOCK_OFFSET;
+        let name = entry_base + PPC_DM_MODE_LIST_NAME_OFFSET;
+        let Some(geometry_mode) =
+            ppc_dm_mode_at_geometry(live_mode, display_mode_id, width, height)
+        else {
+            let _ = process_memory_manager.dispose_native_ptr(list);
+            return PPC_PARAM_ERR;
+        };
+        let Some(modes) = DEPTHS
+            .map(|depth| ppc_dm_mode_at_depth(geometry_mode, depth))
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+        else {
+            let _ = process_memory_manager.dispose_native_ptr(list);
+            return PPC_PARAM_ERR;
+        };
+        let live_depth_index = DEPTHS
+            .iter()
+            .position(|depth| *depth == live_mode.pixel_size)
+            .unwrap_or(0) as u32;
+        let _ = memory.write_u32_be(entry, 0);
+        let _ = memory.write_u32_be(
+            entry + 4,
+            entry_base + PPC_DM_MODE_LIST_SWITCH_INFO_OFFSET + live_depth_index * 16,
+        );
+        let _ = memory.write_u32_be(entry + 8, resolution);
+        let _ = memory.write_u32_be(entry + 12, timing);
+        let _ = memory.write_u32_be(entry + 16, depth_block);
+        let _ = memory.write_u32_be(entry + 20, DEPTHS.len() as u32);
+        let _ = memory.write_u32_be(entry + 24, name);
+        let _ = memory.write_u32_be(entry + 28, 0);
 
-    for (index, mode) in modes.iter().copied().enumerate() {
-        let offset = index as u32;
-        let switch_info = list + PPC_DM_MODE_LIST_SWITCH_INFO_OFFSET + offset * 16;
-        let depth_info = list + PPC_DM_MODE_LIST_DEPTH_INFO_OFFSET + offset * 20;
-        let vp_block = list + PPC_DM_MODE_LIST_VP_BLOCK_OFFSET + offset * 42;
-        let _ = ppc_dm_write_switch_info(memory, switch_info, mode);
-        let _ = memory.write_u32_be(depth_info, switch_info);
-        let _ = memory.write_u32_be(depth_info + 4, vp_block);
-        let _ = memory.write_u32_be(depth_info + 8, 0);
-        let _ = memory.write_u32_be(depth_info + 12, 0);
-        let _ = memory.write_u32_be(depth_info + 16, 0);
-        let _ = ppc_dm_write_vp_block(memory, vp_block, mode);
+        for (index, mode) in modes.iter().copied().enumerate() {
+            let offset = index as u32;
+            let switch_info = entry_base + PPC_DM_MODE_LIST_SWITCH_INFO_OFFSET + offset * 16;
+            let depth_info = entry_base + PPC_DM_MODE_LIST_DEPTH_INFO_OFFSET + offset * 20;
+            let vp_block = entry_base + PPC_DM_MODE_LIST_VP_BLOCK_OFFSET + offset * 42;
+            let _ = ppc_dm_write_switch_info(memory, switch_info, mode);
+            let _ = memory.write_u32_be(depth_info, switch_info);
+            let _ = memory.write_u32_be(depth_info + 4, vp_block);
+            let _ = memory.write_u32_be(depth_info + 8, 0);
+            let _ = memory.write_u32_be(depth_info + 12, 0);
+            let _ = memory.write_u32_be(depth_info + 16, 0);
+            let _ = ppc_dm_write_vp_block(memory, vp_block, mode);
+        }
+
+        let _ = memory.write_u32_be(resolution, 0);
+        let _ = memory.write_u32_be(resolution + 4, display_mode_id);
+        let _ = memory.write_u32_be(resolution + 8, width);
+        let _ = memory.write_u32_be(resolution + 12, height);
+        let _ = memory.write_u32_be(resolution + 16, 60 << 16);
+        let _ = memory.write_u32_be(resolution + 20, geometry_mode.depth_mode);
+        let _ = memory.write_u32_be(resolution + 24, 0);
+        let _ = memory.write_u32_be(resolution + 28, 0);
+
+        let _ = memory.write_u32_be(timing, display_mode_id);
+        let _ = memory.write_u32_be(timing + 4, 0);
+        let _ = memory.write_u32_be(timing + 8, 0);
+        let _ = memory.write_u32_be(timing + 12, 0);
+        let _ = memory.write_u32_be(timing + 16, 0b111);
+
+        let _ = memory.write_u32_be(depth_block, DEPTHS.len() as u32);
+        let _ = memory.write_u32_be(
+            depth_block + 4,
+            entry_base + PPC_DM_MODE_LIST_DEPTH_INFO_OFFSET,
+        );
+        let _ = memory.write_u32_be(depth_block + 8, 0);
+        let _ = memory.write_u32_be(depth_block + 12, 0);
+        let _ = memory.write_u32_be(depth_block + 16, 0);
+        // Video.h VPBlock is 68K-aligned even for CFM clients.
+        let mode_name = format!("{} x {}", width, height);
+        let _ = ppc_write_pstring_bytes(memory, name, mode_name.as_bytes());
     }
-
-    let _ = memory.write_u32_be(resolution, 0);
-    let _ = memory.write_u32_be(resolution + 4, live_mode.display_mode_id);
-    let _ = memory.write_u32_be(resolution + 8, live_mode.width);
-    let _ = memory.write_u32_be(resolution + 12, live_mode.height);
-    let _ = memory.write_u32_be(resolution + 16, 60 << 16);
-    let _ = memory.write_u32_be(resolution + 20, live_mode.depth_mode);
-    let _ = memory.write_u32_be(resolution + 24, 0);
-    let _ = memory.write_u32_be(resolution + 28, 0);
-
-    let _ = memory.write_u32_be(timing, live_mode.display_mode_id);
-    let _ = memory.write_u32_be(timing + 4, 0);
-    let _ = memory.write_u32_be(timing + 8, 0);
-    let _ = memory.write_u32_be(timing + 12, 0);
-    let _ = memory.write_u32_be(timing + 16, 0b111);
-
-    let _ = memory.write_u32_be(depth_block, DEPTHS.len() as u32);
-    let _ = memory.write_u32_be(depth_block + 4, list + PPC_DM_MODE_LIST_DEPTH_INFO_OFFSET);
-    let _ = memory.write_u32_be(depth_block + 8, 0);
-    let _ = memory.write_u32_be(depth_block + 12, 0);
-    let _ = memory.write_u32_be(depth_block + 16, 0);
-    // Video.h VPBlock is 68K-aligned even for CFM clients: long, short,
-    // Rect, two shorts, three longs, four shorts, and a final long.
-    let mode_name = format!("{} x {}", live_mode.width, live_mode.height);
-    let _ = ppc_write_pstring_bytes(memory, name, mode_name.as_bytes());
-    let _ = memory.write_u32_be(count_out, 1);
+    let _ = memory.write_u32_be(count_out, geometries.len() as u32);
     let _ = memory.write_u32_be(list_out, list);
     PPC_NO_ERR
 }
@@ -508,7 +597,9 @@ pub(super) fn ppc_dm_get_indexed_display_mode_values(
     user_data: u32,
 ) -> Option<PpcImportAction> {
     if memory.read_u32_be(list) != Some(PPC_DM_MODE_LIST_MAGIC)
-        || !matches!(item_index, 0 | 1)
+        || memory
+            .read_u32_be(list + 8)
+            .is_none_or(|count| item_index >= count)
         || callback == 0
     {
         return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
@@ -519,7 +610,11 @@ pub(super) fn ppc_dm_get_indexed_display_mode_values(
     install_powerpc_call_arguments(
         cpu,
         memory,
-        &[user_data, item_index, list + PPC_DM_MODE_LIST_ENTRY_OFFSET],
+        &[
+            user_data,
+            item_index,
+            list + item_index * PPC_DM_MODE_LIST_ENTRY_STRIDE + PPC_DM_MODE_LIST_ENTRY_OFFSET,
+        ],
     )?;
     Some(
         GuestCallEffect::call_guest(

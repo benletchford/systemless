@@ -1905,6 +1905,10 @@ pub struct TrapDispatcher {
     /// Screen mode: (screen_base, row_bytes, width, height, pixel_size)
     /// Defaults to 800x600 8bpp.
     pub screen_mode: (u32, u32, u16, u16, u16),
+    /// Initial host/user-selected logical geometry. Guest Display Manager
+    /// switches may temporarily change `screen_mode`; this remains the native
+    /// mode advertised for restoration and explicit override semantics.
+    pub(crate) native_screen_geometry: (u16, u16),
     /// Runtime device CLUT for 8bpp mode. 256 entries of [R, G, B] in 16-bit Mac values.
     /// Initialized to the standard Mac 8-bit system palette. Updated by SetEntries trap
     /// and low-level video driver cscSetEntries. Used for DISPLAY rendering only.
@@ -3696,6 +3700,10 @@ impl TrapDispatcher {
                     profile.screen_height,
                     profile.screen_depth,
                 )
+            },
+            native_screen_geometry: {
+                let profile = reference_machine_profile();
+                (profile.screen_width, profile.screen_height)
             },
             device_clut: SharedProcessValue::from_value(Self::standard_mac_8bpp_clut()),
             display_gamma: crate::process_context::SharedProcessDisplayGamma::default(),
