@@ -329,6 +329,7 @@ impl Machine {
         show_menu_bar: bool,
         application_partition_size: Option<u32>,
         remove_paths: &[&str],
+        file_mappings: &[(&str, &str)],
         runtime_pacing: RuntimePacing,
         mut on_progress: F,
     ) -> Result<Self, String>
@@ -385,6 +386,9 @@ impl Machine {
 
         on_progress(BootProgress::StartingRuntime);
         yield_to_browser_task().await;
+        for (source, destination) in file_mappings {
+            runner.map_vfs_file(source, destination)?;
+        }
         for plugin in plugin_files {
             runner.import_vfs_file_relative_to_launched_app(&plugin.mount_path, &plugin.file)?;
         }

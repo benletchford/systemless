@@ -561,6 +561,20 @@ fn validation_catches_semantic_errors() {
     e.runtime.remove_paths = vec!["../../etc".into()];
     assert!(validate::entry(&e).is_err());
     e.runtime.remove_paths.clear();
+    e.runtime
+        .file_mappings
+        .insert("Data".into(), "Folder/Data".into());
+    validate::entry(&e).unwrap();
+    e.runtime
+        .file_mappings
+        .insert("Other".into(), "Folder/Data".into());
+    assert!(validate::entry(&e).is_err());
+    e.runtime.file_mappings.clear();
+    e.runtime
+        .file_mappings
+        .insert("../Data".into(), "Folder/Data".into());
+    assert!(validate::entry(&e).is_err());
+    e.runtime.file_mappings.clear();
     e.default_architecture = Architecture::Ppc;
     e.architectures = vec![Architecture::M68k];
     assert!(validate::entry(&e).is_err());

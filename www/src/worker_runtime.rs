@@ -13,6 +13,8 @@ struct BootConfig {
     show_menu_bar: bool,
     application_partition_size: Option<u32>,
     remove_paths: Vec<String>,
+    #[serde(default)]
+    file_mappings: Vec<(String, String)>,
     runtime_pacing: RuntimePacing,
     arrows_as_numpad: bool,
 }
@@ -37,6 +39,11 @@ impl WorkerMachine {
         };
         let bytes = game_bytes.to_vec();
         let paths: Vec<&str> = config.remove_paths.iter().map(String::as_str).collect();
+        let mappings: Vec<(&str, &str)> = config
+            .file_mappings
+            .iter()
+            .map(|(source, destination)| (source.as_str(), destination.as_str()))
+            .collect();
         let mut machine = Machine::new_with_progress(
             &config.id,
             &bytes,
@@ -46,6 +53,7 @@ impl WorkerMachine {
             config.show_menu_bar,
             config.application_partition_size,
             &paths,
+            &mappings,
             config.runtime_pacing,
             |_| {},
         )

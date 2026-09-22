@@ -3380,6 +3380,31 @@ impl FixtureRunner {
         });
     }
 
+    /// Copy one loaded archive file to another guest VFS path while preserving
+    /// both forks and Finder metadata.
+    pub fn map_vfs_file(
+        &mut self,
+        source: &str,
+        destination: &str,
+    ) -> std::result::Result<(), String> {
+        let source = TrapDispatcher::normalize_vfs_path(source);
+        let destination = TrapDispatcher::normalize_vfs_path(destination);
+        if source.is_empty() || destination.is_empty() {
+            return Err("VFS file mappings require non-empty paths".to_string());
+        }
+        if self.vfs_file_snapshot(&destination).is_some() {
+            return Err(format!(
+                "VFS file mapping destination already exists: {destination}"
+            ));
+        }
+        let mut file = self
+            .vfs_file_snapshot(&source)
+            .ok_or_else(|| format!("VFS file mapping source does not exist: {source}"))?;
+        file.path = destination;
+        self.import_vfs_file(&file);
+        Ok(())
+    }
+
     pub fn import_vfs_file_relative_to_launched_app(
         &mut self,
         relative_dir: &str,

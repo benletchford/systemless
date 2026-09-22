@@ -318,6 +318,16 @@ pub fn entry(e: &Entry) -> Result<()> {
         relative_path(path)?;
         ensure!(paths.insert(path), "duplicate remove path");
     }
+    let mut destinations = BTreeSet::new();
+    for (source, destination) in &e.runtime.file_mappings {
+        relative_path(source)?;
+        relative_path(destination)?;
+        ensure!(source != destination, "file mapping must change the path");
+        ensure!(
+            destinations.insert(destination),
+            "duplicate file mapping destination"
+        );
+    }
     for (from, to) in &e.controls.key_mappings {
         key(from)?;
         key(to)?;

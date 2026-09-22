@@ -69,6 +69,7 @@ pub struct GameSettings {
     pub show_menu_bar: bool,
     pub application_partition_size: Option<u32>,
     pub remove_paths: &'static [&'static str],
+    pub file_mappings: &'static [(&'static str, &'static str)],
     pub runtime_pacing: RuntimePacing,
     pub plugins: &'static [GamePlugin],
 }
