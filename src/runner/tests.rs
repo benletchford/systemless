@@ -1687,6 +1687,46 @@
             .any(|entry| !entry.is_directory && entry.name == "Warblade"));
     }
 
+    #[test]
+    fn map_vfs_file_preserves_source_forks_metadata_and_rejects_collisions() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let source = VfsFileSnapshot {
+            path: "INDYDEMO.000".to_string(),
+            data_fork: vec![1, 2, 3],
+            resource_fork: vec![4, 5],
+            file_type: u32::from_be_bytes(*b"DATA"),
+            creator: u32::from_be_bytes(*b"Iny4"),
+            finder_flags: 0x4000,
+            created_date: 123,
+            modified_date: 456,
+        };
+        runner.import_vfs_file(&source);
+
+        runner
+            .map_vfs_file("INDYDEMO.000", "Atlantis Demo/INDYDEMO.000")
+            .expect("file mapping");
+
+        let mapped = runner
+            .vfs_file_snapshot("Atlantis Demo/INDYDEMO.000")
+            .expect("mapped file");
+        assert_eq!(mapped.data_fork, source.data_fork);
+        assert_eq!(mapped.resource_fork, source.resource_fork);
+        assert_eq!(mapped.file_type, source.file_type);
+        assert_eq!(mapped.creator, source.creator);
+        assert_eq!(mapped.finder_flags, source.finder_flags);
+        assert_eq!(mapped.created_date, source.created_date);
+        assert_eq!(mapped.modified_date, source.modified_date);
+        assert!(runner.vfs_file_snapshot("INDYDEMO.000").is_some());
+        assert!(runner
+            .map_vfs_file("INDYDEMO.000", "Atlantis Demo/INDYDEMO.000")
+            .unwrap_err()
+            .contains("destination already exists"));
+        assert!(runner
+            .map_vfs_file("MISSING", "Atlantis Demo/MISSING")
+            .unwrap_err()
+            .contains("source does not exist"));
+    }
+
     fn make_resource_fork_bytes(resources: &[([u8; 4], i16, &[u8])]) -> Vec<u8> {
         let mut type_groups: Vec<([u8; 4], Vec<(i16, &[u8], u32)>)> = Vec::new();
         for (res_type, res_id, data) in resources {

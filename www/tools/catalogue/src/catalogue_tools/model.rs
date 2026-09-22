@@ -197,6 +197,8 @@ pub struct Runtime {
     pub application_partition_size: Option<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub remove_paths: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub file_mappings: BTreeMap<String, String>,
     pub runtime_pacing: RuntimePacing,
 }
 

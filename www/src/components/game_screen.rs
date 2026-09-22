@@ -280,6 +280,7 @@ fn GameRuntime(
         let show_menu_bar = game.settings.show_menu_bar;
         let application_partition_size = game.settings.application_partition_size;
         let remove_paths = game.settings.remove_paths;
+        let file_mappings = game.settings.file_mappings;
         let runtime_pacing = game.settings.runtime_pacing;
         let selected_plugin_ids = selected_plugin_ids_for_effect.clone();
         let alive = alive.clone();
@@ -404,6 +405,7 @@ fn GameRuntime(
                 show_menu_bar,
                 application_partition_size,
                 remove_paths,
+                file_mappings,
                 runtime_pacing,
                 |progress| status.set(boot_progress_status(progress)),
             )
@@ -1989,6 +1991,7 @@ async fn boot_catalogue_worker(
         "show_menu_bar": game.settings.show_menu_bar,
         "application_partition_size": game.settings.application_partition_size,
         "remove_paths": game.settings.remove_paths,
+        "file_mappings": game.settings.file_mappings,
         "runtime_pacing": game.settings.runtime_pacing,
         "arrows_as_numpad": game.settings.arrows_as_numpad,
     });
