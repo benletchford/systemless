@@ -15463,7 +15463,8 @@
         assert_eq!(bus.read_long(event_desc), AE_TYPE_APPLE_EVENT);
         assert_ne!(bus.read_long(event_desc + 4), 0);
         let stored = disp
-            .ae_events
+            .ae_descriptor_state
+            .events
             .get(&event_desc)
             .expect("AECreateAppleEvent should record event attributes");
         assert_eq!(stored.event_class, event_class);
@@ -15616,7 +15617,8 @@
         assert_eq!(cpu.read_reg(Register::PC), handler_ptr);
         assert_eq!(bus.read_long(reply_desc), AE_TYPE_APPLE_EVENT);
         let reply_event = disp
-            .ae_events
+            .ae_descriptor_state
+            .events
             .get(&reply_desc)
             .expect("wait-reply AESend should provide a reply AppleEvent");
         assert_eq!(reply_event.event_class, AE_TYPE_APPLE_EVENT);
@@ -15697,7 +15699,7 @@
                 refcon: handler_refcon,
             },
         );
-        disp.ae_events.insert(
+        disp.ae_descriptor_state.with_mut(|state| state.events.insert(
             event_desc,
             crate::trap::dispatch::SyntheticAppleEvent {
                 event_class,
@@ -15705,7 +15707,7 @@
                 params: HashMap::new(),
                 items: Vec::new(),
             },
-        );
+        ));
         disp.ae_call_state = Some(outer_state.clone());
 
         cpu.write_reg(Register::PC, 0x00F0_2468);
@@ -15830,7 +15832,7 @@
 
         assert_eq!(bus.read_word(sp + 16), 0);
         assert_eq!(bus.read_long(result_desc), AE_TYPE_OBJECT_SPECIFIER);
-        assert!(disp.ae_descriptors.contains_key(&result_desc));
+        assert!(disp.ae_descriptor_state.descriptors.contains_key(&result_desc));
     }
 
     #[test]
@@ -16342,7 +16344,7 @@
 
         let data_handle = bus.read_long(token_desc + 4);
         let data_ptr = bus.read_long(data_handle);
-        assert!(disp.ae_descriptors.contains_key(&token_desc));
+        assert!(disp.ae_descriptor_state.descriptors.contains_key(&token_desc));
         assert!(disp.has_handle_ptr(data_ptr));
 
         cpu.write_reg(Register::A7, sp);
@@ -16355,7 +16357,7 @@
         assert_eq!(bus.read_word(sp + 4), 0);
         assert_eq!(bus.read_long(token_desc), AE_TYPE_NULL);
         assert_eq!(bus.read_long(token_desc + 4), 0);
-        assert!(!disp.ae_descriptors.contains_key(&token_desc));
+        assert!(!disp.ae_descriptor_state.descriptors.contains_key(&token_desc));
         assert!(!disp.has_handle_ptr(data_ptr));
     }
 
@@ -16368,7 +16370,7 @@
 
         bus.write_long(event_desc, AE_TYPE_APPLE_EVENT);
         bus.write_long(event_desc + 4, 0x0030_0200);
-        disp.ae_events.insert(
+        disp.ae_descriptor_state.with_mut(|state| state.events.insert(
             event_desc,
             crate::trap::dispatch::SyntheticAppleEvent {
                 event_class: AE_TYPE_APPLE_EVENT,
@@ -16376,7 +16378,7 @@
                 params: HashMap::new(),
                 items: Vec::new(),
             },
-        );
+        ));
 
         // Selector $0812 => AEGetParamDesc(event, keyDirectObject,
         // typeWildCard, result). The synthetic OAPP event has no direct
@@ -16416,7 +16418,7 @@
 
         bus.write_long(event_desc, AE_TYPE_APPLE_EVENT);
         bus.write_long(event_desc + 4, 0x0030_0400);
-        disp.ae_events.insert(
+        disp.ae_descriptor_state.with_mut(|state| state.events.insert(
             event_desc,
             crate::trap::dispatch::SyntheticAppleEvent {
                 event_class,
@@ -16424,7 +16426,7 @@
                 params: HashMap::new(),
                 items: Vec::new(),
             },
-        );
+        ));
 
         // Selector $0E15 => AEGetAttributePtr(event, keyEventIDAttr,
         // typeWildCard, typeCode, dataPtr, maximumSize, actualSize).
@@ -16574,8 +16576,8 @@
         assert_eq!(bus.get_alloc_size(reply_desc), None);
         assert_eq!(bus.get_alloc_size(event_handle), None);
         assert_eq!(bus.get_alloc_size(event_data), None);
-        assert!(!disp.ae_events.contains_key(&event_desc));
-        assert!(!disp.ae_descriptors.contains_key(&event_desc));
+        assert!(!disp.ae_descriptor_state.events.contains_key(&event_desc));
+        assert!(!disp.ae_descriptor_state.descriptors.contains_key(&event_desc));
     }
 
     #[test]
@@ -16615,8 +16617,8 @@
         assert_eq!(cpu.read_reg(Register::D0), -108i32 as u32);
         assert_eq!(bus.read_word(sp + 4), (-108i16) as u16);
         assert_eq!(bus.get_alloc_size(transient_descriptor), None);
-        assert!(disp.ae_events.is_empty());
-        assert!(disp.ae_descriptors.is_empty());
+        assert!(disp.ae_descriptor_state.events.is_empty());
+        assert!(disp.ae_descriptor_state.descriptors.is_empty());
         assert!(disp.ae_call_state.is_none());
     }
 

@@ -1433,16 +1433,16 @@ impl super::TrapDispatcher {
         }
         let data_handle = bus.read_long(desc_ptr + 4);
         if data_handle != 0 {
-            if let Some(backing) = self.ae_descriptor_backing.get(&data_handle) {
+            if let Some(backing) = self.ae_descriptor_state.backing.get(&data_handle) {
                 let mut desc = backing.clone();
                 desc.desc_type = desc_type;
                 return Some(desc);
             }
         }
-        if let Some(desc) = self.ae_descriptors.get(&desc_ptr) {
+        if let Some(desc) = self.ae_descriptor_state.descriptors.get(&desc_ptr) {
             return Some(desc.clone());
         }
-        if self.ae_events.contains_key(&desc_ptr) {
+        if self.ae_descriptor_state.events.contains_key(&desc_ptr) {
             return Some(AeDescriptor {
                 desc_type: AE_TYPE_APPLE_EVENT,
                 data: Vec::new(),
@@ -1495,7 +1495,7 @@ impl super::TrapDispatcher {
         event_desc: u32,
         keyword: u32,
     ) -> Option<AeDescriptor> {
-        self.ae_events
+        self.ae_descriptor_state.events
             .get(&event_desc)
             .and_then(|event| event.params.get(&keyword).cloned())
             .or_else(|| {
@@ -1504,20 +1504,35 @@ impl super::TrapDispatcher {
             })
     }
 
-    fn ae_event_attribute_value(&self, event_desc: u32, keyword: u32) -> Option<AeDescriptor> {
-        self.ae_events.get(&event_desc).and_then(|event| {
-            let value = if keyword == AE_KEY_EVENT_CLASS_ATTR {
-                event.event_class
-            } else if keyword == AE_KEY_EVENT_ID_ATTR {
-                event.event_id
-            } else {
-                return None;
-            };
-            Some(Self::ae_descriptor(
-                AE_TYPE_TYPE,
-                value.to_be_bytes().to_vec(),
-            ))
-        })
+    fn ae_event_attribute_value(
+        &self,
+        bus: &MacMemoryBus,
+        event_desc: u32,
+        keyword: u32,
+    ) -> Option<AeDescriptor> {
+        let value = self
+            .ae_descriptor_state
+            .events
+            .get(&event_desc)
+            .map(|event| (event.event_class, event.event_id))
+            .or_else(|| {
+                let descriptor = self.read_ae_descriptor_value(bus, event_desc)?;
+                (descriptor.data.len() >= 8).then(|| {
+                    (
+                        u32::from_be_bytes(descriptor.data[0..4].try_into().unwrap()),
+                        u32::from_be_bytes(descriptor.data[4..8].try_into().unwrap()),
+                    )
+                })
+            })?;
+        let value = match keyword {
+            AE_KEY_EVENT_CLASS_ATTR => value.0,
+            AE_KEY_EVENT_ID_ATTR => value.1,
+            _ => return None,
+        };
+        Some(Self::ae_descriptor(
+            AE_TYPE_TYPE,
+            value.to_be_bytes().to_vec(),
+        ))
     }
 
     fn ae_put_record_field(desc: &mut AeDescriptor, keyword: u32, value: AeDescriptor) {
@@ -1544,6 +1559,26 @@ impl super::TrapDispatcher {
         } else {
             event.items.push((keyword, value));
         }
+    }
+
+    fn sync_ae_event_descriptor_backing(&self, bus: &MacMemoryBus, event_desc: u32) {
+        let data_handle = bus.read_long(event_desc + 4);
+        self.ae_descriptor_state.with_mut(|state| {
+            let Some(event) = state.events.get(&event_desc).cloned() else {
+                return;
+            };
+            let mut descriptor = state
+                .descriptors
+                .get(&event_desc)
+                .cloned()
+                .unwrap_or_else(|| Self::ae_descriptor(AE_TYPE_APPLE_EVENT, Vec::new()));
+            descriptor.fields = event.params;
+            descriptor.items = event.items;
+            state.descriptors.insert(event_desc, descriptor.clone());
+            if data_handle != 0 {
+                state.backing.insert(data_handle, descriptor);
+            }
+        });
     }
 
     fn ae_list_item_at(desc: &AeDescriptor, index: u32) -> Option<(u32, AeDescriptor)> {
@@ -1601,10 +1636,12 @@ impl super::TrapDispatcher {
         };
         bus.write_long(desc_ptr, desc.desc_type);
         bus.write_long(desc_ptr + 4, data_handle);
-        if data_handle != 0 && Self::ae_descriptor_needs_backing(&desc) {
-            self.ae_descriptor_backing.insert(data_handle, desc.clone());
+        if data_handle != 0 {
+            self.ae_descriptor_state
+                .with_mut(|state| state.backing.insert(data_handle, desc.clone()));
         }
-        self.ae_descriptors.insert(desc_ptr, desc);
+        self.ae_descriptor_state
+            .with_mut(|state| state.descriptors.insert(desc_ptr, desc));
     }
 
     fn write_synthetic_apple_event_descriptor(
@@ -1622,15 +1659,17 @@ impl super::TrapDispatcher {
             desc_ptr,
             Self::ae_descriptor(AE_TYPE_APPLE_EVENT, event_data),
         );
-        self.ae_events.insert(
-            desc_ptr,
-            SyntheticAppleEvent {
-                event_class,
-                event_id,
-                params: HashMap::new(),
-                items: Vec::new(),
-            },
-        );
+        self.ae_descriptor_state.with_mut(|state| {
+            state.events.insert(
+                desc_ptr,
+                SyntheticAppleEvent {
+                    event_class,
+                    event_id,
+                    params: HashMap::new(),
+                    items: Vec::new(),
+                },
+            )
+        });
     }
 
     fn dispose_ae_descriptor_record(&mut self, bus: &mut MacMemoryBus, desc_ptr: u32) {
@@ -1645,8 +1684,10 @@ impl super::TrapDispatcher {
             0
         };
 
-        self.ae_events.remove(&desc_ptr);
-        self.ae_descriptors.remove(&desc_ptr);
+        self.ae_descriptor_state.with_mut(|state| {
+            state.events.remove(&desc_ptr);
+            state.descriptors.remove(&desc_ptr);
+        });
         // AEDesc records are copied by value; sibling records may still share
         // this data handle, so keep structured backing until the process exits.
         if data_ptr != 0 {
@@ -1660,10 +1701,14 @@ impl super::TrapDispatcher {
             return;
         }
         let data_handle = bus.read_long(desc_ptr + 4);
-        self.ae_events.remove(&desc_ptr);
-        self.ae_descriptors.remove(&desc_ptr);
+        self.ae_descriptor_state.with_mut(|state| {
+            state.events.remove(&desc_ptr);
+            state.descriptors.remove(&desc_ptr);
+            if data_handle != 0 {
+                state.backing.remove(&data_handle);
+            }
+        });
         if data_handle != 0 {
-            self.ae_descriptor_backing.remove(&data_handle);
             let _ = self.dispose_process_handle(bus, data_handle, true);
         }
         self.dispose_process_ptr(bus, desc_ptr);
@@ -7759,16 +7804,22 @@ impl super::TrapDispatcher {
                     }
                     let mut err = AE_ERR_DESC_NOT_FOUND;
                     let value = Self::ae_descriptor(desc_type, data);
-                    if let Some(event) = self.ae_events.get_mut(&list_desc) {
-                        err = if index == 0 || index as usize == event.items.len() + 1 {
-                            event.items.push((AE_TYPE_WILDCARD, value));
-                            0
-                        } else if (index as usize) <= event.items.len() {
-                            event.items[index as usize - 1] = (AE_TYPE_WILDCARD, value);
-                            0
-                        } else {
-                            AE_ERR_ILLEGAL_INDEX
-                        };
+                    if self.ae_descriptor_state.events.contains_key(&list_desc) {
+                        err = self.ae_descriptor_state.with_mut(|state| {
+                            let event = state.events.get_mut(&list_desc).unwrap();
+                            if index == 0 || index as usize == event.items.len() + 1 {
+                                event.items.push((AE_TYPE_WILDCARD, value));
+                                0
+                            } else if (index as usize) <= event.items.len() {
+                                event.items[index as usize - 1] = (AE_TYPE_WILDCARD, value);
+                                0
+                            } else {
+                                AE_ERR_ILLEGAL_INDEX
+                            }
+                        });
+                        if err == 0 {
+                            self.sync_ae_event_descriptor_backing(bus, list_desc);
+                        }
                     } else if let Some(mut list) = self.read_ae_descriptor_value(bus, list_desc) {
                         err = Self::ae_put_list_item(&mut list, index, AE_TYPE_WILDCARD, value);
                         if err == 0 {
@@ -7788,16 +7839,22 @@ impl super::TrapDispatcher {
                     let value = self.read_ae_descriptor_value(bus, source_desc);
                     let mut err = AE_ERR_DESC_NOT_FOUND;
                     if let Some(value) = value {
-                        if let Some(event) = self.ae_events.get_mut(&list_desc) {
-                            err = if index == 0 || index as usize == event.items.len() + 1 {
-                                event.items.push((AE_TYPE_WILDCARD, value));
-                                0
-                            } else if (index as usize) <= event.items.len() {
-                                event.items[index as usize - 1] = (AE_TYPE_WILDCARD, value);
-                                0
-                            } else {
-                                AE_ERR_ILLEGAL_INDEX
-                            };
+                        if self.ae_descriptor_state.events.contains_key(&list_desc) {
+                            err = self.ae_descriptor_state.with_mut(|state| {
+                                let event = state.events.get_mut(&list_desc).unwrap();
+                                if index == 0 || index as usize == event.items.len() + 1 {
+                                    event.items.push((AE_TYPE_WILDCARD, value));
+                                    0
+                                } else if (index as usize) <= event.items.len() {
+                                    event.items[index as usize - 1] = (AE_TYPE_WILDCARD, value);
+                                    0
+                                } else {
+                                    AE_ERR_ILLEGAL_INDEX
+                                }
+                            });
+                            if err == 0 {
+                                self.sync_ae_event_descriptor_backing(bus, list_desc);
+                            }
                         } else if let Some(mut list) = self.read_ae_descriptor_value(bus, list_desc)
                         {
                             err = Self::ae_put_list_item(&mut list, index, AE_TYPE_WILDCARD, value);
@@ -7825,7 +7882,8 @@ impl super::TrapDispatcher {
                     let count_ptr = bus.read_long(sp);
                     let list_desc = bus.read_long(sp + 4);
                     let count = self
-                        .ae_events
+                        .ae_descriptor_state
+                        .events
                         .get(&list_desc)
                         .map(|event| event.items.len())
                         .or_else(|| {
@@ -7859,7 +7917,8 @@ impl super::TrapDispatcher {
                     let index = bus.read_long(sp + 24);
                     let list_desc = bus.read_long(sp + 28);
                     let found = self
-                        .ae_events
+                        .ae_descriptor_state
+                        .events
                         .get(&list_desc)
                         .and_then(|event| {
                             if index == 0 {
@@ -7924,7 +7983,8 @@ impl super::TrapDispatcher {
                     let index = bus.read_long(sp + 12);
                     let list_desc = bus.read_long(sp + 16);
                     let found = self
-                        .ae_events
+                        .ae_descriptor_state
+                        .events
                         .get(&list_desc)
                         .and_then(|event| {
                             if index == 0 {
@@ -7967,7 +8027,8 @@ impl super::TrapDispatcher {
                     let index = bus.read_long(sp + 8);
                     let list_desc = bus.read_long(sp + 12);
                     let found = self
-                        .ae_events
+                        .ae_descriptor_state
+                        .events
                         .get(&list_desc)
                         .and_then(|event| {
                             if index == 0 {
@@ -8077,8 +8138,15 @@ impl super::TrapDispatcher {
                         }
                     }
                     let value = Self::ae_descriptor(desc_type, data);
-                    if let Some(event) = self.ae_events.get_mut(&target_desc) {
-                        Self::ae_put_event_param(event, keyword, value);
+                    if self.ae_descriptor_state.events.contains_key(&target_desc) {
+                        self.ae_descriptor_state.with_mut(|state| {
+                            Self::ae_put_event_param(
+                                state.events.get_mut(&target_desc).unwrap(),
+                                keyword,
+                                value,
+                            );
+                        });
+                        self.sync_ae_event_descriptor_backing(bus, target_desc);
                     } else if let Some(mut target) = self.read_ae_descriptor_value(bus, target_desc)
                     {
                         Self::ae_put_record_field(&mut target, keyword, value);
@@ -8096,8 +8164,15 @@ impl super::TrapDispatcher {
                     let target_desc = bus.read_long(sp + 8);
                     let desc = self.read_ae_descriptor_value(bus, source_desc);
                     if let Some(desc) = desc {
-                        if let Some(event) = self.ae_events.get_mut(&target_desc) {
-                            Self::ae_put_event_param(event, keyword, desc);
+                        if self.ae_descriptor_state.events.contains_key(&target_desc) {
+                            self.ae_descriptor_state.with_mut(|state| {
+                                Self::ae_put_event_param(
+                                    state.events.get_mut(&target_desc).unwrap(),
+                                    keyword,
+                                    desc,
+                                );
+                            });
+                            self.sync_ae_event_descriptor_backing(bus, target_desc);
                         } else if let Some(mut target) =
                             self.read_ae_descriptor_value(bus, target_desc)
                         {
@@ -8295,7 +8370,7 @@ impl super::TrapDispatcher {
                     let type_code_ptr = bus.read_long(sp + 4);
                     let keyword = bus.read_long(sp + 8);
                     let event_desc = bus.read_long(sp + 12);
-                    let found = self.ae_event_attribute_value(event_desc, keyword);
+                    let found = self.ae_event_attribute_value(bus, event_desc, keyword);
                     let err = if let Some(desc) = found {
                         if type_code_ptr != 0 {
                             bus.write_long(type_code_ptr, desc.desc_type);
@@ -8344,7 +8419,7 @@ impl super::TrapDispatcher {
                     let desired_type = bus.read_long(sp + 16);
                     let keyword = bus.read_long(sp + 20);
                     let event_desc = bus.read_long(sp + 24);
-                    let attr_value = self.ae_event_attribute_value(event_desc, keyword);
+                    let attr_value = self.ae_event_attribute_value(bus, event_desc, keyword);
                     let err = if let Some(desc) = attr_value {
                         if desired_type != AE_TYPE_WILDCARD && desired_type != desc.desc_type {
                             AE_ERR_COERCION_FAIL
@@ -8389,7 +8464,7 @@ impl super::TrapDispatcher {
                     let desired_type = bus.read_long(sp + 4);
                     let keyword = bus.read_long(sp + 8);
                     let event_desc = bus.read_long(sp + 12);
-                    let attr_value = self.ae_event_attribute_value(event_desc, keyword);
+                    let attr_value = self.ae_event_attribute_value(bus, event_desc, keyword);
                     let err = if let Some(desc) = attr_value {
                         if desired_type != AE_TYPE_WILDCARD && desired_type != desc.desc_type {
                             write_null_aedesc(bus, result_desc);
@@ -8769,12 +8844,19 @@ impl super::TrapDispatcher {
                                 AE_EVENT_ID_ANSWER,
                             );
                         } else {
-                            self.ae_events.remove(&reply_desc);
-                            self.ae_descriptors.remove(&reply_desc);
+                            self.ae_descriptor_state.with_mut(|state| {
+                                state.events.remove(&reply_desc);
+                                state.descriptors.remove(&reply_desc);
+                            });
                             write_null_aedesc(bus, reply_desc);
                         }
                     }
-                    if let Some(event) = self.ae_events.get(&event_desc).cloned() {
+                    if let Some(event) = self
+                        .ae_descriptor_state
+                        .events
+                        .get(&event_desc)
+                        .cloned()
+                    {
                         if let Some(handler) =
                             self.apple_event_handler_for(event.event_class, event.event_id)
                         {

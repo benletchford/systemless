@@ -567,4 +567,35 @@ fn native_apple_event_dispatch_enters_registered_classic_handler() {
     let pending = native.guest_calls().activate_m68k().unwrap();
     assert_eq!(pending.entry, classic_handler);
     assert_eq!(native.apple_events.pending_dispatches.len(), 1);
+    let dispatch = native.apple_events.pending_dispatches[0];
+    let mut classic_descriptors = SharedProcessAppleEventDescriptors::default();
+    context.attach_apple_event_descriptors(&mut classic_descriptors);
+    let event = classic_descriptors
+        .events
+        .get(&dispatch.descriptors)
+        .expect("classic adapter sees native callback event semantics");
+    assert_eq!(event.event_class, PPC_CORE_EVENT_CLASS);
+    assert_eq!(event.event_id, PPC_OPEN_APPLICATION_EVENT);
+    assert!(classic_descriptors
+        .descriptors
+        .contains_key(&(dispatch.descriptors + 8)));
+
+    {
+        let mut manager = context.memory_manager_mut();
+        ppc_complete_apple_event_dispatch(
+            &mut native.apple_events,
+            0,
+            &mut manager,
+            &mut native.memory,
+            &mut heap_cursor,
+            &mut last_mem_error,
+            &mut handles,
+        );
+    }
+    assert!(!classic_descriptors
+        .events
+        .contains_key(&dispatch.descriptors));
+    assert!(!classic_descriptors
+        .descriptors
+        .contains_key(&dispatch.descriptors));
 }

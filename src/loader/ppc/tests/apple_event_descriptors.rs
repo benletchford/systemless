@@ -3,24 +3,42 @@ use super::*;
 #[test]
 fn apple_event_compatibility_imports_pre_resolve_to_typed_operations() {
     for (symbol, operation) in [
-        ("AECountItems", PpcAppleEventCompatibilityOperation::CountItems),
+        (
+            "AECountItems",
+            PpcAppleEventCompatibilityOperation::CountItems,
+        ),
         (
             "AECreateAppleEvent",
             PpcAppleEventCompatibilityOperation::CreateAppleEvent,
         ),
-        ("AECreateDesc", PpcAppleEventCompatibilityOperation::CreateDesc),
-        ("AEDisposeDesc", PpcAppleEventCompatibilityOperation::DisposeDesc),
+        (
+            "AECreateDesc",
+            PpcAppleEventCompatibilityOperation::CreateDesc,
+        ),
+        (
+            "AEDisposeDesc",
+            PpcAppleEventCompatibilityOperation::DisposeDesc,
+        ),
         (
             "AEGetAttributePtr",
             PpcAppleEventCompatibilityOperation::GetAttributePtr,
         ),
-        ("AEGetNthPtr", PpcAppleEventCompatibilityOperation::GetNthPtr),
+        (
+            "AEGetNthPtr",
+            PpcAppleEventCompatibilityOperation::GetNthPtr,
+        ),
         (
             "AEGetParamDesc",
             PpcAppleEventCompatibilityOperation::GetParamDesc,
         ),
-        ("AEPutParamDesc", PpcAppleEventCompatibilityOperation::PutParamDesc),
-        ("AEPutParamPtr", PpcAppleEventCompatibilityOperation::PutParamPtr),
+        (
+            "AEPutParamDesc",
+            PpcAppleEventCompatibilityOperation::PutParamDesc,
+        ),
+        (
+            "AEPutParamPtr",
+            PpcAppleEventCompatibilityOperation::PutParamPtr,
+        ),
         ("AESend", PpcAppleEventCompatibilityOperation::Send),
     ] {
         assert_eq!(
@@ -58,6 +76,7 @@ fn native_ppc_apple_event_descriptors_own_and_dispose_guest_data() {
         &[],
     );
     let mut handles = Vec::new();
+    let mut apple_events = PpcAppleEventState::default();
     assert_eq!(
         ppc_dispatch_apple_event_compatibility(
             PpcAppleEventCompatibilityOperation::CreateDesc,
@@ -68,6 +87,7 @@ fn native_ppc_apple_event_descriptors_own_and_dispose_guest_data() {
             0x5000,
             &mut last_mem_error,
             &mut handles,
+            &mut apple_events,
         ),
         PpcImportAction::Return(0)
     );
@@ -92,6 +112,7 @@ fn native_ppc_apple_event_descriptors_own_and_dispose_guest_data() {
             0x5000,
             &mut last_mem_error,
             &mut handles,
+            &mut apple_events,
         ),
         PpcImportAction::Return(0)
     );
@@ -227,6 +248,81 @@ fn apple_event_descriptor_allocation_failure_is_atomic() {
 }
 
 #[test]
+fn native_apple_event_parameters_round_trip_through_process_semantics() {
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    let mut context = ProcessContext::default();
+    native.attach_unconverted_process_services(&mut context);
+    let scratch = PPC_DATA_BASE + 0x2280;
+    let source_bytes = scratch;
+    let source_desc = scratch + 0x20;
+    let event_desc = scratch + 0x40;
+    let result_desc = scratch + 0x60;
+    native.memory.add_region(scratch, vec![0; 0x80]);
+    native
+        .memory
+        .write_bytes(source_bytes, b"shared value")
+        .unwrap();
+
+    native.cpu.gpr[3] = u32::from_be_bytes(*b"TEXT");
+    native.cpu.gpr[4] = source_bytes;
+    native.cpu.gpr[5] = 12;
+    native.cpu.gpr[6] = source_desc;
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::CreateDesc,
+        ),
+    );
+
+    native.cpu.gpr[3] = u32::from_be_bytes(*b"misc");
+    native.cpu.gpr[4] = u32::from_be_bytes(*b"slct");
+    native.cpu.gpr[8] = event_desc;
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::CreateAppleEvent,
+        ),
+    );
+
+    let keyword = u32::from_be_bytes(*b"----");
+    native.cpu.gpr[3] = event_desc;
+    native.cpu.gpr[4] = keyword;
+    native.cpu.gpr[5] = source_desc;
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::PutParamDesc,
+        ),
+    );
+    assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_NO_ERR);
+
+    native.cpu.gpr[3] = event_desc;
+    native.cpu.gpr[4] = keyword;
+    native.cpu.gpr[5] = PPC_TYPE_WILDCARD;
+    native.cpu.gpr[6] = result_desc;
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::GetParamDesc,
+        ),
+    );
+    assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_NO_ERR);
+    assert_eq!(
+        native.memory.read_u32_be(result_desc),
+        Some(u32::from_be_bytes(*b"TEXT"))
+    );
+    let result_handle = native.memory.read_u32_be(result_desc + 4).unwrap();
+    let allocation = context
+        .memory_manager_mut()
+        .native_allocation(result_handle)
+        .unwrap();
+    assert_eq!(
+        ppc_memory_read_bytes(&mut native.memory, allocation.ptr, allocation.size),
+        Some(b"shared value".to_vec())
+    );
+}
+
+#[test]
 fn object_specifier_descriptors_are_immediately_process_owned() {
     let pef = synthetic_pef_with_library_import(b"ObjectSupportLib", b"CreateObjSpecifier");
     let mut native = load_pef_application(&pef).unwrap();
@@ -274,13 +370,15 @@ fn object_specifier_descriptors_are_immediately_process_owned() {
 }
 
 #[test]
-fn apple_event_records_use_process_owned_empty_handles() {
+fn apple_event_records_use_process_owned_semantic_handles() {
     let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"AECreateAppleEvent");
     let mut native = load_pef_application(&pef).unwrap();
     let mut context = ProcessContext::default();
     native.attach_unconverted_process_services(&mut context);
     let descriptor = PPC_DATA_BASE + 0x2500;
     native.memory.add_region(descriptor, vec![0; 8]);
+    native.cpu.gpr[3] = u32::from_be_bytes(*b"misc");
+    native.cpu.gpr[4] = u32::from_be_bytes(*b"slct");
     native.cpu.gpr[8] = descriptor;
 
     run_test_import(
@@ -300,7 +398,11 @@ fn apple_event_records_use_process_owned_empty_handles() {
         .memory_manager_mut()
         .native_allocation(handle)
         .unwrap();
-    assert_eq!(allocation.size, 0);
+    assert_eq!(allocation.size, 8);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut native.memory, allocation.ptr, allocation.size),
+        Some(b"miscslct".to_vec())
+    );
     assert_eq!(native.memory.read_u32_be(handle), Some(allocation.ptr));
     assert_eq!(
         context.memory_manager_mut().recover_handle(allocation.ptr),

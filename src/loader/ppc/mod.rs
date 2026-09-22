@@ -87,13 +87,14 @@ use crate::menu_manager::{
 };
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{
-    ProcessAppleEventHandler, ProcessContext, ProcessFileSystemState,
+    ProcessAeDescriptor, ProcessAppleEventHandler, ProcessContext, ProcessFileSystemState,
+    ProcessSyntheticAppleEvent,
     ProcessHandleHeap, ProcessHandleRecord, ProcessHandleStateRecord,
     ProcessMemoryManager, ProcessNewHandleBackend, ProcessNewHandleRequest,
     ProcessNativeHeapState, ProcessNativeMemoryManager, ProcessPtrRecord,
     ProcessResourceManagerState, ProcessVfsFileRecords,
-    ProcessVfsResourceFileRecords, ProcessWorkingDirectory, SharedProcessAppleEventHandlers,
-    SharedProcessAppleEventLaunchState,
+    ProcessVfsResourceFileRecords, ProcessWorkingDirectory, SharedProcessAppleEventDescriptors,
+    SharedProcessAppleEventHandlers, SharedProcessAppleEventLaunchState,
     SharedProcessCallbackScheduling, SharedProcessCollectionManager, SharedProcessCursorState,
     SharedProcessDialogText, SharedProcessDisplayClut,
     SharedProcessControlManager, SharedProcessEventQueue,
@@ -409,13 +410,18 @@ const PPC_NOT_ENOUGH_HARDWARE_ERR: i16 = -201;
 const PPC_SM_NO_MORE_SRSRCS_ERR: i16 = -344;
 const PPC_NO_MPP_ERR: i16 = -3102;
 const PPC_ERR_AE_DESC_NOT_FOUND: i16 = -1701;
+const PPC_ERR_AE_COERCION_FAIL: i16 = -1700;
 const PPC_ERR_AE_EVENT_NOT_HANDLED: i16 = -1708;
+const PPC_AE_BUFFER_IS_SMALL: i16 = -607;
 const PPC_HM_HELP_MANAGER_NOT_INITED: i16 = -855;
 const PPC_HIGH_LEVEL_EVENT_MASK: u16 = 0x0400;
 const PPC_HIGH_LEVEL_EVENT: u16 = 23;
 const PPC_CORE_EVENT_CLASS: u32 = u32::from_be_bytes(*b"aevt");
 const PPC_OPEN_APPLICATION_EVENT: u32 = u32::from_be_bytes(*b"oapp");
 const PPC_TYPE_WILDCARD: u32 = u32::from_be_bytes(*b"****");
+const PPC_KEY_EVENT_CLASS_ATTR: u32 = u32::from_be_bytes(*b"evcl");
+const PPC_KEY_EVENT_ID_ATTR: u32 = u32::from_be_bytes(*b"evid");
+const PPC_TYPE_TYPE: u32 = u32::from_be_bytes(*b"type");
 pub const PPC_BAD_FORMAT: i16 = -206;
 pub const PPC_CHANNEL_NOT_BUSY: i16 = -211;
 pub const PPC_GESTALT_UNDEF_SELECTOR_ERR: i16 = -5551;
@@ -3312,6 +3318,7 @@ struct PpcAppleEventDispatchAllocation {
 pub(crate) struct PpcAppleEventState {
     pub(crate) apple_event_launch_state: SharedProcessAppleEventLaunchState,
     handlers: SharedProcessAppleEventHandlers,
+    descriptors: SharedProcessAppleEventDescriptors,
     pending_dispatches: Vec<PpcAppleEventDispatchAllocation>,
 }
 
@@ -4618,6 +4625,7 @@ impl PpcLoadedApp {
         context.attach_mixed_mode_m68k_state(&mut self.toolbox_startup.mixed_mode_m68k);
         context.attach_apple_event_handlers(&mut self.apple_events.handlers);
         context.attach_apple_event_launch_state(&mut self.apple_events.apple_event_launch_state);
+        context.attach_apple_event_descriptors(&mut self.apple_events.descriptors);
     }
 
     /// Run one native operation with every process manager continuously attached.
@@ -21505,6 +21513,7 @@ fn ppc_dispatch_object_support_compatibility(
         heap_limit,
         last_mem_error,
         handles,
+        None,
         result_ptr,
         u32::from_be_bytes(*b"obj "),
         &data,
