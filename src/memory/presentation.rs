@@ -5,7 +5,9 @@
 mod compact;
 mod controls;
 mod resample;
+mod samples;
 pub use compact::{CompactPresentation, CompactPresentationCache};
+use samples::{DetailSamples, TILE_SAMPLES};
 
 use super::page_index::PageIndex;
 use super::{MacMemoryBus, MemoryBus};
@@ -388,8 +390,7 @@ pub struct VisibleImageStamp {
 
 impl PartialEq for VisibleImageStamp {
     fn eq(&self, other: &Self) -> bool {
-        self.revision == other.revision
-            && std::rc::Rc::ptr_eq(&self.identity, &other.identity)
+        self.revision == other.revision && std::rc::Rc::ptr_eq(&self.identity, &other.identity)
     }
 }
 
@@ -443,11 +444,11 @@ pub(crate) struct Presentation {
     direct_palettes: [[[u8; 3]; 256]; 4],
     pub scale: u32,
     palette: [[u8; 3]; 256],
-    pixels: Vec<u8>,
-    pixel_indices: Vec<u8>,
+    samples: DetailSamples,
     guest_values: Vec<u16>,
     text_cells: Vec<bool>,
     detail_cache: std::cell::RefCell<Vec<Option<Arc<DetailCell>>>>,
+    // Keys are cell * TILE_SAMPLES + sample, independent of screen stride.
     ink: HashMap<usize, Ink, BuildHasherDefault<SampleOffsetHasher>>,
     run_ink: HashSet<usize, BuildHasherDefault<SampleOffsetHasher>>,
     offscreen_run_ink: HashSet<(u32, usize)>,
@@ -694,7 +695,6 @@ impl Presentation {
         if self.depth == 8 && self.scale % scale == 0 {
             let factor = self.scale / scale;
             let count = factor * factor;
-            let stride = self.width as usize * self.scale as usize * 3;
             for y in 0..self.height {
                 for dy in 0..scale {
                     for x in 0..self.width {
@@ -703,15 +703,13 @@ impl Presentation {
                             emit(self.palette[self.guest_values[cell] as u8 as usize], scale);
                             continue;
                         }
+                        let samples = self.samples.get(cell);
                         for dx in 0..scale {
                             let mut sum = [0u32; 3];
-                            let start = (y * self.scale + dy * factor) as usize * stride
-                                + (x * self.scale + dx * factor) as usize * 3;
+                            let start = ((dy * factor) * self.scale + dx * factor) as usize;
                             for sy in 0..factor as usize {
-                                for rgb in self.pixels
-                                    [start + sy * stride..start + sy * stride + factor as usize * 3]
-                                    .chunks_exact(3)
-                                {
+                                let row = start + sy * self.scale as usize;
+                                for rgb in &samples.rgb[row..row + factor as usize] {
                                     for c in 0..3 {
                                         sum[c] += u32::from(rgb[c]);
                                     }
@@ -772,17 +770,7 @@ impl Presentation {
                                     let bx = x * lanes + lane;
                                     let cell = first + lane as usize;
                                     let color = if self.text_cells[cell] {
-                                        let index =
-                                            (((y * self.scale + sy) * self.width * self.scale
-                                                + bx * self.scale
-                                                + sx)
-                                                * 3)
-                                                as usize;
-                                        [
-                                            self.pixels[index],
-                                            self.pixels[index + 1],
-                                            self.pixels[index + 2],
-                                        ]
+                                        self.samples.get(cell).rgb[(sy * self.scale + sx) as usize]
                                     } else {
                                         self.palette_at(bx)[self.guest_values[cell] as u8 as usize]
                                     };
@@ -835,15 +823,7 @@ impl Presentation {
                             let bx = x * lanes + lane;
                             let cell = (y * self.width + bx) as usize;
                             let color = if self.text_cells[cell] {
-                                let start = (((y * self.scale + sy) * self.width * self.scale
-                                    + bx * self.scale
-                                    + sx)
-                                    * 3) as usize;
-                                [
-                                    self.pixels[start],
-                                    self.pixels[start + 1],
-                                    self.pixels[start + 2],
-                                ]
+                                self.samples.get(cell).rgb[(sy * self.scale + sx) as usize]
                             } else {
                                 self.palette_at(bx)[self.guest_values[cell] as u8 as usize]
                             };
@@ -867,12 +847,8 @@ impl Presentation {
                 for x in 0..self.width {
                     let cell = (y * self.width + x) as usize;
                     if self.text_cells[cell] {
-                        let start = ((y * self.scale + sy) * self.width * self.scale
-                            + x * self.scale) as usize
-                            * 3;
-                        for rgb in
-                            self.pixels[start..start + self.scale as usize * 3].chunks_exact(3)
-                        {
+                        let start = (sy * self.scale) as usize;
+                        for rgb in &self.samples.get(cell).rgb[start..start + self.scale as usize] {
                             output.push(map([rgb[0], rgb[1], rgb[2]]));
                         }
                     } else {
@@ -905,15 +881,11 @@ impl Presentation {
             indices: Vec::new(),
             ink: HashMap::default(),
         };
-        for sy in 0..self.scale {
-            for sx in 0..self.scale {
-                let pixel = ((y * self.scale + sy) * self.width * self.scale + x * self.scale + sx)
-                    as usize;
-                let i = cell.indices.len();
-                cell.indices.push(self.pixel_indices[pixel]);
-                if let Some(ink) = self.ink.get(&(pixel * 3)) {
-                    cell.ink.insert(i, ink.clone());
-                }
+        let samples = self.samples.get(index);
+        for i in 0..(self.scale * self.scale) as usize {
+            cell.indices.push(samples.indices[i]);
+            if let Some(ink) = self.ink.get(&(index * TILE_SAMPLES + i)) {
+                cell.ink.insert(i, ink.clone());
             }
         }
         let cell = Arc::new(cell);
@@ -983,7 +955,9 @@ impl Presentation {
             {
                 let byte = cursor + index as u64;
                 if let Some(detail) = self.detail(byte as u32) {
-                    pixels.detail.insert(offset + (byte - start) as usize, detail);
+                    pixels
+                        .detail
+                        .insert(offset + (byte - start) as usize, detail);
                 }
             }
             cursor += run as u64;
@@ -1074,16 +1048,13 @@ impl Presentation {
         {
             return true;
         }
-        for sy in 0..self.scale {
-            for sx in 0..self.scale {
-                let i = (sy * self.scale + sx) as usize;
-                let pixel =
-                    ((y * self.scale + sy) * self.width * self.scale + x * self.scale + sx) as usize;
-                if self.pixel_indices[pixel] != cell.indices[i]
-                    || self.ink.get(&(pixel * 3)) != cell.ink.get(&i)
-                {
-                    return false;
-                }
+        let index = (y * self.width + x) as usize;
+        let samples = self.samples.get(index);
+        for i in 0..(self.scale * self.scale) as usize {
+            if samples.indices[i] != cell.indices[i]
+                || self.ink.get(&(index * TILE_SAMPLES + i)) != cell.ink.get(&i)
+            {
+                return false;
             }
         }
         // A redraw can create an equal cell with a new identity. Remember it
@@ -1115,28 +1086,26 @@ impl Presentation {
         if cell.indices.len() != (self.scale * self.scale) as usize {
             return;
         }
-        self.text_cells[(y * self.width + x) as usize] = true;
-        self.detail_cache.get_mut()[(y * self.width + x) as usize] = Some(cell.clone());
-        self.guest_values[(y * self.width + x) as usize] = cell.value.into();
-        for sy in 0..self.scale {
-            for sx in 0..self.scale {
-                let i = (sy * self.scale + sx) as usize;
-                let pixel = ((y * self.scale + sy) * self.width * self.scale + x * self.scale + sx)
-                    as usize;
-                self.pixel_indices[pixel] = cell.indices[i];
-                self.ink.remove(&(pixel * 3));
-                let rgb = if let Some(ink) = cell.ink.get(&i) {
-                    self.ink.insert(pixel * 3, ink.clone());
-                    ink.rgb(if self.depth == 8 {
-                        &self.palette
-                    } else {
-                        &self.direct_palettes[(x % self.bytes_per_pixel()) as usize]
-                    })
-                } else {
-                    self.palette_at(x)[cell.indices[i] as usize]
-                };
-                self.pixels[pixel * 3..pixel * 3 + 3].copy_from_slice(&rgb);
-            }
+        let index = (y * self.width + x) as usize;
+        let palette = if self.depth == 8 {
+            &self.palette
+        } else {
+            &self.direct_palettes[(x % self.bytes_per_pixel()) as usize]
+        };
+        let samples = self.samples.ensure(index);
+        self.text_cells[index] = true;
+        self.detail_cache.get_mut()[index] = Some(cell.clone());
+        self.guest_values[index] = cell.value.into();
+        for i in 0..(self.scale * self.scale) as usize {
+            samples.indices[i] = cell.indices[i];
+            let offset = index * TILE_SAMPLES + i;
+            self.ink.remove(&offset);
+            samples.rgb[i] = if let Some(ink) = cell.ink.get(&i) {
+                self.ink.insert(offset, ink.clone());
+                ink.rgb(palette)
+            } else {
+                palette[cell.indices[i] as usize]
+            };
         }
     }
 
@@ -1157,16 +1126,9 @@ impl Presentation {
         if !self.text_cells[cell] {
             let index = self.guest_values[cell] as u8;
             let color = self.palette_at(x)[index as usize];
-            for sy in 0..self.scale {
-                let start =
-                    ((y * self.scale + sy) * self.width * self.scale + x * self.scale) as usize;
-                self.pixel_indices[start..start + self.scale as usize].fill(index);
-                for pixel in
-                    self.pixels[start * 3..(start + self.scale as usize) * 3].chunks_exact_mut(3)
-                {
-                    pixel.copy_from_slice(&color);
-                }
-            }
+            let samples = self.samples.ensure(cell);
+            samples.indices.fill(index);
+            samples.rgb.fill(color);
         }
         self.text_cells[cell] = true;
     }
@@ -1235,22 +1197,22 @@ impl Presentation {
         }
         self.text_cells[cell] = false;
         let color = self.palette_at(x)[value as usize];
-        for sy in 0..self.scale {
-            for sx in 0..self.scale {
-                let offset =
-                    (((y * self.scale + sy) * self.width * self.scale + x * self.scale + sx) * 3)
-                        as usize;
-                // A following character's opaque background must not shave off
-                // an outline overhang already painted by this same text run.
-                if self.erasing_text && self.run_ink.contains(&offset) {
-                    self.text_cells[cell] = true;
-                    continue;
-                }
-                self.run_ink.remove(&offset);
-                self.ink.remove(&offset);
-                self.pixel_indices[offset / 3] = value;
-                self.pixels[offset..offset + 3].copy_from_slice(&color);
+        let samples = self.samples.get_mut(cell);
+        for i in 0..(self.scale * self.scale) as usize {
+            let offset = cell * TILE_SAMPLES + i;
+            // A following character's opaque background must not shave off
+            // an outline overhang already painted by this same text run.
+            if self.erasing_text && self.run_ink.contains(&offset) {
+                self.text_cells[cell] = true;
+                continue;
             }
+            self.run_ink.remove(&offset);
+            self.ink.remove(&offset);
+            samples.indices[i] = value;
+            samples.rgb[i] = color;
+        }
+        if !self.text_cells[cell] {
+            self.samples.release(cell);
         }
     }
 
@@ -1329,6 +1291,7 @@ impl Presentation {
             &self.direct_palettes[lane]
         };
         let color = palette[foreground as usize];
+        let samples = self.samples.get_mut((py * self.width + px) as usize);
         for sy in 0..self.scale {
             for sx in 0..self.scale {
                 let gx =
@@ -1341,16 +1304,16 @@ impl Presentation {
                 if alpha == 0 {
                     continue;
                 }
-                let offset =
-                    (((py * self.scale + sy) * self.width * self.scale + px * self.scale + sx) * 3)
-                        as usize;
+                let offset = (py * self.width + px) as usize * TILE_SAMPLES
+                    + (sy * self.scale + sx) as usize;
                 if self.in_text_run {
                     self.run_ink.insert(offset);
                 }
+                let sample = (sy * self.scale + sx) as usize;
                 if alpha == 255 {
-                    self.pixels[offset..offset + 3].copy_from_slice(&color);
+                    samples.rgb[sample] = color;
                     self.ink.remove(&offset);
-                    self.pixel_indices[offset / 3] = foreground;
+                    samples.indices[sample] = foreground;
                     continue;
                 }
                 // Inside Macintosh I, "Transfer Modes": srcOr forces source
@@ -1360,7 +1323,7 @@ impl Presentation {
                 let ink = self.ink.entry(offset).or_insert_with(|| Ink {
                     foreground,
                     alpha: 0,
-                    background: IndexedColor::Solid(self.pixel_indices[offset / 3]),
+                    background: IndexedColor::Solid(samples.indices[sample]),
                 });
                 if ink.foreground != foreground {
                     let previous = std::mem::replace(
@@ -1376,7 +1339,7 @@ impl Presentation {
                         .over(previous.foreground, previous.alpha);
                 }
                 ink.alpha = ink.alpha.max(alpha);
-                self.pixels[offset..offset + 3].copy_from_slice(&ink.rgb(palette));
+                samples.rgb[sample] = ink.rgb(palette);
             }
         }
     }
@@ -1431,9 +1394,7 @@ impl MacMemoryBus {
     /// Identity and revision of the currently visible retained image.
     /// Offscreen-only drawing deliberately leaves this token unchanged.
     pub fn presentation_visible_epoch(&self) -> Option<VisibleImageStamp> {
-        self.presentation
-            .as_ref()
-            .map(|p| p.visible_image.clone())
+        self.presentation.as_ref().map(|p| p.visible_image.clone())
     }
 
     /// Synchronize a native framebuffer mirror without erasing unchanged coverage.
@@ -1814,18 +1775,14 @@ impl MacMemoryBus {
                     if !detail {
                         continue;
                     }
-                    let x = cell as u32 % p.width;
-                    let y = cell as u32 / p.width;
-                    for sy in 0..p.scale {
-                        let start = ((y * p.scale + sy) * p.width * p.scale + x * p.scale) as usize;
-                        for pixel in start..start + p.scale as usize {
-                            p.pixels[pixel * 3..pixel * 3 + 3]
-                                .copy_from_slice(&palette[p.pixel_indices[pixel] as usize]);
-                        }
+                    let samples = p.samples.get_mut(cell);
+                    for (rgb, &index) in samples.rgb.iter_mut().zip(&samples.indices) {
+                        *rgb = palette[index as usize];
                     }
                 }
                 for (&offset, ink) in &p.ink {
-                    p.pixels[offset..offset + 3].copy_from_slice(&ink.rgb(&palette));
+                    p.samples.get_mut(offset / TILE_SAMPLES).rgb[offset % TILE_SAMPLES] =
+                        ink.rgb(&palette);
                 }
             }
         } else {
@@ -2059,11 +2016,7 @@ impl MacMemoryBus {
             }),
             scale,
             palette,
-            pixels: vec![0; width as usize * height as usize * scale as usize * scale as usize * 3],
-            pixel_indices: vec![
-                0;
-                width as usize * height as usize * scale as usize * scale as usize
-            ],
+            samples: DetailSamples::new(width as usize * height as usize),
             guest_values: vec![256; width as usize * height as usize],
             text_cells: vec![false; width as usize * height as usize],
             detail_cache: std::cell::RefCell::new(vec![None; width as usize * height as usize]),
@@ -2329,6 +2282,46 @@ mod tests {
     }
 
     #[test]
+    fn saved_coverage_survives_tile_reuse_and_palette_changes() {
+        for scale in [2, 3, 4] {
+            let mut bus = bus();
+            let screen = (0x1000, 8, 8, 8, 8);
+            let palette = std::array::from_fn(|i| [i as u8; 3]);
+            bus.enable_outline_presentation(screen, palette, scale);
+            paint_detail(&mut bus, 0x1000);
+            let saved = bus.save_pixel_bytes(0x1000, 1);
+            let guest = [0; 64];
+            let expected = bus.presented_argb(&guest, &guest).unwrap();
+            let slot = {
+                let p = bus.presentation.as_ref().unwrap();
+                p.samples.get(0) as *const samples::SampleTile
+            };
+
+            // Erase the source, then reuse its storage for different coverage
+            // in another row. The saved snapshot must remain independent.
+            bus.write_byte(0x1000, 255);
+            bus.write_byte(0x1008, 64);
+            paint_detail(&mut bus, 0x1008);
+            assert_eq!(
+                bus.presentation.as_ref().unwrap().samples.get(8) as *const samples::SampleTile,
+                slot
+            );
+            bus.restore_saved_pixels(0x1000, &saved, 0, 1);
+            bus.write_byte(0x1008, 255);
+            assert_eq!(bus.presented_argb(&guest, &guest).unwrap(), expected);
+
+            if scale == 4 {
+                let mut changed = palette;
+                changed[0] = [20, 40, 80];
+                bus.prepare_outline_presentation(screen, changed);
+                assert_ne!(bus.presented_argb(&guest, &guest).unwrap(), expected);
+                bus.prepare_outline_presentation(screen, palette);
+                assert_eq!(bus.presented_argb(&guest, &guest).unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
     fn framebuffer_sync_preserves_plain_rows_and_updates_changed_bytes() {
         let mut bus = bus();
         let epoch = bus.presentation_epoch();
@@ -2481,7 +2474,10 @@ mod tests {
         let palette = std::array::from_fn(|i| [i as u8; 3]);
         bus.enable_outline_presentation((0x2000, 8, 8, 8, 8), palette, 2);
         assert!(bus.presentation.as_ref().unwrap().observes_range(0x9000, 1));
-        assert_eq!(bus.presentation.as_ref().unwrap().detail(0x9000), Some(detail));
+        assert_eq!(
+            bus.presentation.as_ref().unwrap().detail(0x9000),
+            Some(detail)
+        );
         bus.write_byte(0x9000, 0);
         assert!(bus.presentation.as_ref().unwrap().detail(0x9000).is_none());
     }

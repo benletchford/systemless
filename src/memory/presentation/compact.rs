@@ -74,12 +74,7 @@ impl Presentation {
             let cell = y * self.width as usize + bx;
             let color = if self.text_cells[cell] {
                 let scale = self.scale as usize;
-                let offset = ((y * scale + sy) * self.width as usize * scale + bx * scale + sx) * 3;
-                [
-                    self.pixels[offset],
-                    self.pixels[offset + 1],
-                    self.pixels[offset + 2],
-                ]
+                self.samples.get(cell).rgb[sy * scale + sx]
             } else {
                 self.palette_at(bx as u32)[self.guest_values[cell] as u8 as usize]
             };
@@ -172,7 +167,6 @@ impl Presentation {
                 (u32::from(rgb[0]) << 16) | (u32::from(rgb[1]) << 8) | u32::from(rgb[2])
             });
             let scale = p.scale as usize;
-            let stride = width as usize * scale * 3;
             for (cell, ((destination, (&text, &value)), overlay)) in output
                 .cells
                 .iter_mut()
@@ -185,12 +179,11 @@ impl Presentation {
                 } else if !text {
                     *destination = palette[value as u8 as usize];
                 } else {
-                    let x = cell % width as usize;
-                    let y = cell / width as usize;
                     *destination = 0x80000000 | output.detail.len() as u32;
+                    let samples = p.samples.get(cell);
                     for sy in 0..scale {
-                        let start = (y * scale + sy) * stride + x * scale * 3;
-                        for rgb in p.pixels[start..start + scale * 3].chunks_exact(3) {
+                        let start = sy * scale;
+                        for rgb in &samples.rgb[start..start + scale] {
                             output.detail.push(
                                 (u32::from(rgb[0]) << 16)
                                     | (u32::from(rgb[1]) << 8)
