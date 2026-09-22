@@ -21,8 +21,8 @@ compatibility:
     systemless_version: "0.51.0"
     architecture: 68k
     environment: >-
-      Deterministic run from the unchanged Glider PRO Demo StuffIt archive
-      through its title screen and animated Demo House, including multiple rooms
+      Deterministic run from the unchanged Glider PRO Demo StuffIt archive through
+      its title screen and animated Demo House, including multiple rooms
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/2442
 runtime:
@@ -33,11 +33,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://classicmacdemos.com/download/glider-pro/
-    download_page: https://classicmacdemos.com/glider-pro
-    expected_sha256: c54b543d56ca0a1e05ab201e379d2411cf09a47ea086caadcd24b040a59dd7ae
-    expected_size: 1268279
+    type: sha256
+    sha256: c54b543d56ca0a1e05ab201e379d2411cf09a47ea086caadcd24b040a59dd7ae
+    size_bytes: 1268279
   provenance:
     redistribution: permitted
     original: true
@@ -49,21 +47,22 @@ artifacts:
     rights_holder: Glider PRO rights holders
     permission: >-
       Casady & Greene released this purpose-built Glider PRO demo. Its included
-      read-me calls it a demo, explains the Demo House and controls, distinguishes
-      it from the retail release, and provides ordering information. Classic
-      Macintosh Game Demos documents contemporary distribution on 19 demo discs
-      and continues to offer this demo archive. Only the original demo is staged,
-      not the retail game or later Carbon beta.
+      read-me calls it a demo, explains the Demo House and controls, distinguishes it from
+      the retail release, and provides ordering information. Classic Macintosh Game
+      Demos documents contemporary distribution on 19 demo discs and continues to offer
+      this demo archive. Only the original demo is staged, not the retail game or later
+      Carbon beta.
     notes: >-
       Unchanged 1,268,279-byte StuffIt archive with SHA-256
-      c54b543d56ca0a1e05ab201e379d2411cf09a47ea086caadcd24b040a59dd7ae.
-      It contains the 68K Glider PRO Demo application, Demo House and Getting Started file.
+      c54b543d56ca0a1e05ab201e379d2411cf09a47ea086caadcd24b040a59dd7ae. It contains the 68K Glider PRO Demo
+      application, Demo House and Getting Started file.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/glider-pro/gameplay.png
+    type: sha256
+    sha256: 26055cd5897fce1fe8bcd599cc11432eaa29709507acb79ac5ae601303b18e09
+    size_bytes: 138701
   provenance:
     redistribution: permitted
     original: true
@@ -74,12 +73,11 @@ artifacts:
       Original in-game screenshot captured for this catalogue at the maintainer's
       request. Underlying Glider PRO artwork remains the property of its rights holders.
     notes: >-
-      Fresh deterministic Systemless 0.51.0 capture from the staged demo archive
-      on 2026-09-23 during the animated Demo House. The 800x600 guest framebuffer
-      was captured as the 800x342 game-only viewport, excluding the surrounding
-      desktop. PNG SHA-256
-      26055cd5897fce1fe8bcd599cc11432eaa29709507acb79ac5ae601303b18e09;
-      138,701 bytes.
+      Fresh deterministic Systemless 0.51.0 capture from the staged demo archive on
+      2026-09-23 during the animated Demo House. The 800x600 guest framebuffer was
+      captured as the 800x342 game-only viewport, excluding the surrounding desktop. PNG
+      SHA-256 26055cd5897fce1fe8bcd599cc11432eaa29709507acb79ac5ae601303b18e09; 138,701
+      bytes.
 references:
 - https://classicmacdemos.com/glider-pro
 - https://static.classicmacdemos.com/demos/glider-pro/README.txt
@@ -87,7 +85,7 @@ references:
 
 ## Through the Demo House
 
-![A paper airplane in the Glider PRO Demo House](incoming/glider-pro/gameplay.png)
+![A paper airplane in the Glider PRO Demo House](https://assets.systemless.org/catalogue/media/sha256/26/26055cd5897fce1fe8bcd599cc11432eaa29709507acb79ac5ae601303b18e09.png)
 
 Glider PRO sends a paper airplane drifting through a house of vents, candles,
 windows and other hazards. Air currents keep the glider aloft; the player steers
