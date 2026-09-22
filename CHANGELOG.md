@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.49.0](https://github.com/benletchford/systemless/compare/v0.48.0...v0.49.0) (2026-09-22)
+
+
+### Features
+
+* **catalogue:** add Civilization demo ([#2399](https://github.com/benletchford/systemless/issues/2399)) ([fedd336](https://github.com/benletchford/systemless/commit/fedd3363927df31ead8c3b2de1239c97c2348c2c))
+* **catalogue:** add Lemmings demo with browser startup support ([28ce87f](https://github.com/benletchford/systemless/commit/28ce87fa5f8f7c811126cd8a2399af11e0becc85))
+* **catalogue:** add Oregon Trail demo ([4cfd315](https://github.com/benletchford/systemless/commit/4cfd3157f3ec1304a9e9fa7a08af0da62d34ce41))
+* **catalogue:** add Prince of Persia demo ([c50dbf0](https://github.com/benletchford/systemless/commit/c50dbf0540de777ef5f5b688fb8e07c6e349a032))
+* **catalogue:** add SimCity 2000 demo ([#2398](https://github.com/benletchford/systemless/issues/2398)) ([85ae0a1](https://github.com/benletchford/systemless/commit/85ae0a1bd180a65911faa333e5f960d247586467))
+
+
+### Bug Fixes
+
+* **display:** expose and switch compatible screen modes ([#2393](https://github.com/benletchford/systemless/issues/2393)) ([cf1cd6e](https://github.com/benletchford/systemless/commit/cf1cd6ea50c1f395f592dabe98ccbd57e5ab2818))
+* honor live TickCount trap patches ([#2397](https://github.com/benletchford/systemless/issues/2397)) ([40959bc](https://github.com/benletchford/systemless/commit/40959bc8b1bfd1d8b9b44027c714ab337e989369))
+
+
+### Code Refactoring
+
+* **apple-events:** share descriptor state across adapters ([#2395](https://github.com/benletchford/systemless/issues/2395)) ([e56f8b1](https://github.com/benletchford/systemless/commit/e56f8b19dc08be672c3aa8278e980c5ddf8e7005))
+
 ## [0.48.0](https://github.com/benletchford/systemless/compare/v0.47.5...v0.48.0) (2026-09-22)
 
 
