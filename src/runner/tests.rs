@@ -3658,6 +3658,44 @@
     }
 
     #[test]
+    fn sub_2mb_size_partition_keeps_resident_code_above_low_decompression_range() {
+        const DECOMPRESS_START: u32 = 0x0001_000A;
+        const OLD_EXECUTING_CODE_END: u32 = 0x0003_35FE;
+
+        // This reproduces the launch geometry of a self-decompressing
+        // installer whose SIZE partition is below 2 MiB. Its startup code
+        // clears the low destination range before expanding the application;
+        // resident CODE must therefore follow the partition-relative A5 world
+        // rather than remain inside that range.
+        let preferred_partition = 1_022_976;
+        let below_a5 = 0x10B0;
+        let code0 = minimal_code0(0x164BC, below_a5, 0, 0);
+        let size = size_resource_bytes(0x5880, preferred_partition, preferred_partition);
+        let mut code1 = vec![0xA5; 128];
+        code1[..4].fill(0); // Valid near-model header with no jump-table entries.
+        let fork_bytes = make_resource_fork_bytes(&[
+            (*b"CODE", 0, &code0),
+            (*b"CODE", 1, &code1),
+            (*b"SIZE", -1, &size),
+        ]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(32 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let app = runner.load_app(&fork).expect("load app");
+        let code1_base = app.segment_bases[&1];
+
+        assert!(
+            code1_base > OLD_EXECUTING_CODE_END,
+            "resident CODE must be placed above the self-decompressor's low destination range"
+        );
+        runner.bus.fill_zeros(
+            DECOMPRESS_START,
+            OLD_EXECUTING_CODE_END - DECOMPRESS_START + 1,
+        );
+        assert_eq!(runner.bus.read_bytes(code1_base, code1.len()), code1);
+    }
+
+    #[test]
     fn size_partition_does_not_cap_shared_resource_fork_materialization() {
         let code0 = minimal_code0(0, 0x2000, 0, 0);
         let size = size_resource_bytes(0x5880, 4_194_304, 3_584_000);
