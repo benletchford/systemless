@@ -1,12 +1,22 @@
 name: Promotion approval signal
-run-name: 'Promotion review PR #${{ github.event.pull_request.number }} review #${{ github.event.review.id }}'
+run-name: >-
+  ${{ github.event_name == 'pull_request_review'
+      && format('Promotion review PR #{0} review #{1}', github.event.pull_request.number, github.event.review.id)
+      || format('Promotion owner PR #{0} commit {1}', github.event.pull_request.number, github.event.pull_request.head.sha) }}
 on:
   pull_request_review:
     types: [submitted]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 permissions: {}
 jobs:
   signal:
-    if: github.event.review.state == 'approved'
+    if: >-
+      (github.event_name == 'pull_request_review' && github.event.review.state == 'approved') ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.user.login == github.repository_owner &&
+       github.actor == github.repository_owner &&
+       github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     steps:
-      - run: echo 'Approval submitted; trusted promotion will validate the review through the GitHub API.'
+      - run: echo 'Promotion authorization submitted; the trusted workflow will validate it through the GitHub API.'

@@ -29,15 +29,43 @@ async function approvedReview(github, context, number, reviewId, actor) {
   validatePr(pr, `${context.repo.owner}/${context.repo.repo}`, context.payload.repository.default_branch, review.commit_id);
   return pr;
 }
+async function authorizedSubmission(github, context, state) {
+  if (state.reviewId !== 0) {
+    return approvedReview(github, context, state.number, state.reviewId, state.actor);
+  }
+  const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: state.number});
+  if (state.actor !== context.repo.owner || pr.user.login !== context.repo.owner || pr.draft) {
+    throw new Error('Owner promotion is no longer authorized');
+  }
+  validatePr(pr, `${context.repo.owner}/${context.repo.repo}`, context.payload.repository.default_branch, state.sha);
+  return pr;
+}
 async function authorize({github, context, core}) {
   const run = context.payload.workflow_run;
-  if (run.event !== 'pull_request_review' || run.conclusion !== 'success') throw new Error('Expected a successful review signal');
-  const match = /^Promotion review PR #(\d+) review #(\d+)$/.exec(run.display_title);
-  if (!match) throw new Error('Invalid review signal');
-  const number = Number(match[1]);
-  const reviewId = Number(match[2]);
-  const actor = run.actor.login;
-  const pr = await approvedReview(github, context, number, reviewId, actor);
+  if (run.conclusion !== 'success') throw new Error('Expected a successful promotion authorization signal');
+  const reviewMatch = /^Promotion review PR #(\d+) review #(\d+)$/.exec(run.display_title);
+  const ownerMatch = /^Promotion owner PR #(\d+) commit ([0-9a-f]{40})$/.exec(run.display_title);
+  let number;
+  let reviewId;
+  let actor = run.actor.login;
+  let pr;
+  if (run.event === 'pull_request_review' && reviewMatch) {
+    number = Number(reviewMatch[1]);
+    reviewId = Number(reviewMatch[2]);
+    pr = await approvedReview(github, context, number, reviewId, actor);
+  } else if (run.event === 'pull_request' && ownerMatch) {
+    number = Number(ownerMatch[1]);
+    const sha = ownerMatch[2];
+    const {data: candidate} = await github.rest.pulls.get({...context.repo, pull_number: number});
+    if (actor !== context.repo.owner || candidate.user.login !== context.repo.owner || candidate.draft) {
+      throw new Error('Owner promotion requires a non-draft PR authored and triggered by the repository owner');
+    }
+    validatePr(candidate, `${context.repo.owner}/${context.repo.repo}`, context.payload.repository.default_branch, sha);
+    pr = candidate;
+    reviewId = 0;
+  } else {
+    throw new Error('Invalid promotion authorization signal');
+  }
   core.setOutput('authorized', 'true');
   core.setOutput('number', number);
   const files = await github.paginate(github.rest.pulls.listFiles, {...context.repo, pull_number: pr.number});
@@ -51,7 +79,7 @@ async function authorize({github, context, core}) {
 }
 async function commit({github, context, core}) {
   const state = JSON.parse(fs.readFileSync('promotion-state.json', 'utf8'));
-  const pr = await approvedReview(github, context, state.number, state.reviewId, state.actor);
+  const pr = await authorizedSubmission(github, context, state);
   validatePr(pr, `${context.repo.owner}/${context.repo.repo}`, context.payload.repository.default_branch, state.sha);
   if (pr.head.ref !== state.branch) throw new Error('PR branch changed');
   const {data: base} = await github.rest.git.getCommit({...context.repo, commit_sha: state.sha});
@@ -88,4 +116,4 @@ async function commit({github, context, core}) {
   }
   await github.rest.actions.createWorkflowDispatch({...context.repo, workflow_id: 'ci.yml', ref: state.branch});
 }
-module.exports = {authorize, commit, entryIds, validatePr, removalAllowed, approvedReview};
+module.exports = {authorize, commit, entryIds, validatePr, removalAllowed, approvedReview, authorizedSubmission};

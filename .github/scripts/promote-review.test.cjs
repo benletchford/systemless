@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {entryIds, validatePr, removalAllowed, authorize} = require('./promote-review.cjs');
+const {entryIds, validatePr, removalAllowed, authorizedSubmission} = require('./promote-review.cjs');
 test('only actual changed entry paths become CLI arguments', () => {
   assert.deepEqual(entryIds([{filename:'www/catalogue/marathon.md'}, {filename:'www/catalogue/ev.md',status:'removed'},
     {filename:'www/catalogue/../../bad.md'}, {filename:'www/catalogue/a;echo.md'}, {filename:'.github/workflows/ci.yml'},
@@ -44,4 +44,17 @@ test('superseded approvals and changed reviewed commits cannot promote', async (
   assert.equal(await approvedReview(github,context,1,2,'maintainer'),pr);
   github.paginate=async()=>[review,{...review,id:3,state:'CHANGES_REQUESTED'}];
   await assert.rejects(approvedReview(github,context,1,2,'maintainer'),/superseded/);
+});
+test('repository owner submissions require the owner, an unchanged head and a non-draft PR', async () => {
+  const pr = {state:'open',draft:false,user:{login:'owner'},base:{ref:'master'},head:{ref:'dev/test',sha:'reviewed',repo:{full_name:'owner/repo'}}};
+  const github = {rest:{pulls:{get:async()=>({data:pr})}}};
+  const context = {repo:{owner:'owner',repo:'repo'},payload:{repository:{default_branch:'master'}}};
+  const state = {number:1,reviewId:0,actor:'owner',sha:'reviewed'};
+  assert.equal(await authorizedSubmission(github,context,state),pr);
+  await assert.rejects(authorizedSubmission(github,context,{...state,actor:'other'}),/no longer authorized/);
+  pr.draft=true;
+  await assert.rejects(authorizedSubmission(github,context,state),/no longer authorized/);
+  pr.draft=false;
+  pr.head.sha='changed';
+  await assert.rejects(authorizedSubmission(github,context,state),/unchanged/);
 });
