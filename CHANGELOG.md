@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.50.0](https://github.com/benletchford/systemless/compare/v0.49.0...v0.50.0) (2026-09-22)
+
+
+### Features
+
+* **catalogue:** add Carmen U.S.A. demo ([#2424](https://github.com/benletchford/systemless/issues/2424)) ([b7a60ee](https://github.com/benletchford/systemless/commit/b7a60ee2c2fbb205fb85c4a0b080dae336dd4b5f))
+* **catalogue:** add SimTower demo ([#2419](https://github.com/benletchford/systemless/issues/2419)) ([8ce188c](https://github.com/benletchford/systemless/commit/8ce188cdc2a51f3c624d26045a781cb5b9537bce))
+* **catalogue:** add Star Wars Dark Forces demo ([761c3dc](https://github.com/benletchford/systemless/commit/761c3dca31664341640d3ab4778bbc8fd03ba156))
+* **catalogue:** add Warcraft demo ([e56589f](https://github.com/benletchford/systemless/commit/e56589fe6af9e3f03bc23f01f25b0292ab17fd54)), closes [#2412](https://github.com/benletchford/systemless/issues/2412)
+* **catalogue:** publish Warcraft II demo ([#2417](https://github.com/benletchford/systemless/issues/2417)) ([dba45f2](https://github.com/benletchford/systemless/commit/dba45f20b76333837bc81e7ec5ce81231785567c))
+
+
+### Bug Fixes
+
+* **runtime:** support Warcraft startup services ([eb8bc3d](https://github.com/benletchford/systemless/commit/eb8bc3d055b5967a4cdce28446693a1775906ec7)), closes [#2410](https://github.com/benletchford/systemless/issues/2410)
+* **sound:** construct sampled sound headers ([#2415](https://github.com/benletchford/systemless/issues/2415)) ([587dc66](https://github.com/benletchford/systemless/commit/587dc661d148d36549c808b634dcc65e0f60cd52))
+
 ## [0.49.0](https://github.com/benletchford/systemless/compare/v0.48.0...v0.49.0) (2026-09-22)
 
 
