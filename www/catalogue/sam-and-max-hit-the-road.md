@@ -12,7 +12,6 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
-launch_enabled: false
 compatibility:
   status: boots
   verified:
@@ -22,20 +21,21 @@ compatibility:
     architecture: 68k
     environment: >-
       Deterministic Systemless run from the exact official Macintosh demo archive
-      through its LucasArts logo and animated opening sequence, cross-checked with
-      the same archive under BasiliskII
+      through its LucasArts logo and animated opening sequence, cross-checked with the
+      same archive under BasiliskII
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/2432
 runtime:
-  show_menu_bar: true
   application_partition_size: 8388608
+  show_menu_bar: true
 artifacts:
 - id: archive
   role: archive
   format: zip
   source:
-    type: incoming
-    path: catalogue/incoming/sam-and-max-hit-the-road/samnmax-mac-demo-en.zip
+    type: sha256
+    sha256: c39aceb453093aea0c0564b36439636f13d46df480ccf1ec85304638e00dd6b5
+    size_bytes: 9651922
   provenance:
     redistribution: permitted
     original: true
@@ -44,24 +44,18 @@ artifacts:
     - https://downloads.scummvm.org/frs/demos/scumm/samnmax-mac-demo-en.zip
     license: LucasArts Sam & Max promotional demo distribution
     rights_holder: Lucasfilm Games / LucasArts and their successors
-    permission: >-
-      LucasArts deliberately released this self-contained package as the Macintosh
-      demonstration of Sam & Max: Hit the Road. Its included read-me thanks the player
-      for trying the demo, describes its first-puzzle challenge and supplies ordering
-      details for the full game. ScummVM's official demo library continues to distribute
-      the unchanged package. This entry preserves only the demo files and does not
-      include or claim permission for the retail game.
+    permission: "LucasArts deliberately released this self-contained package as the Macintosh demonstration of Sam & Max: Hit the Road. Its included read-me thanks the player for trying the demo, describes its first-puzzle challenge and supplies ordering details for the full game. ScummVM's official demo library continues to distribute the unchanged package. This entry preserves only the demo files and does not include or claim permission for the retail game."
     notes: >-
       Unchanged 9,651,922-byte ZIP with SHA-256
-      c39aceb453093aea0c0564b36439636f13d46df480ccf1ec85304638e00dd6b5. The
-      package retains the MacBinary application, read-me and icon alongside the original
-      Sam & Max Demo Data file.
+      c39aceb453093aea0c0564b36439636f13d46df480ccf1ec85304638e00dd6b5. The package retains the MacBinary application,
+      read-me and icon alongside the original Sam & Max Demo Data file.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/sam-and-max-hit-the-road/gameplay.png
+    type: sha256
+    sha256: 42ea66f59bc5e50410e04c12041a73ad54592231c6ad199a71481010df9e64f2
+    size_bytes: 26306
   provenance:
     redistribution: permitted
     original: true
@@ -76,15 +70,14 @@ artifacts:
       on 2026-09-23 during its animated opening. The 800x600 guest framebuffer was
       cropped to the 640x400 game surface, excluding the Classic Mac menu bar and
       surrounding desktop. PNG SHA-256
-      42ea66f59bc5e50410e04c12041a73ad54592231c6ad199a71481010df9e64f2,
-      26,306 bytes.
+      42ea66f59bc5e50410e04c12041a73ad54592231c6ad199a71481010df9e64f2, 26,306 bytes.
 references:
 - https://www.scummvm.org/demos/
 ---
 
 ## Freelance police, reporting for duty
 
-![Sam and Max on the road](incoming/sam-and-max-hit-the-road/gameplay.png)
+![Sam and Max on the road](https://assets.systemless.org/catalogue/media/sha256/42/42ea66f59bc5e50410e04c12041a73ad54592231c6ad199a71481010df9e64f2.png)
 
 Sam is a six-foot canine detective. Max is a hyperkinetic rabbity thing. When
 the commissioner sends them after a missing carnival attraction, the case turns
