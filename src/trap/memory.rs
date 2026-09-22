@@ -2382,8 +2382,8 @@ impl super::TrapDispatcher {
             // Device Manager control call. Register-based: A0 = param block ptr.
             // FUNCTION PBControl (paramBlock: ParmBlkPtr; async: BOOLEAN): OSErr;
             // Inside Macintosh: Devices 1994, p. 1-16
-            // _Control ($A004): Handles cscSetMode (csCode=2) by returning
-            // page/base address through the inline csParam VDPgInfo record
+            // _Control ($A004): Handles cscSetMode (csCode=2) by switching
+            // depth and returning the page/base address through the VDPgInfoPtr
             // and cscSetEntries (csCode=3) via VDSetEntryRecord. Unsupported
             // requests return controlErr (IM:Devices 1994, pp. 1-35--1-36, 1-77).
             (false, 0x04) => {
@@ -2399,8 +2399,7 @@ impl super::TrapDispatcher {
                         control_result = CONTROL_ERR;
                     }
                     // cscSetMode (csCode=2): switch mode/page and return base address.
-                    // Low-level PBControl stores the VDPgInfo record inline in
-                    // CntrlParam.csParam, whose documented layout is short[11].
+                    // The video driver's csParam contains a VDPgInfoPtr.
                     // VDPgInfo layout:
                     //   csMode [word] @ +0
                     //   csData [long] @ +2
@@ -2409,26 +2408,22 @@ impl super::TrapDispatcher {
                     // Designing Cards and Drivers 3rd Ed 1992, p. 219, 235
                     // Devices 1994, p. 2-128, 6-68
                     if cs_code == 2 {
-                        let vdpg_info = pb + 28;
-                        let cs_mode = bus.read_word(vdpg_info) as i16;
-                        let cs_data = bus.read_long(vdpg_info + 2);
-                        let cs_page = bus.read_word(vdpg_info + 6) as i16;
-                        let mut screen_base = self.screen_mode.0;
-                        if screen_base == 0 {
-                            let gdh = self.ensure_main_gdevice(bus);
-                            if gdh != 0 {
-                                let gd = bus.read_long(gdh);
-                                if gd != 0 {
-                                    let pm_handle = bus.read_long(gd + 22); // gdPMap
-                                    if pm_handle != 0 {
-                                        let pm = bus.read_long(pm_handle);
-                                        if pm != 0 {
-                                            screen_base = bus.read_long(pm);
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        let vdpg_info = bus.read_long(pb + 28);
+                        let cs_mode = if vdpg_info != 0 {
+                            bus.read_word(vdpg_info)
+                        } else {
+                            0
+                        };
+                        let cs_data = if vdpg_info != 0 {
+                            bus.read_long(vdpg_info + 2)
+                        } else {
+                            0
+                        };
+                        let cs_page = if vdpg_info != 0 {
+                            bus.read_word(vdpg_info + 6)
+                        } else {
+                            0
+                        };
 
                         if trace_video_driver_enabled() {
                             eprintln!(
@@ -2444,22 +2439,20 @@ impl super::TrapDispatcher {
                             );
                         }
 
-                        let vdpg_end = vdpg_info.saturating_add(12);
-                        let frame_sp = cpu.read_reg(Register::A7);
-                        let frame_a6 = cpu.read_reg(Register::A6);
-                        let fits_current_stack_frame = !(frame_sp <= vdpg_info
-                            && vdpg_info < frame_a6)
-                            || vdpg_end <= frame_a6;
-
-                        if fits_current_stack_frame {
-                            // Single-screen HLE currently exposes page 0.
-                            bus.write_word(vdpg_info + 6, 0); // csPage
-                            bus.write_long(vdpg_info + 8, screen_base); // csBaseAddr
-                        } else if trace_video_driver_enabled() {
-                            eprintln!(
-                                "[VIDEO] cscSetMode output skipped: inline VDPgInfo ${:08X}..${:08X} exceeds stack frame ${:08X}..${:08X}",
-                                vdpg_info, vdpg_end, frame_sp, frame_a6
-                            );
+                        if vdpg_info == 0 || cs_page != 0 {
+                            control_result = CONTROL_ERR;
+                        } else if let Some(depth) = crate::display::classic_pixel_size(cs_mode) {
+                            let width = self.screen_mode.2;
+                            let height = self.screen_mode.3;
+                            if self.do_setdepth_with_geometry(cpu, bus, depth, width, height) {
+                                // Single-screen HLE exposes page 0.
+                                bus.write_word(vdpg_info + 6, 0); // csPage
+                                bus.write_long(vdpg_info + 8, self.screen_mode.0);
+                            } else {
+                                control_result = (-108i16) as u32;
+                            }
+                        } else {
+                            control_result = CONTROL_ERR;
                         }
                     }
 
@@ -2596,13 +2589,15 @@ impl super::TrapDispatcher {
             // PBStatusSync/PBStatusAsync. The Async ($A405) and Immed
             // ($A205) variants share the same A0/D0 register convention.
             //
-            // Systemless HLE compromise: the single-threaded synchronous-I/O
-            // HLE has no installed Device Manager drivers and no Status
-            // routines to invoke. The trap returns noErr (0) for the
-            // zero/refNum-cleared path and collapses any non-zero ioRefNum
-            // to badUnitErr (-21), mirroring that into pb.ioResult. That
-            // keeps the dispatcher convention (D0 == ioResult) intact while
-            // making the bogus-refnum path visibly non-successful.
+            // The modeled main video device has refNum 0. Its GetMode,
+            // GetPages, and GetGray status calls fill the VDPgInfo record
+            // pointed to by csParam. Other zero-refNum requests retain the legacy noErr
+            // result; unknown nonzero refNums return badUnitErr (-21).
+            // Designing Cards and Drivers for the Macintosh II and SE
+            // (1987), pp. 9-17 and 9-27: status csCode 2 returns csMode,
+            // csPage, and csBaseAddr; csCode 4 returns the number of pages
+            // through csPage; csCode 6 returns 0 for colors or 1 for gray
+            // tones through csMode. The modeled screen has one display page.
             //
             // Apple-vs-BasiliskII engine divergence: the absolute OSErr
             // returned for a bogus ioRefNum (e.g. 9999) diverges between
@@ -2623,7 +2618,32 @@ impl super::TrapDispatcher {
                 let pb = cpu.read_reg(Register::A0);
                 if pb != 0 {
                     let io_ref_num = bus.read_word(pb + 24);
+                    let cs_code = bus.read_word(pb + 26);
+                    let vdpg_info = bus.read_long(pb + 28);
                     let result = if io_ref_num == 0 {
+                        match cs_code {
+                            2 => {
+                                if vdpg_info != 0 {
+                                    if let Some(mode) =
+                                        crate::display::classic_depth_mode(self.screen_mode.4)
+                                    {
+                                        bus.write_word(vdpg_info, mode);
+                                        bus.write_word(vdpg_info + 6, 0);
+                                        bus.write_long(vdpg_info + 8, self.screen_mode.0);
+                                    }
+                                }
+                            }
+                            4 if vdpg_info != 0 => bus.write_word(vdpg_info + 6, 1),
+                            6 => {
+                                if vdpg_info != 0 {
+                                    let gdh = self.ensure_main_gdevice(bus);
+                                    let gd = bus.read_long(gdh);
+                                    let is_color = gd != 0 && bus.read_word(gd + 20) & 1 != 0;
+                                    bus.write_word(vdpg_info, u16::from(!is_color));
+                                }
+                            }
+                            _ => {}
+                        }
                         NO_ERR
                     } else if self.synthetic_drivers.contains_key(&io_ref_num) {
                         NO_ERR
@@ -11375,16 +11395,18 @@ mod tests {
     }
 
     #[test]
-    fn test_control_set_mode_uses_inline_vdpginfo() {
+    fn test_control_set_mode_uses_vdpginfo_pointer() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let pb = 0x300000u32;
+        let record = 0x310000u32;
 
         dispatcher.screen_mode.0 = 0x01F80000;
         bus.write_word(pb + 26, 2); // csCode = cscSetMode
-        bus.write_word(pb + 28, 1); // csParam.csMode
-        bus.write_long(pb + 30, 0x12345678); // csParam.csData
-        bus.write_word(pb + 34, 0xFFFF); // csParam.csPage
-        bus.write_long(pb + 36, 0xDEADBEEF); // csParam.csBaseAddr
+        bus.write_long(pb + 28, record);
+        bus.write_word(record, 0x83);
+        bus.write_long(record + 2, 0x12345678);
+        bus.write_word(record + 6, 0);
+        bus.write_long(record + 8, 0xDEADBEEF);
 
         cpu.write_reg(Register::A0, pb);
         let result = dispatcher.dispatch_memory(false, 0x04, &mut cpu, &mut bus);
@@ -11392,19 +11414,20 @@ mod tests {
         assert!(result.unwrap().is_ok(), "PBControl should succeed");
 
         assert_eq!(
-            bus.read_word(pb + 34),
+            bus.read_word(record + 6),
             0,
-            "SetMode should return page 0 through inline csParam VDPgInfo"
+            "SetMode should return page 0 through csParam's VDPgInfo pointer"
         );
         assert_eq!(
-            bus.read_long(pb + 36),
-            0x01F80000,
-            "SetMode should return the framebuffer base through inline csParam VDPgInfo"
+            bus.read_long(record + 8),
+            dispatcher.screen_mode.0,
+            "SetMode should return the framebuffer base through csParam's VDPgInfo pointer"
         );
+        assert_eq!(bus.read_long(record + 2), 0x12345678);
     }
 
     #[test]
-    fn test_control_set_mode_does_not_dereference_csparam_as_pointer() {
+    fn test_control_set_mode_keeps_parameter_block_inline_fields_unchanged() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let pb = 0x300000u32;
         let pointer_shaped_csparam = 0x310000u32;
@@ -11414,7 +11437,8 @@ mod tests {
         bus.write_long(pb + 28, pointer_shaped_csparam);
         bus.write_word(pb + 34, 0xFFFF);
         bus.write_long(pb + 36, 0xDEADBEEF);
-        bus.write_word(pointer_shaped_csparam + 6, 0x7777);
+        bus.write_word(pointer_shaped_csparam, 0x83);
+        bus.write_word(pointer_shaped_csparam + 6, 0);
         bus.write_long(pointer_shaped_csparam + 8, 0xCAFEBABE);
 
         cpu.write_reg(Register::A0, pb);
@@ -11424,23 +11448,23 @@ mod tests {
 
         assert_eq!(
             bus.read_word(pointer_shaped_csparam + 6),
-            0x7777,
-            "SetMode should not treat csParam's first longword as a VDPgInfo pointer"
+            0,
+            "SetMode should write page zero through the VDPgInfo pointer"
         );
         assert_eq!(
             bus.read_long(pointer_shaped_csparam + 8),
-            0xCAFEBABE,
-            "SetMode should not write through a pointer-shaped inline csParam value"
+            dispatcher.screen_mode.0,
+            "SetMode should write the framebuffer base through the VDPgInfo pointer"
         );
         assert_eq!(
             bus.read_word(pb + 34),
-            0,
-            "SetMode should still update inline csPage"
+            0xFFFF,
+            "SetMode should not rewrite unrelated inline words"
         );
         assert_eq!(
             bus.read_long(pb + 36),
-            0x01F80000,
-            "SetMode should still update inline csBaseAddr"
+            0xDEADBEEF,
+            "SetMode should not rewrite unrelated inline longwords"
         );
     }
 
@@ -11452,7 +11476,9 @@ mod tests {
 
         dispatcher.screen_mode.0 = 0x01F80000;
         bus.write_word(pb + 26, 2); // csCode = cscSetMode
-        bus.write_word(pb + 28, 1); // csParam.csMode only
+        let record = 0x310000u32;
+        bus.write_long(pb + 28, record);
+        bus.write_word(record, 0x83);
         bus.write_long(frame_a6 + 4, 0x00ABCDEF); // saved return address
 
         cpu.write_reg(Register::A0, pb);
@@ -13287,8 +13313,12 @@ mod tests {
         // and uses CntrlParam.ioResult in the parameter block.
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let pb = 0x300000u32;
+        let record = 0x310000u32;
         bus.write_word(pb + 26, 2); // supported cscSetMode request
-                                    // Write a non-zero value at ioResult (pb+16) to verify it gets cleared
+        bus.write_long(pb + 28, record);
+        bus.write_word(record, 0x83);
+        bus.write_word(record + 6, 0);
+        // Write a non-zero value at ioResult (pb+16) to verify it gets cleared.
         bus.write_word(pb + 16, 0xFFFF);
         cpu.write_reg(Register::A0, pb);
         let result = dispatcher.dispatch_memory(false, 0x04, &mut cpu, &mut bus);
@@ -13367,6 +13397,92 @@ mod tests {
             0,
             "_Status should set ioResult at pb+16 to 0"
         );
+    }
+
+    #[test]
+    fn video_status_returns_current_mode_page_and_base() {
+        // The video driver's GetMode status call returns a VDPgInfo record.
+        // Designing Cards and Drivers for the Macintosh II and SE (1987),
+        // pp. 9-17 and 9-27.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        let record = 0x310000u32;
+        dispatcher.screen_mode = (0x01F8_0000, 800, 800, 600, 8);
+        bus.write_word(pb + 24, 0);
+        bus.write_word(pb + 26, 2);
+        bus.write_long(pb + 28, record);
+        bus.write_word(record, 0xFFFF);
+        bus.write_long(record + 2, 0x1234_5678);
+        bus.write_word(record + 6, 0xFFFF);
+        bus.write_long(record + 8, 0xDEAD_BEEF);
+        cpu.write_reg(Register::A0, pb);
+        let sp_before = cpu.read_reg(Register::A7);
+
+        dispatcher
+            .dispatch_memory(false, 0x05, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_word(record), 0x0083);
+        assert_eq!(bus.read_long(record + 2), 0x1234_5678);
+        assert_eq!(bus.read_word(record + 6), 0);
+        assert_eq!(bus.read_long(record + 8), 0x01F8_0000);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp_before);
+    }
+
+    #[test]
+    fn video_status_reports_one_page_for_getpages() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        let record = 0x310000u32;
+        bus.write_word(pb + 24, 0);
+        bus.write_word(pb + 26, 4);
+        bus.write_long(pb + 28, record);
+        bus.write_word(record, 0x0083);
+        bus.write_word(record + 6, 0xFFFF);
+        cpu.write_reg(Register::A0, pb);
+
+        dispatcher
+            .dispatch_memory(false, 0x05, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_word(record), 0x0083);
+        assert_eq!(bus.read_word(record + 6), 1);
+        assert_eq!(bus.read_word(pb + 16), 0);
+    }
+
+    #[test]
+    fn video_status_reports_color_or_grayscale_personality() {
+        // GetGray uses VDPgInfo.csMode, not the request's result code.
+        // Designing Cards and Drivers for the Macintosh II and SE (1987),
+        // p. 9-17.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        let record = 0x310000u32;
+        let gdh = dispatcher.ensure_main_gdevice(&mut bus);
+        let gd = bus.read_long(gdh);
+        bus.write_word(pb + 24, 0);
+        bus.write_word(pb + 26, 6);
+        bus.write_long(pb + 28, record);
+        cpu.write_reg(Register::A0, pb);
+
+        bus.write_word(record, 0xFFFF);
+        dispatcher
+            .dispatch_memory(false, 0x05, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(record), 0);
+
+        bus.write_word(gd + 20, bus.read_word(gd + 20) & !1);
+        dispatcher
+            .dispatch_memory(false, 0x05, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(record), 1);
+        assert_eq!(bus.read_word(pb + 16), 0);
     }
 
     #[test]
