@@ -65928,3 +65928,17 @@ fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
 fn write_u16(bytes: &mut [u8], offset: usize, value: u16) {
     bytes[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
 }
+
+#[test]
+fn drawing_imports_charge_guest_time_below_one_tick_per_redraw() {
+    use PpcImportDispatcherTarget as T;
+    for target in [T::DrawText, T::DrawPicture, T::CopyBits, T::PaintRect, T::GetIndString] {
+        assert!(ppc_import_extra_cycles_for_target(&target) > 0);
+    }
+    let tick_cycles = (crate::runner::DEFAULT_REALTIME_PPC_CPU_MHZ * 1_000_000.0
+        / crate::runner::DEFAULT_VBL_HZ) as u64;
+    let redraw = 370 * ppc_import_extra_cycles_for_target(&T::DrawText)
+        + 165 * ppc_import_extra_cycles_for_target(&T::DrawPicture)
+        + 135 * ppc_import_extra_cycles_for_target(&T::CopyBits);
+    assert!(redraw < tick_cycles / 2, "{redraw} of {tick_cycles}");
+}

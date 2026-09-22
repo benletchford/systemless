@@ -1058,6 +1058,25 @@ const PPC_Q3_IDLE_STATE_ONLY_FRAME_EXTRA_CYCLES: u64 = 416_000;
 // code while still accounting for work performed by a native QD3D driver.
 const PPC_Q3_HOT_IMPORT_EXTRA_CYCLES: u64 = 1_536;
 const PPC_MATH_HOT_IMPORT_EXTRA_CYCLES: u64 = 128;
+// TickCount is maintained by the vertical retrace interrupt, so it advances
+// while the Toolbox draws on the application's behalf. Inside Macintosh:
+// Processes (1993), p. 3-46. HLE QuickDraw and Resource Manager imports do
+// that work on the host and otherwise charge no guest cycles, so a loop that
+// redraws until TickCount changes sees drawing as free and repeats a full
+// redraw many times within one tick at real host cost. Inside Macintosh
+// gives no per-call timings; these fixed charges are a deliberate
+// approximation of a 120 MHz 604 (DrawText ~6 us, CopyBits ~9 us,
+// DrawPicture ~17 us). They are lower bounds -- large pictures and transfers
+// take far longer on hardware -- so an application redrawing a few hundred
+// items still has most of its tick left for its own code.
+// A redraw of ~370 text calls, 165 pictures and 135 transfers costs under
+// half of one tick's cycles.
+const PPC_DRAW_TEXT_IMPORT_EXTRA_CYCLES: u64 = 768;
+const PPC_MEASURE_TEXT_IMPORT_EXTRA_CYCLES: u64 = 256;
+const PPC_DRAW_PICTURE_IMPORT_EXTRA_CYCLES: u64 = 2_048;
+const PPC_BIT_TRANSFER_IMPORT_EXTRA_CYCLES: u64 = 1_024;
+const PPC_DRAW_PRIMITIVE_IMPORT_EXTRA_CYCLES: u64 = 256;
+const PPC_RESOURCE_IMPORT_EXTRA_CYCLES: u64 = 128;
 const PPC_Q3_RETAINED_BOUNDING_TRIMESH_PREVIEW_LIMIT: usize = 16;
 const PPC_FIXED_MAC_TIME: u32 = 3_786_912_000;
 const PPC_MICROSECONDS_PER_TICK: u64 = 16_625;
@@ -2918,6 +2937,43 @@ fn ppc_import_extra_cycles_for_target(target: &PpcImportDispatcherTarget) -> u64
         | PpcImportDispatcherTarget::MathFmod
         | PpcImportDispatcherTarget::MathLog
         | PpcImportDispatcherTarget::MathLog10 => PPC_MATH_HOT_IMPORT_EXTRA_CYCLES,
+        // Rasterizing text: each call renders glyphs into the framebuffer.
+        PpcImportDispatcherTarget::DrawChar
+        | PpcImportDispatcherTarget::DrawText
+        | PpcImportDispatcherTarget::DrawString => PPC_DRAW_TEXT_IMPORT_EXTRA_CYCLES,
+        // Text measurement walks every glyph of the supplied bytes.
+        PpcImportDispatcherTarget::MeasureText
+        | PpcImportDispatcherTarget::TextWidth
+        | PpcImportDispatcherTarget::TruncString
+        | PpcImportDispatcherTarget::StringWidth
+        | PpcImportDispatcherTarget::CharWidth
+        | PpcImportDispatcherTarget::GetFontInfo
+        | PpcImportDispatcherTarget::FontMetrics => PPC_MEASURE_TEXT_IMPORT_EXTRA_CYCLES,
+        // PICT opcode interpretation plus rasterization.
+        PpcImportDispatcherTarget::DrawPicture => PPC_DRAW_PICTURE_IMPORT_EXTRA_CYCLES,
+        // Rectangular bit transfers between ports and GWorlds.
+        PpcImportDispatcherTarget::CopyBits => PPC_BIT_TRANSFER_IMPORT_EXTRA_CYCLES,
+        // Rect, region, oval and rounded-rect painting operations.
+        PpcImportDispatcherTarget::PaintArc
+        | PpcImportDispatcherTarget::PaintRect
+        | PpcImportDispatcherTarget::PaintRoundRect
+        | PpcImportDispatcherTarget::FillCRect
+        | PpcImportDispatcherTarget::FillRgn
+        | PpcImportDispatcherTarget::EraseOval
+        | PpcImportDispatcherTarget::EraseRect
+        | PpcImportDispatcherTarget::InvertRect
+        | PpcImportDispatcherTarget::InvertRgn
+        | PpcImportDispatcherTarget::FrameRect
+        | PpcImportDispatcherTarget::FrameRgn => PPC_DRAW_PRIMITIVE_IMPORT_EXTRA_CYCLES,
+        // Resource Manager fetches parse and copy resource data.
+        PpcImportDispatcherTarget::GetIndString
+        | PpcImportDispatcherTarget::GetString
+        | PpcImportDispatcherTarget::GetResource
+        | PpcImportDispatcherTarget::Get1Resource
+        | PpcImportDispatcherTarget::Get1NamedResource
+        | PpcImportDispatcherTarget::Get1IndResource
+        | PpcImportDispatcherTarget::LoadResource
+        | PpcImportDispatcherTarget::ReadPartialResource => PPC_RESOURCE_IMPORT_EXTRA_CYCLES,
         _ => 0,
     }
 }
