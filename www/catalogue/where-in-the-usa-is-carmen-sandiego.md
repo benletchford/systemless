@@ -1,7 +1,7 @@
 ---
 id: where-in-the-usa-is-carmen-sandiego
 kind: game
-title: "Where in the U.S.A. Is Carmen Sandiego?"
+title: Where in the U.S.A. Is Carmen Sandiego?
 summary: >-
   Follow Carmen's gang across America in Brøderbund's playable Macintosh
   demonstration.
@@ -12,7 +12,6 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
-launch_enabled: false
 compatibility:
   status: playable
   verified:
@@ -21,9 +20,8 @@ compatibility:
     systemless_version: "0.50.0"
     architecture: 68k
     environment: >-
-      Deterministic new-detective and sample-case run from the unchanged
-      cover-disc StuffIt demo, with its animated tour cross-checked under
-      BasiliskII
+      Deterministic new-detective and sample-case run from the unchanged cover-disc
+      StuffIt demo, with its animated tour cross-checked under BasiliskII
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2423
 artifacts:
@@ -31,8 +29,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: incoming
-    path: catalogue/incoming/where-in-the-usa-is-carmen-sandiego/Carmen-USA-Demo.sit
+    type: sha256
+    sha256: c26af580aae0b0c60eb0f29700106b3c45baa05217a4cdbd096ab92a1cc8f20d
+    size_bytes: 291100
   provenance:
     redistribution: permitted
     original: true
@@ -41,21 +40,21 @@ artifacts:
     license: Brøderbund Carmen U.S.A. promotional demo distribution
     rights_holder: Brøderbund / The Learning Company and their successors
     permission: >-
-      Brøderbund deliberately distributed this self-contained promotional demo
-      on contemporary magazine and software-library discs. This entry preserves
-      that exact unchanged demo archive; it does not include or claim permission
-      for the retail game or any other Carmen Sandiego title.
+      Brøderbund deliberately distributed this self-contained promotional demo on
+      contemporary magazine and software-library discs. This entry preserves that exact
+      unchanged demo archive; it does not include or claim permission for the retail game
+      or any other Carmen Sandiego title.
     notes: >-
       Unchanged 291,100-byte StuffIt archive, SHA-256
-      c26af580aae0b0c60eb0f29700106b3c45baa05217a4cdbd096ab92a1cc8f20d.
-      It contains one runnable 68K application named “Carmen USA™ (Demo)” plus
-      its original music files.
+      c26af580aae0b0c60eb0f29700106b3c45baa05217a4cdbd096ab92a1cc8f20d. It contains one runnable 68K application named
+      “Carmen USA™ (Demo)” plus its original music files.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/where-in-the-usa-is-carmen-sandiego/gameplay.png
+    type: sha256
+    sha256: 08a5d8c2b613f76cc776bc71609d6aa171c9c4bd86a3425dbf1c519cf7f239de
+    size_bytes: 94283
   provenance:
     redistribution: permitted
     original: true
@@ -63,15 +62,14 @@ artifacts:
     sources:
     - https://github.com/benletchford/systemless/issues/2423
     permission: >-
-      Original gameplay screenshot captured for this catalogue at the
-      maintainer's request. Underlying Carmen Sandiego artwork remains the
-      property of its rights holders.
+      Original gameplay screenshot captured for this catalogue at the maintainer's
+      request. Underlying Carmen Sandiego artwork remains the property of its rights
+      holders.
     notes: >-
-      Fresh deterministic Systemless 0.50.0 capture made from the exact
-      unchanged demo archive on 2026-09-23 during its interactive sample-game
-      introduction. The complete 800x600 guest framebuffer is preserved without
-      alteration or host chrome. PNG SHA-256
-      08a5d8c2b613f76cc776bc71609d6aa171c9c4bd86a3425dbf1c519cf7f239de,
+      Fresh deterministic Systemless 0.50.0 capture made from the exact unchanged
+      demo archive on 2026-09-23 during its interactive sample-game introduction. The
+      complete 800x600 guest framebuffer is preserved without alteration or host chrome.
+      PNG SHA-256 08a5d8c2b613f76cc776bc71609d6aa171c9c4bd86a3425dbf1c519cf7f239de,
       94,283 bytes.
 references:
 - https://classicmacdemos.com/where-in-the-usa-is-carmen-sandiego
@@ -79,7 +77,7 @@ references:
 
 ## Chase the gang across America
 
-![Where in the U.S.A. Is Carmen Sandiego? demo](incoming/where-in-the-usa-is-carmen-sandiego/gameplay.png)
+![Where in the U.S.A. Is Carmen Sandiego? demo](https://assets.systemless.org/catalogue/media/sha256/08/08a5d8c2b613f76cc776bc71609d6aa171c9c4bd86a3425dbf1c519cf7f239de.png)
 
 A stolen monument starts a chase across all fifty states. Witnesses reveal
 geographic clues, travel choices consume precious time, and the detective has
