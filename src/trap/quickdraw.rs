@@ -19704,7 +19704,7 @@ impl super::TrapDispatcher {
         Some((clut, entry_count))
     }
 
-    fn do_setdepth_with_geometry<C: CpuOps>(
+    pub(super) fn do_setdepth_with_geometry<C: CpuOps>(
         &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
