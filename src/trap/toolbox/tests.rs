@@ -18133,6 +18133,25 @@
     }
 
     #[test]
+    fn image_compression_align_window_consumes_fourteen_byte_frame() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x000E_004D);
+        bus.write_long(sp, 0); // standard alignment procedure
+        bus.write_long(sp + 4, 0); // use window bounds
+        bus.write_word(sp + 8, 0); // do not bring to front
+        bus.write_long(sp + 10, 0); // NIL window is ignored safely
+
+        let result = disp.dispatch_toolbox(true, 0x2A3, &mut cpu, &mut bus);
+        assert!(result.is_some(), "ImageCompressionDispatch should be handled");
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
     fn image_compression_align_screen_rect_preserves_aligned_rect() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;

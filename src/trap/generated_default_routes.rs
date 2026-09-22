@@ -149,7 +149,7 @@
     DefaultTrapRoute::new(0xA091, TrapAdapterId::Memory.mask()),
     DefaultTrapRoute::new(0xA092, TrapAdapterId::Memory.mask()),
     DefaultTrapRoute::new(0xA093, TrapAdapterId::Memory.mask()),
-    DefaultTrapRoute::new(0xA094, TrapAdapterId::Nonterminal.mask()),
+    DefaultTrapRoute::new(0xA094, TrapAdapterId::Resource.mask()),
     DefaultTrapRoute::new(0xA095, TrapAdapterId::Nonterminal.mask()),
     DefaultTrapRoute::new(0xA096, TrapAdapterId::Nonterminal.mask()),
     DefaultTrapRoute::new(0xA097, TrapAdapterId::Nonterminal.mask()),

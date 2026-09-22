@@ -14231,6 +14231,33 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A7, sp + 8);
                         cpu.write_reg(Register::D0, 0);
                     }
+                    // AlignWindow ($AAA3, selector $004D)
+                    // Moves a window so its selected local rectangle begins on
+                    // the optimal screen grid and optionally selects it.
+                    // pascal void AlignWindow(WindowPtr wp, Boolean front,
+                    //     const Rect *alignmentRect, AlignmentProcRecordPtr alignmentProc);
+                    // Inside Macintosh: QuickTime (1993), pp. 3-142--3-143.
+                    // Stack: alignmentProc(4), alignmentRect(4), front(2), wp(4).
+                    0x004D if arg_bytes == 14 => {
+                        let alignment_proc = bus.read_long(sp);
+                        let alignment_rect = bus.read_long(sp + 4);
+                        let front = bus.read_byte(sp + 8) != 0;
+                        let window = bus.read_long(sp + 10);
+                        if alignment_proc != 0 {
+                            eprintln!(
+                                "[IMAGE-COMPRESSION] AlignWindow custom alignment procedures are not implemented"
+                            );
+                            return Some(Err(Error::Halted));
+                        }
+                        self.align_window_to_eight_bit_grid(
+                            bus,
+                            window,
+                            front,
+                            alignment_rect,
+                        );
+                        cpu.write_reg(Register::A7, sp + 14);
+                        cpu.write_reg(Register::D0, 0);
+                    }
                     _ => {
                         eprintln!(
                             "[IMAGE-COMPRESSION] Unimplemented selector ${selector:04X} frame={arg_bytes}"
