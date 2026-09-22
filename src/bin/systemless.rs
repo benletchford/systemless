@@ -148,6 +148,14 @@ const RENDER_HEADROOM_MARGIN: std::time::Duration = std::time::Duration::from_mi
 /// batches. Keep each slice well below a realtime VBL so heavy startup loads
 /// can still present intermediate drawing and service Sound Manager callbacks.
 const CPU_BATCH_INSTRUCTIONS: usize = 10_000;
+/// PPC HLE slices move process-owned collections into the dispatch closure
+/// and restore them afterward, so every slice boundary has a fixed cost and
+/// batches stay coarser than the 68K instruction batches. Subdividing the
+/// guest tick (rather than running one full-tick batch) keeps that cost
+/// bounded while letting the GUI loop re-check its wall-clock CPU deadline
+/// between sub-tick batches: draw-heavy imports used to let a single
+/// full-tick batch run for ~1 s before `cpu_deadline` was consulted again.
+const PPC_GUI_BATCH_TICK_DIVISOR: usize = 16;
 const SOUND_CALLBACK_SLICE_INSTRUCTIONS: usize = CPU_BATCH_INSTRUCTIONS;
 const SOUND_CALLBACK_RESERVED_INSTRUCTIONS_PER_FRAME: usize = 25_000;
 const AUDIO_CALLBACK_CHUNK_SAMPLES: usize = 32;
@@ -161,7 +169,7 @@ const CONTENT_RECT_RELEARN_CONFIRMATIONS: u16 = 120;
 
 fn foreground_cpu_batch_instructions(powerpc: bool, instructions_per_tick: u32) -> usize {
     if powerpc {
-        instructions_per_tick.max(1) as usize
+        (instructions_per_tick.max(1) as usize).div_ceil(PPC_GUI_BATCH_TICK_DIVISOR)
     } else {
         CPU_BATCH_INSTRUCTIONS
     }
@@ -1415,8 +1423,9 @@ impl App {
         runner.advance_menu_presentation_clock(presentation_interval);
         // A PPC HLE slice currently borrows its large mutable state by moving
         // collections into a dispatch closure and restoring them afterward.
-        // Yield once per guest VBL rather than paying that boundary thousands
-        // of times per second. The interpreter still stops at the tick cap.
+        // Yield a few times per guest VBL rather than paying that boundary
+        // thousands of times per second, so the wall-clock CPU deadline is
+        // still rechecked within a tick. The interpreter stops at the tick cap.
         let foreground_batch_instructions = foreground_cpu_batch_instructions(
             runner.is_powerpc_app(),
             runner.instructions_per_tick(),
@@ -5159,8 +5168,9 @@ mod tests {
         );
         assert_eq!(
             foreground_cpu_batch_instructions(true, ppc_instructions_per_tick as u32),
-            ppc_instructions_per_tick,
-            "PPC should cross the expensive HLE state boundary once per guest VBL"
+            ppc_instructions_per_tick.div_ceil(PPC_GUI_BATCH_TICK_DIVISOR),
+            "PPC batches should subdivide the guest tick so draw-heavy HLE imports \
+             honor the wall-clock CPU deadline between sub-tick batches"
         );
         assert_eq!(
             SOUND_CALLBACK_SLICE_INSTRUCTIONS, CPU_BATCH_INSTRUCTIONS,
