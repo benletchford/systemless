@@ -3,8 +3,8 @@ id: pathways-into-darkness
 kind: game
 title: Pathways into Darkness
 summary: >-
-  Descend beneath the Yucatán in Bungie's original Macintosh demonstration of
-  its landmark first-person adventure.
+  Descend beneath the Yucatán in Bungie's original Macintosh demonstration of its
+  landmark first-person adventure.
 developer: Bungie Software Products Corporation
 publisher: Bungie Software Products Corporation
 year: 1993
@@ -12,7 +12,6 @@ architectures:
 - 68k
 default_architecture: 68k
 category: FPS
-launch_enabled: false
 compatibility:
   status: playable
   verified:
@@ -27,15 +26,16 @@ compatibility:
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2436
 runtime:
-  show_menu_bar: true
   application_partition_size: 16777216
+  show_menu_bar: true
 artifacts:
 - id: archive
   role: archive
   format: sit
   source:
-    type: incoming
-    path: catalogue/incoming/pathways-into-darkness/pathways-into-darkness-demo.sit
+    type: sha256
+    sha256: 0b3f8529367e881fbb7cc402d37f2ce9abe56eb4e2089fd31169cd1f87e61bc2
+    size_bytes: 937427
   provenance:
     redistribution: permitted
     original: true
@@ -48,22 +48,22 @@ artifacts:
     permission: >-
       Bungie deliberately distributed this self-contained package as Pathways into
       Darkness Demo v2.0. Its included March 1994 read-me identifies it as a demo,
-      documents the packaged application and data files, advertises where to buy the
-      retail game, and provides Bungie's contemporary contact details. Classic
-      Macintosh Game Demos records the package on 33 period demo discs and continues
-      to distribute it specifically as the playable demo. This entry preserves only
-      those demo files and does not include the retail game.
+      documents the packaged application and data files, advertises where to buy the retail
+      game, and provides Bungie's contemporary contact details. Classic Macintosh Game
+      Demos records the package on 33 period demo discs and continues to distribute it
+      specifically as the playable demo. This entry preserves only those demo files and
+      does not include the retail game.
     notes: >-
       Unchanged 937,427-byte StuffIt archive with SHA-256
-      0b3f8529367e881fbb7cc402d37f2ce9abe56eb4e2089fd31169cd1f87e61bc2.
-      The package retains the original demo application, maps, shapes, sounds, saved
-      games, icon and read-me.
+      0b3f8529367e881fbb7cc402d37f2ce9abe56eb4e2089fd31169cd1f87e61bc2. The package retains the original demo
+      application, maps, shapes, sounds, saved games, icon and read-me.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/pathways-into-darkness/gameplay.png
+    type: sha256
+    sha256: 7538964caa7763bdebe9a2b043714bd84972c2ccbb77646a55552d51eafb7214
+    size_bytes: 76582
   provenance:
     redistribution: permitted
     original: true
@@ -79,8 +79,7 @@ artifacts:
       on 2026-09-23 after creating a new game and moving through the Ground Floor. The
       800x600 guest framebuffer was cropped to the 631x452 game workspace, excluding
       the Classic Mac menu bar and surrounding desktop. PNG SHA-256
-      7538964caa7763bdebe9a2b043714bd84972c2ccbb77646a55552d51eafb7214,
-      76,582 bytes.
+      7538964caa7763bdebe9a2b043714bd84972c2ccbb77646a55552d51eafb7214, 76,582 bytes.
 references:
 - https://classicmacdemos.com/pathways-into-darkness
 - https://pid.bungie.org/demoV2.0ReadMe.html
@@ -89,7 +88,7 @@ references:
 
 ## Into the pyramid
 
-![Exploring the Ground Floor in Pathways into Darkness](incoming/pathways-into-darkness/gameplay.png)
+![Exploring the Ground Floor in Pathways into Darkness](https://assets.systemless.org/catalogue/media/sha256/75/7538964caa7763bdebe9a2b043714bd84972c2ccbb77646a55552d51eafb7214.png)
 
 A Special Forces mission has gone badly wrong above an ancient pyramid in the
 Yucatán. Alone and poorly equipped, the player must descend through the tunnels,
