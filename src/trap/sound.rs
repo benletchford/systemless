@@ -8,6 +8,7 @@ use crate::cpu::{CpuOps, Register};
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::sound::{self, SndChannel, SndCommand, StereoSample};
 use crate::trap::dispatch::{selector_operation_route, SelectorOperationRoute};
+use crate::trap::extended80::Extended80;
 use crate::Result;
 
 /// Size of the guest SndChannel record we allocate.
@@ -35,6 +36,7 @@ const BAD_UNIT_ERR: i16 = -21;
 const WRITE_ERR: i16 = -20;
 const PARAM_ERR: i16 = -50;
 const MEM_FULL_ERR: i16 = -108;
+const SI_INVALID_COMPRESSION: i16 = -223;
 const SOUND_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_sound_dispatch_operations.rs");
 const MIDI_STOP_TIME_OPERATION_ROUTE: SelectorOperationRoute = SelectorOperationRoute::new(
@@ -862,6 +864,46 @@ impl super::TrapDispatcher {
                             bus.write_word(the_status + 4, 0); // smCurCPULoad
                         }
                         bus.write_word(sp + param_bytes, 0); // noErr
+                        cpu.write_reg(Register::A7, sp + param_bytes);
+                    }
+
+                    // SetupSndHeader (routine $48, sel $0D480014)
+                    // Constructs a format 1 'snd ' resource containing one
+                    // sampled-synth modifier, one bufferCmd, and the sampled-
+                    // sound header selected by the compression, channel, and
+                    // sample-size arguments.
+                    // FUNCTION SetupSndHeader(sndHandle: Handle;
+                    //     numChannels: Integer; sampleRate: Fixed;
+                    //     sampleSize: Integer; compressionType: OSType;
+                    //     baseFrequency: Integer; numBytes: LongInt;
+                    //     VAR headerLen: Integer): OSErr;
+                    // Stack: SP+0 headerLen(4), SP+4 numBytes(4),
+                    //   SP+8 baseFrequency(2), SP+10 compressionType(4),
+                    //   SP+14 sampleSize(2), SP+16 sampleRate(4),
+                    //   SP+20 numChannels(2), SP+22 sndHandle(4),
+                    //   SP+26 result(2).
+                    // Inside Macintosh: Sound (1994), pp. 3-44 to 3-46.
+                    0x48 if selector == 0x0D48_0014 => {
+                        let header_len_ptr = bus.read_long(sp);
+                        let num_bytes = bus.read_long(sp + 4);
+                        let base_frequency = bus.read_word(sp + 8);
+                        let compression_type = bus.read_long(sp + 10);
+                        let sample_size = bus.read_word(sp + 14);
+                        let sample_rate = bus.read_long(sp + 16);
+                        let num_channels = bus.read_word(sp + 20);
+                        let snd_handle = bus.read_long(sp + 22);
+                        let err = Self::setup_snd_header(
+                            bus,
+                            snd_handle,
+                            num_channels,
+                            sample_rate,
+                            sample_size,
+                            compression_type,
+                            base_frequency,
+                            num_bytes,
+                            header_len_ptr,
+                        );
+                        bus.write_word(sp + param_bytes, err as u16);
                         cpu.write_reg(Register::A7, sp + param_bytes);
                     }
 
@@ -2002,6 +2044,111 @@ impl super::TrapDispatcher {
         }
 
         None
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn setup_snd_header(
+        bus: &mut MacMemoryBus,
+        snd_handle: u32,
+        num_channels: u16,
+        sample_rate: u32,
+        sample_size: u16,
+        compression_type: u32,
+        base_frequency: u16,
+        num_bytes: u32,
+        header_len_ptr: u32,
+    ) -> i16 {
+        const NONE: u32 = u32::from_be_bytes(*b"NONE");
+        const MACE_3: u32 = u32::from_be_bytes(*b"MAC3");
+        const MACE_6: u32 = u32::from_be_bytes(*b"MAC6");
+        const RESOURCE_PREFIX_LEN: u32 = 20;
+        const STANDARD_HEADER_LEN: u32 = 22;
+        const EXTENDED_HEADER_LEN: u32 = 64;
+
+        if num_channels == 0 || sample_size == 0 {
+            return PARAM_ERR;
+        }
+
+        let (encode, sampled_header_len, compression_init, packet_size, frame_ratio) =
+            match compression_type {
+                NONE if num_channels == 1 && sample_size == 8 => {
+                    (0x00, STANDARD_HEADER_LEN, 0, 0, 1u32)
+                }
+                NONE => (0xFF, EXTENDED_HEADER_LEN, 0, 0, 1u32),
+                MACE_3 if sample_size == 8 => (0xFE, EXTENDED_HEADER_LEN, 0x0300, 16, 3u32),
+                MACE_6 if sample_size == 8 => (0xFE, EXTENDED_HEADER_LEN, 0x0400, 8, 6u32),
+                _ => return SI_INVALID_COMPRESSION,
+            };
+        let header_len = RESOURCE_PREFIX_LEN + sampled_header_len;
+
+        if snd_handle == 0 || header_len_ptr == 0 {
+            return PARAM_ERR;
+        }
+        let snd_ptr = bus.read_long(snd_handle);
+        if snd_ptr == 0 {
+            return -204; // resProblem
+        }
+        if bus
+            .get_alloc_size(snd_ptr)
+            .is_some_and(|size| size < header_len)
+        {
+            return MEM_FULL_ERR;
+        }
+
+        let channel_init = if num_channels == 1 { 0x0080 } else { 0x00C0 };
+        bus.write_word(snd_ptr, 1); // format 1
+        bus.write_word(snd_ptr + 2, 1); // one data type
+        bus.write_word(snd_ptr + 4, SAMPLED_SYNTH_ID as u16);
+        bus.write_long(snd_ptr + 6, channel_init | compression_init);
+        bus.write_word(snd_ptr + 10, 1); // one sound command
+        bus.write_word(snd_ptr + 12, 0x8000 | sound::cmd::BUFFER);
+        bus.write_word(snd_ptr + 14, 0);
+        bus.write_long(snd_ptr + 16, RESOURCE_PREFIX_LEN);
+
+        let header = snd_ptr + RESOURCE_PREFIX_LEN;
+        bus.write_long(header, 0); // samples immediately follow the header
+        let bytes_per_sample = u32::from(sample_size).div_ceil(8);
+        let frame_divisor = u32::from(num_channels).saturating_mul(bytes_per_sample);
+        let num_frames = if encode == 0xFE {
+            (u64::from(num_bytes) * u64::from(frame_ratio) / u64::from(num_channels))
+                .min(u64::from(u32::MAX)) as u32
+        } else {
+            num_bytes / frame_divisor
+        };
+
+        if encode == 0x00 {
+            bus.write_long(header + 4, num_bytes);
+            bus.write_long(header + 8, sample_rate);
+            bus.write_long(header + 12, 0);
+            bus.write_long(header + 16, 0);
+            bus.write_byte(header + 20, encode);
+            bus.write_byte(header + 21, base_frequency as u8);
+        } else {
+            bus.write_long(header + 4, u32::from(num_channels));
+            bus.write_long(header + 8, sample_rate);
+            bus.write_long(header + 12, 0);
+            bus.write_long(header + 16, 0);
+            bus.write_byte(header + 20, encode);
+            bus.write_byte(header + 21, base_frequency as u8);
+            bus.write_long(header + 22, num_frames);
+            Extended80::from(f64::from(sample_rate) / 65536.0).write_to_bus(bus, header + 26);
+            for offset in (36..64).step_by(4) {
+                bus.write_long(header + offset, 0);
+            }
+            if encode == 0xFF {
+                bus.write_word(header + 48, sample_size);
+                bus.write_word(header + 50, 0);
+            } else {
+                bus.write_long(header + 40, compression_type);
+                bus.write_word(header + 56, (-1i16) as u16); // fixedCompression
+                bus.write_word(header + 58, packet_size);
+                bus.write_word(header + 60, 0);
+                bus.write_word(header + 62, sample_size);
+            }
+        }
+
+        bus.write_word(header_len_ptr, header_len as u16);
+        0
     }
 
     /// SndPlayDoubleBuffer: set up double-buffer playback on a channel.
@@ -3969,6 +4116,140 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), sp + 12);
         assert_eq!(bus.read_long(sp + 12), 0x0001_0000);
+    }
+
+    #[test]
+    fn setup_snd_header_builds_standard_format_one_resource() {
+        // Inside Macintosh: Sound (1994), pp. 2-76 to 2-77 and 3-44
+        // to 3-46: 8-bit mono NONE data uses the 22-byte SoundHeader
+        // after a 20-byte format-1 resource prefix.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP + 0x80;
+        let handle = 0x230800;
+        let resource = 0x230900;
+        let header_len = 0x230880;
+        bus.write_long(handle, resource);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0D48_0014);
+        bus.write_long(sp, header_len);
+        bus.write_long(sp + 4, 0x2000);
+        bus.write_word(sp + 8, 0x43);
+        bus.write_long(sp + 10, u32::from_be_bytes(*b"NONE"));
+        bus.write_word(sp + 14, 8);
+        bus.write_long(sp + 16, 0x5622_0000);
+        bus.write_word(sp + 20, 1);
+        bus.write_long(sp + 22, handle);
+        bus.write_word(sp + 26, 0xBEEF);
+
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 26);
+        assert_eq!(bus.read_word(sp + 26), 0);
+        assert_eq!(bus.read_word(header_len), 42);
+        assert_eq!(bus.read_word(resource), 1);
+        assert_eq!(bus.read_word(resource + 2), 1);
+        assert_eq!(bus.read_word(resource + 4), 5);
+        assert_eq!(bus.read_long(resource + 6), 0x80);
+        assert_eq!(bus.read_word(resource + 10), 1);
+        assert_eq!(bus.read_word(resource + 12), 0x8051);
+        assert_eq!(bus.read_long(resource + 16), 20);
+        assert_eq!(bus.read_long(resource + 24), 0x2000);
+        assert_eq!(bus.read_long(resource + 28), 0x5622_0000);
+        assert_eq!(bus.read_byte(resource + 40), 0);
+        assert_eq!(bus.read_byte(resource + 41), 0x43);
+    }
+
+    #[test]
+    fn setup_snd_header_builds_extended_and_mace_headers() {
+        // The same routine selects ExtSoundHeader for uncompressed stereo
+        // and CmpSoundHeader for the two documented MACE formats.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP + 0x80;
+        let handle = 0x230A00;
+        let resource = 0x230B00;
+        let header_len = 0x230A80;
+        bus.write_long(handle, resource);
+
+        let mut invoke = |compression: u32, channels: u16, sample_size: u16, num_bytes: u32| {
+            cpu.write_reg(Register::A7, sp);
+            cpu.write_reg(Register::D0, 0x0D48_0014);
+            bus.write_long(sp, header_len);
+            bus.write_long(sp + 4, num_bytes);
+            bus.write_word(sp + 8, 60);
+            bus.write_long(sp + 10, compression);
+            bus.write_word(sp + 14, sample_size);
+            bus.write_long(sp + 16, 0x5622_0000);
+            bus.write_word(sp + 20, channels);
+            bus.write_long(sp + 22, handle);
+            bus.write_word(sp + 26, 0xBEEF);
+            disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            (
+                bus.read_word(header_len),
+                bus.read_long(resource + 6),
+                bus.read_byte(resource + 40),
+                bus.read_long(resource + 42),
+                bus.read_long(resource + 60),
+                bus.read_word(resource + 68),
+                bus.read_word(resource + 76),
+                bus.read_word(resource + 78),
+            )
+        };
+
+        let extended = invoke(u32::from_be_bytes(*b"NONE"), 2, 16, 0x2000);
+        assert_eq!(extended.0, 84);
+        assert_eq!(extended.1, 0xC0);
+        assert_eq!(extended.2, 0xFF);
+        assert_eq!(extended.3, 0x800);
+        assert_eq!(extended.5, 16);
+
+        let mace3 = invoke(u32::from_be_bytes(*b"MAC3"), 1, 8, 1000);
+        assert_eq!(mace3.0, 84);
+        assert_eq!(mace3.1, 0x380);
+        assert_eq!(mace3.2, 0xFE);
+        assert_eq!(mace3.3, 3000);
+        assert_eq!(mace3.4, u32::from_be_bytes(*b"MAC3"));
+        assert_eq!(mace3.6, 0xFFFF);
+        assert_eq!(mace3.7, 16);
+
+        let mace6 = invoke(u32::from_be_bytes(*b"MAC6"), 1, 8, 1000);
+        assert_eq!(mace6.1, 0x480);
+        assert_eq!(mace6.3, 6000);
+        assert_eq!(mace6.7, 8);
+    }
+
+    #[test]
+    fn setup_snd_header_rejects_unknown_compression_without_outputs() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP + 0x80;
+        let handle = 0x230C00;
+        let resource = 0x230D00;
+        let header_len = 0x230C80;
+        bus.write_long(handle, resource);
+        bus.write_long(resource, 0xDEAD_BEEF);
+        bus.write_word(header_len, 0xCAFE);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0D48_0014);
+        bus.write_long(sp, header_len);
+        bus.write_long(sp + 4, 1000);
+        bus.write_word(sp + 8, 60);
+        bus.write_long(sp + 10, u32::from_be_bytes(*b"BAD!"));
+        bus.write_word(sp + 14, 8);
+        bus.write_long(sp + 16, 0x5622_0000);
+        bus.write_word(sp + 20, 1);
+        bus.write_long(sp + 22, handle);
+
+        disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A7), sp + 26);
+        assert_eq!(bus.read_word(sp + 26) as i16, -223);
+        assert_eq!(bus.read_word(header_len), 0xCAFE);
+        assert_eq!(bus.read_long(resource), 0xDEAD_BEEF);
     }
 
     #[test]
