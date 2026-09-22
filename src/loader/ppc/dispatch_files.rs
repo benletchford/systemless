@@ -213,6 +213,21 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 next_file_ref_num,
             ))))
         }
+        PpcImportDispatcherTarget::PBOpen => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_open(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_volumes,
+                vfs_files,
+                files,
+                writable_refnums,
+                next_file_ref_num,
+                default_dir_id,
+                *application_working_directory_ref_num,
+                working_directories,
+            ))))
+        }
         PpcImportDispatcherTarget::HOpen => {
             let result = ppc_h_open(
                 cpu,
@@ -223,6 +238,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 writable_refnums,
                 next_file_ref_num,
                 default_dir_id,
+                working_directories,
             );
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
