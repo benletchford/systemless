@@ -4336,7 +4336,7 @@ dependencies = [
 
 [[package]]
 name = "systemless"
-version = "0.49.0"
+version = "0.50.0"
 dependencies = [
  "clap",
  "cpal",
@@ -4368,7 +4368,7 @@ dependencies = [
 
 [[package]]
 name = "systemless-catalogue-tools"
-version = "0.49.0"
+version = "0.50.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4392,7 +4392,7 @@ dependencies = [
 
 [[package]]
 name = "systemless-org"
-version = "0.49.0"
+version = "0.50.0"
 dependencies = [
  "base64 0.22.1",
  "gloo-net",
