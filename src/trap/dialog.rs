@@ -9777,11 +9777,16 @@ impl super::TrapDispatcher {
             .get(&dialog_ptr)
             .is_some_and(|saved| self.saved_pixels_are_mostly_logical_white(saved));
         let mut restored_stale_saved_under = false;
+        let mut restored_saved_under_rect = None;
 
         if was_front && was_visible && !initial_draw_deferred {
             if let Some(saved) = self.dialog_saved_pixels.remove(&dialog_ptr) {
                 restored_stale_saved_under = self.saved_pixels_are_mostly_logical_white(&saved);
                 self.restore_dialog_pixels(bus, dialog_record_bounds, &saved);
+                if !restored_stale_saved_under {
+                    restored_saved_under_rect =
+                        Some(Self::dialog_saved_pixel_rect(dialog_record_bounds));
+                }
             }
         } else {
             self.dialog_saved_pixels.remove(&dialog_ptr);
@@ -9835,8 +9840,21 @@ impl super::TrapDispatcher {
         }
 
         self.untrack_window(bus, dialog_ptr);
+        let repaint_exposure = restored_saved_under_rect
+            .map(|restored| Self::rect_difference_parts(exposed_rect, restored))
+            .unwrap_or_else(|| vec![exposed_rect]);
         if was_visible {
-            self.invalidate_exposed_windows(bus, &windows_behind, Some(exposed_rect));
+            // CloseWindow's PaintBehind is paired with CalcVisBehind. Rebuild
+            // the visible regions now that the dialog is absent, then dirty
+            // only structure pixels not supplied by a current saved-under
+            // snapshot. Repainting pixels we just restored is both redundant
+            // and observably wrong for applications whose partial-update path
+            // changes viewport state. Inside Macintosh Volume I (1985),
+            // pp. I-293, I-297; Macintosh Toolbox Essentials (1992), p. 4-118.
+            self.recalculate_window_vis_regions(bus);
+            for &rect in &repaint_exposure {
+                self.invalidate_exposed_windows(bus, &windows_behind, Some(rect));
+            }
         }
 
         if was_front {
@@ -9875,15 +9893,19 @@ impl super::TrapDispatcher {
                         self.queue_window_activation_event(bus, prev_window, true);
                     }
                     self.draw_single_window_chrome_inline(bus, prev_window, true);
-                    if was_visible {
-                        let exposed_local = (
-                            exposed_rect.0.saturating_sub(prev_bounds.0),
-                            exposed_rect.1.saturating_sub(prev_bounds.1),
-                            exposed_rect.2.saturating_sub(prev_bounds.0),
-                            exposed_rect.3.saturating_sub(prev_bounds.1),
-                        );
-                        self.invalidate_window_rect(bus, prev_window, exposed_local);
-                        self.queue_window_update_event(prev_window);
+                    // Normally PaintBehind above already handled this tracked
+                    // predecessor. Keep the fallback for synthetic or damaged
+                    // window lists without re-dirtying valid restored pixels.
+                    if was_visible && !windows_behind.contains(&prev_window) {
+                        for &rect in &repaint_exposure {
+                            let local = (
+                                rect.0.saturating_sub(prev_bounds.0),
+                                rect.1.saturating_sub(prev_bounds.1),
+                                rect.2.saturating_sub(prev_bounds.0),
+                                rect.3.saturating_sub(prev_bounds.1),
+                            );
+                            self.invalidate_window_rect(bus, prev_window, local);
+                        }
                     }
                 }
                 let should_repair_stale_exposure = restored_stale_saved_under

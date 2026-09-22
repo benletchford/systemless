@@ -11249,6 +11249,93 @@
     }
 
     #[test]
+    fn dispos_dialog_preserves_valid_saved_under_without_repainting_it() {
+        // The HLE retains the pixels beneath a visible dialog. When that
+        // snapshot is current, restoring it completes PaintBehind for the
+        // covered structure; queuing an application repaint for the same area
+        // can change state in partial-update drawing code. CalcVisBehind still
+        // has to expose the restored pixels for later drawing.
+        // Inside Macintosh Volume I (1985), pp. I-293, I-297.
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_sent_open_app_event_for_test(true);
+        disp.menu_bar_hidden = true;
+
+        let (screen_base, row_bytes, _width, _height, _depth) = disp.screen_mode;
+        let back = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            back,
+            screen_base,
+            40,
+            20,
+            260,
+            620,
+            "Back",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        disp.validate_window_rect(&mut bus, back, (0, 0, 220, 600));
+
+        let dialog_ptr = bus.alloc(256);
+        disp.window_stack
+            .push((back, (40, 20, 260, 620), 2, "Back".to_string()));
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            dialog_ptr,
+            screen_base,
+            90,
+            200,
+            190,
+            450,
+            "Dialog",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        bus.write_word(dialog_ptr + 108, 2); // dialogKind
+        disp.dialog_items.insert(dialog_ptr, Vec::new());
+        disp.validate_window_rect(&mut bus, dialog_ptr, (0, 0, 100, 250));
+        disp.event_queue.clear();
+
+        let saved_rect = TrapDispatcher::dialog_saved_pixel_rect((90, 200, 190, 450));
+        let saved_len = usize::from((saved_rect.2 - saved_rect.0) as u16)
+            * usize::from((saved_rect.3 - saved_rect.1) as u16);
+        disp.dialog_saved_pixels
+            .insert(dialog_ptr, vec![0x33; saved_len].into());
+
+        let back_vis = bus.read_long(back + 24);
+        assert!(!TrapDispatcher::region_contains_point(
+            &bus, back_vis, 80, 230
+        ));
+
+        bus.write_long(TEST_SP, dialog_ptr);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert!(TrapDispatcher::region_contains_point(
+            &bus, back_vis, 80, 230
+        ));
+        assert_eq!(
+            TrapDispatcher::region_handle_rect(&bus, bus.read_long(back + 122)),
+            None,
+            "valid restored pixels must not be dirtied again"
+        );
+        assert!(!disp
+            .event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == back));
+        assert_eq!(bus.read_byte(screen_base + 120 * row_bytes + 250), 0x33);
+    }
+
+    #[test]
     fn dispos_dialog_hidden_or_invalid_target_does_not_expose_windows() {
         // A hidden dialog has never covered the screen, and an invalid
         // DialogPtr is a defensive failure path. Neither may manufacture an
