@@ -4286,6 +4286,11 @@ impl FixtureRunner {
         migrated_services: crate::process_context::MigratedServiceAdoption,
     ) {
         ppc_companion.commit_migrated_services(&self.process_context, migrated_services);
+        if let Some(profile) = self.dispatcher.trap_table_profile {
+            if let Some(gateway) = self.bus.default_system_trap_gateway(profile, 0xA975) {
+                ppc_companion.attach_trap_default_gateway(0xA975, gateway);
+            }
+        }
         self.share_ppc_process_memory(&mut ppc_companion);
         ppc_companion.attach_unconverted_process_services(&mut self.process_context);
         assert!(self
@@ -4367,6 +4372,11 @@ impl FixtureRunner {
         self.dispatcher
             .materialize_trap_tables(&mut self.bus, TrapTableProfile::PowerPc604)
             .expect("trap table construction requires writable cells and system storage");
+        let tick_count_gateway = self
+            .bus
+            .default_system_trap_gateway(TrapTableProfile::PowerPc604, 0xA975)
+            .expect("materialized TickCount gateway has a canonical identity");
+        ppc_app.attach_trap_default_gateway(0xA975, tick_count_gateway);
         self.share_ppc_process_memory(&mut ppc_app);
         let detached_events = ppc_app.event_queue.take();
         self.process_context

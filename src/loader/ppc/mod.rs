@@ -3862,6 +3862,11 @@ pub struct PpcLoadedApp {
     pub(crate) tick_state: SharedProcessTickState,
     pub clock_cycles_per_tick: u32,
     pub clock_cycle_phase: u32,
+    /// Canonical system-owned trap gateways captured when this native adapter
+    /// joins a materialized process. A live table entry equal to one of these
+    /// identities still selects the HLE default; every other callable entry is
+    /// an application patch and must run through Mixed Mode.
+    pub(crate) trap_default_gateways: HashMap<u16, u32>,
     pub native_exception_handler: u32,
     pub(crate) native_exception_stack: Vec<PpcNativeExceptionContext>,
     pub(crate) stdc_qsort_stack: Vec<PpcQsortState>,
@@ -4047,6 +4052,13 @@ pub(super) fn ppc_set_current_resource_refnum(
 }
 
 impl PpcLoadedApp {
+    pub(crate) fn attach_trap_default_gateway(&mut self, trap_word: u16, gateway: u32) {
+        self.trap_default_gateways.insert(
+            crate::trap::manager::raw_trap_route(trap_word).canonical_word,
+            gateway,
+        );
+    }
+
     #[cfg(test)]
     pub(crate) fn guest_calls(&self) -> &SharedGuestCallStack {
         self.toolbox_startup.execution.calls()
@@ -8076,6 +8088,7 @@ impl PpcLoadedApp {
     ) -> PpcHleRunProbe {
         self.assert_cfm_execution_owner(process_cfm.as_deref());
         let guest_calls = self.toolbox_startup.execution.calls().shared_handle();
+        let trap_default_gateways = self.trap_default_gateways.clone();
         // Wakeup selects and prepares a saved context before any native step.
         guest_calls.resume_ready_task();
         if !guest_calls.current_task_is_running()
@@ -8514,6 +8527,43 @@ impl PpcLoadedApp {
                     }
                     return PpcImportAction::Halt;
                 };
+                match ppc_live_trap_import_action(
+                    dispatcher_target,
+                    &trap_default_gateways,
+                    cpu,
+                    &mut *process_memory_manager,
+                    memory,
+                    &mut toolbox_startup,
+                ) {
+                    Ok(Some(action)) => {
+                        if trace_imports {
+                            if binding.is_none() {
+                                binding = import_run_state.binding_cloned(index);
+                            }
+                            let binding = binding
+                                .as_ref()
+                                .expect("live trap import tracing resolves a known binding");
+                            push_ppc_hle_import_trace_entry(
+                                &mut import_trace,
+                                PpcHleImportTraceEntry {
+                                    import_index: index,
+                                    library_name: binding.library_name.clone(),
+                                    symbol_name: binding.symbol_name.clone(),
+                                    pc: cpu.pc,
+                                    lr: cpu.lr,
+                                    rtoc: cpu.gpr[2],
+                                    sp: cpu.gpr[1],
+                                    dispatcher_target: dispatcher_target.clone(),
+                                    repeat_count: 1,
+                                },
+                            );
+                        }
+                        handled_import_count = handled_import_count.saturating_add(1);
+                        return guest_calls.externalize_powerpc_action(cpu, action);
+                    }
+                    Ok(None) => {}
+                    Err(()) => return PpcImportAction::Halt,
+                }
                 if trace_recent_on_halt {
                     let binding = binding
                         .as_ref()
@@ -14224,6 +14274,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         tick_state: SharedProcessTickState::default(),
         clock_cycles_per_tick: 1,
         clock_cycle_phase: 0,
+        trap_default_gateways: HashMap::new(),
         native_exception_handler: 0,
         native_exception_stack: Vec::new(),
         stdc_qsort_stack: Vec::new(),
@@ -59944,6 +59995,76 @@ fn ppc_logical_trap_address(
         },
         move |address| protected_memory.is_shared_readonly_range(address, 4),
     )
+}
+
+/// Resolve a native import through the process's live Trap Manager entry
+/// before any HLE shortcut runs. The default identity comes from the system
+/// gateway registry, never from opcode inspection, so saved defaults remain
+/// callable while direct table writes and SetTrapAddress patches take effect
+/// immediately.
+fn ppc_live_trap_import_action(
+    target: &PpcImportDispatcherTarget,
+    default_gateways: &HashMap<u16, u32>,
+    cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    toolbox_startup: &mut PpcToolboxStartupState,
+) -> Result<Option<PpcImportAction>, ()> {
+    let (trap_word, toolbox, proc_info) = match target {
+        // pascal LONGINT TickCount(void)
+        PpcImportDispatcherTarget::TickCount => (0xA975, true, 0x30),
+        _ => return Ok(None),
+    };
+    let kind = if toolbox {
+        TrapTableKind::Toolbox
+    } else {
+        TrapTableKind::OperatingSystem
+    };
+    let table_entry = TrapManager::table_address(trap_word, kind);
+    if memory.read_u32_be(table_entry).is_none() {
+        // A detached PEF adapter has no process trap topology until the runner
+        // attaches it. That standalone case retains the HLE import behavior.
+        return Ok(None);
+    }
+    let handler = ppc_logical_trap_address(memory, trap_word, toolbox).ok_or(())?;
+    let canonical_word = crate::trap::manager::raw_trap_route(trap_word).canonical_word;
+    if default_gateways.get(&canonical_word) == Some(&handler) {
+        return Ok(None);
+    }
+    if handler == 0 {
+        return if default_gateways.is_empty() {
+            // Standalone PEF construction currently exposes zero-filled low
+            // memory without materializing system gateways (#1491).
+            Ok(None)
+        } else {
+            Err(())
+        };
+    }
+
+    let heap = process_memory_manager
+        .native_heap_state()
+        .ok_or(())?;
+    let saved_r3 = cpu.gpr[3];
+    let saved_r4 = cpu.gpr[4];
+    cpu.gpr[3] = handler;
+    cpu.gpr[4] = proc_info;
+    let mut heap_cursor = heap.heap_cursor;
+    let heap_limit = process_memory_manager.native_allocation_limit(heap.heap_limit);
+    let action = ppc_call_universal_proc(
+        cpu,
+        process_memory_manager,
+        memory,
+        &mut heap_cursor,
+        heap_limit,
+        toolbox_startup,
+        GuestIsa::M68k,
+    );
+    if action.is_none() {
+        cpu.gpr[3] = saved_r3;
+        cpu.gpr[4] = saved_r4;
+        return Err(());
+    }
+    Ok(action)
 }
 
 fn ppc_set_logical_trap_address(

@@ -4564,6 +4564,7 @@
             tick_state: SharedProcessTickState::default(),
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
+            trap_default_gateways: Default::default(),
             native_exception_handler: 0,
             native_exception_stack: Vec::new(),
             stdc_qsort_stack: Vec::new(),
@@ -4864,6 +4865,102 @@
                 }
             }
         }
+    }
+
+    #[test]
+    fn native_tick_count_import_observes_live_process_trap_patch() {
+        use crate::guest_procedure::{
+            ROUTINE_DESCRIPTOR_HEADER_SIZE, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
+            ROUTINE_DESCRIPTOR_VERSION, ROUTINE_FLAG_USE_NATIVE_ISA, ROUTINE_RECORD_POWERPC_ISA,
+        };
+        use crate::loader::ppc::tests::synthetic_pef_with_import;
+        use crate::trap::manager::{TrapManager, TrapTableKind};
+
+        const DESCRIPTOR: u32 = 0x0180_0000;
+        const TVECTOR: u32 = DESCRIPTOR + 0x80;
+        const ENTRY: u32 = DESCRIPTOR + 0x100;
+        const RTOC: u32 = DESCRIPTOR + 0x200;
+        const RESULT: u32 = 0x1234_5678;
+
+        let native = load_pef_application(&synthetic_pef_with_import(b"TickCount")).unwrap();
+        let mut runner = FixtureRunner::new(64 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&LoadedApp::from_ppc(native));
+        let native = runner.native.application_mut().expect("native application");
+        native.memory.add_region(DESCRIPTOR, vec![0; 0x300]);
+        native
+            .memory
+            .write_u16_be(DESCRIPTOR, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP)
+            .unwrap();
+        native
+            .memory
+            .write_u8(DESCRIPTOR + 2, ROUTINE_DESCRIPTOR_VERSION)
+            .unwrap();
+        native.memory.write_u16_be(DESCRIPTOR + 10, 0).unwrap();
+        let record = DESCRIPTOR + ROUTINE_DESCRIPTOR_HEADER_SIZE;
+        native.memory.write_u32_be(record, 0x30).unwrap();
+        native
+            .memory
+            .write_u8(record + 5, ROUTINE_RECORD_POWERPC_ISA)
+            .unwrap();
+        native
+            .memory
+            .write_u16_be(record + 6, ROUTINE_FLAG_USE_NATIVE_ISA)
+            .unwrap();
+        native.memory.write_u32_be(record + 8, TVECTOR).unwrap();
+        native.memory.write_u32_be(TVECTOR, ENTRY).unwrap();
+        native.memory.write_u32_be(TVECTOR + 4, RTOC).unwrap();
+        for (offset, word) in [0x3c60_1234, 0x6063_5678, 0x4e80_0020]
+            .into_iter()
+            .enumerate()
+        {
+            native
+                .memory
+                .write_u32_be(ENTRY + u32::try_from(offset).unwrap() * 4, word)
+                .unwrap();
+        }
+        let table_entry = TrapManager::table_address(0xA975, TrapTableKind::Toolbox);
+        runner.bus.write_long(table_entry, DESCRIPTOR);
+        let (_, running) = runner.run_steps(128, None);
+
+        assert!(!running);
+        let native = runner.native.application().expect("native application retained");
+        assert_eq!(native.cpu.gpr[3], RESULT);
+        assert!(native.guest_calls().is_empty());
+    }
+
+    #[test]
+    fn native_tick_count_import_completes_live_classic_trap_patch() {
+        use crate::loader::ppc::tests::synthetic_pef_with_import;
+        use crate::trap::manager::{TrapManager, TrapTableKind};
+
+        const RESULT: u32 = 0x1234_5678;
+        let native = load_pef_application(&synthetic_pef_with_import(b"TickCount")).unwrap();
+        let mut runner = FixtureRunner::new(64 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&LoadedApp::from_ppc(native));
+        let handler = runner.bus.alloc(12);
+        for (offset, word) in [
+            0x2f7c, // MOVE.L #RESULT,4(SP), the Pascal result slot
+            (RESULT >> 16) as u16,
+            RESULT as u16,
+            0x0004,
+            0x4e75,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            runner
+                .bus
+                .write_word(handler + u32::try_from(offset).unwrap() * 2, word);
+        }
+        let table_entry = TrapManager::table_address(0xA975, TrapTableKind::Toolbox);
+        runner.bus.write_long(table_entry, handler);
+
+        let (_, running) = runner.run_steps(256, None);
+
+        assert!(!running);
+        let native = runner.native.application().expect("native application retained");
+        assert_eq!(native.cpu.gpr[3], RESULT);
+        assert!(native.guest_calls().is_empty());
     }
 
     #[test]
@@ -9563,6 +9660,7 @@
             tick_state: SharedProcessTickState::default(),
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
+            trap_default_gateways: Default::default(),
             native_exception_handler: 0,
             native_exception_stack: Vec::new(),
             stdc_qsort_stack: Vec::new(),
@@ -10429,6 +10527,7 @@
             tick_state: SharedProcessTickState::default(),
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
+            trap_default_gateways: Default::default(),
             native_exception_handler: 0,
             native_exception_stack: Vec::new(),
             stdc_qsort_stack: Vec::new(),
@@ -10582,6 +10681,7 @@
             tick_state: SharedProcessTickState::default(),
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
+            trap_default_gateways: Default::default(),
             native_exception_handler: 0,
             native_exception_stack: Vec::new(),
             stdc_qsort_stack: Vec::new(),
@@ -10964,6 +11064,7 @@
             tick_state: SharedProcessTickState::default(),
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
+            trap_default_gateways: Default::default(),
             native_exception_handler: 0,
             native_exception_stack: Vec::new(),
             stdc_qsort_stack: Vec::new(),
@@ -11249,6 +11350,7 @@
             tick_state: SharedProcessTickState::default(),
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
+            trap_default_gateways: Default::default(),
             native_exception_handler: 0,
             native_exception_stack: Vec::new(),
             stdc_qsort_stack: Vec::new(),
