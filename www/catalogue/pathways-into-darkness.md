@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: FPS
+launch_enabled: true
 compatibility:
   status: playable
   verified:
