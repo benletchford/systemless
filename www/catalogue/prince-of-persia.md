@@ -9,7 +9,7 @@ year: 1992
 architectures: [68k]
 default_architecture: 68k
 category: Arcade
-launch_enabled: false
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -27,10 +27,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Prince%20of%20Persia.sit
-    expected_sha256: 1914f6bd17b4b9ff0ae68cf5408ddf88ebfc2ae6c85a8b5499fde5d52ae31917
-    expected_size: 1153091
+    type: sha256
+    sha256: 1914f6bd17b4b9ff0ae68cf5408ddf88ebfc2ae6c85a8b5499fde5d52ae31917
+    size_bytes: 1153091
   provenance:
     redistribution: permitted
     original: true
@@ -61,8 +60,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/prince-of-persia/gameplay.png
+    type: sha256
+    sha256: fe82086f572a8043903397350438498ee68f2566ae06e060fa51c15c93aba705
+    size_bytes: 46052
   provenance:
     redistribution: permitted
     original: true
@@ -90,7 +90,7 @@ references:
 
 ## Sixty minutes, one dungeon
 
-![Prince of Persia gameplay](incoming/prince-of-persia/gameplay.png)
+![Prince of Persia gameplay](https://assets.systemless.org/catalogue/media/sha256/fe/fe82086f572a8043903397350438498ee68f2566ae06e060fa51c15c93aba705.png)
 
 The demo opens with the palace title sequence, then drops the Prince into the
 first underground chamber. Movement has weight: a running start carries him
@@ -113,6 +113,5 @@ obstacle and matched the BasiliskII oracle at 99.8% overall perceptual parity.
 
 The package identifies itself as a demo and includes Brøderbund's original
 ordering information. It is preserved byte-for-byte rather than replaced with
-the retail game, a cracked copy or a browser remake. The launcher remains
-disabled until the archive and screenshot complete asset promotion and browser
-review.
+the retail game, a cracked copy or a browser remake. Browser startup and asset
+review confirmed the promoted immutable archive and screenshot.
