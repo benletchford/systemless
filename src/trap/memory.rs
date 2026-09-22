@@ -802,6 +802,18 @@ impl super::TrapDispatcher {
         memory_manager.new_classic_ptr(bus, size)
     }
 
+    fn new_process_classic_ptr_below(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        size: u32,
+        upper_bound: u32,
+    ) -> u32 {
+        let memory_manager = self.process_memory_manager();
+        let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.attach_classic_memory_bus(bus);
+        memory_manager.new_classic_ptr_below(bus, size, upper_bound)
+    }
+
     pub(super) fn dispose_process_ptr(&mut self, bus: &mut MacMemoryBus, ptr: u32) {
         let memory_manager = self.process_memory_manager();
         let mut memory_manager = memory_manager.borrow_mut();
@@ -1028,7 +1040,20 @@ impl super::TrapDispatcher {
                     write_memory_result(cpu, bus, MEM_FULL_ERR);
                     return Some(Ok(()));
                 }
-                let ptr = self.new_process_classic_ptr(bus, size);
+                let ptr = if matches!(
+                    variant,
+                    OsRoutineVariant::CurrentHeap | OsRoutineVariant::CurrentHeapClear
+                ) {
+                    // The application heap shares its partition with the
+                    // downward-growing 68K stack. A request that reaches the
+                    // live A7 must fail with `memFullErr`; returning it would
+                    // let the documented undefined contents overwrite active
+                    // frames. Inside Macintosh: Memory (1992), pp. 1-7,
+                    // 2-36--2-37.
+                    self.new_process_classic_ptr_below(bus, size, cpu.read_reg(Register::A7))
+                } else {
+                    self.new_process_classic_ptr(bus, size)
+                };
                 if ptr == 0 && size > 0 {
                     cpu.write_reg(Register::A0, 0);
                     write_memory_result(cpu, bus, MEM_FULL_ERR);
@@ -5491,6 +5516,26 @@ mod tests {
             ptr >= app_zone && ptr < bus.read_long(app_zone),
             "a successful NewPtr result must pass the classic [zone, bkLim) validity test"
         );
+    }
+
+    #[test]
+    fn new_ptr_refuses_to_cross_the_active_68k_stack() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let allocation_start = 0x0020_2000;
+        let stack_pointer = 0x0020_2800;
+        let sentinel = 0x1234_5678;
+
+        bus.reserve_heap_until(allocation_start);
+        bus.write_long(stack_pointer, sentinel);
+        cpu.write_reg(Register::A7, stack_pointer);
+        cpu.write_reg(Register::D0, 0x1000);
+        dispatcher.current_trap_word = 0xA11E;
+
+        let result = dispatcher.dispatch_memory(false, 0x1E, &mut cpu, &mut bus);
+        assert!(result.is_some() && result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(cpu.read_reg(Register::D0), super::MEM_FULL_ERR);
+        assert_eq!(bus.read_long(stack_pointer), sentinel);
     }
 
     #[test]
