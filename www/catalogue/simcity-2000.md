@@ -9,7 +9,7 @@ year: 1993
 architectures: [68k]
 default_architecture: 68k
 category: Strategy
-launch_enabled: false
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -27,10 +27,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/SimCity%202000%20Demo.sit
-    expected_sha256: 499e54b44655bbcda54967f75de83cca86453b3d9533c7d0e5d5d7f26ee4339b
-    expected_size: 1060825
+    type: sha256
+    sha256: 499e54b44655bbcda54967f75de83cca86453b3d9533c7d0e5d5d7f26ee4339b
+    size_bytes: 1060825
   provenance:
     redistribution: permitted
     original: true
@@ -60,8 +59,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/simcity-2000/gameplay.png
+    type: sha256
+    sha256: f60a859897501f6719a86a14b2b0006312fa14c52f72d44c89bf2ed47c2b5025
+    size_bytes: 278288
   provenance:
     redistribution: permitted
     original: true
@@ -89,7 +89,7 @@ references:
 
 ## A living city in miniature
 
-![SimCity 2000 gameplay](incoming/simcity-2000/gameplay.png)
+![SimCity 2000 gameplay](https://assets.systemless.org/catalogue/media/sha256/f6/f60a859897501f6719a86a14b2b0006312fa14c52f72d44c89bf2ed47c2b5025.png)
 
 The interactive demo opens Demo City as a working metropolis rather than a
 scripted tour. Roads cross rail lines, power plants feed dense neighbourhoods,
@@ -112,5 +112,5 @@ dialogs, selects a construction tool and changes a visible map tile.
 Electronic Arts is the present rights holder and still offers SimCity 2000
 Special Edition commercially. This catalogue uses only Maxis's time-limited
 promotional demo, preserved byte-for-byte; it does not substitute or expose the
-retail game. The launcher remains disabled until its promoted archive and page
-have passed the production and browser-review gates.
+retail game. The promoted archive and page have passed the production and
+browser-review gates, so the unchanged demo can be launched directly.
