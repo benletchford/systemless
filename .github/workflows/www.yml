@@ -1,6 +1,7 @@
 name: Website and catalogue
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - .cargo/**
