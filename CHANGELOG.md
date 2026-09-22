@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.48.0](https://github.com/benletchford/systemless/compare/v0.47.5...v0.48.0) (2026-09-22)
+
+
+### Features
+
+* implement Collection Manager service family ([#2385](https://github.com/benletchford/systemless/issues/2385)) ([4bfb451](https://github.com/benletchford/systemless/commit/4bfb45165ed4077f7716d5b017863658e4bf3e5e))
+
+
+### Bug Fixes
+
+* **controls:** decode high-bit CDEF identifiers ([#2382](https://github.com/benletchford/systemless/issues/2382)) ([6e1559d](https://github.com/benletchford/systemless/commit/6e1559d0c14e976e5cde6ba2ef5897be5cde1f5c))
+* **dialog:** preserve valid saved-under pixels ([#2389](https://github.com/benletchford/systemless/issues/2389)) ([5b2b229](https://github.com/benletchford/systemless/commit/5b2b2299de2543dd791704aed27b34c781ae9963))
+* **files:** resolve full HFS catalogue paths ([#2380](https://github.com/benletchford/systemless/issues/2380)) ([63c4ae0](https://github.com/benletchford/systemless/commit/63c4ae0fc1a1ebc4c8f5d6fbe7e05adbbbea6701))
+* **files:** restore PBSetVol working directories ([#2379](https://github.com/benletchford/systemless/issues/2379)) ([7f911ee](https://github.com/benletchford/systemless/commit/7f911ee6bd9d1f34d289518ea331a5d8e1d82e03))
+* **loader:** update StuffIt decoder ([02ce859](https://github.com/benletchford/systemless/commit/02ce85955c3d684f91bb42b315e49c5e10ecb603))
+* **math:** correct X2Frac pointer ABI ([#2377](https://github.com/benletchford/systemless/issues/2377)) ([e11c5be](https://github.com/benletchford/systemless/commit/e11c5be2ceab24734c64dafc56d131c7e4648518))
+* **notifications:** execute queued response procedures ([#2381](https://github.com/benletchford/systemless/issues/2381)) ([7ad6781](https://github.com/benletchford/systemless/commit/7ad6781cd753675f00fa968d1acb43b5ee538c6f))
+* **ppc:** bind initial bundled library imports ([5da377d](https://github.com/benletchford/systemless/commit/5da377d4b5f356973bc622a46ea33a5d47925c9d)), closes [#2355](https://github.com/benletchford/systemless/issues/2355)
+* **ppc:** preserve writable cache coherence ([#2388](https://github.com/benletchford/systemless/issues/2388)) ([e55bb61](https://github.com/benletchford/systemless/commit/e55bb6145673cbce0b6283f8117ba9d8b8fb80f5))
+* **ppc:** resolve working-directory data fork opens ([#2392](https://github.com/benletchford/systemless/issues/2392)) ([1078048](https://github.com/benletchford/systemless/commit/10780482c0163c1da8dc01b312376281459fe9f1))
+* **resources:** supply standard system pattern list ([#2383](https://github.com/benletchford/systemless/issues/2383)) ([28e9ce2](https://github.com/benletchford/systemless/commit/28e9ce2644bdaf1fa7f98b0aa0e3d21663d0761a))
+
+
+### Code Refactoring
+
+* **process:** seal resource policy handle ([#2386](https://github.com/benletchford/systemless/issues/2386)) ([e86f265](https://github.com/benletchford/systemless/commit/e86f26539ee5e024447699d0771f13b8132f68a5))
+
 ## [0.47.5](https://github.com/benletchford/systemless/compare/v0.47.4...v0.47.5) (2026-09-21)
 
 
