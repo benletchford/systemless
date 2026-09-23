@@ -8446,6 +8446,14 @@ impl super::TrapDispatcher {
                         let bl = bus.read_word(port.wrapping_add(10)) as i16;
                         let bb = bus.read_word(port.wrapping_add(12)) as i16;
                         let br = bus.read_word(port.wrapping_add(14)) as i16;
+                        // Color QuickDraw draws a basic GrafPort at the main
+                        // screen's actual depth when its baseAddr identifies
+                        // that screen. Match the shape-drawing path instead of
+                        // treating this screen-backed destination as 1bpp.
+                        // Inside Macintosh Volume V, V-122.
+                        let screen_backed = base == self.screen_mode.0
+                            && rb == self.screen_mode.1
+                            && matches!(self.screen_mode.4, 2 | 4 | 8);
                         (
                             base,
                             rb,
@@ -8453,7 +8461,7 @@ impl super::TrapDispatcher {
                             bl,
                             (br - bl) as u16,
                             (bb - bt) as u16,
-                            1u16,
+                            if screen_backed { self.screen_mode.4 } else { 1 },
                             0u32,
                         )
                     };

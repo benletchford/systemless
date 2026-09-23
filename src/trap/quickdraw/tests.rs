@@ -22166,6 +22166,36 @@
     }
 
     #[test]
+    fn drawpicture_uses_screen_depth_for_screen_backed_basic_grafport() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let a5 = cpu.read_reg(Register::A5);
+        let port = bus.read_long(bus.read_long(a5));
+        let screen_base = bus.alloc(8 * 8);
+        bus.fill_zeros(screen_base, 8 * 8);
+        d.screen_mode = (screen_base, 8, 8, 8, 8);
+        bus.write_long(port + 2, screen_base);
+        bus.write_word(port + 6, 8);
+        bus.write_word(port + 8, 0);
+        bus.write_word(port + 10, 0);
+        bus.write_word(port + 12, 8);
+        bus.write_word(port + 14, 8);
+
+        let pic = bus.alloc(32);
+        write_v1_paintrect_picture(&mut bus, pic, (0, 0, 1, 1), (0, 0, 1, 1));
+        let pic_handle = bus.alloc(4);
+        bus.write_long(pic_handle, pic);
+        let dst_rect = bus.alloc(8);
+        write_rect(&mut bus, dst_rect, 2, 3, 3, 4);
+        bus.write_long(TEST_SP, dst_rect);
+        bus.write_long(TEST_SP + 4, pic_handle);
+
+        let result = d.dispatch_quickdraw(true, 0x0F6, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_byte(screen_base + 2 * 8 + 3), 255);
+        assert_eq!(bus.read_byte(screen_base + 2 * 8 + 2), 0);
+    }
+
+    #[test]
     fn drawpicture_skips_rect_outside_current_port_visible_region() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let a5 = cpu.read_reg(Register::A5);
