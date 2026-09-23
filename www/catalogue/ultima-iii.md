@@ -12,7 +12,6 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Role-Playing
-launch_enabled: false
 compatibility:
   status: unknown
 artifacts:
@@ -20,10 +19,9 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://github.com/beastie/ultima3/releases/download/v1.3/ultima3-13.hqx
-    expected_sha256: 0be5463e37cb057f56fd28c9d68a4171ff2f44ee84efe6bbf55af0a4e841de6c
-    expected_size: 2923877
+    type: sha256
+    sha256: 0be5463e37cb057f56fd28c9d68a4171ff2f44ee84efe6bbf55af0a4e841de6c
+    size_bytes: 2923877
   provenance:
     redistribution: permitted
     original: true
@@ -34,22 +32,21 @@ artifacts:
     rights_holder: LairWare
     permission: >-
       The included Read Me First permits free distribution of the unregistered
-      software archive provided it is not modified. This is the unchanged
-      developer-hosted v1.3 BinHex archive, with no registration code supplied
-      or applied.
+      software archive provided it is not modified. This is the unchanged developer-hosted
+      v1.3 BinHex archive, with no registration code supplied or applied.
     notes: >-
       Original 68k-compatible Ultima III v1.3 shareware archive, 2,923,877 bytes,
-      SHA-256 0be5463e37cb057f56fd28c9d68a4171ff2f44ee84efe6bbf55af0a4e841de6c.
-      The unregistered game allows play but prevents travel to Ambrosia and
-      raising abilities. The developer's later MIT source-code license does not
-      cover every franchise asset; distribution of this original archive relies
-      on its own bundled shareware terms.
+      SHA-256 0be5463e37cb057f56fd28c9d68a4171ff2f44ee84efe6bbf55af0a4e841de6c. The
+      unregistered game allows play but prevents travel to Ambrosia and raising abilities.
+      The developer's later MIT source-code license does not cover every franchise asset;
+      distribution of this original archive relies on its own bundled shareware terms.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/ultima-iii/gameplay.png
+    type: sha256
+    sha256: 45aa130edcd79906a0f5a4b32284001937a016e7f9460d762bbbf1bb4e8ef1a5
+    size_bytes: 51874
   provenance:
     redistribution: permitted
     original: true
@@ -57,13 +54,12 @@ artifacts:
     sources:
     - https://github.com/benletchford/systemless/issues/2551
     permission: >-
-      Fresh Systemless capture of the unregistered shareware game. The
-      underlying Ultima III artwork remains the property of its rights holders.
+      Fresh Systemless capture of the unregistered shareware game. The underlying
+      Ultima III artwork remains the property of its rights holders.
     notes: >-
       Cropped 640-by-402 game-window capture of the included sample party on
-      Sosaria's overworld, without browser, host desktop, or emulator controls.
-      PNG SHA-256 45aa130edcd79906a0f5a4b32284001937a016e7f9460d762bbbf1bb4e8ef1a5;
-      51,874 bytes.
+      Sosaria's overworld, without browser, host desktop, or emulator controls. PNG SHA-256
+      45aa130edcd79906a0f5a4b32284001937a016e7f9460d762bbbf1bb4e8ef1a5; 51,874 bytes.
 references:
 - https://github.com/beastie/ultima3/releases/tag/v1.3
 - https://github.com/benletchford/systemless/issues/2551
@@ -71,7 +67,7 @@ references:
 
 ## Into Sosaria
 
-![The Ultima III shareware party on Sosaria's overworld](incoming/ultima-iii/gameplay.png)
+![The Ultima III shareware party on Sosaria's overworld](https://assets.systemless.org/catalogue/media/sha256/45/45aa130edcd79906a0f5a4b32284001937a016e7f9460d762bbbf1bb4e8ef1a5.png)
 
 Gather a party, explore towns and dungeons, and survive the road across
 Sosaria in LairWare's colorful Macintosh adaptation of *Ultima III*. The
