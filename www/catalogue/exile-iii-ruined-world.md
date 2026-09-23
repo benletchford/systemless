@@ -12,8 +12,20 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Role-Playing
+launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
+  verified:
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
+    systemless_version: "0.55.0"
+    architecture: 68k
+    environment: >-
+      Release-mode browser run of the promoted unregistered demo through the
+      welcome dialog, new-game and party creation, and Guest Quarters gameplay;
+      welcome text rendering briefly stalls before recovering
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/2547
 artifacts:
 - id: archive
   role: archive
@@ -65,6 +77,7 @@ artifacts:
 references:
 - https://www.spiderwebsoftware.com/exile3/macexile3.html
 - https://github.com/benletchford/systemless/issues/2542
+- https://github.com/benletchford/systemless/issues/2566
 ---
 
 ## Back to the surface
@@ -82,5 +95,7 @@ through its support team; this archive contains no key. The original license
 still accompanies the download and sets the terms for unregistered use.
 
 Systemless reaches party creation and the opening Guest Quarters game scene in
-a deterministic run. Browser launch remains disabled until the promoted archive
-is manually tested in the browser.
+a deterministic run. The same path and scene were verified in the release-mode
+browser build using this promoted archive. The welcome dialog can briefly slow
+the browser while its text appears, then normal speed resumes; this is tracked
+in [the runtime performance issue](https://github.com/benletchford/systemless/issues/2566).
