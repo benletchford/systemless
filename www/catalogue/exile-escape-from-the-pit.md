@@ -77,6 +77,6 @@ Spiderweb now describes Exile as free to play and offers free unlocking keys
 through its support team; this archive contains no key. The original license
 still accompanies the download and sets the terms for unregistered use.
 
-Systemless reaches the starting Fort Exile scene with a pending generic File
-Manager fix. Browser launch remains disabled until that fix is released and the
-promoted archive is manually tested in the browser.
+With the generic File Manager correction, Systemless reaches the starting Fort
+Exile scene. Browser launch remains disabled until the promoted archive is
+manually tested in the browser.
