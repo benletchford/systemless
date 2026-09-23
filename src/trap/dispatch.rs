@@ -34,7 +34,7 @@ use crate::process_context::{
     SharedProcessAppleEventLaunchState,
     SharedProcessCollectionManager, SharedProcessControlManager, SharedProcessCursorState,
     SharedProcessDialogText, SharedProcessDisplayClut,
-    SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessInputState,
+    SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessGraphicsPort, SharedProcessInputState,
     SharedProcessListManager, SharedProcessMemoryManager, SharedProcessMenuTracking,
     SharedProcessOpenFilePositions, SharedProcessOpenFiles, SharedProcessQuickDrawError,
     SharedProcessQuickDrawHiliteColors,
@@ -1826,7 +1826,7 @@ pub struct TrapDispatcher {
     /// Current GDevice handle
     pub(crate) current_gdevice: SharedProcessValue<u32>,
     /// Current GrafPort/GWorld pointer
-    pub(crate) current_port: SharedProcessValue<u32>,
+    pub(crate) current_port: SharedProcessGraphicsPort,
     /// Error from the last applicable Color QuickDraw or Color Manager call.
     pub(crate) quickdraw_error: SharedProcessQuickDrawError,
     /// Process-owned fallback for ports whose guest record has no
@@ -2870,9 +2870,7 @@ impl TrapDispatcher {
     /// Test-only: set the current port without going through SetPort.
     /// Used by integration test helpers like setup_with_cgraf_port().
     pub fn set_current_port_for_test(&mut self, port: u32) {
-        self
-            .current_port
-            .with_mut(|current_port| *current_port = port);
+        self.current_port.set(port);
     }
 
     /// Test-only: invoke save_dialog_pixels for the byte-isomorphism gate.
@@ -3657,7 +3655,7 @@ impl TrapDispatcher {
             trace_sink: None,
             main_gdevice_handle: 0,
             current_gdevice: SharedProcessValue::from_value(0),
-            current_port: SharedProcessValue::from_value(0),
+            current_port: SharedProcessGraphicsPort::default(),
             quickdraw_error: SharedProcessQuickDrawError::default(),
             quickdraw_op_colors: SharedProcessQuickDrawOpColors::default(),
             quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors::default(),

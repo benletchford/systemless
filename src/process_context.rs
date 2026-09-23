@@ -2258,6 +2258,126 @@ impl SharedProcessQuickDrawPixelStates {
     }
 }
 
+/// Detached-by-default attachment handle for the process-owned QuickDraw graphics port.
+///
+/// Ordinary clones are snapshots so cloning an adapter cannot couple two
+/// processes. Adapters share only through `attach_copy_to` or `activate_copy_to`,
+/// under the same serialized runner ownership used for guest RAM and the Memory Manager.
+/// Inside Macintosh: Imaging With QuickDraw (1994), pp. 2-41--2-42 and 6-29.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedProcessGraphicsPort(SharedProcessValue<u32>);
+
+impl Default for SharedProcessGraphicsPort {
+    fn default() -> Self {
+        Self::from_value(0)
+    }
+}
+
+impl std::ops::Deref for SharedProcessGraphicsPort {
+    type Target = u32;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl PartialEq<u32> for SharedProcessGraphicsPort {
+    fn eq(&self, other: &u32) -> bool {
+        self.with_ref(|port| port == other)
+    }
+}
+
+impl PartialEq<&u32> for SharedProcessGraphicsPort {
+    fn eq(&self, other: &&u32) -> bool {
+        self.with_ref(|port| port == *other)
+    }
+}
+
+impl PartialEq<SharedProcessGraphicsPort> for u32 {
+    fn eq(&self, other: &SharedProcessGraphicsPort) -> bool {
+        other.with_ref(|port| self == port)
+    }
+}
+
+impl PartialEq<SharedProcessGraphicsPort> for &u32 {
+    fn eq(&self, other: &SharedProcessGraphicsPort) -> bool {
+        other.with_ref(|port| *self == port)
+    }
+}
+
+impl std::fmt::Display for SharedProcessGraphicsPort {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "0x{:08X}", self.get())
+    }
+}
+
+#[allow(dead_code)]
+impl SharedProcessGraphicsPort {
+    pub(crate) fn from_value(port: u32) -> Self {
+        Self(SharedProcessValue::from_value(port))
+    }
+
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&u32) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut u32) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    pub(crate) fn attach_copy_to(&mut self, process_state: &Self) {
+        self.0.attach_copy_to(&process_state.0, |port| *port == 0);
+    }
+
+    pub(crate) fn activate_copy_to(&mut self, process_state: &Self) {
+        self.0.activate_copy_to(&process_state.0);
+    }
+
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.with_ref(|port| *port == 0)
+    }
+
+    pub(crate) fn get(&self) -> u32 {
+        self.with_ref(|port| *port)
+    }
+
+    pub(crate) fn set(&self, port: u32) {
+        self.with_mut(|p| *p = port);
+    }
+
+    pub(crate) fn replace(&self, port: u32) -> u32 {
+        self.with_mut(|p| {
+            let previous = *p;
+            *p = port;
+            previous
+        })
+    }
+
+    pub(crate) fn clear(&self) {
+        self.set(0);
+    }
+
+    pub(crate) fn is_null(&self) -> bool {
+        self.get() == 0
+    }
+
+    pub(crate) fn is_valid(&self) -> bool {
+        self.get() != 0
+    }
+
+    pub(crate) fn snapshot(&self) -> u32 {
+        self.get()
+    }
+}
+
 /// Canonical desktop scrap for one Macintosh process.
 ///
 /// The Scrap Manager exposes one ordered collection of typed flavors to every
@@ -9182,7 +9302,7 @@ pub(crate) struct ProcessContext {
     quickdraw_op_colors: SharedProcessQuickDrawOpColors,
     quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors,
     quickdraw_pixel_states: SharedProcessQuickDrawPixelStates,
-    current_graphics_port: SharedProcessValue<u32>,
+    current_graphics_port: SharedProcessGraphicsPort,
     current_graphics_device: SharedProcessValue<u32>,
     quickdraw_error: SharedProcessQuickDrawError,
     device_clut: SharedProcessDisplayClut,
@@ -9354,7 +9474,7 @@ impl Default for ProcessContext {
             quickdraw_op_colors: SharedProcessQuickDrawOpColors::default(),
             quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors::default(),
             quickdraw_pixel_states: SharedProcessQuickDrawPixelStates::default(),
-            current_graphics_port: SharedProcessValue::from_value(0),
+            current_graphics_port: SharedProcessGraphicsPort::default(),
             current_graphics_device: SharedProcessValue::from_value(0),
             quickdraw_error: SharedProcessQuickDrawError::default(),
             device_clut: SharedProcessDisplayClut::default(),
@@ -9685,20 +9805,25 @@ impl ProcessContext {
     /// QuickDraw (1994), pp. 2-41--2-42 and 6-29.
     pub(crate) fn attach_quickdraw_selection(
         &self,
-        current_port: &mut SharedProcessValue<u32>,
+        current_port: &mut SharedProcessGraphicsPort,
         current_device: &mut SharedProcessValue<u32>,
     ) {
-        current_port.attach_copy_to(&self.current_graphics_port, |address| *address == 0);
+        current_port.attach_copy_to(&self.current_graphics_port);
         current_device.attach_copy_to(&self.current_graphics_device, |address| *address == 0);
     }
 
     pub(crate) fn activate_quickdraw_selection(
         &self,
-        current_port: &mut SharedProcessValue<u32>,
+        current_port: &mut SharedProcessGraphicsPort,
         current_device: &mut SharedProcessValue<u32>,
     ) {
         current_port.activate_copy_to(&self.current_graphics_port);
         current_device.activate_copy_to(&self.current_graphics_device);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn current_graphics_port(&self) -> &SharedProcessGraphicsPort {
+        &self.current_graphics_port
     }
 
     /// Attach the error from the last applicable Color QuickDraw or Color
@@ -14261,5 +14386,72 @@ mod tests {
             context.apple_event_descriptors().descriptors.get(&0x5000),
             Some(&desc)
         );
+    }
+
+    #[test]
+    fn process_graphics_port_encapsulation() {
+        let port = SharedProcessGraphicsPort::default();
+        assert!(port.is_pristine());
+        assert!(port.is_null());
+        assert!(!port.is_valid());
+        assert_eq!(port.get(), 0);
+        assert_eq!(*port, 0);
+        assert_eq!(port, 0);
+        assert_eq!(port, &0);
+        assert_eq!(0, port);
+        assert_eq!(&0, port);
+        assert_eq!(port.snapshot(), 0);
+        assert_eq!(format!("{port}"), "0x00000000");
+
+        let handle = port.shared_handle();
+        assert!(port.ptr_eq(&handle));
+
+        port.set(0x0012_3456);
+        assert!(!port.is_pristine());
+        assert!(!port.is_null());
+        assert!(port.is_valid());
+        assert_eq!(port.get(), 0x0012_3456);
+        assert_eq!(*port, 0x0012_3456);
+        assert_eq!(port, 0x0012_3456);
+        assert_eq!(handle.get(), 0x0012_3456);
+        assert_eq!(format!("{port}"), "0x00123456");
+
+        let prev = port.replace(0x00AB_CDEF);
+        assert_eq!(prev, 0x0012_3456);
+        assert_eq!(port.get(), 0x00AB_CDEF);
+        assert_eq!(port.snapshot(), 0x00AB_CDEF);
+
+        port.clear();
+        assert!(port.is_pristine());
+        assert!(port.is_null());
+        assert_eq!(port.get(), 0);
+    }
+
+    #[test]
+    fn attached_graphics_ports_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic_port = SharedProcessGraphicsPort::default();
+        let mut classic_device = SharedProcessValue::from_value(0);
+        let mut native_port = SharedProcessGraphicsPort::default();
+        let mut native_device = SharedProcessValue::from_value(0);
+
+        context.attach_quickdraw_selection(&mut classic_port, &mut classic_device);
+        context.activate_quickdraw_selection(&mut native_port, &mut native_device);
+
+        assert!(classic_port.ptr_eq(&native_port));
+        assert!(classic_port.ptr_eq(context.current_graphics_port()));
+
+        classic_port.set(0x0020_0000);
+        assert_eq!(*native_port, 0x0020_0000);
+        assert_eq!(*context.current_graphics_port(), 0x0020_0000);
+
+        let detached = native_port.clone();
+        assert!(!detached.ptr_eq(&native_port));
+
+        detached.set(0x0030_0000);
+        assert_eq!(*detached, 0x0030_0000);
+        assert_eq!(*native_port, 0x0020_0000);
+        assert_eq!(*classic_port, 0x0020_0000);
+        assert_eq!(*context.current_graphics_port(), 0x0020_0000);
     }
 }
