@@ -1263,6 +1263,33 @@
     }
 
     #[test]
+    fn get_new_dialog_without_dctb_exposes_grafport_bitmap_bounds() {
+        // MTE 1992, p. 6-55: GetNewDialog uses a black-and-white GrafPort
+        // unless a matching 'dctb' resource requests a color port. Old
+        // applications may read the embedded portBits.bounds directly.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((640 * 480) as u32);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 640, 640, 480, 8);
+
+        let dlog = build_test_dlog((40, 50, 110, 230), 2201, 0);
+        let ditl = build_test_ditl_item(8, (10, 12, 28, 120), b"Classic");
+        disp.install_test_resource(&mut bus, *b"DLOG", 2200, &dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 2201, &ditl);
+        bus.write_long(TEST_SP, 0xFFFF_FFFF);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 2200);
+
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let dialog = bus.read_long(TEST_SP + 10);
+        assert_eq!(bus.read_word(dialog + 6) & 0xC000, 0);
+        assert_eq!(bus.read_word(dialog + 8) as i16, -40);
+        assert_eq!(bus.read_word(dialog + 10) as i16, -50);
+    }
+
+    #[test]
     fn get_new_dialog_copies_ditl_not_aliases_resource() {
         // IM:I I-403 and MTE 1992 p. 6-114: GetNewDialog reads the DITL
         // resource, makes a copy, and uses that copy so several dialogs can
@@ -1660,6 +1687,7 @@
             .unwrap();
 
         let dialog_ptr = bus.read_long(TEST_SP + 10);
+        assert_eq!(bus.read_word(dialog_ptr + 6) & 0xC000, 0xC000);
         let aux_handle = disp.window_aux_records[&dialog_ptr];
         let aux_ptr = bus.read_long(aux_handle);
         let table_handle = bus.read_long(aux_ptr + TrapDispatcher::AUX_WIN_CTABLE_OFFSET);
@@ -2346,6 +2374,7 @@
         );
         let dlg_ptr = bus.read_long(sp + 30);
         assert_ne!(dlg_ptr, 0);
+        assert_eq!(bus.read_word(dlg_ptr + 6) & 0xC000, 0);
         assert_eq!(
             bus.read_word(dlg_ptr + 108),
             2,
@@ -2406,6 +2435,7 @@
         );
         let dlg_ptr = bus.read_long(sp + 30);
         assert_ne!(dlg_ptr, 0);
+        assert_eq!(bus.read_word(dlg_ptr + 6) & 0xC000, 0xC000);
         assert_eq!(
             disp.window_list,
             vec![existing, dlg_ptr],

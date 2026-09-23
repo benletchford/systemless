@@ -4107,6 +4107,7 @@ impl super::TrapDispatcher {
             items.clone(),
             None,
             None,
+            false,
         );
         if dialog_ptr == 0 {
             return false;
@@ -5258,6 +5259,7 @@ impl super::TrapDispatcher {
         items: Vec<DialogItem>,
         dialog_color_table: Option<u32>,
         dialog_item_color_table: Option<u32>,
+        color_port: bool,
     ) -> u32 {
         let previous_port = *self.current_port;
         let previous_gdevice = *self.current_gdevice;
@@ -5280,22 +5282,44 @@ impl super::TrapDispatcher {
         ));
 
         let screen_base: u32 = bus.read_long(0x0824);
-        self.init_cgraf_window(
-            bus,
-            cpu,
-            dlg_ptr,
-            screen_base,
-            bounds.0,
-            bounds.1,
-            bounds.2,
-            bounds.3,
-            title,
-            proc_id,
-            visible,
-            false,
-            go_away_flag,
-            ref_con,
-        );
+        // GetNewDialog/NewDialog normally publish a classic GrafPort. A
+        // matching 'dctb' resource, NewCDialog, or NewFeaturesDialog opts in
+        // to the CGrafPort layout. MTE 1992, pp. 6-55..6-56, 6-118..6-121.
+        if color_port {
+            self.init_cgraf_window(
+                bus,
+                cpu,
+                dlg_ptr,
+                screen_base,
+                bounds.0,
+                bounds.1,
+                bounds.2,
+                bounds.3,
+                title,
+                proc_id,
+                visible,
+                false,
+                go_away_flag,
+                ref_con,
+            );
+        } else {
+            self.init_graf_window(
+                bus,
+                cpu,
+                dlg_ptr,
+                screen_base,
+                bounds.0,
+                bounds.1,
+                bounds.2,
+                bounds.3,
+                title,
+                proc_id,
+                visible,
+                false,
+                go_away_flag,
+                ref_con,
+            );
+        }
         self.set_current_port_state(bus, cpu, dlg_ptr, None);
 
         // GetNewDialog associates a matching DCTab before the first visible
@@ -10947,6 +10971,7 @@ impl super::TrapDispatcher {
                         items,
                         dialog_color_table,
                         dialog_item_color_table,
+                        dialog_color_table.is_some(),
                     );
                     // Install any 'pltt' resource whose id matches the
                     // dialog id onto the freshly-created window. This
@@ -16108,6 +16133,7 @@ impl super::TrapDispatcher {
                     items,
                     None,
                     None,
+                    trap_num == 0x24B,
                 );
                 // Honor Pascal `behind` param at SP+10 per IM:I I-412.
                 self.apply_behind_parameter(bus, dlg_ptr, behind);
@@ -16676,6 +16702,7 @@ impl super::TrapDispatcher {
                             items,
                             None,
                             None,
+                            true,
                         );
                         self.apply_behind_parameter(bus, dlg_ptr, behind);
                         bus.write_long(sp + param_bytes, dlg_ptr);
