@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn stdclib_time_uses_msl_epoch_and_optional_result_pointer() {
+    let pef = synthetic_pef_with_library_import(b"StdCLib", b"time");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let result_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(result_ptr, vec![0; 4]);
+    loaded.cpu.gpr[3] = result_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    let expected = PPC_FIXED_MAC_TIME + 1_460 * 86_400;
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], expected);
+    assert_eq!(loaded.memory.read_u32_be(result_ptr), Some(expected));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], expected);
+}
+
+#[test]
 fn hle_import_runner_formats_stdclib_sprintf_arguments() {
     let pef = synthetic_pef_with_library_import(b"StdCLib", b"sprintf");
     let mut loaded = load_pef_application(&pef).unwrap();
