@@ -34,7 +34,8 @@ use crate::process_context::{
     SharedProcessAppleEventLaunchState,
     SharedProcessCollectionManager, SharedProcessControlManager, SharedProcessCursorState,
     SharedProcessDialogText, SharedProcessDisplayClut,
-    SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessGraphicsPort, SharedProcessInputState,
+    SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessGraphicsDevice,
+    SharedProcessGraphicsPort, SharedProcessInputState,
     SharedProcessListManager, SharedProcessMemoryManager, SharedProcessMenuTracking,
     SharedProcessOpenFilePositions, SharedProcessOpenFiles, SharedProcessQuickDrawError,
     SharedProcessQuickDrawHiliteColors,
@@ -1824,7 +1825,7 @@ pub struct TrapDispatcher {
     /// Main GDevice handle in guest memory (0 = not yet allocated)
     pub(crate) main_gdevice_handle: u32,
     /// Current GDevice handle
-    pub(crate) current_gdevice: SharedProcessValue<u32>,
+    pub(crate) current_gdevice: SharedProcessGraphicsDevice,
     /// Current GrafPort/GWorld pointer
     pub(crate) current_port: SharedProcessGraphicsPort,
     /// Error from the last applicable Color QuickDraw or Color Manager call.
@@ -3654,7 +3655,7 @@ impl TrapDispatcher {
             copybits_screen_secs: Vec::new(),
             trace_sink: None,
             main_gdevice_handle: 0,
-            current_gdevice: SharedProcessValue::from_value(0),
+            current_gdevice: SharedProcessGraphicsDevice::default(),
             current_port: SharedProcessGraphicsPort::default(),
             quickdraw_error: SharedProcessQuickDrawError::default(),
             quickdraw_op_colors: SharedProcessQuickDrawOpColors::default(),

@@ -2378,6 +2378,126 @@ impl SharedProcessGraphicsPort {
     }
 }
 
+/// Canonical current graphics device handle for one Macintosh process.
+///
+/// `GetGDevice`/`SetGDevice` expose one `theGDevice` low-memory global
+/// across all CPU architectures in the process, while `GetGWorld`/`SetGWorld`
+/// save and restore the graphics device associated with the current port.
+/// Inside Macintosh: Imaging With QuickDraw (1994), pp. 5-14--5-15 and 6-29.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedProcessGraphicsDevice(SharedProcessValue<u32>);
+
+impl Default for SharedProcessGraphicsDevice {
+    fn default() -> Self {
+        Self::from_value(0)
+    }
+}
+
+impl std::ops::Deref for SharedProcessGraphicsDevice {
+    type Target = u32;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl PartialEq<u32> for SharedProcessGraphicsDevice {
+    fn eq(&self, other: &u32) -> bool {
+        self.with_ref(|device| device == other)
+    }
+}
+
+impl PartialEq<&u32> for SharedProcessGraphicsDevice {
+    fn eq(&self, other: &&u32) -> bool {
+        self.with_ref(|device| device == *other)
+    }
+}
+
+impl PartialEq<SharedProcessGraphicsDevice> for u32 {
+    fn eq(&self, other: &SharedProcessGraphicsDevice) -> bool {
+        other.with_ref(|device| self == device)
+    }
+}
+
+impl PartialEq<SharedProcessGraphicsDevice> for &u32 {
+    fn eq(&self, other: &SharedProcessGraphicsDevice) -> bool {
+        other.with_ref(|device| *self == device)
+    }
+}
+
+impl std::fmt::Display for SharedProcessGraphicsDevice {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "0x{:08X}", self.get())
+    }
+}
+
+#[allow(dead_code)]
+impl SharedProcessGraphicsDevice {
+    pub(crate) fn from_value(device: u32) -> Self {
+        Self(SharedProcessValue::from_value(device))
+    }
+
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&u32) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut u32) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    pub(crate) fn attach_copy_to(&mut self, process_state: &Self) {
+        self.0.attach_copy_to(&process_state.0, |device| *device == 0);
+    }
+
+    pub(crate) fn activate_copy_to(&mut self, process_state: &Self) {
+        self.0.activate_copy_to(&process_state.0);
+    }
+
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.with_ref(|device| *device == 0)
+    }
+
+    pub(crate) fn get(&self) -> u32 {
+        self.with_ref(|device| *device)
+    }
+
+    pub(crate) fn set(&self, device: u32) {
+        self.with_mut(|d| *d = device);
+    }
+
+    pub(crate) fn replace(&self, device: u32) -> u32 {
+        self.with_mut(|d| {
+            let previous = *d;
+            *d = device;
+            previous
+        })
+    }
+
+    pub(crate) fn clear(&self) {
+        self.set(0);
+    }
+
+    pub(crate) fn is_null(&self) -> bool {
+        self.get() == 0
+    }
+
+    pub(crate) fn is_valid(&self) -> bool {
+        self.get() != 0
+    }
+
+    pub(crate) fn snapshot(&self) -> u32 {
+        self.get()
+    }
+}
+
 /// Canonical desktop scrap for one Macintosh process.
 ///
 /// The Scrap Manager exposes one ordered collection of typed flavors to every
@@ -9303,7 +9423,7 @@ pub(crate) struct ProcessContext {
     quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors,
     quickdraw_pixel_states: SharedProcessQuickDrawPixelStates,
     current_graphics_port: SharedProcessGraphicsPort,
-    current_graphics_device: SharedProcessValue<u32>,
+    current_graphics_device: SharedProcessGraphicsDevice,
     quickdraw_error: SharedProcessQuickDrawError,
     device_clut: SharedProcessDisplayClut,
     color_manager_clut: SharedProcessDisplayClut,
@@ -9475,7 +9595,7 @@ impl Default for ProcessContext {
             quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors::default(),
             quickdraw_pixel_states: SharedProcessQuickDrawPixelStates::default(),
             current_graphics_port: SharedProcessGraphicsPort::default(),
-            current_graphics_device: SharedProcessValue::from_value(0),
+            current_graphics_device: SharedProcessGraphicsDevice::default(),
             quickdraw_error: SharedProcessQuickDrawError::default(),
             device_clut: SharedProcessDisplayClut::default(),
             color_manager_clut: SharedProcessDisplayClut::default(),
@@ -9806,16 +9926,16 @@ impl ProcessContext {
     pub(crate) fn attach_quickdraw_selection(
         &self,
         current_port: &mut SharedProcessGraphicsPort,
-        current_device: &mut SharedProcessValue<u32>,
+        current_device: &mut SharedProcessGraphicsDevice,
     ) {
         current_port.attach_copy_to(&self.current_graphics_port);
-        current_device.attach_copy_to(&self.current_graphics_device, |address| *address == 0);
+        current_device.attach_copy_to(&self.current_graphics_device);
     }
 
     pub(crate) fn activate_quickdraw_selection(
         &self,
         current_port: &mut SharedProcessGraphicsPort,
-        current_device: &mut SharedProcessValue<u32>,
+        current_device: &mut SharedProcessGraphicsDevice,
     ) {
         current_port.activate_copy_to(&self.current_graphics_port);
         current_device.activate_copy_to(&self.current_graphics_device);
@@ -9824,6 +9944,11 @@ impl ProcessContext {
     #[allow(dead_code)]
     pub(crate) fn current_graphics_port(&self) -> &SharedProcessGraphicsPort {
         &self.current_graphics_port
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn current_graphics_device(&self) -> &SharedProcessGraphicsDevice {
+        &self.current_graphics_device
     }
 
     /// Attach the error from the last applicable Color QuickDraw or Color
@@ -14431,9 +14556,9 @@ mod tests {
     fn attached_graphics_ports_share_immediately_while_clones_detach() {
         let context = ProcessContext::default();
         let mut classic_port = SharedProcessGraphicsPort::default();
-        let mut classic_device = SharedProcessValue::from_value(0);
+        let mut classic_device = SharedProcessGraphicsDevice::default();
         let mut native_port = SharedProcessGraphicsPort::default();
-        let mut native_device = SharedProcessValue::from_value(0);
+        let mut native_device = SharedProcessGraphicsDevice::default();
 
         context.attach_quickdraw_selection(&mut classic_port, &mut classic_device);
         context.activate_quickdraw_selection(&mut native_port, &mut native_device);
@@ -14453,5 +14578,72 @@ mod tests {
         assert_eq!(*native_port, 0x0020_0000);
         assert_eq!(*classic_port, 0x0020_0000);
         assert_eq!(*context.current_graphics_port(), 0x0020_0000);
+    }
+
+    #[test]
+    fn process_graphics_device_encapsulation() {
+        let device = SharedProcessGraphicsDevice::default();
+        assert!(device.is_pristine());
+        assert!(device.is_null());
+        assert!(!device.is_valid());
+        assert_eq!(device.get(), 0);
+        assert_eq!(*device, 0);
+        assert_eq!(device, 0);
+        assert_eq!(device, &0);
+        assert_eq!(0, device);
+        assert_eq!(&0, device);
+        assert_eq!(device.snapshot(), 0);
+        assert_eq!(format!("{device}"), "0x00000000");
+
+        let handle = device.shared_handle();
+        assert!(device.ptr_eq(&handle));
+
+        device.set(0x0023_4567);
+        assert!(!device.is_pristine());
+        assert!(!device.is_null());
+        assert!(device.is_valid());
+        assert_eq!(device.get(), 0x0023_4567);
+        assert_eq!(*device, 0x0023_4567);
+        assert_eq!(device, 0x0023_4567);
+        assert_eq!(handle.get(), 0x0023_4567);
+        assert_eq!(format!("{device}"), "0x00234567");
+
+        let prev = device.replace(0x00FE_DCBA);
+        assert_eq!(prev, 0x0023_4567);
+        assert_eq!(device.get(), 0x00FE_DCBA);
+        assert_eq!(device.snapshot(), 0x00FE_DCBA);
+
+        device.clear();
+        assert!(device.is_pristine());
+        assert!(device.is_null());
+        assert_eq!(device.get(), 0);
+    }
+
+    #[test]
+    fn attached_graphics_devices_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic_port = SharedProcessGraphicsPort::default();
+        let mut classic_device = SharedProcessGraphicsDevice::default();
+        let mut native_port = SharedProcessGraphicsPort::default();
+        let mut native_device = SharedProcessGraphicsDevice::default();
+
+        context.attach_quickdraw_selection(&mut classic_port, &mut classic_device);
+        context.activate_quickdraw_selection(&mut native_port, &mut native_device);
+
+        assert!(classic_device.ptr_eq(&native_device));
+        assert!(classic_device.ptr_eq(context.current_graphics_device()));
+
+        classic_device.set(0x0050_0000);
+        assert_eq!(*native_device, 0x0050_0000);
+        assert_eq!(*context.current_graphics_device(), 0x0050_0000);
+
+        let detached = native_device.clone();
+        assert!(!detached.ptr_eq(&native_device));
+
+        detached.set(0x0060_0000);
+        assert_eq!(*detached, 0x0060_0000);
+        assert_eq!(*native_device, 0x0050_0000);
+        assert_eq!(*classic_device, 0x0050_0000);
+        assert_eq!(*context.current_graphics_device(), 0x0050_0000);
     }
 }
