@@ -1838,13 +1838,88 @@ pub(crate) struct SharedProcessAppleEventLaunchState(
     SharedProcessValue<ProcessAppleEventLaunchState>,
 );
 
-/// Canonical per-color-port arithmetic transfer colors. The guest-visible
-/// `CGrafPort.grafVars` record is the primary representation; this process
-/// index keeps the value live across adapters when a port is one of the
-/// static records that cannot own an allocator-managed GrafVars handle.
+/// Detached-by-default attachment handle for process-owned QuickDraw operation colors.
+///
+/// Ordinary clones are snapshots so cloning an adapter cannot couple two
+/// processes. Adapters share only through `attach_to`, under the same
+/// serialized runner ownership used for guest RAM and the Memory Manager.
 /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62 and 4-64.
-pub(crate) type SharedProcessQuickDrawOpColors =
-    SharedProcessValue<HashMap<u32, (u16, u16, u16)>>;
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SharedProcessQuickDrawOpColors(
+    SharedProcessValue<HashMap<u32, (u16, u16, u16)>>,
+);
+
+#[allow(dead_code)]
+impl SharedProcessQuickDrawOpColors {
+    pub(crate) fn from_value(colors: HashMap<u32, (u16, u16, u16)>) -> Self {
+        Self(SharedProcessValue::from_value(colors))
+    }
+
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&HashMap<u32, (u16, u16, u16)>) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut HashMap<u32, (u16, u16, u16)>) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    pub(crate) fn attach_to(&mut self, process_state: &Self) {
+        self.0.attach_to(&process_state.0, |colors| colors.is_empty());
+    }
+
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.with_ref(|colors| colors.is_empty())
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.with_ref(|colors| colors.is_empty())
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.with_ref(|colors| colors.len())
+    }
+
+    /// Read one Color QuickDraw operation color without exposing a reference
+    /// into the process-owned map to adapter code. This keeps any mutable
+    /// borrow inside the individual operation, so a Mixed Mode callback can
+    /// safely enter the other attached adapter afterwards.
+    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62 and 4-64.
+    pub(crate) fn quickdraw_op_color(&self, port: u32) -> Option<(u16, u16, u16)> {
+        self.with_ref(|colors| colors.get(&port).copied())
+    }
+
+    /// Update one process-owned Color QuickDraw operation color while keeping
+    /// the UnsafeCell borrow scoped to this statement.
+    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62 and 4-64.
+    pub(crate) fn set_quickdraw_op_color(&self, port: u32, color: (u16, u16, u16)) {
+        self.with_mut(|colors| {
+            colors.insert(port, color);
+        });
+    }
+
+    /// Drop a disposed port's fallback operation color.
+    pub(crate) fn remove_quickdraw_op_color(&self, port: u32) {
+        self.with_mut(|colors| {
+            colors.remove(&port);
+        });
+    }
+
+    pub(crate) fn clear(&self) {
+        self.with_mut(|colors| {
+            colors.clear();
+        });
+    }
+}
+
 
 /// Default HiliteRGB used when a color graphics port has not received a
 /// HiliteColor call. The selected-list green matches the System 7.5.3
@@ -4196,35 +4271,6 @@ impl std::fmt::Debug for SharedProcessAppleEventLaunchState {
 }
 
 impl SharedProcessValue<HashMap<u32, (u16, u16, u16)>> {
-    /// Read one Color QuickDraw operation color without exposing a reference
-    /// into the process-owned map to adapter code. This keeps any mutable
-    /// borrow inside the individual operation, so a Mixed Mode callback can
-    /// safely enter the other attached adapter afterwards.
-    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62 and 4-64.
-    pub(crate) fn quickdraw_op_color(&self, port: u32) -> Option<(u16, u16, u16)> {
-        // SAFETY: process adapters are serialized by the runner. The map is
-        // accessed only for the duration of this operation; no reference is
-        // returned to the UnsafeCell-backed value.
-        unsafe { (&*self.0.get()).get(&port).copied() }
-    }
-
-    /// Update one process-owned Color QuickDraw operation color while keeping
-    /// the UnsafeCell borrow scoped to this statement.
-    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-62 and 4-64.
-    pub(crate) fn set_quickdraw_op_color(&self, port: u32, color: (u16, u16, u16)) {
-        // SAFETY: see `quickdraw_op_color`.
-        unsafe {
-            (&mut *self.0.get()).insert(port, color);
-        }
-    }
-
-    /// Drop a disposed port's fallback operation color.
-    pub(crate) fn remove_quickdraw_op_color(&self, port: u32) {
-        // SAFETY: see `quickdraw_op_color`.
-        unsafe {
-            (&mut *self.0.get()).remove(&port);
-        }
-    }
 
     /// Read one Color QuickDraw highlight color without exposing a reference
     /// into the process-owned map to adapter code.
@@ -9175,7 +9221,12 @@ impl ProcessContext {
         &self,
         adapter: &mut SharedProcessQuickDrawOpColors,
     ) {
-        adapter.attach_to(&self.quickdraw_op_colors, |colors| colors.is_empty());
+        adapter.attach_to(&self.quickdraw_op_colors);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn quickdraw_op_colors(&self) -> &SharedProcessQuickDrawOpColors {
+        &self.quickdraw_op_colors
     }
 
     /// Attach Color QuickDraw's per-port `GrafVars.rgbHiliteColor` index.
@@ -13267,5 +13318,79 @@ mod tests {
         assert_eq!(*detached, -108);
         assert_eq!(*adapter, -145);
         assert_eq!(*context.quickdraw_error(), -145);
+    }
+
+    #[test]
+    fn process_quickdraw_op_colors_encapsulation() {
+        let op_colors = SharedProcessQuickDrawOpColors::default();
+        assert!(op_colors.is_pristine());
+        assert!(op_colors.is_empty());
+        assert_eq!(op_colors.len(), 0);
+        assert_eq!(op_colors.quickdraw_op_color(0x1000), None);
+
+        op_colors.set_quickdraw_op_color(0x1000, (0x1234, 0x5678, 0x9abc));
+        assert!(!op_colors.is_pristine());
+        assert!(!op_colors.is_empty());
+        assert_eq!(op_colors.len(), 1);
+        assert_eq!(op_colors.quickdraw_op_color(0x1000), Some((0x1234, 0x5678, 0x9abc)));
+
+        let handle = op_colors.shared_handle();
+        assert!(op_colors.ptr_eq(&handle));
+        handle.set_quickdraw_op_color(0x2000, (0x1111, 0x2222, 0x3333));
+        assert_eq!(op_colors.len(), 2);
+        assert_eq!(op_colors.quickdraw_op_color(0x2000), Some((0x1111, 0x2222, 0x3333)));
+
+        op_colors.remove_quickdraw_op_color(0x1000);
+        assert_eq!(op_colors.len(), 1);
+        assert_eq!(op_colors.quickdraw_op_color(0x1000), None);
+        assert_eq!(op_colors.quickdraw_op_color(0x2000), Some((0x1111, 0x2222, 0x3333)));
+
+        op_colors.clear();
+        assert!(op_colors.is_pristine());
+        assert!(op_colors.is_empty());
+        assert_eq!(op_colors.len(), 0);
+    }
+
+    #[test]
+    fn attached_quickdraw_op_colors_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut adapter = SharedProcessQuickDrawOpColors::default();
+        assert!(adapter.is_pristine());
+
+        context.attach_quickdraw_op_colors(&mut adapter);
+        assert!(adapter.ptr_eq(context.quickdraw_op_colors()));
+
+        // Shared mutation across process context and adapter
+        adapter.set_quickdraw_op_color(0x1000, (0xaaaa, 0xbbbb, 0xcccc));
+        assert_eq!(
+            context.quickdraw_op_colors().quickdraw_op_color(0x1000),
+            Some((0xaaaa, 0xbbbb, 0xcccc))
+        );
+        assert_eq!(
+            adapter.quickdraw_op_color(0x1000),
+            Some((0xaaaa, 0xbbbb, 0xcccc))
+        );
+
+        // Cloning detaches
+        let detached = adapter.clone();
+        assert!(!detached.ptr_eq(&adapter));
+        assert_eq!(
+            detached.quickdraw_op_color(0x1000),
+            Some((0xaaaa, 0xbbbb, 0xcccc))
+        );
+
+        detached.set_quickdraw_op_color(0x1000, (0x1111, 0x2222, 0x3333));
+        assert_eq!(
+            detached.quickdraw_op_color(0x1000),
+            Some((0x1111, 0x2222, 0x3333))
+        );
+        assert_eq!(
+            adapter.quickdraw_op_color(0x1000),
+            Some((0xaaaa, 0xbbbb, 0xcccc))
+        );
+        assert_eq!(
+            context.quickdraw_op_colors().quickdraw_op_color(0x1000),
+            Some((0xaaaa, 0xbbbb, 0xcccc))
+        );
     }
 }
