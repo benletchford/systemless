@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.55.0](https://github.com/benletchford/systemless/compare/v0.54.0...v0.55.0) (2026-09-23)
+
+
+### Features
+
+* **catalogue:** add original Glypha shareware ([#2508](https://github.com/benletchford/systemless/issues/2508)) ([319cab1](https://github.com/benletchford/systemless/commit/319cab10d54ace272d38e8db6c99406b0c859fde))
+* **catalogue:** add Scarab of Ra shareware ([#2514](https://github.com/benletchford/systemless/issues/2514)) ([b15d4fa](https://github.com/benletchford/systemless/commit/b15d4fa65623d9c117beb18b24884097e0e083f8))
+* **catalogue:** add Snood shareware ([#2505](https://github.com/benletchford/systemless/issues/2505)) ([1e7f1c8](https://github.com/benletchford/systemless/commit/1e7f1c8988e33013f44e85717e4bbf01a5dc0611))
+
+
+### Bug Fixes
+
+* **gui:** split PPC batches below one guest tick ([12a69f0](https://github.com/benletchford/systemless/commit/12a69f071a850a37d98e5ece3303f3c505a021d2))
+* **launch:** prefer folder-named game applications ([#2518](https://github.com/benletchford/systemless/issues/2518)) ([28b7e85](https://github.com/benletchford/systemless/commit/28b7e857a8744694e5308fa718cb3f12a4dbd54d))
+* **ppc:** charge guest time for HLE drawing imports ([99ee61c](https://github.com/benletchford/systemless/commit/99ee61c7515f186099c4fa51906c98ace4244eaf))
+* **quickdraw:** render pictures at screen depth in basic ports ([#2522](https://github.com/benletchford/systemless/issues/2522)) ([fad2e8a](https://github.com/benletchford/systemless/commit/fad2e8a414e8f1d9996dcc5d48f390b096a290cf))
+* **quickdraw:** use device stride for screen-backed bitmaps ([#2516](https://github.com/benletchford/systemless/issues/2516)) ([5270dd9](https://github.com/benletchford/systemless/commit/5270dd9a4648f931e06f074d6a46ade16662dd3b))
+
+
+### Performance Improvements
+
+* **ppc:** trim DrawPicture handle copy and write-range sort ([#2422](https://github.com/benletchford/systemless/issues/2422)) ([f8e7b4a](https://github.com/benletchford/systemless/commit/f8e7b4ae055bfa3b1ba2d9b9ed4488a674e8a7f5))
+* prove unchanged saved coverage by range ([#2401](https://github.com/benletchford/systemless/issues/2401)) ([081b180](https://github.com/benletchford/systemless/commit/081b180edb11fa0451a4ed7c65c4fff3f166fc4b))
+* store retained outline samples in reusable tiles ([5a17c10](https://github.com/benletchford/systemless/commit/5a17c1006b6246526db1cc3d00bb8968cbffee6e))
+
 ## [0.54.0](https://github.com/benletchford/systemless/compare/v0.53.0...v0.54.0) (2026-09-23)
 
 
