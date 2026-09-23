@@ -176,6 +176,35 @@ pub(super) fn dispatch_resource_import(
                 last_resource_error,
             )),
         )),
+        PpcImportDispatcherTarget::CountTypes | PpcImportDispatcherTarget::Count1Types => {
+            let current_only = matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::Count1Types
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_count_resource_types(
+                    vfs_resources,
+                    *current_resource_refnum,
+                    current_only,
+                    last_resource_error,
+                ),
+            )))
+        }
+        PpcImportDispatcherTarget::GetIndType | PpcImportDispatcherTarget::Get1IndType => {
+            let current_only = matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::Get1IndType
+            );
+            ppc_get_ind_resource_type(
+                cpu,
+                memory,
+                vfs_resources,
+                *current_resource_refnum,
+                current_only,
+                last_resource_error,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::UniqueID => {
             Some(PpcImportAction::Return(ppc_i16_result(ppc_unique_id(
                 cpu,
