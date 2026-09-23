@@ -18,15 +18,15 @@ compatibility:
   verified:
   - date: "2026-09-24"
     tester: Catalogue maintainer
-    systemless_version: "0.55.0-dev"
+    systemless_version: 0.55.0-dev
     architecture: ppc
     environment: >-
-      Deterministic PowerPC play of the unchanged demo in a local 0.55.0
-      development build at 800 by 600. After the display and memory prompts,
-      the intro tour, pilot log, FBO, and Pitts Special selection, Start on
-      Taxiway reaches the live cockpit and landscape at tick 7,505 without
-      unsupported imports. The same route and throttle input were also tested
-      in a local browser preview against the unchanged archive.
+      Deterministic PowerPC play of the unchanged demo in a local 0.55.0 development
+      build at 800 by 600. After the display and memory prompts, the intro tour, pilot
+      log, FBO, and Pitts Special selection, Start on Taxiway reaches the live cockpit
+      and landscape at tick 7,505 without unsupported imports. The same route and
+      throttle input were also tested in a local browser preview against the unchanged
+      archive.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2573
 artifacts:
@@ -58,8 +58,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/flight-unlimited/flight-unlimited-pitts-gameplay.png
+    type: sha256
+    sha256: b30df3449efe0f4d551815b6299fe938922b404065173e7778917946a699eaf0
+    size_bytes: 110022
   provenance:
     redistribution: permitted
     content_only: true
@@ -70,10 +71,9 @@ artifacts:
       Underlying game artwork remains the property of its rights holder.
     notes: >-
       Deterministic capture from the exact unchanged demo archive after choosing
-      Start on Taxiway, cropped from its 800-by-600 framebuffer to the
-      640-by-480 game content surface without altering game pixels. PNG SHA-256
-      b30df3449efe0f4d551815b6299fe938922b404065173e7778917946a699eaf0,
-      110,022 bytes.
+      Start on Taxiway, cropped from its 800-by-600 framebuffer to the 640-by-480 game
+      content surface without altering game pixels. PNG SHA-256
+      b30df3449efe0f4d551815b6299fe938922b404065173e7778917946a699eaf0, 110,022 bytes.
 references:
 - https://classicmacdemos.com/flight-unlimited
 - https://github.com/benletchford/systemless/issues/2573
@@ -81,7 +81,7 @@ references:
 
 ## A sample flight
 
-![Flight Unlimited Pitts Special cockpit](incoming/flight-unlimited/flight-unlimited-pitts-gameplay.png)
+![Flight Unlimited Pitts Special cockpit](https://assets.systemless.org/catalogue/media/sha256/b3/b30df3449efe0f4d551815b6299fe938922b404065173e7778917946a699eaf0.png)
 
 Looking Glass Technologies' official Macintosh demo provides one plane and one
 location from its full flight simulator. It retains the original readme and
