@@ -1029,13 +1029,166 @@ impl Presentation {
         }
     }
 
+    /// Prove that the retained coverage over `[address, address + len)` is
+    /// exactly what `pixels` recorded at `[offset, offset + len)`.
+    ///
+    /// The mirror of [`Presentation::capture_detail_range`] for restoration.
+    /// The per-byte proof asks, for every byte, "does the snapshot hold a cell
+    /// here, and does the screen agree?", which costs a hash probe, a division
+    /// and a call even where neither side has ever held a glyph. Restored
+    /// chrome is overwhelmingly background, so this walks the two sparse sides
+    /// instead: screen bytes a row at a time, reducing an unchanged background
+    /// byte to one `text_cells` bool, and bytes outside the screen by one
+    /// ordered range query per span.
+    ///
+    /// Both sides are read on every call. No additional result or index is
+    /// cached, so snapshot mutations need no new invalidation protocol.
+    ///
+    /// Returns `None` when the snapshot table's capacity exceeds eight times
+    /// the span length, bounding rescans of large snapshots for tiny restores.
+    /// Counting a table entry is cheaper than a hash probe plus per-byte
+    /// coordinates, so equal capacity and span length is too restrictive for
+    /// short rows inside a larger saved rectangle. This is a cost heuristic;
+    /// the declined case keeps the caller's original proof.
+    /// The bound is the table's **capacity**, not its length: walking a hash
+    /// table costs a pass over its buckets, and `replace_range` and `clear`
+    /// empty a table without returning its capacity, so a snapshot that once
+    /// held a screenful of glyphs stays expensive to enumerate after it is
+    /// emptied.
+    ///
+    /// Anything this cannot describe exactly answers `Some(false)` rather than
+    /// claiming a proof. That only costs the caller its ordinary per-byte
+    /// restore pass, which writes nothing where bytes and coverage agree.
+    fn coverage_matches<T: Copy + Into<u16>>(
+        &self,
+        address: u32,
+        len: usize,
+        pixels: &SavedPixels<T>,
+        offset: usize,
+    ) -> Option<bool> {
+        if pixels.detail.capacity() > len.saturating_mul(8) {
+            return None;
+        }
+        let start = u64::from(address);
+        let end = start + len as u64;
+
+        // Count entries without following each Arc to its retained samples.
+        // The destination walk below verifies every covered position against a
+        // live, matching entry, so covered <= live entries <= all entries.
+        let entries = pixels
+            .detail
+            .keys()
+            .filter(|&&index| index >= offset && index - offset < len)
+            .count();
+
+        // Every position the screen still covers must be one of those, and
+        // must still hold the same cell. Counting both sides is what proves
+        // the snapshot holds nothing where the screen now holds nothing.
+        let mut covered = 0usize;
+        let has_offscreen = self.may_have_offscreen_detail(address, end);
+        let offscreen_span = |from: u64, to: u64, covered: &mut usize| {
+            if !has_offscreen || from >= to {
+                return true;
+            }
+            // `to` is exclusive and may be one past the last address, which no
+            // `u32` holds; the span's final address always is one. A span this
+            // cannot express is reported as unproven, never as proven.
+            let (Ok(first), Ok(last)) = (u32::try_from(from), u32::try_from(to - 1)) else {
+                return false;
+            };
+            for (&key, cell) in self.offscreen.range(first..=last) {
+                let index = offset + (key - address) as usize;
+                let value = pixels[index].into() as u8;
+                if pixels
+                    .detail
+                    .get(&index)
+                    .filter(|saved| saved.value == value)
+                    != Some(cell)
+                {
+                    return false;
+                }
+                *covered += 1;
+            }
+            true
+        };
+
+        let screen_start = u64::from(self.base);
+        let screen_limit = screen_start + u64::from(self.row_bytes) * u64::from(self.height);
+        if !offscreen_span(start, end.min(screen_start), &mut covered)
+            || !offscreen_span(start.max(screen_limit), end, &mut covered)
+        {
+            return Some(false);
+        }
+
+        let mut cursor = start.max(screen_start);
+        let screen_end = end.min(screen_limit);
+        while cursor < screen_end {
+            let row_offset = cursor - screen_start;
+            let y = (row_offset / u64::from(self.row_bytes)) as u32;
+            let x = (row_offset % u64::from(self.row_bytes)) as u32;
+            let row_start = cursor - u64::from(x);
+            if x >= self.width {
+                // Row padding carries no cell; it can still hold a glyph.
+                let next_row = (row_start + u64::from(self.row_bytes)).min(screen_end);
+                if !offscreen_span(cursor, next_row, &mut covered) {
+                    return Some(false);
+                }
+                cursor = next_row;
+                continue;
+            }
+            let run = (u64::from(self.width - x)).min(screen_end - cursor) as usize;
+            let cell_base = (y * self.width + x) as usize;
+            for column in self.text_cells[cell_base..cell_base + run]
+                .iter()
+                .enumerate()
+                .filter_map(|(column, set)| set.then_some(column))
+            {
+                let index = offset + (cursor + column as u64 - start) as usize;
+                let value = pixels[index].into() as u8;
+                let Some(cell) = pixels.detail.get(&index).filter(|cell| cell.value == value)
+                else {
+                    return Some(false);
+                };
+                if !self.screen_cell_matches(x + column as u32, y, cell) {
+                    return Some(false);
+                }
+                covered += 1;
+            }
+            cursor += run as u64;
+        }
+        if covered == entries {
+            return Some(true);
+        }
+        // A map may leave entries whose value no longer matches the saved
+        // byte. If the cheap counts differ, retain the original filtered
+        // count so these stale entries cannot change the proof's verdict.
+        let retained = pixels
+            .detail
+            .iter()
+            .filter(|&(index, cell)| {
+                *index >= offset
+                    && *index - offset < len
+                    && cell.value == pixels[*index].into() as u8
+            })
+            .count();
+        Some(covered == retained)
+    }
+
     fn matches_detail(&self, address: u32, detail: Option<&Arc<DetailCell>>) -> bool {
         let Some((x, y)) = self.position(address) else {
             return self.offscreen.get(&address) == detail;
         };
-        let Some(cell) = detail else {
-            return !self.text_cells[(y * self.width + x) as usize];
-        };
+        match detail {
+            None => !self.text_cells[(y * self.width + x) as usize],
+            Some(cell) => self.screen_cell_matches(x, y, cell),
+        }
+    }
+
+    /// Whether the screen cell at `(x, y)` still carries exactly `cell`.
+    ///
+    /// The retained half of [`Presentation::matches_detail`], for a caller that
+    /// already knows the position and so need not derive it from an address.
+    fn screen_cell_matches(&self, x: u32, y: u32, cell: &Arc<DetailCell>) -> bool {
         if !self.text_cells[(y * self.width + x) as usize]
             || self.guest_values[(y * self.width + x) as usize] != u16::from(cell.value)
             || cell.indices.len() != (self.scale * self.scale) as usize
@@ -1673,14 +1826,21 @@ impl MacMemoryBus {
         // Unchanged chrome often restores the same entire row every frame.
         // Check its RAM with one route/tracing gate and borrow presentation
         // once. Equal guest bytes alone cannot establish equal outline ink.
-        if self
+        let same_bytes = self
             .untraced_ram_slice(address, end - offset)
             .is_some_and(|bytes| {
                 bytes
                     .iter()
                     .zip(&pixels[offset..end])
                     .all(|(&byte, &value)| byte == value.into() as u8)
-                    && self.presentation.as_ref().is_some_and(|p| {
+            });
+        if same_bytes
+            && self.presentation.as_ref().is_some_and(|p| {
+                // Walking the two sparse sides is cheaper than asking about
+                // every byte, but it declines ranges it cannot enumerate
+                // cheaply; the per-byte proof stays for those.
+                p.coverage_matches(address, end - offset, pixels, offset)
+                    .unwrap_or_else(|| {
                         (offset..end).all(|i| {
                             let value = pixels[i].into() as u8;
                             let detail = pixels.detail.get(&i).filter(|cell| cell.value == value);
@@ -2279,6 +2439,372 @@ mod tests {
         bus.outline_glyph_pixel(address, 0, 0, 0);
         bus.write_byte(address, 0);
         bus.end_outline_glyph();
+    }
+
+    /// A screen whose rows may be wider than their visible pixels, so spans
+    /// can start in padding, cross a row, or leave the framebuffer entirely.
+    fn padded_bus(row_bytes: u16, width: u16, height: u16, scale: u32) -> MacMemoryBus {
+        let mut bus = MacMemoryBus::new(1024 * 1024);
+        let palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.fill_bytes(0x1000, u32::from(row_bytes) * u32::from(height), 255);
+        bus.enable_outline_presentation(
+            (0x1000, u32::from(row_bytes), width, height, 8),
+            palette,
+            scale,
+        );
+        bus
+    }
+
+    /// The proof `restore_saved_pixels` used before the range walk existed,
+    /// written out independently so it can judge the range walk's answer.
+    fn per_byte_coverage_proof(
+        bus: &MacMemoryBus,
+        address: u32,
+        len: usize,
+        pixels: &SavedPixels,
+        offset: usize,
+    ) -> bool {
+        let p = bus.presentation.as_ref().unwrap();
+        (offset..offset + len).all(|i| {
+            let value = pixels[i];
+            let detail = pixels.detail.get(&i).filter(|cell| cell.value == value);
+            p.matches_detail(address + (i - offset) as u32, detail)
+        })
+    }
+
+    /// Every configuration the range walk accepts must reach the same verdict
+    /// as asking about each byte in turn.
+    #[test]
+    fn coverage_proof_agrees_with_the_per_byte_oracle() {
+        // Unpadded, padded, and a row too short to reach its own padding.
+        for (row_bytes, width, height, scale) in
+            [(8u16, 8u16, 8u16, 2u32), (10, 8, 6, 2), (12, 4, 4, 4)]
+        {
+            let stride = u32::from(row_bytes);
+            let base = 0x1000u32;
+            let screen_bytes = stride * u32::from(height);
+            for painted in [
+                vec![],
+                vec![0u32],
+                vec![1, 2],
+                vec![0, stride, stride + 3],
+                vec![stride * 2 + 1],
+                // A glyph in the row padding, which is retained off-screen.
+                vec![u32::from(width)],
+            ] {
+                for &(start, len) in &[
+                    (0u32, 1usize),
+                    (0, u32::from(width) as usize),
+                    (1, 3),
+                    (u32::from(width) as u32, 2),
+                    (stride - 1, 3),
+                    (0, (stride * 2) as usize),
+                    (stride * u32::from(height) - 2, 4),
+                    (0, screen_bytes as usize),
+                ] {
+                    let address = base + start;
+                    // Judge the snapshot as taken, then after each way the
+                    // screen can drift from it. The fixture is rebuilt for
+                    // every case so one disturbance cannot leak into the next.
+                    for disturb in 0..5 {
+                        let mut bus = padded_bus(row_bytes, width, height, scale);
+                        for &offset in &painted {
+                            if offset < screen_bytes {
+                                paint_detail(&mut bus, base + offset);
+                            }
+                        }
+                        let saved = bus.save_pixel_bytes(address, len);
+                        match disturb {
+                            0 => {}
+                            // A same-value store erases retained coverage.
+                            1 => bus.write_byte(address, bus.read_byte(address)),
+                            // A different value changes bytes and coverage.
+                            2 => bus.write_byte(address, 7),
+                            // New coverage where the snapshot had none.
+                            3 => paint_detail(&mut bus, address),
+                            // Coverage elsewhere in the same row.
+                            _ => {
+                                if len > 1 {
+                                    paint_detail(&mut bus, address + 1);
+                                }
+                            }
+                        }
+                        let expected = per_byte_coverage_proof(&bus, address, len, &saved, 0);
+                        let actual = bus
+                            .presentation
+                            .as_ref()
+                            .unwrap()
+                            .coverage_matches(address, len, &saved, 0);
+                        if let Some(actual) = actual {
+                            assert_eq!(
+                                actual, expected,
+                                "row_bytes={row_bytes} width={width} scale={scale} \
+                                 painted={painted:?} start={start} len={len} disturb={disturb}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The same verdicts through a non-zero snapshot offset, which is how the
+    /// dialog and window restores address a snapshot row by row.
+    #[test]
+    fn coverage_proof_agrees_when_restoring_part_of_a_snapshot() {
+        for (offset, len) in [(0usize, 8usize), (3, 5), (8, 4), (10, 8), (20, 10), (0, 30)] {
+            for disturb in 0..3 {
+                let mut bus = padded_bus(10, 8, 6, 2);
+                paint_detail(&mut bus, 0x1000 + 3);
+                paint_detail(&mut bus, 0x1000 + 10);
+                let saved = bus.save_pixel_bytes(0x1000, 30);
+                let address = 0x1000 + offset as u32;
+                match disturb {
+                    0 => {}
+                    1 => bus.write_byte(address, bus.read_byte(address)),
+                    _ => paint_detail(&mut bus, address),
+                }
+                let expected = per_byte_coverage_proof(&bus, address, len, &saved, offset);
+                let verdict = {
+                    let p = bus.presentation.as_ref().unwrap();
+                    p.coverage_matches(address, len, &saved, offset)
+                };
+                if let Some(actual) = verdict {
+                    assert_eq!(
+                        actual, expected,
+                        "offset={offset} len={len} disturb={disturb}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Equal guest bytes do not prove equal retained coverage: a same-value
+    /// store erases a glyph, and restoring the snapshot must bring it back.
+    #[test]
+    fn restore_returns_coverage_erased_by_a_same_value_store() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x1000);
+        let saved = bus.save_pixel_bytes(0x1000, 8);
+        assert!(!saved.detail.is_empty(), "the snapshot retained a glyph");
+        let before = bus.presentation_visible_epoch();
+
+        let value = bus.read_byte(0x1000);
+        bus.write_byte(0x1000, value);
+        assert_eq!(bus.read_byte(0x1000), value, "the bytes never changed");
+        assert_ne!(
+            bus.presentation_visible_epoch(),
+            before,
+            "the glyph was erased"
+        );
+
+        bus.restore_saved_pixels(0x1000, &saved, 0, 8);
+        assert_eq!(bus.read_bytes(0x1000, 8), *saved, "bytes restored");
+        assert!(
+            per_byte_coverage_proof(&bus, 0x1000, 8, &saved, 0),
+            "the erased glyph is retained again"
+        );
+    }
+
+    /// The bounded scan accepts short rows inside larger snapshots but still
+    /// declines tiny spans in a comparatively large table.
+    #[test]
+    fn the_range_walk_declines_by_buckets_and_accepts_a_sparse_table() {
+        // Dense: every byte of a short snapshot carries a glyph, so the table
+        // has at least as many buckets as the range has bytes.
+        {
+            let mut dense_bus = bus();
+            for offset in 0..8 {
+                paint_detail(&mut dense_bus, 0x1000 + offset);
+            }
+            let dense = dense_bus.save_pixel_bytes(0x1000, 8);
+            assert_eq!(dense.detail.len(), 8);
+            assert!(
+                dense.detail.capacity() > 8,
+                "a dense table outgrows its range"
+            );
+            let p = dense_bus.presentation.as_ref().unwrap();
+            assert_eq!(p.coverage_matches(0x1000, 1, &dense, 0), None);
+            for len in [4, 8] {
+                assert_eq!(
+                    p.coverage_matches(0x1000, len, &dense, 0),
+                    Some(per_byte_coverage_proof(&dense_bus, 0x1000, len, &dense, 0)),
+                );
+            }
+        }
+
+        // Sparse: one glyph in a 64-byte row, the shape that matters.
+        let mut sparse_bus = bus();
+        paint_detail(&mut sparse_bus, 0x1000 + 3);
+        let sparse = sparse_bus.save_pixel_bytes(0x1000, 64);
+        assert_eq!(sparse.detail.len(), 1);
+        assert!(
+            sparse.detail.capacity() <= 64,
+            "a sparse table stays inside its range"
+        );
+        let expected = per_byte_coverage_proof(&sparse_bus, 0x1000, 64, &sparse, 0);
+        let p = sparse_bus.presentation.as_ref().unwrap();
+        assert_eq!(
+            p.coverage_matches(0x1000, 64, &sparse, 0),
+            Some(expected),
+            "walks a range it can enumerate, and agrees"
+        );
+        assert!(expected, "an untouched snapshot still matches");
+    }
+
+    /// Emptying a table does not return its buckets, and walking one costs a
+    /// pass over those. A snapshot that once held glyphs must keep declining
+    /// after `replace_range` removes them, or the bound would not bound
+    /// anything.
+    #[test]
+    fn an_emptied_but_still_large_table_keeps_declining() {
+        let mut bus = bus();
+        for offset in 0..8 {
+            paint_detail(&mut bus, 0x1000 + offset);
+        }
+        let mut saved = bus.save_pixel_bytes(0x1000, 8);
+        let buckets = saved.detail.capacity();
+        assert!(buckets >= 8);
+
+        saved.replace_range(0, &[0u8; 8]);
+        assert!(saved.detail.is_empty(), "every cell was dropped");
+        assert_eq!(saved.detail.capacity(), buckets, "the buckets stayed");
+
+        let p = bus.presentation.as_ref().unwrap();
+        for len in 1..=buckets.min(8) {
+            let verdict = p.coverage_matches(0x1000, len, &saved, 0);
+            if len.saturating_mul(8) < buckets {
+                assert_eq!(
+                    verdict, None,
+                    "len={len} exceeds the bounded table-scan cost"
+                );
+            }
+            // Whatever it answers, it must not contradict the per-byte proof.
+            if let Some(verdict) = verdict {
+                assert_eq!(
+                    verdict,
+                    per_byte_coverage_proof(&bus, 0x1000, len, &saved, 0)
+                );
+            }
+        }
+    }
+
+    /// A span reaching the last address has an exclusive end no `u32` holds.
+    /// The proof must stay exact there rather than read a failed conversion as
+    /// success.
+    ///
+    /// Reaching that conversion needs retained coverage outside the screen, so
+    /// the range query actually runs: an empty offscreen table short-circuits
+    /// before it. Treating a failed exclusive `u32::try_from(to)` conversion
+    /// as success would wrongly prove equality in the missing-coverage case.
+    #[test]
+    fn a_span_reaching_the_last_address_is_still_proved_exactly() {
+        // A cell painted on screen, then retained at the very top address so
+        // the offscreen bounds and pages cover it.
+        fn bus_with_glyph_at_the_top() -> (MacMemoryBus, Arc<DetailCell>) {
+            let mut bus = bus();
+            paint_detail(&mut bus, 0x1000);
+            let cell = bus
+                .presentation
+                .as_ref()
+                .unwrap()
+                .detail(0x1000)
+                .expect("the painted glyph is retained");
+            {
+                let mut p = bus.presentation.as_mut().unwrap();
+                p.put_detail(u32::MAX, &cell);
+            }
+            assert!(
+                bus.presentation
+                    .as_ref()
+                    .unwrap()
+                    .may_have_offscreen_detail(u32::MAX, u64::from(u32::MAX) + 1),
+                "the range query must be reached, not short-circuited"
+            );
+            (bus, cell)
+        }
+
+        // A snapshot long enough that the capacity guard accepts it, ending
+        // exactly at 2^32.
+        const LEN: usize = 64;
+        let address = u32::MAX - (LEN as u32 - 1);
+
+        for saved_coverage in ["matching", "missing", "changed"] {
+            let (bus, cell) = bus_with_glyph_at_the_top();
+            let mut saved = SavedPixels::from(vec![cell.value; LEN]);
+            match saved_coverage {
+                "matching" => {
+                    saved.detail.insert(LEN - 1, cell.clone());
+                }
+                "missing" => {}
+                _ => {
+                    let mut different = (*cell).clone();
+                    different.indices = different.indices.iter().map(|i| i ^ 1).collect();
+                    saved.detail.insert(LEN - 1, Arc::new(different));
+                }
+            }
+            assert!(
+                saved.detail.capacity() <= LEN,
+                "the capacity guard must accept this range"
+            );
+
+            let expected = per_byte_coverage_proof(&bus, address, LEN, &saved, 0);
+            let p = bus.presentation.as_ref().unwrap();
+            assert_eq!(
+                p.coverage_matches(address, LEN, &saved, 0),
+                Some(expected),
+                "coverage={saved_coverage} at a span ending one past {:#x}",
+                u32::MAX
+            );
+        }
+    }
+
+    #[test]
+    fn key_count_proof_keeps_stale_source_entries_and_empty_ranges_exact() {
+        for stale in [vec![], vec![0usize], vec![0, 3], vec![0, 3, 8, 16]] {
+            for disturbance in 0..3 {
+                let mut bus = bus();
+                for offset in [0, 3, 8, 16] {
+                    paint_detail(&mut bus, 0x1000 + offset);
+                }
+                let saved = bus.save_pixel_bytes(0x1000, 64);
+                let mut index = 0usize;
+                let saved = saved.map(|value| {
+                    let changed = stale.contains(&index);
+                    index += 1;
+                    if changed {
+                        value ^ 1
+                    } else {
+                        value
+                    }
+                });
+                assert_eq!(saved.detail.len(), 4, "map keeps the source entries");
+                for &offset in &stale {
+                    bus.write_byte(0x1000 + offset as u32, saved[offset]);
+                }
+                match disturbance {
+                    0 => {}
+                    1 => bus.write_byte(0x1003, saved[3]),
+                    _ => paint_detail(&mut bus, 0x1007),
+                }
+                // Full snapshot, shifted rows, a range without source keys,
+                // and the zero-length case all retain the original verdict.
+                for (offset, len) in [(0, 64), (0, 8), (3, 6), (8, 9), (24, 8), (24, 0)] {
+                    let address = 0x1000 + offset as u32;
+                    let expected = per_byte_coverage_proof(&bus, address, len, &saved, offset);
+                    let actual = bus
+                        .presentation
+                        .as_ref()
+                        .unwrap()
+                        .coverage_matches(address, len, &saved, offset);
+                    if len > 0 {
+                        assert_eq!(actual, Some(expected), "stale={stale:?}, disturbance={disturbance}, offset={offset}, len={len}");
+                    } else if let Some(actual) = actual {
+                        assert_eq!(actual, expected);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
