@@ -46,8 +46,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/the-fools-errand/gameplay.png
+    type: sha256
+    sha256: 773e6e3398c76a8a4414330e166a70b6d7b038c61d78b05aff512a9ba6667f44
+    size_bytes: 16626
   provenance:
     redistribution: permitted
     original: true
@@ -60,10 +61,9 @@ artifacts:
       Macintosh game. The game artwork remains Cliff Johnson's copyright.
     notes: >-
       The 516-by-324 puzzle surface excludes the Classic Mac menu bar and host
-      framebuffer. Captured from the exact promoted archive after entering the
-      first puzzle, with no artwork edits beyond cropping. PNG SHA-256
-      773e6e3398c76a8a4414330e166a70b6d7b038c61d78b05aff512a9ba6667f44,
-      16,626 bytes.
+      framebuffer. Captured from the exact promoted archive after entering the first puzzle,
+      with no artwork edits beyond cropping. PNG SHA-256
+      773e6e3398c76a8a4414330e166a70b6d7b038c61d78b05aff512a9ba6667f44, 16,626 bytes.
 references:
 - >-
   https://web.archive.org/web/20120710133534/http://www.thefoolsgold.com/downloads/games-macintosh.htm
@@ -72,7 +72,7 @@ references:
 
 ## A journey through the Land of Tarot
 
-![The Fool's Errand puzzle grid in Systemless](incoming/the-fools-errand/gameplay.png)
+![The Fool's Errand puzzle grid in Systemless](https://assets.systemless.org/catalogue/media/sha256/77/773e6e3398c76a8a4414330e166a70b6d7b038c61d78b05aff512a9ba6667f44.png)
 
 Cliff Johnson's puzzle story asks the Fool to explore a land of Tarot cards,
 solve its varied riddles, and assemble the Sun's map. This entry preserves the
