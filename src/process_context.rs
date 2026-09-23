@@ -1845,8 +1845,23 @@ impl std::ops::Deref for SharedProcessTimerTasks {
         self.0.as_slice()
     }
 }
-pub(crate) type SharedProcessVblTasks = SharedProcessValue<Vec<ProcessVblTask>>;
-/// Detached-by-default attachment handle for Time and Vertical Retrace Manager callback scheduling.
+
+/// Detached-by-default attachment handle for Vertical Retrace Manager tasks.
+///
+/// Ordinary clones are snapshots so cloning an adapter cannot couple two
+/// processes. Adapters share only through `attach_to`, under the same
+/// serialized runner ownership used for guest RAM and the Memory Manager.
+/// Inside Macintosh: Processes (1994), pp. 4-6--4-12.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SharedProcessVblTasks(SharedProcessValue<Vec<ProcessVblTask>>);
+
+impl std::ops::Deref for SharedProcessVblTasks {
+    type Target = Vec<ProcessVblTask>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 #[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessCallbackScheduling(SharedProcessValue<ProcessCallbackScheduling>);
 #[derive(Clone, Default, Eq, PartialEq)]
@@ -4220,10 +4235,65 @@ impl SharedProcessTimerTasks {
     }
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 impl SharedProcessVblTasks {
+    pub(crate) fn from_value(tasks: Vec<ProcessVblTask>) -> Self {
+        Self(SharedProcessValue::from_value(tasks))
+    }
+
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&[ProcessVblTask]) -> R) -> R {
+        self.0.with_ref(|tasks| operation(tasks.as_slice()))
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut Vec<ProcessVblTask>) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    pub(crate) fn attach_to(&mut self, process_state: &Self) {
+        self.0.attach_to(&process_state.0, |tasks| tasks.is_empty());
+    }
+
+    pub(crate) fn attach_vbl_tasks_to(&mut self, target: &Self) {
+        self.attach_to(target);
+    }
+
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.with_ref(|tasks| tasks.is_empty())
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.with_ref(|tasks| tasks.is_empty())
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.with_ref(|tasks| tasks.len())
+    }
+
     pub(crate) fn push(&self, task: ProcessVblTask) {
         self.with_mut(|tasks| tasks.push(task));
+    }
+
+    pub(crate) fn extend<I>(&self, tasks: I)
+    where
+        I: IntoIterator<Item = ProcessVblTask>,
+    {
+        self.with_mut(|installed| installed.extend(tasks));
+    }
+
+    pub(crate) fn clear(&self) {
+        self.with_mut(|tasks| tasks.clear());
+    }
+
+    pub(crate) fn snapshot(&self) -> Vec<ProcessVblTask> {
+        self.with_ref(|tasks| tasks.to_vec())
     }
 }
 
@@ -9381,6 +9451,16 @@ impl ProcessContext {
         &self.timer_tasks
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn attach_vbl_tasks(&self, adapter: &mut SharedProcessVblTasks) {
+        adapter.attach_to(&self.vbl_tasks);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn vbl_tasks(&self) -> &SharedProcessVblTasks {
+        &self.vbl_tasks
+    }
+
     pub(crate) fn attach_callback_tasks(
         &self,
         timer_tasks: &mut SharedProcessTimerTasks,
@@ -9388,7 +9468,7 @@ impl ProcessContext {
         scheduling: &mut SharedProcessCallbackScheduling,
     ) {
         timer_tasks.attach_to(&self.timer_tasks);
-        vbl_tasks.attach_to(&self.vbl_tasks, Vec::is_empty);
+        vbl_tasks.attach_to(&self.vbl_tasks);
         scheduling.attach_to(&self.callback_scheduling);
     }
 
@@ -13901,5 +13981,79 @@ mod tests {
         assert_eq!(native.len(), 1);
         assert_eq!(classic.len(), 1);
         assert_eq!(context.timer_tasks().len(), 1);
+    }
+
+    #[test]
+    fn process_vbl_tasks_encapsulation() {
+        let tasks = SharedProcessVblTasks::default();
+        assert!(tasks.is_pristine());
+        assert!(tasks.is_empty());
+        assert_eq!(tasks.len(), 0);
+        assert_eq!(tasks.snapshot(), Vec::new());
+
+        let task = ProcessVblTask {
+            task_ptr: 0x4000,
+            architecture: CallbackTaskArchitecture::PowerPc,
+            slot: Some(2),
+            pending: true,
+        };
+        tasks.push(task);
+
+        assert!(!tasks.is_pristine());
+        assert!(!tasks.is_empty());
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0], task);
+        assert_eq!(tasks.first(), Some(&task));
+        assert_eq!(tasks.snapshot(), vec![task]);
+
+        let second_task = ProcessVblTask {
+            task_ptr: 0x4020,
+            architecture: CallbackTaskArchitecture::M68k,
+            slot: None,
+            pending: false,
+        };
+        tasks.extend(std::iter::once(second_task));
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[1], second_task);
+
+        tasks.clear();
+        assert!(tasks.is_pristine());
+        assert!(tasks.is_empty());
+        assert_eq!(tasks.len(), 0);
+    }
+
+    #[test]
+    fn attached_vbl_tasks_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessVblTasks::default();
+        let mut native = SharedProcessVblTasks::default();
+
+        context.attach_vbl_tasks(&mut classic);
+        context.attach_vbl_tasks(&mut native);
+
+        assert!(classic.ptr_eq(&native));
+        assert!(classic.ptr_eq(context.vbl_tasks()));
+
+        let task = ProcessVblTask {
+            task_ptr: 0x1234,
+            architecture: CallbackTaskArchitecture::M68k,
+            slot: Some(1),
+            pending: false,
+        };
+        classic.push(task);
+
+        assert_eq!(native.len(), 1);
+        assert_eq!(native[0], task);
+        assert_eq!(context.vbl_tasks().len(), 1);
+
+        let mut detached = native.clone();
+        assert!(!detached.ptr_eq(&native));
+        assert_eq!(detached.len(), 1);
+
+        detached.clear();
+        assert!(detached.is_empty());
+        assert_eq!(native.len(), 1);
+        assert_eq!(classic.len(), 1);
+        assert_eq!(context.vbl_tasks().len(), 1);
     }
 }
