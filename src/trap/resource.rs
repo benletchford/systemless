@@ -6003,9 +6003,10 @@ impl super::TrapDispatcher {
                         }
                     })
                     .flatten();
-                let matching_basic_working_directory = (!is_hfs_set_vol)
-                    .then(|| self.working_directories.get(&requested_vref).copied())
-                    .flatten()
+                let matching_working_directory = self
+                    .working_directories
+                    .get(&requested_vref)
+                    .copied()
                     .filter(|working_directory| {
                         named_volume.is_none_or(|(volume_ref_num, _)| {
                             volume_ref_num == working_directory.volume_ref_num
@@ -6017,12 +6018,11 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::D0, nsverr as u32);
                     return Some(Ok(()));
                 }
-                let mut target_volume_ref_num = matching_basic_working_directory
+                let mut target_volume_ref_num = matching_working_directory
                     .map(|working_directory| working_directory.volume_ref_num)
                     .or_else(|| named_volume.map(|(volume_ref_num, _)| volume_ref_num))
                     .unwrap_or_else(|| self.resolve_volume_ref_num(requested_vref));
-                let mut target_dir_id = if let Some(working_directory) =
-                    matching_basic_working_directory
+                let mut target_dir_id = if let Some(working_directory) = matching_working_directory
                 {
                     working_directory.dir_id
                 } else if let Some((_, root_dir_id)) = named_volume {
@@ -17940,6 +17940,33 @@ mod tests {
         bus.write_long(pb + 18, name_buf);
         bus.write_word(pb + 22, saved_wd_refnum as u16);
         call_trap_word(&mut disp, 0xA015, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(*disp.default_dir_id, app_dir_id);
+        assert_eq!(*disp.app_wd_refnum, saved_wd_refnum);
+        assert_eq!(bus.read_long(addr::CUR_DIR_STORE), app_dir_id);
+    }
+
+    #[test]
+    fn pbhsetvol_restores_working_directory_with_saved_volume_name() {
+        // PBHSetVol: a working-directory reference supplies the base directory;
+        // ioWDDirID is ignored. Inside Macintosh: Files (1992), pp. 2-153–2-154.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let app_dir_id = disp.ensure_vfs_directory("Game Folder");
+        disp.vfs.insert("Game Folder/Game".to_string(), vec![]);
+        disp.set_launched_app_path("Game Folder/Game");
+        let saved_wd_refnum = *disp.app_wd_refnum;
+
+        let pb = 0x300000u32;
+        let name_buf = 0x300100u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 18, name_buf);
+        bus.write_pstring(name_buf, b"MacintoshHD");
+        bus.write_word(pb + 22, saved_wd_refnum as u16);
+        bus.write_long(pb + 48, 2); // stale ioWDDirID must not select the root
+
+        call_trap_word(&mut disp, 0xA215, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
