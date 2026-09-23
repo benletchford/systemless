@@ -4622,8 +4622,7 @@
             ),
             aliases: Vec::new(),
             gworlds: Vec::new(),
-            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(
-            ),
+            gworld_pixel_states: Default::default(),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,
@@ -9718,8 +9717,7 @@
             ),
             aliases: Vec::new(),
             gworlds: Vec::new(),
-            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(
-            ),
+            gworld_pixel_states: Default::default(),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,
@@ -10585,8 +10583,7 @@
             ),
             aliases: Vec::new(),
             gworlds: Vec::new(),
-            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(
-            ),
+            gworld_pixel_states: Default::default(),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,
@@ -10739,8 +10736,7 @@
             ),
             aliases: Vec::new(),
             gworlds: Vec::new(),
-            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(
-            ),
+            gworld_pixel_states: Default::default(),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,
@@ -11151,8 +11147,7 @@
                     pixels_no_purge: false,
                 },
             ],
-            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(
-            ),
+            gworld_pixel_states: Default::default(),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,
@@ -11421,8 +11416,7 @@
                 pixels_locked: false,
                 pixels_no_purge: false,
             }],
-            gworld_pixel_states: crate::process_context::SharedProcessQuickDrawPixelStates::default(
-            ),
+            gworld_pixel_states: Default::default(),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,

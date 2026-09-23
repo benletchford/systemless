@@ -2007,13 +2007,90 @@ impl SharedProcessQuickDrawHiliteColors {
     }
 }
 
-/// Canonical process-owned pixel-state bits keyed by `PixMapHandle`.
+/// Detached-by-default attachment handle for process-owned QuickDraw pixel-state bits.
+///
 /// Guest PixMap bytes are process-memory-backed, while geometry, allocation,
 /// rendering, and device records remain adapter-local; only the QuickDraw
 /// state bits that `GetPixelsState` and `SetPixelsState` expose cross the
 /// adapter boundary. Inside Macintosh: Imaging With QuickDraw (1994), pp.
 /// 6-30--6-38.
-pub(crate) type SharedProcessQuickDrawPixelStates = SharedProcessValue<HashMap<u32, u32>>;
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SharedProcessQuickDrawPixelStates(
+    SharedProcessValue<HashMap<u32, u32>>,
+);
+
+#[allow(dead_code)]
+impl SharedProcessQuickDrawPixelStates {
+    pub(crate) fn from_value(states: HashMap<u32, u32>) -> Self {
+        Self(SharedProcessValue::from_value(states))
+    }
+
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&HashMap<u32, u32>) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut HashMap<u32, u32>) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    pub(crate) fn attach_to(&mut self, process_state: &Self) {
+        self.0.attach_to(&process_state.0, |states| states.is_empty());
+    }
+
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.with_ref(|states| states.is_empty())
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.with_ref(|states| states.is_empty())
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.with_ref(|states| states.len())
+    }
+
+    /// Read one process-owned QuickDraw pixel-state word without returning a
+    /// reference into the attached adapter's `UnsafeCell`.
+    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 6-32--6-38.
+    pub(crate) fn quickdraw_pixel_state(&self, pixmap_handle: u32) -> u32 {
+        self.with_ref(|states| states.get(&pixmap_handle).copied().unwrap_or(0))
+    }
+
+    /// Report whether a PixMapHandle has an explicitly registered state word.
+    /// A missing entry is distinct from a registered all-zero default while a
+    /// native adapter is adopting legacy records during the migration.
+    pub(crate) fn has_quickdraw_pixel_state(&self, pixmap_handle: u32) -> bool {
+        self.with_ref(|states| states.contains_key(&pixmap_handle))
+    }
+
+    /// Register or replace one process-owned QuickDraw pixel-state word.
+    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 6-34--6-38.
+    pub(crate) fn set_quickdraw_pixel_state(&self, pixmap_handle: u32, state: u32) {
+        self.with_mut(|states| {
+            states.insert(pixmap_handle, state);
+        });
+    }
+
+    /// Drop a disposed PixMapHandle's registered pixel-state word.
+    pub(crate) fn remove_quickdraw_pixel_state(&self, pixmap_handle: u32) -> Option<u32> {
+        self.with_mut(|states| states.remove(&pixmap_handle))
+    }
+
+    pub(crate) fn clear(&self) {
+        self.with_mut(|states| {
+            states.clear();
+        });
+    }
+}
 
 /// Canonical desktop scrap for one Macintosh process.
 ///
@@ -4343,35 +4420,6 @@ impl std::fmt::Debug for SharedProcessAppleEventLaunchState {
     }
 }
 
-
-impl SharedProcessValue<HashMap<u32, u32>> {
-    /// Read one process-owned QuickDraw pixel-state word without returning a
-    /// reference into the attached adapter's `UnsafeCell`.
-    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 6-32--6-38.
-    pub(crate) fn quickdraw_pixel_state(&self, pixmap_handle: u32) -> u32 {
-        // SAFETY: process adapters are serialized by the runner and this
-        // method copies the value before returning it.
-        unsafe { (&*self.0.get()).get(&pixmap_handle).copied().unwrap_or(0) }
-    }
-
-    /// Report whether a PixMapHandle has an explicitly registered state word.
-    /// A missing entry is distinct from a registered all-zero default while a
-    /// native adapter is adopting legacy records during the migration.
-    pub(crate) fn has_quickdraw_pixel_state(&self, pixmap_handle: u32) -> bool {
-        // SAFETY: see `quickdraw_pixel_state`.
-        unsafe { (&*self.0.get()).contains_key(&pixmap_handle) }
-    }
-
-    /// Register or replace one process-owned QuickDraw pixel-state word.
-    /// Inside Macintosh: Imaging With QuickDraw (1994), pp. 6-34--6-38.
-    pub(crate) fn set_quickdraw_pixel_state(&self, pixmap_handle: u32, state: u32) {
-        // SAFETY: process adapters are serialized by the runner; the mutable
-        // borrow is scoped to this map update.
-        unsafe {
-            (&mut *self.0.get()).insert(pixmap_handle, state);
-        }
-    }
-}
 
 impl<T: Default> SharedProcessValue<T> {
     pub(crate) fn attach_to(&mut self, process_value: &Self, is_empty: impl Fn(&T) -> bool) {
@@ -9297,7 +9345,12 @@ impl ProcessContext {
         &self,
         adapter: &mut SharedProcessQuickDrawPixelStates,
     ) {
-        adapter.attach_to(&self.quickdraw_pixel_states, |states| states.is_empty());
+        adapter.attach_to(&self.quickdraw_pixel_states);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn quickdraw_pixel_states(&self) -> &SharedProcessQuickDrawPixelStates {
+        &self.quickdraw_pixel_states
     }
 
     /// Attach a CPU adapter to the process's current QuickDraw port and device.
@@ -13309,7 +13362,7 @@ mod tests {
 
     #[test]
     fn process_quickdraw_error_encapsulation() {
-        let mut error = SharedProcessQuickDrawError::default();
+        let error = SharedProcessQuickDrawError::default();
         assert!(error.is_pristine());
         assert_eq!(*error, 0);
         assert_eq!(error.get(), 0);
@@ -13359,7 +13412,7 @@ mod tests {
         assert_eq!(*adapter, -145);
 
         // Cloning detaches
-        let mut detached = adapter.clone();
+        let detached = adapter.clone();
         assert!(!detached.ptr_eq(&adapter));
         assert_eq!(*detached, -145);
 
@@ -13523,6 +13576,84 @@ mod tests {
         assert_eq!(
             context.quickdraw_hilite_colors().quickdraw_hilite_color(0x1000),
             Some((0xaaaa, 0xbbbb, 0xcccc))
+        );
+    }
+
+    #[test]
+    fn process_quickdraw_pixel_states_encapsulation() {
+        let pixel_states = SharedProcessQuickDrawPixelStates::default();
+        assert!(pixel_states.is_pristine());
+        assert!(pixel_states.is_empty());
+        assert_eq!(pixel_states.len(), 0);
+        assert_eq!(pixel_states.quickdraw_pixel_state(0x1000), 0);
+        assert!(!pixel_states.has_quickdraw_pixel_state(0x1000));
+
+        pixel_states.set_quickdraw_pixel_state(0x1000, 0x88);
+        assert!(!pixel_states.is_pristine());
+        assert!(!pixel_states.is_empty());
+        assert_eq!(pixel_states.len(), 1);
+        assert_eq!(pixel_states.quickdraw_pixel_state(0x1000), 0x88);
+        assert!(pixel_states.has_quickdraw_pixel_state(0x1000));
+
+        let handle = pixel_states.shared_handle();
+        assert!(pixel_states.ptr_eq(&handle));
+        handle.set_quickdraw_pixel_state(0x2000, 0x48);
+        assert_eq!(pixel_states.len(), 2);
+        assert_eq!(pixel_states.quickdraw_pixel_state(0x2000), 0x48);
+
+        let removed = pixel_states.remove_quickdraw_pixel_state(0x1000);
+        assert_eq!(removed, Some(0x88));
+        assert_eq!(pixel_states.len(), 1);
+        assert_eq!(pixel_states.quickdraw_pixel_state(0x1000), 0);
+        assert!(!pixel_states.has_quickdraw_pixel_state(0x1000));
+        assert_eq!(pixel_states.quickdraw_pixel_state(0x2000), 0x48);
+
+        pixel_states.clear();
+        assert!(pixel_states.is_pristine());
+        assert!(pixel_states.is_empty());
+        assert_eq!(pixel_states.len(), 0);
+    }
+
+    #[test]
+    fn attached_quickdraw_pixel_states_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut adapter = SharedProcessQuickDrawPixelStates::default();
+        assert!(adapter.is_pristine());
+
+        context.attach_quickdraw_pixel_states(&mut adapter);
+        assert!(adapter.ptr_eq(context.quickdraw_pixel_states()));
+
+        // Shared mutation across process context and adapter
+        adapter.set_quickdraw_pixel_state(0x1000, 0xc8);
+        assert_eq!(
+            context.quickdraw_pixel_states().quickdraw_pixel_state(0x1000),
+            0xc8
+        );
+        assert_eq!(
+            adapter.quickdraw_pixel_state(0x1000),
+            0xc8
+        );
+
+        // Cloning detaches
+        let detached = adapter.clone();
+        assert!(!detached.ptr_eq(&adapter));
+        assert_eq!(
+            detached.quickdraw_pixel_state(0x1000),
+            0xc8
+        );
+
+        detached.set_quickdraw_pixel_state(0x1000, 0x88);
+        assert_eq!(
+            detached.quickdraw_pixel_state(0x1000),
+            0x88
+        );
+        assert_eq!(
+            adapter.quickdraw_pixel_state(0x1000),
+            0xc8
+        );
+        assert_eq!(
+            context.quickdraw_pixel_states().quickdraw_pixel_state(0x1000),
+            0xc8
         );
     }
 }
