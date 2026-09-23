@@ -1271,7 +1271,7 @@
     DefaultTrapRoute::new(0xABF3, TrapAdapterId::Nonterminal.mask()),
     DefaultTrapRoute::new(0xABF4, TrapAdapterId::Nonterminal.mask()),
     DefaultTrapRoute::new(0xABF5, TrapAdapterId::Nonterminal.mask()),
-    DefaultTrapRoute::new(0xABF6, TrapAdapterId::Collection.mask()),
+    DefaultTrapRoute::new(0xABF6, TrapAdapterId::Collection.mask() | TrapAdapterId::Nonterminal.mask()),
     DefaultTrapRoute::new(0xABF7, TrapAdapterId::Nonterminal.mask()),
     DefaultTrapRoute::new(0xABF8, TrapAdapterId::QuickDraw.mask()),
     DefaultTrapRoute::new(0xABF9, TrapAdapterId::Nonterminal.mask()),
