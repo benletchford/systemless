@@ -12488,6 +12488,19 @@ fn ppc_wide_fixmath_helpers_mutate_records_and_apply_documented_results() {
     ppc_wide_shift(&mut memory, TARGET, -2);
     assert_eq!(ppc_read_wide(&mut memory, TARGET), Some(-12));
 
+    ppc_write_wide(&mut memory, TARGET, 7).unwrap();
+    assert_eq!(ppc_wide_bit_shift(&mut memory, TARGET, 1), TARGET);
+    assert_eq!(ppc_read_wide(&mut memory, TARGET), Some(3));
+    ppc_write_wide(&mut memory, TARGET, -7).unwrap();
+    ppc_wide_bit_shift(&mut memory, TARGET, 1);
+    assert_eq!(ppc_read_wide(&mut memory, TARGET), Some(-4));
+    ppc_wide_bit_shift(&mut memory, TARGET, -2);
+    assert_eq!(ppc_read_wide(&mut memory, TARGET), Some(-16));
+    ppc_wide_bit_shift(&mut memory, TARGET, 64);
+    assert_eq!(ppc_read_wide(&mut memory, TARGET), Some(-16));
+    ppc_wide_bit_shift(&mut memory, TARGET, 65);
+    assert_eq!(ppc_read_wide(&mut memory, TARGET), Some(-8));
+
     assert_eq!(
         ppc_wide_multiply(&mut memory, -2_000_000_000, 2, TARGET),
         TARGET
@@ -12540,6 +12553,7 @@ fn ppc_wide_fixmath_imports_execute_through_synthetic_pefs() {
         ("WideSubtract", PpcImportDispatcherTarget::WideSubtract),
         ("WideNegate", PpcImportDispatcherTarget::WideNegate),
         ("WideShift", PpcImportDispatcherTarget::WideShift),
+        ("WideBitShift", PpcImportDispatcherTarget::WideBitShift),
         ("WideMultiply", PpcImportDispatcherTarget::WideMultiply),
         ("WideDivide", PpcImportDispatcherTarget::WideDivide),
         ("WideWideDivide", PpcImportDispatcherTarget::WideWideDivide),
@@ -12561,7 +12575,7 @@ fn ppc_wide_fixmath_imports_execute_through_synthetic_pefs() {
         loaded.cpu.gpr[4] = source;
         loaded.cpu.gpr[5] = remainder;
         match name {
-            "WideShift" => loaded.cpu.gpr[4] = 1,
+            "WideShift" | "WideBitShift" => loaded.cpu.gpr[4] = 1,
             "WideMultiply" => {
                 loaded.cpu.gpr[3] = (-3i32) as u32;
                 loaded.cpu.gpr[4] = 7;
@@ -12589,6 +12603,9 @@ fn ppc_wide_fixmath_imports_execute_through_synthetic_pefs() {
             }
             "WideShift" => {
                 assert_eq!(ppc_read_wide(&mut loaded.memory, scratch), Some(5))
+            }
+            "WideBitShift" => {
+                assert_eq!(ppc_read_wide(&mut loaded.memory, scratch), Some(4))
             }
             "WideMultiply" => {
                 assert_eq!(ppc_read_wide(&mut loaded.memory, scratch), Some(-21))

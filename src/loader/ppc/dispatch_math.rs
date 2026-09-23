@@ -162,6 +162,9 @@ pub(super) fn dispatch_math_import(
             cpu.gpr[3],
             cpu.gpr[4] as i32,
         ))),
+        PpcImportDispatcherTarget::WideBitShift => Some(PpcImportAction::Return(
+            ppc_wide_bit_shift(memory, cpu.gpr[3], cpu.gpr[4] as i32),
+        )),
         PpcImportDispatcherTarget::WideMultiply => Some(PpcImportAction::Return(
             ppc_wide_multiply(memory, cpu.gpr[3] as i32, cpu.gpr[4] as i32, cpu.gpr[5]),
         )),
