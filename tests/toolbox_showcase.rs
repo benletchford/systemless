@@ -2621,6 +2621,9 @@ fn test_toolbox_showcase() {
             == page_legacy_save_sample
     });
 
+    // The sample pixel is restored early in the page redraw; wait for the
+    // guest to return to its event loop so the capture sees the whole page.
+    wait_for_page_event_loop(&mut runner, "standard file page redraw");
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "22-standard-file-complete.png");
 
@@ -2877,6 +2880,9 @@ fn test_toolbox_showcase() {
             ITEM_PAGE_EVENTS_CURSORS,
         ) && r.window_count() == 1
     });
+    // The menu check flips before the new page finishes drawing; wait for the
+    // guest to return to its event loop so the capture sees the whole page.
+    wait_for_page_event_loop(&mut runner, "Events & Cursors page redraw");
     runner.set_mouse_position(550, 760);
     let events_initial = runner.event_manager_snapshot();
     assert!(
@@ -2906,7 +2912,9 @@ fn test_toolbox_showcase() {
     let event_probe_h = win_left + 108;
     runner.set_mouse_position(event_probe_v, event_probe_h);
     runner.push_mouse_down(event_probe_v, event_probe_h);
-    run_ticks(&mut runner, "held event probe click", 2);
+    // The probe redraws the page while the button is held; a fixed tick count
+    // can end mid-redraw, so wait for the guest to return to its event loop.
+    wait_for_page_event_loop(&mut runner, "held event probe click");
     runner.set_mouse_position(event_probe_v, event_probe_h);
     let held_events = runner.event_manager_snapshot();
     assert!(
@@ -3004,6 +3012,8 @@ fn test_toolbox_showcase() {
         key_frame_marker_h,
         key_frame_marker,
     );
+    // The marker is drawn before the footer; let the redraw finish.
+    wait_for_page_event_loop(&mut runner, "shift-modified key page redraw");
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "31-events-key-modifiers.png");
     run_ticks(&mut runner, "key release", 2);
@@ -3011,8 +3021,10 @@ fn test_toolbox_showcase() {
     // 28. Switch through standard system cursors and exercise the balanced
     // HideCursor/ShowCursor level pair. The hotspot is part of the cursor
     // contract and is asserted independently of screenshot presentation.
+    // Each button redraws the whole page, which can outlast a fixed tick
+    // count, so every click waits for the guest's event loop.
     click_point(&mut runner, win_top + 262, win_left + 350);
-    run_ticks(&mut runner, "cross cursor selection", 1);
+    wait_for_page_event_loop(&mut runner, "cross cursor selection");
     let (_, _, cross_hot_v, cross_hot_h) = runner
         .dispatcher()
         .cursor_data()
@@ -3021,7 +3033,7 @@ fn test_toolbox_showcase() {
     assert!(runner.dispatcher().cursor_visible());
 
     click_point(&mut runner, win_top + 262, win_left + 420);
-    run_ticks(&mut runner, "watch cursor selection", 1);
+    wait_for_page_event_loop(&mut runner, "watch cursor selection");
     let (_, _, watch_hot_v, watch_hot_h) = runner
         .dispatcher()
         .cursor_data()
@@ -3029,7 +3041,7 @@ fn test_toolbox_showcase() {
     assert_eq!((watch_hot_v, watch_hot_h), (8, 8));
 
     click_point(&mut runner, win_top + 294, win_left + 350);
-    run_ticks(&mut runner, "hide cursor", 1);
+    wait_for_page_event_loop(&mut runner, "hide cursor");
     assert!(!runner.dispatcher().cursor_visible());
     let hidden_events = runner.event_manager_snapshot();
     assert!(!hidden_events.cursor_visible);
@@ -3038,10 +3050,10 @@ fn test_toolbox_showcase() {
     assert_reference_frame(&mut runner, "32-events-cursor-hidden.png");
 
     click_point(&mut runner, win_top + 294, win_left + 420);
-    run_ticks(&mut runner, "show cursor", 1);
+    wait_for_page_event_loop(&mut runner, "show cursor");
     assert!(runner.dispatcher().cursor_visible());
     click_point(&mut runner, win_top + 262, win_left + 490);
-    run_ticks(&mut runner, "restore arrow cursor", 1);
+    wait_for_page_event_loop(&mut runner, "restore arrow cursor");
     assert!(runner.dispatcher().cursor_visible());
     let final_events = runner.event_manager_snapshot();
     assert!(final_events.cursor_visible);
