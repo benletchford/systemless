@@ -111,9 +111,7 @@ pub(super) fn dispatch_gworld_import(
             // Imaging With QuickDraw (1994), pp. 6-20 and 6-24: QDError
             // reports NewGWorld and UpdateGWorld failures, and a successful
             // call clears the previous QuickDraw error.
-            toolbox_startup
-                .last_quickdraw_error
-                .with_mut(|error| *error = result);
+            toolbox_startup.last_quickdraw_error.set(result);
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::UpdateGWorld => {
@@ -146,9 +144,7 @@ pub(super) fn dispatch_gworld_import(
             } else {
                 PPC_NO_ERR
             };
-            toolbox_startup
-                .last_quickdraw_error
-                .with_mut(|error| *error = quickdraw_error);
+            toolbox_startup.last_quickdraw_error.set(quickdraw_error);
             if result & (1 << 31) == 0 {
                 ppc_register_gdevice(toolbox_startup, *current_gdevice);
             }

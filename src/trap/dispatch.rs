@@ -36,7 +36,8 @@ use crate::process_context::{
     SharedProcessDialogText, SharedProcessDisplayClut,
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessInputState,
     SharedProcessListManager, SharedProcessMemoryManager, SharedProcessMenuTracking,
-    SharedProcessOpenFilePositions, SharedProcessOpenFiles, SharedProcessQuickDrawHiliteColors,
+    SharedProcessOpenFilePositions, SharedProcessOpenFiles, SharedProcessQuickDrawError,
+    SharedProcessQuickDrawHiliteColors,
     SharedProcessQuickDrawOpColors, SharedProcessQuickDrawPixelStates, SharedProcessScrapState,
     SharedProcessSoundManager, SharedProcessTextEditManager, SharedProcessTickState,
     SharedProcessValue,
@@ -1827,7 +1828,7 @@ pub struct TrapDispatcher {
     /// Current GrafPort/GWorld pointer
     pub(crate) current_port: SharedProcessValue<u32>,
     /// Error from the last applicable Color QuickDraw or Color Manager call.
-    pub(crate) quickdraw_error: SharedProcessValue<i16>,
+    pub(crate) quickdraw_error: SharedProcessQuickDrawError,
     /// Process-owned fallback for ports whose guest record has no
     /// allocator-managed GrafVars handle. A valid guest GrafVars record is
     /// always preferred by OpColor reads and writes.
@@ -3657,7 +3658,7 @@ impl TrapDispatcher {
             main_gdevice_handle: 0,
             current_gdevice: SharedProcessValue::from_value(0),
             current_port: SharedProcessValue::from_value(0),
-            quickdraw_error: SharedProcessValue::from_value(0),
+            quickdraw_error: SharedProcessQuickDrawError::default(),
             quickdraw_op_colors: SharedProcessQuickDrawOpColors::default(),
             quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors::default(),
             process_quickdraw_port_state_attached: false,
