@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.54.0](https://github.com/benletchford/systemless/compare/v0.53.0...v0.54.0) (2026-09-23)
+
+
+### Features
+
+* **catalogue:** add Falcon MC demo ([c0f1fff](https://github.com/benletchford/systemless/commit/c0f1fffc50ec1f87eee2156bf4d9a39985921cda))
+* **catalogue:** add original Spectre demo ([f7db830](https://github.com/benletchford/systemless/commit/f7db8303fd3520fcd6cf71fa03dc3f167b447d96))
+* **catalogue:** add Shanghai II demo ([#2498](https://github.com/benletchford/systemless/issues/2498)) ([eebb048](https://github.com/benletchford/systemless/commit/eebb04849040d4b84e1d698eb9dee02ea64f4117))
+* **catalogue:** add Super Tetris demo ([#2500](https://github.com/benletchford/systemless/issues/2500)) ([593fe05](https://github.com/benletchford/systemless/commit/593fe05c4e237f07ed10338f435e3e8af6f156f4))
+* **catalogue:** add Wordtris demo ([#2503](https://github.com/benletchford/systemless/issues/2503)) ([1a0b29a](https://github.com/benletchford/systemless/commit/1a0b29a75320ea25917e5faef9d48f0195f44890))
+
 ## [0.53.0](https://github.com/benletchford/systemless/compare/v0.52.0...v0.53.0) (2026-09-23)
 
 
