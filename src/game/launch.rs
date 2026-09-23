@@ -2883,13 +2883,14 @@ struct ExecutableCandidate {
 }
 
 impl ExecutableCandidate {
-    fn selection_key(&self) -> (u8, bool, bool, bool, bool, bool, bool, bool, bool, usize) {
+    fn selection_key(&self) -> (u8, bool, bool, bool, bool, bool, bool, bool, bool, bool, usize) {
         (
             self.priority,
             self.is_appl,
             !self.is_installer,
             !self.is_documentation,
             !is_registration_executable(&self.name),
+            !executable_name_has_role(&self.name, "editor"),
             !self.is_demo,
             !is_system_folder_path(&self.name),
             self.kind.is_powerpc(),
@@ -4455,6 +4456,89 @@ mod tests {
                 "Game Folder/Game Demo"
             );
         }
+    }
+
+    #[test]
+    fn executable_selection_prefers_installed_game_over_larger_level_editor() {
+        let game_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let editor_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 256]);
+
+        for editor_first in [false, true] {
+            let mut selected = None;
+            let mut candidates = [
+                ("Harry 1.0.0 ƒ/Harry 1.0.0", &game_rsrc, 400_000usize),
+                (
+                    "Harry 1.0.0 ƒ/Harry Level Editor ƒ/Harry Editor 1.0.0b3",
+                    &editor_rsrc,
+                    800_000usize,
+                ),
+            ];
+            if editor_first {
+                candidates.reverse();
+            }
+            for (name, rsrc, data_len) in candidates {
+                maybe_select_executable(
+                    &mut selected,
+                    name,
+                    &[0],
+                    rsrc,
+                    true,
+                    data_len,
+                    *b"Hary",
+                    1,
+                );
+            }
+
+            assert_eq!(selected.unwrap().name, "Harry 1.0.0 ƒ/Harry 1.0.0");
+        }
+
+        let mut editor_only = None;
+        maybe_select_executable(
+            &mut editor_only,
+            "Harry Level Editor ƒ/Harry Editor 1.0.0b3",
+            &[0],
+            &editor_rsrc,
+            true,
+            800_000,
+            *b"Hary",
+            1,
+        );
+        assert!(editor_only.is_some());
+    }
+
+    #[test]
+    fn installer_handoff_prefers_new_game_over_new_level_editor() {
+        let mut runner = new_runner();
+        let baseline = runner
+            .vfs_file_summaries()
+            .into_iter()
+            .map(|file| file.path)
+            .collect();
+        let game_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let editor_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 256]);
+        insert_forks_into_vfs(
+            &mut runner,
+            "Harry 1.0.0 ƒ/Harry 1.0.0",
+            vec![0; 400_000],
+            game_rsrc,
+            *b"APPL",
+            *b"Hary",
+            0,
+        );
+        insert_forks_into_vfs(
+            &mut runner,
+            "Harry 1.0.0 ƒ/Harry Level Editor ƒ/Harry Editor 1.0.0b3",
+            vec![0; 800_000],
+            editor_rsrc,
+            *b"APPL",
+            *b"Hary",
+            0,
+        );
+
+        assert_eq!(
+            select_installed_application(&mut runner, &baseline).as_deref(),
+            Some("Harry 1.0.0 ƒ/Harry 1.0.0")
+        );
     }
 
     #[test]
