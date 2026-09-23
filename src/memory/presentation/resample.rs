@@ -68,12 +68,7 @@ impl Presentation {
             let cell = y * self.width as usize + bx;
             let color = if self.text_cells[cell] {
                 let scale = self.scale as usize;
-                let offset = ((y * scale + sy) * self.width as usize * scale + bx * scale + sx) * 3;
-                [
-                    self.pixels[offset],
-                    self.pixels[offset + 1],
-                    self.pixels[offset + 2],
-                ]
+                self.samples.get(cell).rgb[sy * scale + sx]
             } else {
                 self.palette_at(bx as u32)[self.guest_values[cell] as u8 as usize]
             };
@@ -266,9 +261,11 @@ mod tests {
                     for i in 0..p.guest_values.len() {
                         p.guest_values[i] = u16::from(next());
                         p.text_cells[i] = next() % 3 == 0;
-                    }
-                    for value in &mut p.pixels {
-                        *value = next();
+                        if p.text_cells[i] {
+                            for rgb in &mut p.samples.ensure(i).rgb {
+                                *rgb = [next(), next(), next()];
+                            }
+                        }
                     }
                     p.revision += 1;
                 }
