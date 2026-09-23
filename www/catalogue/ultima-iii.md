@@ -12,8 +12,20 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Role-Playing
+launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
+  verified:
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
+    systemless_version: "0.55.0"
+    architecture: 68k
+    environment: >-
+      Release-mode browser run of the promoted unregistered shareware archive
+      through the font warning, title sequence, keyboard menu, and included
+      sample-party overworld scene
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/2552
 artifacts:
 - id: archive
   role: archive
@@ -80,4 +92,7 @@ players cannot travel to Ambrosia or raise their abilities. No registration
 code is included or applied here.
 
 The unchanged archive reaches the overworld in both Systemless and BasiliskII.
-Browser launch remains disabled until manual review of the promoted archive.
+In the release-mode browser build, choose **Continue Anyway** if the bundled
+UltimaThree font warning appears, then press Space through the title sequence
+and choose Journey Onward to use the included sample party. The promoted
+archive was verified through that overworld scene.
