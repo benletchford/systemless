@@ -2883,7 +2883,22 @@ struct ExecutableCandidate {
 }
 
 impl ExecutableCandidate {
-    fn selection_key(&self) -> (u8, bool, bool, bool, bool, bool, bool, bool, bool, bool, usize) {
+    fn selection_key(
+        &self,
+    ) -> (
+        u8,
+        bool,
+        bool,
+        bool,
+        bool,
+        bool,
+        bool,
+        bool,
+        bool,
+        bool,
+        bool,
+        usize,
+    ) {
         (
             self.priority,
             self.is_appl,
@@ -2893,6 +2908,10 @@ impl ExecutableCandidate {
             !executable_name_has_role(&self.name, "editor"),
             !self.is_demo,
             !is_system_folder_path(&self.name),
+            self.name
+                .rsplit_once('/')
+                .and_then(|(parent, app)| parent.rsplit('/').next().map(|folder| (folder, app)))
+                .is_some_and(|(folder, app)| folder.eq_ignore_ascii_case(app)),
             self.kind.is_powerpc(),
             self.has_data_fork,
             self.score,
@@ -4455,6 +4474,28 @@ mod tests {
                 selected.expect("expected an executable candidate").name,
                 "Game Folder/Game Demo"
             );
+        }
+    }
+
+    #[test]
+    fn executable_selection_prefers_folder_named_game_over_larger_companion() {
+        let game_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let companion_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 512]);
+
+        for companion_first in [false, true] {
+            let mut selected = None;
+            let mut candidates = [
+                ("Puzzle World/Puzzle World", &game_rsrc),
+                ("Puzzle World/Prologue & Finale", &companion_rsrc),
+            ];
+            if companion_first {
+                candidates.reverse();
+            }
+            for (name, rsrc) in candidates {
+                maybe_select_executable(&mut selected, name, &[], rsrc, true, 0, *b"GAME", 1);
+            }
+
+            assert_eq!(selected.unwrap().name, "Puzzle World/Puzzle World");
         }
     }
 
