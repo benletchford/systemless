@@ -88,7 +88,7 @@ fn download_with_referer(
             .no_proxy()
             .cookie_provider(cookies.clone())
             .https_only(true)
-            .user_agent(concat!("catalogue/", env!("CARGO_PKG_VERSION")))
+            .user_agent("Mozilla/5.0")
             .redirect(Policy::none())
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(600))
