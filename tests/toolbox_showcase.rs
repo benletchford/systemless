@@ -2621,6 +2621,9 @@ fn test_toolbox_showcase() {
             == page_legacy_save_sample
     });
 
+    // The sample pixel is restored early in the page redraw; wait for the
+    // guest to return to its event loop so the capture sees the whole page.
+    wait_for_page_event_loop(&mut runner, "standard file page redraw");
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "22-standard-file-complete.png");
 
