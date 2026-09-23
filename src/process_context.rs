@@ -1829,7 +1829,22 @@ pub(crate) type SharedProcessMenuTracking = crate::guest_call::SharedMenuTrackin
 #[derive(Clone, Default)]
 pub(crate) struct SharedProcessWindowList(SharedProcessValue<Vec<u32>>);
 pub(crate) struct SharedProcessInputState(SharedProcessValue<ProcessInputState>);
-pub(crate) type SharedProcessTimerTasks = SharedProcessValue<Vec<ProcessTimerTask>>;
+/// Detached-by-default attachment handle for Time Manager tasks.
+///
+/// Ordinary clones are snapshots so cloning an adapter cannot couple two
+/// processes. Adapters share only through `attach_to`, under the same
+/// serialized runner ownership used for guest RAM and the Memory Manager.
+/// Inside Macintosh: Processes (1994), pp. 3-6--3-22.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SharedProcessTimerTasks(SharedProcessValue<Vec<ProcessTimerTask>>);
+
+impl std::ops::Deref for SharedProcessTimerTasks {
+    type Target = [ProcessTimerTask];
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_slice()
+    }
+}
 pub(crate) type SharedProcessVblTasks = SharedProcessValue<Vec<ProcessVblTask>>;
 /// Detached-by-default attachment handle for Time and Vertical Retrace Manager callback scheduling.
 #[derive(Clone, Default, Eq, PartialEq)]
@@ -4143,8 +4158,48 @@ impl SharedProcessListManager {
     }
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 impl SharedProcessTimerTasks {
+    pub(crate) fn from_value(tasks: Vec<ProcessTimerTask>) -> Self {
+        Self(SharedProcessValue::from_value(tasks))
+    }
+
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&[ProcessTimerTask]) -> R) -> R {
+        self.0.with_ref(|tasks| operation(tasks.as_slice()))
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut Vec<ProcessTimerTask>) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    pub(crate) fn attach_to(&mut self, process_state: &Self) {
+        self.0.attach_to(&process_state.0, |tasks| tasks.is_empty());
+    }
+
+    pub(crate) fn attach_timer_tasks_to(&mut self, target: &Self) {
+        self.attach_to(target);
+    }
+
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.with_ref(|tasks| tasks.is_empty())
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.with_ref(|tasks| tasks.is_empty())
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.with_ref(|tasks| tasks.len())
+    }
+
     pub(crate) fn push(&self, task: ProcessTimerTask) {
         self.with_mut(|tasks| tasks.push(task));
     }
@@ -4154,6 +4209,14 @@ impl SharedProcessTimerTasks {
         I: IntoIterator<Item = ProcessTimerTask>,
     {
         self.with_mut(|installed| installed.extend(tasks));
+    }
+
+    pub(crate) fn clear(&self) {
+        self.with_mut(|tasks| tasks.clear());
+    }
+
+    pub(crate) fn snapshot(&self) -> Vec<ProcessTimerTask> {
+        self.with_ref(|tasks| tasks.to_vec())
     }
 }
 
@@ -9299,7 +9362,7 @@ impl ProcessContext {
         adapter.attach_to(&self.file_system.resource_manager);
     }
 
-    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn resource_manager(&self) -> &SharedProcessResourceManager {
         &self.file_system.resource_manager
     }
@@ -9308,13 +9371,23 @@ impl ProcessContext {
         adapter.attach_to(&self.sound_manager);
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn attach_timer_tasks(&self, adapter: &mut SharedProcessTimerTasks) {
+        adapter.attach_to(&self.timer_tasks);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn timer_tasks(&self) -> &SharedProcessTimerTasks {
+        &self.timer_tasks
+    }
+
     pub(crate) fn attach_callback_tasks(
         &self,
         timer_tasks: &mut SharedProcessTimerTasks,
         vbl_tasks: &mut SharedProcessVblTasks,
         scheduling: &mut SharedProcessCallbackScheduling,
     ) {
-        timer_tasks.attach_to(&self.timer_tasks, Vec::is_empty);
+        timer_tasks.attach_to(&self.timer_tasks);
         vbl_tasks.attach_to(&self.vbl_tasks, Vec::is_empty);
         scheduling.attach_to(&self.callback_scheduling);
     }
@@ -13742,5 +13815,91 @@ mod tests {
             .with_mut(|current_file| *current_file = 15);
         assert_eq!(*detached.current_resource_file, 15);
         assert_eq!(*manager.current_resource_file, 12);
+    }
+
+    #[test]
+    fn process_timer_tasks_encapsulation() {
+        let tasks = SharedProcessTimerTasks::default();
+        assert!(tasks.is_pristine());
+        assert!(tasks.is_empty());
+        assert_eq!(tasks.len(), 0);
+        assert_eq!(tasks.snapshot(), Vec::new());
+
+        let task = ProcessTimerTask {
+            task_ptr: 0x4000,
+            architecture: CallbackTaskArchitecture::PowerPc,
+            extended: true,
+            callback: 0x5000,
+            active: true,
+            fire_at_tick: 42,
+            fire_at_subtick: 42_000_000,
+            last_fired_tick: None,
+        };
+        tasks.push(task);
+
+        assert!(!tasks.is_pristine());
+        assert!(!tasks.is_empty());
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0], task);
+        assert_eq!(tasks.first(), Some(&task));
+        assert_eq!(tasks.snapshot(), vec![task]);
+
+        let second_task = ProcessTimerTask {
+            task_ptr: 0x4020,
+            architecture: CallbackTaskArchitecture::M68k,
+            extended: false,
+            callback: 0x6000,
+            active: false,
+            fire_at_tick: 100,
+            fire_at_subtick: 100_000_000,
+            last_fired_tick: Some(50),
+        };
+        tasks.extend(std::iter::once(second_task));
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[1], second_task);
+
+        tasks.clear();
+        assert!(tasks.is_pristine());
+        assert!(tasks.is_empty());
+        assert_eq!(tasks.len(), 0);
+    }
+
+    #[test]
+    fn attached_timer_tasks_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessTimerTasks::default();
+        let mut native = SharedProcessTimerTasks::default();
+
+        context.attach_timer_tasks(&mut classic);
+        context.attach_timer_tasks(&mut native);
+
+        assert!(classic.ptr_eq(&native));
+        assert!(classic.ptr_eq(context.timer_tasks()));
+
+        let task = ProcessTimerTask {
+            task_ptr: 0x1234,
+            architecture: CallbackTaskArchitecture::M68k,
+            extended: false,
+            callback: 0x5678,
+            active: true,
+            fire_at_tick: 10,
+            fire_at_subtick: 10_000_000,
+            last_fired_tick: None,
+        };
+        classic.push(task);
+
+        assert_eq!(native.len(), 1);
+        assert_eq!(native[0], task);
+        assert_eq!(context.timer_tasks().len(), 1);
+
+        let mut detached = native.clone();
+        assert!(!detached.ptr_eq(&native));
+        assert_eq!(detached.len(), 1);
+
+        detached.clear();
+        assert!(detached.is_empty());
+        assert_eq!(native.len(), 1);
+        assert_eq!(classic.len(), 1);
+        assert_eq!(context.timer_tasks().len(), 1);
     }
 }
