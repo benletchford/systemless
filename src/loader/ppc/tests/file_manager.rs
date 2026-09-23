@@ -1,6 +1,151 @@
 use super::*;
 
     #[test]
+    fn hrename_moves_both_forks_and_open_paths_without_changing_directory() {
+        let pef = synthetic_pef_with_import(b"HRename");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let old_ptr = PPC_DATA_BASE + 0x1000;
+        let new_ptr = old_ptr + 0x40;
+        loaded.memory.add_region(old_ptr, vec![0; 0x100]);
+        write_ppc_pstring(&mut loaded.memory, old_ptr, b"Old Log");
+        write_ppc_pstring(&mut loaded.memory, new_ptr, b"New Log");
+        let old_path = "System Folder/Preferences/Old Log";
+        let new_path = "System Folder/Preferences/New Log";
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: old_path.to_string(),
+            data: b"data fork".to_vec().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.push_vfs_resource_file(PpcVfsResourceFileRecord {
+            path: old_path.to_string(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            resource_len: 13,
+            raw_data: Some(b"resource fork".to_vec().into()),
+            map_attrs: 0,
+            dirty: false,
+        });
+        loaded.push_test_open_file(PpcFileRecord {
+            ref_num: PPC_FIRST_FILE_REF_NUM,
+            path: old_path.to_string(),
+            position: 3,
+        });
+        loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+        loaded.cpu.gpr[4] = PPC_PREFERENCES_DIR_ID;
+        loaded.cpu.gpr[5] = old_ptr;
+        loaded.cpu.gpr[6] = new_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.vfs_files[0].path, new_path);
+        assert_eq!(loaded.vfs_resource_files[0].path, new_path);
+        assert_eq!(loaded.files[0].path, new_path);
+        assert_eq!(loaded.files[0].position, 3);
+        assert_eq!(loaded.take_deleted_vfs_file_paths(), vec![old_path]);
+        assert_eq!(loaded.take_dirty_vfs_files()[0].data, b"data fork");
+        assert_eq!(
+            loaded.take_dirty_vfs_resource_forks()[0].data,
+            b"resource fork"
+        );
+    }
+
+    #[test]
+    fn hrename_rejects_missing_and_duplicate_names() {
+        let pef = synthetic_pef_with_import(b"HRename");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let old_ptr = PPC_DATA_BASE + 0x1000;
+        let new_ptr = old_ptr + 0x40;
+        loaded.memory.add_region(old_ptr, vec![0; 0x100]);
+        write_ppc_pstring(&mut loaded.memory, old_ptr, b"Absent");
+        write_ppc_pstring(&mut loaded.memory, new_ptr, b"Other");
+        loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+        loaded.cpu.gpr[4] = PPC_ROOT_DIR_ID;
+        loaded.cpu.gpr[5] = old_ptr;
+        loaded.cpu.gpr[6] = new_ptr;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_FNF_ERR));
+
+        for name in ["Source", "Other"] {
+            loaded.push_test_vfs_file(PpcVfsFileRecord {
+                path: name.to_string(),
+                data: Vec::new().into(),
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                dirty: false,
+            });
+        }
+        write_ppc_pstring(&mut loaded.memory, old_ptr, b"Source");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_DUP_FN_ERR));
+        assert!(loaded.vfs_files.iter().all(|file| !file.dirty));
+    }
+
+    #[test]
+    fn hrename_directory_keeps_child_ids_and_rewrites_descendant_paths() {
+        let pef = synthetic_pef_with_import(b"HRename");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let old_ptr = PPC_DATA_BASE + 0x1000;
+        let new_ptr = old_ptr + 0x40;
+        loaded.memory.add_region(old_ptr, vec![0; 0x100]);
+        write_ppc_pstring(&mut loaded.memory, old_ptr, b"Hangar");
+        write_ppc_pstring(&mut loaded.memory, new_ptr, b"Airfield");
+        let mut directories = initial_ppc_vfs_directories();
+        directories.push(PpcVfsDirectory {
+            dir_id: 1000,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: "Hangar".to_string(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        directories.push(PpcVfsDirectory {
+            dir_id: 1001,
+            parent_dir_id: 1000,
+            path: "Hangar/Logs".to_string(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.seed_vfs_directories(directories, PPC_ROOT_DIR_ID, 1002);
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Hangar/Logs/Pilot".to_string(),
+            data: b"flight".to_vec().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+        loaded.cpu.gpr[4] = PPC_ROOT_DIR_ID;
+        loaded.cpu.gpr[5] = old_ptr;
+        loaded.cpu.gpr[6] = new_ptr;
+
+        loaded.run_with_hle_imports(64);
+
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.vfs_directories[3].dir_id, 1000);
+        assert_eq!(loaded.vfs_directories[3].path, "Airfield");
+        assert_eq!(loaded.vfs_directories[4].dir_id, 1001);
+        assert_eq!(loaded.vfs_directories[4].path, "Airfield/Logs");
+        assert_eq!(loaded.vfs_files[0].path, "Airfield/Logs/Pilot");
+        assert_eq!(
+            loaded.take_deleted_vfs_file_paths(),
+            vec!["Hangar/Logs/Pilot"]
+        );
+    }
+
+    #[test]
     fn hle_import_runner_handles_find_folder_preferences_outputs() {
         let pef = synthetic_pef_with_import(b"FindFolder");
         let mut loaded = load_pef_application(&pef).unwrap();

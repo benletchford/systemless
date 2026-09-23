@@ -355,6 +355,29 @@ impl ProcessVfsFileRecords {
         }
     }
 
+    pub(crate) fn rename_path(&mut self, old_path: &str, new_path: &str) -> bool {
+        let Some(record) = self
+            .records
+            .iter_mut()
+            .find(|record| record.path.eq_ignore_ascii_case(old_path))
+        else {
+            return false;
+        };
+        let fork_key = self
+            .data_forks
+            .keys()
+            .find(|path| path.eq_ignore_ascii_case(old_path))
+            .cloned();
+        if let Some(fork_key) = fork_key {
+            if let Some(bytes) = self.data_forks.remove(&fork_key) {
+                self.data_forks.insert(new_path.to_string(), bytes);
+            }
+        }
+        record.path = new_path.to_string();
+        record.dirty = true;
+        true
+    }
+
     fn merge_from(&mut self, source: &mut Self) {
         for record in source.records.drain(..) {
             if self
@@ -671,6 +694,29 @@ impl ProcessVfsResourceFileRecords {
         for record in records {
             self.push(record);
         }
+    }
+
+    pub(crate) fn rename_path(&mut self, old_path: &str, new_path: &str) -> bool {
+        let Some(record) = self
+            .records
+            .iter_mut()
+            .find(|record| record.path.eq_ignore_ascii_case(old_path))
+        else {
+            return false;
+        };
+        let fork_key = self
+            .resource_forks
+            .keys()
+            .find(|path| path.eq_ignore_ascii_case(old_path))
+            .cloned();
+        if let Some(fork_key) = fork_key {
+            if let Some(bytes) = self.resource_forks.remove(&fork_key) {
+                self.resource_forks.insert(new_path.to_string(), bytes);
+            }
+        }
+        record.path = new_path.to_string();
+        record.dirty = true;
+        true
     }
 
     pub(crate) fn update_fork(&mut self, path: &str, bytes: &[u8]) {
