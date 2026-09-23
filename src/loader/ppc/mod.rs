@@ -14480,48 +14480,123 @@ fn dispatcher_target_for_import(
     symbol_name: &str,
 ) -> PpcImportDispatcherTarget {
     match (library_name, symbol_name) {
-        ("ColMgrLib", symbol) => match symbol {
-            "getCollectionMgrLibVersion" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Version),
-            "NewCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::New),
-            "DisposeCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Dispose),
-            "CloneCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Clone),
-            "CountCollectionOwners" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::CountOwners),
-            "CopyCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Copy),
-            "GetCollectionDefaultAttributes" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetDefaultAttributes),
-            "SetCollectionDefaultAttributes" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::SetDefaultAttributes),
-            "CountCollectionItems" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::CountItems),
-            "AddCollectionItem" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::AddItem),
-            "GetCollectionItem" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetItem),
-            "RemoveCollectionItem" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::RemoveItem),
-            "SetCollectionItemInfo" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::SetItemInfo),
-            "GetCollectionItemInfo" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetItemInfo),
-            "ReplaceIndexedCollectionItem" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::ReplaceIndexedItem),
-            "GetIndexedCollectionItem" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetIndexedItem),
-            "RemoveIndexedCollectionItem" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::RemoveIndexedItem),
-            "SetIndexedCollectionItemInfo" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::SetIndexedItemInfo),
-            "GetIndexedCollectionItemInfo" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetIndexedItemInfo),
-            "CollectionTagExists" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::TagExists),
-            "CountCollectionTags" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::CountTags),
-            "GetIndexedCollectionTag" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetIndexedTag),
-            "CountTaggedCollectionItems" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::CountTaggedItems),
-            "GetTaggedCollectionItem" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetTaggedItem),
-            "GetTaggedCollectionItemInfo" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetTaggedItemInfo),
-            "PurgeCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Purge),
-            "PurgeCollectionTag" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::PurgeTag),
-            "EmptyCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Empty),
-            "FlattenCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Flatten),
-            "FlattenPartialCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::FlattenPartial),
-            "UnflattenCollection" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Unflatten),
-            "GetCollectionExceptionProc" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetExceptionProc),
-            "SetCollectionExceptionProc" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::SetExceptionProc),
-            "AddCollectionItemHdl" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::AddItemHandle),
-            "GetCollectionItemHdl" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetItemHandle),
-            "ReplaceIndexedCollectionItemHdl" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::ReplaceIndexedItemHandle),
-            "GetIndexedCollectionItemHdl" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetIndexedItemHandle),
-            "FlattenCollectionToHdl" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::FlattenToHandle),
-            "UnflattenCollectionFromHdl" => PpcImportDispatcherTarget::Collection(PpcCollectionOperation::UnflattenFromHandle),
-            _ => PpcImportDispatcherTarget::Unsupported,
-        },
+        ("ColMgrLib", "getCollectionMgrLibVersion") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Version)
+        }
+        ("ColMgrLib", "NewCollection") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::New)
+        }
+        ("ColMgrLib", "DisposeCollection") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Dispose)
+        }
+        ("ColMgrLib", "CloneCollection") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Clone)
+        }
+        ("ColMgrLib", "CountCollectionOwners") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::CountOwners)
+        }
+        ("ColMgrLib", "CopyCollection") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Copy)
+        }
+        ("ColMgrLib", "GetCollectionDefaultAttributes") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetDefaultAttributes)
+        }
+        ("ColMgrLib", "SetCollectionDefaultAttributes") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::SetDefaultAttributes)
+        }
+        ("ColMgrLib", "CountCollectionItems") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::CountItems)
+        }
+        ("ColMgrLib", "AddCollectionItem") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::AddItem)
+        }
+        ("ColMgrLib", "GetCollectionItem") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetItem)
+        }
+        ("ColMgrLib", "RemoveCollectionItem") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::RemoveItem)
+        }
+        ("ColMgrLib", "SetCollectionItemInfo") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::SetItemInfo)
+        }
+        ("ColMgrLib", "GetCollectionItemInfo") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetItemInfo)
+        }
+        ("ColMgrLib", "ReplaceIndexedCollectionItem") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::ReplaceIndexedItem)
+        }
+        ("ColMgrLib", "GetIndexedCollectionItem") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetIndexedItem)
+        }
+        ("ColMgrLib", "RemoveIndexedCollectionItem") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::RemoveIndexedItem)
+        }
+        ("ColMgrLib", "SetIndexedCollectionItemInfo") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::SetIndexedItemInfo)
+        }
+        ("ColMgrLib", "GetIndexedCollectionItemInfo") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetIndexedItemInfo)
+        }
+        ("ColMgrLib", "CollectionTagExists") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::TagExists)
+        }
+        ("ColMgrLib", "CountCollectionTags") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::CountTags)
+        }
+        ("ColMgrLib", "GetIndexedCollectionTag") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetIndexedTag)
+        }
+        ("ColMgrLib", "CountTaggedCollectionItems") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::CountTaggedItems)
+        }
+        ("ColMgrLib", "GetTaggedCollectionItem") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetTaggedItem)
+        }
+        ("ColMgrLib", "GetTaggedCollectionItemInfo") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetTaggedItemInfo)
+        }
+        ("ColMgrLib", "PurgeCollection") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Purge)
+        }
+        ("ColMgrLib", "PurgeCollectionTag") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::PurgeTag)
+        }
+        ("ColMgrLib", "EmptyCollection") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Empty)
+        }
+        ("ColMgrLib", "FlattenCollection") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Flatten)
+        }
+        ("ColMgrLib", "FlattenPartialCollection") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::FlattenPartial)
+        }
+        ("ColMgrLib", "UnflattenCollection") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Unflatten)
+        }
+        ("ColMgrLib", "GetCollectionExceptionProc") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetExceptionProc)
+        }
+        ("ColMgrLib", "SetCollectionExceptionProc") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::SetExceptionProc)
+        }
+        ("ColMgrLib", "AddCollectionItemHdl") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::AddItemHandle)
+        }
+        ("ColMgrLib", "GetCollectionItemHdl") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetItemHandle)
+        }
+        ("ColMgrLib", "ReplaceIndexedCollectionItemHdl") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::ReplaceIndexedItemHandle)
+        }
+        ("ColMgrLib", "GetIndexedCollectionItemHdl") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::GetIndexedItemHandle)
+        }
+        ("ColMgrLib", "FlattenCollectionToHdl") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::FlattenToHandle)
+        }
+        ("ColMgrLib", "UnflattenCollectionFromHdl") => {
+            PpcImportDispatcherTarget::Collection(PpcCollectionOperation::UnflattenFromHandle)
+        }
         ("InterfaceLib" | "ProcessMgrSupport", "InstallExceptionHandler") => {
             PpcImportDispatcherTarget::InstallExceptionHandler
         }

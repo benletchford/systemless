@@ -504,8 +504,9 @@ impl TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
-        if !is_tool || trap_num != 0x3F6 {
-            return None;
+        match (is_tool, trap_num) {
+            (true, 0x3F6) => {}
+            _ => return None,
         }
         let selector = (cpu.read_reg(Register::D0) & 0xFFFF) as u16;
         if selector == 0x70FE && !self.collection_callback_stack.is_empty() {
