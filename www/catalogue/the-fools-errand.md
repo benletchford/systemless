@@ -12,8 +12,20 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
+  verified:
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
+    systemless_version: "0.54.0"
+    architecture: 68k
+    environment: >-
+      Browser run from the exact promoted Macintosh ZIP through the opening story
+      into The Sun puzzle board, with an interactive symbol click verified in the
+      same session
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/2520
 artifacts:
 - id: archive
   role: archive
@@ -79,5 +91,5 @@ solve its varied riddles, and assemble the Sun's map. This entry preserves the
 creator's own Macintosh download, including its separate prologue application
 and puzzle data.
 
-Browser launch remains disabled pending validation with the published runtime
-and a browser gameplay check. The creator retains the game's copyright.
+The creator retains the game's copyright. This browser listing uses his
+unchanged, freely offered Macintosh download.
