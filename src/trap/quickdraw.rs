@@ -8035,7 +8035,11 @@ impl super::TrapDispatcher {
                     // QuickDraw Reference (Carbon) p. 307;
                     // QDOffscreen.h declaration.
                     0x0014 => {
-                        let version = 1u32;
+                        // OffscreenVersion uses a major/minor version word;
+                        // $0100 advertises version 1.0 of 32-Bit QuickDraw.
+                        // Spaceward Ho! checks for at least $0100 before
+                        // enabling its color display path.
+                        let version = 0x0100u32;
                         bus.write_long(sp, version);
                         cpu.write_reg(Register::D0, version);
                     }

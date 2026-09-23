@@ -21490,11 +21490,11 @@
     }
 
     #[test]
-    fn offscreenversion_returns_nonzero_and_preserves_stack() {
+    fn offscreenversion_returns_version_one_and_preserves_stack() {
         // QuickDraw Reference p. 307 / QDOffscreen.h:
         // OffscreenVersion is a no-arg Pascal FUNCTION, so the caller
         // pre-pushes a 4-byte result slot and the trap leaves A7
-        // unchanged while writing a nonzero version word.
+        // unchanged while writing a classic major/minor version word.
         let (mut d, mut cpu, mut bus) = setup();
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, 0xDEAD_BEEFu32);
@@ -21503,8 +21503,8 @@
         let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
-        assert_ne!(bus.read_long(TEST_SP), 0);
-        assert_ne!(bus.read_long(TEST_SP), 0xDEAD_BEEFu32);
+        assert_eq!(bus.read_long(TEST_SP), 0x0100);
+        assert_eq!(cpu.read_reg(Register::D0), 0x0100);
     }
 
     // $AB1C is not documented as SetGWorld (SetGWorld uses _QDExtensions
