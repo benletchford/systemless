@@ -9742,8 +9742,15 @@ impl FixtureRunner {
     fn sync_guest_mouse_position(&mut self, previous_mouse: u32) {
         let mouse = self.bus.read_long(crate::memory::globals::addr::MOUSE_LOC2);
         if mouse != previous_mouse {
+            // Guest writes to Mouse (including cursor recentering) update the
+            // visible cursor but are not physical ADB mouse movement. The
+            // host's next absolute position still needs to be measured from
+            // the last host position, not from this guest-authored warp.
+            // Apple Technical Note DV520, "How the Macintosh mouse/cursor
+            // mechanism works"; Inside Macintosh Volume V (1986), V-365.
             self.dispatcher
-                .set_mouse_position((mouse >> 16) as i16, mouse as i16);
+                .input_state
+                .set_mouse_position(((mouse >> 16) as i16, mouse as i16));
         }
     }
 
