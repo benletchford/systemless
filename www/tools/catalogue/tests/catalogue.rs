@@ -545,6 +545,7 @@ fn general_takedown_link_uses_configured_repository_without_entries() {
 #[test]
 fn validation_catches_semantic_errors() {
     let mut e = simple("one");
+    assert!(CATEGORIES.contains(&"Simulation"));
     for category in CATEGORIES {
         e.category = (*category).into();
         validate::entry(&e).unwrap();
