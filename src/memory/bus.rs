@@ -1811,23 +1811,27 @@ impl MacMemoryBus {
     /// same-value writes. Those still erase any retained outline coverage.
     pub(crate) fn finish_write_probe_ranges(&mut self) -> Vec<std::ops::Range<u32>> {
         assert!(!self.write_probe_invalid && !self.write_probe_overflowed);
-        let mut addresses = Vec::new();
-        if let Some(journal) = &self.write_probe_original {
-            for (&word, &(_, mask)) in journal {
-                for byte in 0..4 {
-                    if mask & (1 << byte) != 0 {
-                        addresses.push(word + byte);
-                    }
-                }
-            }
-        }
-        addresses.sort_unstable();
+        // Sort journal words, not expanded bytes: a picture's journal holds
+        // one entry per written word, and expanding first quadruples the sort.
+        let mut words: Vec<(u32, u8)> = self
+            .write_probe_original
+            .iter()
+            .flatten()
+            .map(|(&word, &(_, mask))| (word, mask))
+            .collect();
+        words.sort_unstable_by_key(|&(word, _)| word);
         let mut ranges: Vec<std::ops::Range<u32>> = Vec::new();
-        for address in addresses {
-            if let Some(last) = ranges.last_mut().filter(|last| last.end == address) {
-                last.end += 1;
-            } else {
-                ranges.push(address..address + 1);
+        for (word, mask) in words {
+            for byte in 0..4 {
+                if mask & (1 << byte) == 0 {
+                    continue;
+                }
+                let address = word + byte;
+                if let Some(last) = ranges.last_mut().filter(|last| last.end == address) {
+                    last.end += 1;
+                } else {
+                    ranges.push(address..address + 1);
+                }
             }
         }
         self.cancel_write_probe();
@@ -3267,6 +3271,23 @@ mod tests {
         bus.begin_write_probe();
         bus.write_byte(108, 1);
         assert!(!bus.finish_write_probe_unchanged());
+    }
+
+    #[test]
+    fn drawing_write_ranges_are_ordered_and_keep_gaps_within_a_word() {
+        let mut bus = MacMemoryBus::new(4096);
+        bus.begin_uncapped_write_probe();
+        // Descending writes across many words, then two bytes of one word
+        // with the byte between them left untouched.
+        for word in (0..64u32).rev() {
+            bus.write_long(0x400 + word * 4, 0);
+        }
+        bus.write_byte(0x203, 0);
+        bus.write_byte(0x201, 0);
+        assert_eq!(
+            bus.finish_write_probe_ranges(),
+            vec![0x201..0x202, 0x203..0x204, 0x400..0x500]
+        );
     }
 
     #[test]

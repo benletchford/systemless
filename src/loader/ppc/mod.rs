@@ -49740,10 +49740,11 @@ pub(super) fn ppc_handle_bytes(
     handle: u32,
 ) -> Option<Vec<u8>> {
     let record = handles.iter().find(|record| record.handle == handle)?;
-    let mut bytes = Vec::with_capacity(usize::try_from(record.size).ok()?);
-    for offset in 0..record.size {
-        bytes.push(memory.read_u8(record.ptr.checked_add(offset)?)?);
+    if record.size != 0 {
+        record.ptr.checked_add(record.size - 1)?;
     }
+    let mut bytes = vec![0; usize::try_from(record.size).ok()?];
+    memory.read_bytes_into(record.ptr, &mut bytes)?;
     Some(bytes)
 }
 
