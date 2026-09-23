@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.56.0](https://github.com/benletchford/systemless/compare/v0.55.0...v0.56.0) (2026-09-23)
+
+
+### Features
+
+* **catalogue:** add Exile demo ([f0d8e8a](https://github.com/benletchford/systemless/commit/f0d8e8ad9cee328f415b7d6dfcc018cd9ef346d0))
+* **catalogue:** add Exile II demo ([853129b](https://github.com/benletchford/systemless/commit/853129b7be77f4554748579260350457b76115ad))
+* **catalogue:** add Exile III demo ([ed9d4c0](https://github.com/benletchford/systemless/commit/ed9d4c058d369d849bce2c30ec0901e8f12217c6))
+* **catalogue:** add role-playing category ([#2538](https://github.com/benletchford/systemless/issues/2538)) ([da87d7c](https://github.com/benletchford/systemless/commit/da87d7cbd1316993e6c1572bd2e012d39c0811ca))
+* **catalogue:** add Ultima III shareware ([0b0e406](https://github.com/benletchford/systemless/commit/0b0e40689033e58001509831f07dac95049da4f1))
+* **catalogue:** add verified The Fool’s Errand ([ba63ff2](https://github.com/benletchford/systemless/commit/ba63ff2a2a5dfb0314a06b1e019a4e98b75ceb5a))
+* **catalogue:** enable Flight Unlimited demo play ([#2596](https://github.com/benletchford/systemless/issues/2596)) ([368421d](https://github.com/benletchford/systemless/commit/368421dbc3cf54b2be4e1a3a4f25df38a2db8293))
+* **catalogue:** stage Flight Unlimited demo ([e7741fe](https://github.com/benletchford/systemless/commit/e7741fee1da84837b1c25181a428d7c1cff307c9))
+
+
+### Bug Fixes
+
+* **catalogue:** accept MacBinary-wrapped StuffIt archives ([c9e385d](https://github.com/benletchford/systemless/commit/c9e385d57b8756cde95064176f5feeca9781cbab))
+* **files:** preserve working directory in PBHSetVol ([#2532](https://github.com/benletchford/systemless/issues/2532)) ([be4d766](https://github.com/benletchford/systemless/commit/be4d7664bdf815d94d08bab0659fde5bc80b9e37))
+* honor live input trap patches ([1f41e04](https://github.com/benletchford/systemless/commit/1f41e042aa7efd9b8dd00b2d00b7d2278c644c72))
+* **ppc:** implement resource type enumeration imports ([#2580](https://github.com/benletchford/systemless/issues/2580)) ([fa29138](https://github.com/benletchford/systemless/commit/fa291386e55fffa610e2f621d668cdfad058179d))
+* **ppc:** implement sound channel sample rate setter ([#2583](https://github.com/benletchford/systemless/issues/2583)) ([eae8a8e](https://github.com/benletchford/systemless/commit/eae8a8e0ea1d81130146875bb2c793ad927987aa))
+* **ppc:** implement Standard C time import ([#2585](https://github.com/benletchford/systemless/issues/2585)) ([86b4c9b](https://github.com/benletchford/systemless/commit/86b4c9be3d30379bb4af5db41b355af672d2935a))
+* **ppc:** implement wide bit shift import ([#2588](https://github.com/benletchford/systemless/issues/2588)) ([fce853f](https://github.com/benletchford/systemless/commit/fce853f1793a6c60a3f0a368516920e45583069a))
+* **ppc:** resolve StdCLib labs imports ([#2594](https://github.com/benletchford/systemless/issues/2594)) ([d23c9b9](https://github.com/benletchford/systemless/commit/d23c9b905e250472331244d7ee04afa1a49b0be4))
+* **ppc:** support hierarchical file renaming ([#2590](https://github.com/benletchford/systemless/issues/2590)) ([2b5a02e](https://github.com/benletchford/systemless/commit/2b5a02e020ca06ad5d4265cd00aa61a9665fba3a))
+
+
+### Code Refactoring
+
+* **ae:** seal SharedProcessAppleEventDescriptors handle ([3d83dc1](https://github.com/benletchford/systemless/commit/3d83dc16fc1beba8ba4d725edef20a4c35a837cc))
+* **collection:** seal SharedProcessCollectionManager handle ([888bca9](https://github.com/benletchford/systemless/commit/888bca9e41fa0c12ab12047539f6b89f52712ef4))
+* **display:** seal SharedProcessDisplayClut handle ([8e1fd2f](https://github.com/benletchford/systemless/commit/8e1fd2f007b2152ef7b4b9897cf1ba4a11d0d60b))
+* **quickdraw:** seal SharedProcessQuickDrawError handle ([16c4f57](https://github.com/benletchford/systemless/commit/16c4f575dff342cf02eac94836b72edf62f9f718))
+* **quickdraw:** seal SharedProcessQuickDrawHiliteColors handle ([b4e73fa](https://github.com/benletchford/systemless/commit/b4e73fa4e52a1ff289ec187d644da46e4245d27e))
+* **quickdraw:** seal SharedProcessQuickDrawOpColors handle ([be5f46b](https://github.com/benletchford/systemless/commit/be5f46bc5f78cc7fa36fa643b8b83722ce026160))
+* **quickdraw:** seal SharedProcessQuickDrawPixelStates handle ([c6dc668](https://github.com/benletchford/systemless/commit/c6dc668304e42957a9e27f4b7abe6b2f763d4288))
+* **resource:** seal SharedProcessResourceManager handle ([d6e20f8](https://github.com/benletchford/systemless/commit/d6e20f80d500418a047c58ba75d1a4f5a6e77f6f))
+* **sound:** seal SharedProcessSoundManager handle ([26e653c](https://github.com/benletchford/systemless/commit/26e653c5af94dfbf32270ac06ded0d1479c368ae))
+* **time:** seal SharedProcessTimerTasks handle ([e032096](https://github.com/benletchford/systemless/commit/e0320961542480069cc64aac2fa26bf7533a8ec5))
+* **traps:** standardize collection dispatch mapping syntax ([3bc64a6](https://github.com/benletchford/systemless/commit/3bc64a644925209cc3af7b79d3fe007aa4987dc8))
+* **vbl:** seal SharedProcessVblTasks handle ([c77cb0f](https://github.com/benletchford/systemless/commit/c77cb0fdedde96bb2e802883edcbd742fe26fcc1))
+
 ## [0.55.0](https://github.com/benletchford/systemless/compare/v0.54.0...v0.55.0) (2026-09-23)
 
 
