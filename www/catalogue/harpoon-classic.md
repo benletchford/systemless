@@ -6,21 +6,21 @@ summary: Command a North Atlantic naval engagement in the original Macintosh dem
 developer: Alliance Interactive Software
 publisher: Alliance Interactive Software
 year: 1994
-architectures: [68k]
+architectures:
+- 68k
 default_architecture: 68k
 category: Strategy
-launch_enabled: false
 compatibility:
   status: playable
   verified:
-  - date: '2026-09-23'
+  - date: "2026-09-23"
     tester: Catalogue maintainer
     systemless_version: 0.52.0-dev
     architecture: 68k
     environment: >-
       Deterministic headless play of the unchanged Classic CD demo archive at
-      800-by-600 in 256 colours. Selected the GIUK battleset, accepted game
-      options, selected Dawn Patrol, and reached the live tactical map.
+      800-by-600 in 256 colours. Selected the GIUK battleset, accepted game options, selected
+      Dawn Patrol, and reached the live tactical map.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2477
 artifacts:
@@ -28,10 +28,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://gardenmirror.oldapplestuff.com/games/HarpoonClassicCDDemo.sit
-    expected_sha256: 546fe5eeb21f006596f2188caf861d020b18836d7e75f61c620aa7148c35fc70
-    expected_size: 952220
+    type: sha256
+    sha256: 546fe5eeb21f006596f2188caf861d020b18836d7e75f61c620aa7148c35fc70
+    size_bytes: 952220
   provenance:
     redistribution: permitted
     original: true
@@ -41,24 +40,24 @@ artifacts:
     - https://command.matrixgames.com/?page_id=530
     rights_holder: Applied Computing Services, Inc. and Alliance Interactive Software, Inc.
     permission: >-
-      This unchanged, limited Macintosh demonstration was distributed publicly
-      to promote Harpoon Classic. HarpoonPages still offers a contemporary
-      full-working Macintosh demo and states that its play is limited to six
-      scenarios; Macintosh Garden separately identifies this CD-demo archive as
-      a demo. The archive itself contains no express redistribution clause.
-      Hosting is limited to this original demo, not any retail edition.
+      This unchanged, limited Macintosh demonstration was distributed publicly to
+      promote Harpoon Classic. HarpoonPages still offers a contemporary full-working
+      Macintosh demo and states that its play is limited to six scenarios; Macintosh Garden
+      separately identifies this CD-demo archive as a demo. The archive itself contains
+      no express redistribution clause. Hosting is limited to this original demo, not
+      any retail edition.
     notes: >-
       Original 952,220-byte StuffIt archive, SHA-256
-      546fe5eeb21f006596f2188caf861d020b18836d7e75f61c620aa7148c35fc70.
-      MD5 56ed10636fbebbb78652be707dab4cfc matches Macintosh Garden's
-      HarpoonClassicCDDemo.sit listing. Historical code and publishing rights
-      involved ACSI and Alliance; no complete commercial game is included.
+      546fe5eeb21f006596f2188caf861d020b18836d7e75f61c620aa7148c35fc70. MD5 56ed10636fbebbb78652be707dab4cfc matches
+      Macintosh Garden's HarpoonClassicCDDemo.sit listing. Historical code and publishing
+      rights involved ACSI and Alliance; no complete commercial game is included.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/harpoon-classic/gameplay.png
+    type: sha256
+    sha256: c070986090092d7e257a4b1f2715336f5ba29d3a349c1e53d387581d10d221b1
+    size_bytes: 48102
   provenance:
     redistribution: permitted
     original: true
@@ -66,14 +65,13 @@ artifacts:
     sources:
     - https://github.com/benletchford/systemless/issues/2477
     permission: >-
-      Fresh deterministic gameplay capture made for this catalogue entry.
-      Underlying game artwork remains the property of its rights holders.
+      Fresh deterministic gameplay capture made for this catalogue entry. Underlying
+      game artwork remains the property of its rights holders.
     notes: >-
-      Captured the 800-by-554 game-only framebuffer region at (0,20) after
-      starting the Dawn Patrol scenario. The crop excludes the Mac menu bar
-      and outer desktop without altering game pixels. PNG SHA-256
-      c070986090092d7e257a4b1f2715336f5ba29d3a349c1e53d387581d10d221b1,
-      48,102 bytes.
+      Captured the 800-by-554 game-only framebuffer region at (0,20) after starting
+      the Dawn Patrol scenario. The crop excludes the Mac menu bar and outer desktop
+      without altering game pixels. PNG SHA-256
+      c070986090092d7e257a4b1f2715336f5ba29d3a349c1e53d387581d10d221b1, 48,102 bytes.
 references:
 - https://macintoshgarden.org/games/harpoon-classic
 - https://www.harpoonpages.com/harpoon1.htm
@@ -82,7 +80,7 @@ references:
 
 ## Patrol the GIUK gap
 
-![Harpoon Classic demo tactical map](incoming/harpoon-classic/gameplay.png)
+![Harpoon Classic demo tactical map](https://assets.systemless.org/catalogue/media/sha256/c0/c070986090092d7e257a4b1f2715336f5ba29d3a349c1e53d387581d10d221b1.png)
 
 *Harpoon Classic* begins with a battleset and scenario selection. Dawn Patrol
 places a small NATO surface group in the waters between Greenland, Iceland,
