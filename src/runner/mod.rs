@@ -4287,8 +4287,10 @@ impl FixtureRunner {
     ) {
         ppc_companion.commit_migrated_services(&self.process_context, migrated_services);
         if let Some(profile) = self.dispatcher.trap_table_profile {
-            if let Some(gateway) = self.bus.default_system_trap_gateway(profile, 0xA975) {
-                ppc_companion.attach_trap_default_gateway(0xA975, gateway);
+            for &trap_word in crate::loader::ppc::PPC_LIVE_TRAP_IMPORT_WORDS {
+                if let Some(gateway) = self.bus.default_system_trap_gateway(profile, trap_word) {
+                    ppc_companion.attach_trap_default_gateway(trap_word, gateway);
+                }
             }
         }
         self.share_ppc_process_memory(&mut ppc_companion);
@@ -4372,11 +4374,13 @@ impl FixtureRunner {
         self.dispatcher
             .materialize_trap_tables(&mut self.bus, TrapTableProfile::PowerPc604)
             .expect("trap table construction requires writable cells and system storage");
-        let tick_count_gateway = self
-            .bus
-            .default_system_trap_gateway(TrapTableProfile::PowerPc604, 0xA975)
-            .expect("materialized TickCount gateway has a canonical identity");
-        ppc_app.attach_trap_default_gateway(0xA975, tick_count_gateway);
+        for &trap_word in crate::loader::ppc::PPC_LIVE_TRAP_IMPORT_WORDS {
+            let gateway = self
+                .bus
+                .default_system_trap_gateway(TrapTableProfile::PowerPc604, trap_word)
+                .expect("materialized trap gateway has a canonical identity");
+            ppc_app.attach_trap_default_gateway(trap_word, gateway);
+        }
         self.share_ppc_process_memory(&mut ppc_app);
         let detached_events = ppc_app.event_queue.take();
         self.process_context

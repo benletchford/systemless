@@ -535,6 +535,9 @@ const PPC_PROCINFO_SIZE_NONE: u32 = crate::mixed_mode::proc_info::SIZE_NONE;
 const PPC_PROCINFO_SIZE_ONE: u32 = crate::mixed_mode::proc_info::SIZE_ONE;
 const PPC_PROCINFO_SIZE_TWO: u32 = crate::mixed_mode::proc_info::SIZE_TWO;
 const PPC_PROCINFO_SIZE_FOUR: u32 = crate::mixed_mode::proc_info::SIZE_FOUR;
+
+pub(crate) const PPC_LIVE_TRAP_IMPORT_WORDS: &[u16] =
+    &[0xA973, 0xA974, 0xA975, 0xA976, 0xA977];
 const PPC_PROCINFO_MAX_STACK_PARAMETERS: usize = crate::mixed_mode::proc_info::MAX_STACK_PARAMETERS;
 const PPC_PROCINFO_MAX_DISPATCHED_STACK_PARAMETERS: usize =
     crate::mixed_mode::proc_info::MAX_DISPATCHED_STACK_PARAMETERS;
@@ -60010,9 +60013,17 @@ fn ppc_live_trap_import_action(
     memory: &mut PpcSectionMem,
     toolbox_startup: &mut PpcToolboxStartupState,
 ) -> Result<Option<PpcImportAction>, ()> {
-    let (trap_word, toolbox, proc_info) = match target {
+    let (trap_word, toolbox, proc_info, argument_count) = match target {
+        // pascal Boolean StillDown(void)
+        PpcImportDispatcherTarget::StillDown => (0xA973, true, 0x10, 0),
+        // pascal Boolean Button(void)
+        PpcImportDispatcherTarget::Button => (0xA974, true, 0x10, 0),
         // pascal LONGINT TickCount(void)
-        PpcImportDispatcherTarget::TickCount => (0xA975, true, 0x30),
+        PpcImportDispatcherTarget::TickCount => (0xA975, true, 0x30, 0),
+        // pascal void GetKeys(KeyMap *)
+        PpcImportDispatcherTarget::GetKeys => (0xA976, true, 0xC0, 1),
+        // pascal Boolean WaitMouseUp(void)
+        PpcImportDispatcherTarget::WaitMouseUp => (0xA977, true, 0x10, 0),
         _ => return Ok(None),
     };
     let kind = if toolbox {
@@ -60044,8 +60055,14 @@ fn ppc_live_trap_import_action(
     let heap = process_memory_manager
         .native_heap_state()
         .ok_or(())?;
-    let saved_r3 = cpu.gpr[3];
-    let saved_r4 = cpu.gpr[4];
+    if argument_count > 6 {
+        return Err(());
+    }
+    let mut saved_arguments = [0; 8];
+    saved_arguments.copy_from_slice(&cpu.gpr[3..11]);
+    for index in (0..argument_count).rev() {
+        cpu.gpr[5 + index] = saved_arguments[index];
+    }
     cpu.gpr[3] = handler;
     cpu.gpr[4] = proc_info;
     let mut heap_cursor = heap.heap_cursor;
@@ -60060,8 +60077,7 @@ fn ppc_live_trap_import_action(
         GuestIsa::M68k,
     );
     if action.is_none() {
-        cpu.gpr[3] = saved_r3;
-        cpu.gpr[4] = saved_r4;
+        cpu.gpr[3..11].copy_from_slice(&saved_arguments);
         return Err(());
     }
     Ok(action)
