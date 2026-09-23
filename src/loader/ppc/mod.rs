@@ -1684,6 +1684,7 @@ pub enum PpcImportDispatcherTarget {
     WideSubtract,
     WideNegate,
     WideShift,
+    WideBitShift,
     WideMultiply,
     WideDivide,
     WideWideDivide,
@@ -15814,6 +15815,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "WideSubtract") => PpcImportDispatcherTarget::WideSubtract,
         ("InterfaceLib", "WideNegate") => PpcImportDispatcherTarget::WideNegate,
         ("InterfaceLib", "WideShift") => PpcImportDispatcherTarget::WideShift,
+        ("InterfaceLib", "WideBitShift") => PpcImportDispatcherTarget::WideBitShift,
         ("InterfaceLib", "WideMultiply") => PpcImportDispatcherTarget::WideMultiply,
         ("InterfaceLib", "WideDivide") => PpcImportDispatcherTarget::WideDivide,
         ("InterfaceLib", "WideWideDivide") => PpcImportDispatcherTarget::WideWideDivide,
@@ -18891,6 +18893,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::WideSubtract
         | PpcImportDispatcherTarget::WideNegate
         | PpcImportDispatcherTarget::WideShift
+        | PpcImportDispatcherTarget::WideBitShift
         | PpcImportDispatcherTarget::WideMultiply
         | PpcImportDispatcherTarget::WideDivide
         | PpcImportDispatcherTarget::WideWideDivide
@@ -40926,6 +40929,23 @@ pub(super) fn ppc_wide_shift(memory: &mut PpcSectionMem, target: u32, shift: i32
             }
         } else {
             value
+        };
+        let _ = ppc_write_wide(memory, target, shifted);
+    }
+    target
+}
+
+pub(super) fn ppc_wide_bit_shift(memory: &mut PpcSectionMem, target: u32, shift: i32) -> u32 {
+    // FixMath.h: WideBitShift(wide *target, SInt32 shift) updates target and
+    // returns its pointer. Positive counts shift right without WideShift's
+    // rounding; negative counts shift left. CarbonCore masks counts to six
+    // bits (observed with native WideBitShift for shifts 64 and 65).
+    if let Some(value) = ppc_read_wide(memory, target) {
+        let count = shift.unsigned_abs() & 63;
+        let shifted = if shift >= 0 {
+            value >> count
+        } else {
+            value.wrapping_shl(count)
         };
         let _ = ppc_write_wide(memory, target, shifted);
     }
