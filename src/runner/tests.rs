@@ -6,8 +6,8 @@
     use crate::menu_manager::TrackedMenuPaneView;
     use crate::process_context::{
         PendingFileCompletion, ProcessFileSystemState, SharedProcessFileSystem,
-        SharedProcessDisplayClut, SharedProcessDisplayGamma, SharedProcessGraphicsPort,
-        SharedProcessTickState, SharedProcessValue,
+        SharedProcessDisplayClut, SharedProcessDisplayGamma, SharedProcessGraphicsDevice,
+        SharedProcessGraphicsPort, SharedProcessTickState, SharedProcessValue,
     };
     use crate::sound::{
         DoubleBufferState, PendingDoubleBackCallback, PendingSoundCallback, PlaybackKind,
@@ -4665,7 +4665,7 @@
             callback_scheduling: Default::default(),
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessGraphicsPort::from_value(PPC_MAIN_GWORLD),
-            current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
+            current_gdevice: SharedProcessGraphicsDevice::from_value(PPC_MAIN_GDEVICE),
             quickdraw_op_colors: Default::default(),
             quickdraw_hilite_colors: Default::default(),
             quickdraw_fore_color: PpcRgbColor {
@@ -9817,7 +9817,7 @@
                 ),
             ),
             current_gworld: SharedProcessGraphicsPort::from_value(PPC_MAIN_GWORLD),
-            current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
+            current_gdevice: SharedProcessGraphicsDevice::from_value(PPC_MAIN_GDEVICE),
             quickdraw_op_colors: Default::default(),
             quickdraw_hilite_colors: Default::default(),
             quickdraw_fore_color: PpcRgbColor {
@@ -10626,7 +10626,7 @@
             callback_scheduling: Default::default(),
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessGraphicsPort::from_value(PPC_MAIN_GWORLD),
-            current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
+            current_gdevice: SharedProcessGraphicsDevice::from_value(PPC_MAIN_GDEVICE),
             quickdraw_op_colors: Default::default(),
             quickdraw_hilite_colors: Default::default(),
             quickdraw_fore_color: PpcRgbColor {
@@ -10779,7 +10779,7 @@
             callback_scheduling: Default::default(),
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessGraphicsPort::from_value(PPC_MAIN_GWORLD),
-            current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
+            current_gdevice: SharedProcessGraphicsDevice::from_value(PPC_MAIN_GDEVICE),
             quickdraw_op_colors: Default::default(),
             quickdraw_hilite_colors: Default::default(),
             quickdraw_fore_color: PpcRgbColor {
@@ -11190,7 +11190,7 @@
             callback_scheduling: Default::default(),
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessGraphicsPort::from_value(PPC_MAIN_GWORLD),
-            current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
+            current_gdevice: SharedProcessGraphicsDevice::from_value(PPC_MAIN_GDEVICE),
             quickdraw_op_colors: Default::default(),
             quickdraw_hilite_colors: Default::default(),
             quickdraw_fore_color: PpcRgbColor {
@@ -11507,7 +11507,7 @@
             callback_scheduling: Default::default(),
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessGraphicsPort::from_value(PPC_MAIN_GWORLD),
-            current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
+            current_gdevice: SharedProcessGraphicsDevice::from_value(PPC_MAIN_GDEVICE),
             quickdraw_op_colors: Default::default(),
             quickdraw_hilite_colors: Default::default(),
             quickdraw_fore_color: PpcRgbColor {
