@@ -14138,6 +14138,35 @@
     }
 
     #[test]
+    fn guest_cursor_recenter_does_not_generate_physical_adb_motion() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        assert!(runner
+            .dispatcher
+            .adb
+            .set_device_handler(3, 0x0012_3456, 0, false));
+
+        runner.set_mouse_position(100, 100);
+        runner.dispatcher.adb.flush(3);
+
+        let previous_mouse = runner.bus.read_long(crate::memory::globals::addr::MOUSE_LOC2);
+        runner.bus.write_long(
+            crate::memory::globals::addr::MOUSE_LOC2,
+            (300 << 16) | 296,
+        );
+        runner.sync_guest_mouse_position(previous_mouse);
+
+        assert_eq!(runner.dispatcher.mouse_position(), (300, 296));
+        assert_eq!(runner.dispatcher.adb.pending_packet_count(), 0);
+
+        runner.set_mouse_position(100, 120);
+        assert_eq!(runner.dispatcher.adb.pending_packet_count(), 1);
+        assert_eq!(
+            runner.dispatcher.adb.pop_pending_packet().unwrap().packet,
+            [2, 0x80, 0x94]
+        );
+    }
+
+    #[test]
     fn adb_mouse_callback_uses_documented_registers_and_restores_foreground() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let interrupted_pc = 0x0001_0000;
