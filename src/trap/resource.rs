@@ -4141,8 +4141,17 @@ impl super::TrapDispatcher {
                 // expect 0).
                 bus.write_word(pb + 24, 0);
 
-                // Look up in VFS (try exact match, then basename match)
-                if let Some(vfs_name) = self.find_vfs_file(&filename) {
+                // HOpen supplies ioDirID and uses HFS names, where slash is
+                // a legal filename character; only colon separates path
+                // components. Files 1992, pp. 2-27 to 2-29, 2-185 to 2-186.
+                let vfs_file = if self.current_trap_word & 0x0200 != 0 {
+                    let vref = bus.read_word(pb + 22) as i16;
+                    let dir_id = bus.read_long(pb + 48);
+                    self.find_vfs_file_for_hfs_lookup(vref, dir_id, &filename)
+                } else {
+                    self.find_vfs_file(&filename)
+                };
+                if let Some(vfs_name) = vfs_file {
                     let read_only = self.vfs_path_is_read_only(&vfs_name);
                     let requests_write = matches!(permission, 2 | 3 | 4);
                     if requests_write && read_only {
@@ -16774,6 +16783,39 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
         assert_eq!(bus.read_word(pb + 16) as i16, 0);
         assert_eq!(bus.read_pstring(name_ptr), b"Object IDs/Level Info");
+    }
+
+    #[test]
+    fn pbh_open_data_fork_finds_literal_slash_in_explicit_directory() {
+        // Files 1992, pp. 2-27 to 2-29, 2-185 to 2-186: slash is legal
+        // in an HFS filename, and ioDirID selects its parent directory.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let target_dir_id = disp.ensure_vfs_directory("Game Folder");
+        let other_dir_id = disp.ensure_vfs_directory("Other Folder");
+        let filename = "Object IDs/Level Info";
+        let encoded = super::super::TrapDispatcher::encode_hfs_component_for_vfs(filename);
+        let target_path = format!("Game Folder/{encoded}");
+        disp.vfs.insert(target_path.clone(), vec![1, 2, 3]);
+        disp.vfs.insert(format!("Other Folder/{encoded}"), vec![9]);
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, filename.as_bytes());
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_byte(pb + 27, 1); // fsRdPerm
+        bus.write_long(pb + 48, target_dir_id);
+        call_trap_word(&mut disp, 0xA200, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        assert_eq!(disp.open_files.get(&bus.read_word(pb + 24)), Some(&target_path));
+
+        bus.write_long(pb + 48, other_dir_id);
+        call_trap_word(&mut disp, 0xA200, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(
+            disp.open_files.get(&bus.read_word(pb + 24)),
+            Some(&format!("Other Folder/{encoded}"))
+        );
     }
 
     #[test]
