@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -20,9 +21,10 @@ compatibility:
     systemless_version: "0.54.0"
     architecture: 68k
     environment: >-
-      Deterministic headless run of the preserved version 1.4 HFS disk image. The
-      pyramid interface renders and a movement control changes the first-person view.
-      Browser interaction awaits manual approval.
+      Deterministic headless run and local browser test of the preserved version 1.4
+      HFS disk image. The pyramid interface renders and clicking a movement control
+      changes the first-person view. The browser test used the exact promoted archive
+      bytes served temporarily from the local test origin.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2513
 artifacts:
@@ -85,5 +87,4 @@ to explore its changing rooms and keep track of your supplies. Rick Holzgrafe's
 original version 1.4 remains available as shareware from Semicolon Software.
 
 This entry uses a preserved HFS disk-image repack of that game so Systemless
-can launch it directly. Headless movement works; browser launch awaits manual
-verification.
+can launch it directly. The pyramid interface and movement work in the browser.
