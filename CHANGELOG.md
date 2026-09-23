@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.53.0](https://github.com/benletchford/systemless/compare/v0.52.0...v0.53.0) (2026-09-23)
+
+
+### Features
+
+* add A-10 Attack demo catalogue entry ([#2483](https://github.com/benletchford/systemless/issues/2483)) ([1d72ed8](https://github.com/benletchford/systemless/commit/1d72ed81fd279465d9224827083765963f12d18c))
+* add Castles demo catalogue entry ([#2481](https://github.com/benletchford/systemless/issues/2481)) ([b8d9b56](https://github.com/benletchford/systemless/commit/b8d9b5654246afd8fb206bb2c44bc01863cd1293))
+* add Harpoon Classic demo catalogue entry ([#2478](https://github.com/benletchford/systemless/issues/2478)) ([2bba89d](https://github.com/benletchford/systemless/commit/2bba89d1fda33407a7ebbe484404662e4b5a698d))
+* add Populous demo catalogue entry ([#2475](https://github.com/benletchford/systemless/issues/2475)) ([7b426c1](https://github.com/benletchford/systemless/commit/7b426c1c5af2c8fac0f7bb5fe8d210c0598eaf3c))
+* add Spaceward Ho demo catalogue entry ([#2471](https://github.com/benletchford/systemless/issues/2471)) ([dd80f0e](https://github.com/benletchford/systemless/commit/dd80f0e71dd5b69aa4c3de142cd0a2f0529a1b02))
+* **catalogue:** accept simulation category ([#2485](https://github.com/benletchford/systemless/issues/2485)) ([a021ad9](https://github.com/benletchford/systemless/commit/a021ad9b4750c90e1c221157a7df844569bb19b0))
+
+
+### Bug Fixes
+
+* download catalogue assets with browser user agent ([#2473](https://github.com/benletchford/systemless/issues/2473)) ([9e39b4e](https://github.com/benletchford/systemless/commit/9e39b4e1df95adee24e3e68060673efbd980051d))
+* load classic icon suites from selected resource families ([#2461](https://github.com/benletchford/systemless/issues/2461)) ([0674dbb](https://github.com/benletchford/systemless/commit/0674dbb383cd4ae921f3833b04d988ffa1c07c9f))
+* preserve classic dialog grafport layout ([#2469](https://github.com/benletchford/systemless/issues/2469)) ([22eb9ca](https://github.com/benletchford/systemless/commit/22eb9cad8382f1cab7400eac22926572386a2014))
+* report compatible QuickDraw offscreen version ([#2467](https://github.com/benletchford/systemless/issues/2467)) ([fbdaec4](https://github.com/benletchford/systemless/commit/fbdaec4681e47613826e38792318ad4a552eee18))
+
 ## [0.52.0](https://github.com/benletchford/systemless/compare/v0.51.0...v0.52.0) (2026-09-23)
 
 
