@@ -859,6 +859,14 @@ fn process_resource_manager_runtime_is_empty(manager: &ProcessResourceManagerSta
 }
 
 impl ProcessResourceManagerState {
+    pub(crate) fn is_pristine(&self) -> bool {
+        process_resource_manager_runtime_is_empty(self)
+            && *self.current_resource_file == 0
+            && self.policy.is_pristine()
+            && self.vfs_resource_files.is_empty()
+            && self.vfs_resources.is_empty()
+    }
+
     fn publish_classic_current_file(&mut self) {
         if *self.current_resource_file != 0 {
             return;
@@ -1165,7 +1173,7 @@ impl ProcessFileSystemState {
         });
         source
             .resource_manager
-            .attach_resource_manager_to(&self.resource_manager);
+            .attach_to(&self.resource_manager);
     }
 
     fn detached_vfs_snapshot(&self) -> Self {
@@ -1458,7 +1466,68 @@ pub(crate) struct SharedProcessFileSystem(Rc<UnsafeCell<ProcessFileSystemState>>
 #[derive(Debug)]
 pub struct SharedProcessValue<T>(Rc<UnsafeCell<T>>);
 
-pub(crate) type SharedProcessResourceManager = SharedProcessValue<ProcessResourceManagerState>;
+/// Detached-by-default attachment handle for process-owned Resource Manager bookkeeping.
+///
+/// Ordinary clones are snapshots so cloning an adapter cannot couple two
+/// processes. Adapters share only through `attach_to`, under the same
+/// serialized runner ownership used for guest RAM and the Memory Manager.
+/// Inside Macintosh Volume I (1985), pp. I-113--I-126.
+#[derive(Clone, Debug, Default)]
+pub struct SharedProcessResourceManager(
+    SharedProcessValue<ProcessResourceManagerState>,
+);
+
+impl std::ops::Deref for SharedProcessResourceManager {
+    type Target = ProcessResourceManagerState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[allow(dead_code)]
+impl SharedProcessResourceManager {
+    pub(crate) fn from_value(state: ProcessResourceManagerState) -> Self {
+        Self(SharedProcessValue::from_value(state))
+    }
+
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&ProcessResourceManagerState) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut ProcessResourceManagerState) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    pub(crate) fn attach_to(&mut self, target: &Self) {
+        if self.ptr_eq(target) {
+            return;
+        }
+        // SAFETY: adapters attach before being exposed through the runner,
+        // and the target allocation must stay stable because its nested fork
+        // maps may already be shared with the classic dispatcher.
+        unsafe {
+            (&mut *target.0.0.get()).merge_from(&mut *self.0.0.get());
+        }
+        self.0 = target.0.shared_handle();
+    }
+
+    pub(crate) fn attach_resource_manager_to(&mut self, target: &Self) {
+        self.attach_to(target);
+    }
+
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.with_ref(ProcessResourceManagerState::is_pristine)
+    }
+}
 /// Detached-by-default attachment handle for Resource Manager policy switches.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessResourcePolicy(SharedProcessValue<ProcessResourcePolicyState>);
@@ -4469,21 +4538,6 @@ impl<T: Copy + PartialEq> SharedProcessValue<T> {
             *process_value.0.get() = **self;
         }
         self.0 = Rc::clone(&process_value.0);
-    }
-}
-
-impl SharedProcessValue<ProcessResourceManagerState> {
-    fn attach_resource_manager_to(&mut self, target: &Self) {
-        if Rc::ptr_eq(&self.0, &target.0) {
-            return;
-        }
-        // SAFETY: adapters attach before being exposed through the runner,
-        // and the target allocation must stay stable because its nested fork
-        // maps may already be shared with the classic dispatcher.
-        unsafe {
-            (&mut *target.0.get()).merge_from(&mut *self.0.get());
-        }
-        self.0 = Rc::clone(&target.0);
     }
 }
 
@@ -9242,7 +9296,12 @@ impl ProcessContext {
 
     #[cfg(test)]
     pub(crate) fn attach_resource_manager(&self, adapter: &mut SharedProcessResourceManager) {
-        adapter.attach_resource_manager_to(&self.file_system.resource_manager);
+        adapter.attach_to(&self.file_system.resource_manager);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resource_manager(&self) -> &SharedProcessResourceManager {
+        &self.file_system.resource_manager
     }
 
     pub(crate) fn attach_sound_manager(&self, adapter: &mut SharedProcessSoundManager) {
@@ -13655,5 +13714,33 @@ mod tests {
             context.quickdraw_pixel_states().quickdraw_pixel_state(0x1000),
             0xc8
         );
+    }
+
+    #[test]
+    fn process_resource_manager_encapsulation() {
+        let manager = SharedProcessResourceManager::default();
+        assert!(manager.is_pristine());
+        assert_eq!(*manager.current_resource_file, 0);
+        assert!(manager.policy.is_pristine());
+
+        let handle = manager.shared_handle();
+        assert!(manager.ptr_eq(&handle));
+
+        manager
+            .current_resource_file
+            .with_mut(|current_file| *current_file = 12);
+        assert!(!manager.is_pristine());
+        assert_eq!(*manager.current_resource_file, 12);
+        assert_eq!(*handle.current_resource_file, 12);
+
+        let detached = manager.clone();
+        assert!(!manager.ptr_eq(&detached));
+        assert_eq!(*detached.current_resource_file, 12);
+
+        detached
+            .current_resource_file
+            .with_mut(|current_file| *current_file = 15);
+        assert_eq!(*detached.current_resource_file, 15);
+        assert_eq!(*manager.current_resource_file, 12);
     }
 }
