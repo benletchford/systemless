@@ -1604,6 +1604,10 @@ pub enum PpcImportDispatcherTarget {
     HomeResFile,
     CountResources,
     Count1Resources,
+    CountTypes,
+    Count1Types,
+    GetIndType,
+    Get1IndType,
     UniqueID,
     Unique1ID,
     UpdateResFile,
@@ -15714,6 +15718,10 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "HomeResFile") => PpcImportDispatcherTarget::HomeResFile,
         ("InterfaceLib", "CountResources") => PpcImportDispatcherTarget::CountResources,
         ("InterfaceLib", "Count1Resources") => PpcImportDispatcherTarget::Count1Resources,
+        ("InterfaceLib", "CountTypes") => PpcImportDispatcherTarget::CountTypes,
+        ("InterfaceLib", "Count1Types") => PpcImportDispatcherTarget::Count1Types,
+        ("InterfaceLib", "GetIndType") => PpcImportDispatcherTarget::GetIndType,
+        ("InterfaceLib", "Get1IndType") => PpcImportDispatcherTarget::Get1IndType,
         ("InterfaceLib", "UniqueID") => PpcImportDispatcherTarget::UniqueID,
         ("InterfaceLib", "Unique1ID") => PpcImportDispatcherTarget::Unique1ID,
         ("InterfaceLib", "UpdateResFile") => PpcImportDispatcherTarget::UpdateResFile,
@@ -18779,6 +18787,10 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::Get1IndResource
         | PpcImportDispatcherTarget::CountResources
         | PpcImportDispatcherTarget::Count1Resources
+        | PpcImportDispatcherTarget::CountTypes
+        | PpcImportDispatcherTarget::Count1Types
+        | PpcImportDispatcherTarget::GetIndType
+        | PpcImportDispatcherTarget::Get1IndType
         | PpcImportDispatcherTarget::UniqueID
         | PpcImportDispatcherTarget::Unique1ID
         | PpcImportDispatcherTarget::ReleaseResource
@@ -49146,6 +49158,54 @@ pub(super) fn ppc_count_resources(
         );
     }
     i16::try_from(count).unwrap_or(i16::MAX)
+}
+
+pub(super) fn ppc_count_resource_types(
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    current_only: bool,
+    last_resource_error: &mut i16,
+) -> i16 {
+    // CountTypes / Count1Types count distinct types across the search chain
+    // or in the current resource file, respectively.
+    // Inside Macintosh: More Macintosh Toolbox 1993, 1-102
+    let count = vfs_resources
+        .iter()
+        .filter(|record| !current_only || record.ref_num == current_resource_refnum)
+        .map(|record| record.res_type)
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    *last_resource_error = PPC_NO_ERR;
+    i16::try_from(count).unwrap_or(i16::MAX)
+}
+
+pub(super) fn ppc_get_ind_resource_type(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    current_only: bool,
+    last_resource_error: &mut i16,
+) {
+    // GetIndType / Get1IndType return the indexed type through a ResType
+    // pointer, or four NUL bytes when the 1-based index is out of range.
+    // Inside Macintosh: More Macintosh Toolbox 1993, 1-103–1-104
+    let output = cpu.gpr[3];
+    let index = cpu.gpr[4] as u16 as usize;
+    let types: std::collections::BTreeSet<_> = vfs_resources
+        .iter()
+        .filter(|record| !current_only || record.ref_num == current_resource_refnum)
+        .map(|record| record.res_type)
+        .collect();
+    let res_type = index
+        .checked_sub(1)
+        .and_then(|index| types.into_iter().nth(index))
+        .unwrap_or(0);
+    *last_resource_error = if memory.write_u32_be(output, res_type).is_some() {
+        PPC_NO_ERR
+    } else {
+        PPC_PARAM_ERR
+    };
 }
 
 pub(super) fn ppc_unique_id(

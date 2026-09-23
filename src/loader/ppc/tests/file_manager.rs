@@ -7587,6 +7587,67 @@ use super::*;
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3] as i16, 1);
 
+        loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: other_refnum,
+            path: "Other".to_string(),
+            res_type: u32::from_be_bytes(*b"PICT"),
+            res_id: 128,
+            name: b"Picture".to_vec(),
+            data: Vec::new(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+
+        // CountTypes sees two distinct types; Count1Types sees only STR in
+        // the current file, even though STR also occurs in another file.
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::CountTypes;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 2);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Count1Types;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 1);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+
+        let type_output = PPC_DATA_BASE + 0x1100;
+        loaded.memory.add_region(type_output, vec![0xff; 4]);
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetIndType;
+        loaded.cpu.gpr[3] = type_output;
+        loaded.cpu.gpr[4] = 1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded.memory.read_u32_be(type_output),
+            Some(u32::from_be_bytes(*b"PICT"))
+        );
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Get1IndType;
+        loaded.cpu.gpr[3] = type_output;
+        loaded.cpu.gpr[4] = 1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded.memory.read_u32_be(type_output),
+            Some(u32::from_be_bytes(*b"STR "))
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[4] = 2;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u32_be(type_output), Some(0));
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+
         // Unique1ID: candidate should be 129 (since 128 exists in current file)
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Unique1ID;
