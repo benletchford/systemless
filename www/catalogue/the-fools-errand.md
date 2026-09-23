@@ -18,12 +18,11 @@ compatibility:
   verified:
   - date: "2026-09-24"
     tester: Catalogue maintainer
-    systemless_version: "0.54.0"
+    systemless_version: "0.55.0"
     architecture: 68k
     environment: >-
-      Browser run from the exact promoted Macintosh ZIP through the opening story
-      into The Sun puzzle board, with an interactive symbol click verified in the
-      same session
+      Browser run from the exact promoted Macintosh ZIP through the opening story,
+      using the in-game puzzle control to open The Sun board in the same session
     status: playable
     evidence: https://github.com/benletchford/systemless/pull/2520
 artifacts:
