@@ -21851,24 +21851,25 @@ impl super::TrapDispatcher {
 
         let base = normalize_base(bus.read_long(bits_ptr));
         let (screen_base, _, _, _, screen_ps) = self.screen_mode;
-        // If this plain BitMap's baseAddr matches the screen framebuffer and
-        // the screen is >1bpp, the caller passed qd.screenBits for a color
-        // screen.  Treat it as the actual screen pixel depth so CopyBits
-        // reads the pixel data correctly instead of interpreting 8bpp bytes
-        // as 1bpp packed bits.
+        // A legacy GrafPort can pass a BitMap-shaped portBits whose baseAddr
+        // identifies the color screen, even when its rowBytes still describes
+        // a 1-bit port. CopyBits targets the screen device in that case; use
+        // its actual stride and depth. Imaging With QuickDraw (1994), 3-116,
+        // describes CopyBits translation between bitmap and pixel-map depths.
         let raw_row_bytes = (raw_word & 0x3FFF) as u32;
-        let (pixel_size, ctab_handle) =
-            if base == screen_base && raw_row_bytes == self.screen_mode.1 && screen_ps > 1 {
-                (
-                    screen_ps as u32,
-                    Self::gdevice_ctab_handle(bus, self.main_gdevice_handle),
-                )
-            } else {
-                (1, 0)
-            };
+        let screen_backed = base == screen_base && screen_ps > 1;
+        let (pixel_size, ctab_handle, row_bytes) = if screen_backed {
+            (
+                screen_ps as u32,
+                Self::gdevice_ctab_handle(bus, self.main_gdevice_handle),
+                self.screen_mode.1,
+            )
+        } else {
+            (1, 0, raw_row_bytes)
+        };
         CopyBitmapInfo {
             base,
-            row_bytes: raw_row_bytes,
+            row_bytes,
             bounds_top: bus.read_word(bits_ptr + 6) as i16,
             bounds_left: bus.read_word(bits_ptr + 8) as i16,
             bounds_bottom: bus.read_word(bits_ptr + 10) as i16,

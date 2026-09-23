@@ -20961,6 +20961,27 @@
     }
 
     #[test]
+    fn resolve_copy_bitmap_screen_backed_legacy_port_uses_device_stride_and_depth() {
+        let (d, _cpu, mut bus) = setup();
+        let bits_ptr = bus.alloc(14);
+        let (screen_base, screen_row_bytes, _, _, screen_depth) = d.screen_mode;
+        assert!(screen_depth > 1);
+
+        bus.write_long(bits_ptr, screen_base);
+        bus.write_word(bits_ptr + 4, 64); // Legacy 640-pixel monochrome stride.
+        write_rect(&mut bus, bits_ptr + 6, -69, -64, 411, 576);
+
+        let info = d.resolve_copy_bitmap(&bus, bits_ptr);
+        assert_eq!(info.base, screen_base);
+        assert_eq!(info.row_bytes, screen_row_bytes);
+        assert_eq!(info.pixel_size, u32::from(screen_depth));
+        assert_eq!(info.bounds_top, -69);
+        assert_eq!(info.bounds_left, -64);
+        assert_eq!(info.bounds_bottom, 411);
+        assert_eq!(info.bounds_right, 576);
+    }
+
+    #[test]
     fn resolve_copy_bitmap_direct_pixmap_dereferences_offscreen_base_handle() {
         let (d, _cpu, mut bus) = setup();
         let pm_ptr = bus.alloc(64);
