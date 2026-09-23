@@ -1945,6 +1945,7 @@ pub enum PpcImportDispatcherTarget {
     SndPlay,
     SndChannelStatus,
     SndGetInfo,
+    SndSetInfo,
     ParseSndHeader,
     SndDoCommand,
     SndDoImmediate,
@@ -16484,6 +16485,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "SndPlay") => PpcImportDispatcherTarget::SndPlay,
         ("InterfaceLib", "SndChannelStatus") => PpcImportDispatcherTarget::SndChannelStatus,
         ("SoundLib" | "InterfaceLib", "SndGetInfo") => PpcImportDispatcherTarget::SndGetInfo,
+        ("SoundLib" | "InterfaceLib", "SndSetInfo") => PpcImportDispatcherTarget::SndSetInfo,
         ("SoundLib", "ParseSndHeader") => PpcImportDispatcherTarget::ParseSndHeader,
         ("InterfaceLib", "SndDoImmediate") => PpcImportDispatcherTarget::SndDoImmediate,
         ("InterfaceLib", "SndDoCommand") => PpcImportDispatcherTarget::SndDoCommand,
@@ -19677,6 +19679,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::SndPlay
         | PpcImportDispatcherTarget::SndChannelStatus
         | PpcImportDispatcherTarget::SndGetInfo
+        | PpcImportDispatcherTarget::SndSetInfo
         | PpcImportDispatcherTarget::ParseSndHeader
         | PpcImportDispatcherTarget::SndDoCommand
         | PpcImportDispatcherTarget::SndDoImmediate
@@ -33422,11 +33425,19 @@ fn ppc_snd_get_info(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: &PpcSoundSt
     }
 
     // Universal Interfaces 3.4.1 Sound.h identifies SndGetInfo as a Sound
-    // Manager 3.1 SoundLib call. These scalar selectors describe the native
-    // HLE mixer's canonical mono, 8-bit, 22.254 kHz channel. Unknown queries
-    // return the documented siUnknownInfoType instead of fabricating data.
+    // Manager 3.1 SoundLib call. These scalar selectors default to the native
+    // HLE mixer's canonical mono, 8-bit, 22.254 kHz channel; siSampleRate
+    // reflects a value set on this channel. Unknown queries return the
+    // documented siUnknownInfoType instead of fabricating data.
     let result = match &selector.to_be_bytes() {
-        b"srat" => memory.write_u32_be(info_ptr, crate::sound::RATE_22KHZ_FIXED),
+        b"srat" => memory.write_u32_be(
+            info_ptr,
+            sound
+                .manager
+                .find_channel(channel)
+                .map(|channel| channel.sample_rate())
+                .unwrap_or(crate::sound::RATE_22KHZ_FIXED),
+        ),
         b"ssiz" => memory.write_u16_be(info_ptr, 8),
         b"chan" => memory.write_u16_be(info_ptr, 1),
         b"hwbs" => {
@@ -33441,6 +33452,37 @@ fn ppc_snd_get_info(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: &PpcSoundSt
         PPC_NO_ERR
     } else {
         PPC_PARAM_ERR
+    }
+}
+
+fn ppc_snd_set_info(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: &mut PpcSoundState) -> i16 {
+    const SI_UNKNOWN_INFO_TYPE: i16 = -231;
+    let channel = cpu.gpr[3];
+    let selector = cpu.gpr[4];
+    let info_ptr = cpu.gpr[5];
+    if channel == 0 || info_ptr == 0 {
+        return PPC_PARAM_ERR;
+    }
+
+    // SndSetInfo(SndChannelPtr, OSType, const void *) is a SoundLib 3.1
+    // call. siSampleRate ('srat') uses a pointer to an unsigned 16.16 Fixed
+    // sample rate; an unmapped pointer is an invalid argument, not a value.
+    // Universal Interfaces 3.4.1, Sound.h; Inside Macintosh: Sound (1994),
+    // Sound Input Manager Reference, siSampleRate.
+    match &selector.to_be_bytes() {
+        b"srat" => {
+            let Some(rate) = memory.read_u32_be(info_ptr) else {
+                return PPC_PARAM_ERR;
+            };
+            let Some(()) = sound
+                .manager
+                .with_channel_mut(channel, |channel| channel.set_sample_rate(rate))
+            else {
+                return PPC_PARAM_ERR;
+            };
+            PPC_NO_ERR
+        }
+        _ => SI_UNKNOWN_INFO_TYPE,
     }
 }
 

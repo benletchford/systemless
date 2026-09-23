@@ -70,6 +70,73 @@ use crate::sound::PendingSoundCallback;
     }
 
     #[test]
+    fn snd_set_info_updates_channel_sample_rate_and_rejects_invalid_arguments() {
+        let pef = synthetic_pef_with_library_import(b"SoundLib", b"SndSetInfo");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let channel = PPC_DATA_BASE + 0x1000;
+        let rate_ptr = PPC_DATA_BASE + 0x1100;
+        let output_ptr = PPC_DATA_BASE + 0x1200;
+        loaded.memory.add_region(rate_ptr, vec![0; 4]);
+        loaded.memory.add_region(output_ptr, vec![0; 4]);
+        loaded.memory.write_u32_be(rate_ptr, 0x5622_0000).unwrap();
+        loaded
+            .sound
+            .manager
+            .with_ensured_channel_mut(channel, |_| {});
+
+        loaded.cpu.gpr[3] = channel;
+        loaded.cpu.gpr[4] = u32::from_be_bytes(*b"srat");
+        loaded.cpu.gpr[5] = rate_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded
+                .sound
+                .manager
+                .find_channel(channel)
+                .unwrap()
+                .sample_rate(),
+            0x5622_0000
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::SndGetInfo;
+        loaded.cpu.gpr[3] = channel;
+        loaded.cpu.gpr[4] = u32::from_be_bytes(*b"srat");
+        loaded.cpu.gpr[5] = output_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u32_be(output_ptr), Some(0x5622_0000));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::SndSetInfo;
+        loaded.cpu.gpr[3] = channel;
+        loaded.cpu.gpr[4] = u32::from_be_bytes(*b"srat");
+        loaded.cpu.gpr[5] = 0x5622_0000;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+        assert_eq!(
+            loaded
+                .sound
+                .manager
+                .find_channel(channel)
+                .unwrap()
+                .sample_rate(),
+            0x5622_0000
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = channel;
+        loaded.cpu.gpr[4] = u32::from_be_bytes(*b"xxxx");
+        loaded.cpu.gpr[5] = rate_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-231));
+    }
+
+    #[test]
     fn hle_import_runner_handles_get_default_output_volume() {
         let pef = synthetic_pef_with_import(b"GetDefaultOutputVolume");
         let mut loaded = load_pef_application(&pef).unwrap();

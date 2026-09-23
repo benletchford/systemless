@@ -134,6 +134,9 @@ pub(super) fn dispatch_sound_import(
         PpcImportDispatcherTarget::SndGetInfo => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_snd_get_info(cpu, memory, sound),
         ))),
+        PpcImportDispatcherTarget::SndSetInfo => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_snd_set_info(cpu, memory, sound),
+        ))),
         PpcImportDispatcherTarget::ParseSndHeader => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_parse_snd_header(cpu, memory, handles),
         ))),

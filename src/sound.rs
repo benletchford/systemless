@@ -272,6 +272,8 @@ pub struct SndChannel {
     volume: u32,
     /// Current playback rate relative to the channel's base sample rate.
     rate_fixed: u32,
+    /// Sample rate selected through Sound Manager channel information.
+    sample_rate_fixed: u32,
     /// callBackCmd commands waiting for the current playback to complete.
     pending_callback_cmds: Vec<SndCommand>,
     /// Completion routine for the current asynchronous SndStartFilePlay.
@@ -329,6 +331,7 @@ impl SndChannel {
             callback_architecture: CallbackTaskArchitecture::M68k,
             volume: FULL_STEREO_VOLUME,
             rate_fixed: UNITY_RATE_FIXED,
+            sample_rate_fixed: RATE_22KHZ_FIXED,
             pending_callback_cmds: Vec::new(),
             file_completion_addr: 0,
             file_completion_architecture: None,
@@ -486,6 +489,14 @@ impl SndChannel {
 
     pub fn current_rate(&self) -> u32 {
         self.rate_fixed
+    }
+
+    pub(crate) fn sample_rate(&self) -> u32 {
+        self.sample_rate_fixed
+    }
+
+    pub(crate) fn set_sample_rate(&mut self, sample_rate_fixed: u32) {
+        self.sample_rate_fixed = sample_rate_fixed;
     }
 
     pub fn pause_file_playback_toggle(&mut self) {
