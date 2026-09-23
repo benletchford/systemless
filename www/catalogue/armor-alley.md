@@ -3,8 +3,8 @@ id: armor-alley
 kind: game
 title: Armor Alley
 summary: >-
-  Fly a helicopter and marshal ground forces in Battle 1 of the original
-  Armor Alley Macintosh demonstration.
+  Fly a helicopter and marshal ground forces in Battle 1 of the original Armor
+  Alley Macintosh demonstration.
 developer: Information Access Technologies
 publisher: Three-Sixty Pacific
 year: 1991
@@ -21,9 +21,9 @@ compatibility:
     systemless_version: "0.51.0"
     architecture: 68k
     environment: >-
-      Deterministic run from the unchanged Armor Alley StuffIt demo through
-      its demonstration notice into Practice Battle 1, with matched input and
-      no-input checkpoints
+      Deterministic run from the unchanged Armor Alley StuffIt demo through its
+      demonstration notice into Practice Battle 1, with matched input and no-input
+      checkpoints
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2448
 runtime:
@@ -33,11 +33,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://classicmacdemos.com/download/armor-alley/
-    download_page: https://classicmacdemos.com/armor-alley
-    expected_sha256: 747dbebc3acec8ca223f76d0a1f77f8f1362e13fb90e851a0494623661ad1539
-    expected_size: 318624
+    type: sha256
+    sha256: 747dbebc3acec8ca223f76d0a1f77f8f1362e13fb90e851a0494623661ad1539
+    size_bytes: 318624
   provenance:
     redistribution: permitted
     original: true
@@ -48,22 +46,22 @@ artifacts:
     license: Three-Sixty Pacific Armor Alley promotional demonstration distribution
     rights_holder: Armor Alley rights holders
     permission: >-
-      The publisher distributed this purpose-built demonstration on The
-      Macintosh Demo Games CD. The application identifies itself as a
-      “Demonstration game” and limits play to Battle 1 without additional
-      helicopters or funds. Classic Macintosh Game Demos documents the period
-      disc and continues to offer the demo archive. Only the unchanged demo is
-      staged, not the retail game.
+      The publisher distributed this purpose-built demonstration on The Macintosh
+      Demo Games CD. The application identifies itself as a “Demonstration game” and
+      limits play to Battle 1 without additional helicopters or funds. Classic Macintosh
+      Game Demos documents the period disc and continues to offer the demo archive. Only
+      the unchanged demo is staged, not the retail game.
     notes: >-
       Unchanged 318,624-byte StuffIt archive with SHA-256
-      747dbebc3acec8ca223f76d0a1f77f8f1362e13fb90e851a0494623661ad1539.
-      Its single packaged application is the 68K Armor Alley demo.
+      747dbebc3acec8ca223f76d0a1f77f8f1362e13fb90e851a0494623661ad1539. Its single packaged application is the 68K
+      Armor Alley demo.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/armor-alley/gameplay.png
+    type: sha256
+    sha256: 2259d8302b7738b8fae5645cad24aea5eaa8313203957d2452a4009c47ed3f64
+    size_bytes: 10609
   provenance:
     redistribution: permitted
     original: true
@@ -71,16 +69,13 @@ artifacts:
     sources:
     - https://github.com/benletchford/systemless/issues/2448
     permission: >-
-      Original in-game screenshot captured for this catalogue at the
-      maintainer's request. Underlying Armor Alley artwork remains the
-      property of its rights holders.
+      Original in-game screenshot captured for this catalogue at the maintainer's
+      request. Underlying Armor Alley artwork remains the property of its rights holders.
     notes: >-
-      Fresh deterministic Systemless 0.51.0 capture from the exact demo on
-      2026-09-23 after entering Practice Battle 1 and issuing keyboard input.
-      The 800x600 guest framebuffer was captured as the 512x324 game-content
-      viewport. PNG SHA-256
-      2259d8302b7738b8fae5645cad24aea5eaa8313203957d2452a4009c47ed3f64;
-      10,609 bytes.
+      Fresh deterministic Systemless 0.51.0 capture from the exact demo on 2026-09-23
+      after entering Practice Battle 1 and issuing keyboard input. The 800x600 guest
+      framebuffer was captured as the 512x324 game-content viewport. PNG SHA-256
+      2259d8302b7738b8fae5645cad24aea5eaa8313203957d2452a4009c47ed3f64; 10,609 bytes.
 references:
 - https://classicmacdemos.com/armor-alley
 - https://coverdiscs.com/disc/the-macintosh-demo-games-cd
@@ -88,7 +83,7 @@ references:
 
 ## Battle 1
 
-![Armor Alley demo helicopter and ground convoy in Battle 1](incoming/armor-alley/gameplay.png)
+![Armor Alley demo helicopter and ground convoy in Battle 1](https://assets.systemless.org/catalogue/media/sha256/22/2259d8302b7738b8fae5645cad24aea5eaa8313203957d2452a4009c47ed3f64.png)
 
 Armor Alley combines helicopter action with the problem of moving ground
 forces across a scrolling battlefield. You fly above tanks, troops and bunkers
