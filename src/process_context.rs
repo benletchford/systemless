@@ -1462,8 +1462,51 @@ pub(crate) type SharedProcessResourceManager = SharedProcessValue<ProcessResourc
 /// Detached-by-default attachment handle for Resource Manager policy switches.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessResourcePolicy(SharedProcessValue<ProcessResourcePolicyState>);
-/// Process-wide 256-entry display color table shared by attached CPU adapters.
-pub(crate) type SharedProcessDisplayClut = SharedProcessValue<[[u16; 3]; 256]>;
+/// Detached-by-default attachment handle for process-owned display color tables.
+///
+/// Ordinary clones are snapshots so cloning an adapter cannot couple two
+/// processes. Adapters share only through `attach_copy_to`, under the same
+/// serialized runner ownership used for guest RAM and the Memory Manager.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedProcessDisplayClut(SharedProcessValue<[[u16; 3]; 256]>);
+
+impl Default for SharedProcessDisplayClut {
+    fn default() -> Self {
+        Self::from_value(standard_mac_8bpp_clut())
+    }
+}
+
+impl std::ops::Deref for SharedProcessDisplayClut {
+    type Target = [[u16; 3]; 256];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl PartialEq<[[u16; 3]; 256]> for SharedProcessDisplayClut {
+    fn eq(&self, other: &[[u16; 3]; 256]) -> bool {
+        self.with_ref(|clut| clut == other)
+    }
+}
+
+impl PartialEq<&[[u16; 3]; 256]> for SharedProcessDisplayClut {
+    fn eq(&self, other: &&[[u16; 3]; 256]) -> bool {
+        self.with_ref(|clut| clut == *other)
+    }
+}
+
+impl PartialEq<SharedProcessDisplayClut> for [[u16; 3]; 256] {
+    fn eq(&self, other: &SharedProcessDisplayClut) -> bool {
+        other.with_ref(|clut| self == clut)
+    }
+}
+
+impl PartialEq<SharedProcessDisplayClut> for &[[u16; 3]; 256] {
+    fn eq(&self, other: &SharedProcessDisplayClut) -> bool {
+        other.with_ref(|clut| *self == clut)
+    }
+}
 /// Detached-by-default attachment handle for process-owned sound playback and channels.
 ///
 /// Ordinary clones are snapshots so cloning an adapter cannot couple two
@@ -2843,6 +2886,38 @@ impl SharedProcessValue<Vec<ProcessVfsDirectory>> {
 }
 
 impl SharedProcessDisplayClut {
+    pub(crate) fn from_value(clut: [[u16; 3]; 256]) -> Self {
+        Self(SharedProcessValue::from_value(clut))
+    }
+
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&[[u16; 3]; 256]) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut [[u16; 3]; 256]) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    pub(crate) fn attach_copy_to(&mut self, process_state: &Self) {
+        let clut_is_pristine =
+            |clut: &[[u16; 3]; 256]| *clut == [[0; 3]; 256] || *clut == standard_mac_8bpp_clut();
+        self.0.attach_copy_to(&process_state.0, clut_is_pristine);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.with_ref(|clut| *clut == [[0; 3]; 256] || *clut == standard_mac_8bpp_clut())
+    }
+
     /// Replace one logical or physical display palette as a single serialized
     /// operation. The copied table cannot retain a reference into shared state.
     pub(crate) fn replace(&self, clut: [[u16; 3]; 256]) {
@@ -8731,8 +8806,8 @@ impl Default for ProcessContext {
             current_graphics_port: SharedProcessValue::from_value(0),
             current_graphics_device: SharedProcessValue::from_value(0),
             quickdraw_error: SharedProcessValue::from_value(0),
-            device_clut: SharedProcessValue::from_value(standard_mac_8bpp_clut()),
-            color_manager_clut: SharedProcessValue::from_value(standard_mac_8bpp_clut()),
+            device_clut: SharedProcessDisplayClut::default(),
+            color_manager_clut: SharedProcessDisplayClut::default(),
             display_gamma: SharedProcessDisplayGamma::default(),
         }
     }
@@ -9049,10 +9124,8 @@ impl ProcessContext {
         color_manager_clut: &mut SharedProcessDisplayClut,
         display_gamma: &mut SharedProcessDisplayGamma,
     ) {
-        let clut_is_pristine =
-            |clut: &[[u16; 3]; 256]| *clut == [[0; 3]; 256] || *clut == standard_mac_8bpp_clut();
-        device_clut.attach_copy_to(&self.device_clut, clut_is_pristine);
-        color_manager_clut.attach_copy_to(&self.color_manager_clut, clut_is_pristine);
+        device_clut.attach_copy_to(&self.device_clut);
+        color_manager_clut.attach_copy_to(&self.color_manager_clut);
         display_gamma.attach_to(&self.display_gamma);
     }
 
@@ -12798,13 +12871,84 @@ mod tests {
     }
 
     #[test]
+    fn process_display_clut_encapsulation() {
+        let clut = SharedProcessDisplayClut::default();
+        assert!(clut.is_pristine());
+        assert_eq!(*clut, standard_mac_8bpp_clut());
+
+        let zero_clut = SharedProcessDisplayClut::from_value([[0u16; 3]; 256]);
+        assert!(zero_clut.is_pristine());
+
+        clut.set_entry(1, [1000, 2000, 3000]);
+        assert!(!clut.is_pristine());
+        assert_eq!(clut[1], [1000, 2000, 3000]);
+
+        let custom = [[500u16; 3]; 256];
+        clut.replace(custom);
+        assert!(!clut.is_pristine());
+        assert_eq!(clut, custom);
+        assert_eq!(&clut, &custom);
+        assert_eq!(custom, clut);
+        assert_eq!(&custom, &clut);
+
+        clut.fill([777, 888, 999]);
+        assert_eq!(clut[0], [777, 888, 999]);
+        assert_eq!(clut[255], [777, 888, 999]);
+
+        let shared = clut.shared_handle();
+        assert!(clut.ptr_eq(&shared));
+    }
+
+    #[test]
+    fn attached_display_cluts_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic_device = SharedProcessDisplayClut::default();
+        let mut classic_color = SharedProcessDisplayClut::default();
+        let mut classic_gamma = SharedProcessDisplayGamma::default();
+        let mut native_device = SharedProcessDisplayClut::default();
+        let mut native_color = SharedProcessDisplayClut::default();
+        let mut native_gamma = SharedProcessDisplayGamma::default();
+
+        assert!(classic_device.is_pristine());
+        assert!(classic_color.is_pristine());
+
+        context.attach_display_color_state(
+            &mut classic_device,
+            &mut classic_color,
+            &mut classic_gamma,
+        );
+
+        classic_device.set_entry(1, [1000, 2000, 3000]);
+        classic_color.set_entry(2, [4000, 5000, 6000]);
+        assert!(!classic_device.is_pristine());
+        assert!(!classic_color.is_pristine());
+
+        context.attach_display_color_state(
+            &mut native_device,
+            &mut native_color,
+            &mut native_gamma,
+        );
+        let detached = native_device.clone();
+
+        assert!(classic_device.ptr_eq(&native_device));
+        assert!(classic_color.ptr_eq(&native_color));
+        assert_eq!(native_device[1], [1000, 2000, 3000]);
+        assert_eq!(native_color[2], [4000, 5000, 6000]);
+
+        detached.set_entry(1, [9999, 9999, 9999]);
+        assert!(!native_device.ptr_eq(&detached));
+        assert_eq!(native_device[1], [1000, 2000, 3000]);
+        assert_eq!(detached[1], [9999, 9999, 9999]);
+    }
+
+    #[test]
     fn attached_display_gammas_share_immediately_while_clones_detach() {
         let context = ProcessContext::default();
-        let mut classic_device = SharedProcessValue::from_value(standard_mac_8bpp_clut());
-        let mut classic_color = SharedProcessValue::from_value(standard_mac_8bpp_clut());
+        let mut classic_device = SharedProcessDisplayClut::default();
+        let mut classic_color = SharedProcessDisplayClut::default();
         let mut classic_gamma = SharedProcessDisplayGamma::default();
-        let mut native_device = SharedProcessValue::from_value(standard_mac_8bpp_clut());
-        let mut native_color = SharedProcessValue::from_value(standard_mac_8bpp_clut());
+        let mut native_device = SharedProcessDisplayClut::default();
+        let mut native_color = SharedProcessDisplayClut::default();
         let mut native_gamma = SharedProcessDisplayGamma::default();
 
         context.attach_display_color_state(

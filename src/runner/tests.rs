@@ -6,7 +6,8 @@
     use crate::menu_manager::TrackedMenuPaneView;
     use crate::process_context::{
         PendingFileCompletion, ProcessFileSystemState, SharedProcessFileSystem,
-        SharedProcessDisplayGamma, SharedProcessTickState, SharedProcessValue,
+        SharedProcessDisplayClut, SharedProcessDisplayGamma, SharedProcessTickState,
+        SharedProcessValue,
     };
     use crate::sound::{
         DoubleBufferState, PendingDoubleBackCallback, PendingSoundCallback, PlaybackKind,
@@ -4613,10 +4614,10 @@
             apple_events: Default::default(),
             cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
-            screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
+            screen_clut: SharedProcessDisplayClut::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
             display_gamma: SharedProcessDisplayGamma::default(),
             process_quickdraw_port_state_attached: false,
-            color_manager_clut: SharedProcessValue::from_value(
+            color_manager_clut: SharedProcessDisplayClut::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
             aliases: Vec::new(),
@@ -9709,10 +9710,10 @@
             apple_events: Default::default(),
             cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
-            screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
+            screen_clut: SharedProcessDisplayClut::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
             display_gamma: SharedProcessDisplayGamma::default(),
             process_quickdraw_port_state_attached: false,
-            color_manager_clut: SharedProcessValue::from_value(
+            color_manager_clut: SharedProcessDisplayClut::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
             aliases: Vec::new(),
@@ -10576,10 +10577,10 @@
             apple_events: Default::default(),
             cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
-            screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
+            screen_clut: SharedProcessDisplayClut::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
             display_gamma: SharedProcessDisplayGamma::default(),
             process_quickdraw_port_state_attached: false,
-            color_manager_clut: SharedProcessValue::from_value(
+            color_manager_clut: SharedProcessDisplayClut::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
             aliases: Vec::new(),
@@ -10730,10 +10731,10 @@
             apple_events: Default::default(),
             cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
-            screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
+            screen_clut: SharedProcessDisplayClut::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
             display_gamma: SharedProcessDisplayGamma::default(),
             process_quickdraw_port_state_attached: false,
-            color_manager_clut: SharedProcessValue::from_value(
+            color_manager_clut: SharedProcessDisplayClut::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
             aliases: Vec::new(),
@@ -11113,10 +11114,10 @@
             apple_events: Default::default(),
             cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
-            screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
+            screen_clut: SharedProcessDisplayClut::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
             display_gamma: SharedProcessDisplayGamma::default(),
             process_quickdraw_port_state_attached: false,
-            color_manager_clut: SharedProcessValue::from_value(
+            color_manager_clut: SharedProcessDisplayClut::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
             aliases: Vec::new(),
@@ -11399,10 +11400,10 @@
             apple_events: Default::default(),
             cfm: Some(crate::cfm::CfmState::default()),
             controls: Default::default(),
-            screen_clut: SharedProcessValue::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
+            screen_clut: SharedProcessDisplayClut::from_value(TrapDispatcher::standard_mac_8bpp_clut()),
             display_gamma: SharedProcessDisplayGamma::default(),
             process_quickdraw_port_state_attached: false,
-            color_manager_clut: SharedProcessValue::from_value(
+            color_manager_clut: SharedProcessDisplayClut::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
             aliases: Vec::new(),
