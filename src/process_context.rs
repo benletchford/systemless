@@ -1464,7 +1464,21 @@ pub(crate) type SharedProcessResourceManager = SharedProcessValue<ProcessResourc
 pub(crate) struct SharedProcessResourcePolicy(SharedProcessValue<ProcessResourcePolicyState>);
 /// Process-wide 256-entry display color table shared by attached CPU adapters.
 pub(crate) type SharedProcessDisplayClut = SharedProcessValue<[[u16; 3]; 256]>;
-pub(crate) type SharedProcessSoundManager = SharedProcessValue<SoundManager>;
+/// Detached-by-default attachment handle for process-owned sound playback and channels.
+///
+/// Ordinary clones are snapshots so cloning an adapter cannot couple two
+/// processes. Adapters share only through `attach_to`, under the same
+/// serialized runner ownership used for guest RAM and the Memory Manager.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SharedProcessSoundManager(SharedProcessValue<SoundManager>);
+
+impl std::ops::Deref for SharedProcessSoundManager {
+    type Target = SoundManager;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 pub(crate) type SharedProcessCollectionManager =
     SharedProcessValue<ProcessCollectionManagerState>;
 #[derive(Clone, Default, Eq, PartialEq)]
@@ -2323,7 +2337,23 @@ impl<T> SharedProcessValue<T> {
     }
 }
 
-impl SharedProcessValue<SoundManager> {
+impl SharedProcessSoundManager {
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut SoundManager) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    pub(crate) fn attach_to(&mut self, process_state: &Self) {
+        self.0.attach_to(&process_state.0, SoundManager::is_pristine);
+    }
     /// Mutate one process-owned sound channel for the duration of a serialized
     /// operation without allowing the channel borrow to escape.
     pub(crate) fn with_channel_mut<R>(
@@ -8840,7 +8870,7 @@ impl ProcessContext {
     }
 
     pub(crate) fn attach_sound_manager(&self, adapter: &mut SharedProcessSoundManager) {
-        adapter.attach_to(&self.sound_manager, SoundManager::is_pristine);
+        adapter.attach_to(&self.sound_manager);
     }
 
     pub(crate) fn attach_callback_tasks(
