@@ -61,6 +61,7 @@ Looking Glass Technologies' official Macintosh demo provides one plane and one
 location from its full flight simulator. It retains the original readme and
 control chart in the same archive as the application and flight data.
 
-The PowerPC demo reaches its display and memory startup prompts in Systemless,
-but does not yet enter the flight interface. Browser launch remains disabled
-while the startup failure is investigated.
+The PowerPC demo reaches its display and memory startup prompts in Systemless.
+Selecting "Switch to 256 Colors" and then "No, Thanks" halts before the flight
+interface. Browser launch remains disabled while the startup failure is
+investigated.
