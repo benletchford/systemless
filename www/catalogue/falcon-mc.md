@@ -92,4 +92,5 @@ full campaign.
 This is Spectrum HoloByte's promotional Falcon MC demo, not the copy-protected
 retail game. Systemless reaches the cockpit after the demo's 16-colour prompt,
 but that prompt does not yet draw its text or buttons correctly. Browser launch
-therefore remains disabled while the generic alert-rendering issue is tracked.
+therefore remains disabled while the [alert-rendering issue](https://github.com/benletchford/systemless/issues/2491)
+is tracked.
