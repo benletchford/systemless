@@ -1983,6 +1983,7 @@ pub enum PpcImportDispatcherTarget {
     FSpDelete,
     DeleteByName(PpcDeleteByNameOperation),
     HCreate,
+    HRename,
     Create,
     DSpGetFirstContext,
     DSpGetNextContext,
@@ -16226,6 +16227,7 @@ fn dispatcher_target_for_import(
             )
         }
         ("InterfaceLib", "HCreate") => PpcImportDispatcherTarget::HCreate,
+        ("InterfaceLib", "HRename") => PpcImportDispatcherTarget::HRename,
         ("InterfaceLib", "Create") => PpcImportDispatcherTarget::Create,
         ("InterfaceLib", "GetNewDialog") => PpcImportDispatcherTarget::GetNewDialog,
         ("InterfaceLib", "NewDialog")
@@ -18737,6 +18739,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::PBCreate(_)
         | PpcImportDispatcherTarget::FSpCreate
         | PpcImportDispatcherTarget::HCreate
+        | PpcImportDispatcherTarget::HRename
         | PpcImportDispatcherTarget::Create
         | PpcImportDispatcherTarget::FSpDelete
         | PpcImportDispatcherTarget::DeleteByName(_)
@@ -65932,6 +65935,131 @@ fn ppc_h_create(
         cpu.gpr[6],
         cpu.gpr[7],
     )
+}
+
+fn ppc_renamed_path(path: &str, old_path: &str, new_path: &str) -> Option<String> {
+    if path.eq_ignore_ascii_case(old_path) {
+        return Some(new_path.to_string());
+    }
+    let prefix = path.get(..old_path.len())?;
+    let suffix = path.get(old_path.len()..)?;
+    (prefix.eq_ignore_ascii_case(old_path) && suffix.starts_with('/'))
+        .then(|| format!("{new_path}{suffix}"))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_h_rename(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &mut Vec<PpcVfsDirectory>,
+    vfs_files: &mut ProcessVfsFileRecords,
+    deleted_vfs_file_paths: &mut Vec<String>,
+    files: &mut Vec<PpcFileRecord>,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    resource_files: &mut Vec<PpcResourceFileRecord>,
+    vfs_resources: &mut Vec<PpcVfsResourceRecord>,
+    default_dir_id: u32,
+) -> i16 {
+    // Inside Macintosh: Files (1992), pp. 2-178--2-179:
+    // FUNCTION HRename (vRefNum: Integer; dirID: LongInt;
+    //                   oldName: Str255; newName: Str255): OSErr;
+    // Rename within the source directory; open access paths remain valid.
+    let vref = cpu.gpr[3] as u16 as i16;
+    if !matches!(vref, 0 | PPC_BOOT_VOLUME_REF_NUM) {
+        return PPC_NSV_ERR;
+    }
+    let (Some(old_bytes), Some(new_bytes)) = (
+        ppc_read_pstring_bytes(memory, cpu.gpr[5]),
+        ppc_read_pstring_bytes(memory, cpu.gpr[6]),
+    ) else {
+        return PPC_PARAM_ERR;
+    };
+    let old_name = ppc_normalize_vfs_path(&decode_mac_roman(&old_bytes));
+    let new_name = decode_mac_roman(&new_bytes);
+    if old_name.is_empty() || new_name.is_empty() {
+        return PPC_PARAM_ERR;
+    }
+    if new_name.contains([':', '/']) || matches!(new_name.as_str(), "." | "..") {
+        return PPC_BD_NAM_ERR;
+    }
+    let dir_id = ppc_resolve_directory_id(vref, cpu.gpr[4], default_dir_id);
+    let Some(parent_path) = ppc_directory_path_for_id(vfs_directories, dir_id) else {
+        return PPC_DIR_NF_ERR;
+    };
+    let requested_path = ppc_join_vfs_path(parent_path, &old_name);
+    let old_path = ppc_vfs_file_or_resource_path(vfs_files, vfs_resource_files, &requested_path)
+        .or_else(|| {
+            vfs_directories
+                .iter()
+                .find(|directory| directory.path.eq_ignore_ascii_case(&requested_path))
+                .map(|directory| directory.path.clone())
+        });
+    let Some(old_path) = old_path else {
+        return PPC_FNF_ERR;
+    };
+    let parent = old_path.rsplit_once('/').map_or("", |(parent, _)| parent);
+    let new_path = ppc_join_vfs_path(parent, &new_name);
+    if old_path.eq_ignore_ascii_case(&new_path) {
+        return PPC_NO_ERR;
+    }
+    if ppc_vfs_file_or_resource_path(vfs_files, vfs_resource_files, &new_path).is_some()
+        || vfs_directories
+            .iter()
+            .any(|directory| directory.path.eq_ignore_ascii_case(&new_path))
+    {
+        return PPC_DUP_FN_ERR;
+    }
+
+    let data_moves = vfs_files
+        .iter()
+        .filter_map(|file| {
+            ppc_renamed_path(&file.path, &old_path, &new_path)
+                .map(|new| (file.path.clone(), new))
+        })
+        .collect::<Vec<_>>();
+    let resource_moves = vfs_resource_files
+        .iter()
+        .filter_map(|file| {
+            ppc_renamed_path(&file.path, &old_path, &new_path)
+                .map(|new| (file.path.clone(), new))
+        })
+        .collect::<Vec<_>>();
+    for (old, new) in &data_moves {
+        vfs_files.rename_path(old, new);
+    }
+    for (old, new) in &resource_moves {
+        vfs_resource_files.rename_path(old, new);
+    }
+    for (old, _) in data_moves.iter().chain(resource_moves.iter()) {
+        if !deleted_vfs_file_paths
+            .iter()
+            .any(|deleted| deleted.eq_ignore_ascii_case(old))
+        {
+            deleted_vfs_file_paths.push(old.clone());
+        }
+    }
+    for directory in vfs_directories.iter_mut() {
+        if let Some(renamed) = ppc_renamed_path(&directory.path, &old_path, &new_path) {
+            directory.path = renamed;
+            directory.dirty = true;
+        }
+    }
+    for file in files.iter_mut() {
+        if let Some(renamed) = ppc_renamed_path(&file.path, &old_path, &new_path) {
+            file.path = renamed;
+        }
+    }
+    for file in resource_files.iter_mut() {
+        if let Some(renamed) = ppc_renamed_path(&file.path, &old_path, &new_path) {
+            file.path = renamed;
+        }
+    }
+    for resource in vfs_resources.iter_mut() {
+        if let Some(renamed) = ppc_renamed_path(&resource.path, &old_path, &new_path) {
+            resource.path = renamed;
+        }
+    }
+    PPC_NO_ERR
 }
 
 fn ppc_pb_create(
