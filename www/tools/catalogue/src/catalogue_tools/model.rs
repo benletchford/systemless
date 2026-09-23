@@ -10,6 +10,7 @@ pub const CATEGORIES: &[&str] = &[
     "Arcade",
     "FPS",
     "Puzzle",
+    "Role-Playing",
     "Simulation",
     "Space Trading",
     "Strategy",
