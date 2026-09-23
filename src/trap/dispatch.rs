@@ -3686,9 +3686,9 @@ impl TrapDispatcher {
                 let profile = reference_machine_profile();
                 (profile.screen_width, profile.screen_height)
             },
-            device_clut: SharedProcessValue::from_value(Self::standard_mac_8bpp_clut()),
+            device_clut: SharedProcessDisplayClut::from_value(Self::standard_mac_8bpp_clut()),
             display_gamma: crate::process_context::SharedProcessDisplayGamma::default(),
-            color_manager_clut: SharedProcessValue::from_value(Self::standard_mac_8bpp_clut()),
+            color_manager_clut: SharedProcessDisplayClut::from_value(Self::standard_mac_8bpp_clut()),
             inverse_table_cache: Vec::new(),
             clut_protected: [false; 256],
             clut_reserved: [false; 256],
