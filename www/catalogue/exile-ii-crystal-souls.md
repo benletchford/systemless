@@ -12,8 +12,19 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Role-Playing
+launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
+  verified:
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
+    systemless_version: "0.55.0"
+    architecture: 68k
+    environment: >-
+      Release-mode browser run of the promoted unregistered demo through the
+      title, welcome and party-creation dialogs into the opening Chapter I scene
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/2541
 artifacts:
 - id: archive
   role: archive
@@ -81,5 +92,5 @@ through its support team; this archive contains no key. The original license
 still accompanies the download and sets the terms for unregistered use.
 
 Systemless reaches party creation and the opening Chapter I game screen in a
-deterministic run. Browser launch remains disabled until the promoted archive
-is manually tested in the browser.
+deterministic run. The same path and scene were verified in the release-mode
+browser build using this promoted archive.
