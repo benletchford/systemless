@@ -1479,8 +1479,23 @@ impl std::ops::Deref for SharedProcessSoundManager {
         &self.0
     }
 }
-pub(crate) type SharedProcessCollectionManager =
-    SharedProcessValue<ProcessCollectionManagerState>;
+/// Detached-by-default attachment handle for process-owned Collection Manager state.
+///
+/// Ordinary clones are snapshots so cloning an adapter cannot couple two
+/// processes. Adapters share only through `attach_to`, under the same
+/// serialized runner ownership used for guest RAM and the Memory Manager.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SharedProcessCollectionManager(
+    SharedProcessValue<ProcessCollectionManagerState>,
+);
+
+impl std::ops::Deref for SharedProcessCollectionManager {
+    type Target = ProcessCollectionManagerState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 #[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessCursorState(SharedProcessValue<ProcessCursorState>);
 /// Host pacing snapshot for the wrapping Macintosh clock.
@@ -2572,6 +2587,41 @@ impl SharedProcessSoundManager {
 
     pub(crate) fn mix_frame_stereo(&self, num_samples: usize) -> Vec<u8> {
         self.with_mut(|manager| manager.mix_frame_stereo(num_samples))
+    }
+}
+
+impl SharedProcessCollectionManager {
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn with_ref<R>(
+        &self,
+        operation: impl FnOnce(&ProcessCollectionManagerState) -> R,
+    ) -> R {
+        self.0.with_ref(operation)
+    }
+
+    pub(crate) fn with_mut<R>(
+        &self,
+        operation: impl FnOnce(&mut ProcessCollectionManagerState) -> R,
+    ) -> R {
+        self.0.with_mut(operation)
+    }
+
+    pub(crate) fn attach_to(&mut self, process_state: &Self) {
+        self.0
+            .attach_to(&process_state.0, ProcessCollectionManagerState::is_pristine);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.with_ref(ProcessCollectionManagerState::is_pristine)
     }
 }
 
@@ -8909,10 +8959,7 @@ impl ProcessContext {
     }
 
     pub(crate) fn attach_collection_manager(&self, adapter: &mut SharedProcessCollectionManager) {
-        adapter.attach_to(
-            &self.collection_manager,
-            ProcessCollectionManagerState::is_pristine,
-        );
+        adapter.attach_to(&self.collection_manager);
     }
 
     pub(crate) fn attach_text_edit_manager(&self, adapter: &mut SharedProcessTextEditManager) {
@@ -12614,6 +12661,7 @@ mod tests {
         let mut classic = SharedProcessCollectionManager::default();
         let mut native = SharedProcessCollectionManager::default();
         context.attach_collection_manager(&mut classic);
+        assert!(classic.is_pristine());
         let collection = classic.with_mut(|manager| manager.new_collection());
         assert_eq!(
             classic.with_mut(|manager| {
@@ -12621,6 +12669,7 @@ mod tests {
             }),
             0
         );
+        assert!(!classic.is_pristine());
         context.attach_collection_manager(&mut native);
         let detached = native.clone();
 
