@@ -1345,6 +1345,38 @@ fn stuffit5_header_and_declared_archive_length_are_checked() {
 }
 
 #[test]
+fn macbinary_wrapped_stuffit_requires_valid_fork_lengths_and_inner_header() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let mut bytes = vec![0_u8; 128 + 128 + 128];
+    bytes[1] = 4;
+    bytes[2..6].copy_from_slice(b"game");
+    bytes[83..87].copy_from_slice(&22_u32.to_be_bytes());
+    bytes[87..91].copy_from_slice(&1_u32.to_be_bytes());
+    bytes[128..132].copy_from_slice(b"SIT!");
+    fs::write(file.path(), &bytes).unwrap();
+    assert_eq!(
+        assets::inspect(file.path(), FileType::Sit)
+            .unwrap()
+            .size_bytes,
+        bytes.len() as u64
+    );
+
+    bytes[128..132].copy_from_slice(b"nope");
+    fs::write(file.path(), &bytes).unwrap();
+    assert!(assets::inspect(file.path(), FileType::Sit).is_err());
+    bytes[128..132].copy_from_slice(b"SIT!");
+
+    bytes[83..87].copy_from_slice(&150_u32.to_be_bytes());
+    fs::write(file.path(), &bytes).unwrap();
+    assert!(assets::inspect(file.path(), FileType::Sit).is_err());
+    bytes[83..87].copy_from_slice(&22_u32.to_be_bytes());
+
+    bytes[82] = 1;
+    fs::write(file.path(), &bytes).unwrap();
+    assert!(assets::inspect(file.path(), FileType::Sit).is_err());
+}
+
+#[test]
 fn plugins_reference_managed_supplements_and_safe_install_paths() {
     let mut c = common::catalogue();
     let e = &mut c.documents[0].entry;

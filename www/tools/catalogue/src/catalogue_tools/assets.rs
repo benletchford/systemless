@@ -179,18 +179,7 @@ pub fn inspect(path: &Path, format: FileType) -> Result<Inspection> {
                         .iter()
                         .any(|m| header.starts_with(*m))
             }
-            FileType::Sit => {
-                let classic = size >= 22
-                    && (header.starts_with(b"SIT!")
-                        || header.starts_with(b"ST46")
-                        || header.starts_with(b"ST50"));
-                // StuffIt 5 places its binary signature after an 80-byte text header.
-                let sit5 = size >= 114
-                    && header.starts_with(b"StuffIt (c)")
-                    && header[80..83] == [0x1a, 0x00, 0x05]
-                    && u64::from(u32::from_be_bytes(header[84..88].try_into().unwrap())) == size;
-                classic || sit5
-            }
+            FileType::Sit => recognized_sit(&header, size) || macbinary_wrapped_sit(&header, size),
             FileType::Sitx => header.starts_with(b"StuffIt!"),
             FileType::Gz => size >= 18 && header.starts_with(&[0x1f, 0x8b, 8]),
             FileType::Bin => {
@@ -226,6 +215,37 @@ pub fn inspect(path: &Path, format: FileType) -> Result<Inspection> {
         );
     }
     hash_file(path)
+}
+
+fn recognized_sit(header: &[u8], size: u64) -> bool {
+    let classic = size >= 22
+        && (header.starts_with(b"SIT!")
+            || header.starts_with(b"ST46")
+            || header.starts_with(b"ST50"));
+    // StuffIt 5 places its binary signature after an 80-byte text header.
+    let sit5 = size >= 114
+        && header.len() >= 88
+        && header.starts_with(b"StuffIt (c)")
+        && header[80..83] == [0x1a, 0x00, 0x05]
+        && u64::from(u32::from_be_bytes(header[84..88].try_into().unwrap())) == size;
+    classic || sit5
+}
+
+fn macbinary_wrapped_sit(header: &[u8], size: u64) -> bool {
+    // MacBinary stores the data and resource forks after 128-byte-aligned boundaries.
+    if header.len() < 128
+        || header[0] != 0
+        || !(1..=63).contains(&header[1])
+        || header[74] != 0
+        || header[82] != 0
+    {
+        return false;
+    }
+    let data_size = u64::from(u32::from_be_bytes(header[83..87].try_into().unwrap()));
+    let resource_size = u64::from(u32::from_be_bytes(header[87..91].try_into().unwrap()));
+    let padded = |n: u64| n.div_ceil(128) * 128;
+    size == 128 + padded(data_size) + padded(resource_size)
+        && recognized_sit(&header[128..], data_size)
 }
 
 /// A store must never replace an existing key with different content.
