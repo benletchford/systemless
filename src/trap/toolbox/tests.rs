@@ -10249,6 +10249,69 @@
     }
 
     #[test]
+    fn icondispatch_geticonsuite_selects_available_family_members() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let output = 0x200800;
+        let large = bus.alloc(128);
+        let small = bus.alloc(128);
+        disp.set_loaded_resources_for_test(LoadedResources {
+            files: HashMap::from([(
+                0,
+                ResourceFileMap {
+                    loaded: HashMap::from([
+                        ((*b"ICN#", 128), large),
+                        ((*b"ics#", 128), small),
+                    ]),
+                    ..ResourceFileMap::default()
+                },
+            )]),
+            names: HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0501);
+        bus.write_long(sp, 0x0000_0105); // large and small 1-bit, plus absent large 8-bit
+        bus.write_word(sp + 4, 128);
+        bus.write_long(sp + 6, output);
+        bus.write_word(sp + 10, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x3C9, &mut cpu, &mut bus);
+        assert!(result.expect("GetIconSuite dispatch").is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_word(sp + 10), 0);
+        let suite = bus.read_long(output);
+        assert_ne!(suite, 0);
+        let data = bus.read_long(suite);
+        assert_eq!(bus.read_bytes(data, 4), b"ISUT");
+        assert_eq!(bus.read_word(data + 8), 2);
+        assert_eq!(bus.read_bytes(data + 10, 4), b"ICN#");
+        assert_eq!(bus.read_long(bus.read_long(data + 14)), large);
+        assert_eq!(bus.read_bytes(data + 18, 4), b"ics#");
+        assert_eq!(bus.read_long(bus.read_long(data + 22)), small);
+    }
+
+    #[test]
+    fn icondispatch_geticonsuite_rejects_missing_output_pointer() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0105);
+        bus.write_long(sp, 0xFFFF_FFFF);
+        bus.write_word(sp + 4, 128);
+        bus.write_long(sp + 6, 0);
+        bus.write_word(sp + 10, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x3C9, &mut cpu, &mut bus);
+        assert!(result.expect("GetIconSuite dispatch").is_ok());
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_word(sp + 10) as i16, -50);
+    }
+
+    #[test]
     fn icondispatch_loadiconcache_records_then_clears_identity_without_changing_behavior() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;

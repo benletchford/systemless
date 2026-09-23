@@ -16837,6 +16837,68 @@ impl super::TrapDispatcher {
                     8
                 };
                 match selector {
+                    // GetIconSuite ($ABC9, selector $0105)
+                    // Loads the selected icon-family resources into an opaque suite handle.
+                    // FUNCTION GetIconSuite(VAR theIconSuite: Handle;
+                    //                       theResID: Integer; selector: IconSelectorValue): OSErr;
+                    // More Macintosh Toolbox (1993), pp. 5-31–5-32, A-34.
+                    0x0105 => {
+                        let sp = cpu.read_reg(Register::A7);
+                        let icon_selector = bus.read_long(sp);
+                        let res_id = bus.read_word(sp + 4) as i16;
+                        let output = bus.read_long(sp + 6);
+                        if output == 0 || !bus.try_write_long(output, 0) {
+                            bus.write_word(sp + pop_bytes, (-50i16) as u16);
+                            return_error_and_pop(cpu, pop_bytes, -50)
+                        } else {
+                            let family = [
+                                (0x0000_0001, *b"ICN#"),
+                                (0x0000_0002, *b"icl4"),
+                                (0x0000_0004, *b"icl8"),
+                                (0x0000_0100, *b"ics#"),
+                                (0x0000_0200, *b"ics4"),
+                                (0x0000_0400, *b"ics8"),
+                                (0x0001_0000, *b"icm#"),
+                                (0x0002_0000, *b"icm4"),
+                                (0x0004_0000, *b"icm8"),
+                            ];
+                            let mut entries = Vec::new();
+                            for (bit, res_type) in family {
+                                if icon_selector & bit == 0 {
+                                    continue;
+                                }
+                                if let Some((refnum, ptr)) =
+                                    self.find_or_load_resource_any(bus, res_type, res_id)
+                                {
+                                    let handle = self.get_or_create_resource_handle_in_file(
+                                        bus, res_type, res_id, ptr, refnum,
+                                    );
+                                    entries.push((res_type, handle));
+                                }
+                            }
+                            let mut bytes = Vec::with_capacity(10 + entries.len() * 8);
+                            bytes.extend_from_slice(b"ISUT");
+                            bytes.extend_from_slice(&0u32.to_be_bytes());
+                            bytes.extend_from_slice(&(entries.len() as u16).to_be_bytes());
+                            for (res_type, handle) in entries {
+                                bytes.extend_from_slice(&res_type);
+                                bytes.extend_from_slice(&handle.to_be_bytes());
+                            }
+                            match self.new_process_classic_handle(bus, bytes.len() as u32) {
+                                Ok((suite, ptr)) => {
+                                    bus.write_bytes(ptr, &bytes);
+                                    bus.write_long(output, suite);
+                                    bus.write_word(0x0A60, 0);
+                                    bus.write_word(sp + pop_bytes, 0);
+                                    return_noerr_and_pop(cpu, pop_bytes)
+                                }
+                                Err(_) => {
+                                    bus.write_word(sp + pop_bytes, (-108i16) as u16);
+                                    return_error_and_pop(cpu, pop_bytes, -108)
+                                }
+                            }
+                        }
+                    }
                     // PlotCIconHandle. The Icon Utilities glue passes, in
                     // reverse Pascal order, the CIconHandle, transform and
                     // alignment words, and destination Rect pointer. PlotCIcon
