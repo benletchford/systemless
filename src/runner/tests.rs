@@ -4667,7 +4667,7 @@
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
-            quickdraw_op_colors: SharedProcessValue::default(),
+            quickdraw_op_colors: Default::default(),
             quickdraw_hilite_colors: SharedProcessValue::default(),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
@@ -9820,7 +9820,7 @@
             ),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
-            quickdraw_op_colors: SharedProcessValue::default(),
+            quickdraw_op_colors: Default::default(),
             quickdraw_hilite_colors: SharedProcessValue::default(),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
@@ -10630,7 +10630,7 @@
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
-            quickdraw_op_colors: SharedProcessValue::default(),
+            quickdraw_op_colors: Default::default(),
             quickdraw_hilite_colors: SharedProcessValue::default(),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
@@ -10784,7 +10784,7 @@
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
-            quickdraw_op_colors: SharedProcessValue::default(),
+            quickdraw_op_colors: Default::default(),
             quickdraw_hilite_colors: SharedProcessValue::default(),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
@@ -11196,7 +11196,7 @@
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
-            quickdraw_op_colors: SharedProcessValue::default(),
+            quickdraw_op_colors: Default::default(),
             quickdraw_hilite_colors: SharedProcessValue::default(),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
@@ -11514,7 +11514,7 @@
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
-            quickdraw_op_colors: SharedProcessValue::default(),
+            quickdraw_op_colors: Default::default(),
             quickdraw_hilite_colors: SharedProcessValue::default(),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
