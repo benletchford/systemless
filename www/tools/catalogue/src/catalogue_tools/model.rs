@@ -6,7 +6,14 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// Resolved entries, asset records, launch policy and generic plugin declarations.
 pub const COMPILED_SCHEMA_VERSION: u32 = 2;
 /// Stable category labels exposed by the public library filters.
-pub const CATEGORIES: &[&str] = &["Arcade", "FPS", "Puzzle", "Simulation", "Space Trading", "Strategy"];
+pub const CATEGORIES: &[&str] = &[
+    "Arcade",
+    "FPS",
+    "Puzzle",
+    "Simulation",
+    "Space Trading",
+    "Strategy",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
