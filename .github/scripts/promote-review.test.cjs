@@ -48,16 +48,16 @@ test('superseded approvals and changed reviewed commits cannot promote', async (
   github.paginate=async()=>[review,{...review,id:3,state:'CHANGES_REQUESTED'}];
   await assert.rejects(approvedReview(github,context,1,2,'maintainer'),/superseded/);
 });
-test('repository owner submissions require the owner, an unchanged head and a non-draft PR', async () => {
-  const pr = {state:'open',draft:false,user:{login:'owner'},base:{ref:'master'},head:{ref:'dev/test',sha:'reviewed',repo:{full_name:'owner/repo'}}};
+test('repository owner submissions allow drafts but require the owner and an unchanged head', async () => {
+  const pr = {state:'open',draft:true,user:{login:'owner'},base:{ref:'master'},head:{ref:'dev/test',sha:'reviewed',repo:{full_name:'owner/repo'}}};
   const github = {rest:{pulls:{get:async()=>({data:pr})}}};
   const context = {repo:{owner:'owner',repo:'repo'},payload:{repository:{default_branch:'master'}}};
   const state = {number:1,reviewId:0,actor:'owner',sha:'reviewed'};
   assert.equal(await authorizedSubmission(github,context,state),pr);
   await assert.rejects(authorizedSubmission(github,context,{...state,actor:'other'}),/no longer authorized/);
-  pr.draft=true;
+  pr.user.login='other';
   await assert.rejects(authorizedSubmission(github,context,state),/no longer authorized/);
-  pr.draft=false;
+  pr.user.login='owner';
   pr.head.sha='changed';
   await assert.rejects(authorizedSubmission(github,context,state),/unchanged/);
 });

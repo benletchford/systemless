@@ -15,8 +15,7 @@ jobs:
       (github.event_name == 'pull_request_review' && github.event.review.state == 'approved') ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.user.login == github.repository_owner &&
-       github.actor == github.repository_owner &&
-       github.event.pull_request.draft == false)
+       github.actor == github.repository_owner)
     runs-on: ubuntu-latest
     steps:
       - run: echo 'Promotion authorization submitted; the trusted workflow will validate it through the GitHub API.'

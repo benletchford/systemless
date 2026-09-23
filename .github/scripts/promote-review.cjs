@@ -35,7 +35,7 @@ async function authorizedSubmission(github, context, state) {
     return approvedReview(github, context, state.number, state.reviewId, state.actor);
   }
   const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: state.number});
-  if (state.actor !== context.repo.owner || pr.user.login !== context.repo.owner || pr.draft) {
+  if (state.actor !== context.repo.owner || pr.user.login !== context.repo.owner) {
     throw new Error('Owner promotion is no longer authorized');
   }
   validatePr(pr, `${context.repo.owner}/${context.repo.repo}`, context.payload.repository.default_branch, state.sha);
@@ -58,8 +58,8 @@ async function authorize({github, context, core}) {
     number = Number(ownerMatch[1]);
     const sha = ownerMatch[2];
     const {data: candidate} = await github.rest.pulls.get({...context.repo, pull_number: number});
-    if (actor !== context.repo.owner || candidate.user.login !== context.repo.owner || candidate.draft) {
-      throw new Error('Owner promotion requires a non-draft PR authored and triggered by the repository owner');
+    if (actor !== context.repo.owner || candidate.user.login !== context.repo.owner) {
+      throw new Error('Owner promotion requires a PR authored and triggered by the repository owner');
     }
     validatePr(candidate, `${context.repo.owner}/${context.repo.repo}`, context.payload.repository.default_branch, sha);
     pr = candidate;
