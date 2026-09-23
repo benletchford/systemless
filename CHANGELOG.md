@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.52.0](https://github.com/benletchford/systemless/compare/v0.51.0...v0.52.0) (2026-09-23)
+
+
+### Features
+
+* **catalogue:** add Apeiron shareware trial ([#2451](https://github.com/benletchford/systemless/issues/2451)) ([cdb25ef](https://github.com/benletchford/systemless/commit/cdb25efeca8baf8ddb2d78ede20c8c5e07da9784))
+* **catalogue:** add Armor Alley demo ([#2449](https://github.com/benletchford/systemless/issues/2449)) ([9689185](https://github.com/benletchford/systemless/commit/96891851a753196bfa46bc4fc3108e7eb42e784e))
+* **catalogue:** add Glider PRO demo ([#2443](https://github.com/benletchford/systemless/issues/2443)) ([88c8492](https://github.com/benletchford/systemless/commit/88c84923e43a71f33d842d633827656aee6cfb35))
+* **catalogue:** add Harry the Handsome Executive shareware trial ([#2459](https://github.com/benletchford/systemless/issues/2459)) ([ff272b8](https://github.com/benletchford/systemless/commit/ff272b896b99b9d7a076d5dd391fa67484de61cc))
+* **catalogue:** add Spectre VR demo ([#2447](https://github.com/benletchford/systemless/issues/2447)) ([f8eebf8](https://github.com/benletchford/systemless/commit/f8eebf857a36c13627e6f4f91615dd8da874c092))
+
+
+### Bug Fixes
+
+* **files:** honor HFS literal slash names when opening data forks ([#2457](https://github.com/benletchford/systemless/issues/2457)) ([ae02d26](https://github.com/benletchford/systemless/commit/ae02d268968bc90a871df836ca30ac7c2f14b578))
+* **input:** keep guest cursor warps out of ADB motion ([22ab9e3](https://github.com/benletchford/systemless/commit/22ab9e34583f97287b4f233b18dd294bf4d04ebb))
+* **launch:** prefer games over bundled level editors ([623111c](https://github.com/benletchford/systemless/commit/623111cc76b4f28e7a865b8c3c3b5f7c3dc7acf2))
+
 ## [0.51.0](https://github.com/benletchford/systemless/compare/v0.50.0...v0.51.0) (2026-09-22)
 
 
