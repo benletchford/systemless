@@ -17,12 +17,13 @@ compatibility:
   verified:
   - date: "2026-09-24"
     tester: Catalogue maintainer
-    systemless_version: "0.55.0"
+    systemless_version: "0.51.0-dev"
     architecture: ppc
     environment: >-
-      Deterministic PowerPC launch of the unchanged demo at 800 by 600. The 256-color
-      and memory-partition prompts render, but dismissing the latter halts execution
-      before the flight interface.
+      Deterministic PowerPC launch of the unchanged demo in a local 0.51.0
+      development build at 800 by 600. The 256-color and memory-partition
+      prompts render, but dismissing the latter halts execution before the
+      flight interface. Current published-runtime behavior is not yet verified.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/2573
 artifacts:
