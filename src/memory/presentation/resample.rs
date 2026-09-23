@@ -267,6 +267,7 @@ mod tests {
                             }
                         }
                     }
+                    p.text_cell_count = p.text_cells.iter().filter(|&&text| text).count();
                     p.revision += 1;
                 }
                 let guest = vec![0xff123456; 35];

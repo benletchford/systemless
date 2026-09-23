@@ -512,6 +512,9 @@ pub(crate) struct Presentation {
     samples: DetailSamples,
     guest_values: Vec<u16>,
     text_cells: Vec<bool>,
+    /// Number of entries set in `text_cells`; maintained on every transition so
+    /// `has_visible_outline_detail` does not rescan the whole screen.
+    text_cell_count: usize,
     detail_cache: std::cell::RefCell<Vec<Option<Arc<DetailCell>>>>,
     // Keys are cell * TILE_SAMPLES + sample, independent of screen stride.
     ink: HashMap<usize, Ink, BuildHasherDefault<SampleOffsetHasher>>,
@@ -1400,7 +1403,7 @@ impl Presentation {
             &self.direct_palettes[(x % self.bytes_per_pixel()) as usize]
         };
         let samples = self.samples.ensure(index);
-        self.text_cells[index] = true;
+        Self::set_text_cell(&mut self.text_cells, &mut self.text_cell_count, index, true);
         self.detail_cache.get_mut()[index] = Some(cell.clone());
         self.guest_values[index] = cell.value.into();
         for i in 0..(self.scale * self.scale) as usize {
@@ -1432,6 +1435,29 @@ impl Presentation {
         ))
     }
 
+    /// Set one coverage cell, keeping `text_cell_count` in step with the
+    /// true/false transitions. Repeated assignments must stay no-ops: the erase
+    /// path below can revisit the same cell once per covered sample.
+    ///
+    /// The two coverage fields are passed separately so callers holding a
+    /// `samples` borrow can still update coverage without a second whole-`self`
+    /// borrow.
+    fn set_text_cell(
+        text_cells: &mut [bool],
+        text_cell_count: &mut usize,
+        cell: usize,
+        text: bool,
+    ) {
+        if text_cells[cell] != text {
+            text_cells[cell] = text;
+            *text_cell_count = if text {
+                *text_cell_count + 1
+            } else {
+                *text_cell_count - 1
+            };
+        }
+    }
+
     fn prepare_text_cell(&mut self, x: u32, y: u32) {
         self.touch_screen(x, y);
         self.detail_cache.get_mut()[(y * self.width + x) as usize] = None;
@@ -1443,7 +1469,7 @@ impl Presentation {
             samples.indices.fill(index);
             samples.rgb.fill(color);
         }
-        self.text_cells[cell] = true;
+        Self::set_text_cell(&mut self.text_cells, &mut self.text_cell_count, cell, true);
     }
 
     /// The mask invariant: bits exactly mirror the ink map's keys.
@@ -1527,7 +1553,7 @@ impl Presentation {
             return;
         }
         self.detail_cache.get_mut()[cell] = None;
-        self.text_cells[cell] = false;
+        Self::set_text_cell(&mut self.text_cells, &mut self.text_cell_count, cell, false);
         let color = self.palette_at(x)[value as usize];
         let samples = self.samples.get_mut(cell);
         for i in 0..(self.scale * self.scale) as usize {
@@ -1535,7 +1561,7 @@ impl Presentation {
             // A following character's opaque background must not shave off
             // an outline overhang already painted by this same text run.
             if self.erasing_text && self.run_ink.contains(&offset) {
-                self.text_cells[cell] = true;
+                Self::set_text_cell(&mut self.text_cells, &mut self.text_cell_count, cell, true);
                 continue;
             }
             if !self.run_ink.is_empty() {
@@ -2227,9 +2253,15 @@ impl MacMemoryBus {
     /// Frames without visible retained text can use the ordinary framebuffer
     /// presenter while continuing to track offscreen text for later copies.
     pub fn has_visible_outline_detail(&self) -> bool {
-        self.presentation
-            .as_ref()
-            .is_some_and(|p| p.text_cells.iter().any(|&text| text))
+        let Some(p) = self.presentation.as_ref() else {
+            return false;
+        };
+        debug_assert_eq!(
+            p.text_cell_count,
+            p.text_cells.iter().filter(|&&text| text).count(),
+            "text_cell_count must track text_cells"
+        );
+        p.text_cell_count != 0
     }
 
     /// Composite host overlays onto the outline surface. Overlay positions stay
@@ -2448,6 +2480,7 @@ impl MacMemoryBus {
             samples: DetailSamples::new(width as usize * height as usize),
             guest_values: vec![256; width as usize * height as usize],
             text_cells: vec![false; width as usize * height as usize],
+            text_cell_count: 0,
             detail_cache: std::cell::RefCell::new(vec![None; width as usize * height as usize]),
             ink: HashMap::default(),
             ink_mask: vec![0; width as usize * height as usize],
