@@ -336,6 +336,19 @@ pub(super) fn dispatch_stdc_import(ctx: PpcStdCDispatchContext<'_>) -> Option<Pp
         PpcImportDispatcherTarget::StdRand => Some(PpcImportAction::Return(u32::from(
             ppc_random(memory) & 0x7fff,
         ))),
+        PpcImportDispatcherTarget::StdTime => {
+            // Metrowerks Standard Library time_t counts seconds since
+            // 1900-01-01; Mac Toolbox seconds start on 1904-01-01. The
+            // four-year interval is 1,460 days because 1900 was not a leap
+            // year. CPython 2.1 Modules/timemodule.c and MIT Support
+            // Library UtilitiesLib document the MSL epoch distinction.
+            const MSL_EPOCH_OFFSET_FROM_MAC: u32 = 1_460 * 86_400;
+            let seconds = PPC_FIXED_MAC_TIME.wrapping_add(MSL_EPOCH_OFFSET_FROM_MAC);
+            if cpu.gpr[3] != 0 {
+                let _ = memory.write_u32_be(cpu.gpr[3], seconds);
+            }
+            Some(PpcImportAction::Return(seconds))
+        }
         PpcImportDispatcherTarget::P2CStr => {
             ppc_p2cstr(cpu, memory);
             Some(PpcImportAction::Return(cpu.gpr[3]))

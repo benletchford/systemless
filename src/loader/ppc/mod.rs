@@ -2196,6 +2196,7 @@ pub enum PpcImportDispatcherTarget {
     StdToascii,
     StdSrand,
     StdRand,
+    StdTime,
     P2CStr,
     C2PStr,
     UpperText,
@@ -15510,6 +15511,7 @@ fn dispatcher_target_for_import(
         ("StdCLib", "toascii") => PpcImportDispatcherTarget::StdToascii,
         ("StdCLib", "srand") => PpcImportDispatcherTarget::StdSrand,
         ("StdCLib", "rand") => PpcImportDispatcherTarget::StdRand,
+        ("StdCLib", "time") => PpcImportDispatcherTarget::StdTime,
         (
             "StdCLib",
             "_IntEnv" | "__C_phase" | "__p_CType" | "__target_for_exit" | "_exit_status",
@@ -19269,6 +19271,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::StdToascii
         | PpcImportDispatcherTarget::StdSrand
         | PpcImportDispatcherTarget::StdRand
+        | PpcImportDispatcherTarget::StdTime
         | PpcImportDispatcherTarget::P2CStr
         | PpcImportDispatcherTarget::C2PStr
         | PpcImportDispatcherTarget::UpperText => {

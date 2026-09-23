@@ -17054,6 +17054,10 @@ fn import_bindings_classify_dialog_and_utility_imports() {
         PpcImportDispatcherTarget::StdSprintf
     );
     assert_eq!(
+        dispatcher_target_for_import("StdCLib", "time"),
+        PpcImportDispatcherTarget::StdTime
+    );
+    assert_eq!(
         dispatcher_target_for_import("StdCLib", "signal"),
         PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::Signal)
     );
