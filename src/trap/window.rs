@@ -3763,7 +3763,7 @@ impl super::TrapDispatcher {
     /// at offsets 2..15. NewCWindow/GetNewCWindow instead expose a
     /// PixMapHandle at offset 2. The records have the same total size, but
     /// callers such as HyperCard legitimately inspect the embedded portBits.
-    fn init_graf_window<C: CpuOps>(
+    pub(crate) fn init_graf_window<C: CpuOps>(
         &mut self,
         bus: &mut MacMemoryBus,
         cpu: &mut C,
