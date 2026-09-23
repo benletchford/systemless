@@ -29,8 +29,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://download.macintoshgarden.org/games/SpacewardHo_v3.0Demo.sit
-    download_page: https://macintoshgarden.org/games/spaceward-ho
+    url: https://gardenmirror.oldapplestuff.com/games/SpacewardHo_v3.0Demo.sit
     expected_sha256: aa58b78cb31e7be671ec84a4cc38bc3adc4d553a02adf20b6935e6bcee3c9a85
     expected_size: 401674
   provenance:
