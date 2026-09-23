@@ -15494,7 +15494,9 @@ fn dispatcher_target_for_import(
         ("StdCLib", "_iob") => {
             PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::IoBuffer)
         }
-        ("StdCLib", "abs") => PpcImportDispatcherTarget::StdAbs,
+        // ISO/IEC 9899:2011 7.22.6.1 declares abs(int) and labs(long int).
+        // Both arguments and results use one 32-bit register in the classic PPC ABI.
+        ("StdCLib", "abs" | "labs") => PpcImportDispatcherTarget::StdAbs,
         ("StdCLib", "toupper") => PpcImportDispatcherTarget::StdToupper,
         ("StdCLib", "tolower") => PpcImportDispatcherTarget::StdTolower,
         // Universal Interfaces 3.4 ctype.h declares these StdCLib exports.

@@ -1,6 +1,21 @@
 use super::*;
 
 #[test]
+fn stdclib_labs_uses_the_32_bit_long_abi() {
+    assert_eq!(
+        dispatcher_target_for_import("StdCLib", "labs"),
+        PpcImportDispatcherTarget::StdAbs
+    );
+    let pef = synthetic_pef_with_library_import(b"StdCLib", b"labs");
+    let mut native = load_pef_application(&pef).unwrap();
+    for (argument, expected) in [(37_u32, 37_u32), (-37_i32 as u32, 37), (0, 0)] {
+        native.cpu.gpr[3] = argument;
+        run_test_import(&mut native, PpcImportDispatcherTarget::StdAbs);
+        assert_eq!(native.cpu.gpr[3], expected);
+    }
+}
+
+#[test]
 fn stdclib_allocations_are_immediately_process_owned_and_cross_isa_visible() {
     let pef = synthetic_pef_with_library_import(b"StdCLib", b"malloc");
     let mut native = load_pef_application(&pef).unwrap();
