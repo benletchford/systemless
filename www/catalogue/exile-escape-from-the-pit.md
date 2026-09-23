@@ -12,8 +12,20 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Role-Playing
+launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
+  verified:
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
+    systemless_version: "0.55.0"
+    architecture: 68k
+    environment: >-
+      Release-mode browser run of the promoted unregistered demo through the
+      title screen, new-party and prefab-party dialogs, introduction, and
+      responsive Fort Exile scene
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/2534
 artifacts:
 - id: archive
   role: archive
@@ -78,5 +90,5 @@ through its support team; this archive contains no key. The original license
 still accompanies the download and sets the terms for unregistered use.
 
 With the generic File Manager correction, Systemless reaches the starting Fort
-Exile scene. Browser launch remains disabled until the promoted archive is
-manually tested in the browser.
+Exile scene. The same scene and its new-party path were verified in the
+release-mode browser build using this promoted archive.
