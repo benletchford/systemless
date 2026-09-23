@@ -101,7 +101,7 @@ use crate::process_context::{
     SharedProcessFileSystem, SharedProcessInputState, SharedProcessMemoryManager,
     DEFAULT_QUICKDRAW_HILITE_COLOR,
     SharedProcessMixedModeM68kState,
-    SharedProcessQuickDrawHiliteColors, SharedProcessQuickDrawOpColors,
+    SharedProcessQuickDrawError, SharedProcessQuickDrawHiliteColors, SharedProcessQuickDrawOpColors,
     SharedProcessDisplayGamma, SharedProcessQuickDrawPixelStates, SharedProcessResourcePolicy,
     SharedProcessTickState, SharedProcessTimerTasks, SharedProcessValue, SharedProcessVblTasks,
     SharedProcessWindowList,
@@ -3468,7 +3468,7 @@ pub struct PpcToolboxStartupState {
     pub(crate) update_event_seen: bool,
     pub delay_deadline: Option<u32>,
     pub next_ct_seed: u32,
-    pub(crate) last_quickdraw_error: SharedProcessValue<i16>,
+    pub(crate) last_quickdraw_error: SharedProcessQuickDrawError,
     pub open_region_port: u32,
     pub open_region_save_handle: u32,
     pub open_region_bounds: Option<(i16, i16, i16, i16)>,
@@ -3534,7 +3534,7 @@ impl Default for PpcToolboxStartupState {
             update_event_seen: false,
             delay_deadline: None,
             next_ct_seed: 0,
-            last_quickdraw_error: SharedProcessValue::from_value(PPC_NO_ERR),
+            last_quickdraw_error: SharedProcessQuickDrawError::default(),
             open_region_port: 0,
             open_region_save_handle: 0,
             open_region_bounds: None,
@@ -51083,9 +51083,7 @@ fn ppc_make_itable(
         requested_resolution
     };
     if !(3..=5).contains(&resolution) {
-        toolbox_startup
-            .last_quickdraw_error
-            .with_mut(|error| *error = PPC_C_RES_ERR);
+        toolbox_startup.last_quickdraw_error.set(PPC_C_RES_ERR);
         return;
     }
 
@@ -51101,9 +51099,7 @@ fn ppc_make_itable(
         screen_clut,
         &ppc_device_clut_reserved(toolbox_startup, current_gdevice),
     ) else {
-        toolbox_startup
-            .last_quickdraw_error
-            .with_mut(|error| *error = PPC_PARAM_ERR);
+        toolbox_startup.last_quickdraw_error.set(PPC_PARAM_ERR);
         return;
     };
     let table = ppc_inverse_table_bytes(&colors, resolution);
@@ -51111,9 +51107,7 @@ fn ppc_make_itable(
         .ok()
         .and_then(|size| size.checked_add(6))
     else {
-        toolbox_startup
-            .last_quickdraw_error
-            .with_mut(|error| *error = PPC_MEM_FULL_ERR);
+        toolbox_startup.last_quickdraw_error.set(PPC_MEM_FULL_ERR);
         return;
     };
 
@@ -51121,9 +51115,7 @@ fn ppc_make_itable(
     let mut itable_handle = explicit_itable_handle;
     if itable_handle == 0 {
         let Some(gdevice) = gdevice else {
-            toolbox_startup
-                .last_quickdraw_error
-                .with_mut(|error| *error = PPC_PARAM_ERR);
+            toolbox_startup.last_quickdraw_error.set(PPC_PARAM_ERR);
             return;
         };
         itable_handle = memory.read_u32_be(gdevice + 6).unwrap_or(0);
@@ -51139,9 +51131,7 @@ fn ppc_make_itable(
                 true,
             );
             if itable_handle == 0 || memory.write_u32_be(gdevice + 6, itable_handle).is_none() {
-                toolbox_startup
-                    .last_quickdraw_error
-                    .with_mut(|error| *error = PPC_MEM_FULL_ERR);
+                toolbox_startup.last_quickdraw_error.set(PPC_MEM_FULL_ERR);
                 return;
             }
         }
@@ -51158,18 +51148,14 @@ fn ppc_make_itable(
         record_size,
     );
     if resize_result != PPC_NO_ERR {
-        toolbox_startup
-            .last_quickdraw_error
-            .with_mut(|error| *error = resize_result);
+        toolbox_startup.last_quickdraw_error.set(resize_result);
         return;
     }
     let Some(itable) = memory
         .read_u32_be(itable_handle)
         .filter(|itable| *itable != 0)
     else {
-        toolbox_startup
-            .last_quickdraw_error
-            .with_mut(|error| *error = PPC_PARAM_ERR);
+        toolbox_startup.last_quickdraw_error.set(PPC_PARAM_ERR);
         return;
     };
     let wrote_record = memory.write_u32_be(itable, seed).is_some()
@@ -51180,9 +51166,7 @@ fn ppc_make_itable(
     } else {
         PPC_PARAM_ERR
     };
-    toolbox_startup
-        .last_quickdraw_error
-        .with_mut(|error| *error = quickdraw_error);
+    toolbox_startup.last_quickdraw_error.set(quickdraw_error);
 }
 
 fn ppc_set_entries(

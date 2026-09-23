@@ -1507,6 +1507,119 @@ impl PartialEq<SharedProcessDisplayClut> for &[[u16; 3]; 256] {
         other.with_ref(|clut| *self == clut)
     }
 }
+/// Detached-by-default attachment handle for the process-owned QuickDraw error code.
+///
+/// Ordinary clones are snapshots so cloning an adapter cannot couple two
+/// processes. Adapters share only through `attach_copy_to`, under the same
+/// serialized runner ownership used for guest RAM and the Memory Manager.
+/// Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-94--4-95.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedProcessQuickDrawError(SharedProcessValue<i16>);
+
+impl Default for SharedProcessQuickDrawError {
+    fn default() -> Self {
+        Self::from_value(0)
+    }
+}
+
+impl std::ops::Deref for SharedProcessQuickDrawError {
+    type Target = i16;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl PartialEq<i16> for SharedProcessQuickDrawError {
+    fn eq(&self, other: &i16) -> bool {
+        self.with_ref(|error| error == other)
+    }
+}
+
+impl PartialEq<&i16> for SharedProcessQuickDrawError {
+    fn eq(&self, other: &&i16) -> bool {
+        self.with_ref(|error| error == *other)
+    }
+}
+
+impl PartialEq<SharedProcessQuickDrawError> for i16 {
+    fn eq(&self, other: &SharedProcessQuickDrawError) -> bool {
+        other.with_ref(|error| self == error)
+    }
+}
+
+impl PartialEq<SharedProcessQuickDrawError> for &i16 {
+    fn eq(&self, other: &SharedProcessQuickDrawError) -> bool {
+        other.with_ref(|error| *self == error)
+    }
+}
+
+impl std::fmt::Display for SharedProcessQuickDrawError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.get())
+    }
+}
+
+#[allow(dead_code)]
+impl SharedProcessQuickDrawError {
+    pub(crate) fn from_value(error: i16) -> Self {
+        Self(SharedProcessValue::from_value(error))
+    }
+
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&i16) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut i16) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    pub(crate) fn attach_copy_to(&mut self, process_state: &Self) {
+        self.0.attach_copy_to(&process_state.0, |value| *value == 0);
+    }
+
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.with_ref(|error| *error == 0)
+    }
+
+    pub(crate) fn get(&self) -> i16 {
+        self.with_ref(|error| *error)
+    }
+
+    pub(crate) fn set(&self, error: i16) {
+        self.with_mut(|e| *e = error);
+    }
+
+    pub(crate) fn replace(&self, error: i16) -> i16 {
+        self.with_mut(|e| {
+            let previous = *e;
+            *e = error;
+            previous
+        })
+    }
+
+    pub(crate) fn is_ok(&self) -> bool {
+        self.get() == 0
+    }
+
+    pub(crate) fn is_err(&self) -> bool {
+        self.get() != 0
+    }
+
+    pub(crate) fn clear(&self) {
+        self.set(0);
+    }
+}
+
 /// Detached-by-default attachment handle for process-owned sound playback and channels.
 ///
 /// Ordinary clones are snapshots so cloning an adapter cannot couple two
@@ -8633,7 +8746,7 @@ pub(crate) struct ProcessContext {
     quickdraw_pixel_states: SharedProcessQuickDrawPixelStates,
     current_graphics_port: SharedProcessValue<u32>,
     current_graphics_device: SharedProcessValue<u32>,
-    quickdraw_error: SharedProcessValue<i16>,
+    quickdraw_error: SharedProcessQuickDrawError,
     device_clut: SharedProcessDisplayClut,
     color_manager_clut: SharedProcessDisplayClut,
     display_gamma: SharedProcessDisplayGamma,
@@ -8805,7 +8918,7 @@ impl Default for ProcessContext {
             quickdraw_pixel_states: SharedProcessQuickDrawPixelStates::default(),
             current_graphics_port: SharedProcessValue::from_value(0),
             current_graphics_device: SharedProcessValue::from_value(0),
-            quickdraw_error: SharedProcessValue::from_value(0),
+            quickdraw_error: SharedProcessQuickDrawError::default(),
             device_clut: SharedProcessDisplayClut::default(),
             color_manager_clut: SharedProcessDisplayClut::default(),
             display_gamma: SharedProcessDisplayGamma::default(),
@@ -9114,8 +9227,13 @@ impl ProcessContext {
     /// Manager operation. QDError exposes one process result regardless of
     /// which CPU ABI performed the operation. Imaging With QuickDraw (1994),
     /// pp. 4-94--4-95.
-    pub(crate) fn attach_quickdraw_error(&self, error: &mut SharedProcessValue<i16>) {
-        error.attach_copy_to(&self.quickdraw_error, |value| *value == 0);
+    pub(crate) fn attach_quickdraw_error(&self, error: &mut SharedProcessQuickDrawError) {
+        error.attach_copy_to(&self.quickdraw_error);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn quickdraw_error(&self) -> &SharedProcessQuickDrawError {
+        &self.quickdraw_error
     }
 
     pub(crate) fn attach_display_color_state(
@@ -13087,5 +13205,67 @@ mod tests {
         assert_eq!(classic_sched.primary_vbl_slot(), 8);
         assert_eq!(context.callback_scheduling().primary_vbl_slot(), 8);
         assert_eq!(detached.primary_vbl_slot(), 11);
+    }
+
+    #[test]
+    fn process_quickdraw_error_encapsulation() {
+        let mut error = SharedProcessQuickDrawError::default();
+        assert!(error.is_pristine());
+        assert_eq!(*error, 0);
+        assert_eq!(error.get(), 0);
+        assert!(error.is_ok());
+        assert!(!error.is_err());
+        assert_eq!(error, 0);
+        assert_eq!(&error, &0);
+        assert_eq!(0, error);
+        assert_eq!(&0, &error);
+        assert_eq!(format!("{}", error), "0");
+
+        error.set(-108); // memFullErr
+        assert!(!error.is_pristine());
+        assert_eq!(*error, -108);
+        assert_eq!(error.get(), -108);
+        assert!(!error.is_ok());
+        assert!(error.is_err());
+        assert_eq!(error, -108);
+        assert_eq!(0, SharedProcessQuickDrawError::from_value(0));
+
+        let prev = error.replace(-145); // cResErr
+        assert_eq!(prev, -108);
+        assert_eq!(*error, -145);
+
+        error.clear();
+        assert!(error.is_pristine());
+        assert_eq!(*error, 0);
+
+        let handle = error.shared_handle();
+        assert!(error.ptr_eq(&handle));
+        handle.set(-50); // paramErr
+        assert_eq!(error.get(), -50);
+    }
+
+    #[test]
+    fn attached_quickdraw_errors_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut adapter = SharedProcessQuickDrawError::default();
+        assert!(adapter.is_pristine());
+
+        context.attach_quickdraw_error(&mut adapter);
+        assert!(adapter.ptr_eq(context.quickdraw_error()));
+
+        // Shared mutation across process context and adapter
+        adapter.set(-145);
+        assert_eq!(*context.quickdraw_error(), -145);
+        assert_eq!(*adapter, -145);
+
+        // Cloning detaches
+        let mut detached = adapter.clone();
+        assert!(!detached.ptr_eq(&adapter));
+        assert_eq!(*detached, -145);
+
+        detached.set(-108);
+        assert_eq!(*detached, -108);
+        assert_eq!(*adapter, -145);
+        assert_eq!(*context.quickdraw_error(), -145);
     }
 }
