@@ -42,6 +42,28 @@ artifacts:
       Original ZipIt Macintosh package with the game application, its puzzle data,
       and the separate Prologue & Finale companion. The preserved ZIP is 514,100 bytes
       with SHA-256 fc12d8ea0ce9c8f016191b6dabf22e04d73de726dc6940f3289b1831cfa70613.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: incoming
+    path: catalogue/incoming/the-fools-errand/gameplay.png
+  provenance:
+    redistribution: permitted
+    original: true
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/2521
+    rights_holder: Cliff Johnson
+    permission: >-
+      Fresh Systemless capture from the copyright holder's freely distributed
+      Macintosh game. The game artwork remains Cliff Johnson's copyright.
+    notes: >-
+      The 516-by-324 puzzle surface excludes the Classic Mac menu bar and host
+      framebuffer. Captured from the exact promoted archive after entering the
+      first puzzle, with no artwork edits beyond cropping. PNG SHA-256
+      773e6e3398c76a8a4414330e166a70b6d7b038c61d78b05aff512a9ba6667f44,
+      16,626 bytes.
 references:
 - >-
   https://web.archive.org/web/20120710133534/http://www.thefoolsgold.com/downloads/games-macintosh.htm
@@ -50,10 +72,12 @@ references:
 
 ## A journey through the Land of Tarot
 
+![The Fool's Errand puzzle grid in Systemless](incoming/the-fools-errand/gameplay.png)
+
 Cliff Johnson's puzzle story asks the Fool to explore a land of Tarot cards,
 solve its varied riddles, and assemble the Sun's map. This entry preserves the
 creator's own Macintosh download, including its separate prologue application
 and puzzle data.
 
-Browser launch remains disabled while the archive's application selection and
-gameplay rendering are verified. The creator retains the game's copyright.
+Browser launch remains disabled pending validation with the published runtime
+and a browser gameplay check. The creator retains the game's copyright.
