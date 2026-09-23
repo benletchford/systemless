@@ -1968,9 +1968,30 @@ pub(crate) struct ProcessAppleEventDescriptors {
     pub(crate) descriptors: HashMap<u32, ProcessAeDescriptor>,
     pub(crate) backing: HashMap<u32, ProcessAeDescriptor>,
 }
+impl ProcessAppleEventDescriptors {
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.events.is_empty() && self.descriptors.is_empty() && self.backing.is_empty()
+    }
+}
 
-pub(crate) type SharedProcessAppleEventDescriptors =
-    SharedProcessValue<ProcessAppleEventDescriptors>;
+/// Detached-by-default attachment handle for process-owned Apple Event descriptor records.
+///
+/// Ordinary clones are snapshots so cloning an adapter cannot couple two
+/// processes. Adapters share only through `attach_to`, under the same
+/// serialized runner ownership used for guest RAM and the Memory Manager.
+/// Inside Macintosh: Interapplication Communication (1993), pp. 3-6--3-18.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SharedProcessAppleEventDescriptors(
+    SharedProcessValue<ProcessAppleEventDescriptors>,
+);
+
+impl std::ops::Deref for SharedProcessAppleEventDescriptors {
+    type Target = ProcessAppleEventDescriptors;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 impl ProcessAppleEventLaunchState {
     pub(crate) fn is_pristine(&self) -> bool {
@@ -4340,6 +4361,52 @@ impl SharedProcessVblTasks {
 
     pub(crate) fn snapshot(&self) -> Vec<ProcessVblTask> {
         self.with_ref(|tasks| tasks.to_vec())
+    }
+}
+
+#[allow(dead_code)]
+impl SharedProcessAppleEventDescriptors {
+    pub(crate) fn from_value(descriptors: ProcessAppleEventDescriptors) -> Self {
+        Self(SharedProcessValue::from_value(descriptors))
+    }
+
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn with_ref<R>(
+        &self,
+        operation: impl FnOnce(&ProcessAppleEventDescriptors) -> R,
+    ) -> R {
+        self.0.with_ref(operation)
+    }
+
+    pub(crate) fn with_mut<R>(
+        &self,
+        operation: impl FnOnce(&mut ProcessAppleEventDescriptors) -> R,
+    ) -> R {
+        self.0.with_mut(operation)
+    }
+
+    pub(crate) fn attach_to(&mut self, process_state: &Self) {
+        self.0
+            .attach_to(&process_state.0, ProcessAppleEventDescriptors::is_pristine);
+    }
+
+    pub(crate) fn attach_apple_event_descriptors_to(&mut self, target: &Self) {
+        self.attach_to(target);
+    }
+
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.with_ref(ProcessAppleEventDescriptors::is_pristine)
+    }
+
+    pub(crate) fn snapshot(&self) -> ProcessAppleEventDescriptors {
+        self.with_ref(|state| state.clone())
     }
 }
 
@@ -9845,11 +9912,12 @@ impl ProcessContext {
         &self,
         adapter: &mut SharedProcessAppleEventDescriptors,
     ) {
-        adapter.attach_to(&self.apple_event_descriptors, |state| {
-            state.events.is_empty()
-                && state.descriptors.is_empty()
-                && state.backing.is_empty()
-        });
+        adapter.attach_to(&self.apple_event_descriptors);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn apple_event_descriptors(&self) -> &SharedProcessAppleEventDescriptors {
+        &self.apple_event_descriptors
     }
 
     pub(crate) fn reset_apple_event_launch_state_for_launch(
@@ -14018,7 +14086,7 @@ mod tests {
         assert_eq!(native[0], task);
         assert_eq!(context.timer_tasks().len(), 1);
 
-        let mut detached = native.clone();
+        let detached = native.clone();
         assert!(!detached.ptr_eq(&native));
         assert_eq!(detached.len(), 1);
 
@@ -14092,7 +14160,7 @@ mod tests {
         assert_eq!(native[0], task);
         assert_eq!(context.vbl_tasks().len(), 1);
 
-        let mut detached = native.clone();
+        let detached = native.clone();
         assert!(!detached.ptr_eq(&native));
         assert_eq!(detached.len(), 1);
 
@@ -14101,5 +14169,97 @@ mod tests {
         assert_eq!(native.len(), 1);
         assert_eq!(classic.len(), 1);
         assert_eq!(context.vbl_tasks().len(), 1);
+    }
+
+    #[test]
+    fn process_apple_event_descriptors_encapsulation() {
+        let descriptors = SharedProcessAppleEventDescriptors::default();
+        assert!(descriptors.is_pristine());
+        assert!(descriptors.events.is_empty());
+        assert!(descriptors.descriptors.is_empty());
+        assert!(descriptors.backing.is_empty());
+        assert_eq!(descriptors.snapshot(), ProcessAppleEventDescriptors::default());
+
+        let event = ProcessSyntheticAppleEvent {
+            event_class: 0x61657674,
+            event_id: 0x6F617070,
+            params: HashMap::new(),
+            items: Vec::new(),
+        };
+        let desc = ProcessAeDescriptor {
+            desc_type: 0x54455854,
+            data: b"hello".to_vec(),
+            fields: HashMap::new(),
+            items: Vec::new(),
+        };
+
+        descriptors.with_mut(|state| {
+            state.events.insert(0x1000, event.clone());
+            state.descriptors.insert(0x2000, desc.clone());
+            state.backing.insert(0x3000, desc.clone());
+        });
+
+        assert!(!descriptors.is_pristine());
+        assert_eq!(descriptors.events.len(), 1);
+        assert_eq!(descriptors.descriptors.len(), 1);
+        assert_eq!(descriptors.backing.len(), 1);
+        assert_eq!(descriptors.events.get(&0x1000), Some(&event));
+        assert_eq!(descriptors.descriptors.get(&0x2000), Some(&desc));
+        assert_eq!(descriptors.backing.get(&0x3000), Some(&desc));
+
+        let snap = descriptors.snapshot();
+        assert_eq!(snap.events.len(), 1);
+        assert_eq!(snap.descriptors.len(), 1);
+        assert_eq!(snap.backing.len(), 1);
+
+        descriptors.with_mut(|state| {
+            state.events.clear();
+            state.descriptors.clear();
+            state.backing.clear();
+        });
+        assert!(descriptors.is_pristine());
+    }
+
+    #[test]
+    fn attached_apple_event_descriptors_share_cross_isa_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessAppleEventDescriptors::default();
+        let mut native = SharedProcessAppleEventDescriptors::default();
+
+        context.attach_apple_event_descriptors(&mut classic);
+        context.attach_apple_event_descriptors(&mut native);
+
+        assert!(classic.ptr_eq(&native));
+        assert!(classic.ptr_eq(context.apple_event_descriptors()));
+
+        let desc = ProcessAeDescriptor {
+            desc_type: 0x54455854,
+            data: b"cross-isa".to_vec(),
+            fields: HashMap::new(),
+            items: Vec::new(),
+        };
+        classic.with_mut(|state| {
+            state.descriptors.insert(0x5000, desc.clone());
+        });
+
+        assert_eq!(native.descriptors.get(&0x5000), Some(&desc));
+        assert_eq!(
+            context.apple_event_descriptors().descriptors.get(&0x5000),
+            Some(&desc)
+        );
+
+        let detached = native.clone();
+        assert!(!detached.ptr_eq(&native));
+
+        detached.with_mut(|state| {
+            state.descriptors.clear();
+        });
+        assert!(detached.descriptors.is_empty());
+        assert_eq!(native.descriptors.get(&0x5000), Some(&desc));
+        assert_eq!(classic.descriptors.get(&0x5000), Some(&desc));
+        assert_eq!(
+            context.apple_event_descriptors().descriptors.get(&0x5000),
+            Some(&desc)
+        );
     }
 }
