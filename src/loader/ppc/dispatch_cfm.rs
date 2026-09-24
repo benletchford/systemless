@@ -658,6 +658,7 @@ pub(super) fn ppc_is_explicit_hle_cfm_library(library_name: &str) -> bool {
             | "SpeechLib"
             | "QuickTimeLib"
             | "InputSprocketLib"
+            | "DriverServicesLib"
             | "ObjectSupportLib"
             | "AppearanceLib"
             | "DisplayLib"

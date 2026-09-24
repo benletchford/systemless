@@ -2754,6 +2754,22 @@ use super::*;
     }
 
     #[test]
+    fn pb_get_cat_info_absolute_boot_path_ignores_current_directory() {
+        let directories = initial_ppc_vfs_directories();
+        let entry = ppc_catalog_entry_for_lookup(
+            &directories,
+            &[],
+            &[],
+            PPC_PREFERENCES_DIR_ID,
+            b"MacintoshHD:System Folder:Preferences",
+            0,
+        )
+        .expect("absolute boot-volume pathname");
+        assert_eq!(entry.path, "System Folder/Preferences");
+        assert!(entry.is_directory);
+    }
+
+    #[test]
     fn hle_import_runner_pb_get_cat_info_enumerates_children_by_index() {
         let pef = synthetic_pef_with_import(b"PBGetCatInfoSync");
         let mut loaded = load_pef_application(&pef).unwrap();
