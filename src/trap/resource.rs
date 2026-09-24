@@ -7907,6 +7907,56 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
+                // PBSetCatInfo (selector 10)
+                // Updates a file's Finder information and catalogue dates, or
+                // a directory's Finder information, using the named entry.
+                // FUNCTION PBSetCatInfo(paramBlock: CInfoPBPtr; async: BOOLEAN): OSErr;
+                // Inside Macintosh: Files (1992), pp. 2-193 to 2-195.
+                if selector == 10 {
+                    let error = if vref != 0 && self.working_directory_info(vref).is_none() {
+                        -35i16 // nsvErr
+                    } else if let Some(entry) =
+                        self.lookup_catalog_entry_for_hfs_lookup(vref, dir_id, &filename, 0)
+                    {
+                        if self.vfs_path_is_read_only(&entry.path) {
+                            -46 // vLckdErr
+                        } else if entry.is_directory {
+                            let file_type = bus.read_long(pb + 32);
+                            let creator = bus.read_long(pb + 36);
+                            let finder_flags = bus.read_word(pb + 40);
+                            self.vfs_directories.with_mut(|directories| {
+                                if let Some(directory) = directories.iter_mut().find(|directory| {
+                                    directory.path.eq_ignore_ascii_case(&entry.path)
+                                }) {
+                                    directory.file_type = file_type;
+                                    directory.creator = creator;
+                                    directory.finder_flags = finder_flags;
+                                }
+                            });
+                            0
+                        } else if self.locked_files.contains(&entry.path) {
+                            -45 // fLckdErr
+                        } else {
+                            let file_type = bus.read_long(pb + 32);
+                            let creator = bus.read_long(pb + 36);
+                            let finder_flags = bus.read_word(pb + 40);
+                            let created_date = bus.read_long(pb + 72);
+                            let modified_date = bus.read_long(pb + 76);
+                            self.vfs_metadata.update(&entry.path, |metadata| {
+                                metadata.created_date = created_date;
+                                metadata.modified_date = modified_date;
+                            });
+                            self.set_vfs_entry_finfo(&entry.path, file_type, creator, finder_flags);
+                            0
+                        }
+                    } else {
+                        -43 // fnfErr
+                    };
+                    bus.write_word(pb + 16, error as u16);
+                    cpu.write_reg(Register::D0, (error as i32) as u32);
+                    return Some(Ok(()));
+                }
+
                 // Selector 26 = PBOpenDF / PBHOpenDF: open data fork by name.
                 // hfsBit distinguishes the basic parameter block from the HFS
                 // form that adds ioDirID. Both forms otherwise share the open,
@@ -17165,6 +17215,98 @@ mod tests {
         assert_eq!(bus.read_long(pb + 54), 0, "data fork length");
         assert_eq!(bus.read_long(pb + 64), 4, "resource fork length");
         assert_eq!(bus.read_long(pb + 100), app_dir_id);
+    }
+
+    #[test]
+    fn fsdispatch_pbsetcatinfo_updates_file_finder_info_and_dates() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dir_id = disp.ensure_vfs_directory("Installed");
+        disp.vfs.insert("Installed/Game".to_string(), Vec::new());
+        disp.set_vfs_entry_metadata("Installed/Game", *b"Part", *b"SIT!", 0);
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"Game");
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_long(pb + 48, dir_id);
+        bus.write_long(pb + 32, u32::from_be_bytes(*b"APPL"));
+        bus.write_long(pb + 36, u32::from_be_bytes(*b"GAME"));
+        bus.write_word(pb + 40, 0x0040);
+        bus.write_long(pb + 72, 0x12345678);
+        bus.write_long(pb + 76, 0x23456789);
+        cpu.write_reg(Register::D0, 10);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        let metadata = disp.vfs_file_metadata("Installed/Game").unwrap();
+        assert_eq!(metadata.file_type, u32::from_be_bytes(*b"APPL"));
+        assert_eq!(metadata.creator, u32::from_be_bytes(*b"GAME"));
+        assert_eq!(metadata.finder_flags, 0x0040);
+        assert_eq!(metadata.created_date, 0x12345678);
+        assert_eq!(metadata.modified_date, 0x23456789);
+    }
+
+    #[test]
+    fn fsdispatch_pbsetcatinfo_updates_directory_finder_info() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dir_id = disp.ensure_vfs_directory("Installed");
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"");
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_long(pb + 48, dir_id);
+        bus.write_long(pb + 32, u32::from_be_bytes(*b"fold"));
+        bus.write_long(pb + 36, u32::from_be_bytes(*b"TEST"));
+        bus.write_word(pb + 40, 0x0400);
+        cpu.write_reg(Register::D0, 10);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        let directory = disp.directory_entry_for_id(dir_id).unwrap();
+        assert_eq!(directory.file_type, u32::from_be_bytes(*b"fold"));
+        assert_eq!(directory.creator, u32::from_be_bytes(*b"TEST"));
+        assert_eq!(directory.finder_flags, 0x0400);
+    }
+
+    #[test]
+    fn fsdispatch_pbsetcatinfo_rejects_missing_file() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"Missing");
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_long(pb + 48, 2);
+        cpu.write_reg(Register::D0, 10);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -43);
+        assert_eq!(bus.read_word(pb + 16) as i16, -43);
+    }
+
+    #[test]
+    fn fsdispatch_pbsetcatinfo_rejects_locked_file_without_mutation() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dir_id = disp.ensure_vfs_directory("Installed");
+        disp.vfs.insert("Installed/Game".to_string(), Vec::new());
+        disp.set_vfs_entry_metadata("Installed/Game", *b"APPL", *b"GAME", 0);
+        disp.locked_files.insert("Installed/Game".to_string());
+
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"Game");
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_long(pb + 48, dir_id);
+        bus.write_long(pb + 32, u32::from_be_bytes(*b"TEXT"));
+        cpu.write_reg(Register::D0, 10);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -45);
+        assert_eq!(bus.read_word(pb + 16) as i16, -45);
+        assert_eq!(
+            disp.vfs_file_metadata("Installed/Game").unwrap().file_type,
+            u32::from_be_bytes(*b"APPL")
+        );
     }
 
     // ================================================================
