@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.58.0](https://github.com/benletchford/systemless/compare/v0.57.0...v0.58.0) (2026-09-24)
+
+
+### Features
+
+* **catalogue:** add TaskMaker shareware ([#2641](https://github.com/benletchford/systemless/issues/2641)) ([3c3506b](https://github.com/benletchford/systemless/commit/3c3506b5a81eca29a63201da347d9b76be7d1ad5))
+* **catalogue:** enable Harpoon Classic demo launch ([#2651](https://github.com/benletchford/systemless/issues/2651)) ([3ee2e0c](https://github.com/benletchford/systemless/commit/3ee2e0c1722d3732277f64dcd0e986d61e45b36f))
+* **catalogue:** enable Harry the Handsome Executive launch ([#2645](https://github.com/benletchford/systemless/issues/2645)) ([e4a64d5](https://github.com/benletchford/systemless/commit/e4a64d57e0284b613c2ab87ab840cbd8c31fdc7b))
+* **catalogue:** enable Populous demo launch ([#2649](https://github.com/benletchford/systemless/issues/2649)) ([0b4d50b](https://github.com/benletchford/systemless/commit/0b4d50baf089e5a9f1964ecb5551fb04aa52f301))
+* **catalogue:** enable Spaceward Ho! demo launch ([#2647](https://github.com/benletchford/systemless/issues/2647)) ([8ca9380](https://github.com/benletchford/systemless/commit/8ca9380cac238dc54b7371e7a069b80b9d711508))
+
+
+### Bug Fixes
+
+* **dialog:** recognize stack-result filter callbacks ([#2639](https://github.com/benletchford/systemless/issues/2639)) ([a5d54de](https://github.com/benletchford/systemless/commit/a5d54def432bdf82ed6e13729cd0c5b4a2e7bddc))
+* **files:** apply PBSetCatInfo metadata updates ([#2644](https://github.com/benletchford/systemless/issues/2644)) ([e0d86f4](https://github.com/benletchford/systemless/commit/e0d86f456ea9831f18c7349c24bcbd34429b92c9))
+
+
+### Performance Improvements
+
+* **framebuffer:** skip unchanged chrome restores and shrink menu-bar snapshots ([#2632](https://github.com/benletchford/systemless/issues/2632)) ([123d6b7](https://github.com/benletchford/systemless/commit/123d6b7eb3c291c9c9eb2507ace0a1157490c659))
+* **memory:** let compiled stores to plain RAM skip the bus ([#2629](https://github.com/benletchford/systemless/issues/2629)) ([89c0d6b](https://github.com/benletchford/systemless/commit/89c0d6bd98ae062e440f62a8ce4c06fcea6e30ce))
+
+
+### Code Refactoring
+
+* **ppc:** extract TextEdit Manager tests into dedicated module ([#2636](https://github.com/benletchford/systemless/issues/2636)) ([dd5c100](https://github.com/benletchford/systemless/commit/dd5c1007cf49660e307272bc920ebad020e38f0c))
+
 ## [0.57.0](https://github.com/benletchford/systemless/compare/v0.56.0...v0.57.0) (2026-09-24)
 
 
