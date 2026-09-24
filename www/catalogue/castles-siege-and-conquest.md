@@ -10,9 +10,21 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+launch_enabled: true
 compatibility:
   status: playable
   verified:
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
+    systemless_version: "0.57.0 + local site build"
+    architecture: 68k
+    environment: >-
+      Release-mode browser launch from the immutable hosted time-limited demo
+      at localhost:8080. Passed the Demo Version title, entered a player name,
+      started a new game, watched the strategic-map date advance, and selected
+      a map region that updated the location label to Chartres.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2652
   - date: "2026-09-23"
     tester: Catalogue maintainer
     systemless_version: 0.52.0-dev
