@@ -1672,6 +1672,18 @@ pub(super) fn dispatch_q3_group_view_import(
                 ),
             )))
         }
+        PpcImportDispatcherTarget::Q3ViewGetWorldToFrustumMatrixState => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_view_get_world_to_frustum_matrix_state(
+                    cpu,
+                    memory,
+                    stores.q3_objects,
+                    q3_error_state,
+                    stores.q3_views,
+                    stores.q3_cameras,
+                ),
+            )))
+        }
         PpcImportDispatcherTarget::Q3ViewStartRendering => Some(PpcImportAction::Return(
             u32::from(ppc_q3_view_start_rendering(
                 cpu,

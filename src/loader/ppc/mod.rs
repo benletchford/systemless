@@ -2436,6 +2436,7 @@ pub enum PpcImportDispatcherTarget {
     Q3ViewGetDrawContext,
     Q3ViewSetCamera,
     Q3ViewGetCamera,
+    Q3ViewGetWorldToFrustumMatrixState,
     Q3ViewStartRendering,
     Q3ViewEndRendering,
     Q3ViewStartBoundingBox,
@@ -15215,6 +15216,11 @@ fn dispatcher_target_for_import(
         (library_name, "Q3View_GetCamera") if is_quickdraw_3d_library(library_name) => {
             PpcImportDispatcherTarget::Q3ViewGetCamera
         }
+        (library_name, "Q3View_GetWorldToFrustumMatrixState")
+            if is_quickdraw_3d_library(library_name) =>
+        {
+            PpcImportDispatcherTarget::Q3ViewGetWorldToFrustumMatrixState
+        }
         (library_name, "Q3View_StartRendering") if is_quickdraw_3d_library(library_name) => {
             PpcImportDispatcherTarget::Q3ViewStartRendering
         }
@@ -19564,6 +19570,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::Q3ViewGetDrawContext
         | PpcImportDispatcherTarget::Q3ViewSetCamera
         | PpcImportDispatcherTarget::Q3ViewGetCamera
+        | PpcImportDispatcherTarget::Q3ViewGetWorldToFrustumMatrixState
         | PpcImportDispatcherTarget::Q3ViewStartRendering
         | PpcImportDispatcherTarget::Q3ViewEndRendering
         | PpcImportDispatcherTarget::Q3ViewStartBoundingBox
@@ -23945,6 +23952,47 @@ fn ppc_q3_camera_get_view_to_frustum(
     let Some(matrix) = ppc_q3_camera_view_to_frustum_matrix(record) else {
         return false;
     };
+    ppc_write_q3_matrix4x4(memory, matrix_out_ptr, &matrix).is_some()
+}
+
+fn ppc_q3_view_get_world_to_frustum_matrix_state(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    q3_objects: &[PpcQ3ObjectRecord],
+    q3_error_state: &mut PpcQ3ErrorState,
+    q3_views: &[PpcQ3ViewStateRecord],
+    q3_cameras: &[PpcQ3CameraRecord],
+) -> bool {
+    let view = cpu.gpr[3];
+    let matrix_out_ptr = cpu.gpr[4];
+    if matrix_out_ptr == 0
+        || !ppc_memory_can_write_bytes(memory, matrix_out_ptr, PPC_Q3_MATRIX4X4_SIZE)
+        || !ppc_q3_validate_view_handle(q3_objects, q3_error_state, view)
+    {
+        return false;
+    }
+    let Some(view_record) = q3_views.iter().find(|record| record.view == view) else {
+        return false;
+    };
+    if view_record.rendering_depth == 0 {
+        return false;
+    }
+    if !ppc_q3_validate_camera_handle(q3_objects, q3_error_state, view_record.camera) {
+        return false;
+    }
+    let Some(camera) = q3_cameras
+        .iter()
+        .find(|record| record.camera == view_record.camera)
+    else {
+        return false;
+    };
+    let Some(world_to_view) = ppc_q3_camera_world_to_view_matrix(camera.placement) else {
+        return false;
+    };
+    let Some(view_to_frustum) = ppc_q3_camera_view_to_frustum_matrix(camera) else {
+        return false;
+    };
+    let matrix = ppc_q3_matrix4x4_multiply_values(world_to_view, view_to_frustum);
     ppc_write_q3_matrix4x4(memory, matrix_out_ptr, &matrix).is_some()
 }
 
