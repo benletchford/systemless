@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.59.0](https://github.com/benletchford/systemless/compare/v0.58.0...v0.59.0) (2026-09-24)
+
+
+### Features
+
+* **catalogue:** add Alone in the Dark demo ([#2667](https://github.com/benletchford/systemless/issues/2667)) ([4805aad](https://github.com/benletchford/systemless/commit/4805aadd65ddf22baea06a3aad0b6a1aeea5d558))
+* **catalogue:** add Return to Zork demo ([#2673](https://github.com/benletchford/systemless/issues/2673)) ([3d181b3](https://github.com/benletchford/systemless/commit/3d181b3595711047bad52e49420076ca830664cc))
+* **catalogue:** enable A-10 Attack! demo launch ([#2656](https://github.com/benletchford/systemless/issues/2656)) ([5447e5f](https://github.com/benletchford/systemless/commit/5447e5fcdf801dc0d9cbee34e411605ed1945422))
+* **catalogue:** enable Castles demo launch ([#2653](https://github.com/benletchford/systemless/issues/2653)) ([015c0bd](https://github.com/benletchford/systemless/commit/015c0bdb4a74421b5a61fc0852b5d26b0e01172c))
+* **catalogue:** enable Spectre demo launch ([#2659](https://github.com/benletchford/systemless/issues/2659)) ([a294bb8](https://github.com/benletchford/systemless/commit/a294bb8846ff8a092fb979752391ad5156ce588a))
+
+
+### Bug Fixes
+
+* **ppc:** support QuickDraw 3D version checks for Bugdom ([#2668](https://github.com/benletchford/systemless/issues/2668)) ([9659576](https://github.com/benletchford/systemless/commit/965957651fdec7bcc7702644c8361804197f09a7))
+
+
+### Code Refactoring
+
+* **ppc:** consolidate remaining Menu Manager tests into dedicated module ([#2662](https://github.com/benletchford/systemless/issues/2662)) ([14924a4](https://github.com/benletchford/systemless/commit/14924a486ceeea0e8dea1de4c8af1b70fd7f3ec7))
+* **ppc:** extract Control Manager tests into dedicated module ([#2676](https://github.com/benletchford/systemless/issues/2676)) ([9169cdd](https://github.com/benletchford/systemless/commit/9169cdd586ad269bf09829bb86dfa997ee893ef2))
+* **ppc:** extract Dialog Manager tests into dedicated module ([#2666](https://github.com/benletchford/systemless/issues/2666)) ([dfcf04c](https://github.com/benletchford/systemless/commit/dfcf04c8dc7a895a58113a8b8e105cfb4f09430c))
+* **ppc:** extract List Manager tests into dedicated module ([#2657](https://github.com/benletchford/systemless/issues/2657)) ([36313c9](https://github.com/benletchford/systemless/commit/36313c914f2a8ef571e4d3b39d48a10a95be69b6))
+* **ppc:** extract remaining Menu Tracking and PopUpMenuSelect tests into menu manager module ([#2672](https://github.com/benletchford/systemless/issues/2672)) ([967b519](https://github.com/benletchford/systemless/commit/967b519823cde747ddca86b1fde5170b85308940))
+
 ## [0.58.0](https://github.com/benletchford/systemless/compare/v0.57.0...v0.58.0) (2026-09-24)
 
 
