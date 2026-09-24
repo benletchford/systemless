@@ -1,5 +1,67 @@
 # Changelog
 
+## [0.60.0](https://github.com/benletchford/systemless/compare/v0.59.0...v0.60.0) (2026-09-24)
+
+
+### Features
+
+* **catalogue:** add F/A-18 Hornet 2.0 demo ([#2738](https://github.com/benletchford/systemless/issues/2738)) ([67d3586](https://github.com/benletchford/systemless/commit/67d358625ba81366b9380d61514751231faca5dd))
+* **catalogue:** add Hellcats automated demo ([#2742](https://github.com/benletchford/systemless/issues/2742)) ([2ca7407](https://github.com/benletchford/systemless/commit/2ca74077c9f2874c90d3146ff5262957e8c93647))
+* **catalogue:** add original Journeyman Project preview ([#2766](https://github.com/benletchford/systemless/issues/2766)) ([8af6913](https://github.com/benletchford/systemless/commit/8af6913e9e9c64475e4fbecd92842532c76041fb))
+* **catalogue:** add original SimAnt color demo ([#2773](https://github.com/benletchford/systemless/issues/2773)) ([abd1748](https://github.com/benletchford/systemless/commit/abd174865a906a5c525feb0dc3934fbe25f78524))
+* **catalogue:** add V for Victory demo ([36c5ff0](https://github.com/benletchford/systemless/commit/36c5ff081e31e8187df9dd6a0081354487428ee6))
+* **catalogue:** stage Realmz shareware ([#2697](https://github.com/benletchford/systemless/issues/2697)) ([7246fc5](https://github.com/benletchford/systemless/commit/7246fc5f8f65685acdc22067f71720255de8cb30))
+* **ppc:** implement QuickDraw 3D bounds and vector length ([#2674](https://github.com/benletchford/systemless/issues/2674)) ([92fa239](https://github.com/benletchford/systemless/commit/92fa239fb306b478f81f7c129d54d1a07525ab87))
+
+
+### Bug Fixes
+
+* **desktop:** preserve guest cursor warps in host pointer input ([#2681](https://github.com/benletchford/systemless/issues/2681)) ([220c666](https://github.com/benletchford/systemless/commit/220c6663222b873f5747c1b2ccc51d3707aadc68))
+* **file:** back data-fork opens with HFS file control blocks ([#2735](https://github.com/benletchford/systemless/issues/2735)) ([48029c4](https://github.com/benletchford/systemless/commit/48029c45cbf5dc45b0e2823227f15dd61aabab70))
+* **loadseg:** reenter saved gateway dispatch sequence ([#2759](https://github.com/benletchford/systemless/issues/2759)) ([65e8f41](https://github.com/benletchford/systemless/commit/65e8f4114367f9560c833d4b60c8b88f9356dda1))
+* **ppc:** advance Quake III Test through startup ([#2702](https://github.com/benletchford/systemless/issues/2702)) ([8065d41](https://github.com/benletchford/systemless/commit/8065d41dc02cbbe1206333fcaa52372e2ab5acef))
+* **ppc:** preserve DisplayDispatch callback under auto-pop ([#2714](https://github.com/benletchford/systemless/issues/2714)) ([379e4b9](https://github.com/benletchford/systemless/commit/379e4b9e0faebd0531578e31534e5ec4a574af4c))
+* **ppc:** run StarCraft demo through playable Terran mission ([#2768](https://github.com/benletchford/systemless/issues/2768)) ([e9ffe1e](https://github.com/benletchford/systemless/commit/e9ffe1e2852b34088538376cd1794873467cac15))
+* **quickdraw:** map extended pictures through their source rectangle ([#2709](https://github.com/benletchford/systemless/issues/2709)) ([e0b8012](https://github.com/benletchford/systemless/commit/e0b801298a39abee3d551778fc82db76a9ea14d8))
+* **resource:** handle saved LoadSeg gateway calls ([#2752](https://github.com/benletchford/systemless/issues/2752)) ([5766059](https://github.com/benletchford/systemless/commit/57660595e339b83795437df995ef6922f4e4f56e))
+* **resource:** synchronize guest ResLoad low-memory state ([#2750](https://github.com/benletchford/systemless/issues/2750)) ([d79dced](https://github.com/benletchford/systemless/commit/d79dced3fb70f26b0b876a0b6a27eed1ad07a484))
+* update StuffIt decoder for classic archives ([#2693](https://github.com/benletchford/systemless/issues/2693)) ([8f9b7b4](https://github.com/benletchford/systemless/commit/8f9b7b431ee1568863c00cf559a763d67c21b2dc))
+* **window:** preserve oversized dialog regions during moves ([#2708](https://github.com/benletchford/systemless/issues/2708)) ([6d80688](https://github.com/benletchford/systemless/commit/6d8068854de603f23ad15dee73476ccda728e5b2))
+
+
+### Performance Improvements
+
+* cut presentation and bus overhead on graphics-heavy games ([#2677](https://github.com/benletchford/systemless/issues/2677)) ([a8fba45](https://github.com/benletchford/systemless/commit/a8fba45a42cb54d88def0d6f1688e826877bd7d8))
+* **framebuffer:** replay chrome colour lookups across palette changes ([#2689](https://github.com/benletchford/systemless/issues/2689)) ([71960a3](https://github.com/benletchford/systemless/commit/71960a3db97e6b6fbb967b2bba1a751c8a88a0f9))
+
+
+### Code Refactoring
+
+* **ppc:** extract Color QuickDraw and CLUT operations tests into quickdraw module ([#2720](https://github.com/benletchford/systemless/issues/2720)) ([3f71279](https://github.com/benletchford/systemless/commit/3f7127911dbed4d5116901c1ab11fdaa38ea2014))
+* **ppc:** extract cross-ISA process service and clone detachment tests into process_services module ([#2746](https://github.com/benletchford/systemless/issues/2746)) ([711f02d](https://github.com/benletchford/systemless/commit/711f02d4ad59c72a359538606719d7641665c06d))
+* **ppc:** extract display manager and GDevice query tests into display_depth module ([#2749](https://github.com/benletchford/systemless/issues/2749)) ([6a7b9f2](https://github.com/benletchford/systemless/commit/6a7b9f2f3598272bc568962b848301aecdfaa140))
+* **ppc:** extract DrawSprocket and InputSprocket trace and import classification tests into sprocket modules ([#2727](https://github.com/benletchford/systemless/issues/2727)) ([52e81dd](https://github.com/benletchford/systemless/commit/52e81dd8ade2f91903032e377e55e3bfa823c6fc))
+* **ppc:** extract Event Manager queue, dispatch, and polling tests into event_manager module ([#2722](https://github.com/benletchford/systemless/issues/2722)) ([dcdb5d5](https://github.com/benletchford/systemless/commit/dcdb5d55546a835586374aca882ae19ed4e6d8a7))
+* **ppc:** extract File Manager volume and FCB tests into file_manager module ([#2716](https://github.com/benletchford/systemless/issues/2716)) ([8464b82](https://github.com/benletchford/systemless/commit/8464b82826af7ba183b139e1aa35477b11b774b6))
+* **ppc:** extract FixMath and Wide operations tests into fixmath module ([#2701](https://github.com/benletchford/systemless/issues/2701)) ([788f862](https://github.com/benletchford/systemless/commit/788f86270e5223edc4bac71bbd9a97bccabca5c9))
+* **ppc:** extract handle duplication, pointer, and memory binding tests into memory_manager module ([#2760](https://github.com/benletchford/systemless/issues/2760)) ([1bd0233](https://github.com/benletchford/systemless/commit/1bd0233a65c4393ccd8f8ff7f153328bb3439eab))
+* **ppc:** extract MathLib floating-point and transcendental tests into math_compatibility module ([#2705](https://github.com/benletchford/systemless/issues/2705)) ([22a991b](https://github.com/benletchford/systemless/commit/22a991bf249553e3b2ace7c0b43e22e5ce41b627))
+* **ppc:** extract memory manager handle, block, and temp memory tests into memory_manager module ([#2744](https://github.com/benletchford/systemless/issues/2744)) ([1323432](https://github.com/benletchford/systemless/commit/13234322851e73d076e18bfc00214fa36d535616))
+* **ppc:** extract parameter block and volume working directory tests into file_manager module ([#2731](https://github.com/benletchford/systemless/issues/2731)) ([659e944](https://github.com/benletchford/systemless/commit/659e944cfde907844c9d409522eb67a5aa47559d))
+* **ppc:** extract PEF loader relocation, import planning, and dump tests into loader_configuration module ([#2729](https://github.com/benletchford/systemless/issues/2729)) ([613645b](https://github.com/benletchford/systemless/commit/613645bb3c14f396d0721ed0558d7a14574dc23e))
+* **ppc:** extract QuickDraw 3D trace formatting and import classification tests into qd3d module ([#2724](https://github.com/benletchford/systemless/issues/2724)) ([ea2b84f](https://github.com/benletchford/systemless/commit/ea2b84feb0a8f6cb23f5a3cc339acb1c2bd4d328))
+* **ppc:** extract QuickDraw and GWorld import classification tests into quickdraw and gworld modules ([#2733](https://github.com/benletchford/systemless/issues/2733)) ([c05aa5d](https://github.com/benletchford/systemless/commit/c05aa5d9743da7b9c21546749e2ba2a718679bf4))
+* **ppc:** extract QuickDraw cursor and color indexing tests into quickdraw module ([#2694](https://github.com/benletchford/systemless/issues/2694)) ([3c05c0f](https://github.com/benletchford/systemless/commit/3c05c0fb76d01b5e1ce1b6cb4709845133f213f5))
+* **ppc:** extract QuickDraw picture and geometry tests into quickdraw module ([#2690](https://github.com/benletchford/systemless/issues/2690)) ([89cf52d](https://github.com/benletchford/systemless/commit/89cf52d987729f3af3aae69ae1f3cf15f9808aec))
+* **ppc:** extract QuickDraw transfer mode and color tests into quickdraw module ([#2680](https://github.com/benletchford/systemless/issues/2680)) ([f0a39a5](https://github.com/benletchford/systemless/commit/f0a39a5835e0fff79a11663eab8c9de6bc70b479))
+* **ppc:** extract resource manager tests into resource_manager module ([#2767](https://github.com/benletchford/systemless/issues/2767)) ([a685aaa](https://github.com/benletchford/systemless/commit/a685aaa9ef79425ff10289a961ea3e182b1961f2))
+* **ppc:** extract StdCLib signal and data globals tests into standard_c_library module ([#2712](https://github.com/benletchford/systemless/issues/2712)) ([05cb017](https://github.com/benletchford/systemless/commit/05cb017312449f44b22ca613482212c6b91e4e77))
+* **ppc:** extract system reservation and memory layout tests into loader_configuration module ([#2740](https://github.com/benletchford/systemless/issues/2740)) ([13c1bfc](https://github.com/benletchford/systemless/commit/13c1bfc1b7517da69c051463c5fbce9366c14b10))
+* **ppc:** extract timer and VBL interrupt callback tests into interrupt_callbacks module ([#2737](https://github.com/benletchford/systemless/issues/2737)) ([f8a08eb](https://github.com/benletchford/systemless/commit/f8a08eb80b9c8c488cdcfef871f8fe5f2fde78fc))
+* **ppc:** extract toolbox utilities and string conversion tests into toolbox_utilities module ([#2763](https://github.com/benletchford/systemless/issues/2763)) ([2d5dadc](https://github.com/benletchford/systemless/commit/2d5dadca305de9e94b8d322a0754d8b69944e928))
+* **ppc:** extract virtual tick and poll fast-forwarding tests into interrupt_callbacks module ([#2754](https://github.com/benletchford/systemless/issues/2754)) ([1481619](https://github.com/benletchford/systemless/commit/1481619346ac958dab430ac17b62c0b65673af78))
+* **ppc:** extract zone, application limit, and more masters tests into memory_manager module ([#2756](https://github.com/benletchford/systemless/issues/2756)) ([435a520](https://github.com/benletchford/systemless/commit/435a5209222fbd70bd6369b430f8ecde578d5edc))
+
 ## [0.59.0](https://github.com/benletchford/systemless/compare/v0.58.0...v0.59.0) (2026-09-24)
 
 
