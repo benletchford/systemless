@@ -1111,6 +1111,26 @@ fn hle_import_runner_gets_world_to_frustum_matrix_during_rendering() {
 }
 
 #[test]
+fn quickdraw_3d_frustum_to_window_matrix_maps_pane_corners() {
+    let pane = PpcQ3ViewportRect {
+        left: 10,
+        top: 20,
+        right: 650,
+        bottom: 500,
+    };
+    let matrix = ppc_q3_frustum_to_window_matrix(pane).unwrap();
+    assert_eq!(
+        ppc_q3_point3d_transform_values((-1.0, 1.0, 0.25), matrix),
+        (10.0, 20.0, 0.25)
+    );
+    assert_eq!(
+        ppc_q3_point3d_transform_values((1.0, -1.0, 0.75), matrix),
+        (650.0, 500.0, 0.75)
+    );
+    assert_eq!(matrix[2][2], 1.0);
+}
+
+#[test]
 fn hle_import_runner_handles_q3_renderer_type_state() {
     let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3Renderer_NewFromType");
     let mut loaded = load_pef_application(&pef).unwrap();

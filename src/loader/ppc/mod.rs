@@ -2437,6 +2437,7 @@ pub enum PpcImportDispatcherTarget {
     Q3ViewSetCamera,
     Q3ViewGetCamera,
     Q3ViewGetWorldToFrustumMatrixState,
+    Q3ViewGetFrustumToWindowMatrixState,
     Q3ViewStartRendering,
     Q3ViewEndRendering,
     Q3ViewStartBoundingBox,
@@ -15221,6 +15222,11 @@ fn dispatcher_target_for_import(
         {
             PpcImportDispatcherTarget::Q3ViewGetWorldToFrustumMatrixState
         }
+        (library_name, "Q3View_GetFrustumToWindowMatrixState")
+            if is_quickdraw_3d_library(library_name) =>
+        {
+            PpcImportDispatcherTarget::Q3ViewGetFrustumToWindowMatrixState
+        }
         (library_name, "Q3View_StartRendering") if is_quickdraw_3d_library(library_name) => {
             PpcImportDispatcherTarget::Q3ViewStartRendering
         }
@@ -19571,6 +19577,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::Q3ViewSetCamera
         | PpcImportDispatcherTarget::Q3ViewGetCamera
         | PpcImportDispatcherTarget::Q3ViewGetWorldToFrustumMatrixState
+        | PpcImportDispatcherTarget::Q3ViewGetFrustumToWindowMatrixState
         | PpcImportDispatcherTarget::Q3ViewStartRendering
         | PpcImportDispatcherTarget::Q3ViewEndRendering
         | PpcImportDispatcherTarget::Q3ViewStartBoundingBox
@@ -23993,6 +24000,60 @@ fn ppc_q3_view_get_world_to_frustum_matrix_state(
         return false;
     };
     let matrix = ppc_q3_matrix4x4_multiply_values(world_to_view, view_to_frustum);
+    ppc_write_q3_matrix4x4(memory, matrix_out_ptr, &matrix).is_some()
+}
+
+fn ppc_q3_frustum_to_window_matrix(viewport: PpcQ3ViewportRect) -> Option<[[f32; 4]; 4]> {
+    if viewport.right <= viewport.left || viewport.bottom <= viewport.top {
+        return None;
+    }
+    let half_width = (viewport.right - viewport.left) as f32 * 0.5;
+    let half_height = (viewport.bottom - viewport.top) as f32 * 0.5;
+    Some([
+        [half_width, 0.0, 0.0, 0.0],
+        [0.0, -half_height, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [viewport.left as f32 + half_width, viewport.top as f32 + half_height, 0.0, 1.0],
+    ])
+}
+
+fn ppc_q3_view_get_frustum_to_window_matrix_state(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    q3_objects: &[PpcQ3ObjectRecord],
+    q3_error_state: &mut PpcQ3ErrorState,
+    q3_views: &[PpcQ3ViewStateRecord],
+    q3_draw_contexts: &[PpcQ3DrawContextRecord],
+    gworlds: &[PpcGWorldRecord],
+) -> bool {
+    let view = cpu.gpr[3];
+    let matrix_out_ptr = cpu.gpr[4];
+    if matrix_out_ptr == 0
+        || !ppc_memory_can_write_bytes(memory, matrix_out_ptr, PPC_Q3_MATRIX4X4_SIZE)
+        || !ppc_q3_validate_view_handle(q3_objects, q3_error_state, view)
+    {
+        return false;
+    }
+    let Some(view_record) = q3_views.iter().find(|record| record.view == view) else {
+        return false;
+    };
+    if view_record.rendering_depth == 0 {
+        return false;
+    }
+    let Some(target) = ppc_q3_draw_context_render_target(
+        q3_objects,
+        q3_draw_contexts,
+        gworlds,
+        view_record.draw_context,
+    ) else {
+        return false;
+    };
+    let viewport = target
+        .viewport
+        .unwrap_or_else(|| PpcQ3ViewportRect::full(target.front_buffer));
+    let Some(matrix) = ppc_q3_frustum_to_window_matrix(viewport) else {
+        return false;
+    };
     ppc_write_q3_matrix4x4(memory, matrix_out_ptr, &matrix).is_some()
 }
 

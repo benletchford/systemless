@@ -3295,6 +3295,13 @@ fn import_bindings_classify_quickdraw_3d_initializer() {
         PpcImportDispatcherTarget::Q3ViewGetWorldToFrustumMatrixState
     );
     assert_eq!(
+        dispatcher_target_for_import(
+            "QuickDraw\u{2122} 3D",
+            "Q3View_GetFrustumToWindowMatrixState"
+        ),
+        PpcImportDispatcherTarget::Q3ViewGetFrustumToWindowMatrixState
+    );
+    assert_eq!(
         dispatcher_target_for_import("QuickDraw\u{2122} 3D", "Q3MipmapTexture_New"),
         PpcImportDispatcherTarget::Q3MipmapTextureNew
     );
