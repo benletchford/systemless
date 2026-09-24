@@ -69,6 +69,9 @@ pub(super) fn dispatch_drawsprocket_import(
         PpcImportDispatcherTarget::DSpContextGlobalToLocal => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_context_global_to_local(cpu, memory)),
         )),
+        PpcImportDispatcherTarget::DSpContextLocalToGlobal => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_dsp_context_global_to_local(cpu, memory)),
+        )),
         PpcImportDispatcherTarget::DSpFindBestContext => {
             Some(PpcImportAction::Return(ppc_i16_result(
                 ppc_dsp_find_best_context(memory, cpu.gpr[3], cpu.gpr[4], draw_sprocket),
@@ -106,6 +109,9 @@ pub(super) fn dispatch_drawsprocket_import(
         )),
         PpcImportDispatcherTarget::DSpContextSetState => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_context_set_state(cpu, draw_sprocket)),
+        )),
+        PpcImportDispatcherTarget::DSpContextGetState => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_dsp_context_get_state(cpu, memory, draw_sprocket)),
         )),
         PpcImportDispatcherTarget::DSpContextFadeGamma => {
             Some(PpcImportAction::Return(ppc_i16_result(

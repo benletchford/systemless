@@ -47,6 +47,9 @@ pub(super) fn dispatch_resource_import(
                 memory.write_u16_be(crate::memory::globals::addr::RES_LOAD, u16::from(load) << 8);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::LMGetResLoad => {
+            Some(PpcImportAction::Return(u32::from(resource_policy.res_load())))
+        }
         PpcImportDispatcherTarget::LoadResource => {
             // Inside Macintosh Volume I (1985), I-120: LoadResource fills an
             // empty resource handle and reports resNotFound for other handles.

@@ -38,6 +38,16 @@ pub(super) fn dispatch_low_memory_import(
             // refnum 0 as its system/application fallback map.
             Some(PpcImportAction::Return(ppc_i16_result(0)))
         }
+        PpcImportDispatcherTarget::LMGetSysEvtMask => Some(PpcImportAction::Return(
+            u32::from(memory.read_u16_be(crate::memory::globals::addr::SYS_EVT_MASK)
+                .unwrap_or(crate::memory::globals::DEFAULT_SYS_EVT_MASK)),
+        )),
+        PpcImportDispatcherTarget::LMSetSysEvtMask => {
+            let _ = memory.write_u16_be(
+                crate::memory::globals::addr::SYS_EVT_MASK, cpu.gpr[3] as u16,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::LMGetDefltStack => Some(PpcImportAction::Return(
             // Inside Macintosh Volume II (1985), II-17 and II-51:
             // DefltStack is the long default stack-space allotment.

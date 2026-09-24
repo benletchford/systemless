@@ -113,6 +113,27 @@ fn find_window_distinguishes_the_menu_bar_from_the_desktop() {
 }
 
 #[test]
+fn find_window_routes_active_draw_sprocket_display_clicks_to_content() {
+    let pef = synthetic_pef_with_import(b"FindWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let window_out = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(window_out, vec![0xff; 4]);
+    loaded.draw_sprocket.active_context = Some(PPC_DSP_CONTEXT);
+    loaded.cpu.gpr[3] = (120 << 16) | 220;
+    loaded.cpu.gpr[4] = window_out;
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FindWindow);
+
+    assert_eq!(loaded.cpu.gpr[3], 3);
+    assert_eq!(loaded.memory.read_u32_be(window_out), Some(0));
+
+    loaded.draw_sprocket.active_context = None;
+    loaded.cpu.gpr[3] = (120 << 16) | 220;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FindWindow);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
 fn find_window_uses_visible_front_to_back_window_geometry_not_the_current_port() {
     let pef = synthetic_pef_with_import(b"FindWindow");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -2731,6 +2752,36 @@ fn hle_import_runner_tracks_ppc_update_region_until_end_update() {
         Some((0, 0, 0, 0)),
         "EndUpdate must clear the committed update region",
     );
+}
+
+#[test]
+fn hle_import_runner_check_update_reports_first_dirty_window() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CheckUpdate")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 48]);
+    let window = create_test_cwindow(&mut loaded, scratch, (20, 10, 260, 330), 0, true, u32::MAX);
+    let update = loaded
+        .memory
+        .read_u32_be(window + PPC_CWINDOW_UPDATE_RGN_OFFSET)
+        .unwrap();
+    ppc_write_rgn_bbox(&mut loaded.memory, update, 2, 3, 40, 50).unwrap();
+    loaded.cpu.gpr[3] = scratch + 16;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CheckUpdate),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    assert_eq!(loaded.memory.read_u16_be(scratch + 16), Some(6));
+    assert_eq!(loaded.memory.read_u32_be(scratch + 18), Some(window));
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update), Some((2, 3, 40, 50)));
+
+    ppc_set_empty_rgn(&mut loaded.memory, update).unwrap();
+    loaded.cpu.gpr[3] = scratch + 16;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CheckUpdate),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
 }
 
 #[test]

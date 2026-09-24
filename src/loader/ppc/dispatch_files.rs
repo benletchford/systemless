@@ -72,9 +72,25 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
         PpcImportDispatcherTarget::FSRead => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_fs_read(cpu, memory, files, vfs_files),
         ))),
-        PpcImportDispatcherTarget::PBRead => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_read(cpu, memory, files, vfs_files),
-        ))),
+        PpcImportDispatcherTarget::PBRead => {
+            let pb = cpu.gpr[3];
+            let result = ppc_pb_read(cpu, memory, files, vfs_files);
+            if std::env::var_os("SYSTEMLESS_PPC_FILE_TRACE").is_some() {
+                eprintln!(
+                    "[PPC-FILE-TRACE] PBRead result={} completion={:?} ioResult={:?} ref={:?} buffer={:?} request={:?} actual={:?} mode={:?} offset={:?}",
+                    result,
+                    memory.read_u32_be(pb + 12),
+                    memory.read_u16_be(pb + 16),
+                    memory.read_u16_be(pb + 24),
+                    memory.read_u32_be(pb + 32),
+                    memory.read_u32_be(pb + 36),
+                    memory.read_u32_be(pb + 40),
+                    memory.read_u16_be(pb + 44),
+                    memory.read_u32_be(pb + 46),
+                );
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::FSWrite => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_fs_write(cpu, memory, files, writable_refnums, vfs_files),
         ))),
@@ -361,6 +377,12 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
         PpcImportDispatcherTarget::PBHGetVInfo => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pbh_get_v_info(cpu, memory, vfs_volumes),
         ))),
+        PpcImportDispatcherTarget::PBDTGetPath => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_pb_dt_get_path(cpu, memory, vfs_volumes),
+        ))),
+        PpcImportDispatcherTarget::PBDTGetCommentSync => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_pb_dt_get_comment(cpu, memory, vfs_volumes),
+        ))),
         PpcImportDispatcherTarget::PBGetFInfo => {
             Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_get_finfo(
                 cpu,
@@ -573,6 +595,69 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
         }
         _ => None,
     }
+}
+
+fn ppc_pb_dt_get_path(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_volumes: &[PpcVfsVolumeRecord],
+) -> i16 {
+    // DTPBRec uses the classic parameter-block header: ioNamePtr at +18,
+    // ioVRefNum at +22, and ioDTRefNum at +24. More Macintosh Toolbox
+    // (1993), pp. 9-6–9-9.
+    let pb = cpu.gpr[3];
+    if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 26) {
+        return PPC_PARAM_ERR;
+    }
+    let name_ptr = memory.read_u32_be(pb + 18).unwrap_or(0);
+    let vref = memory.read_u16_be(pb + 22).unwrap_or(0) as i16;
+    let requested_name = if name_ptr == 0 {
+        None
+    } else {
+        let Some(name) = ppc_read_pstring(memory, name_ptr) else {
+            return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+        };
+        Some(name)
+    };
+    let boot_name = crate::trap::TrapDispatcher::boot_volume_name();
+    let volume_index = if let Some(name) = requested_name.as_deref().filter(|name| !name.is_empty()) {
+        let volume_name = name.split(':').next().unwrap_or(name);
+        if volume_name.eq_ignore_ascii_case(boot_name) {
+            Some(0usize)
+        } else {
+            vfs_volumes.iter().position(|volume| volume.name.eq_ignore_ascii_case(volume_name)).map(|index| index + 1)
+        }
+    } else if matches!(vref, 0 | PPC_BOOT_VOLUME_REF_NUM) {
+        Some(0)
+    } else {
+        vfs_volumes.iter().position(|volume| volume.ref_num == vref).map(|index| index + 1)
+    };
+    let Some(volume_index) = volume_index else {
+        let _ = memory.write_u16_be(pb + 24, 0);
+        return ppc_complete_pb(memory, pb, PPC_NSV_ERR);
+    };
+    let desktop_ref = 0x7f00u16.saturating_add(volume_index as u16);
+    let _ = memory.write_u16_be(pb + 24, desktop_ref);
+    ppc_complete_pb(memory, pb, PPC_NO_ERR)
+}
+
+fn ppc_pb_dt_get_comment(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_volumes: &[PpcVfsVolumeRecord],
+) -> i16 {
+    // A newly created desktop database has no user comments. More Macintosh
+    // Toolbox (1993), pp. 9-15–9-16, reports afpItemNotFound for absent data.
+    const AFP_ITEM_NOT_FOUND: i16 = -5012;
+    let pb = cpu.gpr[3];
+    if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 44) {
+        return PPC_PARAM_ERR;
+    }
+    let desktop_ref = memory.read_u16_be(pb + 24).unwrap_or(0);
+    let valid_ref = desktop_ref >= 0x7f00
+        && usize::from(desktop_ref - 0x7f00) <= vfs_volumes.len();
+    let _ = memory.write_u32_be(pb + 40, 0);
+    ppc_complete_pb(memory, pb, if valid_ref { AFP_ITEM_NOT_FOUND } else { PPC_RF_NUM_ERR })
 }
 
 pub(super) fn ppc_dispatch_file_compatibility(

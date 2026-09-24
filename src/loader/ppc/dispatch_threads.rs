@@ -156,6 +156,34 @@ pub(super) fn dispatch_thread_import(
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
+        PpcImportDispatcherTarget::SetThreadTerminator => {
+            // OSErr SetThreadTerminator(ThreadID thread,
+            //     ThreadTerminationProcPtr threadTerminator, void *terminationProcParam);
+            // Inside Macintosh: Thread Manager (1999), pp. 81–82.
+            let calls = toolbox_startup.execution.calls();
+            let thread = ThreadManager::new(calls).resolve_thread(cpu.gpr[3]);
+            let task = crate::guest_call::ExecutionTaskId::from_thread_id(thread);
+            let result = calls
+                .set_thread_terminator(task, cpu.gpr[4], cpu.gpr[5])
+                .map_or_else(|error| error, |()| PPC_NO_ERR);
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::SetThreadSwitcher => {
+            // OSErr SetThreadSwitcher(ThreadID thread,
+            //     ThreadSwitchProcPtr threadSwitcher, void *switchProcParam,
+            //     Boolean inOrOut);
+            // Inside Macintosh: Thread Manager (1999), pp. 79–81.
+            let calls = toolbox_startup.execution.calls();
+            let thread = ThreadManager::new(calls).resolve_thread(cpu.gpr[3]);
+            let task = crate::guest_call::ExecutionTaskId::from_thread_id(thread);
+            let result = calls
+                .set_thread_switcher(task, cpu.gpr[4], cpu.gpr[5], cpu.gpr[6] as u8 != 0)
+                .map_or_else(|error| error, |()| PPC_NO_ERR);
+            if std::env::var_os("SYSTEMLESS_PPC_THREAD_TRACE").is_some() {
+                eprintln!("[PPC-THREAD-TRACE] SetThreadSwitcher thread={} procedure=${:08X} parameter=${:08X} in={} result={}", thread, cpu.gpr[4], cpu.gpr[5], cpu.gpr[6] as u8 != 0, result);
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::GetThreadState => {
             // OSErr GetThreadState(ThreadID thread, ThreadState *state);
             // Inside Macintosh: Thread Manager (1999), pp. 45, 63.
@@ -218,8 +246,7 @@ pub(super) fn dispatch_thread_import(
                 binding.dispatcher_target,
                 PpcImportDispatcherTarget::SetThreadStateEndCritical
             );
-            Some(
-                match toolbox_startup.execution.calls().set_native_thread_state(
+            let action = match toolbox_startup.execution.calls().set_native_thread_state(
                     cpu,
                     thread,
                     state,
@@ -229,8 +256,11 @@ pub(super) fn dispatch_thread_import(
                     Ok(true) => PpcImportAction::Yield(1),
                     Ok(false) => PpcImportAction::Return(0),
                     Err(error) => PpcImportAction::Return(ppc_i16_result(error)),
-                },
-            )
+                };
+            if std::env::var_os("SYSTEMLESS_PPC_THREAD_TRACE").is_some() {
+                eprintln!("[PPC-THREAD-TRACE] SetThreadState caller={} thread={} state={} suggested={} action={:?} pc=${:08X}", toolbox_startup.execution.calls().current_task().thread_id(), thread, state, suggested, action, cpu.pc);
+            }
+            Some(action)
         }
         PpcImportDispatcherTarget::CreateThreadPool => {
             // OSErr CreateThreadPool(ThreadStyle, short, Size);
@@ -360,6 +390,9 @@ pub(super) fn dispatch_thread_import(
             let result = ThreadManager::new(&execution)
                 .create_thread(GuestIsa::PowerPc, style, size, options, &mut edge)
                 .map_or_else(|error| error, |_| PPC_NO_ERR);
+            if std::env::var_os("SYSTEMLESS_PPC_THREAD_TRACE").is_some() {
+                eprintln!("[PPC-THREAD-TRACE] NewThread caller={} entry=${entry:08X} param=${param:08X} size={} options=${options:08X} made={:?} result={}", execution.current_task().thread_id(), size, edge.memory.read_u32_be(made), result);
+            }
             if result != PPC_NO_ERR && made != 0 {
                 let _ = edge.memory.write_u32_be(made, 0);
             }
@@ -374,8 +407,7 @@ pub(super) fn dispatch_thread_import(
             } else {
                 0
             };
-            Some(
-                match toolbox_startup
+            let action = match toolbox_startup
                     .execution
                     .calls()
                     .yield_native_thread(cpu, suggested)
@@ -383,8 +415,11 @@ pub(super) fn dispatch_thread_import(
                     Ok(true) => PpcImportAction::Yield(1),
                     Ok(false) => PpcImportAction::Return(0),
                     Err(error) => PpcImportAction::Return(ppc_i16_result(error)),
-                },
-            )
+                };
+            if std::env::var_os("SYSTEMLESS_PPC_THREAD_TRACE").is_some() {
+                eprintln!("[PPC-THREAD-TRACE] YieldToThread caller={} suggested={} action={:?} pc=${:08X}", toolbox_startup.execution.calls().current_task().thread_id(), suggested, action, cpu.pc);
+            }
+            Some(action)
         }
         PpcImportDispatcherTarget::DisposeThread => {
             // OSErr DisposeThread(ThreadID, void *, Boolean);

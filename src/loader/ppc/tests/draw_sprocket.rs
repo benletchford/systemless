@@ -625,6 +625,43 @@ use super::*;
     }
 
     #[test]
+    fn hle_import_runner_draw_sprocket_local_to_global_preserves_main_display_point() {
+        let pef =
+            synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_LocalToGlobal");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let point = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(point, vec![0x00, 0xf0, 0x01, 0x40]);
+        loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+        loaded.cpu.gpr[4] = point;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u32_be(point), Some(0x00f0_0140));
+    }
+
+    #[test]
+    fn hle_import_runner_draw_sprocket_get_state_reports_reserved_context() {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_GetState");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let state_out = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(state_out, vec![0xff; 4]);
+        loaded.draw_sprocket.reserved_context = Some(PPC_DSP_CONTEXT);
+        loaded.draw_sprocket.context_state = PpcDspContextPlayState::Active;
+        loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+        loaded.cpu.gpr[4] = state_out;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u32_be(state_out), Some(PPC_DSP_CONTEXT_STATE_ACTIVE));
+    }
+
+    #[test]
     fn hle_import_runner_draw_sprocket_set_blanking_color_rejects_null() {
         let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpSetBlankingColor");
         let mut loaded = load_pef_application(&pef).unwrap();

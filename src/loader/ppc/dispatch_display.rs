@@ -232,6 +232,7 @@ pub(super) fn dispatch_display_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
+                &mut toolbox_startup.system_allocations,
             );
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
@@ -240,20 +241,17 @@ pub(super) fn dispatch_display_import(
         }
         PpcImportDispatcherTarget::DMDisposeList => {
             let list = cpu.gpr[3];
-            let result = if process_memory_manager.native_ptr_size(list) != 0
-                && memory.read_u32_be(list) == Some(PPC_DM_MODE_LIST_MAGIC)
-            {
-                let _ = process_memory_manager.dispose_native_ptr(list);
-                ppc_apply_process_native_allocator(
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    last_mem_error,
-                );
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
-            };
+            let result = if memory.read_u32_be(list) == Some(PPC_DM_MODE_LIST_MAGIC) {
+                if toolbox_startup.system_allocations.release(list) {
+                    PPC_NO_ERR
+                } else if process_memory_manager.native_ptr_size(list) != 0 {
+                    let _ = process_memory_manager.dispose_native_ptr(list);
+                    ppc_apply_process_native_allocator(process_memory_manager, memory, heap_cursor, last_mem_error);
+                    PPC_NO_ERR
+                } else {
+                    PPC_PARAM_ERR
+                }
+            } else { PPC_PARAM_ERR };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::DMBeginConfigureDisplays => {
@@ -431,12 +429,14 @@ pub(super) fn ppc_dm_new_display_mode_list(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
+    pool: &mut PpcSystemAllocationPool,
 ) -> i16 {
     ppc_dm_new_display_mode_list_values(
         process_memory_manager,
         memory,
         heap_cursor,
         last_mem_error,
+        pool,
         cpu.gpr[3],
         cpu.gpr[6],
         cpu.gpr[7],
@@ -448,6 +448,7 @@ pub(super) fn ppc_dm_new_display_mode_list_values(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
+    pool: &mut PpcSystemAllocationPool,
     display_id: u32,
     count_out: u32,
     list_out: u32,
@@ -480,8 +481,11 @@ pub(super) fn ppc_dm_new_display_mode_list_values(
             geometries.push((display_mode_id, width, height));
         }
     }
-    let list = process_memory_manager.new_native_ptr(memory, PPC_DM_MODE_LIST_SIZE, true);
-    ppc_apply_process_native_allocator(process_memory_manager, memory, heap_cursor, last_mem_error);
+    let list = pool.allocate(PPC_DM_MODE_LIST_SIZE).unwrap_or_else(|| {
+        let list = process_memory_manager.new_native_ptr(memory, PPC_DM_MODE_LIST_SIZE, true);
+        ppc_apply_process_native_allocator(process_memory_manager, memory, heap_cursor, last_mem_error);
+        list
+    });
     if list == 0 {
         return PPC_MEM_FULL_ERR;
     }
@@ -506,7 +510,9 @@ pub(super) fn ppc_dm_new_display_mode_list_values(
         let Some(geometry_mode) =
             ppc_dm_mode_at_geometry(live_mode, display_mode_id, width, height)
         else {
-            let _ = process_memory_manager.dispose_native_ptr(list);
+            if !pool.release(list) {
+                let _ = process_memory_manager.dispose_native_ptr(list);
+            }
             return PPC_PARAM_ERR;
         };
         let Some(modes) = DEPTHS
@@ -514,7 +520,9 @@ pub(super) fn ppc_dm_new_display_mode_list_values(
             .into_iter()
             .collect::<Option<Vec<_>>>()
         else {
-            let _ = process_memory_manager.dispose_native_ptr(list);
+            if !pool.release(list) {
+                let _ = process_memory_manager.dispose_native_ptr(list);
+            }
             return PPC_PARAM_ERR;
         };
         let live_depth_index = DEPTHS

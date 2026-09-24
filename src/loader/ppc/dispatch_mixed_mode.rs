@@ -1,5 +1,68 @@
 use super::*;
 
+pub(super) const PPC_SYSTEM_ALLOCATION_POOL_SIZE: u32 = 64 * 1024;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct PpcSystemAllocationPool {
+    base: u32,
+    next: u32,
+    end: u32,
+    free: Vec<(u32, u32)>,
+    allocations: Vec<(u32, u32)>,
+}
+
+impl PpcSystemAllocationPool {
+    pub(super) fn reserve(&mut self, base: u32) {
+        if base != 0 {
+            self.base = base;
+            self.next = base;
+            self.end = base.saturating_add(PPC_SYSTEM_ALLOCATION_POOL_SIZE);
+        }
+    }
+
+    pub(super) fn allocate(&mut self, size: u32) -> Option<u32> {
+        let size = size.checked_add(15)? & !15;
+        if let Some(index) = self.free.iter().position(|&(_, capacity)| capacity >= size) {
+            let (address, capacity) = self.free.swap_remove(index);
+            self.allocations.push((address, capacity));
+            return Some(address);
+        }
+        let end = self.next.checked_add(size)?;
+        if self.base == 0 || end > self.end {
+            return None;
+        }
+        let address = self.next;
+        self.next = end;
+        self.allocations.push((address, size));
+        Some(address)
+    }
+
+    pub(super) fn release(&mut self, address: u32) -> bool {
+        let Some(index) = self.allocations.iter().position(|&(allocated, _)| allocated == address) else {
+            return false;
+        };
+        self.free.push(self.allocations.swap_remove(index));
+        true
+    }
+}
+
+#[cfg(test)]
+mod system_allocation_pool_tests {
+    use super::PpcSystemAllocationPool;
+
+    #[test]
+    fn reusing_a_larger_block_preserves_its_capacity() {
+        let mut pool = PpcSystemAllocationPool::default();
+        pool.reserve(0x1000);
+        let block = pool.allocate(64).unwrap();
+        assert!(pool.release(block));
+        assert_eq!(pool.allocate(32), Some(block));
+        assert!(pool.release(block));
+        assert_eq!(pool.allocate(64), Some(block));
+        assert!(!pool.release(block.wrapping_add(16)));
+    }
+}
+
 pub(super) struct PpcMixedModeDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
@@ -39,6 +102,7 @@ pub(super) fn dispatch_mixed_mode_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
+                &mut toolbox_startup.system_allocations,
             ))))
         }
         PpcImportDispatcherTarget::NewFatRoutineDescriptor => Some(Some(PpcImportAction::Return(
@@ -48,6 +112,7 @@ pub(super) fn dispatch_mixed_mode_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
+                &mut toolbox_startup.system_allocations,
             ),
         ))),
         PpcImportDispatcherTarget::DisposeRoutineDescriptor => {
@@ -55,7 +120,13 @@ pub(super) fn dispatch_mixed_mode_import(
             // PowerPC ABI: r3 carries the descriptor and is preserved on return.
             // The Mixed Mode Manager releases only creation-allocated heap storage.
             // Inside Macintosh: PowerPC System Software (1994), pp. 2-21, 2-41.
-            let _ = process_memory_manager.dispose_native_ptr(cpu.gpr[3]);
+            let descriptor = cpu.gpr[3];
+            if !toolbox_startup
+                .system_allocations
+                .release(descriptor)
+            {
+                let _ = process_memory_manager.dispose_native_ptr(descriptor);
+            }
             ppc_apply_process_native_allocator(
                 process_memory_manager,
                 memory,
@@ -124,6 +195,7 @@ fn ppc_new_routine_descriptor(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
+    pool: &mut PpcSystemAllocationPool,
 ) -> u32 {
     let proc_ptr = cpu.gpr[3];
     if ppc_hle_trace_enabled() {
@@ -146,9 +218,19 @@ fn ppc_new_routine_descriptor(
         memory,
         heap_cursor,
         last_mem_error,
+        pool,
         descriptor_size,
         0,
     );
+    if ppc_hle_trace_enabled() {
+        eprintln!(
+            "[PPC-TRACE] NewRoutineDescriptor result=${descriptor:08X} heap=${:08X} effective_limit=${:08X}",
+            *heap_cursor,
+            process_memory_manager.native_heap_state().map_or(0, |heap| {
+                process_memory_manager.native_allocation_limit(heap.heap_limit)
+            }),
+        );
+    }
     if descriptor == 0 {
         *last_mem_error = PPC_MEM_FULL_ERR;
         return 0;
@@ -162,7 +244,9 @@ fn ppc_new_routine_descriptor(
     };
     let ok = ppc_write_routine_record(memory, record, proc_info, isa, flags, proc_ptr);
     if !ok {
-        let _ = process_memory_manager.dispose_native_ptr(descriptor);
+        if !pool.release(descriptor) {
+            let _ = process_memory_manager.dispose_native_ptr(descriptor);
+        }
         ppc_apply_process_native_allocator(
             process_memory_manager,
             memory,
@@ -183,6 +267,7 @@ fn ppc_new_fat_routine_descriptor(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
+    pool: &mut PpcSystemAllocationPool,
 ) -> u32 {
     let m68k_proc = cpu.gpr[3];
     let powerpc_proc = cpu.gpr[4];
@@ -196,6 +281,7 @@ fn ppc_new_fat_routine_descriptor(
         memory,
         heap_cursor,
         last_mem_error,
+        pool,
         descriptor_size,
         1,
     );
@@ -222,7 +308,9 @@ fn ppc_new_fat_routine_descriptor(
         powerpc_proc,
     );
     if !ok {
-        let _ = process_memory_manager.dispose_native_ptr(descriptor);
+        if !pool.release(descriptor) {
+            let _ = process_memory_manager.dispose_native_ptr(descriptor);
+        }
         ppc_apply_process_native_allocator(
             process_memory_manager,
             memory,
@@ -242,10 +330,13 @@ fn ppc_alloc_routine_descriptor(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
+    pool: &mut PpcSystemAllocationPool,
     descriptor_size: u32,
     routine_count: u16,
 ) -> u32 {
-    let descriptor = process_memory_manager.new_native_ptr(memory, descriptor_size, true);
+    let descriptor = pool.allocate(descriptor_size).unwrap_or_else(|| {
+        process_memory_manager.new_native_ptr(memory, descriptor_size, true)
+    });
     ppc_apply_process_native_allocator(process_memory_manager, memory, heap_cursor, last_mem_error);
     if descriptor == 0 {
         return 0;
@@ -266,7 +357,9 @@ fn ppc_alloc_routine_descriptor(
     if ok {
         descriptor
     } else {
-        let _ = process_memory_manager.dispose_native_ptr(descriptor);
+        if !pool.release(descriptor) {
+            let _ = process_memory_manager.dispose_native_ptr(descriptor);
+        }
         ppc_apply_process_native_allocator(
             process_memory_manager,
             memory,
@@ -638,6 +731,7 @@ pub(super) fn ppc_prepare_resource_call(
             heap_cursor,
             heap_limit,
             import_run_state,
+            connections,
         )?;
         if prepared.main_addr == 0 {
             return Err(PPC_FRAG_CORRUPT_ERR);
@@ -784,6 +878,12 @@ pub(super) fn ppc_call_universal_proc(
         GuestIsa::PowerPc,
         raw_isa,
     )?;
+    if ppc_hle_trace_enabled() {
+        eprintln!(
+            "[PPC-TRACE] CallUniversalProc target isa={:?} entry=${:08X} rtoc=${:08X} system_isa={:?}",
+            target.isa, target.entry, target.rtoc, memory.system_code_isa(proc_ptr),
+        );
+    }
     match target.isa {
         GuestIsa::PowerPc => {
             memory.read_u32_be(target.entry)?;
@@ -1224,7 +1324,12 @@ fn ppc_begin_m68k_universal_proc_inner(
         heap_cursor,
         heap_limit,
         &startup.mixed_mode_m68k,
-    )?;
+    ).or_else(|| {
+        if ppc_hle_trace_enabled() {
+            eprintln!("[PPC-TRACE] CallUniversalProc M68k storage failed heap=${:08X} limit=${:08X}", *heap_cursor, heap_limit);
+        }
+        None
+    })?;
     let return_pc = gateway.checked_add(PPC_MIXED_MODE_M68K_RETURN_OFFSET)?;
     if stack_top < 4 {
         return None;
@@ -1347,6 +1452,9 @@ fn ppc_begin_m68k_universal_proc_inner(
         )
     };
     if !submitted {
+        if ppc_hle_trace_enabled() {
+            eprintln!("[PPC-TRACE] CallUniversalProc M68k submission rejected");
+        }
         return None;
     }
     Some(PpcImportAction::Halt)

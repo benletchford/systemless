@@ -669,6 +669,11 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 PPC_HM_HELP_MANAGER_NOT_INITED,
             )))
         }
+        PpcImportDispatcherTarget::HMGetBalloons => {
+            // HMGetBalloons returns whether Balloon Help is enabled.
+            // Inside Macintosh VI (1991), chapter 11, pp. 11-65–11-66.
+            Some(PpcImportAction::Return(0))
+        }
         PpcImportDispatcherTarget::HiliteMenu => {
             // HiliteMenu first restores the currently highlighted title, then
             // highlights the requested title; zero or an unknown menu ID

@@ -39,6 +39,25 @@ fn math_operation(symbol_name: &str) -> PpcMathCompatibilityOperation {
     }
 }
 
+#[test]
+fn native_ppc_ldtox80_preserves_double_double_tail() {
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(0x1000, vec![0; 32]);
+    memory.write_u64_be(0x1000, 1.5f64.to_bits()).unwrap();
+    memory
+        .write_u64_be(0x1008, (2f64).powi(-60).to_bits())
+        .unwrap();
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[3] = 0x1000;
+    cpu.gpr[4] = 0x1010;
+    assert_eq!(
+        ppc_dispatch_math_compatibility(math_operation("ldtox80"), &mut cpu, &mut memory),
+        PpcImportAction::ReturnPreserve,
+    );
+    assert_eq!(memory.read_u16_be(0x1010), Some(0x3fff));
+    assert_eq!(memory.read_u64_be(0x1012), Some(0xC000_0000_0000_0008));
+}
+
 fn math64_set_gprs(cpu: &mut PpcCpu, high_register: usize, value: u64) {
     cpu.gpr[high_register] = (value >> 32) as u32;
     cpu.gpr[high_register + 1] = value as u32;
@@ -122,6 +141,7 @@ fn native_ppc_math_compatibility_maps_each_export_to_a_typed_operation() {
         ),
         ("fetestexcept", PpcMathCompatibilityOperation::FeTestExcept),
         ("floor", PpcMathCompatibilityOperation::Floor),
+        ("ldtox80", PpcMathCompatibilityOperation::LdToX80),
         ("modf", PpcMathCompatibilityOperation::Modf),
         ("num2dec", PpcMathCompatibilityOperation::Num2Dec),
         ("str2dec", PpcMathCompatibilityOperation::Str2Dec),
