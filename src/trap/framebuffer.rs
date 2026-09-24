@@ -126,6 +126,10 @@ pub(crate) struct MenuBarCache {
     key: MenuBarCacheKey,
     rect: (i16, i16, i16, i16),
     pixels: crate::memory::SavedPixels,
+    /// When the screen last held exactly `pixels` over `rect`: right after
+    /// they were captured or restored. While no cell of `rect` has changed
+    /// since, restoring them again would change nothing.
+    committed: Option<crate::memory::presentation::ScreenMark>,
 }
 
 // Bound retained title coverage even when applications repeatedly rename windows.
@@ -148,6 +152,8 @@ pub(crate) struct WindowTitleCache {
     key: WindowTitleCacheKey,
     rect: (i16, i16, i16, i16),
     pixels: crate::memory::SavedPixels,
+    /// As for [`MenuBarCache::committed`].
+    committed: Option<crate::memory::presentation::ScreenMark>,
 }
 
 /// Which piece of themed chrome a cached rendering is, with the inputs its
@@ -3177,14 +3183,23 @@ impl super::TrapDispatcher {
             outline_scale: bus.outline_presentation_scale(),
         });
         if let Some(key) = &cache_key {
-            let cache = self.menu_bar_cache.borrow();
-            if let Some(cache) = cache.as_ref().filter(|cache| &cache.key == key) {
+            let mut cache = self.menu_bar_cache.borrow_mut();
+            if let Some(cache) = cache.as_mut().filter(|cache| &cache.key == key) {
                 // Repainting is a native drawing boundary even if every menu
                 // pixel is unchanged. Commit any preceding guest recoloring,
                 // which an ordinary menu repaint's first store would finish.
                 bus.end_cpu_drawing(true);
+                if cache
+                    .committed
+                    .is_some_and(|mark| bus.screen_rect_unchanged_since(mark, cache.rect))
+                {
+                    // Nothing has touched the bar since it last matched the
+                    // cache, so the restore below would be a no-op.
+                    return;
+                }
                 let (top, left, width, height) = cache.rect;
                 self.restore_screen_rect_pixels(bus, top, left, width, height, &cache.pixels);
+                cache.committed = bus.screen_mark();
                 return;
             }
         }
@@ -3419,6 +3434,7 @@ impl super::TrapDispatcher {
                     key,
                     rect: (top, left, width, height),
                     pixels,
+                    committed: bus.screen_mark(),
                 });
             }
         }
@@ -4819,12 +4835,19 @@ impl super::TrapDispatcher {
         } else {
             23
         };
-        let saved = (menu_height > 0
-            && self.window_bounds.0.saturating_sub(top_inset) < menu_height)
-            .then(|| bus.save_pixel_bytes(base, row_bytes as usize * menu_height as usize));
+        // The chrome starts `top_inset` rows above the content, so menu bar
+        // rows above that are not drawn: save only the rows it can reach.
+        let first_row = self.window_bounds.0.saturating_sub(top_inset).max(0);
+        let saved = (first_row < menu_height).then(|| {
+            let start = base + row_bytes * first_row as u32;
+            (
+                start,
+                bus.save_pixel_bytes(start, row_bytes as usize * (menu_height - first_row) as usize),
+            )
+        });
         draw(self, bus);
-        if let Some(saved) = saved {
-            bus.restore_saved_pixels(base, &saved, 0, saved.len());
+        if let Some((start, saved)) = saved {
+            bus.restore_saved_pixels(start, &saved, 0, saved.len());
         }
     }
 
@@ -4941,9 +4964,15 @@ impl super::TrapDispatcher {
             };
             // Preserve the native-drawing boundary even when no pixels differ.
             bus.end_cpu_drawing(true);
-            let entry = cache.remove(index);
-            let (top, left, width, height) = entry.rect;
-            self.restore_screen_rect_pixels(bus, top, left, width, height, &entry.pixels);
+            let mut entry = cache.remove(index);
+            if !entry
+                .committed
+                .is_some_and(|mark| bus.screen_rect_unchanged_since(mark, entry.rect))
+            {
+                let (top, left, width, height) = entry.rect;
+                self.restore_screen_rect_pixels(bus, top, left, width, height, &entry.pixels);
+                entry.committed = bus.screen_mark();
+            }
             cache.push(entry);
             true
         });
@@ -5161,6 +5190,7 @@ impl super::TrapDispatcher {
                         key,
                         rect: (top, left, width, height),
                         pixels,
+                        committed: bus.screen_mark(),
                     });
                 }
             }
