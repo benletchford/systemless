@@ -2745,6 +2745,55 @@
     }
 
     #[test]
+    fn white_foreground_draws_src_or_glyph_into_monochrome_offscreen_bitmap() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port = 0x181000u32;
+        let base = bus.alloc(8 * 40);
+        bus.write_long(port + 2, base);
+        bus.write_word(port + 6, 8);
+        write_rect(&mut bus, port + 8, 0, 0, 40, 64);
+        write_rect(&mut bus, port + 16, 0, 0, 40, 64);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        d.tx_font = 0;
+        d.tx_size = 12;
+        d.tx_face = 0;
+        d.tx_mode = 1;
+        d.pn_vis = 0;
+        d.pn_loc = (20, 30);
+
+        for offset in 0..320u32 {
+            bus.write_byte(base + offset, 0xFF);
+        }
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 30); // whiteColor
+        assert!(d
+            .dispatch_quickdraw(true, 0x062, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        d.draw_char(&mut cpu, &mut bus, '1');
+        assert!(
+            (0..320u32).any(|offset| bus.read_byte(base + offset) != 0xFF),
+            "white ink must clear covered glyph bits in a black bitmap"
+        );
+
+        for offset in 0..320u32 {
+            bus.write_byte(base + offset, 0);
+        }
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 33); // blackColor
+        assert!(d
+            .dispatch_quickdraw(true, 0x062, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        d.pn_loc = (20, 30);
+        d.draw_char(&mut cpu, &mut bus, '1');
+        assert!(
+            (0..320u32).any(|offset| bus.read_byte(base + offset) != 0),
+            "black ink must set covered glyph bits in a white bitmap"
+        );
+    }
+
+    #[test]
     fn plain_glyphs_paint_exactly_their_bitmap_pixels() {
         // Covers the tightened plain-glyph rect: every bitmap pixel (first
         // and last rows and columns included) must be painted and nothing
