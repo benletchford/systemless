@@ -21,7 +21,9 @@ compatibility:
       Deterministic run of the unchanged 68K Flashback Demo archive at 800 by 600.
       The publisher splash and title menu render. Space selects Start, and a later key
       press skips the opening cinematic to the first jungle scene. Holding Right moves
-      Conrad across the scene. Browser launch has not yet been approved.
+      Conrad across the scene. A same-origin browser preview rendered the MacPlay
+      splash and menu bar, but a subsequent black transition did not reach the title
+      menu during the preview. Browser launch remains disabled.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/2610
 artifacts:
@@ -84,4 +86,5 @@ limited portion of the game, rather than the commercial release.
 Systemless reaches the title menu and first jungle scene. Press any key to
 leave the publisher splash, select Start, then press a key during the opening
 cinematic to skip ahead. Use the arrow keys to move; Shift is the action key.
-Browser launch awaits manual approval.
+The browser preview rendered the splash but did not establish interactive play,
+so browser launch remains disabled pending further testing.
