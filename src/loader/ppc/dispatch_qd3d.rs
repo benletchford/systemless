@@ -1549,6 +1549,9 @@ pub(super) fn dispatch_q3_group_view_import(
         PpcImportDispatcherTarget::Q3DisplayGroupNew => Some(PpcImportAction::Return(
             ppc_q3_display_group_new(stores.q3_objects, next_q3_object),
         )),
+        PpcImportDispatcherTarget::Q3OrderedDisplayGroupNew => Some(PpcImportAction::Return(
+            ppc_q3_ordered_display_group_new(stores.q3_objects, next_q3_object),
+        )),
         PpcImportDispatcherTarget::Q3LightGroupNew => Some(PpcImportAction::Return(
             ppc_q3_light_group_new(stores.q3_objects, next_q3_object),
         )),

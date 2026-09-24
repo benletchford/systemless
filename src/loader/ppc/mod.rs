@@ -2264,6 +2264,7 @@ pub enum PpcImportDispatcherTarget {
     Q3Exit,
     Q3GetVersion,
     Q3DisplayGroupNew,
+    Q3OrderedDisplayGroupNew,
     Q3ErrorGet,
     Q3ObjectDispose,
     Q3ObjectDuplicate,
@@ -14680,6 +14681,9 @@ fn dispatcher_target_for_import(
         (library_name, "Q3DisplayGroup_New") if is_quickdraw_3d_library(library_name) => {
             PpcImportDispatcherTarget::Q3DisplayGroupNew
         }
+        (library_name, "Q3OrderedDisplayGroup_New") if is_quickdraw_3d_library(library_name) => {
+            PpcImportDispatcherTarget::Q3OrderedDisplayGroupNew
+        }
         (library_name, "Q3BackfacingStyle_New") if is_quickdraw_3d_library(library_name) => {
             PpcImportDispatcherTarget::Q3BackfacingStyleNew
         }
@@ -19338,7 +19342,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::Q3FileNew => {
             unreachable!("QuickDraw 3D file imports return through typed dispatch")
         }
-        PpcImportDispatcherTarget::Q3ViewNew | PpcImportDispatcherTarget::Q3DisplayGroupNew => {
+        PpcImportDispatcherTarget::Q3ViewNew
+        | PpcImportDispatcherTarget::Q3DisplayGroupNew
+        | PpcImportDispatcherTarget::Q3OrderedDisplayGroupNew => {
             unreachable!("QuickDraw 3D group/view imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3ErrorGet => {
@@ -21824,6 +21830,20 @@ fn ppc_q3_display_group_new(
         next_q3_object,
         PpcQ3ObjectKind::Generic,
         PPC_Q3_GROUP_TYPE_DISPLAY,
+        0,
+        0,
+    )
+}
+
+fn ppc_q3_ordered_display_group_new(
+    q3_objects: &mut Vec<PpcQ3ObjectRecord>,
+    next_q3_object: &mut u32,
+) -> u32 {
+    ppc_q3_alloc_object(
+        q3_objects,
+        next_q3_object,
+        PpcQ3ObjectKind::Generic,
+        PPC_Q3_GROUP_TYPE_ORDERED_DISPLAY,
         0,
         0,
     )

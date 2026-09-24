@@ -963,6 +963,10 @@ fn hle_import_runner_handles_q3_display_and_illumination_objects() {
             PPC_Q3_GROUP_TYPE_DISPLAY,
         ),
         (
+            PpcImportDispatcherTarget::Q3OrderedDisplayGroupNew,
+            PPC_Q3_GROUP_TYPE_ORDERED_DISPLAY,
+        ),
+        (
             PpcImportDispatcherTarget::Q3LambertIlluminationNew,
             PPC_Q3_ILLUMINATION_TYPE_LAMBERT,
         ),
@@ -995,6 +999,46 @@ fn hle_import_runner_handles_q3_display_and_illumination_objects() {
         assert_eq!(loaded.q3_objects[index].data_ptr, 0);
         assert_eq!(loaded.q3_objects[index].data_size, 0);
     }
+}
+
+#[test]
+fn hle_import_runner_adds_object_to_ordered_display_group() {
+    fn run_q3_call(loaded: &mut PpcLoadedApp, target: PpcImportDispatcherTarget) -> u32 {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = target;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        loaded.cpu.gpr[3]
+    }
+
+    let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3OrderedDisplayGroup_New");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let group = run_q3_call(&mut loaded, PpcImportDispatcherTarget::Q3OrderedDisplayGroupNew);
+    assert_eq!(
+        ppc_q3_object_type_for_handle(&loaded.q3_objects, group),
+        PPC_Q3_GROUP_TYPE_ORDERED_DISPLAY
+    );
+
+    let object = ppc_q3_alloc_object(
+        &mut loaded.q3_objects,
+        &mut loaded.next_q3_object,
+        PpcQ3ObjectKind::Generic,
+        PPC_Q3_TRANSFORM_TYPE_MATRIX,
+        0,
+        0,
+    );
+    loaded.cpu.gpr[3] = group;
+    loaded.cpu.gpr[4] = object;
+    assert_ne!(
+        run_q3_call(&mut loaded, PpcImportDispatcherTarget::Q3GroupAddObject),
+        0
+    );
+    assert!(loaded
+        .q3_group_memberships
+        .iter()
+        .any(|member| member.group == group && member.object == object));
 }
 
 #[test]
