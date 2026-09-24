@@ -308,6 +308,10 @@ pub(super) fn dispatch_q3_math_import_fast(
         PpcImportDispatcherTarget::Q3Vector3DNormalize => Some(PpcImportAction::Return(
             ppc_q3_vector3d_normalize(cpu, memory, cpu.gpr[3], cpu.gpr[4]),
         )),
+        PpcImportDispatcherTarget::Q3Vector3DLength => {
+            cpu.fpr[1] = f64::from(ppc_q3_vector3d_length(memory, cpu.gpr[3])).to_bits();
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::Q3Vector2DNormalize => Some(PpcImportAction::Return(
             ppc_q3_vector2d_normalize(memory, cpu.gpr[3], cpu.gpr[4]),
         )),
@@ -329,6 +333,11 @@ pub(super) fn dispatch_q3_math_import_fast(
                 memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6],
             )))
         }
+        PpcImportDispatcherTarget::Q3BoundingBoxSetFromPoints3D => Some(PpcImportAction::Return(
+            ppc_q3_bounding_box_set_from_points3d(
+                memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6],
+            ),
+        )),
         PpcImportDispatcherTarget::Q3Matrix3x3SetTranslate => {
             Some(PpcImportAction::Return(ppc_q3_matrix3x3_set_translate(
                 memory,
@@ -1540,6 +1549,9 @@ pub(super) fn dispatch_q3_group_view_import(
         PpcImportDispatcherTarget::Q3DisplayGroupNew => Some(PpcImportAction::Return(
             ppc_q3_display_group_new(stores.q3_objects, next_q3_object),
         )),
+        PpcImportDispatcherTarget::Q3OrderedDisplayGroupNew => Some(PpcImportAction::Return(
+            ppc_q3_ordered_display_group_new(stores.q3_objects, next_q3_object),
+        )),
         PpcImportDispatcherTarget::Q3LightGroupNew => Some(PpcImportAction::Return(
             ppc_q3_light_group_new(stores.q3_objects, next_q3_object),
         )),
@@ -1660,6 +1672,31 @@ pub(super) fn dispatch_q3_group_view_import(
                 ),
             )))
         }
+        PpcImportDispatcherTarget::Q3ViewGetWorldToFrustumMatrixState => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_view_get_world_to_frustum_matrix_state(
+                    cpu,
+                    memory,
+                    stores.q3_objects,
+                    q3_error_state,
+                    stores.q3_views,
+                    stores.q3_cameras,
+                ),
+            )))
+        }
+        PpcImportDispatcherTarget::Q3ViewGetFrustumToWindowMatrixState => {
+            Some(PpcImportAction::Return(u32::from(
+                ppc_q3_view_get_frustum_to_window_matrix_state(
+                    cpu,
+                    memory,
+                    stores.q3_objects,
+                    q3_error_state,
+                    stores.q3_views,
+                    stores.q3_draw_contexts,
+                    gworlds,
+                ),
+            )))
+        }
         PpcImportDispatcherTarget::Q3ViewStartRendering => Some(PpcImportAction::Return(
             u32::from(ppc_q3_view_start_rendering(
                 cpu,
@@ -1692,7 +1729,8 @@ pub(super) fn dispatch_q3_group_view_import(
                 input_idle,
             ))
         }
-        PpcImportDispatcherTarget::Q3ViewStartBoundingBox => Some(PpcImportAction::Return(
+        PpcImportDispatcherTarget::Q3ViewStartBoundingBox
+        | PpcImportDispatcherTarget::Q3ViewStartBoundingSphere => Some(PpcImportAction::Return(
             u32::from(ppc_q3_view_start_bounding_box(
                 cpu,
                 stores.q3_views,
@@ -1702,6 +1740,21 @@ pub(super) fn dispatch_q3_group_view_import(
         )),
         PpcImportDispatcherTarget::Q3ViewEndBoundingBox => {
             Some(PpcImportAction::Return(ppc_q3_view_end_bounding_box(
+                cpu,
+                memory,
+                stores.q3_views,
+                stores.q3_objects,
+                stores.q3_submissions,
+                stores.q3_submission_transforms,
+                stores.q3_submission_materials,
+                stores.q3_submission_lights,
+                stores.q3_retained_frames,
+                stores.q3_trimeshes,
+                q3_error_state,
+            )))
+        }
+        PpcImportDispatcherTarget::Q3ViewEndBoundingSphere => {
+            Some(PpcImportAction::Return(ppc_q3_view_end_bounding_sphere(
                 cpu,
                 memory,
                 stores.q3_views,

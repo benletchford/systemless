@@ -1,6 +1,113 @@
 use super::*;
 
 #[test]
+fn quickdraw_3d_vector_length_and_strided_point_bounds() {
+    let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3Vector3D_Length");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let vector_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(vector_ptr, vec![0; 64]);
+    ppc_write_q3_vector3d(&mut loaded.memory, vector_ptr, (3.0, 4.0, 12.0)).unwrap();
+    loaded.cpu.gpr[3] = vector_ptr;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(f64::from_bits(loaded.cpu.fpr[1]), 13.0);
+
+    let pef =
+        synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3BoundingBox_SetFromPoints3D");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let points_ptr = PPC_DATA_BASE + 0x1000;
+    let box_ptr = PPC_DATA_BASE + 0x1100;
+    loaded.memory.add_region(points_ptr, vec![0; 64]);
+    loaded
+        .memory
+        .add_region(box_ptr, vec![0; PPC_Q3_BOUNDING_BOX_SIZE as usize]);
+    ppc_write_q3_vector3d(&mut loaded.memory, points_ptr, (3.0, -4.0, 5.0)).unwrap();
+    ppc_write_q3_vector3d(&mut loaded.memory, points_ptr + 16, (-2.0, 7.0, 1.0)).unwrap();
+    loaded.cpu.gpr[3] = box_ptr;
+    loaded.cpu.gpr[4] = points_ptr;
+    loaded.cpu.gpr[5] = 2;
+    loaded.cpu.gpr[6] = 16;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], box_ptr);
+    assert_eq!(
+        ppc_read_q3_vector3d(&mut loaded.memory, box_ptr),
+        Some((-2.0, -4.0, 1.0))
+    );
+    assert_eq!(
+        ppc_read_q3_vector3d(&mut loaded.memory, box_ptr + 12),
+        Some((3.0, 7.0, 5.0))
+    );
+    assert_eq!(loaded.memory.read_u32_be(box_ptr + 24), Some(0));
+}
+
+#[test]
+fn quickdraw_3d_bounding_sphere_contains_submitted_trimesh_points() {
+    let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3View_StartBoundingSphere");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let view = PPC_Q3_OBJECT_BASE;
+    let trimesh = PPC_Q3_OBJECT_BASE + PPC_Q3_OBJECT_STRIDE;
+    let sphere_ptr = PPC_DATA_BASE + 0x1000;
+    let points_ptr = PPC_DATA_BASE + 0x1100;
+    loaded
+        .memory
+        .add_region(sphere_ptr, vec![0; PPC_Q3_BOUNDING_SPHERE_SIZE as usize]);
+    loaded.memory.add_region(points_ptr, vec![0; 24]);
+    ppc_write_q3_vector3d(&mut loaded.memory, points_ptr, (0.0, 0.0, 0.0)).unwrap();
+    ppc_write_q3_vector3d(&mut loaded.memory, points_ptr + 12, (0.0, 0.0, 10.0)).unwrap();
+    loaded
+        .q3_objects
+        .push(test_q3_object(view, PPC_Q3_TYPE_VIEW));
+    let mut data = vec![0; PPC_Q3_TRIMESH_DATA_SIZE as usize];
+    ppc_q3_trimesh_header_put_u32(&mut data, PPC_Q3_TRIMESH_NUM_POINTS_OFFSET, 2).unwrap();
+    ppc_q3_trimesh_header_put_u32(&mut data, PPC_Q3_TRIMESH_POINTS_OFFSET, points_ptr).unwrap();
+    loaded.q3_trimeshes.push(PpcQ3TriMeshRecord {
+        trimesh,
+        data,
+        triangle_attribute_sets: Vec::new(),
+        get_data_copies: Vec::new(),
+    });
+    loaded.cpu.gpr[3] = view;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    loaded.q3_submissions.push(PpcQ3SubmissionRecord {
+        view,
+        kind: PpcQ3SubmissionKind::TriMesh,
+        primary: trimesh,
+        secondary: 0,
+    });
+    let mut local_to_world = ppc_q3_matrix4x4_identity();
+    local_to_world[3][0] = 10.0;
+    loaded
+        .q3_submission_transforms
+        .push(PpcQ3SubmissionTransformRecord {
+            view,
+            kind: PpcQ3SubmissionKind::TriMesh,
+            primary: trimesh,
+            secondary: 0,
+            local_to_world,
+        });
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Q3ViewEndBoundingSphere;
+    loaded.cpu.gpr[3] = view;
+    loaded.cpu.gpr[4] = sphere_ptr;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], PPC_Q3_VIEW_STATUS_DONE);
+    assert_eq!(
+        ppc_read_q3_vector3d(&mut loaded.memory, sphere_ptr),
+        Some((10.0, 0.0, 5.0))
+    );
+    assert_eq!(
+        ppc_read_f32_be(&mut loaded.memory, sphere_ptr + 12),
+        Some(5.0)
+    );
+    assert_eq!(loaded.memory.read_u32_be(sphere_ptr + 16), Some(0));
+}
+
+#[test]
 fn hle_import_runner_handles_quickdraw_3d_initialize_success() {
     let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3Initialize");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -856,6 +963,10 @@ fn hle_import_runner_handles_q3_display_and_illumination_objects() {
             PPC_Q3_GROUP_TYPE_DISPLAY,
         ),
         (
+            PpcImportDispatcherTarget::Q3OrderedDisplayGroupNew,
+            PPC_Q3_GROUP_TYPE_ORDERED_DISPLAY,
+        ),
+        (
             PpcImportDispatcherTarget::Q3LambertIlluminationNew,
             PPC_Q3_ILLUMINATION_TYPE_LAMBERT,
         ),
@@ -888,6 +999,135 @@ fn hle_import_runner_handles_q3_display_and_illumination_objects() {
         assert_eq!(loaded.q3_objects[index].data_ptr, 0);
         assert_eq!(loaded.q3_objects[index].data_size, 0);
     }
+}
+
+#[test]
+fn hle_import_runner_adds_object_to_ordered_display_group() {
+    fn run_q3_call(loaded: &mut PpcLoadedApp, target: PpcImportDispatcherTarget) -> u32 {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = target;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        loaded.cpu.gpr[3]
+    }
+
+    let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3OrderedDisplayGroup_New");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let group = run_q3_call(&mut loaded, PpcImportDispatcherTarget::Q3OrderedDisplayGroupNew);
+    assert_eq!(
+        ppc_q3_object_type_for_handle(&loaded.q3_objects, group),
+        PPC_Q3_GROUP_TYPE_ORDERED_DISPLAY
+    );
+
+    let object = ppc_q3_alloc_object(
+        &mut loaded.q3_objects,
+        &mut loaded.next_q3_object,
+        PpcQ3ObjectKind::Generic,
+        PPC_Q3_TRANSFORM_TYPE_MATRIX,
+        0,
+        0,
+    );
+    loaded.cpu.gpr[3] = group;
+    loaded.cpu.gpr[4] = object;
+    assert_ne!(
+        run_q3_call(&mut loaded, PpcImportDispatcherTarget::Q3GroupAddObject),
+        0
+    );
+    assert!(loaded
+        .q3_group_memberships
+        .iter()
+        .any(|member| member.group == group && member.object == object));
+}
+
+#[test]
+fn hle_import_runner_gets_world_to_frustum_matrix_during_rendering() {
+    let pef = synthetic_pef_with_library_import(
+        b"QuickDraw\xaa 3D",
+        b"Q3View_GetWorldToFrustumMatrixState",
+    );
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let view = ppc_q3_view_new(
+        &mut loaded.q3_objects,
+        &mut loaded.next_q3_object,
+        &mut loaded.q3_views,
+    );
+    let camera = ppc_q3_alloc_object(
+        &mut loaded.q3_objects,
+        &mut loaded.next_q3_object,
+        PpcQ3ObjectKind::Generic,
+        PPC_Q3_CAMERA_TYPE_VIEW_ANGLE_ASPECT,
+        0,
+        0,
+    );
+    let camera_record = PpcQ3CameraRecord {
+        camera,
+        camera_type: PPC_Q3_CAMERA_TYPE_VIEW_ANGLE_ASPECT,
+        placement: PpcQ3CameraPlacement {
+            camera_location: (1.0, 2.0, 3.0),
+            point_of_interest: (1.0, 2.0, 2.0),
+            up_vector: (0.0, 1.0, 0.0),
+        },
+        range_hither: 1.0,
+        range_yon: 100.0,
+        viewport_origin: (-1.0, -1.0),
+        viewport_width: 2.0,
+        viewport_height: 2.0,
+        projection: PpcQ3CameraProjection::ViewAngleAspect {
+            fov: std::f32::consts::FRAC_PI_2,
+            aspect_ratio_x_to_y: 4.0 / 3.0,
+        },
+    };
+    loaded.q3_cameras.push(camera_record);
+    loaded.q3_views[0].camera = camera;
+    let output_ptr = PPC_DATA_BASE + 0x1400;
+    loaded
+        .memory
+        .add_region(output_ptr, vec![0xa5; PPC_Q3_MATRIX4X4_SIZE as usize]);
+
+    let run_call = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target =
+            PpcImportDispatcherTarget::Q3ViewGetWorldToFrustumMatrixState;
+        loaded.cpu.gpr[3] = view;
+        loaded.cpu.gpr[4] = output_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        loaded.cpu.gpr[3]
+    };
+
+    assert_eq!(run_call(&mut loaded), 0);
+    assert_eq!(loaded.memory.read_u8(output_ptr), Some(0xa5));
+
+    loaded.q3_views[0].rendering_depth = 1;
+    assert_eq!(run_call(&mut loaded), 1);
+    let actual = ppc_read_q3_matrix4x4(&mut loaded.memory, output_ptr).unwrap();
+    let world_to_view = ppc_q3_camera_world_to_view_matrix(camera_record.placement).unwrap();
+    let view_to_frustum = ppc_q3_camera_view_to_frustum_matrix(&camera_record).unwrap();
+    assert_eq!(actual, ppc_q3_matrix4x4_multiply_values(world_to_view, view_to_frustum));
+}
+
+#[test]
+fn quickdraw_3d_frustum_to_window_matrix_maps_pane_corners() {
+    let pane = PpcQ3ViewportRect {
+        left: 10,
+        top: 20,
+        right: 650,
+        bottom: 500,
+    };
+    let matrix = ppc_q3_frustum_to_window_matrix(pane).unwrap();
+    assert_eq!(
+        ppc_q3_point3d_transform_values((-1.0, 1.0, 0.25), matrix),
+        (10.0, 20.0, 0.25)
+    );
+    assert_eq!(
+        ppc_q3_point3d_transform_values((1.0, -1.0, 0.75), matrix),
+        (650.0, 500.0, 0.75)
+    );
+    assert_eq!(matrix[2][2], 1.0);
 }
 
 #[test]
