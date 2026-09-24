@@ -1871,7 +1871,9 @@ impl SharedProcessTickState {
 }
 #[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessEventQueue(SharedProcessValue<EventQueue>);
-pub(crate) type SharedProcessMenuTracking = crate::guest_call::SharedMenuTracking;
+/// Detached-by-default attachment handle for Menu Manager tracking state.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SharedProcessMenuTracking(crate::guest_call::SharedMenuTracking);
 #[derive(Clone, Default)]
 pub(crate) struct SharedProcessWindowList(SharedProcessValue<Vec<u32>>);
 pub(crate) struct SharedProcessInputState(SharedProcessValue<ProcessInputState>);
@@ -4181,6 +4183,230 @@ impl SharedProcessEventQueue {
     pub(crate) fn iter(&self) -> std::vec::IntoIter<QueuedEvent> {
         self.with_ref(|queue| queue.iter().copied().collect::<Vec<_>>())
             .into_iter()
+    }
+}
+
+impl PartialEq<Option<ProcessMenuTrackingState>> for SharedProcessMenuTracking {
+    fn eq(&self, other: &Option<ProcessMenuTrackingState>) -> bool {
+        self.with_ref(|state| state == other.as_ref())
+    }
+}
+
+impl PartialEq<SharedProcessMenuTracking> for Option<ProcessMenuTrackingState> {
+    fn eq(&self, other: &SharedProcessMenuTracking) -> bool {
+        other == self
+    }
+}
+
+impl std::ops::Deref for SharedProcessMenuTracking {
+    type Target = Option<ProcessMenuTrackingState>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[allow(dead_code)]
+impl SharedProcessMenuTracking {
+    pub(crate) fn from_inner(inner: crate::guest_call::SharedMenuTracking) -> Self {
+        Self(inner)
+    }
+
+    pub(crate) fn inner(&self) -> &crate::guest_call::SharedMenuTracking {
+        &self.0
+    }
+
+    pub(crate) fn inner_mut(&mut self) -> &mut crate::guest_call::SharedMenuTracking {
+        &mut self.0
+    }
+
+    pub(crate) fn into_inner(self) -> crate::guest_call::SharedMenuTracking {
+        self.0
+    }
+
+    pub(crate) fn is_view_of(&self, calls: &crate::guest_call::SharedGuestCallStack) -> bool {
+        self.0.is_view_of(calls)
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.0.context().tracking.is_some()
+    }
+
+    pub(crate) fn is_some(&self) -> bool {
+        self.is_active()
+    }
+
+    pub(crate) fn is_none(&self) -> bool {
+        !self.is_active()
+    }
+
+    pub(crate) fn is_some_and(&self, f: impl FnOnce(&ProcessMenuTrackingState) -> bool) -> bool {
+        self.with_ref(|state| state.is_some_and(f))
+    }
+
+    pub(crate) fn as_ref(&self) -> Option<&ProcessMenuTrackingState> {
+        self.0.context().tracking.as_ref()
+    }
+
+    pub(crate) fn snapshot(&self) -> Option<ProcessMenuTrackingState> {
+        self.0.snapshot()
+    }
+
+    pub(crate) fn unwrap(&self) -> ProcessMenuTrackingState {
+        self.snapshot().unwrap()
+    }
+
+    pub(crate) fn expect(&self, msg: &str) -> ProcessMenuTrackingState {
+        self.snapshot().expect(msg)
+    }
+
+    pub(crate) fn map<R>(&self, f: impl FnOnce(&ProcessMenuTrackingState) -> R) -> Option<R> {
+        self.with_ref(|state| state.map(f))
+    }
+
+    pub(crate) fn filter(
+        &self,
+        predicate: impl FnOnce(&ProcessMenuTrackingState) -> bool,
+    ) -> Option<ProcessMenuTrackingState> {
+        self.snapshot().filter(predicate)
+    }
+
+    pub(crate) fn menu_handle(&self) -> Option<u32> {
+        self.with_ref(|state| state.map(|s| s.menu_handle))
+    }
+
+    pub(crate) fn highlighted_item(&self) -> Option<i16> {
+        self.with_ref(|state| state.map(|s| s.highlighted_item))
+    }
+
+    pub(crate) fn flash_tick(&self) -> Option<u32> {
+        self.with_ref(|state| state.and_then(|s| s.flash_tick))
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(Option<&ProcessMenuTrackingState>) -> R) -> R {
+        operation(self.0.context().tracking.as_ref())
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut Option<ProcessMenuTrackingState>) -> R) -> R {
+        self.0.with_context_mut(|context| operation(&mut context.tracking))
+    }
+
+    pub(crate) fn with_tracking_mut<R>(
+        &self,
+        update: impl FnOnce(&mut ProcessMenuTrackingState) -> R,
+    ) -> Option<R> {
+        self.0.with_tracking_mut(update)
+    }
+
+    pub(crate) fn with_context_mut<R>(
+        &self,
+        update: impl FnOnce(&mut crate::guest_call::MenuTrackingContext) -> R,
+    ) -> R {
+        self.0.with_context_mut(update)
+    }
+
+    pub(crate) fn with_existing_context_mut<R>(
+        &self,
+        update: impl FnOnce(&mut crate::guest_call::MenuTrackingContext) -> R,
+    ) -> Option<R> {
+        self.0.with_existing_context_mut(update)
+    }
+
+    pub(crate) fn take(&self) -> Option<ProcessMenuTrackingState> {
+        self.0.take()
+    }
+
+    pub(crate) fn set(&self, tracking: Option<ProcessMenuTrackingState>) {
+        self.0.set(tracking);
+    }
+
+    pub(crate) fn context(&self) -> &crate::guest_call::MenuTrackingContext {
+        self.0.context()
+    }
+
+    pub(crate) fn request_menu_hook(&self, mouse_down: bool) -> Option<crate::guest_call::MenuHookKey> {
+        self.0.request_menu_hook(mouse_down)
+    }
+
+    pub(crate) fn bind_menu_hook(
+        &self,
+        key: crate::guest_call::MenuHookKey,
+        completion: crate::guest_call::MenuHookCompletion,
+    ) -> bool {
+        self.0.bind_menu_hook(key, completion)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enter(&self) -> crate::guest_call::MenuTrackingEntry {
+        self.0.enter()
+    }
+
+    pub(crate) fn enter_new_call(
+        &self,
+        call: crate::guest_call::MenuTrackingCall,
+    ) -> crate::guest_call::MenuTrackingEntry {
+        self.0.enter_new_call(call)
+    }
+
+    pub(crate) fn entry_id(&self) -> Option<crate::guest_call::MenuOperationId> {
+        self.0.entry_id()
+    }
+
+    pub(crate) fn bind_completion(
+        &self,
+        id: crate::guest_call::MenuOperationId,
+        invocation: crate::menu_manager::MenuDefinitionInvocation,
+        completion: crate::menu_manager::MenuDefinitionCompletion,
+    ) {
+        self.0.bind_completion(id, invocation, completion);
+    }
+
+    pub(crate) fn ready_call(
+        &self,
+        isa: crate::guest_procedure::GuestIsa,
+    ) -> Option<crate::guest_call::MenuTrackingCall> {
+        self.0.ready_call(isa)
+    }
+
+    pub(crate) fn resume_call(
+        &self,
+        isa: crate::guest_procedure::GuestIsa,
+    ) -> Option<(crate::guest_call::MenuTrackingCall, crate::guest_call::MenuTrackingEntry)> {
+        self.0.resume_call(isa)
+    }
+
+    pub(crate) fn begin(&self) -> crate::guest_call::MenuOperationId {
+        self.0.begin()
+    }
+
+    pub(crate) fn finish_if_idle(&self, id: crate::guest_call::MenuOperationId) {
+        self.0.finish_if_idle(id);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn menu_hook_key(&self) -> Option<crate::guest_call::MenuHookKey> {
+        self.0.menu_hook_key()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn menu_hook_is_pending(&self, key: crate::guest_call::MenuHookKey) -> bool {
+        self.0.menu_hook_is_pending(key)
+    }
+}
+
+impl From<crate::guest_call::SharedMenuTracking> for SharedProcessMenuTracking {
+    fn from(inner: crate::guest_call::SharedMenuTracking) -> Self {
+        Self(inner)
+    }
+}
+
+impl From<SharedProcessMenuTracking> for crate::guest_call::SharedMenuTracking {
+    fn from(outer: SharedProcessMenuTracking) -> Self {
+        outer.0
     }
 }
 
@@ -9571,7 +9797,7 @@ impl Default for ProcessContext {
             tick_state: SharedProcessTickState::default(),
             event_queue: SharedProcessEventQueue::default(),
             input_state: SharedProcessInputState::default(),
-            menu_tracking: guest_calls.menu_tracking_view(),
+            menu_tracking: guest_calls.menu_tracking_view().into(),
             window_list: SharedProcessWindowList::default(),
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
             guest_calls,
@@ -10108,8 +10334,21 @@ impl ProcessContext {
         &self.event_queue
     }
 
-    pub(crate) fn menu_tracking(&self) -> Option<&ProcessMenuTrackingState> {
-        self.menu_tracking.as_ref()
+    pub(crate) fn menu_tracking(&self) -> &SharedProcessMenuTracking {
+        &self.menu_tracking
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn menu_tracking_snapshot(&self) -> Option<ProcessMenuTrackingState> {
+        self.menu_tracking.snapshot()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn with_menu_tracking_ref<R>(
+        &self,
+        f: impl FnOnce(Option<&ProcessMenuTrackingState>) -> R,
+    ) -> R {
+        self.menu_tracking.with_ref(f)
     }
 
     pub(crate) fn set_menu_presentation_tick(&mut self, tick: u32) {
@@ -14645,5 +14884,63 @@ mod tests {
         assert_eq!(*native_device, 0x0050_0000);
         assert_eq!(*classic_device, 0x0050_0000);
         assert_eq!(*context.current_graphics_device(), 0x0050_0000);
+    }
+
+    #[test]
+    fn process_menu_tracking_encapsulation() {
+        let calls = SharedGuestCallStack::default();
+        let tracking = SharedProcessMenuTracking::from_inner(calls.menu_tracking_view());
+        assert!(tracking.is_none());
+        assert!(!tracking.is_some());
+        assert!(!tracking.is_active());
+        assert_eq!(tracking.snapshot(), None);
+        assert_eq!(tracking.menu_handle(), None);
+        assert_eq!(tracking.highlighted_item(), None);
+        assert_eq!(tracking.flash_tick(), None);
+
+        let menu = crate::menu_manager::test_process_menu_tracking(0x0012_3456);
+        tracking.set(Some(menu));
+        assert!(tracking.is_some());
+        assert!(tracking.is_active());
+        assert!(!tracking.is_none());
+        assert_eq!(tracking.menu_handle(), Some(0x0012_3456));
+        assert_eq!(tracking.highlighted_item(), Some(1));
+        assert!(tracking.is_some_and(|s| s.menu_handle == 0x0012_3456));
+        assert!(!tracking.is_some_and(|s| s.menu_handle == 0x9999));
+        assert_eq!(tracking.map(|s| s.menu_handle), Some(0x0012_3456));
+        assert_eq!(
+            tracking
+                .filter(|s| s.menu_handle == 0x0012_3456)
+                .map(|s| s.menu_handle),
+            Some(0x0012_3456)
+        );
+        assert_eq!(tracking.filter(|s| s.menu_handle == 0x9999), None);
+        assert_eq!(tracking.unwrap().menu_handle, 0x0012_3456);
+        assert_eq!(
+            tracking.expect("active tracking").menu_handle,
+            0x0012_3456
+        );
+
+        tracking.with_tracking_mut(|s| {
+            s.highlighted_item = 5;
+            s.set_flash_tick(99);
+        });
+        assert_eq!(tracking.highlighted_item(), Some(5));
+        assert_eq!(tracking.flash_tick(), Some(99));
+
+        let taken = tracking.take();
+        assert_eq!(taken.map(|s| s.menu_handle), Some(0x0012_3456));
+        assert!(tracking.is_none());
+
+        let same_view = SharedProcessMenuTracking::from_inner(calls.menu_tracking_view());
+        assert!(tracking.ptr_eq(&same_view));
+
+        let cloned = tracking.clone();
+        assert!(!tracking.ptr_eq(&cloned));
+
+        let ctx = ProcessContext::default();
+        assert!(ctx.menu_tracking().is_none());
+        assert_eq!(ctx.menu_tracking_snapshot(), None);
+        assert_eq!(ctx.with_menu_tracking_ref(|s| s.is_some()), false);
     }
 }

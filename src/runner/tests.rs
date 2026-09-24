@@ -7,7 +7,7 @@
     use crate::process_context::{
         PendingFileCompletion, ProcessFileSystemState, SharedProcessFileSystem,
         SharedProcessDisplayClut, SharedProcessDisplayGamma, SharedProcessGraphicsDevice,
-        SharedProcessGraphicsPort, SharedProcessTickState, SharedProcessValue,
+        SharedProcessGraphicsPort, SharedProcessTickState,
     };
     use crate::sound::{
         DoubleBufferState, PendingDoubleBackCallback, PendingSoundCallback, PlaybackKind,
