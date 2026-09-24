@@ -27,6 +27,26 @@ fn next_store_filter_identity() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
+/// Width in pixels of a screen change-tracking tile.
+const SCREEN_TILE: u32 = 16;
+
+fn screen_tiles_per_row(width: u32) -> usize {
+    width.div_ceil(SCREEN_TILE) as usize
+}
+
+fn next_presentation_identity() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A point in a presentation's screen history; see
+/// [`MacMemoryBus::screen_rect_unchanged_since`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ScreenMark {
+    identity: u64,
+    epoch: u64,
+}
+
 impl std::fmt::Debug for PresentationSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("PresentationSlot")
@@ -431,6 +451,16 @@ struct ResolvedOutputCache {
 
 pub(crate) struct Presentation {
     revision: u64,
+    /// Distinguishes presentation objects, so a screen mark taken on one is
+    /// never compared with another's epochs.
+    identity: u64,
+    /// Bumped by every change to an on-screen cell: its guest value, text
+    /// flag, samples, ink or cached detail.
+    screen_epoch: u64,
+    /// Per screen row, per `SCREEN_TILE`-pixel column tile: the `screen_epoch`
+    /// of the tile's last change. A rectangle whose tiles all predate a mark
+    /// holds exactly what it held at that mark.
+    tile_epochs: Vec<u64>,
     visible_image: VisibleImageStamp,
     cpu_drawing: bool,
     cpu_recolor: Option<CpuRecolor>,
@@ -475,6 +505,54 @@ pub(crate) struct Presentation {
 }
 
 impl Presentation {
+    /// Record a change to the on-screen cell at (`x`, `y`).
+    #[inline]
+    fn touch_screen(&mut self, x: u32, y: u32) {
+        self.screen_epoch += 1;
+        let tile = y as usize * screen_tiles_per_row(self.width) + (x / SCREEN_TILE) as usize;
+        if let Some(epoch) = self.tile_epochs.get_mut(tile) {
+            *epoch = self.screen_epoch;
+        }
+    }
+
+    fn screen_mark(&self) -> ScreenMark {
+        ScreenMark {
+            identity: self.identity,
+            epoch: self.screen_epoch,
+        }
+    }
+
+    /// Whether every on-screen cell in the rectangle is exactly as it was at
+    /// `mark`. Rows and columns outside the screen hold no cells and are
+    /// ignored; a mark from another presentation object is never current.
+    fn screen_rect_unchanged_since(
+        &self,
+        mark: ScreenMark,
+        (top, left, width, height): (i16, i16, i16, i16),
+    ) -> bool {
+        if mark.identity != self.identity {
+            return false;
+        }
+        if width <= 0 || height <= 0 {
+            return true;
+        }
+        let x0 = i32::from(left).max(0) as u32;
+        let y0 = i32::from(top).max(0) as u32;
+        let x1 = (i32::from(left) + i32::from(width)).clamp(0, self.width as i32) as u32;
+        let y1 = (i32::from(top) + i32::from(height)).clamp(0, self.height as i32) as u32;
+        if x0 >= x1 || y0 >= y1 {
+            return true;
+        }
+        let per_row = screen_tiles_per_row(self.width);
+        let (t0, t1) = ((x0 / SCREEN_TILE) as usize, ((x1 - 1) / SCREEN_TILE) as usize);
+        (y0..y1).all(|y| {
+            let row = y as usize * per_row;
+            self.tile_epochs[row + t0..=row + t1]
+                .iter()
+                .all(|&epoch| epoch <= mark.epoch)
+        })
+    }
+
     fn changed(&mut self, visible: bool) {
         self.revision = self.revision.wrapping_add(1);
         if self.revision == 0 {
@@ -1071,6 +1149,9 @@ impl Presentation {
             return;
         }
         self.changed(true);
+        for offset in 0..bytes.len() as u32 {
+            self.touch_screen(x + offset, y);
+        }
         for (offset, &value) in bytes.iter().enumerate() {
             let cell = start + offset;
             self.detail_cache.get_mut()[cell] = None;
@@ -1288,6 +1369,7 @@ impl Presentation {
         if cell.indices.len() != (self.scale * self.scale) as usize {
             return;
         }
+        self.touch_screen(x, y);
         let index = (y * self.width + x) as usize;
         let palette = if self.depth == 8 {
             &self.palette
@@ -1323,6 +1405,7 @@ impl Presentation {
     }
 
     fn prepare_text_cell(&mut self, x: u32, y: u32) {
+        self.touch_screen(x, y);
         self.detail_cache.get_mut()[(y * self.width + x) as usize] = None;
         let cell = (y * self.width + x) as usize;
         if !self.text_cells[cell] {
@@ -1382,13 +1465,17 @@ impl Presentation {
             self.changed(true);
             // The logical mask can extend beyond the native glyph bounds.
             // Such cells still need their current background preserved.
+            // (`prepare_text_cell` records the change for screen marks.)
             self.prepare_text_cell(x, y);
             self.guest_values[cell] = u16::from(value);
             return;
         }
         if self.guest_values[cell] == u16::from(value) && !self.text_cells[cell] {
+            // Same plain pixel: no cell state changes, so no screen mark
+            // moves. (The detail cache cleared above only memoizes `detail`.)
             return;
         }
+        self.touch_screen(x, y);
         self.changed(true);
         self.guest_values[cell] = u16::from(value);
         if !self.text_cells[cell] {
@@ -1686,7 +1773,10 @@ impl MacMemoryBus {
 
     pub(crate) fn save_pixel_bytes(&self, address: u32, len: usize) -> SavedPixels {
         let mut pixels = SavedPixels::from(self.read_bytes(address, len));
-        self.capture_pixel_detail(&mut pixels, 0, address, len);
+        // The sparse range walk, not a `detail` query per byte: callers save
+        // whole menu bars and window frames every frame, and only text cells
+        // and retained glyphs carry detail.
+        self.presentation.capture_detail(&mut pixels, 0, address, len);
         pixels
     }
 
@@ -1776,6 +1866,25 @@ impl MacMemoryBus {
         }
     }
 
+    /// The current point in the screen's change history, or `None` without
+    /// a presentation (then no screen write is tracked and nothing can be
+    /// proven unchanged).
+    pub(crate) fn screen_mark(&self) -> Option<ScreenMark> {
+        self.presentation.as_ref().map(|p| p.screen_mark())
+    }
+
+    /// Whether every on-screen cell of `rect` (top, left, width, height) --
+    /// guest byte, text coverage and ink -- is exactly as it was at `mark`.
+    pub(crate) fn screen_rect_unchanged_since(
+        &self,
+        mark: ScreenMark,
+        rect: (i16, i16, i16, i16),
+    ) -> bool {
+        self.presentation
+            .as_ref()
+            .is_some_and(|p| p.screen_rect_unchanged_since(mark, rect))
+    }
+
     pub(crate) fn begin_cpu_pixel_copy(&mut self, source: u32, bytes: u32) -> bool {
         let addresses: [u32; 4] =
             std::array::from_fn(|i| self.translate_guest_address(source.wrapping_add(i as u32)));
@@ -1819,6 +1928,8 @@ impl MacMemoryBus {
         }
     }
 
+    /// Per-byte capture; also the test oracle for the range walk
+    /// `save_pixel_bytes` uses.
     pub(crate) fn capture_pixel_detail<T>(
         &self,
         pixels: &mut SavedPixels<T>,
@@ -2192,6 +2303,9 @@ impl MacMemoryBus {
         });
         let mut presentation = Presentation {
             revision: 0,
+            identity: next_presentation_identity(),
+            screen_epoch: 0,
+            tile_epochs: vec![0; screen_tiles_per_row(width.into()) * usize::from(height)],
             visible_image: VisibleImageStamp {
                 identity: std::rc::Rc::new(()),
                 revision: 0,
@@ -2584,6 +2698,39 @@ mod tests {
             scale,
         );
         bus
+    }
+
+    #[test]
+    fn range_capture_agrees_with_the_per_byte_oracle() {
+        // Screen text, text in row padding (x >= width), and retained glyphs
+        // before, after and between screen rows, captured over every span
+        // that starts and ends around them.
+        let mut bus = padded_bus(12, 8, 8, 2);
+        for address in [0x1000, 0x1003, 0x1009, 0x100b, 0x1025, 0x105f, 0x0ffd, 0x1060, 0x1063] {
+            paint_detail(&mut bus, address);
+        }
+        let points = [0x0ff8u32, 0x0ffd, 0x0ffe, 0x1000, 0x1004, 0x1008, 0x100b, 0x100c, 0x1024, 0x1026, 0x105f, 0x1060, 0x1064];
+        let mut compared = 0;
+        for &start in &points {
+            for &end in &points {
+                if end <= start {
+                    continue;
+                }
+                let len = (end - start) as usize;
+                let mut oracle = SavedPixels::from(bus.read_bytes(start, len));
+                bus.capture_pixel_detail(&mut oracle, 0, start, len);
+                let fast = bus.save_pixel_bytes(start, len);
+                assert_eq!(fast.values, oracle.values, "{start:#x}+{len}");
+                let keys = |p: &SavedPixels| {
+                    let mut k: Vec<_> = p.detail.iter().map(|(&i, c)| (i, (**c).clone())).collect();
+                    k.sort_by_key(|(i, _)| *i);
+                    k
+                };
+                assert_eq!(keys(&fast), keys(&oracle), "{start:#x}+{len}");
+                compared += 1;
+            }
+        }
+        assert!(compared > 50);
     }
 
     /// The proof `restore_saved_pixels` used before the range walk existed,
