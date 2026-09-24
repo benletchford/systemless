@@ -1306,6 +1306,10 @@ impl App {
         else {
             return;
         };
+        self.sync_guest_cursor_warp_to(v, h);
+    }
+
+    fn sync_guest_cursor_warp_to(&mut self, v: i16, h: i16) {
         let Some(window) = self.window.as_ref() else {
             return;
         };
@@ -1328,14 +1332,19 @@ impl App {
                     width: sw,
                     height: sh,
                 }),
-                self.runner.as_ref().and_then(|runner| {
-                    runner
-                        .dispatcher()
-                        .visible_dialog_structure_bounds(runner.bus())
+                self.snapshot.as_ref().and_then(|frame| frame.dialog_bounds).or_else(|| {
+                    self.runner.as_ref().and_then(|runner| {
+                        runner
+                            .dispatcher()
+                            .visible_dialog_structure_bounds(runner.bus())
+                    })
                 }),
                 sw,
                 sh,
-                native_menu_bar_height(self.runner.as_ref(), self.native_integrations),
+                self.snapshot.as_ref().map_or_else(
+                    || native_menu_bar_height(self.runner.as_ref(), self.native_integrations),
+                    |frame| frame.menu_bar_height,
+                ),
             )
         };
         #[cfg(not(target_os = "macos"))]
@@ -2667,6 +2676,12 @@ impl App {
                 }
             }
             self.force_next_render = true;
+        }
+
+        if self.window.is_some() {
+            if let Some((v, h)) = self.worker.as_ref().and_then(|worker| worker.cursor_warp.take()) {
+                self.sync_guest_cursor_warp_to(v, h);
+            }
         }
 
         if self.force_next_render {
@@ -4119,9 +4134,6 @@ fn run_gui(
         ui_theme,
         fullscreen,
     );
-    if std::env::var_os("SYSTEMLESS_PROFILE_UI").is_some() {
-        app.ui_probe = Some(UiLatencyProbe::start(event_loop.create_proxy()));
-    }
     #[cfg(target_os = "windows")]
     {
         app.gpu_wake = Some(event_loop.create_proxy());
@@ -4153,6 +4165,9 @@ fn run_gui(
     }
     app.worker = Some(worker);
     app.worker_debug_server = debug_socket.is_some();
+    if std::env::var_os("SYSTEMLESS_PROFILE_UI").is_some() {
+        app.ui_probe = Some(UiLatencyProbe::start(event_loop.create_proxy()));
+    }
     event_loop.run_app(&mut app).expect("Event loop failed");
     if let Some(worker) = app.worker.as_mut() {
         worker.shutdown();

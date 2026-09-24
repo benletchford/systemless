@@ -61,6 +61,7 @@ pub(super) struct FrameSnapshot {
 pub(super) struct EmulationWorker {
     pub commands: Arc<CommandMailbox>,
     pub latest: Arc<LatestSlot<FrameSnapshot>>,
+    pub cursor_warp: Arc<LatestSlot<(i16, i16)>>,
     error: Arc<Mutex<Option<String>>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -109,8 +110,10 @@ impl EmulationWorker {
     pub fn start(config: WorkerConfig, wake: EventLoopProxy<()>) -> Result<Self, String> {
         let commands = Arc::new(CommandMailbox::default());
         let latest = Arc::new(LatestSlot::default());
+        let cursor_warp = Arc::new(LatestSlot::default());
         let thread_commands = Arc::clone(&commands);
         let thread_latest = Arc::clone(&latest);
+        let thread_cursor_warp = Arc::clone(&cursor_warp);
         let error = Arc::new(Mutex::new(None));
         let thread_error = Arc::clone(&error);
         let error_wake = wake.clone();
@@ -119,7 +122,7 @@ impl EmulationWorker {
             .name("systemless-emulation".to_owned())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_worker(config, thread_commands, thread_latest, wake, ready_tx)
+                    run_worker(config, thread_commands, thread_latest, thread_cursor_warp, wake, ready_tx)
                 }));
                 if let Err(panic) = result {
                     let message = panic
@@ -144,6 +147,7 @@ impl EmulationWorker {
         Ok(Self {
             commands,
             latest,
+            cursor_warp,
             error,
             thread: Some(thread),
         })
@@ -167,6 +171,7 @@ fn run_worker(
     config: WorkerConfig,
     commands: Arc<CommandMailbox>,
     latest: Arc<LatestSlot<FrameSnapshot>>,
+    cursor_warp: Arc<LatestSlot<(i16, i16)>>,
     wake: EventLoopProxy<()>,
     ready: mpsc::SyncSender<()>,
 ) {
@@ -196,7 +201,7 @@ fn run_worker(
         );
     }
     app.init_game();
-    if let Some(snapshot) = capture_frame(&mut app) {
+    if let Some(snapshot) = capture_frame(&mut app, &cursor_warp) {
         latest.replace(snapshot);
     }
     ready.send(()).ok();
@@ -225,7 +230,7 @@ fn run_worker(
         app.flush_ready_mouse_release();
         app.sync_save_files(false);
         let capture_start = Instant::now();
-        if let Some(snapshot) = capture_frame(&mut app) {
+        if let Some(snapshot) = capture_frame(&mut app, &cursor_warp) {
             latest.replace(snapshot);
             let _ = wake.send_event(());
         }
@@ -319,7 +324,10 @@ fn update_menu_generation(
     }
 }
 
-fn capture_frame(app: &mut App) -> Option<FrameSnapshot> {
+fn capture_frame(
+    app: &mut App,
+    cursor_warp: &LatestSlot<(i16, i16)>,
+) -> Option<FrameSnapshot> {
     let runner = app.runner.as_mut()?;
     runner.prepare_text_presentation();
     runner.composite_frame();
@@ -337,6 +345,9 @@ fn capture_frame(app: &mut App) -> Option<FrameSnapshot> {
     let has_outline_detail = runner.bus().has_visible_outline_detail();
     let cursor = runner.dispatcher().cursor().cloned();
     let mouse_position = runner.dispatcher().mouse_position();
+    if let Some(warp) = runner.take_guest_cursor_warp() {
+        cursor_warp.replace(warp);
+    }
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let software_cursor = std::env::var_os("SYSTEMLESS_SOFTWARE_CURSOR").is_some();
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
