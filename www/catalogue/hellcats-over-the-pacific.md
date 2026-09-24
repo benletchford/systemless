@@ -12,9 +12,22 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Simulation
+launch_enabled: true
 compatibility:
-  status: boots
+  status: works
   verified:
+  - date: "2026-09-25"
+    tester: Catalogue maintainer
+    systemless_version: "0.59.0 production-style WebAssembly build"
+    architecture: 68k
+    environment: >-
+      Optimized browser build at localhost:8080 loaded the promoted immutable
+      ZIP, accepted Play Demo, and progressed from the selector through an
+      airfield launch into the in-flight cockpit sequence without console
+      errors. The sequence is automated, as documented by the publisher; it
+      does not demonstrate player-controlled flight.
+    status: works
+    evidence: https://github.com/benletchford/systemless/pull/2742
   - date: "2026-09-25"
     tester: Catalogue maintainer
     systemless_version: 0.51.0 + current generic File Manager fixes
@@ -23,7 +36,7 @@ compatibility:
       Deterministic headless run of the MacBinary-preserved 1992 Apple demo-CD files
       at 800 by 600 in 256 colours. The original selector accepted Play Demo and
       rendered aircraft on an airfield at tick 1804. This is an automated demonstration, not
-      controllable flight; browser verification remains pending.
+      controllable flight.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/2741
 artifacts:
