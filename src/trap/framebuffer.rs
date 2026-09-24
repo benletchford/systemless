@@ -49,8 +49,90 @@ pub(crate) struct ColorTableMirror {
     depth: u16,
 }
 
+/// One colour-table question a chrome draw asked, with its answer.
+///
+/// Chrome caches key on a digest of the whole colour environment, so any
+/// palette animation used to force a full redraw even when every colour the
+/// chrome actually resolved was unchanged. A draw that fills a cache records
+/// each question it asked at the eight leaves every colour resolution
+/// reduces to; a later lookup whose key differs only in that digest replays
+/// them, and reuses the cached pixels when every answer is still the same.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ColorQuery {
+    MainCtab(Option<u32>),
+    ActiveCtab(Option<u32>),
+    IndexForRgb { ctab: u32, rgb: [u16; 3], entries: usize, index: Option<u8> },
+    RgbForIndex { ctab: u32, index: u8, rgb: Option<[u16; 3]> },
+    BestLuma { ctab: u32, brightest: bool, index: Option<u8> },
+    ValueLuma { ctab: u32, value: u8, luma: Option<u32> },
+    MirrorIndex { rgb: [u16; 3], index: Option<u8> },
+    MirrorLuma { value: u8, luma: Option<u32> },
+}
+
+/// Draws record at most this many distinct questions; beyond it the draw is
+/// not replayable and its cache entry simply keeps the old exact-key rule.
+const MAX_COLOR_QUERIES: usize = 1024;
+
+thread_local! {
+    static COLOR_QUERIES: std::cell::RefCell<Option<Vec<ColorQuery>>> =
+        const { std::cell::RefCell::new(None) };
+    static COLOR_QUERIES_OVERFLOWED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn record_color_query(query: ColorQuery) {
+    COLOR_QUERIES.with_borrow_mut(|queries| {
+        let Some(list) = queries.as_mut() else {
+            return;
+        };
+        if list.contains(&query) {
+            return;
+        }
+        if list.len() >= MAX_COLOR_QUERIES {
+            COLOR_QUERIES_OVERFLOWED.set(true);
+            return;
+        }
+        list.push(query);
+    });
+}
+
+/// Records the colour questions of one chrome draw until `finish` (or drop).
+pub(crate) struct ColorQueryRecording(());
+
+impl ColorQueryRecording {
+    pub(crate) fn start() -> Self {
+        COLOR_QUERIES.with_borrow_mut(|queries| *queries = Some(Vec::new()));
+        COLOR_QUERIES_OVERFLOWED.set(false);
+        Self(())
+    }
+
+    /// The questions asked, or `None` when the draw is not replayable.
+    pub(crate) fn finish(self) -> Option<Vec<ColorQuery>> {
+        let queries = COLOR_QUERIES.with_borrow_mut(Option::take);
+        (!COLOR_QUERIES_OVERFLOWED.get()).then_some(queries).flatten()
+    }
+}
+
+impl Drop for ColorQueryRecording {
+    fn drop(&mut self) {
+        COLOR_QUERIES.with_borrow_mut(|queries| *queries = None);
+    }
+}
+
+/// Test-only switch: on every replay hit, redraw anyway and assert the fresh
+/// pixels equal the cached ones.
+fn verify_color_replay() -> bool {
+    static VERIFY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VERIFY.get_or_init(|| std::env::var_os("SYSTEMLESS_VERIFY_CHROME_COLOR_REPLAY").is_some())
+}
+
 impl ColorTableMirror {
     fn luma_of_value(&self, wanted: u8) -> Option<u32> {
+        let luma = self.luma_of_value_unrecorded(wanted);
+        record_color_query(ColorQuery::MirrorLuma { value: wanted, luma });
+        luma
+    }
+
+    fn luma_of_value_unrecorded(&self, wanted: u8) -> Option<u32> {
         let ordinal = usize::from(wanted);
         if let Some(&(value, rgb)) = self.entries.get(ordinal) {
             if self.device_table || value == u16::from(wanted) {
@@ -65,6 +147,12 @@ impl ColorTableMirror {
 
     /// The device index for `rgb`, as the bus scan would answer it.
     pub(crate) fn pixel_index_for_rgb(&self, rgb: [u16; 3]) -> Option<u8> {
+        let index = self.pixel_index_for_rgb_unrecorded(rgb);
+        record_color_query(ColorQuery::MirrorIndex { rgb, index });
+        index
+    }
+
+    fn pixel_index_for_rgb_unrecorded(&self, rgb: [u16; 3]) -> Option<u8> {
         if !self.present {
             return None;
         }
@@ -126,6 +214,9 @@ pub(crate) struct MenuBarCache {
     key: MenuBarCacheKey,
     rect: (i16, i16, i16, i16),
     pixels: crate::memory::SavedPixels,
+    /// The colour questions the draw that produced `pixels` asked; `None`
+    /// when it asked too many to replay.
+    color_queries: Option<Vec<ColorQuery>>,
     /// When the screen last held exactly `pixels` over `rect`: right after
     /// they were captured or restored. While no cell of `rect` has changed
     /// since, restoring them again would change nothing.
@@ -152,6 +243,8 @@ pub(crate) struct WindowTitleCache {
     key: WindowTitleCacheKey,
     rect: (i16, i16, i16, i16),
     pixels: crate::memory::SavedPixels,
+    /// As for [`MenuBarCache::color_queries`].
+    color_queries: Option<Vec<ColorQuery>>,
     /// As for [`MenuBarCache::committed`].
     committed: Option<crate::memory::presentation::ScreenMark>,
 }
@@ -1068,6 +1161,12 @@ impl super::TrapDispatcher {
     }
 
     fn active_gdevice_ctab(bus: &MacMemoryBus) -> Option<u32> {
+        let ctab = Self::active_gdevice_ctab_unrecorded(bus);
+        record_color_query(ColorQuery::ActiveCtab(ctab));
+        ctab
+    }
+
+    fn active_gdevice_ctab_unrecorded(bus: &MacMemoryBus) -> Option<u32> {
         let current = bus.read_long(0x0CC8); // TheGDevice
         let gdevice_handle = if current != 0 {
             current
@@ -1078,6 +1177,12 @@ impl super::TrapDispatcher {
     }
 
     fn main_gdevice_ctab(bus: &MacMemoryBus) -> Option<u32> {
+        let ctab = Self::main_gdevice_ctab_unrecorded(bus);
+        record_color_query(ColorQuery::MainCtab(ctab));
+        ctab
+    }
+
+    fn main_gdevice_ctab_unrecorded(bus: &MacMemoryBus) -> Option<u32> {
         let main = bus.read_long(0x08A4); // MainDevice
                                           // Menu chrome is composited into the physical screen. Never fall
                                           // back to TheGDevice here: it may name an offscreen GWorld whose
@@ -1086,6 +1191,12 @@ impl super::TrapDispatcher {
     }
 
     fn ctab_value_luma(bus: &MacMemoryBus, ctab: u32, wanted_value: u8) -> Option<u32> {
+        let luma = Self::ctab_value_luma_unrecorded(bus, ctab, wanted_value);
+        record_color_query(ColorQuery::ValueLuma { ctab, value: wanted_value, luma });
+        luma
+    }
+
+    fn ctab_value_luma_unrecorded(bus: &MacMemoryBus, ctab: u32, wanted_value: u8) -> Option<u32> {
         let count = u32::from(bus.read_word(ctab + 6)).min(255) + 1;
         let device_table = (bus.read_word(ctab + 4) & 0x8000) != 0;
 
@@ -1116,6 +1227,16 @@ impl super::TrapDispatcher {
     }
 
     fn best_luma_pixel_index(bus: &MacMemoryBus, ctab: u32, brightest: bool) -> Option<u8> {
+        let index = Self::best_luma_pixel_index_unrecorded(bus, ctab, brightest);
+        record_color_query(ColorQuery::BestLuma { ctab, brightest, index });
+        index
+    }
+
+    fn best_luma_pixel_index_unrecorded(
+        bus: &MacMemoryBus,
+        ctab: u32,
+        brightest: bool,
+    ) -> Option<u8> {
         let count = u32::from(bus.read_word(ctab + 6)).min(255) + 1;
         let device_table = (bus.read_word(ctab + 4) & 0x8000) != 0;
         let mut best_index = 0u8;
@@ -1151,6 +1272,18 @@ impl super::TrapDispatcher {
     }
 
     fn fb_pixel_index_for_rgb_in_ctab_with_entry_count(
+        bus: &MacMemoryBus,
+        ctab: u32,
+        rgb: [u16; 3],
+        entry_count: usize,
+    ) -> Option<u8> {
+        let index =
+            Self::fb_pixel_index_for_rgb_in_ctab_with_entry_count_unrecorded(bus, ctab, rgb, entry_count);
+        record_color_query(ColorQuery::IndexForRgb { ctab, rgb, entries: entry_count, index });
+        index
+    }
+
+    fn fb_pixel_index_for_rgb_in_ctab_with_entry_count_unrecorded(
         bus: &MacMemoryBus,
         ctab: u32,
         rgb: [u16; 3],
@@ -1244,6 +1377,16 @@ impl super::TrapDispatcher {
     /// the mapping from pixel values to RGB; this is the inverse of
     /// `fb_pixel_index_for_rgb`.
     fn fb_rgb_for_pixel_index_in_ctab(
+        bus: &MacMemoryBus,
+        ctab: u32,
+        index: u8,
+    ) -> Option<[u16; 3]> {
+        let rgb = Self::fb_rgb_for_pixel_index_in_ctab_unrecorded(bus, ctab, index);
+        record_color_query(ColorQuery::RgbForIndex { ctab, index, rgb });
+        rgb
+    }
+
+    fn fb_rgb_for_pixel_index_in_ctab_unrecorded(
         bus: &MacMemoryBus,
         ctab: u32,
         index: u8,
@@ -3182,8 +3325,28 @@ impl super::TrapDispatcher {
             highlighted: self.current_menu_bar_highlight_index(bus),
             outline_scale: bus.outline_presentation_scale(),
         });
+        // A palette change alone need not invalidate the cached bar: replay
+        // the colour questions its draw asked, and reuse it when every answer
+        // is unchanged. The test-only verification mode redraws instead and
+        // checks the fresh pixels against the ones a replay hit would reuse.
+        let mut replay_expected = None;
         if let Some(key) = &cache_key {
             let mut cache = self.menu_bar_cache.borrow_mut();
+            let replayable = cache.as_mut().filter(|entry| {
+                entry.key != *key
+                    && entry.key == (MenuBarCacheKey { colors: entry.key.colors, ..key.clone() })
+                    && entry
+                        .color_queries
+                        .as_deref()
+                        .is_some_and(|queries| self.color_queries_hold(bus, queries))
+            });
+            if let Some(entry) = replayable {
+                if verify_color_replay() {
+                    replay_expected = Some((entry.rect, entry.pixels.clone()));
+                } else {
+                    entry.key.colors = key.colors;
+                }
+            }
             if let Some(cache) = cache.as_mut().filter(|cache| &cache.key == key) {
                 // Repainting is a native drawing boundary even if every menu
                 // pixel is unchanged. Commit any preceding guest recoloring,
@@ -3203,6 +3366,7 @@ impl super::TrapDispatcher {
                 return;
             }
         }
+        let recording = cache_key.is_some().then(ColorQueryRecording::start);
         let menu_bar_bg_index = self.menu_bar_background_pixel_index(bus, pixel_size);
 
         if !self.draw_theme_menu_bar_chrome(bus, menu_bar_height) {
@@ -3426,14 +3590,23 @@ impl super::TrapDispatcher {
             self.highlight_menu_title(bus, menu_idx);
         }
 
+        let color_queries = recording.and_then(ColorQueryRecording::finish);
         if let Some(key) = cache_key {
             if let Some((top, left, width, height, pixels)) =
                 self.save_screen_rect_pixels(bus, (0, 0, menu_bar_height, screen_width))
             {
+                if let Some((rect, expected)) = replay_expected {
+                    assert_eq!(rect, (top, left, width, height), "menu bar replay: rect");
+                    assert!(
+                        pixels == expected,
+                        "menu bar colour replay reused pixels a redraw does not produce"
+                    );
+                }
                 *self.menu_bar_cache.borrow_mut() = Some(MenuBarCache {
                     key,
                     rect: (top, left, width, height),
                     pixels,
+                    color_queries,
                     committed: bus.screen_mark(),
                 });
             }
@@ -3510,6 +3683,35 @@ impl super::TrapDispatcher {
             }
         }
         (digest, table)
+    }
+
+    /// Whether every recorded colour question still has the same answer in
+    /// the current colour environment. Answers are recomputed without
+    /// recording.
+    pub(super) fn color_queries_hold(&self, bus: &MacMemoryBus, queries: &[ColorQuery]) -> bool {
+        queries.iter().all(|query| match *query {
+            ColorQuery::MainCtab(ctab) => Self::main_gdevice_ctab_unrecorded(bus) == ctab,
+            ColorQuery::ActiveCtab(ctab) => Self::active_gdevice_ctab_unrecorded(bus) == ctab,
+            ColorQuery::IndexForRgb { ctab, rgb, entries, index } => {
+                Self::fb_pixel_index_for_rgb_in_ctab_with_entry_count_unrecorded(bus, ctab, rgb, entries)
+                    == index
+            }
+            ColorQuery::RgbForIndex { ctab, index, rgb } => {
+                Self::fb_rgb_for_pixel_index_in_ctab_unrecorded(bus, ctab, index) == rgb
+            }
+            ColorQuery::BestLuma { ctab, brightest, index } => {
+                Self::best_luma_pixel_index_unrecorded(bus, ctab, brightest) == index
+            }
+            ColorQuery::ValueLuma { ctab, value, luma } => {
+                Self::ctab_value_luma_unrecorded(bus, ctab, value) == luma
+            }
+            ColorQuery::MirrorIndex { rgb, index } => {
+                self.with_color_mirror(bus, |mirror| mirror.pixel_index_for_rgb_unrecorded(rgb)) == index
+            }
+            ColorQuery::MirrorLuma { value, luma } => {
+                self.with_color_mirror(bus, |mirror| mirror.luma_of_value_unrecorded(value)) == luma
+            }
+        })
     }
 
     /// Bring the colour-table mirror up to date and run `f` against it.
@@ -4957,6 +5159,28 @@ impl super::TrapDispatcher {
             colors: self.with_color_mirror(bus, |mirror| mirror.digest),
             outline_scale: bus.outline_presentation_scale(),
         });
+        // As for the menu bar: a palette change alone replays the recorded
+        // colour questions before giving up a cached title bar.
+        let mut replay_expected = None;
+        if let Some(key) = &title_key {
+            let mut cache = self.window_title_cache.borrow_mut();
+            if !cache.iter().any(|entry| &entry.key == key) {
+                let replayable = cache.iter().position(|entry| {
+                    entry.key == (WindowTitleCacheKey { colors: entry.key.colors, ..key.clone() })
+                        && entry
+                            .color_queries
+                            .as_deref()
+                            .is_some_and(|queries| self.color_queries_hold(bus, queries))
+                });
+                if let Some(index) = replayable {
+                    if verify_color_replay() {
+                        replay_expected = Some((cache[index].rect, cache[index].pixels.clone()));
+                    } else {
+                        cache[index].key.colors = key.colors;
+                    }
+                }
+            }
+        }
         let replayed = title_key.as_ref().is_some_and(|key| {
             let mut cache = self.window_title_cache.borrow_mut();
             let Some(index) = cache.iter().position(|entry| &entry.key == key) else {
@@ -4977,6 +5201,7 @@ impl super::TrapDispatcher {
             true
         });
         if !replayed {
+            let recording = title_key.is_some().then(ColorQueryRecording::start);
             // Fill title bar with white (exclusive bottom)
             Self::fb_fill_rect(
                 bus,
@@ -5178,10 +5403,18 @@ impl super::TrapDispatcher {
                 }
             }
 
+            let color_queries = recording.and_then(ColorQueryRecording::finish);
             if let Some(key) = title_key {
                 if let Some((top, left, width, height, pixels)) =
                     self.save_screen_rect_pixels(bus, chrome.background)
                 {
+                    if let Some((rect, expected)) = replay_expected {
+                        assert_eq!(rect, (top, left, width, height), "title bar replay: rect");
+                        assert!(
+                            pixels == expected,
+                            "title bar colour replay reused pixels a redraw does not produce"
+                        );
+                    }
                     let mut cache = self.window_title_cache.borrow_mut();
                     if cache.len() == WINDOW_TITLE_CACHE_ENTRIES {
                         cache.remove(0);
@@ -5190,6 +5423,7 @@ impl super::TrapDispatcher {
                         key,
                         rect: (top, left, width, height),
                         pixels,
+                        color_queries,
                         committed: bus.screen_mark(),
                     });
                 }
@@ -6366,6 +6600,71 @@ mod redraw_chrome_tests {
             "the live popup's white interior should remain above the black stage"
         );
         assert_eq!(screen_width, 800, "test fixture assumes an 800px screen");
+    }
+
+    /// Palette animation in unrelated entries must not force a title redraw:
+    /// the recorded colour questions still have the same answers, so the
+    /// cached pixels are reused in place. A change to a colour the title does
+    /// resolve must still redraw. Either way the screen matches a fresh paint.
+    #[test]
+    fn title_cache_replays_colour_questions_across_unrelated_palette_changes() {
+        let fixture = || {
+            let (mut disp, _cpu, mut bus) = setup_with_port();
+            disp.set_ui_theme_id(crate::ui_theme::UiThemeId::ClassicSystem7);
+            let base = bus.alloc(256 * 96);
+            disp.set_screen_mode_for_test(base, 256, 256, 96, 8);
+            let main = disp.ensure_main_gdevice(&mut bus);
+            bus.write_long(0x08A4, main);
+            bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+            bus.prepare_outline_presentation(
+                disp.screen_mode,
+                std::array::from_fn(|i| [255 - i as u8; 3]),
+            );
+            disp.window_bounds = (40, 8, 88, 248);
+            disp.window_proc_id = 0;
+            disp.window_title = "SimCity 2000".into();
+            disp.go_away_flag = true;
+            (disp, bus, base)
+        };
+        let set_entry = |bus: &mut MacMemoryBus, index: u32, rgb: [u16; 3]| {
+            let ctab = TrapDispatcher::active_gdevice_ctab(bus).unwrap();
+            for (component, level) in rgb.into_iter().enumerate() {
+                bus.write_word(ctab + 8 + index * 8 + 2 + component as u32 * 2, level);
+            }
+        };
+        let (mut cached, mut actual, base) = fixture();
+        let (mut fresh, mut expected, _) = fixture();
+        cached.draw_window_chrome(&mut actual, true);
+        assert_eq!(cached.window_title_cache.borrow().len(), 1);
+
+        // An entry no title colour resolves to: reuse in place.
+        for bus in [&mut actual, &mut expected] {
+            set_entry(bus, 137, [0xFFFF, 0, 0]);
+        }
+        cached.draw_window_chrome(&mut actual, true);
+        fresh.window_title_cache.borrow_mut().clear();
+        fresh.draw_window_chrome(&mut expected, true);
+        assert_eq!(
+            cached.window_title_cache.borrow().len(),
+            1,
+            "an unrelated palette change replays instead of redrawing"
+        );
+        assert_eq!(actual.save_pixel_bytes(base, 256 * 96), expected.save_pixel_bytes(base, 256 * 96));
+
+        // Black itself changes: the recorded answers differ, so it redraws.
+        for bus in [&mut actual, &mut expected] {
+            set_entry(bus, 255, [0x2000, 0x2000, 0x2000]);
+            set_entry(bus, 1, [0x2000, 0x2000, 0x2000]);
+        }
+        cached.draw_window_chrome(&mut actual, true);
+        fresh.window_title_cache.borrow_mut().clear();
+        fresh.draw_window_chrome(&mut expected, true);
+        assert_eq!(
+            cached.window_title_cache.borrow().len(),
+            2,
+            "a changed answer draws a new entry"
+        );
+        assert_eq!(actual.save_pixel_bytes(base, 256 * 96), expected.save_pixel_bytes(base, 256 * 96));
     }
 
     #[test]
