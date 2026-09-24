@@ -1597,3 +1597,208 @@ fn adopted_ppc_execution_pair_remains_shared_through_panic() {
     );
 }
 
+#[test]
+fn attached_resource_policy_mutations_cross_isa_immediately() {
+    let mut native =
+        load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+    let mut context = ProcessContext::default();
+    classic.attach_unconverted_process_services(&mut context);
+    native.attach_unconverted_process_services(&mut context);
+
+    classic_bus.write_word(TEST_SP, 0x00ff);
+    classic_cpu.write_reg(Register::A7, TEST_SP);
+    assert!(classic
+        .dispatch_toolbox(true, 0x19b, &mut classic_cpu, &mut classic_bus)
+        .unwrap()
+        .is_ok());
+    assert!(!native.policy.res_load());
+
+    native.cpu.gpr[3] = 1;
+    run_test_import(&mut native, PpcImportDispatcherTarget::SetResLoad);
+    assert!(classic.policy.res_load());
+
+    classic_bus.write_word(TEST_SP, 0x0100);
+    classic_cpu.write_reg(Register::A7, TEST_SP);
+    assert!(classic
+        .dispatch_toolbox(true, 0x193, &mut classic_cpu, &mut classic_bus)
+        .unwrap()
+        .is_ok());
+    assert!(native.policy.res_purge());
+}
+
+#[test]
+fn attached_application_limit_mutations_cross_isa_immediately() {
+    // Inside Macintosh: Memory (1992), pp. 2-83--2-85: SetApplLimit
+    // changes the guest-visible application boundary without changing
+    // the allocator's physical heap ceiling.
+    let mut native =
+        load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+    let mut context = ProcessContext::default();
+    classic.attach_unconverted_process_services(&mut context);
+    let low_memory = classic_bus
+        .shared_ram_region(0, 0x0010_0000)
+        .expect("classic adapter owns low memory");
+    context.attach_memory(0, low_memory, &mut native.memory);
+    native.attach_unconverted_process_services(&mut context);
+
+    let native_heap_ceiling = native.heap_limit();
+    assert_eq!(
+        classic_bus.read_long(crate::memory::globals::addr::APPL_LIMIT),
+        native.application_heap_limit(),
+        "native attachment must synchronize the initial low-memory projection"
+    );
+    let requested = native.heap_cursor() + 0x1000;
+    assert!(requested < native_heap_ceiling);
+    native.cpu.gpr[3] = requested;
+    run_test_import(&mut native, PpcImportDispatcherTarget::SetApplLimit);
+    assert_eq!(native.application_heap_limit(), requested);
+    assert_eq!(
+        classic_bus.read_long(crate::memory::globals::addr::APPL_LIMIT),
+        requested,
+        "native SetApplLimit must publish the process value through low memory"
+    );
+
+    let classic_requested = requested + 0x1000;
+    classic_bus.write_long(crate::memory::globals::addr::HEAP_END, native.heap_cursor());
+    classic_bus.write_long(
+        crate::memory::globals::addr::APPL_LIMIT,
+        requested,
+    );
+    classic_cpu.write_reg(Register::A0, classic_requested);
+    assert!(classic
+        .dispatch_memory(false, 0x2D, &mut classic_cpu, &mut classic_bus)
+        .expect("SetApplLimit should be handled")
+        .is_ok());
+
+    // The immediately following native import is the nested cross-ISA
+    // observation point: it must read process state, not a stale adapter
+    // snapshot or the native allocator ceiling.
+    assert_eq!(native.application_heap_limit(), classic_requested);
+    native.cpu.gpr[3] = 0;
+    run_test_import(&mut native, PpcImportDispatcherTarget::GetApplLimit);
+    assert_eq!(native.cpu.gpr[3], classic_requested);
+    assert_eq!(native.heap_limit(), native_heap_ceiling);
+}
+
+#[test]
+fn attached_resource_errors_use_canonical_low_memory_cross_isa() {
+    let mut native =
+        load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+    let mut context = ProcessContext::default();
+    classic.attach_unconverted_process_services(&mut context);
+    native.attach_unconverted_process_services(&mut context);
+    let low_memory = classic_bus
+        .shared_ram_region(0, 0x0010_0000)
+        .expect("classic adapter owns low memory");
+    context.attach_memory(0, low_memory, &mut native.memory);
+
+    classic_bus.write_word(
+        crate::memory::globals::addr::RES_ERR,
+        PPC_RES_NOT_FOUND_ERR as u16,
+    );
+    run_test_import(&mut native, PpcImportDispatcherTarget::ResError);
+    assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_RES_NOT_FOUND_ERR));
+
+    native.cpu.gpr[3] = 0xdead_beef;
+    run_test_import(&mut native, PpcImportDispatcherTarget::LoadResource);
+    assert_eq!(
+        classic_bus.read_word(crate::memory::globals::addr::RES_ERR) as i16,
+        PPC_RES_NOT_FOUND_ERR
+    );
+
+    classic_cpu.write_reg(Register::A7, TEST_SP);
+    assert!(classic
+        .dispatch_resource(true, 0x1af, &mut classic_cpu, &mut classic_bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(classic_bus.read_word(TEST_SP) as i16, PPC_RES_NOT_FOUND_ERR);
+}
+
+#[test]
+fn cloned_native_adapter_detaches_resource_policy_and_error_state() {
+    let mut original =
+        load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    original.policy.set_res_load(false);
+    original.policy.set_res_purge(true);
+    original.set_test_resource_error(PPC_RES_NOT_FOUND_ERR);
+    let mut detached = original.clone();
+
+    detached.policy.set_res_load(true);
+    detached.policy.set_res_purge(false);
+    detached.set_test_resource_error(PPC_RES_F_NOT_FOUND_ERR);
+
+    assert!(!original.policy.res_load());
+    assert!(original.policy.res_purge());
+    assert_eq!(original.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
+    assert!(detached.policy.res_load());
+    assert!(!detached.policy.res_purge());
+    assert_eq!(
+        detached.test_resource_error(),
+        PPC_RES_F_NOT_FOUND_ERR
+    );
+}
+
+#[test]
+fn attached_control_manager_metadata_crosses_isa_immediately() {
+    let mut native =
+        load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    let (mut classic, _classic_cpu, mut classic_bus) = setup_with_port();
+    let mut context = ProcessContext::default();
+    classic.attach_unconverted_process_services(&mut context);
+    native.attach_unconverted_process_services(&mut context);
+
+    let window = classic_bus.alloc(180);
+    let (classic_handle, classic_pointer) = classic.create_control_record(
+        &mut classic_bus,
+        window,
+        (10, 20, 30, 140),
+        b"Mode",
+        true,
+        1,
+        300,
+        96,
+        1009,
+        0,
+    );
+    let classic_record = native
+        .controls
+        .records()
+        .into_iter()
+        .find(|record| record.handle == classic_handle)
+        .unwrap();
+    assert_eq!(classic_record.pointer, classic_pointer);
+    assert_eq!(classic_record.proc_id, 1009);
+    assert_eq!(classic_record.popup_menu_id, 300);
+    assert_eq!(classic_record.popup_title_width, Some(96));
+
+    native.controls.register(0x0030_1000, 0x0030_2000, 16, 0);
+    assert_eq!(classic.control_manager.proc_id(0x0030_2000), 16);
+
+    classic.dispose_control_handle(&mut classic_bus, classic_handle);
+    assert!(!native.controls.contains_handle(classic_handle));
+    native.controls.remove_handle(0x0030_1000);
+    assert!(!classic.control_manager.contains_pointer(0x0030_2000));
+}
+
+#[test]
+fn cloned_native_adapter_detaches_control_manager_metadata() {
+    let original =
+        load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    original
+        .controls
+        .register(0x0031_1000, 0x0031_2000, 1, 0);
+    let detached = original.clone();
+
+    detached.controls.set_proc_id(0x0031_2000, 2);
+    detached
+        .controls
+        .register(0x0031_3000, 0x0031_4000, 16, 0);
+
+    assert_eq!(original.controls.proc_id(0x0031_2000), 1);
+    assert_eq!(detached.controls.proc_id(0x0031_2000), 2);
+    assert!(!original.controls.contains_handle(0x0031_3000));
+}
+
