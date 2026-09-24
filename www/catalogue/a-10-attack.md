@@ -10,9 +10,21 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Simulation
+launch_enabled: true
 compatibility:
   status: playable
   verified:
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
+    systemless_version: "0.58.0 + local site build"
+    architecture: 68k
+    environment: >-
+      Release-mode browser launch from the immutable hosted five-minute demo
+      at localhost:8080. Selected Quick Start and Fly A-10, reached the runway
+      cockpit, switched to chase view with 3, toggled the gear indicator with G,
+      and returned to the cockpit with 1.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2654
   - date: "2026-09-23"
     tester: Catalogue maintainer
     systemless_version: 0.52.0-dev
