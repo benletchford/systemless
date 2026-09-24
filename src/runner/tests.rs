@@ -23,6 +23,18 @@
     use std::collections::{HashMap, VecDeque};
     use std::rc::Rc;
 
+    #[test]
+    fn dialog_filter_accepts_a_stack_result_reservation_prologue() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let callback = runner.bus.alloc(4);
+        runner.bus.write_word(callback, 0x554F); // SUBQ.W #2,SP
+        runner.bus.write_word(callback + 2, 0x206F); // MOVEA.L d16(SP),A0
+        assert!(runner.looks_like_dialog_proc_entry(callback));
+
+        runner.bus.write_word(callback, 0x0020); // Rect data, not code
+        assert!(!runner.looks_like_dialog_proc_entry(callback));
+    }
+
     fn start_real_classic_menu_definition(runner: &mut FixtureRunner) -> u32 {
         use crate::memory::globals::addr;
 

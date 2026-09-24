@@ -10691,7 +10691,9 @@ impl FixtureRunner {
             return false;
         }
         let entry = self.bus.read_word(addr);
-        entry == 0x4E56 || entry == 0x48E7 || entry == 0x4EF9 || entry == 0x4EFA
+        // A stack-based Boolean procedure may reserve its 2-byte result slot
+        // before saving registers or branching. IM:I 1985 pp. I-61–I-62.
+        matches!(entry, 0x4E56 | 0x48E7 | 0x4EF9 | 0x4EFA | 0x554F)
     }
 
     fn resolve_dialog_draw_proc_addr(&self, proc_addr: u32) -> Option<u32> {
@@ -11107,11 +11109,11 @@ impl FixtureRunner {
         // (e.g. Marathon passes a stack address reused as a Rect buffer by
         // GetDItem, leaving it full of coordinate data, not instructions).
         // Executing garbage code would halt the CPU; skip the call instead.
-        // Standard 68K function preambles: LINK A6 (0x4E56),
-        //   MOVEM.L regs,-(SP) (0x48E7), JMP abs (0x4EF9), JMP PC+n (0x4EFA).
+        // Recognize the same valid procedure entries as userItem callbacks,
+        // including SUBQ.W #2,SP for a stack-based Boolean result.
         // Inside Macintosh Volume I, I-415
         let entry = self.bus.read_word(filter_proc);
-        if entry != 0x4E56 && entry != 0x48E7 && entry != 0x4EF9 && entry != 0x4EFA {
+        if !self.looks_like_dialog_proc_entry(filter_proc) {
             if trace_dialog_filter_enabled() {
                 eprintln!(
                     "[DIALOG-FILTER] skip invalid-entry dialog=${:08X} proc=${:08X} entry=${:04X}",
