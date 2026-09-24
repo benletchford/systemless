@@ -218,6 +218,7 @@ use dispatch_event::{
 pub mod graphics;
 pub mod imports;
 pub mod qd3d;
+mod qd3d_text;
 pub mod quicktime;
 pub mod sound;
 pub mod sprockets;
@@ -27585,7 +27586,13 @@ fn ppc_q3_fsspec_storage_new(
         *last_mem_error = PPC_NO_ERR;
         return 0;
     };
-    let Ok(data_size) = u32::try_from(file.data.len()) else {
+    let converted = file
+        .data
+        .starts_with(b"3DMetafile")
+        .then(|| qd3d_text::to_binary(&file.data))
+        .flatten();
+    let data = converted.as_deref().unwrap_or(&file.data);
+    let Ok(data_size) = u32::try_from(data.len()) else {
         *last_mem_error = PPC_MEM_FULL_ERR;
         return 0;
     };
@@ -27598,14 +27605,14 @@ fn ppc_q3_fsspec_storage_new(
     ) else {
         return 0;
     };
-    if data_size != 0 && !ppc_q3_write_bytes(memory, buffer_ptr, &file.data) {
+    if data_size != 0 && !ppc_q3_write_bytes(memory, buffer_ptr, data) {
         return 0;
     }
     if ppc_hle_trace_enabled() {
         eprintln!(
             "[PPC-TRACE] Q3FSSpecStorage_New path=\"{}\" data_size={}",
             file.path,
-            file.data.len()
+            data.len()
         );
     }
     ppc_q3_alloc_object(
