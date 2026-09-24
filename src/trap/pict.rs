@@ -489,8 +489,8 @@ pub fn draw_picture(
 
     // Read Picture header
     let _pic_size = bus.read_word(pic_ptr) as u32;
-    let frame_top = bus.read_word(pic_ptr + 2) as i16;
-    let frame_left = bus.read_word(pic_ptr + 4) as i16;
+    let mut frame_top = bus.read_word(pic_ptr + 2) as i16;
+    let mut frame_left = bus.read_word(pic_ptr + 4) as i16;
     let frame_bottom = bus.read_word(pic_ptr + 6) as i16;
     let frame_right = bus.read_word(pic_ptr + 8) as i16;
 
@@ -511,8 +511,8 @@ pub fn draw_picture(
         return (false, None);
     }
 
-    let scale_x = dst_w / frame_w;
-    let scale_y = dst_h / frame_h;
+    let mut scale_x = dst_w / frame_w;
+    let mut scale_y = dst_h / frame_h;
 
     // Start parsing opcodes after the 10-byte header
     let mut pos = pic_ptr + 10;
@@ -1459,7 +1459,24 @@ pub fn draw_picture(
             }
             // --- v2-only opcodes below ---
             0x0C00 => {
-                // HeaderOp (extended v2) - 24 bytes
+                // HeaderOp: extended version 2 pictures record drawing
+                // coordinates in the optimal source rectangle, which can
+                // differ from the 72-dpi picFrame. Imaging With QuickDraw
+                // (1994), Appendix A, pp. A-3 and A-23.
+                if bus.read_word(pos) == 0xFFFE {
+                    let source_top = bus.read_word(pos + 12) as i16;
+                    let source_left = bus.read_word(pos + 14) as i16;
+                    let source_bottom = bus.read_word(pos + 16) as i16;
+                    let source_right = bus.read_word(pos + 18) as i16;
+                    let source_h = i32::from(source_bottom) - i32::from(source_top);
+                    let source_w = i32::from(source_right) - i32::from(source_left);
+                    if source_h > 0 && source_w > 0 {
+                        frame_top = source_top;
+                        frame_left = source_left;
+                        scale_x = dst_w / f64::from(source_w);
+                        scale_y = dst_h / f64::from(source_h);
+                    }
+                }
                 pos += 24;
             }
             0x02FF => {
@@ -7014,6 +7031,55 @@ fn parse_direct_bits_rect(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn extended_v2_header_maps_source_rect_into_draw_picture_destination() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let pic = 0x10_0000u32;
+        let screen_base = 0x08_0000u32;
+        let mut p = pic;
+        bus.write_word(p, 0);
+        p += 2;
+        for value in [10u16, 25, 20, 35] {
+            bus.write_word(p, value);
+            p += 2;
+        }
+        for value in [0x0011u16, 0x02FF, 0x0C00, 0xFFFE, 0] {
+            bus.write_word(p, value);
+            p += 2;
+        }
+        for value in [0x0120_0000u32, 0x0120_0000] {
+            bus.write_long(p, value);
+            p += 4;
+        }
+        for value in [40u16, 100, 80, 140, 0, 0, 0x0031, 50, 110, 60, 120, 0x00FF] {
+            bus.write_word(p, value);
+            p += 2;
+        }
+        bus.write_word(pic, (p - pic) as u16);
+
+        let clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let (ok, _) = draw_picture(
+            &mut bus,
+            pic,
+            0,
+            0,
+            10,
+            10,
+            (screen_base, 10, 10, 10, 8),
+            &clut,
+            0,
+            None,
+        );
+        assert!(ok);
+        let painted = bus.read_byte(screen_base + 3 * 10 + 3);
+        assert_ne!(
+            painted, 0,
+            "high-resolution picture coordinates must reach the destination"
+        );
+        assert_eq!(bus.read_byte(screen_base), 0);
+        assert_eq!(bus.read_byte(screen_base + 6 * 10 + 6), 0);
+    }
+
     use super::{
         blit_row, build_device_itable, build_pict_indexed_transfer_table, build_src_to_dst_table,
         clear_src_to_dst_table_cache_for_tests, closest_grayscale_luminance_index, draw_picture,
