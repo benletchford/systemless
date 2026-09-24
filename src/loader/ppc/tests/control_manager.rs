@@ -610,3 +610,32 @@ fn hle_import_runner_updates_control_titles_and_values() {
         Some(1)
     );
 }
+
+#[test]
+fn legacy_control_imports_pre_resolve_to_typed_operations() {
+    for (symbol, operation) in [
+        ("DisposeControl", PpcLegacyControlOperation::DisposeControl),
+        ("Draw1Control", PpcLegacyControlOperation::DrawOneControl),
+        ("FindControl", PpcLegacyControlOperation::FindControl),
+        ("GetControlMaximum", PpcLegacyControlOperation::GetControlMaximum),
+        ("GetControlMinimum", PpcLegacyControlOperation::GetControlMinimum),
+        ("GetControlTitle", PpcLegacyControlOperation::GetControlTitle),
+        ("GetControlValue", PpcLegacyControlOperation::GetControlValue),
+        ("GetNewControl", PpcLegacyControlOperation::GetNewControl),
+        ("HideControl", PpcLegacyControlOperation::HideControl),
+        ("KillControls", PpcLegacyControlOperation::KillControls),
+        ("MoveControl", PpcLegacyControlOperation::MoveControl),
+        ("NewControl", PpcLegacyControlOperation::NewControl),
+        ("SetControlMaximum", PpcLegacyControlOperation::SetControlMaximum),
+        ("SetControlMinimum", PpcLegacyControlOperation::SetControlMinimum),
+        ("ShowControl", PpcLegacyControlOperation::ShowControl),
+        ("SizeControl", PpcLegacyControlOperation::SizeControl),
+        ("TestControl", PpcLegacyControlOperation::TestControl),
+        ("TrackControl", PpcLegacyControlOperation::TrackControl),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::LegacyControl(operation),
+        );
+    }
+}

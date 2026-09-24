@@ -3152,3 +3152,28 @@ fn paint_one_erases_exposed_content_and_updates_the_window_region() {
         Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)))
     );
 }
+
+#[test]
+fn legacy_window_imports_pre_resolve_to_typed_operations() {
+    for (symbol, operation) in [
+        ("BringToFront", PpcLegacyWindowOperation::BringToFront),
+        ("CalcVis", PpcLegacyWindowOperation::CalculateVisibleRegion),
+        ("DisposeWindow", PpcLegacyWindowOperation::DisposeWindow),
+        ("DragWindow", PpcLegacyWindowOperation::DragWindow),
+        ("GetNewWindow", PpcLegacyWindowOperation::GetNewWindow),
+        ("GetWTitle", PpcLegacyWindowOperation::GetWindowTitle),
+        ("GrowWindow", PpcLegacyWindowOperation::GrowWindow),
+        ("HiliteWindow", PpcLegacyWindowOperation::HighlightWindow),
+        ("NewWindow", PpcLegacyWindowOperation::NewWindow),
+        ("SendBehind", PpcLegacyWindowOperation::SendBehind),
+        ("SetWTitle", PpcLegacyWindowOperation::SetWindowTitle),
+        ("TrackBox", PpcLegacyWindowOperation::TrackBox),
+        ("TrackGoAway", PpcLegacyWindowOperation::TrackGoAway),
+        ("ZoomWindow", PpcLegacyWindowOperation::ZoomWindow),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::LegacyWindow(operation),
+        );
+    }
+}
