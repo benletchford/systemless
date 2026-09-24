@@ -10,8 +10,9 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
-  status: boots
+  status: playable
   verified:
   - date: "2026-09-24"
     tester: Catalogue maintainer
@@ -21,9 +22,18 @@ compatibility:
       Deterministic 800-by-600, 256-colour run of the unchanged Macintosh demo.
       Selected the 640-by-400 game window, used Escape to skip the opening credits and
       travel sequence, and entered the mansion interior. Right turned the character; Up
-      moved her across the room. Browser launch remains disabled pending manual
-      verification of the promoted archive.
-    status: boots
+      moved her across the room.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2663
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
+    systemless_version: 0.58.0 + local site build
+    architecture: 68k
+    environment: >-
+      Browser run using the promoted archive at localhost:8080. Selected the 640-by-400
+      game window, skipped the credits and travel with Escape, entered the mansion,
+      and turned the character with Right.
+    status: playable
     evidence: https://github.com/benletchford/systemless/issues/2663
 artifacts:
 - id: archive
@@ -85,5 +95,5 @@ retail CD or a DOS release.
 
 Choose a screen size at startup. Escape skips the long opening sequences. In
 the first room, Left and Right turn the character, and Up moves forward.
-Browser launch remains disabled until the promoted archive is tested on the
-site.
+The browser build has been tested with the promoted archive through the first
+playable room.
