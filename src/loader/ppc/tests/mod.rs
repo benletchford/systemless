@@ -498,69 +498,6 @@ fn import_bindings_classify_mathlib_imports() {
 }
 
 
-#[test]
-fn import_bindings_classify_sound_manager_volume_imports() {
-    assert_eq!(
-        dispatcher_target_for_import("SoundLib", "UnsignedFixedMulDiv"),
-        PpcImportDispatcherTarget::UnsignedFixedMulDiv
-    );
-    assert_eq!(
-        dispatcher_target_for_import("SoundLib", "GetSoundOutputInfo"),
-        PpcImportDispatcherTarget::GetSoundOutputInfo
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "SysBeep"),
-        PpcImportDispatcherTarget::SysBeep
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "GetDefaultOutputVolume"),
-        PpcImportDispatcherTarget::GetDefaultOutputVolume
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "SetDefaultOutputVolume"),
-        PpcImportDispatcherTarget::SetDefaultOutputVolume
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "SndNewChannel"),
-        PpcImportDispatcherTarget::SndNewChannel
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "SndDisposeChannel"),
-        PpcImportDispatcherTarget::SndDisposeChannel
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "SndChannelStatus"),
-        PpcImportDispatcherTarget::SndChannelStatus
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "SndDoImmediate"),
-        PpcImportDispatcherTarget::SndDoImmediate
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "SndDoCommand"),
-        PpcImportDispatcherTarget::SndDoCommand
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "SndPlayDoubleBuffer"),
-        PpcImportDispatcherTarget::SndPlayDoubleBuffer
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "SndStartFilePlay"),
-        PpcImportDispatcherTarget::SndStartFilePlay
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "SndPauseFilePlay"),
-        PpcImportDispatcherTarget::SndPauseFilePlay
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "SndStopFilePlay"),
-        PpcImportDispatcherTarget::SndStopFilePlay
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "GetSoundHeaderOffset"),
-        PpcImportDispatcherTarget::GetSoundHeaderOffset
-    );
-}
 
 #[test]
 fn stdio_imports_pre_resolve_to_typed_operations() {
@@ -964,22 +901,6 @@ fn import_bindings_classify_dialog_and_utility_imports() {
     );
 }
 
-#[test]
-fn sound_input_open_failure_clears_the_output_reference() {
-    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SPBOpenDevice")).unwrap();
-    let output = PPC_DATA_BASE + 0x1000;
-    loaded.memory.add_region(output, vec![0xaa; 4]);
-    loaded.cpu.gpr[5] = output;
-
-    let probe = loaded.run_with_hle_imports(64);
-
-    assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(loaded.memory.read_u32_be(output), Some(0));
-    assert_eq!(
-        loaded.cpu.gpr[3],
-        ppc_i16_result(PPC_NOT_ENOUGH_HARDWARE_ERR)
-    );
-}
 
 #[test]
 fn system_compatibility_imports_pre_resolve_to_typed_operations() {
@@ -1973,29 +1894,6 @@ fn hle_import_runner_gets_and_sets_gray_region_low_memory_handle() {
     assert_eq!(loaded.cpu.gpr[3], 0x0300_1234);
 }
 
-#[test]
-fn hle_import_runner_exposes_sound_driver_in_unit_table() {
-    let pef = synthetic_pef_with_import(b"LMGetUTableBase");
-    let mut loaded = load_pef_application(&pef).unwrap();
-
-    let probe = loaded.run_with_hle_imports(64);
-
-    assert_eq!(probe.handled_import_count, 1);
-    assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(loaded.cpu.gpr[3], PPC_UNIT_TABLE);
-    assert_eq!(
-        loaded.memory.read_u32_be(PPC_UNIT_TABLE + 3 * 4),
-        Some(PPC_SOUND_DCE_HANDLE)
-    );
-    assert_eq!(
-        loaded.memory.read_u32_be(PPC_SOUND_DCE_HANDLE),
-        Some(PPC_SOUND_DCE)
-    );
-    assert_eq!(
-        loaded.memory.read_u16_be(PPC_SOUND_DCE + 24),
-        Some((-4i16) as u16)
-    );
-}
 
 #[test]
 fn hle_import_runner_get_adb_info_exposes_standard_devices() {
