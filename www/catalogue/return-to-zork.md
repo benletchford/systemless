@@ -10,8 +10,9 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
-  status: boots
+  status: playable
   verified:
   - date: "2026-09-24"
     tester: Catalogue maintainer
@@ -20,9 +21,19 @@ compatibility:
     environment: >-
       Deterministic 800-by-600, 256-colour run of the unchanged Macintosh demo ZIP.
       Dismissed its CD-ROM prompt, watched the Valley of the Vultures intro, and clicked
-      the travel cursor to reach the Lighthouse scene. Browser launch remains disabled
-      until the promoted archive is tested on the site.
-    status: boots
+      the travel cursor to reach the Lighthouse scene.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2671
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
+    systemless_version: 0.58.0 + local site build
+    architecture: 68k
+    environment: >-
+      Release-mode browser build at localhost:8080 fetched the promoted demo ZIP,
+      dismissed the CD-ROM prompt, rendered the Valley of the Vultures intro,
+      and moved to the Lighthouse after a travel-cursor click. Browser console
+      reported no warnings or errors.
+    status: playable
     evidence: https://github.com/benletchford/systemless/issues/2671
 artifacts:
 - id: archive
@@ -80,5 +91,5 @@ cursor and click to move between scenes. The first route reaches the
 Lighthouse.
 
 The classic application may ask for its CD even though the demo data is
-included. Press OK to continue. Browser launch awaits testing of the promoted
-archive.
+included. Press OK to continue. The promoted archive has been tested in the
+browser through the Lighthouse scene.
