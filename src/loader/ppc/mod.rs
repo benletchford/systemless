@@ -2120,6 +2120,7 @@ pub enum PpcImportDispatcherTarget {
     LMGetUTableBase,
     SecondsToDate,
     Microseconds,
+    AbsoluteToNanoseconds,
     SysEnvirons,
     TextWidth,
     StringWidth,
@@ -13647,6 +13648,13 @@ fn ppc_plan_initial_cfm_libraries(
     initial_imports: Vec<PpcImportBinding>,
     heap_limit: u32,
 ) -> Result<PpcInitialCfmPlan, PpcLoadError> {
+    // GameSprockets are system libraries implemented by the native dispatcher.
+    // Installer copies can require on-disk CFM initialization metadata that is
+    // not present when the archive is expanded into the in-memory launch VFS.
+    fragments.retain(|fragment| {
+        !fragment.name.eq_ignore_ascii_case("DrawSprocketLib")
+            && !fragment.name.eq_ignore_ascii_case("InputSprocketLib")
+    });
     fragments.sort_by(|left, right| {
         left.name
             .to_ascii_lowercase()
@@ -16430,6 +16438,12 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::SecondsToDate
         }
         ("InterfaceLib", "Microseconds") => PpcImportDispatcherTarget::Microseconds,
+        // AbsoluteTime is hardware-relative. Use the virtual microsecond
+        // clock as its unit so this struct-returning call stays deterministic.
+        ("DriverServicesLib", "UpTime") => PpcImportDispatcherTarget::Microseconds,
+        ("DriverServicesLib", "AbsoluteToNanoseconds") => {
+            PpcImportDispatcherTarget::AbsoluteToNanoseconds
+        }
         ("InterfaceLib", "LMGetTicks") => PpcImportDispatcherTarget::TickCount,
         ("InterfaceLib", "SysEnvirons") => PpcImportDispatcherTarget::SysEnvirons,
         ("InterfaceLib", "TextWidth") => PpcImportDispatcherTarget::TextWidth,
@@ -19846,7 +19860,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::GetDblTime
         | PpcImportDispatcherTarget::LMGetTime
         | PpcImportDispatcherTarget::SecondsToDate
-        | PpcImportDispatcherTarget::Microseconds => {
+        | PpcImportDispatcherTarget::Microseconds
+        | PpcImportDispatcherTarget::AbsoluteToNanoseconds => {
             unreachable!("time imports return through dispatch_time_import")
         }
         PpcImportDispatcherTarget::ReturnError(error) => {
@@ -33054,6 +33069,17 @@ fn dispatch_simple_hot_import_fast(
     match target {
         PpcImportDispatcherTarget::Microseconds => {
             Some(dispatch_microseconds_import(cpu, memory, microseconds, None))
+        }
+        PpcImportDispatcherTarget::AbsoluteToNanoseconds => {
+            // PowerPC's struct-return ABI places the output pointer in r3 and
+            // the 64-bit AbsoluteTime input in r4:r5. Our virtual absolute
+            // clock counts microseconds, so conversion to nanoseconds is exact.
+            let output = cpu.gpr[3];
+            let absolute = (u64::from(cpu.gpr[4]) << 32) | u64::from(cpu.gpr[5]);
+            if output != 0 && ppc_memory_can_write_bytes(memory, output, 8) {
+                let _ = memory.write_u64_be(output, absolute.saturating_mul(1_000));
+            }
+            Some(PpcImportAction::ReturnPreserve)
         }
         _ => dispatch_math::dispatch_math_import(target, cpu, memory),
     }
@@ -63182,7 +63208,17 @@ fn ppc_catalog_entry_for_lookup(
     // with a volume name is absolute, while a leading colon is relative.
     let absolute = !decoded_name.starts_with(':') && decoded_name.contains(':');
     let path = if absolute {
-        normalized_name
+        // The boot volume name is part of an HFS absolute pathname, but VFS
+        // records store paths relative to the volume root.
+        if let Some((volume, relative)) = decoded_name.split_once(':') {
+            if volume.eq_ignore_ascii_case(crate::trap::TrapDispatcher::boot_volume_name()) {
+                ppc_normalize_vfs_path(relative)
+            } else {
+                normalized_name
+            }
+        } else {
+            normalized_name
+        }
     } else {
         let parent_path = ppc_directory_path_for_id(vfs_directories, dir_id)?;
         ppc_join_vfs_path(parent_path, &normalized_name)

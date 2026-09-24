@@ -821,6 +821,37 @@ fn initial_bundled_libraries_bind_dependencies_in_deterministic_order() {
 }
 
 #[test]
+fn bundled_gamesprockets_use_native_system_bindings() {
+    for (library_name, symbol_name) in [
+        ("DrawSprocketLib", "DSpStartup"),
+        ("InputSprocketLib", "ISpGetVersion"),
+    ] {
+        let application =
+            synthetic_pef_with_library_import(library_name.as_bytes(), symbol_name.as_bytes());
+        let loaded = load_pef_application_with_config_and_optional_system_reservation(
+            &application,
+            PpcLoadConfig::default(),
+            None,
+            vec![PpcCfmLibraryFragment {
+                name: library_name.to_string(),
+                bytes: vec![0; 40],
+            }],
+        )
+        .expect("native GameSprockets binding");
+        assert!(loaded.imports.iter().any(|binding| {
+            binding.library_name == library_name && binding.symbol_name == symbol_name
+        }));
+        assert!(!loaded
+            .cfm
+            .as_ref()
+            .unwrap()
+            .connections
+            .iter()
+            .any(|connection| connection.library_name == library_name));
+    }
+}
+
+#[test]
 fn initial_bundled_library_initializer_runs_before_application_main() {
     let application = synthetic_pef_with_library_import(b"BundledInitializer", b"Missing");
     let mut library = synthetic_pef_with_initializer();

@@ -131,9 +131,14 @@ impl CfmFragmentPlan {
             .filter(|value| *value < heap_limit)
             .ok_or(CfmLoadError::NoAddressSpace)?;
         let bases = section_bases(&sections);
-        let code_base = first_base_for_kind(&sections, SECTION_KIND_CODE)
-            .ok_or(CfmLoadError::CorruptFragment)?;
+        // CFM libraries can export data without containing executable code.
+        // The relocation context still needs a code base; zero is unused when
+        // such a fragment has no code relocation instructions.
+        let code_base = first_base_for_kind(&sections, SECTION_KIND_CODE).unwrap_or(0);
         let data_base = first_data_base(&sections).unwrap_or(code_base);
+        if code_base == 0 && data_base == 0 {
+            return Err(CfmLoadError::CorruptFragment);
+        }
         let relocations = parse_pef_reloc_headers(fragment).ok_or(CfmLoadError::CorruptFragment)?;
         for relocation in &relocations {
             let stream = pef_reloc_chunk_stream(fragment, relocation)
@@ -459,6 +464,16 @@ mod tests {
             }
             assert_eq!(outcomes[0], outcomes[1]);
         }
+    }
+
+    #[test]
+    fn data_only_library_fragment_can_be_planned() {
+        let mut fragment = fragment(&[]);
+        fragment[40 + 24] = SECTION_KIND_UNPACKED_DATA;
+        fragment[0x80..0x84].copy_from_slice(&(-1i32).to_be_bytes());
+        let plan = CfmFragmentPlan::prepare(&fragment, &[IMPORT], HEAP, HEAP + 256, 16, bounds)
+            .expect("data-only CFM library");
+        assert_eq!(plan.prepared_fragment().main_addr, 0);
     }
 
     #[test]
