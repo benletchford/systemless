@@ -353,6 +353,9 @@ impl CopyBitsMemory for MacMemoryBus {
             }
             return self.write_copy_row(address, &row);
         }
+        if self.write_plain_copy_pixels(address, pixels, offset, len, palette) {
+            return Some(());
+        }
         for i in 0..len {
             self.copy_saved_pixel(address + i as u32, pixels, offset + i, |index| {
                 palette.map_or(index, |table| table[index as usize])

@@ -16,6 +16,22 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
 
+const _: () = assert!(TILE_SAMPLES <= u16::BITS as usize, "ink_mask holds one bit per sample");
+
+/// `(offset % row_bytes, offset / row_bytes)` without a divide.
+/// `reciprocal` is `floor(2^32 / row_bytes)`, so for any 32-bit `offset` the
+/// estimate `offset * reciprocal >> 32` is the true quotient or one less.
+#[inline]
+fn divide_row(offset: u32, row_bytes: u32, reciprocal: u64) -> (u32, u32) {
+    let mut y = ((u64::from(offset) * reciprocal) >> 32) as u32;
+    let mut x = offset - y * row_bytes;
+    if x >= row_bytes {
+        x -= row_bytes;
+        y += 1;
+    }
+    (x, y)
+}
+
 /// Shared by both CPU adapters; access is scoped to a single drawing operation.
 #[derive(Clone, Default)]
 pub(crate) struct PresentationSlot(std::rc::Rc<std::cell::RefCell<Option<Presentation>>>);
@@ -484,6 +500,9 @@ pub(crate) struct Presentation {
     store_filter_identity: u64,
     base: u32,
     row_bytes: u32,
+    /// `floor(2^32 / row_bytes)`: `position` runs for every guest write, and
+    /// a hardware divide showed up in its profile.
+    row_reciprocal: u64,
     width: u32,
     height: u32,
     depth: u16,
@@ -496,6 +515,10 @@ pub(crate) struct Presentation {
     detail_cache: std::cell::RefCell<Vec<Option<Arc<DetailCell>>>>,
     // Keys are cell * TILE_SAMPLES + sample, independent of screen stride.
     ink: HashMap<usize, Ink, BuildHasherDefault<SampleOffsetHasher>>,
+    /// Bit `i` of `ink_mask[cell]` is set exactly when `ink` holds
+    /// `cell * TILE_SAMPLES + i`. Overwriting text probes the map only for
+    /// samples that have ink, instead of once per sample.
+    ink_mask: Vec<u16>,
     run_ink: HashSet<usize, BuildHasherDefault<SampleOffsetHasher>>,
     offscreen_run_ink: HashSet<(u32, usize)>,
     in_text_run: bool,
@@ -736,7 +759,7 @@ impl Presentation {
 
     fn position(&self, address: u32) -> Option<(u32, u32)> {
         let offset = address.checked_sub(self.base)?;
-        let (x, y) = (offset % self.row_bytes, offset / self.row_bytes);
+        let (x, y) = divide_row(offset, self.row_bytes, self.row_reciprocal);
         (x < self.width && y < self.height).then_some((x, y))
     }
 
@@ -1383,9 +1406,14 @@ impl Presentation {
         for i in 0..(self.scale * self.scale) as usize {
             samples.indices[i] = cell.indices[i];
             let offset = index * TILE_SAMPLES + i;
-            self.ink.remove(&offset);
+            let bit = 1u16 << i;
+            if self.ink_mask[index] & bit != 0 {
+                self.ink.remove(&offset);
+                self.ink_mask[index] &= !bit;
+            }
             samples.rgb[i] = if let Some(ink) = cell.ink.get(&i) {
                 self.ink.insert(offset, ink.clone());
+                self.ink_mask[index] |= bit;
                 ink.rgb(palette)
             } else {
                 palette[cell.indices[i] as usize]
@@ -1416,6 +1444,16 @@ impl Presentation {
             samples.rgb.fill(color);
         }
         self.text_cells[cell] = true;
+    }
+
+    /// The mask invariant: bits exactly mirror the ink map's keys.
+    #[cfg(test)]
+    fn ink_mask_matches_ink(&self) -> bool {
+        let mut expected = vec![0u16; self.ink_mask.len()];
+        for &offset in self.ink.keys() {
+            expected[offset / TILE_SAMPLES] |= 1 << (offset % TILE_SAMPLES);
+        }
+        expected == self.ink_mask
     }
 
     pub fn write(&mut self, address: u32, value: u8) {
@@ -1460,8 +1498,8 @@ impl Presentation {
         } else {
             self.finish_cpu_recolor();
         }
-        self.detail_cache.get_mut()[cell] = None;
         if self.glyph.is_some() {
+            self.detail_cache.get_mut()[cell] = None;
             self.changed(true);
             // The logical mask can extend beyond the native glyph bounds.
             // Such cells still need their current background preserved.
@@ -1472,18 +1510,23 @@ impl Presentation {
         }
         if self.guest_values[cell] == u16::from(value) && !self.text_cells[cell] {
             // Same plain pixel: no cell state changes, so no screen mark
-            // moves. (The detail cache cleared above only memoizes `detail`.)
+            // moves, and a plain cell holds no cached detail to clear.
             return;
         }
         self.touch_screen(x, y);
         self.changed(true);
         self.guest_values[cell] = u16::from(value);
         if !self.text_cells[cell] {
+            // Only text cells ever hold a cached detail cell (`detail` and
+            // `put_detail` fill it for text cells, and a cell leaves text
+            // only below, after clearing it), so a plain cell has nothing
+            // to invalidate.
             // Ordinary game pixels stay indexed until presentation. Expanding
             // each intermediate framebuffer write to scale² RGB samples makes
             // software-rendered animation pay the text cost for every pixel.
             return;
         }
+        self.detail_cache.get_mut()[cell] = None;
         self.text_cells[cell] = false;
         let color = self.palette_at(x)[value as usize];
         let samples = self.samples.get_mut(cell);
@@ -1495,8 +1538,14 @@ impl Presentation {
                 self.text_cells[cell] = true;
                 continue;
             }
-            self.run_ink.remove(&offset);
-            self.ink.remove(&offset);
+            if !self.run_ink.is_empty() {
+                self.run_ink.remove(&offset);
+            }
+            let bit = 1u16 << i;
+            if self.ink_mask[cell] & bit != 0 {
+                self.ink.remove(&offset);
+                self.ink_mask[cell] &= !bit;
+            }
             samples.indices[i] = value;
             samples.rgb[i] = color;
         }
@@ -1599,12 +1648,18 @@ impl Presentation {
                     self.run_ink.insert(offset);
                 }
                 let sample = (sy * self.scale + sx) as usize;
+                let ink_cell = (py * self.width + px) as usize;
+                let bit = 1u16 << sample;
                 if alpha == 255 {
                     samples.rgb[sample] = color;
-                    self.ink.remove(&offset);
+                    if self.ink_mask[ink_cell] & bit != 0 {
+                        self.ink.remove(&offset);
+                        self.ink_mask[ink_cell] &= !bit;
+                    }
                     samples.indices[sample] = foreground;
                     continue;
                 }
+                self.ink_mask[ink_cell] |= bit;
                 // Inside Macintosh I, "Transfer Modes": srcOr forces source
                 // ink on and leaves other bits alone; repeated ink is idempotent.
                 // Retain coverage rather than
@@ -1684,6 +1739,54 @@ impl MacMemoryBus {
     /// Offscreen-only drawing deliberately leaves this token unchanged.
     pub fn presentation_visible_epoch(&self) -> Option<VisibleImageStamp> {
         self.presentation.as_ref().map(|p| p.visible_image.clone())
+    }
+
+    /// CopyBits rows usually carry no retained text on either side. Such a
+    /// span is an ordinary byte copy, so write it in bulk and update the
+    /// presentation's guest values once, instead of one presentation write per
+    /// pixel. Returns false, having written nothing, whenever the per-pixel
+    /// path could behave differently: source detail in the span, an active
+    /// glyph capture, observed offscreen detail, a non-plain screen row, or
+    /// any diagnostic, probe or protection gate `write_plain_presented_bytes`
+    /// refuses.
+    pub(crate) fn write_plain_copy_pixels(
+        &mut self,
+        address: u32,
+        pixels: &SavedPixels,
+        offset: usize,
+        len: usize,
+        palette: Option<&[u8; 256]>,
+    ) -> bool {
+        if len == 0 {
+            return false;
+        }
+        let span = offset..offset + len;
+        let source_detail = if pixels.detail.len() < len {
+            pixels.detail.keys().any(|key| span.contains(key))
+        } else {
+            span.clone().any(|key| pixels.detail.contains_key(&key))
+        };
+        if source_detail {
+            return false;
+        }
+        let Some(destination) = self.range_translates_contiguously(address, len) else {
+            return false;
+        };
+        let plain = self.presentation.as_ref().is_some_and(|p| {
+            p.glyph.is_none()
+                && (p.can_sync_plain_screen_row(destination, len)
+                    || !p.observes_range(destination, len))
+        });
+        if !plain {
+            return false;
+        }
+        let mut row = pixels.values[span].to_vec();
+        if let Some(palette) = palette {
+            for pixel in &mut row {
+                *pixel = palette[*pixel as usize];
+            }
+        }
+        self.write_plain_presented_bytes(address, &row)
     }
 
     /// Synchronize a native framebuffer mirror without erasing unchanged coverage.
@@ -2322,6 +2425,7 @@ impl MacMemoryBus {
             store_filter_identity: next_store_filter_identity(),
             base,
             row_bytes,
+            row_reciprocal: (1u64 << 32) / u64::from(row_bytes.max(1)),
             width: width.into(),
             height: height.into(),
             depth,
@@ -2346,6 +2450,7 @@ impl MacMemoryBus {
             text_cells: vec![false; width as usize * height as usize],
             detail_cache: std::cell::RefCell::new(vec![None; width as usize * height as usize]),
             ink: HashMap::default(),
+            ink_mask: vec![0; width as usize * height as usize],
             run_ink: HashSet::default(),
             offscreen_run_ink: HashSet::new(),
             in_text_run: false,
@@ -2731,6 +2836,136 @@ mod tests {
             }
         }
         assert!(compared > 50);
+    }
+
+    #[test]
+    fn ink_mask_tracks_the_ink_map_through_draws_overwrites_and_restores() {
+        for scale in [2u32, 4] {
+            let mut bus = padded_bus(10, 8, 6, scale);
+            let check = |bus: &MacMemoryBus, step: &str| {
+                assert!(
+                    bus.presentation.as_ref().unwrap().ink_mask_matches_ink(),
+                    "scale={scale} {step}"
+                );
+            };
+            // Antialiased glyphs (partial and full alpha) across two rows.
+            for address in [0x1000u32, 0x1001, 0x1003, 0x1000 + 10, 0x1000 + 12] {
+                paint_detail(&mut bus, address);
+                check(&bus, "after glyph");
+            }
+            let saved = bus.save_pixel_bytes(0x1000, 16);
+            // Plain overwrites of text cells, including one to the same value.
+            for (address, value) in [(0x1001u32, 7u8), (0x1000 + 10, 9), (0x1003, 0)] {
+                bus.write_byte(address, value);
+                check(&bus, "after overwrite");
+            }
+            // Restoring the snapshot puts retained detail back.
+            bus.restore_saved_pixels(0x1000, &saved, 0, saved.len());
+            check(&bus, "after restore");
+            // Redraw over existing ink, then erase everything plainly.
+            paint_detail(&mut bus, 0x1000);
+            check(&bus, "after redraw");
+            for address in 0x1000u32..0x1000 + 20 {
+                bus.write_byte(address, 3);
+            }
+            check(&bus, "after erase");
+        }
+    }
+
+    #[test]
+    fn divide_row_matches_hardware_division() {
+        for row_bytes in [1u32, 2, 3, 7, 8, 10, 63, 64, 640, 641, 832, 1024, 1920, 4095, 65535] {
+            let reciprocal = (1u64 << 32) / u64::from(row_bytes);
+            let offsets = (0u32..5000)
+                .chain((0..64).map(|k| u32::MAX - k))
+                .chain((1..4096u32).map(|k| k.wrapping_mul(0x9E37_79B9)))
+                .chain((0..2000).map(|k| k * row_bytes))
+                .chain((1..2000).map(|k| k * row_bytes - 1));
+            for offset in offsets {
+                assert_eq!(
+                    divide_row(offset, row_bytes, reciprocal),
+                    (offset % row_bytes, offset / row_bytes),
+                    "{offset} / {row_bytes}"
+                );
+            }
+        }
+    }
+
+    /// The bulk CopyBits row path must leave RAM, the rendered presentation
+    /// and any later snapshot exactly as the per-pixel copy does, whether it
+    /// takes the fast path (plain rows, plain offscreen RAM) or declines
+    /// (source text detail, rows crossing the padding).
+    #[test]
+    fn plain_copy_rows_match_the_per_pixel_copy() {
+        use crate::copy_bits::CopyBitsMemory;
+        let inverted: [u8; 256] = std::array::from_fn(|i| (255 - i) as u8);
+        let source = 0x3_0000u32;
+        let setup = || {
+            let mut bus = padded_bus(10, 8, 6, 2);
+            // Unrelated retained text elsewhere on screen and offscreen.
+            paint_detail(&mut bus, 0x1000 + 10 * 3 + 1);
+            paint_detail(&mut bus, 0x4_0000);
+            bus
+        };
+        // (destination, length, source detail offsets, fast path expected)
+        for (destination, len, detail, bulk) in [
+            (0x1000u32, 8usize, vec![], true),
+            (0x1000 + 10 + 3, 3, vec![], true),
+            // Crosses the row padding into the next row: declines.
+            (0x1000 + 10 * 2 + 6, 6, vec![], false),
+            (0x2_0000, 16, vec![], true),
+            (0x1000 + 10 * 4, 8, vec![2usize], false),
+            (0x2_0100, 8, vec![0usize, 7], false),
+            // Overwrites the retained offscreen glyph: declines.
+            (0x4_0000 - 2, 4, vec![], false),
+            // The screen row that already holds unrelated text: declines.
+            (0x1000 + 10 * 3, 8, vec![], false),
+        ] {
+            for palette in [None, Some(&inverted)] {
+                let mut fast = setup();
+                let mut slow = setup();
+                for bus in [&mut fast, &mut slow] {
+                    for i in 0..len as u32 {
+                        bus.write_byte(source + i, (i * 37 + 5) as u8);
+                    }
+                    for &offset in &detail {
+                        paint_detail(bus, source + offset as u32);
+                    }
+                }
+                let pixels = fast.save_pixel_bytes(source, len);
+                let context = format!("{destination:#x}+{len} detail={detail:?} palette={}", palette.is_some());
+                let mut probe = setup();
+                for i in 0..len as u32 {
+                    probe.write_byte(source + i, (i * 37 + 5) as u8);
+                }
+                for &offset in &detail {
+                    paint_detail(&mut probe, source + offset as u32);
+                }
+                assert_eq!(
+                    probe.write_plain_copy_pixels(destination, &pixels, 0, len, palette),
+                    bulk,
+                    "{context}: fast path taken"
+                );
+                fast.write_copy_pixels(destination, &pixels, 0, len, palette)
+                    .expect("writable destination");
+                for i in 0..len {
+                    slow.copy_saved_pixel(destination + i as u32, &pixels, i, |index| {
+                        palette.map_or(index, |table| table[index as usize])
+                    });
+                }
+                assert_eq!(fast.read_bytes(destination, len), slow.read_bytes(destination, len), "{context}: RAM");
+                assert_eq!(fast.outline_presentation_rgb(), slow.outline_presentation_rgb(), "{context}: rendered");
+                let after_fast = fast.save_pixel_bytes(destination - 2, len + 4);
+                let after_slow = slow.save_pixel_bytes(destination - 2, len + 4);
+                assert_eq!(after_fast.values, after_slow.values, "{context}: snapshot values");
+                let keys = |p: &SavedPixels| {
+                    let mut k: Vec<_> = p.detail.iter().map(|(&i, c)| (i, (**c).clone())).collect();
+                    k.sort_by_key(|(i, _)| *i);
+                    k
+                };
+                assert_eq!(keys(&after_fast), keys(&after_slow), "{context}: snapshot detail");
+            }
+        }
     }
 
     /// The proof `restore_saved_pixels` used before the range walk existed,

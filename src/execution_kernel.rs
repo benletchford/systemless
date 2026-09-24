@@ -11,7 +11,43 @@
 //! consume a different continuation.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
+use std::hash::{BuildHasherDefault, Hasher};
+
+/// Kernel maps are keyed by small integer identities (tasks, calls). The
+/// default SipHash showed up at ~3% of EV Override's main thread; iteration
+/// order was already unspecified (RandomState), so a fixed hasher cannot
+/// change behavior.
+#[derive(Default, Clone, Copy)]
+struct IdHasher(u64);
+
+impl Hasher for IdHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    #[inline]
+    fn write_u32(&mut self, value: u32) {
+        self.write_u64(u64::from(value));
+    }
+
+    #[inline]
+    fn write_u64(&mut self, value: u64) {
+        let mixed = (value ^ self.0.rotate_left(29)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = mixed ^ (mixed >> 32);
+    }
+}
+
+type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<IdHasher>>;
+type HashSet<K> = std::collections::HashSet<K, BuildHasherDefault<IdHasher>>;
 use std::rc::Rc;
 
 use crate::guest_procedure::{GuestIsa, GuestProcedure};
@@ -470,14 +506,14 @@ impl<R: Copy, C: Copy> Default for StoreState<R, C> {
             current_task: ExecutionTaskId::APPLICATION,
             next_call_id: 1,
             next_task_id: Some(3),
-            stacks: HashMap::from([(ExecutionTaskId::APPLICATION, Vec::new())]),
-            attached_contexts: HashMap::new(),
-            retired_tasks: HashSet::new(),
-            task_states: HashMap::from([(
+            stacks: HashMap::from_iter([(ExecutionTaskId::APPLICATION, Vec::new())]),
+            attached_contexts: HashMap::default(),
+            retired_tasks: HashSet::default(),
+            task_states: HashMap::from_iter([(
                 ExecutionTaskId::APPLICATION,
                 ExecutionTaskState::Running,
             )]),
-            task_entry_isas: HashMap::new(),
+            task_entry_isas: HashMap::default(),
             ready: VecDeque::new(),
             critical_depth: 0,
         }
@@ -1237,7 +1273,7 @@ pub(crate) struct ExecutionTaskContextBank<T> {
 impl<T> Default for ExecutionContextBank<T> {
     fn default() -> Self {
         Self {
-            by_call: HashMap::new(),
+            by_call: HashMap::default(),
         }
     }
 }
@@ -1245,7 +1281,7 @@ impl<T> Default for ExecutionContextBank<T> {
 impl<T> Default for ExecutionTaskContextBank<T> {
     fn default() -> Self {
         Self {
-            by_task: HashMap::new(),
+            by_task: HashMap::default(),
         }
     }
 }
