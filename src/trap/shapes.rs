@@ -1919,7 +1919,20 @@ impl super::TrapDispatcher {
                         ShapeOp::Glyph(mode) => (mode, true),
                         ShapeOp::Invert => (2, true),
                     };
-                    let val = apply_boolean_transfer_1(old, mode, source_is_black);
+                    // A basic GrafPort can still select white ink on a color
+                    // Macintosh. In srcCopy/srcOr text modes, covered glyph
+                    // pixels use that foreground even when the destination
+                    // BitMap itself is only one bit deep. Otherwise white
+                    // text disappears on black offscreen buffers.
+                    // Inside Macintosh I, I-173 (ForeColor); Imaging With
+                    // QuickDraw 1994, p. 3-123 (ForeColor).
+                    let val = if matches!(op, ShapeOp::Glyph(0 | 1))
+                        && effective_fg_color == (0xFFFF, 0xFFFF, 0xFFFF)
+                    {
+                        false
+                    } else {
+                        apply_boolean_transfer_1(old, mode, source_is_black)
+                    };
 
                     if val {
                         bus.write_byte(addr, b | (1 << bit));
