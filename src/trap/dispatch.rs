@@ -9344,11 +9344,10 @@ mod tests {
 
     #[test]
     fn standalone_trap_initialization_refuses_unavailable_memory_atomically_and_retries() {
-        for failure in 0..7 {
+        for failure in [0, 1, 2, 3, 5, 6] {
             let (mut dispatcher, mut cpu, _) = setup();
             let mut bus = MacMemoryBus::new(match failure {
                 0 => 0x1000,
-                4 => 32 * 1024 * 1024,
                 _ => 4 * 1024 * 1024,
             });
             match failure {
@@ -9356,7 +9355,6 @@ mod tests {
                     assert_ne!(bus.alloc_synthetic(64 * 1024), 0);
                 }
                 2 => bus.protect_readonly_code(TOOLBOX_TRAP_TABLE_BASE, 4),
-                4 => bus.set_addressing_32_bit(false),
                 5 => bus.protect_readonly_code(0x28, 4),
                 6 => bus.protect_readonly_code(OS_TRAP_TABLE_BASE, 4),
                 3 => {
@@ -9414,6 +9412,20 @@ mod tests {
                 Some(TrapTableProfile::M68k68040)
             );
         }
+    }
+
+    #[test]
+    fn standalone_trap_initialization_keeps_gateways_callable_in_24_bit_mode() {
+        let (mut dispatcher, mut cpu, _) = setup();
+        let mut bus = MacMemoryBus::new(32 * 1024 * 1024);
+        bus.set_addressing_32_bit(false);
+        dispatcher.initialize_trap_tables(&mut bus).unwrap();
+
+        cpu.write_reg(Register::D0, 0xA8AA);
+        dispatcher.dispatch(0xA746, &mut cpu, &mut bus).unwrap();
+        let gateway = cpu.read_reg(Register::A0);
+        assert_ne!(gateway, 0);
+        assert_eq!(bus.read_word(gateway), 0xACAA);
     }
 
     #[test]
