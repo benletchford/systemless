@@ -7,6 +7,7 @@
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_void, CString};
 use std::sync::{Mutex, OnceLock};
+use std::sync::Arc;
 
 use objc2::rc::Retained;
 use objc2::{declare_class, msg_send_id, mutability, sel, ClassType, DeclaredClass};
@@ -15,8 +16,14 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSProcessInfo, NSString};
 use systemless::menu_model::{GuestMenu, GuestMenuSnapshot};
+use super::worker_mailbox::{CommandMailbox, WorkerCommand};
 
 static COMMANDS: OnceLock<Mutex<VecDeque<(i16, i16)>>> = OnceLock::new();
+static WORKER_COMMANDS: OnceLock<Mutex<Option<Arc<CommandMailbox>>>> = OnceLock::new();
+
+fn worker_commands() -> &'static Mutex<Option<Arc<CommandMailbox>>> {
+    WORKER_COMMANDS.get_or_init(|| Mutex::new(None))
+}
 
 #[repr(C)]
 struct ProcessSerialNumber {
@@ -83,10 +90,19 @@ declare_class!(
         fn menu_item_selected(&self, sender: &NSMenuItem) {
             // NSInteger is 64-bit on every macOS target supported by winit.
             // The upper word preserves negative classic menu IDs verbatim.
-            let packed = unsafe { sender.tag() } as u32;
+            let packed = unsafe { sender.tag() } as u64;
             let menu_id = (packed >> 16) as u16 as i16;
             let item = packed as u16 as i16;
-            commands().lock().unwrap().push_back((menu_id, item));
+            let generation = (packed >> 32) as u32;
+            if let Some(worker) = worker_commands().lock().unwrap().as_ref() {
+                worker.push(WorkerCommand::MenuSelection {
+                    menu_id,
+                    item_number: item,
+                    generation,
+                });
+            } else {
+                commands().lock().unwrap().push_back((menu_id, item));
+            }
         }
     }
 );
@@ -104,10 +120,15 @@ pub struct NativeMenuBridge {
     main_menu: Option<Retained<NSMenu>>,
     guest_menus: Vec<(Retained<NSMenu>, isize)>,
     last_snapshot: GuestMenuSnapshot,
+    generation: u32,
     installed: bool,
 }
 
 impl NativeMenuBridge {
+    pub fn set_worker_commands(&mut self, commands: Arc<CommandMailbox>) {
+        *worker_commands().lock().unwrap() = Some(commands);
+    }
+
     pub fn new(app_name: String) -> Self {
         Self {
             app_name,
@@ -115,6 +136,7 @@ impl NativeMenuBridge {
             main_menu: None,
             guest_menus: Vec::new(),
             last_snapshot: GuestMenuSnapshot::default(),
+            generation: 0,
             installed: false,
         }
     }
@@ -136,10 +158,20 @@ impl NativeMenuBridge {
     }
 
     pub fn sync(&mut self, snapshot: GuestMenuSnapshot) {
+        let generation = if snapshot == self.last_snapshot {
+            self.generation
+        } else {
+            self.generation.wrapping_add(1)
+        };
+        self.sync_versioned(snapshot, generation);
+    }
+
+    pub fn sync_versioned(&mut self, snapshot: GuestMenuSnapshot, generation: u32) {
         self.strip_host_items();
-        if self.installed && snapshot == self.last_snapshot {
+        if self.installed && snapshot == self.last_snapshot && generation == self.generation {
             return;
         }
+        self.generation = generation;
 
         let roots: Vec<&GuestMenu> = snapshot
             .menus
@@ -261,7 +293,9 @@ impl NativeMenuBridge {
                 &key,
                 mtm,
             );
-            let packed = ((menu.id as u16 as u32) << 16) | item.number as u16 as u32;
+            let packed = (u64::from(self.generation) << 32)
+                | (u64::from(menu.id as u16) << 16)
+                | u64::from(item.number as u16);
             unsafe {
                 native_item.setTarget(Some(
                     &**self

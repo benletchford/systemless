@@ -22,6 +22,10 @@ mod d3d_present;
 mod desktop_save_store;
 #[path = "desktop/headless_time.rs"]
 mod headless_time;
+#[path = "desktop/worker_mailbox.rs"]
+mod worker_mailbox;
+#[path = "desktop/emulation_worker.rs"]
+mod emulation_worker;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 #[path = "desktop/host_cursor.rs"]
 mod host_cursor;
@@ -65,9 +69,15 @@ mod debug_server {
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
 use clap::Parser;
 use desktop_save_store::DesktopSaveStore;
+use emulation_worker::{EmulationWorker, FrameSnapshot, WorkerConfig};
+use worker_mailbox::{CommandMailbox, WorkerCommand};
 #[cfg(target_os = "macos")]
 use objc2::{msg_send, runtime::NSObject};
 #[cfg(target_os = "macos")]
@@ -75,6 +85,7 @@ use objc2_quartz_core::CATransaction;
 use systemless::debug_overlay::DebugOverlayFrameStats;
 use systemless::display;
 use systemless::game;
+use systemless::menu_model::GuestMenuSnapshot;
 use systemless::runner::FixtureRunner;
 #[cfg(target_os = "macos")]
 use systemless::runner::MenuBarPolicy;
@@ -99,6 +110,95 @@ use winit::window::WindowId;
 struct FramePhaseTimer {
     phase: &'static str,
     start: Option<std::time::Instant>,
+}
+
+/// Opt-in event-loop probe. One outstanding wake bounds its queue footprint
+/// even when a Toolbox call monopolizes the event loop for a long time.
+struct UiLatencyProbe {
+    pending: Arc<Mutex<Option<std::time::Instant>>>,
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    wake_latencies: Vec<std::time::Duration>,
+    ui_work: Vec<std::time::Duration>,
+    last_report: std::time::Instant,
+}
+
+impl UiLatencyProbe {
+    fn start(proxy: winit::event_loop::EventLoopProxy<()>) -> Self {
+        let pending = Arc::new(Mutex::new(None));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_pending = Arc::clone(&pending);
+        let thread_stop = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            while !thread_stop.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                let mut outstanding = thread_pending.lock().unwrap();
+                if outstanding.is_none() {
+                    *outstanding = Some(std::time::Instant::now());
+                    if proxy.send_event(()).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        Self {
+            pending,
+            stop,
+            thread: Some(thread),
+            wake_latencies: Vec::new(),
+            ui_work: Vec::new(),
+            last_report: std::time::Instant::now(),
+        }
+    }
+
+    fn observe_wake(&mut self) -> Option<std::time::Instant> {
+        let sent = self.pending.lock().unwrap().take();
+        if let Some(sent) = sent {
+            self.wake_latencies.push(sent.elapsed());
+        }
+        if self.last_report.elapsed() >= std::time::Duration::from_secs(10) {
+            Self::report("event wake", &mut self.wake_latencies);
+            Self::report("about_to_wait work", &mut self.ui_work);
+            self.wake_latencies.clear();
+            self.ui_work.clear();
+            self.last_report = std::time::Instant::now();
+        }
+        sent
+    }
+
+    fn observe_work(&mut self, duration: std::time::Duration) {
+        self.ui_work.push(duration);
+    }
+
+    fn report(label: &str, samples: &mut Vec<std::time::Duration>) {
+        if samples.is_empty() {
+            return;
+        }
+        samples.sort_unstable();
+        let percentile = |percent: usize| {
+            let index = ((samples.len() - 1) * percent).div_ceil(100);
+            samples[index].as_secs_f64() * 1000.0
+        };
+        eprintln!(
+            "[UI-PROFILE] {label} n={} p50={:.2}ms p95={:.2}ms p99={:.2}ms max={:.2}ms",
+            samples.len(),
+            percentile(50),
+            percentile(95),
+            percentile(99),
+            percentile(100),
+        );
+    }
+}
+
+impl Drop for UiLatencyProbe {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        Self::report("event wake", &mut self.wake_latencies);
+        Self::report("about_to_wait work", &mut self.ui_work);
+    }
 }
 
 impl FramePhaseTimer {
@@ -172,6 +272,26 @@ fn foreground_cpu_batch_instructions(powerpc: bool, instructions_per_tick: u32) 
         (instructions_per_tick.max(1) as usize).div_ceil(PPC_GUI_BATCH_TICK_DIVISOR)
     } else {
         CPU_BATCH_INSTRUCTIONS
+    }
+}
+
+fn service_pending_worker_commands(
+    commands: Option<&Arc<CommandMailbox>>,
+    runner: &mut FixtureRunner,
+    mouse_release_latch: &mut HostMouseReleaseLatch,
+    menu_generation: &mut u32,
+    last_guest_menu: &mut Option<GuestMenuSnapshot>,
+    outline_scale: &mut u32,
+    shutdown_requested: &mut bool,
+) {
+    let Some(commands) = commands else { return };
+    for command in commands.drain() {
+        if emulation_worker::apply_guest_command(
+            runner, mouse_release_latch, menu_generation, last_guest_menu, outline_scale, command,
+        ) {
+            *shutdown_requested = true;
+            break;
+        }
     }
 }
 
@@ -829,6 +949,17 @@ struct PendingGpuFrame {
 }
 
 struct App {
+    ui_probe: Option<UiLatencyProbe>,
+    emulation_worker: bool,
+    worker: Option<EmulationWorker>,
+    snapshot: Option<FrameSnapshot>,
+    worker_debug_server: bool,
+    worker_commands: Option<Arc<CommandMailbox>>,
+    worker_shutdown_requested: bool,
+    menu_generation: u32,
+    last_guest_menu: Option<GuestMenuSnapshot>,
+    worker_application_identity: Option<Arc<game::ApplicationIdentity>>,
+    worker_outline_scale: u32,
     #[cfg(target_os = "windows")]
     gpu: Option<d3d_present::D3dPresenter>,
     #[cfg(target_os = "windows")]
@@ -1008,6 +1139,17 @@ impl App {
             );
         }
         Self {
+            ui_probe: None,
+            emulation_worker: false,
+            worker: None,
+            snapshot: None,
+            worker_debug_server: false,
+            worker_commands: None,
+            worker_shutdown_requested: false,
+            menu_generation: 0,
+            last_guest_menu: None,
+            worker_application_identity: None,
+            worker_outline_scale: 1,
             window: None,
             #[cfg(target_os = "windows")]
             gpu: None,
@@ -1122,14 +1264,19 @@ impl App {
                     width: sw,
                     height: sh,
                 }),
-                self.runner.as_ref().and_then(|runner| {
-                    runner
-                        .dispatcher()
-                        .visible_dialog_structure_bounds(runner.bus())
+                self.snapshot.as_ref().and_then(|frame| frame.dialog_bounds).or_else(|| {
+                    self.runner.as_ref().and_then(|runner| {
+                        runner
+                            .dispatcher()
+                            .visible_dialog_structure_bounds(runner.bus())
+                    })
                 }),
                 sw,
                 sh,
-                native_menu_bar_height(self.runner.as_ref(), self.native_integrations),
+                self.snapshot.as_ref().map_or_else(
+                    || native_menu_bar_height(self.runner.as_ref(), self.native_integrations),
+                    |frame| frame.menu_bar_height,
+                ),
             )
         };
         #[cfg(not(target_os = "macos"))]
@@ -1273,7 +1420,9 @@ impl App {
         self.save_store = Some(save_store);
         self.initialized = true;
         #[cfg(target_os = "macos")]
-        self.sync_native_application_identity();
+        if !self.emulation_worker {
+            self.sync_native_application_identity();
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -1495,6 +1644,18 @@ impl App {
         }
 
         let runner = self.runner.as_mut().expect("runner checked above");
+        service_pending_worker_commands(
+            self.worker_commands.as_ref(),
+            runner,
+            &mut self.mouse_release_latch,
+            &mut self.menu_generation,
+            &mut self.last_guest_menu,
+            &mut self.worker_outline_scale,
+            &mut self.worker_shutdown_requested,
+        );
+        if self.worker_shutdown_requested {
+            return;
+        }
         runner.advance_menu_presentation_clock(presentation_interval);
         // A PPC HLE slice currently borrows its large mutable state by moving
         // collections into a dispatch closure and restoring them afterward.
@@ -1519,6 +1680,18 @@ impl App {
         let mut reserved_sound_steps = 0usize;
 
         loop {
+            service_pending_worker_commands(
+                self.worker_commands.as_ref(),
+                runner,
+                &mut self.mouse_release_latch,
+                &mut self.menu_generation,
+                &mut self.last_guest_menu,
+                &mut self.worker_outline_scale,
+                &mut self.worker_shutdown_requested,
+            );
+            if self.worker_shutdown_requested {
+                break;
+            }
             if runner.guest_tick() >= effective_target || runner.is_halted() {
                 break;
             }
@@ -1565,6 +1738,10 @@ impl App {
             }
         }
 
+        if self.worker_shutdown_requested {
+            return;
+        }
+
         if audio_mixed < audio_samples {
             if let Some(steps) = service_pending_sound_work(
                 runner,
@@ -1579,7 +1756,19 @@ impl App {
 
         if audio_mixed < audio_samples {
             let mut remaining_audio = audio_samples - audio_mixed;
-            while remaining_audio > 0 && !runner.is_halted() {
+            while remaining_audio > 0 && !runner.is_halted() && !self.worker_shutdown_requested {
+                service_pending_worker_commands(
+                    self.worker_commands.as_ref(),
+                    runner,
+                    &mut self.mouse_release_latch,
+                    &mut self.menu_generation,
+                    &mut self.last_guest_menu,
+                    &mut self.worker_outline_scale,
+                    &mut self.worker_shutdown_requested,
+                );
+                if self.worker_shutdown_requested {
+                    break;
+                }
                 let chunk_audio = remaining_audio.min(AUDIO_CALLBACK_CHUNK_SAMPLES);
                 runner.mix_gui_audio_slice(chunk_audio);
                 remaining_audio -= chunk_audio;
@@ -1593,6 +1782,10 @@ impl App {
                     total_steps += steps;
                 }
             }
+        }
+
+        if self.worker_shutdown_requested {
+            return;
         }
 
         if let Some(steps) = service_pending_sound_work(
@@ -2432,6 +2625,503 @@ impl App {
     }
 }
 
+impl App {
+    fn about_to_wait_worker(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(error) = self.worker.as_ref().and_then(EmulationWorker::take_error) {
+            eprintln!("[SYSTEMLESS] Emulation worker error: {error}");
+            event_loop.exit();
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        if let (Some(menu), Some(worker)) = (self.native_menu.as_ref(), self.worker.as_ref()) {
+            let generation = self.snapshot.as_ref().map_or(0, |frame| frame.menu_generation);
+            for (menu_id, item_number) in menu.drain_commands() {
+                worker.commands.push(WorkerCommand::MenuSelection {
+                    menu_id, item_number, generation,
+                });
+            }
+        }
+
+        let newest = self.worker.as_ref().and_then(|worker| worker.latest.take());
+        if let Some(frame) = newest {
+            let (_, _, sw, sh, _) = frame.screen_mode;
+            let screen_changed = self.current_screen_width != u32::from(sw)
+                || self.current_screen_height != u32::from(sh);
+            self.current_screen_width = u32::from(sw);
+            self.current_screen_height = u32::from(sh);
+            self.total_instructions = frame.total_instructions;
+            self.snapshot = Some(frame);
+            #[cfg(target_os = "macos")]
+            {
+                self.learn_content_rect_from_snapshot();
+                self.sync_native_application_identity_snapshot();
+                if let (Some(menu), Some(frame)) = (self.native_menu.as_mut(), self.snapshot.as_ref()) {
+                    menu.sync_versioned(frame.menu.clone(), frame.menu_generation);
+                }
+            }
+            if let Some(window) = self.window.as_ref().filter(|_| screen_changed) {
+                if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
+                    let sw = self.current_screen_width;
+                    let sh = self.current_screen_height;
+                    let _ = window.request_inner_size(guest_scaled_physical_size(sw, sh, scale));
+                }
+            }
+            self.force_next_render = true;
+        }
+
+        if self.force_next_render {
+            self.render_snapshot();
+        }
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        self.sync_host_cursor(event_loop);
+        if self.snapshot.as_ref().is_some_and(|frame| frame.halted_by_exit) {
+            if !self.guest_exit_reported {
+                eprintln!(
+                    "[SYSTEMLESS] Guest exited. Total instructions: {}",
+                    self.total_instructions
+                );
+                self.guest_exit_reported = true;
+            }
+            if !self.worker_debug_server {
+                event_loop.exit();
+                return;
+            }
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(at) = self.gpu.as_ref().and_then(|gpu| gpu.retry_at()) {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(at));
+            return;
+        }
+        event_loop.set_control_flow(ControlFlow::Wait);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn sync_native_application_identity_snapshot(&mut self) {
+        if !self.native_integrations {
+            return;
+        }
+        let Some(identity) = self.snapshot.as_ref().and_then(|frame| frame.application.as_deref()) else {
+            return;
+        };
+        if self.native_app_path.as_deref() == Some(identity.path.as_str()) {
+            return;
+        }
+        if let Some(menu) = self.native_menu.as_mut() {
+            menu.set_app_name(identity.name.clone());
+        }
+        native_application::set_application_icon(identity.icon.as_ref());
+        if let Some(window) = self.window.as_ref() {
+            window.set_title(&identity.name);
+        }
+        self.native_app_path = Some(identity.path.clone());
+        self.native_app_name = identity.name.clone();
+        self.native_app_icon = identity.icon.clone();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn learn_content_rect_from_snapshot(&mut self) {
+        if !should_learn_content_rect(self.debug_overlay_visible, self.native_integrations) {
+            return;
+        }
+        let Some(frame) = self.snapshot.as_ref() else { return };
+        let screen_mode = frame.screen_mode;
+        let (sw, sh) = (u32::from(screen_mode.2), u32::from(screen_mode.3));
+        let signature = (screen_mode.2, screen_mode.3, screen_mode.4);
+        if self.content_rect_screen_mode != Some(signature) {
+            self.content_rect_screen_mode = Some(signature);
+            self.content_rect = None;
+            self.content_rect_candidate = None;
+            self.content_rect_copybits_count = 0;
+            self.content_rect_active_margin_frames = 0;
+            self.content_rect_relearn_after_full = false;
+            self.content_rect_previous_frame.clear();
+        }
+        let raw = frame.framebuffer.as_slice();
+        let full = ContentRect { left: 0, top: 0, width: sw, height: sh };
+        let visible_dialog = frame.dialog_bounds.is_some();
+        let has_inactive_margins = |rect| {
+            screen_mode.4 != 8 || content_rect_has_inactive_margins_8bpp(
+                raw, screen_mode.1 as usize, sw as usize, sh as usize, rect,
+            )
+        };
+        let active_crop = self.content_rect.filter(|&rect| {
+            rect != full && !visible_dialog && screen_mode.4 == 8 && !has_inactive_margins(rect)
+        });
+        self.content_rect_active_margin_frames = if active_crop.is_some() {
+            self.content_rect_active_margin_frames.saturating_add(1)
+        } else { 0 };
+        let invalidated = active_crop.filter(|_| {
+            self.content_rect_active_margin_frames >= CONTENT_RECT_CONFIRMATIONS
+        });
+        let learning = self.content_rect.is_none() || self.content_rect_relearn_after_full;
+        let authoritative = frame.framed_content
+            .and_then(|rect| content_rect_from_copybits(rect, sw, sh))
+            .filter(|&rect| !self.content_rect_relearn_after_full || has_inactive_margins(rect))
+            .or_else(|| {
+                learning.then(|| {
+                    frame.manual_content.or(frame.declared_content)
+                        .and_then(|rect| content_rect_from_copybits(rect, sw, sh))
+                        .filter(|&rect| has_inactive_margins(rect))
+                })?
+            });
+        let mut accepted = invalidated.map(|_| full);
+        let allow_detection = !self.content_rect_relearn_after_full || !visible_dialog;
+        let mut detected = None;
+        if accepted.is_none() {
+            if self.content_rect_relearn_after_full {
+                if allow_detection {
+                    detected = authoritative.map(|rect| (rect, 1));
+                }
+            } else {
+                accepted = authoritative;
+            }
+        }
+        if learning && accepted.is_none() {
+            if detected.is_none() && allow_detection
+                && frame.copybits_screen_count != self.content_rect_copybits_count
+            {
+                let delta = frame.copybits_screen_count
+                    .saturating_sub(self.content_rect_copybits_count);
+                let confirmations = if self.content_rect_relearn_after_full { 1 }
+                    else { delta.min(u64::from(u16::MAX)) as u16 };
+                self.content_rect_copybits_count = frame.copybits_screen_count;
+                detected = frame.last_copybits_rect
+                    .and_then(|rect| content_rect_from_copybits(rect, sw, sh))
+                    .filter(|&rect| has_inactive_margins(rect))
+                    .map(|rect| (rect, confirmations));
+            }
+            if detected.is_none() && allow_detection && screen_mode.4 == 8
+                && self.content_rect_previous_frame.as_slice() != raw
+            {
+                detected = detect_centered_content_rect_8bpp(
+                    raw, screen_mode.1 as usize, sw as usize, sh as usize,
+                ).map(|rect| (rect, 1));
+                self.content_rect_previous_frame.clear();
+                self.content_rect_previous_frame.extend_from_slice(raw);
+            }
+            if let Some((candidate, confirmations)) = detected {
+                self.content_rect_candidate = match self.content_rect_candidate {
+                    Some((previous, count)) if previous == candidate =>
+                        Some((candidate, count.saturating_add(confirmations))),
+                    _ => Some((candidate, confirmations)),
+                };
+                let required = if self.content_rect_relearn_after_full {
+                    CONTENT_RECT_RELEARN_CONFIRMATIONS
+                } else { CONTENT_RECT_CONFIRMATIONS };
+                accepted = self.content_rect_candidate
+                    .filter(|(_, count)| *count >= required)
+                    .map(|(rect, _)| rect);
+            } else if self.content_rect_relearn_after_full {
+                self.content_rect_candidate = None;
+            }
+        }
+        if let Some(rect) = accepted.filter(|rect| self.content_rect != Some(*rect)) {
+            self.content_rect = Some(rect);
+            self.content_rect_candidate = None;
+            self.content_rect_active_margin_frames = 0;
+            self.content_rect_relearn_after_full = invalidated.is_some();
+            persist_content_rect(&self.game_path, screen_mode, rect);
+            let visible = presentation_content_rect(
+                rect, None, sw, sh, frame.menu_bar_height,
+            );
+            if let Some(window) = self.window.as_ref() {
+                if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
+                    let _ = window.request_inner_size(guest_scaled_physical_size(
+                        visible.width, visible.height, scale,
+                    ));
+                }
+            }
+            self.window_sized_content_rect = Some(visible);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn snapshot_window_geometry(
+        &mut self,
+        size: winit::dpi::PhysicalSize<u32>,
+    ) -> Option<(ContentRect, Option<CoreAnimationTransaction>, winit::dpi::PhysicalSize<u32>)> {
+        let frame = self.snapshot.as_ref()?;
+        let (_, _, sw, sh, _) = frame.screen_mode;
+        let (sw, sh) = (u32::from(sw), u32::from(sh));
+        if self.debug_overlay_visible {
+            return Some((ContentRect { left: 0, top: 0, width: sw, height: sh }, None, size));
+        }
+        let stable = presentation_content_rect(
+            self.content_rect.unwrap_or(ContentRect { left: 0, top: 0, width: sw, height: sh }),
+            None, sw, sh, frame.menu_bar_height,
+        );
+        let desired = presentation_content_rect(
+            stable, frame.dialog_bounds, sw, sh, frame.menu_bar_height,
+        );
+        let Some(window) = self.window.as_ref() else { return None };
+        let allow_resize = window_guest_resize_scale(window, self.display_scale).is_some();
+        if !allow_resize {
+            self.pending_window_transition = None;
+            self.transient_window_restore_geometry = None;
+            self.window_sized_content_rect = Some(desired);
+        }
+        if let Some(pending) = self.pending_window_transition {
+            if pending.content != desired {
+                self.pending_window_transition = None;
+            } else if self.window_resize_events >= pending.required_resize_event
+                && size == pending.target_size
+            {
+                self.window_sized_content_rect = Some(pending.content);
+                self.pending_window_transition = None;
+                if pending.content == stable {
+                    self.transient_window_restore_geometry = None;
+                }
+            } else {
+                self.force_next_render = true;
+                return None;
+            }
+        }
+        let transition_needed = if desired == stable {
+            self.transient_window_restore_geometry.is_some()
+        } else {
+            self.window_sized_content_rect != Some(desired)
+        };
+        if !transition_needed && self.window_sized_content_rect != Some(desired) {
+            if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
+                let _ = window.request_inner_size(guest_scaled_physical_size(
+                    desired.width, desired.height, scale,
+                ));
+            }
+            self.window_sized_content_rect = Some(desired);
+        }
+        if transition_needed && allow_resize {
+            let (target_size, target_position) = if desired != stable {
+                if self.transient_window_restore_geometry.is_none() {
+                    self.transient_window_restore_geometry = Some(TransientWindowGeometry {
+                        inner_size: size,
+                        outer_position: window.outer_position().ok(),
+                    });
+                }
+                let original = self.transient_window_restore_geometry.unwrap();
+                let target_size = native_size_preserving_guest_scale(
+                    stable, desired, original.inner_size,
+                );
+                let target_position = original.outer_position.map(|position| {
+                    native_position_preserving_guest_anchor(
+                        stable, desired, original.inner_size, target_size, position,
+                    )
+                });
+                (target_size, target_position)
+            } else {
+                let original = self.transient_window_restore_geometry.unwrap();
+                (original.inner_size, original.outer_position)
+            };
+            let transaction = CoreAnimationTransaction::begin();
+            if let Some(surface) = self.surface.as_ref() {
+                surface.set_transactional_presentation(true);
+            }
+            let changed_atomically = target_position.is_some_and(|position| {
+                set_macos_window_geometry(window, target_size, position)
+            });
+            if changed_atomically {
+                self.window_sized_content_rect = Some(desired);
+                self.pending_window_transition = None;
+                if desired == stable {
+                    self.transient_window_restore_geometry = None;
+                }
+                return Some((desired, Some(transaction), target_size));
+            }
+            drop(transaction);
+            if let Some(surface) = self.surface.as_ref() {
+                surface.set_transactional_presentation(false);
+            }
+            let _ = window.request_inner_size(target_size);
+            if let Some(position) = target_position {
+                window.set_outer_position(position);
+            }
+            self.pending_window_transition = Some(PendingWindowTransition {
+                content: desired,
+                target_size,
+                required_resize_event: self.window_resize_events.saturating_add(1),
+            });
+            self.force_next_render = true;
+            return None;
+        }
+        Some((self.window_sized_content_rect.unwrap_or(stable), None, size))
+    }
+
+    fn render_snapshot(&mut self) {
+        let render_start = std::time::Instant::now();
+        self.update_debug_frame_stats(render_start);
+        let Some(window) = self.window.as_ref() else { return };
+        let size = window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        let Some((content, mut transaction, size)) = self.snapshot_window_geometry(size) else {
+            return;
+        };
+        let Some(frame) = self.snapshot.as_ref() else { return };
+        let (_, _, sw, sh, _) = frame.screen_mode;
+        let (sw, sh) = (u32::from(sw), u32::from(sh));
+        if sw == 0 || sh == 0 {
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        let logical_size = (content.width, content.height);
+        #[cfg(not(target_os = "macos"))]
+        let logical_size = (sw, sh);
+        let outline_scale = display::outline_output_scale(logical_size, (size.width, size.height));
+        if outline_scale != self.worker_outline_scale {
+            self.worker_outline_scale = outline_scale;
+            if let Some(worker) = self.worker.as_ref() {
+                worker.commands.push(WorkerCommand::SetOutlineScale(outline_scale));
+            }
+        }
+        let (argb_width, argb_height) = frame.argb_size;
+        #[cfg(target_os = "macos")]
+        if !frame.has_outline_detail && !self.debug_overlay_visible {
+            if let Some(surface) = self.surface.as_mut() {
+                let cursor = if self.host_cursor.enabled() {
+                    None
+                } else {
+                    frame.cursor.as_ref().map(|cursor| (cursor, frame.mouse_position))
+                };
+                match surface.present_guest_frame(
+                    &frame.framebuffer,
+                    frame.screen_mode,
+                    (content.left, content.top, content.width, content.height),
+                    &frame.palette,
+                    cursor,
+                    (size.width, size.height),
+                    self.force_gpu_present,
+                ) {
+                    Ok(true) => {
+                        if let Some(transaction) = transaction.take() {
+                            drop(transaction);
+                            surface.set_transactional_presentation(false);
+                        }
+                        self.last_presented_guest_tick = Some(frame.guest_tick);
+                        self.force_next_render = false;
+                        self.force_gpu_present = false;
+                        return;
+                    }
+                    Ok(false) => {
+                        if let Some(transaction) = transaction.take() {
+                            drop(transaction);
+                            surface.set_transactional_presentation(false);
+                        }
+                        self.force_next_render = false;
+                        return;
+                    }
+                    Err(error) => eprintln!("[GPU] {error}; using raster presentation"),
+                }
+            }
+        }
+
+        let mut argb = frame.argb.clone();
+        if !self.host_cursor_enabled() && !frame.argb_includes_cursor {
+            if let Some(cursor) = frame.cursor.as_ref() {
+                display::render_cursor_argb(&mut argb, argb_width, argb_height, cursor, frame.mouse_position);
+            }
+        }
+        if self.debug_overlay_visible {
+            let mut snapshot = frame.debug_overlay.clone();
+            snapshot.frame_stats.host_fps = self.debug_host_fps;
+            snapshot.frame_stats.frame_ms = self.debug_frame_ms;
+            display::render_debug_overlay_argb(&mut argb, argb_width, argb_height, &snapshot.lines());
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let scale = argb_width / sw;
+            let scaled_content = ContentRect {
+                left: content.left * scale,
+                top: content.top * scale,
+                width: content.width * scale,
+                height: content.height * scale,
+            };
+            crop_argb_frame(&mut argb, argb_width, scaled_content);
+            if let Some(surface) = self.surface.as_mut() {
+                surface.present(&argb, scaled_content.width, scaled_content.height, size.width, size.height)
+                    .expect("Failed to present Metal framebuffer");
+                if let Some(transaction) = transaction.take() {
+                    drop(transaction);
+                    surface.set_transactional_presentation(false);
+                }
+            }
+            self.force_gpu_present = false;
+        }
+
+        #[cfg(target_os = "windows")]
+        if let Some(gpu) = self.gpu.as_mut() {
+            let prepared = self.gpu_frame.frame_mut();
+            prepared.width = argb_width;
+            prepared.height = argb_height;
+            prepared.scale = 1;
+            prepared.detail.clear();
+            prepared.cells.clear();
+            prepared.cells.extend(argb.iter().map(|pixel| pixel & 0x00ff_ffff));
+            let rect = aspect_fit_dimensions(argb_width, argb_height, size.width, size.height);
+            self.gpu_pending = Some(PendingGpuFrame {
+                size: (size.width, size.height),
+                rect,
+                guest_tick: frame.guest_tick,
+            });
+            match gpu.present(self.gpu_frame.frame(), (size.width, size.height), rect) {
+                Ok(true) => {
+                    self.gpu_pending = None;
+                    self.last_presented_guest_tick = Some(frame.guest_tick);
+                    self.force_next_render = false;
+                    return;
+                }
+                Ok(false) => {
+                    self.force_next_render = false;
+                    return;
+                }
+                Err(error) => {
+                    eprintln!("[GPU] {error}; switching to software presentation");
+                    self.gpu = None;
+                    self.gpu_pending = None;
+                    let context = softbuffer::Context::new(window.clone())
+                        .expect("Failed to create software context");
+                    self.surface = Some(Surface::new(&context, window.clone())
+                        .expect("Failed to create software surface"));
+                    self.surface_size = None;
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        if let Some(surface) = self.surface.as_mut() {
+            if self.surface_size != Some((size.width, size.height)) {
+                surface.resize(
+                    NonZeroU32::new(size.width).unwrap(),
+                    NonZeroU32::new(size.height).unwrap(),
+                ).expect("Failed to resize software surface");
+                self.surface_size = Some((size.width, size.height));
+            }
+            let mut buffer = surface.buffer_mut().expect("Failed to get software buffer");
+            let (x, y, width, height) = aspect_fit_dimensions(argb_width, argb_height, size.width, size.height);
+            buffer.fill(0xff00_0000);
+            display::resize_argb_coverage(&argb, (argb_width, argb_height), (width, height), &mut self.scaled_frame);
+            for row in 0..height as usize {
+                let source = row * width as usize;
+                let destination = (y as usize + row) * size.width as usize + x as usize;
+                buffer[destination..destination + width as usize]
+                    .copy_from_slice(&self.scaled_frame[source..source + width as usize]);
+            }
+            buffer.present().expect("Failed to present software buffer");
+        }
+        self.last_presented_guest_tick = Some(frame.guest_tick);
+        self.force_next_render = false;
+        self.render_headroom = Self::next_render_headroom(render_start.elapsed());
+    }
+
+    fn host_cursor_enabled(&self) -> bool {
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        { self.host_cursor.enabled() }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        { false }
+    }
+}
+
 #[allow(dead_code)]
 fn aspect_fit_dimensions(
     source_width: u32,
@@ -2901,14 +3591,22 @@ impl App {
     /// Keep the host pointer in step with the guest cursor image, visibility,
     /// and the window's guest-to-screen scale.
     fn sync_host_cursor(&mut self, _event_loop: &ActiveEventLoop) {
-        let (Some(window), Some(runner)) = (self.window.as_ref(), self.runner.as_ref()) else {
+        let Some(window) = self.window.as_ref() else {
             return;
         };
+        let runner = self.runner.as_ref();
+        let snapshot = self.snapshot.as_ref();
+        if runner.is_none() && snapshot.is_none() {
+            return;
+        }
         // The cursor's guest-pixel scale must match the presentation viewport
         // (content rectangle + binding axis), not the raw window/guest ratio:
         // height-constrained windows, learned gameplay crops, and transient
         // dialog expansion all change it (issue #1049).
-        let (_, _, sw, sh, _) = runner.dispatcher().screen_mode;
+        let (_, _, sw, sh, _) = snapshot.map_or_else(
+            || runner.unwrap().dispatcher().screen_mode,
+            |frame| frame.screen_mode,
+        );
         let (sw, sh) = (u32::from(sw), u32::from(sh));
         #[cfg(target_os = "macos")]
         let content = if self.debug_overlay_visible {
@@ -2926,12 +3624,19 @@ impl App {
                     width: sw,
                     height: sh,
                 }),
-                runner
-                    .dispatcher()
-                    .visible_dialog_structure_bounds(runner.bus()),
+                snapshot.and_then(|frame| frame.dialog_bounds).or_else(|| {
+                    runner.and_then(|runner| {
+                        runner
+                            .dispatcher()
+                            .visible_dialog_structure_bounds(runner.bus())
+                    })
+                }),
                 sw,
                 sh,
-                native_menu_bar_height(Some(runner), self.native_integrations),
+                snapshot.map_or_else(
+                    || native_menu_bar_height(runner, self.native_integrations),
+                    |frame| frame.menu_bar_height,
+                ),
             )
         };
         #[cfg(target_os = "windows")]
@@ -2944,17 +3649,24 @@ impl App {
         let size = window.inner_size();
         let scale =
             host_cursor::presentation_scale(content.width, content.height, size.width, size.height);
+        let cursor = snapshot
+            .and_then(|frame| frame.cursor.as_ref())
+            .or_else(|| runner.and_then(|runner| runner.dispatcher().cursor()));
         #[cfg(target_os = "macos")]
-        self.host_cursor
-            .sync(window, runner.dispatcher().cursor(), scale);
+        self.host_cursor.sync(window, cursor, scale);
         #[cfg(target_os = "windows")]
         self.host_cursor
-            .sync(_event_loop, window, runner.dispatcher().cursor(), scale);
+            .sync(_event_loop, window, cursor, scale);
     }
 }
 
 impl ApplicationHandler for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, (): ()) {
+        if let Some(sent) = self.ui_probe.as_mut().and_then(UiLatencyProbe::observe_wake) {
+            if let Some(worker) = self.worker.as_ref() {
+                worker.commands.push(WorkerCommand::ProbeInputService { sent });
+            }
+        }
         // Upload the latest prepared image. Do not execute the guest, change
         // its clock, or redo CPU composition on this display readiness wake.
         #[cfg(target_os = "windows")]
@@ -2979,7 +3691,10 @@ impl ApplicationHandler for App {
                     None,
                     initial_screen_width(),
                     initial_screen_height(),
-                    native_menu_bar_height(self.runner.as_ref(), self.native_integrations),
+                    self.snapshot.as_ref().map_or_else(
+                        || native_menu_bar_height(self.runner.as_ref(), self.native_integrations),
+                        |frame| frame.menu_bar_height,
+                    ),
                 );
                 (content.width, content.height)
             };
@@ -3095,10 +3810,14 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
-                self.sync_save_files(true);
+                if self.worker.is_none() {
+                    self.sync_save_files(true);
+                }
                 eprintln!(
                     "[SYSTEMLESS] Window closed. Total instructions: {}",
-                    self.total_instructions
+                    self.snapshot
+                        .as_ref()
+                        .map_or(self.total_instructions, |frame| frame.total_instructions)
                 );
                 systemless::runner::dump_wait_stats();
                 event_loop.exit();
@@ -3125,7 +3844,9 @@ impl ApplicationHandler for App {
                 self.force_next_render = true;
                 self.mouse_physical = (position.x, position.y);
                 let (v, h) = self.host_mouse_to_mac(position.x, position.y);
-                if let Some(runner) = self.runner.as_mut() {
+                if let Some(worker) = self.worker.as_ref() {
+                    worker.commands.push(WorkerCommand::Input(InputAction::MouseMove { v, h }));
+                } else if let Some(runner) = self.runner.as_mut() {
                     runner.set_mouse_position(v, h);
                     runner.dispatcher_mut().show_cursor();
                 }
@@ -3140,7 +3861,13 @@ impl ApplicationHandler for App {
             } => {
                 self.force_next_render = true;
                 let (v, h) = self.host_mouse_to_mac(self.mouse_physical.0, self.mouse_physical.1);
-                if let Some(runner) = self.runner.as_mut() {
+                if let Some(worker) = self.worker.as_ref() {
+                    let input = match state {
+                        ElementState::Pressed => InputAction::MouseDown { v, h },
+                        ElementState::Released => InputAction::MouseUp { v, h },
+                    };
+                    worker.commands.push(WorkerCommand::Input(input));
+                } else if let Some(runner) = self.runner.as_mut() {
                     match state {
                         ElementState::Pressed => {
                             runner.push_mouse_down(v, h);
@@ -3184,7 +3911,13 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
-                if let Some(runner) = self.runner.as_mut() {
+                if let Some(worker) = self.worker.as_ref() {
+                    let input = match event.state {
+                        ElementState::Pressed => InputAction::KeyDown { key: mac_key, ch: char_code },
+                        ElementState::Released => InputAction::KeyUp { key: mac_key, ch: char_code },
+                    };
+                    worker.commands.push(WorkerCommand::Input(input));
+                } else if let Some(runner) = self.runner.as_mut() {
                     match event.state {
                         ElementState::Pressed => {
                             runner.push_key_down(mac_key, char_code);
@@ -3206,8 +3939,12 @@ impl ApplicationHandler for App {
                 // Live resizing runs independently of the guest VBL. Present
                 // the latest complete guest image at the new drawable size
                 // immediately instead of stretching a stale drawable.
-                if size.width != 0 && size.height != 0 && self.runner.is_some() {
-                    self.render_frame();
+                if size.width != 0 && size.height != 0 {
+                    if self.worker.is_some() {
+                        self.render_snapshot();
+                    } else if self.runner.is_some() {
+                        self.render_frame();
+                    }
                 }
             }
 
@@ -3223,6 +3960,14 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let ui_work_start = self.ui_probe.as_ref().map(|_| std::time::Instant::now());
+        if self.worker.is_some() {
+            self.about_to_wait_worker(event_loop);
+            if let (Some(probe), Some(start)) = (self.ui_probe.as_mut(), ui_work_start) {
+                probe.observe_work(start.elapsed());
+            }
+            return;
+        }
         if let (Some(server), Some(runner)) = (self.debug_server.as_mut(), self.runner.as_mut()) {
             server.pump(runner);
         }
@@ -3247,6 +3992,9 @@ impl ApplicationHandler for App {
                 .and_then(|gpu| gpu.retry_at())
                 .map_or(next, |at| next.min(at));
             event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+            if let (Some(probe), Some(start)) = (self.ui_probe.as_mut(), ui_work_start) {
+                probe.observe_work(start.elapsed());
+            }
             return;
         }
 
@@ -3281,6 +4029,9 @@ impl ApplicationHandler for App {
             }
             if self.debug_server.is_none() {
                 event_loop.exit();
+                if let (Some(probe), Some(start)) = (self.ui_probe.as_mut(), ui_work_start) {
+                    probe.observe_work(start.elapsed());
+                }
                 return;
             }
         }
@@ -3331,6 +4082,9 @@ impl ApplicationHandler for App {
         if let Some(at) = self.gpu.as_ref().and_then(|gpu| gpu.retry_at()) {
             event_loop.set_control_flow(ControlFlow::WaitUntil(next_target.min(at)));
         }
+        if let (Some(probe), Some(start)) = (self.ui_probe.as_mut(), ui_work_start) {
+            probe.observe_work(start.elapsed());
+        }
     }
 }
 
@@ -3365,27 +4119,44 @@ fn run_gui(
         ui_theme,
         fullscreen,
     );
+    if std::env::var_os("SYSTEMLESS_PROFILE_UI").is_some() {
+        app.ui_probe = Some(UiLatencyProbe::start(event_loop.create_proxy()));
+    }
     #[cfg(target_os = "windows")]
     {
         app.gpu_wake = Some(event_loop.create_proxy());
     }
-    if let Some(path) = debug_socket {
-        match debug_server::DebugServer::bind(&path) {
-            Ok(server) => app.debug_server = Some(server),
-            Err(error) => {
-                eprintln!(
-                    "Error: cannot bind debug socket {}: {error}",
-                    path.display()
-                );
-                std::process::exit(1);
-            }
-        }
+    // Loading and every Rc-backed guest object are owned by this thread from
+    // construction onward. Wait for its first immutable projection before
+    // allowing winit to create the visible native window.
+    let worker = EmulationWorker::start(
+        WorkerConfig {
+            game_path: app.game_path.clone(),
+            arrows_as_numpad,
+            native_integrations,
+            addressing_24_bit,
+            screen_depth,
+            display_scale,
+            ui_theme,
+            fullscreen,
+            debug_socket: debug_socket.clone(),
+        },
+        event_loop.create_proxy(),
+    ).unwrap_or_else(|error| {
+        eprintln!("Error: {error}");
+        std::process::exit(1);
+    });
+    app.snapshot = worker.latest.take();
+    #[cfg(target_os = "macos")]
+    if let Some(menu) = app.native_menu.as_mut() {
+        menu.set_worker_commands(Arc::clone(&worker.commands));
     }
-    // `run_app` is the first point at which `resumed` can create a native
-    // window. Finish archive decompression and guest initialization before
-    // entering the event loop so startup never exposes an empty host window.
-    app.init_game();
+    app.worker = Some(worker);
+    app.worker_debug_server = debug_socket.is_some();
     event_loop.run_app(&mut app).expect("Event loop failed");
+    if let Some(worker) = app.worker.as_mut() {
+        worker.shutdown();
+    }
 }
 
 #[cfg(target_os = "macos")]
