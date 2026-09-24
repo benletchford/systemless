@@ -685,7 +685,7 @@ impl super::TrapDispatcher {
         }
 
         Self::restore_regs(cpu, state.d_regs, state.a_regs);
-        self.finish_loadseg(bus, cpu, state.seg_num, state.entry_addr, true)
+        self.finish_loadseg(bus, cpu, state.seg_num, Some(state.entry_addr), true)
     }
 
     fn finish_loadseg<C: CpuOps>(
@@ -693,7 +693,7 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         cpu: &mut C,
         seg_num: i16,
-        entry_addr: u32,
+        entry_addr: Option<u32>,
         refresh_from_resource: bool,
     ) -> Result<()> {
         let trace_loadseg = trace_loadseg_enabled();
@@ -775,14 +775,16 @@ impl super::TrapDispatcher {
             // Ensure the calling entry itself was patched. In Think C format,
             // the calling entry may lie outside the segment header's taboff
             // range (entries for a given segment can be scattered across the JT).
-            if !Self::loadseg_entry_is_loaded(bus, entry_addr) {
-                let code_addr =
-                    Self::patch_loadseg_entry(bus, seg_num, seg_addr, header_size, entry_addr);
-                if trace_loadseg {
-                    eprintln!(
-                        "[TRAP] LoadSeg: patched calling entry at ${:08X} -> ${:08X}",
-                        entry_addr, code_addr
-                    );
+            if let Some(entry_addr) = entry_addr {
+                if !Self::loadseg_entry_is_loaded(bus, entry_addr) {
+                    let code_addr =
+                        Self::patch_loadseg_entry(bus, seg_num, seg_addr, header_size, entry_addr);
+                    if trace_loadseg {
+                        eprintln!(
+                            "[TRAP] LoadSeg: patched calling entry at ${:08X} -> ${:08X}",
+                            entry_addr, code_addr
+                        );
+                    }
                 }
             }
 
@@ -829,11 +831,13 @@ impl super::TrapDispatcher {
 
             // Re-execute the calling JT entry at the JMP instruction. MPW
             // entries dispatch at entry+2; Think C entries dispatch at entry+0.
-            let jmp_addr = Self::loadseg_entry_dispatch_pc(bus, entry_addr);
-            if trace_loadseg {
-                eprintln!("[TRAP] LoadSeg: re-executing JT entry at ${:08X}", jmp_addr);
+            if let Some(entry_addr) = entry_addr {
+                let jmp_addr = Self::loadseg_entry_dispatch_pc(bus, entry_addr);
+                if trace_loadseg {
+                    eprintln!("[TRAP] LoadSeg: re-executing JT entry at ${:08X}", jmp_addr);
+                }
+                cpu.write_reg(Register::PC, jmp_addr);
             }
-            cpu.write_reg(Register::PC, jmp_addr);
             Ok(())
         } else {
             eprintln!("ERROR: LoadSeg unknown segment {}", seg_num);
@@ -2833,6 +2837,12 @@ impl super::TrapDispatcher {
                 let word_before_seg = bus.read_word(a9f0_addr.wrapping_sub(4));
                 let is_standard = old_trap_standard || word_before_seg == 0x3F3C;
 
+                let direct_saved_gateway = is_loadseg_trampoline
+                    && auto_pop_old_trap
+                    && native_call.is_none()
+                    && !old_trap_standard
+                    && !old_trap_think;
+
                 let (seg_num, entry_addr, fmt, refresh_from_resource) = if native_old_trap_standard
                 {
                     let call = native_call.as_ref().unwrap();
@@ -2841,7 +2851,7 @@ impl super::TrapDispatcher {
                     Self::restore_native_toolbox_nonvolatile(cpu, call);
                     (
                         sn,
-                        call.return_pc.wrapping_sub(8),
+                        Some(call.return_pc.wrapping_sub(8)),
                         "mpw-native-oldtrap",
                         true,
                     )
@@ -2851,52 +2861,67 @@ impl super::TrapDispatcher {
                     let sn = bus.read_word(entry + 6) as i16;
                     cpu.write_reg(Register::A7, call.argument_sp);
                     Self::restore_native_toolbox_nonvolatile(cpu, call);
-                    (sn, entry, "thinkc-native-oldtrap", true)
+                    (sn, Some(entry), "thinkc-native-oldtrap", true)
                 } else if old_trap_standard {
                     let return_pc = original_trap_return.unwrap();
                     let sn = bus.read_word(sp) as i16;
                     cpu.write_reg(Register::A7, sp + 2);
-                    (sn, return_pc.wrapping_sub(8), "mpw-oldtrap", true)
+                    (sn, Some(return_pc.wrapping_sub(8)), "mpw-oldtrap", true)
                 } else if old_trap_think {
                     let return_pc = original_trap_return.unwrap();
                     let entry = return_pc.wrapping_sub(2);
                     let sn = bus.read_word(entry + 6) as i16;
-                    (sn, entry, "thinkc-oldtrap", true)
+                    (sn, Some(entry), "thinkc-oldtrap", true)
+                } else if direct_saved_gateway {
+                    // A caller can push a return PC and segment argument,
+                    // then JMP through a saved auto-pop LoadSeg gateway. It
+                    // has no calling jump-table entry to re-execute.
+                    let sn = bus.read_word(sp) as i16;
+                    cpu.write_reg(Register::A7, sp + 2);
+                    (sn, None, "saved-gateway", false)
                 } else if is_standard {
                     // Standard: seg# was pushed by MOVE.W, pop it
                     let sn = bus.read_word(sp) as i16;
                     cpu.write_reg(Register::A7, sp + 2);
                     // Entry starts 6 bytes before A9F0
-                    (sn, a9f0_addr.wrapping_sub(6), "mpw", false)
+                    (sn, Some(a9f0_addr.wrapping_sub(6)), "mpw", false)
                 } else {
                     // Think C: A9F0 at entry+0, seg# at entry+6, offset at entry+4
                     // Stack has JSR return address (don't pop segment number)
                     let entry = a9f0_addr; // A9F0 IS entry+0
                     let sn = bus.read_word(entry + 6) as i16;
-                    (sn, entry, "thinkc", false)
+                    (sn, Some(entry), "thinkc", false)
                 };
 
                 let trace_loadseg = trace_loadseg_enabled();
                 if trace_loadseg {
-                    eprintln!(
-                        "[TRAP] LoadSeg(seg={}, fmt={}) entry=${:08X}",
-                        seg_num, fmt, entry_addr
-                    );
+                    if let Some(entry_addr) = entry_addr {
+                        eprintln!(
+                            "[TRAP] LoadSeg(seg={}, fmt={}) entry=${:08X}",
+                            seg_num, fmt, entry_addr
+                        );
+                    } else {
+                        eprintln!("[TRAP] LoadSeg(seg={}, fmt={}) entry=none", seg_num, fmt);
+                    }
                 }
 
                 if refresh_from_resource {
                     self.preserve_auto_pop_pc_once = auto_pop_old_trap;
                     self.finish_loadseg(bus, cpu, seg_num, entry_addr, true)
-                } else if self.maybe_inject_native_getresource_for_loadseg(
-                    bus,
-                    cpu,
-                    seg_num,
-                    entry_addr,
-                    trace_loadseg,
-                ) {
-                    Ok(())
+                } else if let Some(entry_addr) = entry_addr {
+                    if self.maybe_inject_native_getresource_for_loadseg(
+                        bus,
+                        cpu,
+                        seg_num,
+                        entry_addr,
+                        trace_loadseg,
+                    ) {
+                        Ok(())
+                    } else {
+                        self.finish_loadseg(bus, cpu, seg_num, Some(entry_addr), false)
+                    }
                 } else {
-                    self.finish_loadseg(bus, cpu, seg_num, entry_addr, false)
+                    self.finish_loadseg(bus, cpu, seg_num, None, false)
                 }
             }
 
@@ -12907,6 +12932,43 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
         assert_eq!(bus.read_word(TEST_SP + 2), 0xBEEF);
+    }
+
+    #[test]
+    fn loadseg_saved_gateway_call_returns_to_wrapper_after_patching_segment() {
+        // Inside Macintosh Volume II (1985), II-60: LoadSeg consumes a
+        // segment-number word. A saved auto-pop gateway may be invoked by a
+        // wrapper rather than by an unloaded jump-table entry.
+        let (mut disp, mut cpu, mut bus) = setup_with_trap_tables();
+        let seg_addr = 0x230000u32;
+        bus.write_word(seg_addr, 0);
+        bus.write_word(seg_addr + 2, 1);
+        disp.register_segments(HashMap::from([(12i16, seg_addr)]));
+
+        let entry_addr = 0x240000u32;
+        cpu.write_reg(Register::A5, entry_addr);
+        bus.write_word(entry_addr, 0);
+        bus.write_word(entry_addr + 2, 0x3F3C);
+        bus.write_word(entry_addr + 4, 12);
+        bus.write_word(entry_addr + 6, 0xA9F0);
+
+        let gateway = bus.get_or_create_system_trap_gateway(0xADF0);
+        let return_pc = 0x250000u32;
+        cpu.write_reg(Register::PC, gateway + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, return_pc);
+        bus.write_word(TEST_SP + 4, 12);
+        bus.write_word(TEST_SP + 6, 0xBEEF);
+
+        call_trap_word(&mut disp, 0xADF0, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(bus.read_word(TEST_SP + 6), 0xBEEF);
+        assert_eq!(bus.read_word(entry_addr), 12);
+        assert_eq!(bus.read_word(entry_addr + 2), 0x4EF9);
+        assert_eq!(bus.read_long(entry_addr + 4), seg_addr + 4);
+        assert_eq!(bus.read_word(gateway), 0xADF0);
     }
 
     #[test]
