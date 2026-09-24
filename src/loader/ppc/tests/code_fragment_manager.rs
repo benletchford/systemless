@@ -913,6 +913,31 @@ fn get_shared_library_does_not_fabricate_unknown_connections() {
 }
 
 #[test]
+fn get_shared_library_finds_statically_imported_hle_library_with_any_architecture() {
+    let pef = synthetic_pef_with_import(b"GetSharedLibrary");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_HEAP_BASE;
+    loaded.memory.add_region(scratch, vec![0; 128]);
+    write_ppc_pstring(&mut loaded.memory, scratch, b"InterfaceLib");
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = PPC_CFM_ANY_ARCH;
+    loaded.cpu.gpr[5] = PPC_CFM_FIND_LIB;
+    loaded.cpu.gpr[6] = scratch + 32;
+    loaded.cpu.gpr[7] = scratch + 36;
+    loaded.cpu.gpr[8] = scratch + 40;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(scratch + 32),
+        Some(PPC_FIRST_CFM_CONNECTION_ID)
+    );
+    assert_eq!(loaded.cfm.as_ref().unwrap().connections.len(), 1);
+}
+
+#[test]
 fn get_shared_library_requires_powerpc_architecture() {
     let pef = synthetic_pef_with_import(b"GetSharedLibrary");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -1484,4 +1509,3 @@ fn hle_import_runner_loads_and_runs_a_memory_fragment_with_dynamic_imports() {
     assert_eq!(cycle_limit.result, PpcRunResult::CycleLimit { cycles: 0 });
     assert_registry(&loaded);
 }
-

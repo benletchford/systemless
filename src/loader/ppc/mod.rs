@@ -465,6 +465,7 @@ const PPC_CFM_FIND_LIB: u32 = 2;
 const PPC_CFM_LOAD_LIB: u32 = 1;
 const PPC_CFM_LOAD_NEW_COPY: u32 = 5;
 const PPC_CFM_POWERPC_ARCH: u32 = u32::from_be_bytes(*b"pwpc");
+const PPC_CFM_ANY_ARCH: u32 = 0x3F3F_3F3F;
 #[cfg(test)]
 use crate::cfm::CFM_INIT_BLOCK_SIZE as PPC_CFM_INIT_BLOCK_SIZE;
 pub(super) const PPC_INITIAL_STACK_FRAME_SIZE: u32 = 64;
@@ -608,7 +609,9 @@ const PPC_SQUARE_WAVE_SYNTH_ID: i16 = 1;
 const PPC_WAVE_TABLE_SYNTH_ID: i16 = 3;
 const PPC_SAMPLED_SYNTH_ID: i16 = 5;
 const PPC_QUICKTIME_VERSION: u32 = 0x0300_0000;
-const PPC_QD3D_VERSION: u32 = 0x0150_8000;
+// The 'q3v ' Gestalt selector uses the 'vers' encoding for QuickDraw 3D 1.6.
+// Apple, develop Issue 24 (Dec. 1995), p. 106; Macintosh Toolbox Essentials, p. 1-42.
+const PPC_QD3D_VERSION: u32 = 0x0160_8000;
 const PPC_MAIN_GDEVICE_RECORD: u32 = 0x02f0_0200;
 const PPC_MAIN_GDEVICE_FLAGS: u16 =
     (1 << 0) | (1 << 10) | (1 << 11) | (1 << 12) | (1 << 13) | (1 << 15);
@@ -2256,6 +2259,7 @@ pub enum PpcImportDispatcherTarget {
     Q3ViewNew,
     Q3Initialize,
     Q3Exit,
+    Q3GetVersion,
     Q3DisplayGroupNew,
     Q3ErrorGet,
     Q3ObjectDispose,
@@ -14615,6 +14619,9 @@ fn dispatcher_target_for_import(
         (library_name, "Q3Exit") if is_quickdraw_3d_library(library_name) => {
             PpcImportDispatcherTarget::Q3Exit
         }
+        (library_name, "Q3GetVersion") if is_quickdraw_3d_library(library_name) => {
+            PpcImportDispatcherTarget::Q3GetVersion
+        }
         (library_name, "Q3MemoryStorage_New") if is_quickdraw_3d_library(library_name) => {
             PpcImportDispatcherTarget::Q3MemoryStorageNew
         }
@@ -19296,7 +19303,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::AlertReturnDefault => {
             unreachable!("dialog imports return through dispatch_dialog_import")
         }
-        PpcImportDispatcherTarget::Q3Initialize | PpcImportDispatcherTarget::Q3Exit => {
+        PpcImportDispatcherTarget::Q3Initialize
+        | PpcImportDispatcherTarget::Q3Exit
+        | PpcImportDispatcherTarget::Q3GetVersion => {
             unreachable!("QuickDraw 3D core imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3MemoryStorageNew

@@ -46,6 +46,34 @@ fn hle_import_runner_handles_quickdraw_3d_exit_success() {
 }
 
 #[test]
+fn hle_import_runner_reports_quickdraw_3d_version_after_initialization() {
+    let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3GetVersion");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let major_ptr = PPC_DATA_BASE + 0x1000;
+    let minor_ptr = PPC_DATA_BASE + 0x1004;
+    loaded.memory.add_region(major_ptr, vec![0; 8]);
+    loaded.cpu.gpr[3] = major_ptr;
+    loaded.cpu.gpr[4] = minor_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(major_ptr), Some(0));
+
+    loaded.q3_lifecycle.initialized_depth = 1;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = major_ptr;
+    loaded.cpu.gpr[4] = minor_ptr;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    assert_eq!(loaded.memory.read_u32_be(major_ptr), Some(1));
+    assert_eq!(loaded.memory.read_u32_be(minor_ptr), Some(6));
+}
+
+#[test]
 fn hle_import_runner_handles_q3_memory_storage_new() {
     let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3MemoryStorage_New");
     let mut loaded = load_pef_application(&pef).unwrap();
