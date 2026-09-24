@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -19,7 +20,7 @@ compatibility:
     tester: Catalogue maintainer
     systemless_version: "0.56.0 development build with PR #2627"
     architecture: 68k
-    environment: "Deterministic run of the unchanged Macintosh promotional demo through its title, setup screen, and live 3D well. Level, speed, score, and lives values match a BasiliskII run after the generic monochrome foreground correction in PR #2627. Browser interaction has not yet been approved."
+    environment: "Deterministic run of the unchanged Macintosh promotional demo through its title, setup screen, and live 3D well. Level, speed, score, and lives values match a BasiliskII run after the generic monochrome foreground correction in PR #2627. A local Chromium browser route also reached title, setup, and live play with the promoted immutable archive."
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2501
 artifacts:
@@ -83,4 +84,3 @@ becomes faster and more demanding.
 
 This entry preserves the original Macintosh promotional demo, not the retail
 game. Click the title screen, then select **Start Game** to reach the well.
-Browser launch remains disabled until a live browser check is approved.
