@@ -4524,3 +4524,272 @@ fn make_itable_reports_invalid_resolution_without_touching_target() {
         Some(b"unchanged".to_vec())
     );
 }
+
+#[test]
+fn import_bindings_classify_picture_bootstrap_imports() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetPicture"),
+        PpcImportDispatcherTarget::GetPicture
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetPixPat"),
+        PpcImportDispatcherTarget::GetPixPat
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetPictInfo"),
+        PpcImportDispatcherTarget::GetPictInfo
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "DrawPicture"),
+        PpcImportDispatcherTarget::DrawPicture
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "KillPicture"),
+        PpcImportDispatcherTarget::KillPicture
+    );
+}
+
+
+#[test]
+fn import_bindings_classify_rect_utility_imports() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetRect"),
+        PpcImportDispatcherTarget::SetRect
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "UnionRect"),
+        PpcImportDispatcherTarget::UnionRect
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetPt"),
+        PpcImportDispatcherTarget::SetPt
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LocalToGlobal"),
+        PpcImportDispatcherTarget::LocalToGlobal
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GlobalToLocal"),
+        PpcImportDispatcherTarget::GlobalToLocal
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "PtInRect"),
+        PpcImportDispatcherTarget::PtInRect
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "OffsetRect"),
+        PpcImportDispatcherTarget::OffsetRect
+    );
+}
+
+#[test]
+fn import_bindings_classify_quickdraw_bootstrap_noops() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "InitCursor"),
+        PpcImportDispatcherTarget::InitCursor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "HideCursor"),
+        PpcImportDispatcherTarget::HideCursor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "ShowCursor"),
+        PpcImportDispatcherTarget::ShowCursor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "ShieldCursor"),
+        PpcImportDispatcherTarget::ShieldCursor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetCursor"),
+        PpcImportDispatcherTarget::GetCursor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetCursor"),
+        PpcImportDispatcherTarget::SetCursor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetCCursor"),
+        PpcImportDispatcherTarget::GetCCursor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetCIcon"),
+        PpcImportDispatcherTarget::GetCIcon
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "PlotCIcon"),
+        PpcImportDispatcherTarget::PlotCIcon
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "DisposeCIcon"),
+        PpcImportDispatcherTarget::DisposeCIcon
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetCCursor"),
+        PpcImportDispatcherTarget::SetCCursor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "DisposeCCursor"),
+        PpcImportDispatcherTarget::DisposeCCursor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetForeColor"),
+        PpcImportDispatcherTarget::GetForeColor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetBackColor"),
+        PpcImportDispatcherTarget::GetBackColor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "ForeColor"),
+        PpcImportDispatcherTarget::ForeColor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "BackColor"),
+        PpcImportDispatcherTarget::BackColor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "RGBForeColor"),
+        PpcImportDispatcherTarget::RGBForeColor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "RGBBackColor"),
+        PpcImportDispatcherTarget::RGBBackColor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "Color2Index"),
+        PpcImportDispatcherTarget::Color2Index
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "Index2Color"),
+        PpcImportDispatcherTarget::Index2Color
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "MoveTo"),
+        PpcImportDispatcherTarget::MoveTo
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LineTo"),
+        PpcImportDispatcherTarget::LineTo
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "DrawChar"),
+        PpcImportDispatcherTarget::DrawChar
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "DrawString"),
+        PpcImportDispatcherTarget::DrawString
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "DrawText"),
+        PpcImportDispatcherTarget::DrawText
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "TextMode"),
+        PpcImportDispatcherTarget::TextMode
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "TextSize"),
+        PpcImportDispatcherTarget::TextSize
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "PaintRect"),
+        PpcImportDispatcherTarget::PaintRect
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "EraseRect"),
+        PpcImportDispatcherTarget::EraseRect
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "InvertRect"),
+        PpcImportDispatcherTarget::InvertRect
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "FrameRect"),
+        PpcImportDispatcherTarget::FrameRect
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "InvalRect"),
+        PpcImportDispatcherTarget::InvalRect
+    );
+}
+
+#[test]
+fn import_bindings_classify_classic_quickdraw_shape_imports() {
+    for (symbol, target) in [
+        ("Move", PpcImportDispatcherTarget::Move),
+        ("Line", PpcImportDispatcherTarget::Line),
+        ("GetPen", PpcImportDispatcherTarget::GetPen),
+        ("HidePen", PpcImportDispatcherTarget::HidePen),
+        ("ShowPen", PpcImportDispatcherTarget::ShowPen),
+        ("GetClip", PpcImportDispatcherTarget::GetClip),
+        ("SetClip", PpcImportDispatcherTarget::SetClip),
+        ("FillRect", PpcImportDispatcherTarget::FillRect),
+        ("FrameOval", PpcImportDispatcherTarget::FrameOval),
+        ("PaintOval", PpcImportDispatcherTarget::PaintOval),
+        ("EraseOval", PpcImportDispatcherTarget::EraseOval),
+        ("PaintArc", PpcImportDispatcherTarget::PaintArc),
+        ("FrameRgn", PpcImportDispatcherTarget::FrameRgn),
+        ("PaintRgn", PpcImportDispatcherTarget::PaintRgn),
+        ("FillRgn", PpcImportDispatcherTarget::FillRgn),
+        ("InvertRgn", PpcImportDispatcherTarget::InvertRgn),
+        ("PtInRgn", PpcImportDispatcherTarget::PtInRgn),
+        ("RectInRgn", PpcImportDispatcherTarget::RectInRgn),
+        ("OpenPoly", PpcImportDispatcherTarget::OpenPoly),
+        ("ClosePoly", PpcImportDispatcherTarget::ClosePoly),
+        ("KillPoly", PpcImportDispatcherTarget::KillPoly),
+        ("PaintPoly", PpcImportDispatcherTarget::PaintPoly),
+        ("FramePoly", PpcImportDispatcherTarget::FramePoly),
+        ("FillPoly", PpcImportDispatcherTarget::FillPoly),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            target,
+            "{symbol}"
+        );
+    }
+}
+
+
+#[test]
+fn quickdraw_compatibility_imports_pre_resolve_to_typed_operations() {
+    for (symbol, operation) in [
+        ("AnimateEntry", PpcQuickDrawCompatibilityOperation::AnimateEntry),
+        ("AnimatePalette", PpcQuickDrawCompatibilityOperation::AnimatePalette),
+        ("BackPat", PpcQuickDrawCompatibilityOperation::BackPat),
+        ("BackPixPat", PpcQuickDrawCompatibilityOperation::BackPixPat),
+        ("ClosePicture", PpcQuickDrawCompatibilityOperation::ClosePicture),
+        ("CopyDeepMask", PpcQuickDrawCompatibilityOperation::CopyDeepMask),
+        ("CopyMask", PpcQuickDrawCompatibilityOperation::CopyMask),
+        ("CopyPalette", PpcQuickDrawCompatibilityOperation::CopyPalette),
+        ("CTab2Palette", PpcQuickDrawCompatibilityOperation::Ctab2Palette),
+        ("DisposeGDevice", PpcQuickDrawCompatibilityOperation::DisposeGDevice),
+        ("DisposePalette", PpcQuickDrawCompatibilityOperation::DisposePalette),
+        ("Exp1to3", PpcQuickDrawCompatibilityOperation::Exp1To3),
+        ("Exp1to6", PpcQuickDrawCompatibilityOperation::Exp1To6),
+        ("GetCPixel", PpcQuickDrawCompatibilityOperation::GetCPixel),
+        ("GetEntryUsage", PpcQuickDrawCompatibilityOperation::GetEntryUsage),
+        ("GetItemIcon", PpcQuickDrawCompatibilityOperation::GetItemIcon),
+        ("GetItemStyle", PpcQuickDrawCompatibilityOperation::GetItemStyle),
+        ("GetNewPalette", PpcQuickDrawCompatibilityOperation::GetNewPalette),
+        ("NewGDevice", PpcQuickDrawCompatibilityOperation::NewGDevice),
+        ("NewPalette", PpcQuickDrawCompatibilityOperation::NewPalette),
+        ("OpenPicture", PpcQuickDrawCompatibilityOperation::OpenPicture),
+        ("Palette2CTab", PpcQuickDrawCompatibilityOperation::Palette2Ctab),
+        ("PenPat", PpcQuickDrawCompatibilityOperation::PenPat),
+        ("PlotIcon", PpcQuickDrawCompatibilityOperation::PlotIcon),
+        ("ScrollRect", PpcQuickDrawCompatibilityOperation::ScrollRect),
+        ("SetCPixel", PpcQuickDrawCompatibilityOperation::SetCPixel),
+        ("SetEntryColor", PpcQuickDrawCompatibilityOperation::SetEntryColor),
+        ("SetEntryUsage", PpcQuickDrawCompatibilityOperation::SetEntryUsage),
+        ("SetItemIcon", PpcQuickDrawCompatibilityOperation::SetItemIcon),
+        ("SetItemStyle", PpcQuickDrawCompatibilityOperation::SetItemStyle),
+        ("SetStdCProcs", PpcQuickDrawCompatibilityOperation::SetStdCProcs),
+        ("SetStdProcs", PpcQuickDrawCompatibilityOperation::SetStdProcs),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(operation),
+        );
+    }
+}

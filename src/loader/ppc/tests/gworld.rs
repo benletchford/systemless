@@ -2185,3 +2185,239 @@ use super::*;
             .iter()
             .any(|record| record.port == second_port && record.pixmap_handle == second_pmh));
     }
+
+#[test]
+fn import_bindings_classify_gworld_state_imports() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetPort"),
+        PpcImportDispatcherTarget::GetPort
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetWMgrPort"),
+        PpcImportDispatcherTarget::GetWMgrPort
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetCWMgrPort"),
+        PpcImportDispatcherTarget::GetWMgrPort
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetPort"),
+        PpcImportDispatcherTarget::SetPort
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetGDevice"),
+        PpcImportDispatcherTarget::GetGDevice
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetGDevice"),
+        PpcImportDispatcherTarget::SetGDevice
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetDeviceList"),
+        PpcImportDispatcherTarget::GetDeviceList
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetNextDevice"),
+        PpcImportDispatcherTarget::GetNextDevice
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetMainDevice"),
+        PpcImportDispatcherTarget::GetMainDevice
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetMBarHeight"),
+        PpcImportDispatcherTarget::GetMBarHeight
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "TestDeviceAttribute"),
+        PpcImportDispatcherTarget::TestDeviceAttribute
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "HasDepth"),
+        PpcImportDispatcherTarget::HasDepth
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetDepth"),
+        PpcImportDispatcherTarget::SetDepth
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "DMGetGDeviceByDisplayID"),
+        PpcImportDispatcherTarget::DMGetGDeviceByDisplayID
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "NewCWindow"),
+        PpcImportDispatcherTarget::NewCWindow
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetNewCWindow"),
+        PpcImportDispatcherTarget::GetNewCWindow
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetWRefCon"),
+        PpcImportDispatcherTarget::GetWRefCon
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetWRefCon"),
+        PpcImportDispatcherTarget::SetWRefCon
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SizeWindow"),
+        PpcImportDispatcherTarget::SizeWindow
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "MoveWindow"),
+        PpcImportDispatcherTarget::MoveWindow
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "ShowWindow"),
+        PpcImportDispatcherTarget::ShowWindow
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "HideWindow"),
+        PpcImportDispatcherTarget::HideWindow
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "ShowHide"),
+        PpcImportDispatcherTarget::ShowHide
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "CloseWindow"),
+        PpcImportDispatcherTarget::CloseWindow
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SelectWindow"),
+        PpcImportDispatcherTarget::SelectWindow
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetWinColor"),
+        PpcImportDispatcherTarget::SetWinColor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "CalcVisBehind"),
+        PpcImportDispatcherTarget::CalcVisBehind
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "PaintBehind"),
+        PpcImportDispatcherTarget::PaintBehind
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "PaintOne"),
+        PpcImportDispatcherTarget::PaintOne
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "ActivatePalette"),
+        PpcImportDispatcherTarget::ActivatePalette
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetPalette"),
+        PpcImportDispatcherTarget::NSetPalette
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "NSetPalette"),
+        PpcImportDispatcherTarget::NSetPalette
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetPalette"),
+        PpcImportDispatcherTarget::GetPalette
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "NewGWorld"),
+        PpcImportDispatcherTarget::NewGWorld
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "DisposeGWorld"),
+        PpcImportDispatcherTarget::DisposeGWorld
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetGWorld"),
+        PpcImportDispatcherTarget::GetGWorld
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetGWorld"),
+        PpcImportDispatcherTarget::SetGWorld
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetGWorldDevice"),
+        PpcImportDispatcherTarget::GetGWorldDevice
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetGWorldPixMap"),
+        PpcImportDispatcherTarget::GetGWorldPixMap
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetPixBaseAddr"),
+        PpcImportDispatcherTarget::GetPixBaseAddr
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LockPixels"),
+        PpcImportDispatcherTarget::LockPixels
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "UnlockPixels"),
+        PpcImportDispatcherTarget::UnlockPixels
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetPixelsState"),
+        PpcImportDispatcherTarget::GetPixelsState
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetPixelsState"),
+        PpcImportDispatcherTarget::SetPixelsState
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "AllowPurgePixels"),
+        PpcImportDispatcherTarget::AllowPurgePixels
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "NoPurgePixels"),
+        PpcImportDispatcherTarget::NoPurgePixels
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "CopyBits"),
+        PpcImportDispatcherTarget::CopyBits
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "BitMapToRegion"),
+        PpcImportDispatcherTarget::BitMapToRegion
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetPenState"),
+        PpcImportDispatcherTarget::GetPenState
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetPenState"),
+        PpcImportDispatcherTarget::SetPenState
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "NewRgn"),
+        PpcImportDispatcherTarget::NewRgn
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "DisposeRgn"),
+        PpcImportDispatcherTarget::DisposeRgn
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "OpenRgn"),
+        PpcImportDispatcherTarget::OpenRgn
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "CloseRgn"),
+        PpcImportDispatcherTarget::CloseRgn
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetEmptyRgn"),
+        PpcImportDispatcherTarget::SetEmptyRgn
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetRectRgn"),
+        PpcImportDispatcherTarget::SetRectRgn
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "RectRgn"),
+        PpcImportDispatcherTarget::RectRgn
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "EmptyRgn"),
+        PpcImportDispatcherTarget::EmptyRgn
+    );
+}
