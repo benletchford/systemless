@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.57.0](https://github.com/benletchford/systemless/compare/v0.56.0...v0.57.0) (2026-09-24)
+
+
+### Features
+
+* **catalogue:** add Flashback demo ([#2612](https://github.com/benletchford/systemless/issues/2612)) ([28b984c](https://github.com/benletchford/systemless/commit/28b984c7ec967e03316fd1cf39316027b278843b))
+* **catalogue:** add Out of This World demo ([#2608](https://github.com/benletchford/systemless/issues/2608)) ([9681280](https://github.com/benletchford/systemless/commit/968128081df3e4858acf7ac8b33e5dd528306874))
+* **catalogue:** add Prince of Persia 2 demo ([3d53a88](https://github.com/benletchford/systemless/commit/3d53a880c7c1ed47cb2938986dcfb32c041cb927))
+* **catalogue:** add verified Solarian II shareware ([343b7f3](https://github.com/benletchford/systemless/commit/343b7f34a766aa414f91ebaa18a4c40c0492f084))
+* **catalogue:** add Welltris demo ([#2628](https://github.com/benletchford/systemless/issues/2628)) ([5af8d3a](https://github.com/benletchford/systemless/commit/5af8d3a106140b66356b0cf2d50ba5c991a5e786))
+
+
+### Bug Fixes
+
+* **memory:** keep trap gateways callable in 24-bit mode ([ceab46e](https://github.com/benletchford/systemless/commit/ceab46e8a8eb10214b52986a1363a8b42e7311e2))
+* **quickdraw:** honor white ink for monochrome glyphs ([#2627](https://github.com/benletchford/systemless/issues/2627)) ([4cae50e](https://github.com/benletchford/systemless/commit/4cae50e25cf31d9bd4079aba25b7c258201e10bc))
+
+
+### Code Refactoring
+
+* **ppc:** extract Code Fragment Manager tests into dedicated module ([#2631](https://github.com/benletchford/systemless/issues/2631)) ([041fa59](https://github.com/benletchford/systemless/commit/041fa599503b635345adc580b46da13cb06d52fd))
+* **ppc:** extract Memory Manager test suite from monolithic tests ([#2623](https://github.com/benletchford/systemless/issues/2623)) ([5c8eb33](https://github.com/benletchford/systemless/commit/5c8eb33a7356ff910426b92a53045a71ad3425da))
+* **ppc:** extract Menu Manager test suite from monolithic tests ([#2607](https://github.com/benletchford/systemless/issues/2607)) ([c754d36](https://github.com/benletchford/systemless/commit/c754d36bb818d5445b4ca6e8848cc8a6896908f4))
+* **ppc:** extract Mixed Mode test suite from monolithic tests ([#2615](https://github.com/benletchford/systemless/issues/2615)) ([6a706c3](https://github.com/benletchford/systemless/commit/6a706c3d3a17a032a7189e796cdc8564c78d1d0a))
+* **ppc:** extract Process Services integration test suite from monolithic tests ([#2626](https://github.com/benletchford/systemless/issues/2626)) ([4450ce8](https://github.com/benletchford/systemless/commit/4450ce80b8ff40bfbcd450587031c5cfc1304ad6))
+* **ppc:** extract QuickDraw 3D test suite from monolithic tests ([#2602](https://github.com/benletchford/systemless/issues/2602)) ([e038f85](https://github.com/benletchford/systemless/commit/e038f85770566e8b8f1c368a7dfb4a0421f23b88))
+* **ppc:** extract QuickDraw rasterization and region tests into dedicated module ([#2634](https://github.com/benletchford/systemless/issues/2634)) ([2a09c01](https://github.com/benletchford/systemless/commit/2a09c01594bd94883161fa2b956547ce7aba3b33))
+* **ppc:** extract QuickTime test suite from monolithic tests ([#2619](https://github.com/benletchford/systemless/issues/2619)) ([89441c5](https://github.com/benletchford/systemless/commit/89441c53145a334517d8bacf764f57709e60bc8a))
+* **ppc:** extract Window Manager test suite from monolithic tests ([#2611](https://github.com/benletchford/systemless/issues/2611)) ([a4126af](https://github.com/benletchford/systemless/commit/a4126af7063f7169a9eea10468e3c5a6b46bdead))
+* **process:** seal SharedProcessMenuTracking handle ([#2604](https://github.com/benletchford/systemless/issues/2604)) ([9fcc4a5](https://github.com/benletchford/systemless/commit/9fcc4a50fe7ca51f84b607dbc94efcc84294d59a))
+* **quickdraw:** seal SharedProcessGraphicsDevice handle ([1e36c54](https://github.com/benletchford/systemless/commit/1e36c54b3486e207f11bb18a6f8f90f3c859219b))
+* **quickdraw:** seal SharedProcessGraphicsPort handle ([#2597](https://github.com/benletchford/systemless/issues/2597)) ([6380fac](https://github.com/benletchford/systemless/commit/6380fac0b094b137289219a90b1b42c0038cabaf))
+
 ## [0.56.0](https://github.com/benletchford/systemless/compare/v0.55.0...v0.56.0) (2026-09-23)
 
 
