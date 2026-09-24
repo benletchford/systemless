@@ -113,6 +113,10 @@ pub mod addr {
     /// Macintosh Toolbox Essentials (1992), pp. 3-115--3-119.
     pub const THE_MENU: u32 = 0x0A26;
 
+    /// ResLoad: current SetResLoad state (Boolean in the high byte of a word).
+    /// Inside Macintosh Volume I (1985), p. I-118; Volume III, low-memory globals.
+    pub const RES_LOAD: u32 = 0x0A5E;
+
     /// ResErr: result code from the most recent Resource Manager operation.
     /// Inside Macintosh Volume I (1985), pp. I-109 and I-119.
     pub const RES_ERR: u32 = 0x0A60;

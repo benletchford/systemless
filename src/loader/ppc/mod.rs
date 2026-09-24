@@ -13997,6 +13997,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         crate::memory::globals::addr::MENU_FLASH,
         crate::memory::globals::DEFAULT_MENU_FLASH_COUNT,
     );
+    let _ = memory.write_u16_be(crate::memory::globals::addr::RES_LOAD, 0x0100);
     let _ = memory.write_u32_be(
         crate::memory::globals::addr::DEFLT_STACK,
         crate::memory::globals::DEFAULT_DEFLT_STACK_SIZE,
@@ -55379,6 +55380,7 @@ fn ppc_insert_resource_menu(
     // matching resource before returning. Macintosh Toolbox Essentials
     // (1992), pp. 3-101--3-104.
     resource_policy.set_res_load(true);
+    let _ = memory.write_u16_be(crate::memory::globals::addr::RES_LOAD, 0x0100);
     let indices = ppc_resource_menu_indices(resources, current_resource_refnum, requested_type);
     let mut names = Vec::with_capacity(indices.len());
     for index in indices {

@@ -1605,6 +1605,10 @@ fn attached_resource_policy_mutations_cross_isa_immediately() {
     let mut context = ProcessContext::default();
     classic.attach_unconverted_process_services(&mut context);
     native.attach_unconverted_process_services(&mut context);
+    assert_eq!(
+        native.memory.read_u16_be(crate::memory::globals::addr::RES_LOAD),
+        Some(0x0100),
+    );
 
     classic_bus.write_word(TEST_SP, 0x00ff);
     classic_cpu.write_reg(Register::A7, TEST_SP);
@@ -1614,9 +1618,19 @@ fn attached_resource_policy_mutations_cross_isa_immediately() {
         .is_ok());
     assert!(!native.policy.res_load());
 
+    native.cpu.gpr[3] = 0;
+    run_test_import(&mut native, PpcImportDispatcherTarget::SetResLoad);
+    assert_eq!(
+        native.memory.read_u16_be(crate::memory::globals::addr::RES_LOAD),
+        Some(0),
+    );
     native.cpu.gpr[3] = 1;
     run_test_import(&mut native, PpcImportDispatcherTarget::SetResLoad);
     assert!(classic.policy.res_load());
+    assert_eq!(
+        native.memory.read_u16_be(crate::memory::globals::addr::RES_LOAD),
+        Some(0x0100),
+    );
 
     classic_bus.write_word(TEST_SP, 0x0100);
     classic_cpu.write_reg(Register::A7, TEST_SP);
@@ -1801,4 +1815,3 @@ fn cloned_native_adapter_detaches_control_manager_metadata() {
     assert_eq!(detached.controls.proc_id(0x0031_2000), 2);
     assert!(!original.controls.contains_handle(0x0031_3000));
 }
-
