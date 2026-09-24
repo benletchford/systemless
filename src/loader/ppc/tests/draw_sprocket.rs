@@ -1828,3 +1828,145 @@ use super::*;
         assert_eq!(probes[1].invocation.callback, VECTOR);
     }
 
+#[test]
+fn sprocket_trace_formatter_includes_draw_sprocket_state() {
+    let mut attrs = PpcDspContextAttributes::default();
+    attrs.width = 800;
+    attrs.height = 600;
+    attrs.page_count = 2;
+    let draw_sprocket = PpcDrawSprocketState {
+        started: true,
+        reserved_context: Some(0x00ab_cdef),
+        active_context: Some(0x00ab_cdef),
+        context_state: PpcDspContextPlayState::Active,
+        context_attributes: attrs,
+        last_swap_context: Some(0x00ab_cdef),
+        swap_count: 3,
+        last_fade_context: Some(0x00ab_cdef),
+        last_fade_kind: Some(PpcDspGammaFadeKind::Out),
+        last_fade_percent: Some(0),
+        last_fade_zero_color: Some(PpcRgbColor {
+            red: 0x1111,
+            green: 0x2222,
+            blue: 0x3333,
+        }),
+        fade_count: 1,
+        ..PpcDrawSprocketState::default()
+    };
+    let entry = PpcHleImportTraceEntry {
+        import_index: 41,
+        library_name: "DrawSprocketLib".to_string(),
+        symbol_name: "DSpContext_SwapBuffers".to_string(),
+        pc: 0x01f0_1000,
+        lr: 0x0100_2000,
+        rtoc: 0x0200_3000,
+        sp: 0x03fe_f000,
+        dispatcher_target: PpcImportDispatcherTarget::DSpContextSwapBuffers,
+        repeat_count: 1,
+    };
+
+    assert_eq!(
+        format_sprocket_trace(
+            &entry,
+            [0x00ab_cdef, 0, 0, 0, 0, 0],
+            &format_sprocket_action(&PpcImportAction::Return(0)),
+            &draw_sprocket,
+            &PpcInputSprocketState::default(),
+            &[],
+        ),
+        "[SPROCKET-TRACE] DrawSprocketLib:DSpContext_SwapBuffers pc=$01F01000 lr=$01002000 rtoc=$02003000 sp=$03FEF000 r3=$00ABCDEF r4=$00000000 r5=$00000000 r6=$00000000 r7=$00000000 r8=$00000000 action=return($00000000) dsp started=true reserved=$00ABCDEF active=$00ABCDEF state=active attrs=800x600 display_depth=16 back_depth=16 pages=2 front=$02F00000 back=$05010000 swaps=3 last_swap=$00ABCDEF fades=1 last_fade=out context=$00ABCDEF percent=0 zero=$1111/$2222/$3333"
+    );
+}
+
+
+#[test]
+fn import_bindings_classify_draw_sprocket_imports() {
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpStartup"),
+        PpcImportDispatcherTarget::DSpStartup
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpShutdown"),
+        PpcImportDispatcherTarget::DSpShutdown
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpCanUserSelectContext"),
+        PpcImportDispatcherTarget::DSpCanUserSelectContext
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpGetMouse"),
+        PpcImportDispatcherTarget::DSpGetMouse
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpFindContextFromPoint"),
+        PpcImportDispatcherTarget::DSpFindContextFromPoint
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_GlobalToLocal"),
+        PpcImportDispatcherTarget::DSpContextGlobalToLocal
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpFindBestContext"),
+        PpcImportDispatcherTarget::DSpFindBestContext
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpUserSelectContext"),
+        PpcImportDispatcherTarget::DSpUserSelectContext
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpSetBlankingColor"),
+        PpcImportDispatcherTarget::DSpSetBlankingColor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpAltBuffer_New"),
+        PpcImportDispatcherTarget::DSpAltBufferNew
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpAltBuffer_GetCGrafPtr"),
+        PpcImportDispatcherTarget::DSpAltBufferGetCGrafPtr
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_Reserve"),
+        PpcImportDispatcherTarget::DSpContextReserve
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_Release"),
+        PpcImportDispatcherTarget::DSpContextRelease
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_SetState"),
+        PpcImportDispatcherTarget::DSpContextSetState
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_FadeGamma"),
+        PpcImportDispatcherTarget::DSpContextFadeGamma
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_FadeGammaIn"),
+        PpcImportDispatcherTarget::DSpContextFadeGammaIn
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_FadeGammaOut"),
+        PpcImportDispatcherTarget::DSpContextFadeGammaOut
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_GetFrontBuffer"),
+        PpcImportDispatcherTarget::DSpContextGetFrontBuffer
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_GetBackBuffer"),
+        PpcImportDispatcherTarget::DSpContextGetBackBuffer
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_SwapBuffers"),
+        PpcImportDispatcherTarget::DSpContextSwapBuffers
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_GetDisplayID"),
+        PpcImportDispatcherTarget::DSpContextGetDisplayID
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_GetAttributes"),
+        PpcImportDispatcherTarget::DSpContextGetAttributes
+    );
+}
