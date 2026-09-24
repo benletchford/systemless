@@ -10,9 +10,21 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+launch_enabled: true
 compatibility:
   status: playable
   verified:
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
+    systemless_version: "0.57.0 + local site build"
+    architecture: 68k
+    environment: >-
+      Release-mode browser launch from the immutable hosted Macintosh CD demo
+      at localhost:8080. Selected the GIUK battleset, accepted the default
+      options, started Dawn Patrol, observed the tactical clock advance, and
+      selected a ship to display its unit details.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2650
   - date: "2026-09-23"
     tester: Catalogue maintainer
     systemless_version: 0.52.0-dev
