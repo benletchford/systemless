@@ -1737,6 +1737,8 @@ pub struct FixtureRunner {
     cursor_task_trampoline: u32,
     /// Callable default cursor updater, also retained when guests wrap JCrsrTask.
     default_cursor_task: u32,
+    /// Latest guest-authored cursor position awaiting frontend presentation.
+    pending_guest_cursor_warp: Option<(i16, i16)>,
     /// Guest-memory trampoline and packet buffer for ADB service routines.
     adb_callback_trampoline: u32,
     adb_packet_buffer: u32,
@@ -1970,6 +1972,7 @@ impl FixtureRunner {
             vbl_trampoline: 0,
             cursor_task_trampoline: 0,
             default_cursor_task: 0,
+            pending_guest_cursor_warp: None,
             adb_callback_trampoline: 0,
             adb_packet_buffer: 0,
             active_interrupt_callback: None,
@@ -2840,6 +2843,11 @@ impl FixtureRunner {
         self.sync_mouse_position_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
+    }
+
+    /// Drain the latest cursor position adopted from guest low memory.
+    pub fn take_guest_cursor_warp(&mut self) -> Option<(i16, i16)> {
+        self.pending_guest_cursor_warp.take()
     }
 
     /// Return an immutable snapshot of the guest's current Menu Manager list.
@@ -9752,9 +9760,9 @@ impl FixtureRunner {
             // the last host position, not from this guest-authored warp.
             // Apple Technical Note DV520, "How the Macintosh mouse/cursor
             // mechanism works"; Inside Macintosh Volume V (1986), V-365.
-            self.dispatcher
-                .input_state
-                .set_mouse_position(((mouse >> 16) as i16, mouse as i16));
+            let position = ((mouse >> 16) as i16, mouse as i16);
+            self.dispatcher.input_state.set_mouse_position(position);
+            self.pending_guest_cursor_warp = Some(position);
         }
     }
 
