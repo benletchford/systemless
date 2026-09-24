@@ -6060,10 +6060,11 @@ impl TrapDispatcher {
     // Inside Macintosh: Files (1992), pp. 2-81–2-83: an HFS file
     // reference number is 2 + 94*n, an offset into the FCB buffer.
     // Resource Manager access paths share that namespace with data forks.
-    fn allocate_resource_file_fcb(
+    fn allocate_file_fcb(
         &mut self,
         bus: &mut MacMemoryBus,
         path: &str,
+        resource_fork: bool,
         writable: bool,
     ) -> std::result::Result<u16, i16> {
         use crate::memory::globals::addr;
@@ -6145,22 +6146,54 @@ impl TrapDispatcher {
             }
             bus.write_long(addr::VCB_Q_HDR + 6, vcb);
         }
-        let metadata = self
-            .vfs_file_metadata(path)
-            .expect("existing resource file");
-        let len = self.vfs_rsrc.get(path).map_or(0, |data| data.len() as u32);
+        let metadata = self.vfs_file_metadata(path);
+        let len = if resource_fork {
+            self.vfs_rsrc.get(path).map_or(0, |data| data.len() as u32)
+        } else {
+            self.vfs.get(path).map_or(0, |data| data.len() as u32)
+        };
         let fcb = buffer + refnum as u32;
         bus.fill_bytes(fcb, FCB_SIZE as u32, 0);
-        bus.write_long(fcb, metadata.file_id);
-        bus.write_word(fcb + 4, 0x0200 | if writable { 0x0100 } else { 0 });
+        bus.write_long(fcb, metadata.map_or(0, |file| file.file_id));
+        let flags = (if resource_fork { 0x0200 } else { 0 })
+            | (if writable { 0x0100 } else { 0 });
+        bus.write_word(fcb + 4, flags);
         bus.write_long(fcb + 8, len);
         bus.write_long(fcb + 12, len);
         bus.write_long(fcb + 20, vcb);
-        bus.write_long(fcb + 50, metadata.file_type);
-        bus.write_long(fcb + 58, metadata.parent_dir_id);
+        bus.write_long(fcb + 50, metadata.map_or(0, |file| file.file_type));
+        bus.write_long(fcb + 58, metadata.map_or(2, |file| file.parent_dir_id));
         let name = Self::hfs_name_from_vfs_component(Self::vfs_basename(path));
         Self::write_pstring(bus, fcb + 62, &name.chars().take(31).collect::<String>());
         Ok(refnum)
+    }
+
+    pub(crate) fn allocate_data_file_fcb(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        path: &str,
+        writable: bool,
+    ) -> std::result::Result<u16, i16> {
+        self.allocate_file_fcb(bus, path, false, writable)
+    }
+
+    fn allocate_resource_file_fcb(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        path: &str,
+        writable: bool,
+    ) -> std::result::Result<u16, i16> {
+        self.allocate_file_fcb(bus, path, true, writable)
+    }
+
+    pub(crate) fn clear_file_fcb(bus: &mut MacMemoryBus, refnum: u16) {
+        let fcb_buffer = bus.read_long(crate::memory::globals::addr::FCB_S_PTR);
+        if fcb_buffer != 0
+            && refnum % 94 == 2
+            && u32::from(refnum) + 94 <= u32::from(bus.read_word(fcb_buffer))
+        {
+            bus.fill_bytes(fcb_buffer + u32::from(refnum), 94, 0);
+        }
     }
 
     /// Allocate a new loaded resource-file slot for the given VFS key.
@@ -6327,10 +6360,7 @@ impl TrapDispatcher {
         });
 
         self.write_refnums.remove(&refnum);
-        let fcb_buffer = bus.read_long(crate::memory::globals::addr::FCB_S_PTR);
-        if fcb_buffer != 0 && refnum % 94 == 2 && refnum + 94 <= bus.read_word(fcb_buffer) {
-            bus.fill_bytes(fcb_buffer + refnum as u32, 94, 0);
-        }
+        Self::clear_file_fcb(bus, refnum);
         bus.write_word(0x0A5A, self.current_resource_refnum());
 
         if trace_resfile_enabled() {
