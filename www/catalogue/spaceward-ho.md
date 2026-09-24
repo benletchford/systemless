@@ -12,9 +12,20 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+launch_enabled: true
 compatibility:
   status: playable
   verified:
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
+    systemless_version: "0.57.0 + local site build"
+    architecture: 68k
+    environment: >-
+      Release-mode browser launch from the immutable hosted 3.0 demo archive at
+      localhost:8080; created a galaxy, joined as a novice player, and selected
+      multiple planets on the interactive map.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2646
   - date: "2026-09-23"
     tester: Catalogue maintainer
     systemless_version: 0.52.0-dev
