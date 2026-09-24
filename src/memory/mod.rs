@@ -116,6 +116,8 @@ impl m68k::AddressBus for MacMemoryBus {
     #[inline]
     fn end_memory_copy(&mut self, destination: Option<u32>) {
         self.end_cpu_pixel_copy(destination);
+        // Carried detail may have marked a new offscreen page.
+        self.refresh_store_filter();
     }
 
     /// Guest RAM is one flat side-effect-free array, so expose it all to
@@ -131,6 +133,23 @@ impl m68k::AddressBus for MacMemoryBus {
         let (ptr, len) = self.tracked_mem_window()?;
         Some(m68k::TrackedMem { ptr, base: 0, len })
     }
+
+    fn tracked_store_filter(&mut self) -> *const u8 {
+        self.store_filter_for_batch()
+    }
+}
+
+/// Bumped by every event that can make a JIT store filter page stop being
+/// plain RAM, or change its global byte. A bus compares it with the value it
+/// last applied, so an unchanged count costs one relaxed load per check.
+static STORE_FILTER_EVENTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+pub(crate) fn note_store_filter_event() {
+    STORE_FILTER_EVENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn store_filter_events() -> u64 {
+    STORE_FILTER_EVENTS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 pub(crate) mod presentation;
