@@ -1330,3 +1330,162 @@ use super::*;
         assert!(!loaded.input_sprocket.keyboard_active);
         assert!(!loaded.input_sprocket.mouse_active);
     }
+
+#[test]
+fn sprocket_trace_formatter_includes_input_sprocket_state() {
+    let input_sprocket = PpcInputSprocketState {
+        initialized: true,
+        suspended: false,
+        keyboard_active: true,
+        mouse_active: false,
+        configure_count: 2,
+        virtual_element_count: 5,
+        last_virtual_need_count: 3,
+        last_virtual_needs_ptr: 0x0200_1000,
+        last_virtual_elements_out_ptr: 0x0200_2000,
+    };
+    let entry = PpcHleImportTraceEntry {
+        import_index: 51,
+        library_name: "InputSprocketLib".to_string(),
+        symbol_name: "ISpElement_GetSimpleState".to_string(),
+        pc: 0x01f0_1100,
+        lr: 0x0100_2100,
+        rtoc: 0x0200_3100,
+        sp: 0x03fe_efc0,
+        dispatcher_target: PpcImportDispatcherTarget::ISpElementGetSimpleState,
+        repeat_count: 1,
+    };
+
+    assert_eq!(
+        format_sprocket_trace(
+            &entry,
+            [0x0200_3000, 0x0200_4000, 0, 0, 0, 0],
+            "return-preserve",
+            &PpcDrawSprocketState::default(),
+            &input_sprocket,
+            &[],
+        ),
+        "[SPROCKET-TRACE] InputSprocketLib:ISpElement_GetSimpleState pc=$01F01100 lr=$01002100 rtoc=$02003100 sp=$03FEEFC0 r3=$02003000 r4=$02004000 r5=$00000000 r6=$00000000 r7=$00000000 r8=$00000000 action=return-preserve isp initialized=true suspended=false keyboard=true mouse=false virtuals=5 last_need_count=3 last_needs=$02001000 last_elements=$02002000 configure_count=2"
+    );
+}
+
+#[test]
+fn sprocket_trace_formatter_includes_input_sprocket_virtual_bindings_on_creation() {
+    let input_sprocket = PpcInputSprocketState {
+        initialized: true,
+        suspended: false,
+        keyboard_active: true,
+        mouse_active: true,
+        configure_count: 0,
+        virtual_element_count: 2,
+        last_virtual_need_count: 2,
+        last_virtual_needs_ptr: 0x0200_1000,
+        last_virtual_elements_out_ptr: 0x0200_2000,
+    };
+    let virtual_elements = vec![
+        PpcInputSprocketVirtualElementRecord {
+            element: 0x0300_0000,
+            need_index: 0,
+            need_source: 0x0200_1000,
+            kind: PPC_ISP_ELEMENT_KIND_BUTTON,
+            default_state: 0,
+            action_binding: PpcInputSprocketActionBinding::ButtonFire,
+            need_name: "Fire".to_string(),
+            need_record: Vec::new(),
+        },
+        PpcInputSprocketVirtualElementRecord {
+            element: 0x0300_0100,
+            need_index: 1,
+            need_source: 0x0200_1000 + PPC_ISP_NEED_SIZE,
+            kind: PPC_ISP_ELEMENT_KIND_DELTA,
+            default_state: 0,
+            action_binding: PpcInputSprocketActionBinding::DeltaYaw,
+            need_name: "Yaw (Mouse)".to_string(),
+            need_record: Vec::new(),
+        },
+    ];
+    let entry = PpcHleImportTraceEntry {
+        import_index: 50,
+        library_name: "InputSprocketLib".to_string(),
+        symbol_name: "ISpElement_NewVirtualFromNeeds".to_string(),
+        pc: 0x01f0_1000,
+        lr: 0x0100_2000,
+        rtoc: 0x0200_3000,
+        sp: 0x03fe_f000,
+        dispatcher_target: PpcImportDispatcherTarget::ISpElementNewVirtualFromNeeds,
+        repeat_count: 1,
+    };
+
+    assert_eq!(
+        format_sprocket_trace(
+            &entry,
+            [2, 0x0200_1000, 0x0200_2000, 0, 0, 0],
+            "return($00000000)",
+            &PpcDrawSprocketState::default(),
+            &input_sprocket,
+            &virtual_elements,
+        ),
+        "[SPROCKET-TRACE] InputSprocketLib:ISpElement_NewVirtualFromNeeds pc=$01F01000 lr=$01002000 rtoc=$02003000 sp=$03FEF000 r3=$00000002 r4=$02001000 r5=$02002000 r6=$00000000 r7=$00000000 r8=$00000000 action=return($00000000) isp initialized=true suspended=false keyboard=true mouse=true virtuals=2 last_need_count=2 last_needs=$02001000 last_elements=$02002000 configure_count=0 last_bindings=[#0 button 'Fire'=button/fire,#1 delta 'Yaw (Mouse)'=delta/yaw]"
+    );
+}
+
+
+#[test]
+fn import_bindings_classify_input_sprocket_imports() {
+    assert_eq!(
+        dispatcher_target_for_import("InputSprocketLib", "ISpElement_NewVirtualFromNeeds"),
+        PpcImportDispatcherTarget::ISpElementNewVirtualFromNeeds
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InputSprocketLib", "ISpDevices_Extract"),
+        PpcImportDispatcherTarget::ISpDevicesExtract
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InputSprocketLib", "ISpDevices_ExtractByClass"),
+        PpcImportDispatcherTarget::ISpDevicesExtractByClass
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InputSprocketLib", "ISpDevice_GetElementList"),
+        PpcImportDispatcherTarget::ISpDeviceGetElementList
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InputSprocketLib", "ISpElementList_Extract"),
+        PpcImportDispatcherTarget::ISpElementListExtract
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InputSprocketLib", "ISpElement_GetInfo"),
+        PpcImportDispatcherTarget::ISpElementGetInfo
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InputSprocketLib", "ISpElement_GetSimpleState"),
+        PpcImportDispatcherTarget::ISpElementGetSimpleState
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InputSprocketLib", "ISpInit"),
+        PpcImportDispatcherTarget::ISpInit
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InputSprocketLib", "ISpStop"),
+        PpcImportDispatcherTarget::ISpStop
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InputSprocketLib", "ISpSuspend"),
+        PpcImportDispatcherTarget::ISpSuspend
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InputSprocketLib", "ISpResume"),
+        PpcImportDispatcherTarget::ISpResume
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InputSprocketLib", "ISpDevices_Activate"),
+        PpcImportDispatcherTarget::ISpDevicesActivate
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InputSprocketLib", "ISpDevices_Deactivate"),
+        PpcImportDispatcherTarget::ISpDevicesDeactivate
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InputSprocketLib", "ISpConfigure"),
+        PpcImportDispatcherTarget::ISpConfigure
+    );
+}
