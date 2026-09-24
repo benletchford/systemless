@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -25,6 +26,18 @@ compatibility:
       gameplay render. Browser interaction awaits manual approval.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2510
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
+    systemless_version: "0.56.0"
+    architecture: 68k
+    environment: >-
+      Local Chromium browser route using the promoted immutable archive. Entered a
+      guest name in the first-run registration dialog, advanced past the shareware
+      splash, reached the main menu, and started live first-level gameplay with
+      moving sprites. The local preview disabled browser cross-origin enforcement
+      because the asset host allows the production site origin, not localhost.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2512
 artifacts:
 - id: archive
   role: archive
@@ -82,5 +95,6 @@ original 1.0.4 shareware archive still supplied by its developer, not the later
 Mac OS X port. The unregistered game invites free distribution and asks players
 who keep playing to pay its shareware fee.
 
-Systemless reaches live first-level gameplay. Browser launch remains disabled
-until its controls have been manually verified there.
+Systemless reaches live first-level gameplay in both the deterministic runner
+and the browser. The unregistered game starts with a name prompt, then its
+shareware screen; click through to the menu and click the game window to play.
