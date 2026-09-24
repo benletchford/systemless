@@ -271,14 +271,33 @@ pub fn mem_write_trace_active() -> bool {
     false
 }
 
-#[inline]
+/// 0 = not yet read from the environment, 1 = off, 2 = on. Every guest read
+/// checks this, so the common "off" case must stay one inlined relaxed load.
+#[cfg(not(target_arch = "wasm32"))]
+static MEM_READ_TRACE_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+#[inline(always)]
 fn maybe_log_mem_read(address: u32, width: u8, value: u32) {
     #[cfg(target_arch = "wasm32")]
     {
         let _ = (address, width, value);
     }
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some((start, end)) = mem_read_trace_range() {
+    if MEM_READ_TRACE_STATE.load(std::sync::atomic::Ordering::Relaxed) != 1 {
+        log_mem_read_slow(address, width, value);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[cold]
+#[inline(never)]
+fn log_mem_read_slow(address: u32, width: u8, value: u32) {
+    let range = mem_read_trace_range();
+    MEM_READ_TRACE_STATE.store(
+        if range.is_some() { 2 } else { 1 },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    if let Some((start, end)) = range {
         if address >= start && address <= end {
             let pc = CURRENT_PC.with(|p| *p.borrow());
             eprintln!(
@@ -2479,7 +2498,7 @@ impl MacMemoryBus {
     }
 
     #[inline]
-    fn range_translates_contiguously(&self, address: u32, len: usize) -> Option<u32> {
+    pub(crate) fn range_translates_contiguously(&self, address: u32, len: usize) -> Option<u32> {
         let translated = self.translate_guest_address(address);
         let address24 = address & 0x00FF_FFFF;
         let address_space_end = if self.addressing_32_bit {
