@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::OnceLock;
 
 use super::globals::LowMemGlobals;
+use super::presentation::STORE_FILTER_PAGE_SHIFT;
 use super::{
     flat_memory_route, GuestAddressSpace, GuestMemoryRoute, SharedGuestAddressSpace,
 };
@@ -537,6 +538,17 @@ pub struct MacMemoryBus {
     /// that are restored before the cycle closes.
     write_probe_original: Option<WriteProbeJournal>,
     pub(crate) presentation: super::presentation::PresentationSlot,
+    /// Inline JIT store filter (`m68k::AddressBus::tracked_store_filter`):
+    /// byte 0 global, then one byte per 4 KiB page of RAM and one spare.
+    /// Page bytes: 0 proven plain RAM, 1 unknown, 2 proven observed. Allocated
+    /// on the first tracked batch, never moved afterwards.
+    store_filter: Option<Box<[u8]>>,
+    /// `STORE_FILTER_EVENTS` value last applied to `store_filter`.
+    store_filter_seen: u64,
+    /// Presentation object the page bytes were proven against.
+    store_filter_presentation: Option<u64>,
+    /// Read-only code was added since the page bytes were last reset.
+    store_filter_reset: bool,
     /// The journal's allocation between probes. Probes start more than a
     /// million times in a long SimCity 2000 session; reusing one map keeps
     /// the table's capacity instead of regrowing it from empty each time.
@@ -1342,6 +1354,10 @@ impl MacMemoryBus {
             readonly_code_span: None,
             write_probe_original: None,
             presentation: Default::default(),
+            store_filter: None,
+            store_filter_seen: 0,
+            store_filter_presentation: None,
+            store_filter_reset: false,
             write_probe_spare: WriteProbeJournal::default(),
             write_probe_invalid: false,
             write_probe_overflowed: false,
@@ -1431,6 +1447,10 @@ impl MacMemoryBus {
             readonly_code_span: None,
             write_probe_original: None,
             presentation: Default::default(),
+            store_filter: None,
+            store_filter_seen: 0,
+            store_filter_presentation: None,
+            store_filter_reset: false,
             write_probe_spare: WriteProbeJournal::default(),
             write_probe_invalid: false,
             write_probe_overflowed: false,
@@ -1745,6 +1765,7 @@ impl MacMemoryBus {
     /// Begin journaling original RAM bytes for an exact-state execution
     /// probe. Calling this again discards the previous incomplete probe.
     pub(crate) fn begin_write_probe(&mut self) {
+        super::note_store_filter_event();
         let mut journal = std::mem::take(&mut self.write_probe_spare);
         journal.clear();
         self.write_probe_original = Some(journal);
@@ -1765,6 +1786,7 @@ impl MacMemoryBus {
 
     /// Discard an incomplete write probe and restore normal fast-memory use.
     pub(crate) fn cancel_write_probe(&mut self) {
+        super::note_store_filter_event();
         self.park_write_probe_journal();
         self.write_probe_invalid = false;
         self.write_probe_overflowed = false;
@@ -1777,10 +1799,12 @@ impl MacMemoryBus {
     /// `resume_write_probe` re-arms the very same journal. `None` when no
     /// journal is armed.
     pub(crate) fn suspend_write_probe(&mut self) -> Option<SuspendedWriteProbe> {
+        super::note_store_filter_event();
         self.write_probe_original.take().map(SuspendedWriteProbe)
     }
 
     pub(crate) fn resume_write_probe(&mut self, suspended: SuspendedWriteProbe) {
+        super::note_store_filter_event();
         self.write_probe_original = Some(suspended.0);
     }
 
@@ -1793,6 +1817,7 @@ impl MacMemoryBus {
     /// Finish a write probe and report whether guest RAM is byte-for-byte
     /// identical at every address written during the probe.
     pub(crate) fn finish_write_probe_unchanged(&mut self) -> bool {
+        super::note_store_filter_event();
         let Some(original) = self.write_probe_original.take() else {
             return false;
         };
@@ -1810,6 +1835,7 @@ impl MacMemoryBus {
     /// Finish host drawing and return exactly the bytes it wrote, including
     /// same-value writes. Those still erase any retained outline coverage.
     pub(crate) fn finish_write_probe_ranges(&mut self) -> Vec<std::ops::Range<u32>> {
+        super::note_store_filter_event();
         assert!(!self.write_probe_invalid && !self.write_probe_overflowed);
         // Sort journal words, not expanded bytes: a picture's journal holds
         // one entry per written word, and expanding first quadruples the sort.
@@ -1840,6 +1866,7 @@ impl MacMemoryBus {
 
     /// Close the journal, keeping its allocation for the next probe.
     fn park_write_probe_journal(&mut self) {
+        super::note_store_filter_event();
         if let Some(journal) = self.write_probe_original.take() {
             self.write_probe_spare = journal;
         }
@@ -2018,6 +2045,8 @@ impl MacMemoryBus {
                 return;
             };
             insert_protected_range(&mut self.readonly_code_ranges, address, end);
+            self.store_filter_reset = true;
+            super::note_store_filter_event();
             self.readonly_code_span = Some(match self.readonly_code_span {
                 Some((lo, hi)) => (lo.min(address), hi.max(end)),
                 None => (address, end),
@@ -2579,6 +2608,109 @@ impl MacMemoryBus {
         self.write_word(address.wrapping_add(2), value as u16);
     }
 
+    /// The JIT store filter for a tracked batch, brought up to date. Called by
+    /// `run_batch` right after `tracked_mem` returned a window.
+    pub(crate) fn store_filter_for_batch(&mut self) -> *const u8 {
+        if self.store_filter.is_none() {
+            let pages = (self.ram_size as usize).div_ceil(1 << STORE_FILTER_PAGE_SHIFT);
+            self.store_filter = Some(vec![1u8; 1 + pages + 1].into_boxed_slice());
+            // Force the first refresh to compute the global byte.
+            self.store_filter_seen = 0;
+        }
+        self.refresh_store_filter();
+        self.store_filter
+            .as_deref()
+            .map_or(std::ptr::null(), <[u8]>::as_ptr)
+    }
+
+    /// Apply filter-relevant events since the last call. One relaxed load when
+    /// nothing happened; must run before control returns to generated code
+    /// after anything that may have changed presentation, protection or the
+    /// probe.
+    #[inline]
+    pub(crate) fn refresh_store_filter(&mut self) {
+        if self.store_filter.is_some() && super::store_filter_events() != self.store_filter_seen {
+            self.refresh_store_filter_slow();
+        }
+    }
+
+    #[inline(never)]
+    fn refresh_store_filter_slow(&mut self) {
+        self.store_filter_seen = super::store_filter_events();
+        let (identity, new_pages, glyph) = match self.presentation.as_mut() {
+            Some(mut p) => (
+                Some(p.store_filter_identity()),
+                p.take_store_filter_new_pages(),
+                p.glyph_active(),
+            ),
+            None => (None, Vec::new(), false),
+        };
+        let probe = self.write_probe_original.is_some();
+        let reset = std::mem::take(&mut self.store_filter_reset)
+            || identity != self.store_filter_presentation;
+        self.store_filter_presentation = identity;
+        let Some(filter) = self.store_filter.as_deref_mut() else {
+            return;
+        };
+        if reset {
+            filter[1..].fill(1);
+        } else {
+            let last = filter.len() - 1;
+            for page in new_pages {
+                if let Some(byte) = filter.get_mut(1 + page as usize).filter(|_| page as usize + 1 < last) {
+                    *byte = 1;
+                }
+            }
+        }
+        filter[0] = u8::from(probe || glyph);
+    }
+
+    /// Classify the page holding `address` if it is still unknown. Proven
+    /// plain means a direct store anywhere in the page is exactly what this
+    /// bus's own `write_*` would do: RAM, flat route, no protected code, no
+    /// sparse mapping, and nothing presentation could observe (screen or an
+    /// offscreen page bit). Anything else is recorded as observed.
+    #[inline]
+    fn learn_store_page(&mut self, address: u32) {
+        let page = address >> STORE_FILTER_PAGE_SHIFT;
+        let unknown = self
+            .store_filter
+            .as_deref()
+            .is_some_and(|f| (page as usize) + 2 < f.len() && f[1 + page as usize] == 1);
+        if unknown {
+            self.classify_store_page(page);
+        }
+    }
+
+    #[inline(never)]
+    fn classify_store_page(&mut self, page: u32) {
+        // Proofs are only valid against current presentation/protection.
+        self.refresh_store_filter();
+        let size = 1u32 << STORE_FILTER_PAGE_SHIFT;
+        let start = page << STORE_FILTER_PAGE_SHIFT;
+        let plain = u64::from(start) + u64::from(size) <= u64::from(self.ram_size)
+            && self.foreign_address_space.is_none()
+            && self.route(start, size as usize) == GuestMemoryRoute::Flat
+            && !self.readonly_code_overlaps(start, size)
+            && !self.foreign_ordinary_sparse_overlaps(start, size as usize)
+            && self
+                .presentation
+                .as_ref()
+                .is_none_or(|p| !p.page_may_be_observed(start));
+        if let Some(byte) = self
+            .store_filter
+            .as_deref_mut()
+            .and_then(|f| f.get_mut(1 + page as usize))
+        {
+            *byte = if plain { 0 } else { 2 };
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn store_filter_byte(&self, index: usize) -> Option<u8> {
+        self.store_filter.as_deref().and_then(|f| f.get(index).copied())
+    }
+
     /// Raw window over guest RAM for the m68k fastmem path, or `None`
     /// while any per-access diagnostic (framebuffer-write tracer, memory
     /// read/write tracer, watchpoint) needs to observe individual bus
@@ -2902,6 +3034,8 @@ impl MemoryBus for MacMemoryBus {
 
         if address < self.ram_size {
             self.ram.set_in_bounds(address as usize, value);
+            self.refresh_store_filter();
+            self.learn_store_page(address);
         } else {
                 tracing::warn!(
                 "Write to unmapped address ${:08X} = ${:02X}",
@@ -2949,6 +3083,7 @@ impl MemoryBus for MacMemoryBus {
         if fast {
             self.ram
                 .write_word_in_bounds(foreign_address as usize, value);
+            self.learn_store_page(foreign_address);
             return;
         }
         self.write_word_observed(address, foreign_address, value);
@@ -2987,6 +3122,7 @@ impl MemoryBus for MacMemoryBus {
         if fast {
             self.ram
                 .write_long_in_bounds(foreign_address as usize, value);
+            self.learn_store_page(foreign_address);
             return;
         }
         self.write_long_observed(address, foreign_address, value);

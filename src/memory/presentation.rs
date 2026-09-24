@@ -19,6 +19,14 @@ use std::sync::Arc;
 /// Shared by both CPU adapters; access is scoped to a single drawing operation.
 #[derive(Clone, Default)]
 pub(crate) struct PresentationSlot(std::rc::Rc<std::cell::RefCell<Option<Presentation>>>);
+
+/// Page size of the bus's JIT store filter; equal to `PageIndex`'s.
+pub(crate) const STORE_FILTER_PAGE_SHIFT: u32 = super::page_index::PAGE_SHIFT;
+
+fn next_store_filter_identity() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 impl std::fmt::Debug for PresentationSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("PresentationSlot")
@@ -41,6 +49,7 @@ impl PresentationSlot {
     }
     pub fn set(&self, value: Option<Presentation>) {
         *self.0.borrow_mut() = value;
+        super::note_store_filter_event();
     }
     pub fn observes(&self, address: u32, len: usize) -> bool {
         self.as_ref()
@@ -436,6 +445,13 @@ pub(crate) struct Presentation {
     /// the same heap that ordinary guest writes walk, so the bounds alone
     /// cannot reject an address landing between two retained cells.
     offscreen_pages: PageIndex,
+    /// Pages whose `offscreen_pages` bit went from clear to set since the bus
+    /// last read them. The bus's JIT store filter may have proven any such
+    /// page plain before; it must stop trusting that proof.
+    store_filter_new_pages: Vec<u32>,
+    /// Distinguishes presentation objects, so the bus can tell a replacement
+    /// (new screen geometry and offscreen set) from the object it filtered.
+    store_filter_identity: u64,
     base: u32,
     row_bytes: u32,
     width: u32,
@@ -562,8 +578,41 @@ impl Presentation {
             Some((first, last)) => (first.min(address), last.max(address)),
             None => (address, address),
         });
+        let fresh = !self
+            .offscreen_pages
+            .may_overlap(u64::from(address), u64::from(address) + 1);
         self.offscreen_pages
             .mark(u64::from(address), u64::from(address) + 1);
+        if fresh {
+            self.store_filter_new_pages.push(address >> STORE_FILTER_PAGE_SHIFT);
+            super::note_store_filter_event();
+        }
+    }
+
+    /// Whether any byte of the 4 KiB page at `page_start` may be observed:
+    /// it touches the screen, or its offscreen page bit is set. Deliberately
+    /// coarser than `observes_range`: the bit, not the exact offscreen map,
+    /// is what `include_offscreen_address` reports changes of, so a page is
+    /// proven plain only while its bit is clear.
+    pub(crate) fn page_may_be_observed(&self, page_start: u32) -> bool {
+        let start = u64::from(page_start);
+        let end = start + (1u64 << STORE_FILTER_PAGE_SHIFT);
+        let screen_end = u64::from(self.base) + u64::from(self.row_bytes) * u64::from(self.height);
+        (start < screen_end && end > u64::from(self.base))
+            || self.offscreen_pages.may_overlap(start, end)
+    }
+
+    pub(crate) fn store_filter_identity(&self) -> u64 {
+        self.store_filter_identity
+    }
+
+    pub(crate) fn take_store_filter_new_pages(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.store_filter_new_pages)
+    }
+
+    /// A glyph capture observes every byte write, wherever it lands.
+    pub(crate) fn glyph_active(&self) -> bool {
+        self.glyph.is_some()
     }
 
     #[inline]
@@ -2155,6 +2204,8 @@ impl MacMemoryBus {
             offscreen: BTreeMap::new(),
             offscreen_bounds: None,
             offscreen_pages: PageIndex::default(),
+            store_filter_new_pages: Vec::new(),
+            store_filter_identity: next_store_filter_identity(),
             base,
             row_bytes,
             width: width.into(),
@@ -2353,6 +2404,7 @@ impl PresentationSlot {
                 };
             }
             p.glyph = Some((outline, x, y));
+            super::note_store_filter_event();
             p.glyph_count += 1;
         }
     }
@@ -2408,6 +2460,7 @@ impl PresentationSlot {
     pub(crate) fn end_outline_glyph(&mut self) {
         if let Some(mut p) = self.as_mut() {
             p.glyph = None;
+            super::note_store_filter_event();
         }
     }
 }
@@ -2439,6 +2492,84 @@ mod tests {
         bus.outline_glyph_pixel(address, 0, 0, 0);
         bus.write_byte(address, 0);
         bus.end_outline_glyph();
+    }
+
+    /// JIT store filter bytes: [0] global, [1 + page] per 4 KiB page.
+    fn page_byte(bus: &MacMemoryBus, address: u32) -> u8 {
+        bus.store_filter_byte(1 + (address >> STORE_FILTER_PAGE_SHIFT) as usize)
+            .unwrap()
+    }
+
+    #[test]
+    fn store_filter_learns_plain_and_observed_pages() {
+        let mut bus = bus();
+        assert!(!bus.store_filter_for_batch().is_null());
+        assert_eq!(page_byte(&bus, 0x2_0000), 1, "unknown until written");
+        bus.write_long(0x2_0000, 7);
+        assert_eq!(page_byte(&bus, 0x2_0000), 0, "plain RAM page");
+        bus.write_byte(0x1004, 3);
+        assert_eq!(page_byte(&bus, 0x1004), 2, "the screen page is observed");
+        bus.write_word(0x2_0ffe, 1);
+        assert_eq!(bus.store_filter_byte(0), Some(0), "no probe, no glyph");
+    }
+
+    #[test]
+    fn new_offscreen_detail_withdraws_a_plain_proof() {
+        let mut bus = bus();
+        bus.store_filter_for_batch();
+        bus.write_long(0x3_0000, 1);
+        assert_eq!(page_byte(&bus, 0x3_0000), 0);
+        paint_detail(&mut bus, 0x3_0010);
+        bus.store_filter_for_batch();
+        assert_ne!(page_byte(&bus, 0x3_0000), 0, "offscreen detail now lives here");
+        // Other proven pages are untouched by an incremental change.
+        bus.write_long(0x4_0000, 1);
+        paint_detail(&mut bus, 0x3_0020);
+        bus.store_filter_for_batch();
+        assert_eq!(page_byte(&bus, 0x4_0000), 0);
+    }
+
+    #[test]
+    fn replacing_the_presentation_resets_every_proof() {
+        let mut bus = bus();
+        bus.store_filter_for_batch();
+        bus.write_long(0x2_0000, 1);
+        assert_eq!(page_byte(&bus, 0x2_0000), 0);
+        let palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.enable_outline_presentation((0x1000, 8, 8, 8, 8), palette, 2);
+        bus.store_filter_for_batch();
+        assert_eq!(page_byte(&bus, 0x2_0000), 1);
+    }
+
+    #[test]
+    fn protected_code_resets_proofs_and_is_never_plain() {
+        let mut bus = bus();
+        bus.store_filter_for_batch();
+        bus.write_long(0x5_0000, 1);
+        assert_eq!(page_byte(&bus, 0x5_0000), 0);
+        bus.protect_readonly_code(0x5_0100, 16);
+        bus.store_filter_for_batch();
+        assert_eq!(page_byte(&bus, 0x5_0000), 1);
+        bus.write_long(0x5_0000, 2);
+        assert_eq!(page_byte(&bus, 0x5_0000), 2, "the page holds protected code");
+    }
+
+    #[test]
+    fn an_active_write_probe_sets_the_global_byte() {
+        let mut bus = bus();
+        bus.store_filter_for_batch();
+        bus.begin_write_probe();
+        bus.store_filter_for_batch();
+        assert_eq!(bus.store_filter_byte(0), Some(1));
+        let suspended = bus.suspend_write_probe().unwrap();
+        bus.store_filter_for_batch();
+        assert_eq!(bus.store_filter_byte(0), Some(0), "suspended probes record nothing");
+        bus.resume_write_probe(suspended);
+        bus.store_filter_for_batch();
+        assert_eq!(bus.store_filter_byte(0), Some(1));
+        bus.finish_write_probe_unchanged();
+        bus.store_filter_for_batch();
+        assert_eq!(bus.store_filter_byte(0), Some(0));
     }
 
     /// A screen whose rows may be wider than their visible pixels, so spans
