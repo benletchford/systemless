@@ -426,3 +426,14 @@ fn hle_import_runner_handles_x2fix_in_fpr1() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 0x8000_0000);
 }
+
+#[test]
+fn hle_import_runner_converts_fixed_to_extended_result_register() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"Fix2X")).unwrap();
+    loaded.cpu.gpr[3] = (-98_304i32) as u32;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(f64::from_bits(loaded.cpu.fpr[1]), -1.5);
+}

@@ -453,3 +453,27 @@ fn stdclib_error_globals_are_writable_process_scoped_data() {
         Some(0xffce)
     );
 }
+
+#[test]
+fn stdio_imports_pre_resolve_to_typed_operations() {
+    for (symbol, operation) in [
+        ("clearerr", PpcStdIoOperation::ClearErr),
+        ("_filbuf", PpcStdIoOperation::FileBuffer),
+        ("fclose", PpcStdIoOperation::FileClose),
+        ("feof", PpcStdIoOperation::FileEof),
+        ("ferror", PpcStdIoOperation::FileError),
+        ("fflush", PpcStdIoOperation::FileFlush),
+        ("fopen", PpcStdIoOperation::FileOpen),
+        ("fprintf", PpcStdIoOperation::FilePrintf),
+        ("fread", PpcStdIoOperation::FileRead),
+        ("fseek", PpcStdIoOperation::FileSeek),
+        ("ftell", PpcStdIoOperation::FileTell),
+        ("fwrite", PpcStdIoOperation::FileWrite),
+        ("_iob", PpcStdIoOperation::IoBuffer),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("StdCLib", symbol),
+            PpcImportDispatcherTarget::StdIoCompatibility(operation),
+        );
+    }
+}

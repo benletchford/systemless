@@ -554,3 +554,43 @@ fn hle_import_runner_handles_mathlib_dtox80() {
     assert_eq!(loaded.memory.read_u32_be(output + 2), Some(0xc000_0000));
     assert_eq!(loaded.memory.read_u32_be(output + 6), Some(0));
 }
+
+#[test]
+fn import_bindings_classify_mathlib_imports() {
+    assert_eq!(
+        dispatcher_target_for_import("MathLib", "ceil"),
+        PpcImportDispatcherTarget::MathCeil
+    );
+    assert_eq!(
+        dispatcher_target_for_import("MathLib", "sqrt"),
+        PpcImportDispatcherTarget::MathSqrt
+    );
+    assert_eq!(
+        dispatcher_target_for_import("MathLib", "exp"),
+        PpcImportDispatcherTarget::MathExp
+    );
+    assert_eq!(
+        dispatcher_target_for_import("MathLib", "sin"),
+        PpcImportDispatcherTarget::MathSin
+    );
+    assert_eq!(
+        dispatcher_target_for_import("MathLib", "cos"),
+        PpcImportDispatcherTarget::MathCos
+    );
+    assert_eq!(
+        dispatcher_target_for_import("MathLib", "atan2"),
+        PpcImportDispatcherTarget::MathAtan2
+    );
+    assert_eq!(
+        dispatcher_target_for_import("MathLib", "fmod"),
+        PpcImportDispatcherTarget::MathFmod
+    );
+    assert_eq!(
+        dispatcher_target_for_import("MathLib", "log10"),
+        PpcImportDispatcherTarget::MathLog10
+    );
+    assert_eq!(
+        dispatcher_target_for_import("MathLib", "dtox80"),
+        PpcImportDispatcherTarget::MathDtox80
+    );
+}
