@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Role-Playing
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -22,11 +23,24 @@ compatibility:
     environment: >-
       Deterministic run of the unchanged creator-hosted 2.2.4 ZIP through the
       shareware Distribution notice, New/Open dialog, Create Character dialog, and opening
-      tutorial board. Return from character creation reaches the board. The New/Open
-      background artwork is still missing; browser launch awaits a separate manual check of
-      the promoted archive.
+      tutorial board. Return from character creation reaches the board. An early
+      deterministic snapshot of New/Open lacked its background art; later browser
+      verification showed the artwork after the dialog settled.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2555
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
+    systemless_version: "0.57.0 + PR #2639"
+    architecture: 68k
+    environment: >-
+      Release-mode local Chromium route using the promoted immutable ZIP. The
+      Distribution notice, illustrated New/Open dialog, character creation,
+      first-save dialog, and tutorial board all rendered. A click on an on-screen
+      movement control changed the map pixels outside the cursor. The local
+      preview disabled cross-origin enforcement because the asset host allows
+      the production site origin, not localhost.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/2641
 artifacts:
 - id: archive
   role: archive
@@ -91,7 +105,7 @@ the original sounds and color artwork. It is not an unlocked or modified copy.
 
 The game's Distribution notice encourages sharing complete, unchanged copies
 without charging for them. Registration rights and the game's copyright remain
-with its owner. In Systemless, New opens character creation and Return reaches
-the tutorial board. The New/Open dialog's background artwork is currently
-missing, and browser launch remains disabled until the promoted archive has
-been checked in a browser.
+with its owner. In the browser, dismiss Distribution, choose New, create a
+character, and save to reach the tutorial board. The illustrated New/Open
+dialog appears after a short startup delay, and the on-screen movement controls
+respond in the opening area.
