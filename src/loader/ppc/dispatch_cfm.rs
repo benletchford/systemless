@@ -128,7 +128,9 @@ pub(super) fn ppc_get_shared_library(
     {
         return return_error(PPC_PARAM_ERR);
     }
-    if arch_type != PPC_CFM_POWERPC_ARCH {
+    // Code Fragment Manager Reference, Architecture Constants: kAnyCFragArch
+    // selects an available architecture (PowerPC in this execution context).
+    if !matches!(arch_type, PPC_CFM_POWERPC_ARCH | PPC_CFM_ANY_ARCH) {
         return return_error(PPC_FRAG_ARCH_ERR);
     }
     if !matches!(
@@ -154,7 +156,18 @@ pub(super) fn ppc_get_shared_library(
     } else {
         None
     };
-    if find_flags == PPC_CFM_FIND_LIB && existing_connection.is_none() {
+    // A statically imported system library is already connected by CFM.
+    // HLE imports do not carry guest PEF fragments, so recognize their
+    // existing binding when kFindLib asks for that connection.
+    let statically_imported_hle = ppc_is_explicit_hle_cfm_library(&lib_name)
+        && import_run_state
+            .bindings()
+            .iter()
+            .any(|binding| binding.library_name.eq_ignore_ascii_case(&lib_name));
+    if find_flags == PPC_CFM_FIND_LIB
+        && existing_connection.is_none()
+        && !statically_imported_hle
+    {
         return return_error(PPC_FRAG_LIB_NOT_FOUND);
     }
     let created_connection = existing_connection.is_none();

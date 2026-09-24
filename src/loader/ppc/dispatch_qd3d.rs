@@ -33,6 +33,22 @@ pub(super) fn dispatch_q3_core_import(
             q3_lifecycle.initialized_depth = q3_lifecycle.initialized_depth.saturating_sub(1);
             Some(PpcImportAction::Return(1))
         }
+        PpcImportDispatcherTarget::Q3GetVersion => {
+            // Q3GetVersion writes the major and minor QuickDraw 3D revisions.
+            // TQ3Status Q3GetVersion(unsigned long *majorRevision, unsigned long *minorRevision);
+            // Apple, QuickDraw 3D 1.5.4 Reference, p. 76.
+            let major_ptr = cpu.gpr[3];
+            let minor_ptr = cpu.gpr[4];
+            if !q3_lifecycle.initialized()
+                || !ppc_memory_can_write_bytes(memory, major_ptr, 4)
+                || !ppc_memory_can_write_bytes(memory, minor_ptr, 4)
+            {
+                return Some(PpcImportAction::Return(0));
+            }
+            let _ = memory.write_u32_be(major_ptr, 1);
+            let _ = memory.write_u32_be(minor_ptr, 6);
+            Some(PpcImportAction::Return(1))
+        }
         PpcImportDispatcherTarget::Q3NewObject => {
             Some(PpcImportAction::Return(ppc_q3_alloc_object(
                 q3_objects,
