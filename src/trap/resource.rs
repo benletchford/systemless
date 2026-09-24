@@ -8333,7 +8333,8 @@ impl super::TrapDispatcher {
     /// map, the `loaded_handles` ptr field, and any
     /// `LoadedResources::files[refnum].loaded` / `.named` entries
     /// pointing at the old pointer so subsequent GetResource lookups
-    /// see the new allocation.
+    /// see the new allocation. A null old pointer is shared by every
+    /// unloaded resource, so only the resized handle's record may be updated.
     pub(crate) fn resize_resource_allocation(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -8351,19 +8352,45 @@ impl super::TrapDispatcher {
             return 0;
         };
         self.with_resource_manager_mut(|resource_manager| {
+            let resource_key =
+                resource_manager
+                    .loaded_handles
+                    .get(&handle)
+                    .and_then(|&(_, res_type, res_id)| {
+                        resource_manager
+                            .resource_handle_files
+                            .get(&handle)
+                            .copied()
+                            .map(|refnum| (refnum, res_type, res_id))
+                    });
             if let Some(entry) = resource_manager.loaded_handles.get_mut(&handle) {
                 entry.0 = new_ptr;
             }
             if let Some(resources) = resource_manager.resources.as_mut() {
-                for file in resources.files.values_mut() {
-                    for v in file.loaded.values_mut() {
-                        if *v == old_ptr {
-                            *v = new_ptr;
+                if old_ptr == 0 {
+                    if let Some((refnum, res_type, res_id)) = resource_key {
+                        if let Some(file) = resources.files.get_mut(&refnum) {
+                            if file.loaded.get(&(res_type, res_id)).copied() == Some(0) {
+                                file.loaded.insert((res_type, res_id), new_ptr);
+                            }
+                            for ((named_type, _), (named_id, ptr)) in &mut file.named {
+                                if *named_type == res_type && *named_id == res_id && *ptr == 0 {
+                                    *ptr = new_ptr;
+                                }
+                            }
                         }
                     }
-                    for (_id, v) in file.named.values_mut() {
-                        if *v == old_ptr {
-                            *v = new_ptr;
+                } else {
+                    for file in resources.files.values_mut() {
+                        for v in file.loaded.values_mut() {
+                            if *v == old_ptr {
+                                *v = new_ptr;
+                            }
+                        }
+                        for (_id, v) in file.named.values_mut() {
+                            if *v == old_ptr {
+                                *v = new_ptr;
+                            }
                         }
                     }
                 }
@@ -10037,6 +10064,40 @@ mod tests {
             "GetResource should return the resized live handle, not a duplicate"
         );
         assert_eq!(bus.read_long(returned_handle), new_ptr);
+    }
+
+    #[test]
+    fn resizing_empty_resource_handle_does_not_load_unrelated_resources() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let first_data = setup_resources(&mut disp, &mut bus, b"TEST", 1, &[1, 2]);
+        let second_data = disp.install_test_resource(&mut bus, *b"TEST", 2, &[3, 4]);
+        disp.insert_resource_pointer_for_test(0, (*b"TEST", 1), 0);
+        disp.insert_resource_pointer_for_test(0, (*b"TEST", 2), 0);
+        disp.insert_named_resource_for_test(0, (*b"TEST", "First".to_string()), (1, 0));
+        disp.insert_named_resource_for_test(0, (*b"TEST", "Second".to_string()), (2, 0));
+
+        disp.policy.set_res_load(false);
+        let handle = disp.get_or_create_resource_handle(&mut bus, *b"TEST", 1, first_data);
+        assert_eq!(bus.read_long(handle), 0);
+
+        let resized = disp.resize_resource_allocation(&mut bus, handle, 0, 8);
+        assert_ne!(resized, 0);
+        let file = &disp.resources.as_ref().unwrap().files[&0];
+        assert_eq!(file.loaded[&(*b"TEST", 1)], resized);
+        assert_eq!(file.loaded[&(*b"TEST", 2)], 0);
+        assert_eq!(file.named[&(*b"TEST", "First".to_string())], (1, resized));
+        assert_eq!(file.named[&(*b"TEST", "Second".to_string())], (2, 0));
+
+        disp.policy.set_res_load(true);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 2);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"TEST"));
+        call(&mut disp, true, 0x01F, &mut cpu, &mut bus).unwrap();
+        let second_handle = bus.read_long(TEST_SP + 6);
+        assert_ne!(second_handle, 0);
+        assert_eq!(bus.read_bytes(bus.read_long(second_handle), 2), vec![3, 4]);
+        assert_ne!(bus.read_long(second_handle), resized);
+        assert_eq!(bus.read_bytes(second_data, 2), vec![3, 4]);
     }
 
     #[test]
