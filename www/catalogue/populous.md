@@ -12,9 +12,20 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+launch_enabled: true
 compatibility:
   status: playable
   verified:
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
+    systemless_version: "0.57.0 + local site build"
+    architecture: 68k
+    environment: >-
+      Release-mode browser launch from the immutable hosted two-world demo at
+      localhost:8080; selected Run Slow at the colour prompt, Conquest and Start,
+      then changed the first-world viewport through the overview map.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2648
   - date: "2026-09-23"
     tester: Catalogue maintainer
     systemless_version: 0.52.0-dev
