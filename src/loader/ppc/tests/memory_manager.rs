@@ -4052,3 +4052,557 @@ fn hle_import_runner_tracks_more_masters_requests() {
     assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
 }
 
+#[test]
+fn hand_to_hand_duplicates_tracked_handle_storage() {
+    let heap_base = 0x3000;
+    let handle_variable = 0x3f00;
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(heap_base, vec![0; 0x1000]);
+    let mut heap_cursor = heap_base;
+    let mut handles = Vec::new();
+    let mut free_handles = Vec::new();
+    let source = ppc_alloc_handle_with_bytes(
+        &mut memory,
+        &mut heap_cursor,
+        heap_base + 0x1000,
+        &mut handles,
+        b"copy me",
+    );
+    memory.write_u32_be(handle_variable, source).unwrap();
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[3] = handle_variable;
+
+    assert_eq!(
+        ppc_hand_to_hand(
+            &cpu,
+            &mut memory,
+            &mut heap_cursor,
+            heap_base + 0x1000,
+            &mut handles,
+            &mut free_handles,
+        ),
+        PPC_NO_ERR
+    );
+    let copy = memory.read_u32_be(handle_variable).unwrap();
+    assert_ne!(copy, source);
+    let copy_data = memory.read_u32_be(copy).unwrap();
+    assert_eq!(
+        ppc_memory_read_bytes(&mut memory, copy_data, 7),
+        Some(b"copy me".to_vec())
+    );
+}
+
+#[test]
+fn hand_to_hand_duplicates_main_device_color_table() {
+    let heap_base = 0x0300_0000;
+    let heap_limit = heap_base + 0x4000;
+    let handle_variable = heap_base + 0x3f00;
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(PPC_MAIN_CTABLE_HANDLE, vec![0; 4]);
+    memory.add_region(PPC_MAIN_CTABLE, vec![0; PPC_MAIN_CTABLE_SIZE as usize]);
+    memory.add_region(heap_base, vec![0; (heap_limit - heap_base) as usize]);
+    ppc_seed_main_color_table(&mut memory).unwrap();
+    memory
+        .write_u32_be(handle_variable, PPC_MAIN_CTABLE_HANDLE)
+        .unwrap();
+    let mut heap_cursor = heap_base;
+    let mut handles = Vec::new();
+    let mut free_handles = Vec::new();
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[3] = handle_variable;
+
+    assert_eq!(
+        ppc_hand_to_hand(
+            &cpu,
+            &mut memory,
+            &mut heap_cursor,
+            heap_limit,
+            &mut handles,
+            &mut free_handles,
+        ),
+        PPC_NO_ERR
+    );
+    let copy = memory.read_u32_be(handle_variable).unwrap();
+    let copy_data = memory.read_u32_be(copy).unwrap();
+    assert_ne!(copy, PPC_MAIN_CTABLE_HANDLE);
+    assert_eq!(handles[0].size, PPC_MAIN_CTABLE_SIZE);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut memory, copy_data, PPC_MAIN_CTABLE_SIZE),
+        ppc_memory_read_bytes(&mut memory, PPC_MAIN_CTABLE, PPC_MAIN_CTABLE_SIZE)
+    );
+}
+
+#[test]
+fn legacy_memory_utility_imports_pre_resolve_to_typed_operations() {
+    for (symbol, operation) in [
+        ("BitClr", PpcLegacyMemoryUtilityOperation::BitClear),
+        ("BitNot", PpcLegacyMemoryUtilityOperation::BitNot),
+        ("BitSet", PpcLegacyMemoryUtilityOperation::BitSet),
+        ("Fix2X", PpcLegacyMemoryUtilityOperation::FixToExtended),
+        ("GetMyZone", PpcLegacyMemoryUtilityOperation::GetMyZone),
+        ("HandleZone", PpcLegacyMemoryUtilityOperation::HandleZone),
+        ("LockMemory", PpcLegacyMemoryUtilityOperation::LockMemory),
+        ("MaxBlock", PpcLegacyMemoryUtilityOperation::MaxBlock),
+        ("PurgeSpace", PpcLegacyMemoryUtilityOperation::PurgeSpace),
+        ("ReserveMem", PpcLegacyMemoryUtilityOperation::ReserveMem),
+        ("SetGrowZone", PpcLegacyMemoryUtilityOperation::SetGrowZone),
+        ("StackSpace", PpcLegacyMemoryUtilityOperation::StackSpace),
+        ("TempFreeMem", PpcLegacyMemoryUtilityOperation::TempFreeMem),
+        ("UnlockMemory", PpcLegacyMemoryUtilityOperation::UnlockMemory),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::LegacyMemoryUtility(operation),
+            "{symbol}"
+        );
+    }
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetPtrSize"),
+        PpcImportDispatcherTarget::SetPtrSize
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "RecoverHandle"),
+        PpcImportDispatcherTarget::RecoverHandle
+    );
+}
+
+#[test]
+fn reserve_mem_reports_whether_a_contiguous_block_is_available() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"ReserveMem")).unwrap();
+    loaded.cpu.gpr[3] = 0;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = u32::MAX;
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.last_mem_error(), PPC_MEM_FULL_ERR);
+}
+
+#[test]
+fn set_ptr_size_grows_only_a_terminal_nonrelocatable_block() {
+    let mut memory = PpcSectionMem::new();
+    let heap_limit = PPC_HEAP_BASE + 0x1000;
+    memory.add_region(PPC_HEAP_BASE, vec![0; 0x1000]);
+    let mut manager = ProcessMemoryManager::default();
+    manager.publish_native_allocator(
+        ProcessNativeHeapState {
+            heap_base: PPC_HEAP_BASE,
+            heap_cursor: PPC_HEAP_BASE,
+            heap_limit,
+            last_mem_error: PPC_NO_ERR,
+            heap_maximized: false,
+            master_pointer_blocks_requested: 0,
+        },
+        &[],
+        &[],
+        &[],
+    );
+    let ptr = manager.new_native_ptr(&mut memory, 8, true);
+    assert_ne!(ptr, 0);
+
+    assert_eq!(
+        manager.set_native_ptr_size(&mut memory, ptr, 24),
+        PPC_NO_ERR
+    );
+    assert_eq!(manager.native_ptr_size(ptr), 24);
+    assert_eq!(memory.read_u8(ptr + 23), Some(0));
+
+    let second = manager.new_native_ptr(&mut memory, 8, true);
+    assert_ne!(second, 0);
+    assert_eq!(
+        manager.set_native_ptr_size(&mut memory, ptr, 32),
+        PPC_MEM_FULL_ERR
+    );
+    assert_eq!(manager.native_ptr_size(ptr), 24);
+}
+
+#[test]
+fn import_bindings_classify_supported_memory_manager_imports() {
+    let bindings = PpcImportBindingPlan::prepare(
+        vec![
+            PefResolvedImport {
+                library_index: 0,
+                symbol_index: 0,
+                library_name: "InterfaceLib".to_string(),
+                symbol_name: "NewPtrClear".to_string(),
+                class: 2,
+                weak: false,
+            },
+            PefResolvedImport {
+                library_index: 0,
+                symbol_index: 1,
+                library_name: "InterfaceLib".to_string(),
+                symbol_name: "DisposePtr".to_string(),
+                class: 2,
+                weak: false,
+            },
+            PefResolvedImport {
+                library_index: 0,
+                symbol_index: 2,
+                library_name: "InterfaceLib".to_string(),
+                symbol_name: "MaxApplZone".to_string(),
+                class: 2,
+                weak: false,
+            },
+            PefResolvedImport {
+                library_index: 0,
+                symbol_index: 3,
+                library_name: "InterfaceLib".to_string(),
+                symbol_name: "MoreMasters".to_string(),
+                class: 2,
+                weak: false,
+            },
+            PefResolvedImport {
+                library_index: 0,
+                symbol_index: 4,
+                library_name: "InterfaceLib".to_string(),
+                symbol_name: "CompactMem".to_string(),
+                class: 2,
+                weak: false,
+            },
+            PefResolvedImport {
+                library_index: 0,
+                symbol_index: 5,
+                library_name: "InterfaceLib".to_string(),
+                symbol_name: "MaxMem".to_string(),
+                class: 2,
+                weak: false,
+            },
+            PefResolvedImport {
+                library_index: 0,
+                symbol_index: 6,
+                library_name: "InterfaceLib".to_string(),
+                symbol_name: "CurResFile".to_string(),
+                class: 2,
+                weak: false,
+            },
+            PefResolvedImport {
+                library_index: 0,
+                symbol_index: 7,
+                library_name: "InterfaceLib".to_string(),
+                symbol_name: "ResError".to_string(),
+                class: 2,
+                weak: false,
+            },
+            PefResolvedImport {
+                library_index: 0,
+                symbol_index: 8,
+                library_name: "InterfaceLib".to_string(),
+                symbol_name: "Gestalt".to_string(),
+                class: 2,
+                weak: false,
+            },
+            PefResolvedImport {
+                library_index: 0,
+                symbol_index: 9,
+                library_name: "InterfaceLib".to_string(),
+                symbol_name: "GetSharedLibrary".to_string(),
+                class: 2,
+                weak: false,
+            },
+            PefResolvedImport {
+                library_index: 0,
+                symbol_index: 10,
+                library_name: "InterfaceLib".to_string(),
+                symbol_name: "FindFolder".to_string(),
+                class: 2,
+                weak: false,
+            },
+            PefResolvedImport {
+                library_index: 0,
+                symbol_index: 11,
+                library_name: "InterfaceLib".to_string(),
+                symbol_name: "DirCreate".to_string(),
+                class: 2,
+                weak: false,
+            },
+            PefResolvedImport {
+                library_index: 0,
+                symbol_index: 12,
+                library_name: "InterfaceLib".to_string(),
+                symbol_name: "FSMakeFSSpec".to_string(),
+                class: 2,
+                weak: false,
+            },
+            PefResolvedImport {
+                library_index: 0,
+                symbol_index: 13,
+                library_name: "InterfaceLib".to_string(),
+                symbol_name: "SndSoundManagerVersion".to_string(),
+                class: 2,
+                weak: false,
+            },
+            PefResolvedImport {
+                library_index: 0,
+                symbol_index: 14,
+                library_name: "InterfaceLib".to_string(),
+                symbol_name: "ParamText".to_string(),
+                class: 2,
+                weak: false,
+            },
+            PefResolvedImport {
+                library_index: 0,
+                symbol_index: 15,
+                library_name: "InterfaceLib".to_string(),
+                symbol_name: "NoteAlert".to_string(),
+                class: 2,
+                weak: false,
+            },
+        ],
+        16,
+        0,
+        ppc_import_layout(),
+        &SystemlessPpcImportBindingPolicy,
+    )
+    .unwrap()
+    .into_initial_bindings();
+
+    assert_eq!(
+        bindings[0].dispatcher_target,
+        PpcImportDispatcherTarget::NewPtr { clear: true }
+    );
+    assert_eq!(
+        bindings[1].dispatcher_target,
+        PpcImportDispatcherTarget::DisposePtr
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetPtrSize"),
+        PpcImportDispatcherTarget::GetPtrSize
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "NewHandle"),
+        PpcImportDispatcherTarget::NewHandle { clear: false }
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "NewHandleClear"),
+        PpcImportDispatcherTarget::NewHandle { clear: true }
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "TempNewHandle"),
+        PpcImportDispatcherTarget::TempNewHandle
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "BlockMove"),
+        PpcImportDispatcherTarget::BlockMove
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "PtrToHand"),
+        PpcImportDispatcherTarget::PtrToHand
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "DisposeHandle"),
+        PpcImportDispatcherTarget::DisposeHandle
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "EmptyHandle"),
+        PpcImportDispatcherTarget::EmptyHandle
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "ReleaseResource"),
+        PpcImportDispatcherTarget::ReleaseResource
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "DetachResource"),
+        PpcImportDispatcherTarget::DetachResource
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetHandleSize"),
+        PpcImportDispatcherTarget::GetHandleSize
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetHandleSize"),
+        PpcImportDispatcherTarget::SetHandleSize
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "PurgeMem"),
+        PpcImportDispatcherTarget::PurgeMem
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "PurgeMemSys"),
+        PpcImportDispatcherTarget::PurgeMemSys
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "MemError"),
+        PpcImportDispatcherTarget::MemError
+    );
+    assert_eq!(
+        bindings[2].dispatcher_target,
+        PpcImportDispatcherTarget::MaxApplZone
+    );
+    assert_eq!(
+        bindings[3].dispatcher_target,
+        PpcImportDispatcherTarget::MoreMasters
+    );
+    assert_eq!(
+        bindings[4].dispatcher_target,
+        PpcImportDispatcherTarget::HeapFreeBytes
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "FreeMem"),
+        PpcImportDispatcherTarget::HeapFreeBytes
+    );
+    assert_eq!(
+        bindings[5].dispatcher_target,
+        PpcImportDispatcherTarget::MaxMem
+    );
+    assert_eq!(
+        bindings[6].dispatcher_target,
+        PpcImportDispatcherTarget::CurResFile
+    );
+    assert_eq!(
+        bindings[7].dispatcher_target,
+        PpcImportDispatcherTarget::ResError
+    );
+    assert_eq!(
+        bindings[8].dispatcher_target,
+        PpcImportDispatcherTarget::Gestalt
+    );
+    assert_eq!(
+        bindings[9].dispatcher_target,
+        PpcImportDispatcherTarget::GetSharedLibrary
+    );
+    assert_eq!(
+        bindings[10].dispatcher_target,
+        PpcImportDispatcherTarget::FindFolder
+    );
+    assert_eq!(
+        bindings[11].dispatcher_target,
+        PpcImportDispatcherTarget::DirCreate
+    );
+    assert_eq!(
+        bindings[12].dispatcher_target,
+        PpcImportDispatcherTarget::FSMakeFSSpec
+    );
+    assert_eq!(
+        bindings[13].dispatcher_target,
+        PpcImportDispatcherTarget::SndSoundManagerVersion
+    );
+    assert_eq!(
+        bindings[14].dispatcher_target,
+        PpcImportDispatcherTarget::ParamText
+    );
+    assert_eq!(
+        bindings[15].dispatcher_target,
+        PpcImportDispatcherTarget::AlertReturnDefault
+    );
+}
+
+#[test]
+fn hle_import_runner_handles_new_ptr_clear_and_continues() {
+    let pef = synthetic_pef_with_import(b"NewPtrClear");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 24;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.last_import_index, Some(0));
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        probe.result,
+        PpcRunResult::Halted {
+            pc: PPC_HALT_PC,
+            cycles: 8,
+        }
+    );
+    assert_eq!(loaded.cpu.gpr[3], PPC_HEAP_BASE);
+    assert_eq!(loaded.last_mem_error(), 0);
+    assert_eq!(loaded.cpu.gpr[3] & (PPC_HEAP_ALIGNMENT - 1), 0);
+    assert_eq!(
+        loaded.heap_cursor(),
+        PPC_HEAP_BASE + ppc_allocation_size(24).unwrap()
+    );
+    for offset in 0..24 {
+        assert_eq!(loaded.memory.read_u8(PPC_HEAP_BASE + offset), Some(0));
+    }
+    assert_eq!(
+        loaded.ptrs(),
+        vec![PpcPtrRecord {
+            ptr: PPC_HEAP_BASE,
+            size: 24
+        }]
+    );
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetPtrSize;
+    loaded.cpu.gpr[3] = PPC_HEAP_BASE;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 24);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DisposePtr;
+    loaded.cpu.gpr[3] = PPC_HEAP_BASE;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert!(loaded.ptrs().is_empty());
+    assert_eq!(
+        loaded.free_ptr_blocks(),
+        vec![PpcPtrRecord {
+            ptr: PPC_HEAP_BASE,
+            size: 24
+        }]
+    );
+    let heap_cursor = loaded.heap_cursor();
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::NewPtr { clear: true };
+    loaded.cpu.gpr[3] = 12;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], PPC_HEAP_BASE);
+    assert_eq!(loaded.heap_cursor(), heap_cursor);
+    assert!(loaded.free_ptr_blocks().is_empty());
+    assert_eq!(loaded.ptrs()[0].size, 12);
+}
+
+#[test]
+fn hle_import_runner_ptr_to_hand_copies_bytes_into_a_new_handle() {
+    let pef = synthetic_pef_with_import(b"PtrToHand");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let source_ptr = PPC_DATA_BASE + 0x1000;
+    let destination_handle_ptr = source_ptr + 16;
+    loaded.memory.add_region(source_ptr, vec![0; 32]);
+    for (offset, byte) in b"Gridz".iter().copied().enumerate() {
+        loaded
+            .memory
+            .write_u8(source_ptr + offset as u32, byte)
+            .unwrap();
+    }
+    loaded.cpu.gpr[3] = source_ptr;
+    loaded.cpu.gpr[4] = destination_handle_ptr;
+    loaded.cpu.gpr[5] = 5;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let handle = loaded.memory.read_u32_be(destination_handle_ptr).unwrap();
+    assert_ne!(handle, 0);
+    assert_eq!(
+        ppc_handle_bytes(&mut loaded.memory, &test_handle_records!(loaded), handle),
+        Some(b"Gridz".to_vec())
+    );
+}
+
