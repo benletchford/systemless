@@ -10,6 +10,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Simulation
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -17,7 +18,7 @@ compatibility:
     tester: Catalogue maintainer
     systemless_version: 0.51.0 + File Manager FCB fix
     architecture: 68k
-    environment: "Deterministic headless run of the unchanged original demo at 800-by-600 in 256 colours with a 20 MB application partition. Selected the demo flight and reached the fully rendered cockpit and runway. The generic File Manager fix is tracked in PR #2735; browser launch remains disabled until the promoted archive passes manual browser approval."
+    environment: "Deterministic headless run of the unchanged original demo at 800-by-600 in 256 colours with a 20 MB application partition. Selected the demo flight and reached the fully rendered cockpit and runway. The generic File Manager fix landed in PR #2735. The promoted archive was also tested in the browser: interactive demo, Fly Demo, and fully rendered cockpit and runway."
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2713
 artifacts:
