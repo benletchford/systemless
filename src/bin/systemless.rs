@@ -902,6 +902,8 @@ struct App {
     last_audio_mix_time: Option<std::time::Instant>,
     /// Current mouse position in physical window pixels
     mouse_physical: (f64, f64),
+    /// Guest displacement used when the window system cannot warp its pointer.
+    mouse_guest_offset: (i16, i16),
     mouse_release_latch: HostMouseReleaseLatch,
     /// Current game screen dimensions (tracks screen_mode changes)
     current_screen_width: u32,
@@ -1059,6 +1061,7 @@ impl App {
             audio_sample_remainder: 0.0,
             last_audio_mix_time: None,
             mouse_physical: (0.0, 0.0),
+            mouse_guest_offset: (0, 0),
             mouse_release_latch: HostMouseReleaseLatch::default(),
             current_screen_width: initial_screen_width(),
             current_screen_height: initial_screen_height(),
@@ -1138,6 +1141,78 @@ impl App {
         };
 
         physical_to_mac_in_viewport(px, py, content, size.width, size.height)
+    }
+
+    fn host_mouse_to_mac(&self, px: f64, py: f64) -> (i16, i16) {
+        let (v, h) = self.physical_to_mac(px, py);
+        (
+            v.saturating_add(self.mouse_guest_offset.0),
+            h.saturating_add(self.mouse_guest_offset.1),
+        )
+    }
+
+    fn sync_guest_cursor_warp(&mut self) {
+        let Some((v, h)) = self
+            .runner
+            .as_mut()
+            .and_then(FixtureRunner::take_guest_cursor_warp)
+        else {
+            return;
+        };
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let size = window.inner_size();
+        let sw = self.current_screen_width;
+        let sh = self.current_screen_height;
+        #[cfg(target_os = "macos")]
+        let content = if self.debug_overlay_visible {
+            ContentRect {
+                left: 0,
+                top: 0,
+                width: sw,
+                height: sh,
+            }
+        } else {
+            presentation_content_rect(
+                self.content_rect.unwrap_or(ContentRect {
+                    left: 0,
+                    top: 0,
+                    width: sw,
+                    height: sh,
+                }),
+                self.runner.as_ref().and_then(|runner| {
+                    runner
+                        .dispatcher()
+                        .visible_dialog_structure_bounds(runner.bus())
+                }),
+                sw,
+                sh,
+                native_menu_bar_height(self.runner.as_ref(), self.native_integrations),
+            )
+        };
+        #[cfg(not(target_os = "macos"))]
+        let content = ContentRect {
+            left: 0,
+            top: 0,
+            width: sw,
+            height: sh,
+        };
+        let Some((px, py)) = mac_to_physical_in_viewport(v, h, content, size.width, size.height)
+        else {
+            return;
+        };
+        if window
+            .set_cursor_position(winit::dpi::PhysicalPosition::new(px, py))
+            .is_ok()
+        {
+            self.mouse_physical = (px, py);
+            self.mouse_guest_offset = (0, 0);
+        } else {
+            let (host_v, host_h) =
+                self.physical_to_mac(self.mouse_physical.0, self.mouse_physical.1);
+            self.mouse_guest_offset = (v.saturating_sub(host_v), h.saturating_sub(host_h));
+        }
     }
 
     fn init_game(&mut self) {
@@ -2420,6 +2495,26 @@ fn physical_to_mac_in_viewport(
     )
 }
 
+fn mac_to_physical_in_viewport(
+    v: i16,
+    h: i16,
+    content: ContentRect,
+    drawable_width: u32,
+    drawable_height: u32,
+) -> Option<(f64, f64)> {
+    if content.width == 0 || content.height == 0 || drawable_width == 0 || drawable_height == 0 {
+        return None;
+    }
+    let scale = (drawable_width as f64 / content.width as f64)
+        .min(drawable_height as f64 / content.height as f64);
+    let origin_x = (drawable_width as f64 - content.width as f64 * scale) * 0.5;
+    let origin_y = (drawable_height as f64 - content.height as f64 * scale) * 0.5;
+    Some((
+        origin_x + (f64::from(h) - f64::from(content.left) + 0.5) * scale,
+        origin_y + (f64::from(v) - f64::from(content.top) + 0.5) * scale,
+    ))
+}
+
 #[cfg(target_os = "macos")]
 fn crop_argb_frame(frame: &mut Vec<u32>, screen_width: u32, content: ContentRect) {
     let width = content.width as usize;
@@ -3017,6 +3112,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorLeft { .. } => {
+                self.mouse_guest_offset = (0, 0);
                 #[cfg(target_os = "macos")]
                 self.host_cursor.set_pointer_inside(false);
             }
@@ -3028,7 +3124,7 @@ impl ApplicationHandler for App {
                 }
                 self.force_next_render = true;
                 self.mouse_physical = (position.x, position.y);
-                let (v, h) = self.physical_to_mac(position.x, position.y);
+                let (v, h) = self.host_mouse_to_mac(position.x, position.y);
                 if let Some(runner) = self.runner.as_mut() {
                     runner.set_mouse_position(v, h);
                     runner.dispatcher_mut().show_cursor();
@@ -3043,7 +3139,7 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 self.force_next_render = true;
-                let (v, h) = self.physical_to_mac(self.mouse_physical.0, self.mouse_physical.1);
+                let (v, h) = self.host_mouse_to_mac(self.mouse_physical.0, self.mouse_physical.1);
                 if let Some(runner) = self.runner.as_mut() {
                     match state {
                         ElementState::Pressed => {
@@ -3172,6 +3268,7 @@ impl ApplicationHandler for App {
 
         // Step emulation, then render
         self.step_frame();
+        self.sync_guest_cursor_warp();
         self.flush_ready_mouse_release();
         if self.guest_requested_exit() {
             if !self.guest_exit_reported {
@@ -5421,6 +5518,13 @@ mod tests {
             (60, 80),
             "left letterbox pixels clamp to the cropped guest edge"
         );
+        for (v, h) in [(60, 80), (140, 300), (539, 719)] {
+            let (px, py) = mac_to_physical_in_viewport(v, h, content, 1280, 720).unwrap();
+            assert_eq!(
+                physical_to_mac_in_viewport(px, py, content, 1280, 720),
+                (v, h)
+            );
+        }
     }
 
     #[test]

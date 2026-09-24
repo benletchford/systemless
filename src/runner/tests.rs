@@ -12750,6 +12750,8 @@
 
         assert_eq!(runner.bus.read_long(addr::MOUSE_LOC2), (140 << 16) | 300);
         assert_eq!(runner.dispatcher.mouse_position(), (140, 300));
+        assert_eq!(runner.take_guest_cursor_warp(), Some((140, 300)));
+        assert_eq!(runner.take_guest_cursor_warp(), None);
         assert_eq!(runner.bus.read_byte(0x08CE), 0);
         assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
         assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0x12345678);
@@ -12757,6 +12759,7 @@
         runner.advance_guest_tick();
         assert_eq!(runner.dispatcher.mouse_position(), (140, 300));
         runner.set_mouse_position(150, 310);
+        assert_eq!(runner.take_guest_cursor_warp(), None);
         assert_eq!(runner.dispatcher.mouse_position(), (150, 310));
         assert_eq!(runner.bus.read_long(addr::MOUSE_LOC2), (150 << 16) | 310);
     }
