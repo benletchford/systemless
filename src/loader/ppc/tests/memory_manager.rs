@@ -2938,3 +2938,851 @@ fn ppc_hand_to_hand_color_table_heap_failure_is_atomic() {
     assert_eq!(allocator_after.heap.last_mem_error, PPC_MEM_FULL_ERR);
 }
 
+#[test]
+fn hle_import_runner_handles_compact_mem_as_heap_free_query() {
+    let pef = synthetic_pef_with_import(b"CompactMem");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let free = test_heap_limit!(loaded) - loaded.heap_cursor();
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], free);
+}
+
+#[test]
+fn hle_import_runner_handles_purge_mem_as_heap_free_probe() {
+    let pef = synthetic_pef_with_import(b"PurgeMem");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let heap_cursor = loaded.heap_cursor();
+    let free = test_heap_limit!(loaded) - loaded.heap_cursor();
+    loaded.set_last_mem_error(PPC_MEM_FULL_ERR);
+    loaded.cpu.gpr[3] = free;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], free);
+    assert_eq!(loaded.heap_cursor(), heap_cursor);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = free + 1;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], free + 1);
+    assert_eq!(loaded.heap_cursor(), heap_cursor);
+    assert_eq!(loaded.last_mem_error(), PPC_MEM_FULL_ERR);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::PurgeMemSys;
+    loaded.cpu.gpr[3] = free;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], free);
+    assert_eq!(loaded.heap_cursor(), heap_cursor);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+}
+
+#[test]
+fn hle_import_runner_handles_mem_error() {
+    let pef = synthetic_pef_with_import(b"MemError");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.set_last_mem_error(PPC_MEM_FULL_ERR);
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_MEM_FULL_ERR));
+    assert_eq!(loaded.last_mem_error(), PPC_MEM_FULL_ERR);
+}
+
+#[test]
+fn hle_import_runner_handles_block_move_with_overlap() {
+    let pef = synthetic_pef_with_import(b"BlockMove");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let buffer_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(buffer_ptr, b"abcdefgh".to_vec());
+    loaded.cpu.gpr[3] = buffer_ptr;
+    loaded.cpu.gpr[4] = buffer_ptr + 2;
+    loaded.cpu.gpr[5] = 6;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], buffer_ptr);
+    for (offset, byte) in b"ababcdef".iter().copied().enumerate() {
+        assert_eq!(
+            loaded.memory.read_u8(buffer_ptr + offset as u32),
+            Some(byte)
+        );
+    }
+}
+
+#[test]
+fn hle_import_runner_handles_block_move_data_alias() {
+    let pef = synthetic_pef_with_import(b"BlockMoveData");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let source_ptr = PPC_DATA_BASE + 0x1000;
+    let dest_ptr = PPC_DATA_BASE + 0x1100;
+    loaded.memory.add_region(source_ptr, b"Gridz".to_vec());
+    loaded.memory.add_region(dest_ptr, vec![0; 5]);
+    loaded.cpu.gpr[3] = source_ptr;
+    loaded.cpu.gpr[4] = dest_ptr;
+    loaded.cpu.gpr[5] = 5;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    for (offset, byte) in b"Gridz".iter().copied().enumerate() {
+        assert_eq!(loaded.memory.read_u8(dest_ptr + offset as u32), Some(byte));
+    }
+}
+
+#[test]
+fn hle_import_runner_handles_handle_size_queries() {
+    let pef = synthetic_pef_with_import(b"GetHandleSize");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    test_handles!(loaded).push(PpcHandleRecord {
+        handle: PPC_HEAP_BASE,
+        ptr: PPC_HEAP_BASE + 4,
+        size: 123,
+        capacity: 123,
+    });
+    loaded
+        .memory
+        .write_u32_be(PPC_HEAP_BASE, PPC_HEAP_BASE + 4)
+        .unwrap();
+    loaded.cpu.gpr[3] = PPC_HEAP_BASE;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 123);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+
+    let pef = synthetic_pef_with_import(b"GetHandleSize");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = PPC_MAIN_CTABLE_HANDLE;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], PPC_MAIN_CTABLE_SIZE);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+
+    let pef = synthetic_pef_with_import(b"SetHandleSize");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        b"abcdefghijkl",
+    );
+    assert_ne!(handle, 0);
+    let old_ptr = loaded.memory.read_u32_be(handle).unwrap();
+    let old_heap_cursor = loaded.heap_cursor();
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = 48;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], handle);
+    assert_eq!(test_handle_records!(loaded)[0].size, 48);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+    let new_ptr = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!(new_ptr, old_ptr);
+    assert_eq!(test_handle_records!(loaded)[0].ptr, old_ptr);
+    assert_eq!(
+        loaded.heap_cursor(),
+        old_heap_cursor + ppc_allocation_size(48).unwrap() - ppc_allocation_size(12).unwrap()
+    );
+    for (offset, byte) in b"abcdefghijkl".iter().copied().enumerate() {
+        assert_eq!(loaded.memory.read_u8(new_ptr + offset as u32), Some(byte));
+    }
+
+    let pef = synthetic_pef_with_import(b"SetHandleSize");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        b"abcdefghijkl",
+    );
+    assert_ne!(handle, 0);
+    let old_ptr = loaded.memory.read_u32_be(handle).unwrap();
+    let blocker = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        16,
+        true,
+    );
+    assert_ne!(blocker, 0);
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = 48;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], handle);
+    assert_eq!(test_handle_records!(loaded)[0].size, 48);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+    let new_ptr = loaded.memory.read_u32_be(handle).unwrap();
+    assert_ne!(new_ptr, old_ptr);
+    assert_eq!(test_handle_records!(loaded)[0].ptr, new_ptr);
+    assert!(handle < new_ptr || handle >= new_ptr + 48);
+    for (offset, byte) in b"abcdefghijkl".iter().copied().enumerate() {
+        assert_eq!(loaded.memory.read_u8(new_ptr + offset as u32), Some(byte));
+    }
+}
+
+#[test]
+fn hle_import_runner_dispose_handle_invalidates_tracked_handle() {
+    let pef = synthetic_pef_with_import(b"DisposeHandle");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        b"data",
+    );
+    assert_ne!(handle, 0);
+    let heap_cursor = loaded.heap_cursor();
+    loaded.aliases.push(PpcAliasRecord {
+        handle,
+        target_vref: PPC_BOOT_VOLUME_REF_NUM,
+        target_dir_id: PPC_ROOT_DIR_ID,
+        target_name: b"Target".to_vec(),
+    });
+    let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+    loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+        ref_num: current_resource_refnum,
+        path: "Test App".to_string(),
+        res_type: u32::from_be_bytes(*b"PICT"),
+        res_id: 128,
+        name: b"Title".to_vec(),
+        data: b"data".to_vec(),
+        raw_data: None,
+        raw_attrs: None,
+        attrs: 0,
+        handle,
+    });
+
+    loaded.cpu.gpr[3] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], handle);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+    assert_eq!(loaded.heap_cursor(), heap_cursor);
+    assert!(test_handle_records!(loaded)
+        .iter()
+        .all(|record| record.handle != handle));
+    assert_eq!(loaded.memory.read_u32_be(handle), Some(0));
+    assert!(loaded.aliases.is_empty());
+    assert_eq!(loaded.process_file_system.vfs_resources[0].handle, 0);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetHandleSize;
+    loaded.cpu.gpr[3] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.last_mem_error(), PPC_NIL_HANDLE_ERR);
+}
+
+#[test]
+fn hle_import_runner_tracks_handle_lock_and_no_purge_state() {
+    let pef = synthetic_pef_with_import(b"HLock");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        b"lockable",
+    );
+    assert_ne!(handle, 0);
+    loaded.cpu.gpr[3] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], handle);
+    assert_eq!(
+        loaded.handle_states(),
+        vec![PpcHandleStateRecord {
+            handle,
+            locked: true,
+            high_locked: false,
+            no_purge: false,
+            resource: false,
+        }]
+    );
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::HNoPurge;
+    loaded.cpu.gpr[3] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.handle_states(),
+        vec![PpcHandleStateRecord {
+            handle,
+            locked: true,
+            high_locked: false,
+            no_purge: true,
+            resource: false,
+        }]
+    );
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::HLockHi;
+    loaded.cpu.gpr[3] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.handle_states(),
+        vec![PpcHandleStateRecord {
+            handle,
+            locked: true,
+            high_locked: true,
+            no_purge: true,
+            resource: false,
+        }]
+    );
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::HUnlock;
+    loaded.cpu.gpr[3] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.handle_states(),
+        vec![PpcHandleStateRecord {
+            handle,
+            locked: false,
+            high_locked: false,
+            no_purge: true,
+            resource: false,
+        }]
+    );
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::HLock;
+    loaded.cpu.gpr[3] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.handle_states(),
+        vec![PpcHandleStateRecord {
+            handle,
+            locked: true,
+            high_locked: false,
+            no_purge: true,
+            resource: false,
+        }]
+    );
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::HPurge;
+    loaded.cpu.gpr[3] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.handle_states(),
+        vec![PpcHandleStateRecord {
+            handle,
+            locked: true,
+            high_locked: false,
+            no_purge: false,
+            resource: false,
+        }]
+    );
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::HNoPurge;
+    loaded.cpu.gpr[3] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.handle_states(),
+        vec![PpcHandleStateRecord {
+            handle,
+            locked: true,
+            high_locked: false,
+            no_purge: true,
+            resource: false,
+        }]
+    );
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::MoveHHi;
+    loaded.cpu.gpr[3] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], handle);
+    assert_eq!(
+        loaded.handle_states(),
+        vec![PpcHandleStateRecord {
+            handle,
+            locked: true,
+            high_locked: false,
+            no_purge: true,
+            resource: false,
+        }]
+    );
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::HGetState;
+    loaded.cpu.gpr[3] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0x80);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::HSetState;
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = 0x40;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.handle_states(),
+        vec![PpcHandleStateRecord {
+            handle,
+            locked: false,
+            high_locked: false,
+            no_purge: false,
+            resource: false,
+        }]
+    );
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = PPC_HEAP_BASE + 0x8000;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.handle_states().len(), 1);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DisposeHandle;
+    loaded.cpu.gpr[3] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert!(loaded.handle_states().is_empty());
+    assert!(test_handle_records!(loaded)
+        .iter()
+        .all(|record| record.handle != handle));
+    assert_eq!(loaded.memory.read_u32_be(handle), Some(0));
+}
+
+#[test]
+fn hle_import_runner_dispose_handle_tolerates_unknown_handle() {
+    let pef = synthetic_pef_with_import(b"DisposeHandle");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let heap_cursor = loaded.heap_cursor();
+    loaded.set_last_mem_error(PPC_MEM_FULL_ERR);
+    loaded.cpu.gpr[3] = PPC_HEAP_BASE + 0x4000;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], PPC_HEAP_BASE + 0x4000);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+    assert_eq!(loaded.heap_cursor(), heap_cursor);
+    assert!(test_handle_records!(loaded).is_empty());
+}
+
+#[test]
+fn hle_import_runner_handles_new_handle_clear_allocation() {
+    let pef = synthetic_pef_with_import(b"NewHandleClear");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let heap_cursor = loaded.heap_cursor();
+    loaded.cpu.gpr[3] = 12;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    let handle = loaded.cpu.gpr[3];
+    assert_ne!(handle, 0);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+    assert_eq!(test_handle_records!(loaded).len(), 1);
+    assert_eq!(test_handle_records!(loaded)[0].handle, handle);
+    assert_eq!(handle, heap_cursor);
+    assert_eq!(handle & (PPC_HEAP_ALIGNMENT - 1), 0);
+    assert_eq!(
+        test_handle_records!(loaded)[0].ptr,
+        heap_cursor + PPC_HEAP_ALIGNMENT
+    );
+    assert_eq!(
+        test_handle_records!(loaded)[0].ptr & (PPC_HEAP_ALIGNMENT - 1),
+        0
+    );
+    assert_eq!(test_handle_records!(loaded)[0].size, 12);
+    assert_eq!(
+        loaded.memory.read_u32_be(handle),
+        Some(heap_cursor + PPC_HEAP_ALIGNMENT)
+    );
+    assert_eq!(
+        loaded.heap_cursor(),
+        heap_cursor + ppc_allocation_size(4).unwrap() + ppc_allocation_size(12).unwrap()
+    );
+    for offset in 0..12 {
+        assert_eq!(
+            loaded
+                .memory
+                .read_u8(heap_cursor + PPC_HEAP_ALIGNMENT + offset),
+            Some(0)
+        );
+    }
+}
+
+#[test]
+fn new_handle_abi_marshalling_shares_semantics_without_sharing_addresses() {
+    fn classic_outcome(
+        trap_word: u16,
+        clear: bool,
+        size: u32,
+    ) -> (bool, i16, Option<u8>, Option<u32>, Option<bool>) {
+        let (mut dispatcher, mut cpu, mut bus) = crate::trap::test_helpers::setup();
+        dispatcher.current_trap_word = trap_word;
+        cpu.write_reg(Register::D0, size);
+        dispatcher
+            .dispatch_memory(false, 0x22, &mut cpu, &mut bus)
+            .expect("classic NewHandle should be handled")
+            .expect("classic NewHandle should return cleanly");
+
+        let handle = cpu.read_reg(Register::A0);
+        let error = cpu.read_reg(Register::D0) as i16;
+        if handle == 0 {
+            return (false, error, None, None, None);
+        }
+
+        let state = dispatcher.handle_state_bits(handle);
+        let ptr = bus.read_long(handle);
+        let memory_manager = dispatcher.process_memory_manager();
+        let memory_manager = memory_manager.borrow();
+        let allocation_size = memory_manager.classic_allocation_size(ptr);
+        let contents_zero = clear.then(|| {
+            bus.read_bytes(ptr, allocation_size.unwrap_or(0) as usize)
+                .iter()
+                .all(|&byte| byte == 0)
+        });
+        (true, error, state, allocation_size, contents_zero)
+    }
+
+    fn native_outcome(
+        clear: bool,
+        size: u32,
+    ) -> (bool, i16, Option<u8>, Option<u32>, Option<bool>) {
+        let import = if clear {
+            b"NewHandleClear".as_slice()
+        } else {
+            b"NewHandle".as_slice()
+        };
+        let pef = synthetic_pef_with_import(import);
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cpu.gpr[3] = size;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::NewHandle { clear },
+        );
+
+        let handle = loaded.cpu.gpr[3];
+        let error = loaded.last_mem_error();
+        let (state, record) = {
+            let memory_manager = loaded.process_memory_manager.0.borrow();
+            (
+                memory_manager.state_for_handle(handle),
+                memory_manager.native_allocation(handle),
+            )
+        };
+        let contents_zero = if clear {
+            record.map(|record| {
+                (0..record.size)
+                    .all(|offset| loaded.memory.read_u8(record.ptr + offset) == Some(0))
+            })
+        } else {
+            // Ordinary NewHandle contents are undefined. Do not compare
+            // whatever byte pattern a backend happens to leave there.
+            None
+        };
+        (
+            handle != 0,
+            error,
+            state,
+            record.map(|record| record.size),
+            contents_zero,
+        )
+    }
+
+    // The four classic trap variants (current/system × clear/non-clear)
+    // must reach the same semantic operation as the native InterfaceLib
+    // entry points. Handles and data pointers are intentionally omitted
+    // from the compared outcome because each allocator owns its physical
+    // address, alignment, and layout.
+    for (trap_word, clear) in [
+        (0xA022, false),
+        (0xA322, true),
+        (0xA422, false),
+        (0xA622, true),
+    ] {
+        let classic = classic_outcome(trap_word, clear, 13);
+        let native = native_outcome(clear, 13);
+        assert_eq!(classic, native, "trap ${trap_word:04X} semantic outcome");
+        assert_eq!(
+            classic,
+            (true, 0, Some(0), Some(13), clear.then_some(true))
+        );
+    }
+
+    // Macintosh Size is signed. Both ABI adapters reject the same
+    // negative value before entering an unsigned physical allocator.
+    let classic = classic_outcome(0xA022, false, u32::MAX);
+    let native = native_outcome(false, u32::MAX);
+    assert_eq!(classic, native);
+    assert_eq!(classic, (false, -108, None, None, None));
+
+    fn classic_mem_full_outcome() -> (bool, i16, Option<u8>, Option<u32>, Option<bool>) {
+        let (mut dispatcher, mut cpu, mut bus) = crate::trap::test_helpers::setup();
+        let heap_limit = bus.classic_heap_limit();
+        bus.reserve_heap_until(heap_limit);
+        dispatcher.current_trap_word = 0xA022;
+        cpu.write_reg(Register::D0, 24);
+        dispatcher
+            .dispatch_memory(false, 0x22, &mut cpu, &mut bus)
+            .expect("classic NewHandle should be handled")
+            .expect("classic NewHandle failure should stay in the ABI shim");
+        (
+            cpu.read_reg(Register::A0) != 0,
+            cpu.read_reg(Register::D0) as i16,
+            dispatcher.handle_state_bits(cpu.read_reg(Register::A0)),
+            None,
+            None,
+        )
+    }
+
+    fn native_mem_full_outcome() -> (bool, i16, Option<u8>, Option<u32>, Option<bool>) {
+        let pef = synthetic_pef_with_import(b"NewHandle");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let heap_cursor = loaded.heap_cursor();
+        loaded.set_heap_limit(heap_cursor + 8);
+        loaded.cpu.gpr[3] = 24;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::NewHandle { clear: false },
+        );
+        let handle = loaded.cpu.gpr[3];
+        let state = loaded
+            .process_memory_manager
+            .0
+            .borrow()
+            .state_for_handle(handle);
+        (
+            handle != 0,
+            loaded.last_mem_error(),
+            state,
+            None,
+            None,
+        )
+    }
+
+    let classic = classic_mem_full_outcome();
+    let native = native_mem_full_outcome();
+    assert_eq!(classic, native);
+    assert_eq!(classic, (false, -108, None, None, None));
+
+    // TempNewHandle has a result-code pointer and temporary lifetime, so
+    // it remains a distinct ABI route rather than silently inheriting the
+    // ordinary NewHandle request/result operation above.
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "TempNewHandle"),
+        PpcImportDispatcherTarget::TempNewHandle
+    );
+}
+
+#[test]
+fn hle_import_runner_reuses_disposed_handle_capacity() {
+    let pef = synthetic_pef_with_import(b"NewHandleClear");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 64;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    let handle = loaded.cpu.gpr[3];
+    let ptr = loaded.memory.read_u32_be(handle).unwrap();
+    let heap_cursor = loaded.heap_cursor();
+    loaded.memory.write_u8(ptr, 0xff).unwrap();
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DisposeHandle;
+    loaded.cpu.gpr[3] = handle;
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert!(test_handle_records!(loaded).is_empty());
+    assert_eq!(loaded.free_handle_blocks().len(), 1);
+    assert_eq!(loaded.free_handle_blocks()[0].capacity, 64);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::NewHandle { clear: true };
+    loaded.cpu.gpr[3] = 16;
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], handle);
+    assert_eq!(loaded.memory.read_u32_be(handle), Some(ptr));
+    assert_eq!(loaded.heap_cursor(), heap_cursor);
+    assert_eq!(test_handle_records!(loaded)[0].size, 16);
+    assert_eq!(test_handle_records!(loaded)[0].capacity, 64);
+    assert!(loaded.free_handle_blocks().is_empty());
+    for offset in 0..16 {
+        assert_eq!(loaded.memory.read_u8(ptr + offset), Some(0));
+    }
+}
+
+#[test]
+fn hle_import_runner_handles_temp_new_handle_result_code() {
+    let pef = synthetic_pef_with_import(b"TempNewHandle");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let result_code_ptr = PPC_DATA_BASE;
+    loaded.memory.add_region(result_code_ptr, vec![0xff; 4]);
+    loaded.cpu.gpr[3] = 5;
+    loaded.cpu.gpr[4] = result_code_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    let handle = loaded.cpu.gpr[3];
+    assert_ne!(handle, 0);
+    assert_eq!(
+        loaded.memory.read_u16_be(result_code_ptr),
+        Some(PPC_NO_ERR as u16)
+    );
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+    assert_eq!(test_handle_records!(loaded).len(), 1);
+    assert_eq!(test_handle_records!(loaded)[0].handle, handle);
+    assert_eq!(test_handle_records!(loaded)[0].size, 5);
+}
+
+#[test]
+fn hle_import_runner_temp_new_handle_heap_full_reports_result_code() {
+    let pef = synthetic_pef_with_import(b"TempNewHandle");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let result_code_ptr = PPC_DATA_BASE;
+    let heap_cursor = loaded.heap_cursor();
+    loaded.memory.add_region(result_code_ptr, vec![0xff; 4]);
+    loaded.set_heap_limit(heap_cursor + 8);
+    loaded.cpu.gpr[3] = 4;
+    loaded.cpu.gpr[4] = result_code_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(
+        loaded.memory.read_u16_be(result_code_ptr),
+        Some(PPC_MEM_FULL_ERR as u16)
+    );
+    assert_eq!(loaded.last_mem_error(), PPC_MEM_FULL_ERR);
+    assert_eq!(loaded.heap_cursor(), heap_cursor);
+    assert!(test_handle_records!(loaded).is_empty());
+}
+
+#[test]
+fn hle_import_runner_handles_max_mem_and_writes_zero_grow() {
+    let pef = synthetic_pef_with_import(b"MaxMem");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = PPC_DATA_BASE;
+    loaded
+        .memory
+        .write_u32_be(PPC_DATA_BASE, 0xffff_ffff)
+        .unwrap();
+    let free = test_heap_limit!(loaded) - loaded.heap_cursor();
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], free);
+    assert_eq!(loaded.memory.read_u32_be(PPC_DATA_BASE), Some(0));
+}
+
