@@ -2429,19 +2429,50 @@ impl MacMemoryBus {
         if self.addressing_32_bit {
             address
         } else {
-            address & 0x00FF_FFFF
+            let address24 = address & 0x00FF_FFFF;
+            let alias_start = self.synthetic_floor & 0x00FF_FFFF;
+            let alias_end = alias_start.saturating_add(SYNTHETIC_RESERVE_BYTES);
+            // In 24-bit mode the top byte of a pointer is ignored (Inside
+            // Macintosh: Memory, 1992, pp. 3-5--3-6). Keep system-owned trap
+            // code callable across SwapMMUMode by presenting its top-of-RAM
+            // reservation in the non-RAM half of the 24-bit address space.
+            // Never overlay the application's $000000-$7FFFFF RAM window.
+            if self.synthetic_floor >= 0x0100_0000
+                && alias_start >= 0x0080_0000
+                && alias_end <= 0x0100_0000
+                && (alias_start..alias_end).contains(&address24)
+            {
+                self.synthetic_floor + (address24 - alias_start)
+            } else {
+                address24
+            }
         }
     }
 
     #[inline]
     fn range_translates_contiguously(&self, address: u32, len: usize) -> Option<u32> {
         let translated = self.translate_guest_address(address);
+        let address24 = address & 0x00FF_FFFF;
         let address_space_end = if self.addressing_32_bit {
             u64::from(u32::MAX) + 1
         } else {
             0x0100_0000
         };
-        ((translated as u64).saturating_add(len as u64) <= address_space_end).then_some(translated)
+        let start = if self.addressing_32_bit {
+            address
+        } else {
+            address24
+        };
+        if (start as u64).saturating_add(len as u64) > address_space_end {
+            return None;
+        }
+        if len != 0 {
+            let last = address.wrapping_add((len - 1) as u32);
+            if self.translate_guest_address(last) != translated.wrapping_add((len - 1) as u32) {
+                return None;
+            }
+        }
+        Some(translated)
     }
 
     #[inline]
@@ -3411,6 +3442,24 @@ mod tests {
         assert_eq!(bus.read_long(0x0001_0004), 0x789A_BCDE);
         assert_eq!(bus.read_bytes(0x0001_0008, 4), [1, 2, 3, 4]);
         assert_eq!(bus.read_long(0xEE01_0004), 0x789A_BCDE);
+    }
+
+    #[test]
+    fn system_trap_gateway_remains_callable_after_switch_to_24_bit_mode() {
+        let mut bus = MacMemoryBus::new(0x0200_0000);
+        let gateway = bus.get_or_create_system_trap_gateway(0xA8AA);
+        assert_eq!(bus.read_word(gateway), 0xACAA);
+
+        bus.set_addressing_32_bit(false);
+        assert_eq!(bus.read_word(gateway), 0xACAA);
+        assert_eq!(bus.read_word(gateway & 0x00FF_FFFF), 0xACAA);
+        assert_eq!(bus.read_bytes(gateway, 2), [0xAC, 0xAA]);
+        let alias_end = bus.synthetic_floor + SYNTHETIC_RESERVE_BYTES;
+        assert!(bus
+            .range_translates_contiguously(alias_end - 2, 4)
+            .is_none());
+        assert_eq!(bus.read_word(0x0001_0000), 0);
+        assert!(bus.is_guest_address_mapped(gateway, 2));
     }
 
     #[test]
