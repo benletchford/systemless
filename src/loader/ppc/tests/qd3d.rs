@@ -1,6 +1,113 @@
 use super::*;
 
 #[test]
+fn quickdraw_3d_vector_length_and_strided_point_bounds() {
+    let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3Vector3D_Length");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let vector_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(vector_ptr, vec![0; 64]);
+    ppc_write_q3_vector3d(&mut loaded.memory, vector_ptr, (3.0, 4.0, 12.0)).unwrap();
+    loaded.cpu.gpr[3] = vector_ptr;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(f64::from_bits(loaded.cpu.fpr[1]), 13.0);
+
+    let pef =
+        synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3BoundingBox_SetFromPoints3D");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let points_ptr = PPC_DATA_BASE + 0x1000;
+    let box_ptr = PPC_DATA_BASE + 0x1100;
+    loaded.memory.add_region(points_ptr, vec![0; 64]);
+    loaded
+        .memory
+        .add_region(box_ptr, vec![0; PPC_Q3_BOUNDING_BOX_SIZE as usize]);
+    ppc_write_q3_vector3d(&mut loaded.memory, points_ptr, (3.0, -4.0, 5.0)).unwrap();
+    ppc_write_q3_vector3d(&mut loaded.memory, points_ptr + 16, (-2.0, 7.0, 1.0)).unwrap();
+    loaded.cpu.gpr[3] = box_ptr;
+    loaded.cpu.gpr[4] = points_ptr;
+    loaded.cpu.gpr[5] = 2;
+    loaded.cpu.gpr[6] = 16;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], box_ptr);
+    assert_eq!(
+        ppc_read_q3_vector3d(&mut loaded.memory, box_ptr),
+        Some((-2.0, -4.0, 1.0))
+    );
+    assert_eq!(
+        ppc_read_q3_vector3d(&mut loaded.memory, box_ptr + 12),
+        Some((3.0, 7.0, 5.0))
+    );
+    assert_eq!(loaded.memory.read_u32_be(box_ptr + 24), Some(0));
+}
+
+#[test]
+fn quickdraw_3d_bounding_sphere_contains_submitted_trimesh_points() {
+    let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3View_StartBoundingSphere");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let view = PPC_Q3_OBJECT_BASE;
+    let trimesh = PPC_Q3_OBJECT_BASE + PPC_Q3_OBJECT_STRIDE;
+    let sphere_ptr = PPC_DATA_BASE + 0x1000;
+    let points_ptr = PPC_DATA_BASE + 0x1100;
+    loaded
+        .memory
+        .add_region(sphere_ptr, vec![0; PPC_Q3_BOUNDING_SPHERE_SIZE as usize]);
+    loaded.memory.add_region(points_ptr, vec![0; 24]);
+    ppc_write_q3_vector3d(&mut loaded.memory, points_ptr, (0.0, 0.0, 0.0)).unwrap();
+    ppc_write_q3_vector3d(&mut loaded.memory, points_ptr + 12, (0.0, 0.0, 10.0)).unwrap();
+    loaded
+        .q3_objects
+        .push(test_q3_object(view, PPC_Q3_TYPE_VIEW));
+    let mut data = vec![0; PPC_Q3_TRIMESH_DATA_SIZE as usize];
+    ppc_q3_trimesh_header_put_u32(&mut data, PPC_Q3_TRIMESH_NUM_POINTS_OFFSET, 2).unwrap();
+    ppc_q3_trimesh_header_put_u32(&mut data, PPC_Q3_TRIMESH_POINTS_OFFSET, points_ptr).unwrap();
+    loaded.q3_trimeshes.push(PpcQ3TriMeshRecord {
+        trimesh,
+        data,
+        triangle_attribute_sets: Vec::new(),
+        get_data_copies: Vec::new(),
+    });
+    loaded.cpu.gpr[3] = view;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    loaded.q3_submissions.push(PpcQ3SubmissionRecord {
+        view,
+        kind: PpcQ3SubmissionKind::TriMesh,
+        primary: trimesh,
+        secondary: 0,
+    });
+    let mut local_to_world = ppc_q3_matrix4x4_identity();
+    local_to_world[3][0] = 10.0;
+    loaded
+        .q3_submission_transforms
+        .push(PpcQ3SubmissionTransformRecord {
+            view,
+            kind: PpcQ3SubmissionKind::TriMesh,
+            primary: trimesh,
+            secondary: 0,
+            local_to_world,
+        });
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Q3ViewEndBoundingSphere;
+    loaded.cpu.gpr[3] = view;
+    loaded.cpu.gpr[4] = sphere_ptr;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], PPC_Q3_VIEW_STATUS_DONE);
+    assert_eq!(
+        ppc_read_q3_vector3d(&mut loaded.memory, sphere_ptr),
+        Some((10.0, 0.0, 5.0))
+    );
+    assert_eq!(
+        ppc_read_f32_be(&mut loaded.memory, sphere_ptr + 12),
+        Some(5.0)
+    );
+    assert_eq!(loaded.memory.read_u32_be(sphere_ptr + 16), Some(0));
+}
+
+#[test]
 fn hle_import_runner_handles_quickdraw_3d_initialize_success() {
     let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3Initialize");
     let mut loaded = load_pef_application(&pef).unwrap();

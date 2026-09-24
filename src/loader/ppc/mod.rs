@@ -857,6 +857,9 @@ const PPC_Q3_VECTOR3D_SIZE: u32 = 12;
 const PPC_Q3_BOUNDING_BOX_SIZE: u32 = PPC_Q3_POINT3D_SIZE * 2 + 4;
 const PPC_Q3_BOUNDING_BOX_MAX_OFFSET: u32 = PPC_Q3_POINT3D_SIZE;
 const PPC_Q3_BOUNDING_BOX_IS_EMPTY_OFFSET: u32 = PPC_Q3_POINT3D_SIZE * 2;
+const PPC_Q3_BOUNDING_SPHERE_SIZE: u32 = PPC_Q3_POINT3D_SIZE + 8;
+const PPC_Q3_BOUNDING_SPHERE_RADIUS_OFFSET: u32 = PPC_Q3_POINT3D_SIZE;
+const PPC_Q3_BOUNDING_SPHERE_IS_EMPTY_OFFSET: u32 = PPC_Q3_POINT3D_SIZE + 4;
 const PPC_Q3_SOFTWARE_RENDER_MAX_POINTS: u32 = 65_536;
 const PPC_Q3_SOFTWARE_RENDER_MAX_TRIANGLES: u32 = 131_072;
 const PPC_Q3_SOFTWARE_RENDER_MAX_EDGES: u32 = 196_608;
@@ -2386,11 +2389,13 @@ pub enum PpcImportDispatcherTarget {
     Q3MacDrawContextNew,
     Q3DrawContextGetPane,
     Q3Vector3DNormalize,
+    Q3Vector3DLength,
     Q3Vector2DNormalize,
     Q3Vector3DCross,
     Q3Point2DDistance,
     Q3Point3DDistance,
     Q3Point3DCrossProductTri,
+    Q3BoundingBoxSetFromPoints3D,
     Q3Matrix3x3SetTranslate,
     Q3Matrix4x4SetIdentity,
     Q3Matrix4x4SetTranslate,
@@ -2434,6 +2439,8 @@ pub enum PpcImportDispatcherTarget {
     Q3ViewEndRendering,
     Q3ViewStartBoundingBox,
     Q3ViewEndBoundingBox,
+    Q3ViewStartBoundingSphere,
+    Q3ViewEndBoundingSphere,
     Q3ViewCancel,
     Q3ShaderSubmit,
     Q3StyleSubmit,
@@ -15118,6 +15125,9 @@ fn dispatcher_target_for_import(
         (library_name, "Q3Vector3D_Normalize") if is_quickdraw_3d_library(library_name) => {
             PpcImportDispatcherTarget::Q3Vector3DNormalize
         }
+        (library_name, "Q3Vector3D_Length") if is_quickdraw_3d_library(library_name) => {
+            PpcImportDispatcherTarget::Q3Vector3DLength
+        }
         (library_name, "Q3Vector2D_Normalize") if is_quickdraw_3d_library(library_name) => {
             PpcImportDispatcherTarget::Q3Vector2DNormalize
         }
@@ -15132,6 +15142,9 @@ fn dispatcher_target_for_import(
         }
         (library_name, "Q3Point3D_CrossProductTri") if is_quickdraw_3d_library(library_name) => {
             PpcImportDispatcherTarget::Q3Point3DCrossProductTri
+        }
+        (library_name, "Q3BoundingBox_SetFromPoints3D") if is_quickdraw_3d_library(library_name) => {
+            PpcImportDispatcherTarget::Q3BoundingBoxSetFromPoints3D
         }
         (library_name, "Q3File_SetStorage") if is_quickdraw_3d_library(library_name) => {
             PpcImportDispatcherTarget::Q3FileSetStorage
@@ -15209,6 +15222,12 @@ fn dispatcher_target_for_import(
         }
         (library_name, "Q3View_EndBoundingBox") if is_quickdraw_3d_library(library_name) => {
             PpcImportDispatcherTarget::Q3ViewEndBoundingBox
+        }
+        (library_name, "Q3View_StartBoundingSphere") if is_quickdraw_3d_library(library_name) => {
+            PpcImportDispatcherTarget::Q3ViewStartBoundingSphere
+        }
+        (library_name, "Q3View_EndBoundingSphere") if is_quickdraw_3d_library(library_name) => {
+            PpcImportDispatcherTarget::Q3ViewEndBoundingSphere
         }
         (library_name, "Q3View_Cancel") if is_quickdraw_3d_library(library_name) => {
             PpcImportDispatcherTarget::Q3ViewCancel
@@ -19486,11 +19505,13 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             unreachable!("QuickDraw 3D geometry imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3Vector3DNormalize
+        | PpcImportDispatcherTarget::Q3Vector3DLength
         | PpcImportDispatcherTarget::Q3Vector2DNormalize
         | PpcImportDispatcherTarget::Q3Vector3DCross
         | PpcImportDispatcherTarget::Q3Point2DDistance
         | PpcImportDispatcherTarget::Q3Point3DDistance
         | PpcImportDispatcherTarget::Q3Point3DCrossProductTri
+        | PpcImportDispatcherTarget::Q3BoundingBoxSetFromPoints3D
         | PpcImportDispatcherTarget::Q3Matrix3x3SetTranslate
         | PpcImportDispatcherTarget::Q3Matrix4x4SetIdentity
         | PpcImportDispatcherTarget::Q3Matrix4x4SetTranslate
@@ -19541,6 +19562,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::Q3ViewEndRendering
         | PpcImportDispatcherTarget::Q3ViewStartBoundingBox
         | PpcImportDispatcherTarget::Q3ViewEndBoundingBox
+        | PpcImportDispatcherTarget::Q3ViewStartBoundingSphere
+        | PpcImportDispatcherTarget::Q3ViewEndBoundingSphere
         | PpcImportDispatcherTarget::Q3ViewCancel => {
             unreachable!("QuickDraw 3D view imports return through typed dispatch")
         }
@@ -31145,6 +31168,160 @@ fn ppc_q3_write_bounding_box(memory: &mut PpcSectionMem, bounding_box_ptr: u32) 
     Some(())
 }
 
+fn ppc_q3_view_end_bounding_sphere(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    q3_views: &mut Vec<PpcQ3ViewStateRecord>,
+    q3_objects: &[PpcQ3ObjectRecord],
+    q3_submissions: &mut Vec<PpcQ3SubmissionRecord>,
+    q3_submission_transforms: &mut Vec<PpcQ3SubmissionTransformRecord>,
+    q3_submission_materials: &mut Vec<PpcQ3SubmissionMaterialRecord>,
+    q3_submission_lights: &mut Vec<PpcQ3SubmissionLightRecord>,
+    q3_retained_frames: &mut Vec<PpcQ3RetainedFrameRecord>,
+    q3_trimeshes: &[PpcQ3TriMeshRecord],
+    q3_error_state: &mut PpcQ3ErrorState,
+) -> u32 {
+    let view = cpu.gpr[3];
+    let sphere_ptr = cpu.gpr[4];
+    if sphere_ptr == 0
+        || !ppc_memory_can_write_bytes(memory, sphere_ptr, PPC_Q3_BOUNDING_SPHERE_SIZE)
+        || !ppc_q3_validate_view_handle(q3_objects, q3_error_state, view)
+    {
+        return PPC_Q3_VIEW_STATUS_ERROR;
+    }
+    let Some(record) = ppc_q3_view_mut(q3_views, view) else {
+        return PPC_Q3_VIEW_STATUS_ERROR;
+    };
+    if record.bounding_box_depth == 0 {
+        return PPC_Q3_VIEW_STATUS_ERROR;
+    }
+    record.bounding_box_depth -= 1;
+    let completed = record.bounding_box_depth == 0;
+    let sphere = if completed {
+        let mut frame = ppc_q3_take_completed_frame(
+            view,
+            q3_submissions,
+            q3_submission_transforms,
+            q3_submission_materials,
+            q3_submission_lights,
+        );
+        frame.retained_trimeshes =
+            ppc_q3_capture_retained_trimeshes(memory, q3_objects, q3_trimeshes, &frame);
+        let sphere = ppc_q3_bounding_sphere_from_frame(memory, &frame);
+        if ppc_q3_completed_frame_has_trimesh(&frame) {
+            ppc_q3_limit_retained_frame_trimeshes(
+                &mut frame,
+                PPC_Q3_RETAINED_BOUNDING_TRIMESH_PREVIEW_LIMIT,
+            );
+            ppc_q3_replace_retained_frame(q3_retained_frames, frame);
+        }
+        sphere
+    } else {
+        None
+    };
+    let (center, radius, is_empty) = match sphere {
+        Some((center, radius)) => (center, radius, 0),
+        None => ((0.0, 0.0, 0.0), 0.0, 1),
+    };
+    if ppc_write_q3_vector3d(memory, sphere_ptr, center).is_none()
+        || ppc_write_f32_be(memory, sphere_ptr + PPC_Q3_BOUNDING_SPHERE_RADIUS_OFFSET, radius)
+            .is_none()
+        || memory
+            .write_u32_be(sphere_ptr + PPC_Q3_BOUNDING_SPHERE_IS_EMPTY_OFFSET, is_empty)
+            .is_none()
+    {
+        return PPC_Q3_VIEW_STATUS_ERROR;
+    }
+    PPC_Q3_VIEW_STATUS_DONE
+}
+
+fn ppc_q3_bounding_sphere_from_frame(
+    memory: &mut PpcSectionMem,
+    frame: &PpcQ3CompletedFrameRecord,
+) -> Option<((f32, f32, f32), f32)> {
+    let mut points = Vec::new();
+    for submission in frame
+        .submissions
+        .iter()
+        .filter(|submission| submission.kind == PpcQ3SubmissionKind::TriMesh)
+    {
+        let Some(trimesh) = frame
+            .retained_trimeshes
+            .iter()
+            .find(|record| record.trimesh == submission.primary)
+        else {
+            continue;
+        };
+        let Some(count) =
+            ppc_q3_trimesh_header_u32(&trimesh.data, PPC_Q3_TRIMESH_NUM_POINTS_OFFSET)
+        else {
+            continue;
+        };
+        let Some(points_ptr) =
+            ppc_q3_trimesh_header_u32(&trimesh.data, PPC_Q3_TRIMESH_POINTS_OFFSET)
+        else {
+            continue;
+        };
+        if count > PPC_Q3_SOFTWARE_RENDER_MAX_POINTS || points_ptr == 0 {
+            continue;
+        }
+        let transform = frame
+            .submission_transforms
+            .iter()
+            .find(|record| {
+                record.view == submission.view
+                    && record.kind == submission.kind
+                    && record.primary == submission.primary
+                    && record.secondary == submission.secondary
+            })
+            .map(|record| record.local_to_world)
+            .unwrap_or_else(ppc_q3_matrix4x4_identity);
+        for index in 0..count {
+            let Some(point_ptr) = index
+                .checked_mul(PPC_Q3_POINT3D_SIZE)
+                .and_then(|offset| points_ptr.checked_add(offset))
+            else {
+                continue;
+            };
+            let Some(point) = ppc_read_q3_vector3d(memory, point_ptr) else {
+                continue;
+            };
+            let world = ppc_q3_point3d_transform_values(point, transform);
+            if ppc_q3_point_finite(world) {
+                points.push(world);
+            }
+        }
+    }
+    if points.is_empty() {
+        return None;
+    }
+    let mut min = (f32::INFINITY, f32::INFINITY, f32::INFINITY);
+    let mut max = (f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for point in &points {
+        min.0 = min.0.min(point.0);
+        min.1 = min.1.min(point.1);
+        min.2 = min.2.min(point.2);
+        max.0 = max.0.max(point.0);
+        max.1 = max.1.max(point.1);
+        max.2 = max.2.max(point.2);
+    }
+    let center = (
+        min.0 + (max.0 - min.0) * 0.5,
+        min.1 + (max.1 - min.1) * 0.5,
+        min.2 + (max.2 - min.2) * 0.5,
+    );
+    let radius = points
+        .iter()
+        .map(|point| {
+            let dx = point.0 - center.0;
+            let dy = point.1 - center.1;
+            let dz = point.2 - center.2;
+            dx.mul_add(dx, dy.mul_add(dy, dz * dz)).sqrt()
+        })
+        .fold(0.0_f32, f32::max);
+    Some((center, radius))
+}
+
 fn ppc_q3_view_cancel(
     cpu: &PpcCpu,
     q3_views: &mut Vec<PpcQ3ViewStateRecord>,
@@ -32453,6 +32630,62 @@ fn ppc_q3_point3d_distance(memory: &mut PpcSectionMem, first_ptr: u32, second_pt
     let dy = y1 - y2;
     let dz = z1 - z2;
     (dx.mul_add(dx, dy.mul_add(dy, dz * dz))).sqrt()
+}
+
+fn ppc_q3_vector3d_length(memory: &mut PpcSectionMem, vector_ptr: u32) -> f32 {
+    let Some((x, y, z)) = ppc_read_q3_vector3d(memory, vector_ptr) else {
+        return 0.0;
+    };
+    (x.mul_add(x, y.mul_add(y, z * z))).sqrt()
+}
+
+fn ppc_q3_bounding_box_set_from_points3d(
+    memory: &mut PpcSectionMem,
+    result_ptr: u32,
+    points_ptr: u32,
+    count: u32,
+    stride: u32,
+) -> u32 {
+    if result_ptr == 0
+        || !ppc_memory_can_write_bytes(memory, result_ptr, PPC_Q3_BOUNDING_BOX_SIZE)
+        || count > PPC_Q3_SOFTWARE_RENDER_MAX_POINTS
+        || (count > 0 && (points_ptr == 0 || stride < PPC_Q3_POINT3D_SIZE))
+    {
+        return 0;
+    }
+    let mut min = (f32::INFINITY, f32::INFINITY, f32::INFINITY);
+    let mut max = (f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for index in 0..count {
+        let Some(point_ptr) = index
+            .checked_mul(stride)
+            .and_then(|offset| points_ptr.checked_add(offset))
+        else {
+            return 0;
+        };
+        let Some(point) = ppc_read_q3_vector3d(memory, point_ptr) else {
+            return 0;
+        };
+        if !ppc_q3_point_finite(point) {
+            return 0;
+        }
+        min.0 = min.0.min(point.0);
+        min.1 = min.1.min(point.1);
+        min.2 = min.2.min(point.2);
+        max.0 = max.0.max(point.0);
+        max.1 = max.1.max(point.1);
+        max.2 = max.2.max(point.2);
+    }
+    if count == 0 {
+        min = (0.0, 0.0, 0.0);
+        max = min;
+    }
+    let ok = ppc_write_q3_vector3d(memory, result_ptr, min).is_some()
+        && ppc_write_q3_vector3d(memory, result_ptr + PPC_Q3_BOUNDING_BOX_MAX_OFFSET, max)
+            .is_some()
+        && memory
+            .write_u32_be(result_ptr + PPC_Q3_BOUNDING_BOX_IS_EMPTY_OFFSET, u32::from(count == 0))
+            .is_some();
+    if ok { result_ptr } else { 0 }
 }
 
 fn ppc_q3_point3d_cross_product_tri(
