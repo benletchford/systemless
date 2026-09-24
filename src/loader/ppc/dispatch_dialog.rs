@@ -403,6 +403,16 @@ pub(super) fn dispatch_dialog_import(
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
+        PpcImportDispatcherTarget::SetDialogTracksCursor => {
+            // SetDialogTracksCursor (DialogPtr, Boolean) returns OSErr.
+            // Cursor tracking is performed by the host UI when applicable.
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcImportDispatcherTarget::StdFilterProc => {
+            // The standard modal filter declines events that it does not
+            // handle; ModalDialog then performs its default event handling.
+            Some(PpcImportAction::Return(0))
+        }
         PpcImportDispatcherTarget::DrawDialog => {
             if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
                 return Some(action);

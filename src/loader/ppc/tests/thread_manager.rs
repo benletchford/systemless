@@ -1,6 +1,134 @@
 use super::*;
 
 #[test]
+fn threads_lib_get_current_thread_reaches_the_native_thread_manager() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"ThreadsLib",
+        b"GetCurrentThread",
+    ))
+    .unwrap();
+    let out = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(out, vec![0xaa; 4]);
+    loaded.cpu.gpr[3] = out;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(out), Some(2));
+}
+
+#[test]
+fn threads_lib_set_thread_terminator_records_the_registered_callback() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"ThreadsLib",
+        b"SetThreadTerminator",
+    ))
+    .unwrap();
+    loaded.cpu.gpr[3..6].copy_from_slice(&[2, PPC_CODE_BASE + 0x100, 0x1234_5678]);
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(
+        loaded
+            .toolbox_startup
+            .execution
+            .calls()
+            .thread_terminator(crate::guest_call::ExecutionTaskId::APPLICATION),
+        Some((PPC_CODE_BASE + 0x100, 0x1234_5678))
+    );
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 99;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-618));
+}
+
+#[test]
+fn threads_lib_set_thread_switcher_keeps_in_and_out_callbacks_separate() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"ThreadsLib",
+        b"SetThreadSwitcher",
+    ))
+    .unwrap();
+    let calls = loaded.guest_calls().shared_handle();
+    for (switch_in, procedure, parameter) in [
+        (false, PPC_CODE_BASE + 0x100, 0xaaaa),
+        (true, PPC_CODE_BASE + 0x200, 0xbbbb),
+    ] {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3..7].copy_from_slice(&[2, procedure, parameter, u32::from(switch_in)]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+    assert_eq!(
+        calls.thread_switcher(crate::guest_call::ExecutionTaskId::APPLICATION, false),
+        Some((PPC_CODE_BASE + 0x100, 0xaaaa))
+    );
+    assert_eq!(
+        calls.thread_switcher(crate::guest_call::ExecutionTaskId::APPLICATION, true),
+        Some((PPC_CODE_BASE + 0x200, 0xbbbb))
+    );
+}
+
+#[test]
+fn native_thread_terminator_runs_before_returning_the_thread_result() {
+    use crate::guest_call::ExecutionTaskId;
+    const ENTRY: u32 = PPC_CODE_BASE + 0x2000;
+    const TERMINATOR: u32 = PPC_CODE_BASE + 0x2400;
+    const MADE: u32 = PPC_DATA_BASE + 0x2000;
+    const OUTPUT: u32 = PPC_DATA_BASE + 0x3000;
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewThread")).unwrap();
+    loaded.memory.add_region(
+        ENTRY,
+        [0x3860_002au32, BLR]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+    );
+    loaded.memory.add_region(
+        TERMINATOR,
+        [
+            0x3cc0_0000 | (OUTPUT >> 16),
+            0x60c6_0000 | (OUTPUT & 0xffff),
+            0x9066_0000,
+            0x9086_0004,
+            0x3860_0063,
+            BLR,
+        ]
+        .into_iter()
+        .flat_map(u32::to_be_bytes)
+        .collect(),
+    );
+    loaded.memory.add_region(MADE, vec![0; 4]);
+    loaded.memory.add_region(OUTPUT, vec![0; 12]);
+    loaded.cpu.gpr[3..10].copy_from_slice(&[1, ENTRY, 17, 4096, 0, OUTPUT + 8, MADE]);
+    assert_eq!(loaded.run_with_hle_imports(64).unsupported_import_index, None);
+    let worker = ExecutionTaskId::from_thread_id(loaded.memory.read_u32_be(MADE).unwrap());
+    loaded
+        .guest_calls()
+        .set_thread_terminator(worker, TERMINATOR, 0x1234_5678)
+        .unwrap();
+    let calls = loaded.guest_calls().shared_handle();
+    assert!(calls
+        .yield_native_thread(&mut loaded.cpu, worker.thread_id())
+        .unwrap());
+    for _ in 0..5 {
+        loaded.run_with_hle_imports(256);
+        if loaded.guest_calls().scheduling_state(worker).is_none() {
+            break;
+        }
+    }
+    assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(worker.thread_id()));
+    assert_eq!(loaded.memory.read_u32_be(OUTPUT + 4), Some(0x1234_5678));
+    assert_eq!(loaded.memory.read_u32_be(OUTPUT + 8), Some(42));
+    assert_eq!(loaded.guest_calls().current_task(), ExecutionTaskId::APPLICATION);
+}
+
+#[test]
 fn native_stack_space_import_uses_the_parked_classic_application_limit() {
     use crate::guest_call::{ExecutionTaskId, GuestCallTarget, PowerPcArguments};
     const OUTPUT: u32 = PPC_DATA_BASE + 0x5000;

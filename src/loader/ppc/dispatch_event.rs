@@ -467,10 +467,12 @@ pub(super) fn dispatch_event_import(
                     let _ = memory.write_u32_be(pending, 0);
                 }
             }
-            if crate::trap::dispatch::trace_input_enabled() {
+            if crate::trap::dispatch::trace_input_enabled()
+                || (has_event && crate::trap::dispatch::trace_delivered_events_enabled())
+            {
                 eprintln!(
-                    "[INPUT] PPC {} mask=${event_mask:04X} event_ptr=${event_ptr:08X} sleep={} -> has_event={} what={} message=${message:08X} where=({}, {}) modifiers=${modifiers:04X}",
-                    binding.symbol_name, sleep_ticks, has_event, what, where_v, where_h,
+                    "[INPUT] PPC {} lr=${:08X} mask=${event_mask:04X} event_ptr=${event_ptr:08X} sleep={} -> has_event={} what={} message=${message:08X} where=({}, {}) modifiers=${modifiers:04X}",
+                    binding.symbol_name, cpu.lr, sleep_ticks, has_event, what, where_v, where_h,
                 );
             }
             if event_ptr != 0

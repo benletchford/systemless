@@ -13,6 +13,9 @@ pub(super) struct PpcCfmDispatchContext<'a> {
     pub(super) heap_limit: u32,
     pub(super) cfm_connections: &'a mut Vec<PpcCfmConnection>,
     pub(super) cfm_library_fragments: &'a mut Vec<PpcCfmLibraryFragment>,
+    pub(super) vfs_files: &'a [PpcVfsFileRecord],
+    pub(super) vfs_resource_files: &'a [PpcVfsResourceFileRecord],
+    pub(super) vfs_directories: &'a [PpcVfsDirectory],
     pub(super) next_cfm_connection_id: &'a mut u32,
     pub(super) import_run_state: &'a mut PpcImportRunState,
 }
@@ -28,6 +31,9 @@ pub(super) fn dispatch_cfm_import(context: PpcCfmDispatchContext<'_>) -> Option<
         heap_limit,
         cfm_connections,
         cfm_library_fragments,
+        vfs_files,
+        vfs_resource_files,
+        vfs_directories,
         next_cfm_connection_id,
         import_run_state,
     } = context;
@@ -95,6 +101,20 @@ pub(super) fn dispatch_cfm_import(context: PpcCfmDispatchContext<'_>) -> Option<
             cfm_connections,
             next_cfm_connection_id,
             import_run_state,
+        )),
+        PpcImportDispatcherTarget::GetDiskFragment => Some(ppc_get_disk_fragment(
+            cpu,
+            guest_calls,
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            heap_limit,
+            cfm_connections,
+            next_cfm_connection_id,
+            import_run_state,
+            vfs_files,
+            vfs_resource_files,
+            vfs_directories,
         )),
         _ => None,
     }
@@ -164,10 +184,7 @@ pub(super) fn ppc_get_shared_library(
             .bindings()
             .iter()
             .any(|binding| binding.library_name.eq_ignore_ascii_case(&lib_name));
-    if find_flags == PPC_CFM_FIND_LIB
-        && existing_connection.is_none()
-        && !statically_imported_hle
-    {
+    if find_flags == PPC_CFM_FIND_LIB && existing_connection.is_none() && !statically_imported_hle {
         return return_error(PPC_FRAG_LIB_NOT_FOUND);
     }
     let created_connection = existing_connection.is_none();
@@ -213,6 +230,7 @@ pub(super) fn ppc_get_shared_library(
                     heap_cursor,
                     heap_limit,
                     import_run_state,
+                    cfm_connections,
                 ) {
                     Ok(prepared) => prepared,
                     Err(error) => return return_error(error),
@@ -317,6 +335,87 @@ pub(super) fn ppc_find_symbol(
     ))
 }
 
+pub(super) fn ppc_get_disk_fragment(
+    cpu: &mut PpcCpu,
+    guest_calls: &SharedGuestCallStack,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    cfm_connections: &mut Vec<PpcCfmConnection>,
+    next_cfm_connection_id: &mut u32,
+    import_run_state: &mut PpcImportRunState,
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    vfs_directories: &[PpcVfsDirectory],
+) -> PpcImportAction {
+    // Inside Macintosh: PowerPC System Software (1994), pp. 3-19--3-21.
+    let [spec, offset, length, name, flags, conn, main, err] = [
+        cpu.gpr[3],
+        cpu.gpr[4],
+        cpu.gpr[5],
+        cpu.gpr[6],
+        cpu.gpr[7],
+        cpu.gpr[8],
+        cpu.gpr[9],
+        cpu.gpr[10],
+    ];
+    let Some((_, directory, file_name)) = ppc_read_fsspec_parts(memory, spec) else {
+        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+    };
+    let Some(path) = ppc_resolved_fsspec_target_path(
+        vfs_directories,
+        vfs_files,
+        vfs_resource_files,
+        directory,
+        &file_name,
+    ) else {
+        return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_LIB_NOT_FOUND));
+    };
+    let Some(file) = vfs_files
+        .iter()
+        .find(|file| file.path.eq_ignore_ascii_case(&path))
+    else {
+        return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_LIB_NOT_FOUND));
+    };
+    let Ok(start) = usize::try_from(offset) else {
+        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+    };
+    let Some(remaining) = file.data.get(start..) else {
+        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+    };
+    let bytes = if length == 0 || length == u32::MAX {
+        remaining
+    } else {
+        let Ok(size) = usize::try_from(length) else {
+            return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+        };
+        let Some(bytes) = remaining.get(..size) else {
+            return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+        };
+        bytes
+    };
+    let Ok(size) = u32::try_from(bytes.len()) else {
+        return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_NO_MEM));
+    };
+    let address = ppc_process_heap_alloc(process_memory_manager, memory, heap_cursor, size, false);
+    if address == 0 || memory.write_bytes(address, bytes).is_none() {
+        return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_NO_MEM));
+    }
+    cpu.gpr[3..=9].copy_from_slice(&[address, size, name, flags, conn, main, err]);
+    ppc_get_mem_fragment(
+        cpu,
+        guest_calls,
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        heap_limit,
+        cfm_connections,
+        next_cfm_connection_id,
+        import_run_state,
+    )
+}
+
 pub(super) fn ppc_get_mem_fragment(
     cpu: &mut PpcCpu,
     guest_calls: &SharedGuestCallStack,
@@ -408,6 +507,7 @@ pub(super) fn ppc_get_mem_fragment(
                 heap_cursor,
                 heap_limit,
                 import_run_state,
+                cfm_connections,
             ) {
                 Ok(prepared) => prepared,
                 Err(error) => return PpcImportAction::Return(ppc_i16_result(error)),
@@ -602,6 +702,7 @@ pub(super) fn ppc_prepare_mem_fragment(
     heap_cursor: &mut u32,
     heap_limit: u32,
     import_run_state: &mut PpcImportRunState,
+    cfm_connections: &[PpcCfmConnection],
 ) -> Result<crate::cfm::fragment::CfmPreparedFragment, i16> {
     let imported_symbols = parse_pef_imported_symbols(fragment).ok_or(PPC_FRAG_CORRUPT_ERR)?;
     let resolved_imports = resolve_pef_imports(fragment).ok_or(PPC_FRAG_CORRUPT_ERR)?;
@@ -609,7 +710,9 @@ pub(super) fn ppc_prepare_mem_fragment(
         .plan_resolved(
             resolved_imports,
             imported_symbols.len(),
-            &SystemlessPpcImportBindingPolicy,
+            &PpcConnectedCfmBindingPolicy {
+                connections: cfm_connections,
+            },
         )
         .map_err(ppc_dynamic_import_error)?;
     let pending = import_run_state

@@ -36,6 +36,11 @@ pub(super) fn dispatch_memory_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::HoldMemory => {
+            // HoldMemory (Ptr, Size): OSErr. Native guest memory is resident
+            // for the process lifetime, so no page pin is required.
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
         PpcImportDispatcherTarget::NewPtr { clear } => {
             let size = cpu.gpr[3];
             let ptr = process_memory_manager.new_native_ptr(memory, size, clear);

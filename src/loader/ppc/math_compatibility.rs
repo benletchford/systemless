@@ -286,6 +286,30 @@ pub(super) fn ppc_dispatch_math_compatibility(
     memory: &mut PpcSectionMem,
 ) -> PpcImportAction {
     match operation {
+        PpcMathCompatibilityOperation::LdToX80 => {
+            // PowerPC Numerics (1994), Appendix E: long double is a
+            // double-double pair. Convert its head and tail to the 80-bit
+            // interchange format used by classic Mac OS numeric APIs.
+            let source = cpu.gpr[3];
+            let destination = cpu.gpr[4];
+            if ppc_memory_can_read_bytes(memory, source, 16)
+                && ppc_memory_can_write_bytes(memory, destination, 10)
+            {
+                if let (Some(head), Some(tail)) = (
+                    memory.read_u64_be(source),
+                    memory.read_u64_be(source + 8),
+                ) {
+                    let extended = Extended80::from(f64::from_bits(head))
+                        .add(Extended80::from(f64::from_bits(tail)));
+                    let _ = memory.write_u16_be(
+                        destination,
+                        (u16::from(extended.sign) << 15) | extended.exponent,
+                    );
+                    let _ = memory.write_u64_be(destination + 2, extended.significand);
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
         PpcMathCompatibilityOperation::Floor => {
             // floor returns the nearest integer not greater than its argument,
             // preserving signed zero, NaN, and infinities.

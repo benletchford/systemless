@@ -248,11 +248,11 @@ impl PpcImportBindingPolicy for SystemlessPpcImportBindingPolicy {
     }
 }
 
-struct PpcInitialCfmBindingPolicy<'a> {
+struct PpcConnectedCfmBindingPolicy<'a> {
     connections: &'a [PpcCfmConnection],
 }
 
-impl PpcImportBindingPolicy for PpcInitialCfmBindingPolicy<'_> {
+impl PpcImportBindingPolicy for PpcConnectedCfmBindingPolicy<'_> {
     fn dispatcher_target(&self, library: &str, symbol: &str) -> PpcImportDispatcherTarget {
         dispatcher_target_for_import(library, symbol)
     }
@@ -1191,6 +1191,7 @@ pub enum PpcMathCompatibilityOperation {
     FeClearExcept,
     FeTestExcept,
     Floor,
+    LdToX80,
     Modf,
     Num2Dec,
     Str2Dec,
@@ -1399,6 +1400,7 @@ pub enum PpcLegacyMemoryUtilityOperation {
 pub enum PpcLegacyWindowOperation {
     BringToFront,
     CalculateVisibleRegion,
+    CheckUpdate,
     DisposeWindow,
     DragWindow,
     GetNewWindow,
@@ -1559,6 +1561,7 @@ pub enum PpcImportDispatcherTarget {
     HandAndHand,
     NewHandle { clear: bool },
     TempNewHandle,
+    HoldMemory,
     DisposeHandle,
     EmptyHandle,
     GetHandleSize,
@@ -1594,6 +1597,7 @@ pub enum PpcImportDispatcherTarget {
     HOpenResFile,
     ResError,
     SetResLoad,
+    LMGetResLoad,
     LoadResource,
     GetIndString,
     GetString,
@@ -1641,6 +1645,7 @@ pub enum PpcImportDispatcherTarget {
     GetIndSymbol,
     CloseConnection,
     GetMemFragment,
+    GetDiskFragment,
     InitCursor,
     HideCursor,
     ShowCursor,
@@ -1827,6 +1832,8 @@ pub enum PpcImportDispatcherTarget {
     LMGetMenuFlash,
     LMGetPaintWhite,
     LMGetSysMap,
+    LMGetSysEvtMask,
+    LMSetSysEvtMask,
     LMGetDefltStack,
     LMGetCurStackBase,
     LMSetPaintWhite,
@@ -1842,6 +1849,7 @@ pub enum PpcImportDispatcherTarget {
     DrawMenuBar,
     FlashMenuBar,
     HMGetHelpMenuHandle,
+    HMGetBalloons,
     HiliteMenu,
     DrawGrowIcon,
     MenuNoop,
@@ -1924,6 +1932,8 @@ pub enum PpcImportDispatcherTarget {
     PBGetCatInfo,
     PBSetCatInfo,
     PBHGetVInfo,
+    PBDTGetPath,
+    PBDTGetCommentSync,
     PBGetFCBInfo,
     FSpGetFInfo,
     GetFInfo,
@@ -2003,12 +2013,14 @@ pub enum PpcImportDispatcherTarget {
     DSpGetMouse,
     DSpFindContextFromPoint,
     DSpContextGlobalToLocal,
+    DSpContextLocalToGlobal,
     DSpSetBlankingColor,
     DSpAltBufferNew,
     DSpAltBufferGetCGrafPtr,
     DSpContextReserve,
     DSpContextRelease,
     DSpContextSetState,
+    DSpContextGetState,
     DSpContextFadeGamma,
     DSpContextFadeGammaIn,
     DSpContextFadeGammaOut,
@@ -2034,6 +2046,8 @@ pub enum PpcImportDispatcherTarget {
     SetDialogItemText,
     SetDialogDefaultItem,
     SetDialogCancelItem,
+    SetDialogTracksCursor,
+    StdFilterProc,
     DrawDialog,
     DrawControls,
     ModalDialog,
@@ -2211,6 +2225,8 @@ pub enum PpcImportDispatcherTarget {
     C2PStr,
     UpperText,
     GetCurrentThread,
+    SetThreadTerminator,
+    SetThreadSwitcher,
     GetThreadState,
     GetThreadCurrentTaskRef,
     GetThreadStateGivenTaskRef,
@@ -3466,6 +3482,7 @@ pub struct PpcToolboxStartupState {
     /// Process-owned 68k switch marker/gateway and compatibility stack used
     /// whenever native PowerPC enters classic code through Mixed Mode.
     mixed_mode_m68k: SharedProcessMixedModeM68kState,
+    system_allocations: PpcSystemAllocationPool,
     go_away_tracking: Option<PpcGoAwayTrackingState>,
     drag_window_tracking: Option<PpcDragWindowTrackingState>,
     grow_window_tracking: Option<PpcGrowWindowTrackingState>,
@@ -3535,6 +3552,7 @@ impl Default for PpcToolboxStartupState {
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
             execution: ExecutionMenuViews::detached(),
             mixed_mode_m68k: SharedProcessMixedModeM68kState::default(),
+            system_allocations: PpcSystemAllocationPool::default(),
             go_away_tracking: None,
             drag_window_tracking: None,
             grow_window_tracking: None,
@@ -3955,6 +3973,7 @@ pub struct PpcLoadedApp {
     pub(crate) stdc_qsort_stack: Vec<PpcQsortState>,
     pub(crate) dialog_callback_stack: Vec<PpcDialogCallbackState>,
     pub(crate) collection_callback_stack: Vec<PpcCollectionCallbackState>,
+    pub(crate) pending_file_completions: VecDeque<(u32, u32)>,
     pub(crate) apple_events: PpcAppleEventState,
     /// Standalone CFM seed; None after a runner moves it into its process.
     /// Installed execution must receive the process service explicitly.
@@ -4534,6 +4553,53 @@ impl PpcLoadedApp {
         ppc_update_zone_free_bytes(&mut self.memory, cursor, limit);
     }
 
+    /// Reserve system-service allocations before the application can consume
+    /// its native partition. Display services may run after no contiguous
+    /// application space remains.
+    pub(crate) fn reserve_ppc_system_storage(&mut self) {
+        let mut cursor = self.heap_cursor();
+        let limit = self.heap_limit();
+        let mut manager = self.process_memory_manager.0.borrow_mut();
+        // Keep the host-owned Toolbox arena as a pinned block near the top of
+        // the partition. MaxBlock then describes the largest *contiguous*
+        // application block, while a separate tail remains available for
+        // later guest handles and resources. This matters for games that
+        // allocate nearly all of MaxBlock as an internal memory pool.
+        const RESOURCE_TAIL_SIZE: u32 = 2 * 1024 * 1024;
+        let descriptor_pool = limit
+            .checked_sub(RESOURCE_TAIL_SIZE + PPC_SYSTEM_ALLOCATION_POOL_SIZE)
+            .filter(|&base| {
+                base > cursor.saturating_add(PPC_SYSTEM_ALLOCATION_POOL_SIZE)
+                    && self
+                        .memory
+                        .readonly_allocation_overlap_end(base, PPC_SYSTEM_ALLOCATION_POOL_SIZE)
+                        .is_none()
+            })
+            .map(|base| {
+                self.memory
+                    .add_readonly_allocation_exclusion(base, PPC_SYSTEM_ALLOCATION_POOL_SIZE)
+                    .expect("system arena fits the native heap");
+                if !ppc_memory_can_write_bytes(&mut self.memory, base, PPC_SYSTEM_ALLOCATION_POOL_SIZE) {
+                    self.memory
+                        .add_region(base, vec![0; PPC_SYSTEM_ALLOCATION_POOL_SIZE as usize]);
+                }
+                base
+            })
+            .unwrap_or_else(|| {
+                ppc_process_heap_alloc(
+                    &mut manager,
+                    &mut self.memory,
+                    &mut cursor,
+                    PPC_SYSTEM_ALLOCATION_POOL_SIZE,
+                    true,
+                )
+            });
+        self.toolbox_startup
+            .system_allocations
+            .reserve(descriptor_pool);
+        ppc_update_zone_free_bytes(&mut self.memory, cursor, limit);
+    }
+
     pub fn run_import_trace(&mut self, max_cycles: u64) -> (PpcRunResult, Vec<u32>) {
         let mut trace = Vec::new();
         let result = self.cpu.run_with_import_trace(
@@ -4573,6 +4639,14 @@ impl PpcLoadedApp {
     }
 
     pub fn set_input_snapshot(&mut self, input: PpcInputSnapshot) {
+        self.mirror_input_low_memory(input);
+        self.input = input;
+        self.process_input.set_key_map_snapshot(input.key_map);
+        self.process_input
+            .set_mouse_state((input.mouse_v, input.mouse_h), input.mouse_button);
+    }
+
+    fn mirror_input_low_memory(&mut self, input: PpcInputSnapshot) {
         use crate::memory::globals::addr;
 
         // Native mouse and keyboard drivers mirror the current device state
@@ -4588,10 +4662,6 @@ impl PpcLoadedApp {
                 .memory
                 .write_u16_be(point_addr + 2, input.mouse_h as u16);
         }
-        self.input = input;
-        self.process_input.set_key_map_snapshot(input.key_map);
-        self.process_input
-            .set_mouse_state((input.mouse_v, input.mouse_h), input.mouse_button);
     }
 
     fn current_input_snapshot(&self) -> PpcInputSnapshot {
@@ -7491,15 +7561,24 @@ impl PpcLoadedApp {
     /// Validate the engine owner's allocation and the complete writable frame
     /// before touching linkage, parameters or the interrupted registers.
     fn prepare_interrupt_callback_frame(&mut self, rtoc: u32) -> Option<u32> {
+        let (base, limit) = self.toolbox_startup.execution.calls().native_stack_bounds(
+            self.stack_base,
+            self.stack_base.checked_add(self.stack_size)?,
+        )?;
+        self.prepare_interrupt_callback_frame_in_bounds(rtoc, base, limit)
+    }
+
+    fn prepare_interrupt_callback_frame_in_bounds(
+        &mut self,
+        rtoc: u32,
+        base: u32,
+        limit: u32,
+    ) -> Option<u32> {
         let interrupted_sp = self.cpu.gpr[1];
         let frame_sp = interrupted_sp
             .checked_sub(PPC_INTERRUPT_RED_ZONE_SIZE)?
             .checked_sub(PPC_INITIAL_STACK_FRAME_SIZE)?
             & !15;
-        let (base, limit) = self.toolbox_startup.execution.calls().native_stack_bounds(
-            self.stack_base,
-            self.stack_base.checked_add(self.stack_size)?,
-        )?;
         if frame_sp < base
             || interrupted_sp > limit
             || !ppc_memory_can_write_bytes(&mut self.memory, frame_sp, PPC_INITIAL_STACK_FRAME_SIZE)
@@ -7536,6 +7615,148 @@ impl PpcLoadedApp {
             input_sprocket_trace: Vec::new(),
             fetch_histogram: None,
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run_file_completion_callback_with_process_services(
+        &mut self,
+        parameter_block: u32,
+        completion: u32,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        memory_manager: &mut ProcessMemoryManager,
+        cfm: &mut PpcCfmState,
+    ) -> PpcHleRunProbe {
+        self.assert_cfm_execution_owner(Some(cfm));
+        let saved_context = self.cpu.capture_execution_context();
+        let default_rtoc = if saved_context.architectural().gpr[2] != 0 {
+            saved_context.architectural().gpr[2]
+        } else {
+            self.rtoc
+        };
+        let target = ppc_resolve_callback_target(
+            &mut self.memory,
+            completion,
+            default_rtoc,
+            None,
+        )
+        .unwrap_or(PpcCallbackTarget {
+            entry: completion,
+            rtoc: default_rtoc,
+            proc_info: 0,
+            routine_flags: 0,
+        });
+        if std::env::var_os("SYSTEMLESS_PPC_FILE_TRACE").is_some() {
+            eprintln!(
+                "[PPC-FILE-TRACE] completion target ptr=${completion:08X} entry=${:08X} rtoc=${:08X} words={:?},{:?}",
+                target.entry,
+                target.rtoc,
+                self.memory.read_u32_be(completion),
+                self.memory.read_u32_be(completion.wrapping_add(4)),
+            );
+        }
+        let probe = if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
+            self.cpu.invalidate_reservation();
+            self.cpu.pc = target.entry;
+            self.cpu.lr = self.halt_pc;
+            self.cpu.gpr[1] = callback_sp;
+            self.cpu.gpr[2] = target.rtoc;
+            let _ = install_powerpc_call_arguments(
+                &mut self.cpu,
+                &mut self.memory,
+                &[parameter_block],
+            );
+            self.run_with_hle_imports_with_trace(
+                max_cycles,
+                trace_imports,
+                trace_fetches,
+                Some(memory_manager),
+                Some(cfm),
+            )
+        } else {
+            self.interrupt_callback_stack_fault()
+        };
+        self.cpu.install_execution_context(saved_context);
+        probe
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run_thread_switcher_callback_with_process_services(
+        &mut self,
+        thread_id: u32,
+        procedure: u32,
+        parameter: u32,
+        thread_context: Option<PpcExecutionContext>,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        memory_manager: &mut ProcessMemoryManager,
+        cfm: &mut PpcCfmState,
+    ) -> PpcHleRunProbe {
+        self.assert_cfm_execution_owner(Some(cfm));
+        let saved_context = self.cpu.capture_execution_context();
+        let outgoing_context = thread_context.is_some();
+        if let Some(context) = thread_context {
+            self.cpu.install_execution_context(context);
+        }
+        let default_rtoc = if self.cpu.gpr[2] != 0 { self.cpu.gpr[2] } else { self.rtoc };
+        let target = ppc_resolve_callback_target(
+            &mut self.memory,
+            procedure,
+            default_rtoc,
+            None,
+        )
+        .unwrap_or(PpcCallbackTarget {
+            entry: procedure,
+            rtoc: default_rtoc,
+            proc_info: 0,
+            routine_flags: 0,
+        });
+        let callback_bounds = if outgoing_context {
+            let task = crate::guest_call::ExecutionTaskId::from_thread_id(thread_id);
+            if task == crate::guest_call::ExecutionTaskId::APPLICATION {
+                self.stack_base
+                    .checked_add(self.stack_size)
+                    .map(|limit| (self.stack_base, limit))
+            } else {
+                self.toolbox_startup
+                    .execution
+                    .calls()
+                    .thread_storage(task)
+                    .map(|storage| (storage.stack_base, storage.stack_limit))
+            }
+        } else {
+            None
+        };
+        let callback_sp = if let Some((base, limit)) = callback_bounds {
+            self.prepare_interrupt_callback_frame_in_bounds(default_rtoc, base, limit)
+        } else {
+            self.prepare_interrupt_callback_frame(default_rtoc)
+        };
+        let probe = if let Some(callback_sp) = callback_sp {
+            self.cpu.invalidate_reservation();
+            self.cpu.pc = target.entry;
+            self.cpu.lr = self.halt_pc;
+            self.cpu.gpr[1] = callback_sp;
+            self.cpu.gpr[2] = target.rtoc;
+            let _ = install_powerpc_call_arguments(
+                &mut self.cpu,
+                &mut self.memory,
+                &[thread_id, parameter],
+            );
+            self.run_with_hle_imports_with_trace(
+                max_cycles,
+                trace_imports,
+                trace_fetches,
+                Some(memory_manager),
+                Some(cfm),
+            )
+        } else {
+            self.interrupt_callback_stack_fault()
+        };
+        self.cpu.install_execution_context(saved_context);
+        probe
     }
 
     fn run_sound_completion_callback_inner(
@@ -8227,6 +8448,7 @@ impl PpcLoadedApp {
             })
             .map(|binding| binding.symbol_index);
         let input = self.current_input_snapshot();
+        self.mirror_input_low_memory(input);
         let event_queue = std::mem::take(&mut self.event_queue);
         let process_memory_manager = process_memory_manager.native_mut();
         let _ = self.current_tick();
@@ -8247,6 +8469,7 @@ impl PpcLoadedApp {
         let mut stdc_qsort_stack = std::mem::take(&mut self.stdc_qsort_stack);
         let mut dialog_callback_stack = std::mem::take(&mut self.dialog_callback_stack);
         let mut collection_callback_stack = std::mem::take(&mut self.collection_callback_stack);
+        let mut pending_file_completions = std::mem::take(&mut self.pending_file_completions);
         let mut apple_events = std::mem::take(&mut self.apple_events);
         let mut standalone_cfm = if process_cfm.is_none() {
             self.cfm.take()
@@ -8395,6 +8618,38 @@ impl PpcLoadedApp {
                     // Inside Macintosh: Thread Manager (1999), pp. 59–60.
                     let task = guest_calls.current_task();
                     let result = cpu.gpr[3];
+                    if let Some((procedure, parameter)) = guest_calls.take_thread_terminator(task) {
+                        if procedure != 0 {
+                            // The terminator takes the retiring ID and its
+                            // registered parameter. Its return value does not
+                            // replace the thread entry's result.
+                            // Thread Manager (1999), pp. 81–82, 88–89.
+                            if install_powerpc_call_arguments(
+                                cpu,
+                                memory,
+                                &[task.thread_id(), parameter],
+                            )
+                            .is_none()
+                            {
+                                return PpcImportAction::Halt;
+                            }
+                            return GuestCallEffect::call_guest(
+                                GuestCallRequest::new(GuestCallTarget {
+                                    isa: GuestIsa::PowerPc,
+                                    entry: procedure,
+                                    rtoc: cpu.gpr[2],
+                                }),
+                                GuestCallContinuation::to_powerpc(
+                                    PPC_GUEST_CALL_RETURN_PC,
+                                    PPC_THREAD_RETURN_PC,
+                                    cpu.gpr[2],
+                                    PpcNativeReturnGpr3::Set(result),
+                                ),
+                            )
+                            .into_ppc_import_action()
+                            .unwrap_or(PpcImportAction::Halt);
+                        }
+                    }
                     if let Ok(retirement) =
                         guest_calls.retire_native_thread(task, cpu, false, |context| {
                             context.result_destination == 0
@@ -9285,6 +9540,25 @@ impl PpcLoadedApp {
 
                 match action {
                     Some(action) => {
+                        // Complete asynchronous File Manager calls after returning
+                        // from the import, at the next interrupt-work boundary.
+                        let action = if binding.library_name == "InterfaceLib"
+                            && binding.symbol_name == "PBReadAsync"
+                            && matches!(action, PpcImportAction::Return(0))
+                        {
+                            let parameter_block = cpu.gpr[3];
+                            let completion = memory.read_u32_be(parameter_block + 12).unwrap_or(0);
+                            if completion != 0 {
+                                pending_file_completions.push_back((parameter_block, completion));
+                                cpu.gpr[3] = 0;
+                                cpu.pc = cpu.lr;
+                                PpcImportAction::Yield(0)
+                            } else {
+                                action
+                            }
+                        } else {
+                            action
+                        };
                         let action = ppc_import_action_with_extra_cycles(
                             action,
                             ppc_import_extra_cycles_for_binding(binding),
@@ -9543,6 +9817,7 @@ impl PpcLoadedApp {
         self.stdc_qsort_stack = stdc_qsort_stack;
         self.dialog_callback_stack = dialog_callback_stack;
         self.collection_callback_stack = collection_callback_stack;
+        self.pending_file_completions = pending_file_completions;
         self.apple_events = apple_events;
         self.cfm = standalone_cfm;
         (self.imports, self.import_count) = import_run_state.into_parts();
@@ -13688,7 +13963,7 @@ fn ppc_plan_initial_cfm_libraries(
                 error: PPC_FRAG_CORRUPT_ERR,
             }
         })?;
-        let policy = PpcInitialCfmBindingPolicy {
+        let policy = PpcConnectedCfmBindingPolicy {
             connections: &connections,
         };
         let import_plan = import_run_state
@@ -13740,7 +14015,7 @@ fn ppc_plan_initial_cfm_libraries(
         });
     }
 
-    let policy = PpcInitialCfmBindingPolicy {
+    let policy = PpcConnectedCfmBindingPolicy {
         connections: &connections,
     };
     let rebound = PpcImportBindingPlan::prepare(
@@ -14371,6 +14646,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         stdc_qsort_stack: Vec::new(),
         dialog_callback_stack: Vec::new(),
         collection_callback_stack: Vec::new(),
+        pending_file_completions: VecDeque::new(),
         apple_events: PpcAppleEventState::default(),
         cfm: Some(PpcCfmState {
             connections: cfm_connections,
@@ -15594,6 +15870,9 @@ fn dispatcher_target_for_import(
         ("DrawSprocketLib", "DSpContext_GlobalToLocal") => {
             PpcImportDispatcherTarget::DSpContextGlobalToLocal
         }
+        ("DrawSprocketLib", "DSpContext_LocalToGlobal") => {
+            PpcImportDispatcherTarget::DSpContextLocalToGlobal
+        }
         ("DrawSprocketLib", "DSpFindBestContext") => PpcImportDispatcherTarget::DSpFindBestContext,
         ("DrawSprocketLib", "DSpUserSelectContext") => {
             PpcImportDispatcherTarget::DSpUserSelectContext
@@ -15608,6 +15887,7 @@ fn dispatcher_target_for_import(
         ("DrawSprocketLib", "DSpContext_Reserve") => PpcImportDispatcherTarget::DSpContextReserve,
         ("DrawSprocketLib", "DSpContext_Release") => PpcImportDispatcherTarget::DSpContextRelease,
         ("DrawSprocketLib", "DSpContext_SetState") => PpcImportDispatcherTarget::DSpContextSetState,
+        ("DrawSprocketLib", "DSpContext_GetState") => PpcImportDispatcherTarget::DSpContextGetState,
         ("DrawSprocketLib", "DSpContext_FadeGamma") => {
             PpcImportDispatcherTarget::DSpContextFadeGamma
         }
@@ -15708,6 +15988,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "NewHandle") => PpcImportDispatcherTarget::NewHandle { clear: false },
         ("InterfaceLib", "NewHandleClear") => PpcImportDispatcherTarget::NewHandle { clear: true },
         ("InterfaceLib", "TempNewHandle") => PpcImportDispatcherTarget::TempNewHandle,
+        ("InterfaceLib", "HoldMemory") => PpcImportDispatcherTarget::HoldMemory,
         ("InterfaceLib", "DisposeHandle") => PpcImportDispatcherTarget::DisposeHandle,
         ("InterfaceLib", "EmptyHandle") => PpcImportDispatcherTarget::EmptyHandle,
         ("InterfaceLib", "BlockMove") | ("InterfaceLib", "BlockMoveData") => {
@@ -15755,6 +16036,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "HOpenResFile") => PpcImportDispatcherTarget::HOpenResFile,
         ("InterfaceLib", "ResError") => PpcImportDispatcherTarget::ResError,
         ("InterfaceLib", "SetResLoad") => PpcImportDispatcherTarget::SetResLoad,
+        ("InterfaceLib", "LMGetResLoad") => PpcImportDispatcherTarget::LMGetResLoad,
         ("InterfaceLib", "LoadResource") => PpcImportDispatcherTarget::LoadResource,
         ("InterfaceLib", "GetIndString") | ("InterfaceLib", "getindstring") => {
             PpcImportDispatcherTarget::GetIndString
@@ -15820,6 +16102,7 @@ fn dispatcher_target_for_import(
             "CloseConnection",
         ) => PpcImportDispatcherTarget::CloseConnection,
         ("InterfaceLib", "GetMemFragment") => PpcImportDispatcherTarget::GetMemFragment,
+        ("InterfaceLib", "GetDiskFragment") => PpcImportDispatcherTarget::GetDiskFragment,
         ("InterfaceLib", "InitCursor") => PpcImportDispatcherTarget::InitCursor,
         ("InterfaceLib", "HideCursor") => PpcImportDispatcherTarget::HideCursor,
         ("InterfaceLib", "ShowCursor") => PpcImportDispatcherTarget::ShowCursor,
@@ -15912,6 +16195,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "LMGetMenuFlash") => PpcImportDispatcherTarget::LMGetMenuFlash,
         ("InterfaceLib", "LMGetPaintWhite") => PpcImportDispatcherTarget::LMGetPaintWhite,
         ("InterfaceLib", "LMGetSysMap") => PpcImportDispatcherTarget::LMGetSysMap,
+        ("InterfaceLib", "LMGetSysEvtMask") => PpcImportDispatcherTarget::LMGetSysEvtMask,
+        ("InterfaceLib", "LMSetSysEvtMask") => PpcImportDispatcherTarget::LMSetSysEvtMask,
         ("InterfaceLib", "LMGetDefltStack") => PpcImportDispatcherTarget::LMGetDefltStack,
         ("InterfaceLib", "LMGetCurStackBase") => PpcImportDispatcherTarget::LMGetCurStackBase,
         ("InterfaceLib", "LMSetPaintWhite") => PpcImportDispatcherTarget::LMSetPaintWhite,
@@ -15929,6 +16214,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "DrawMenuBar") => PpcImportDispatcherTarget::DrawMenuBar,
         ("InterfaceLib", "FlashMenuBar") => PpcImportDispatcherTarget::FlashMenuBar,
         ("InterfaceLib", "HMGetHelpMenuHandle") => PpcImportDispatcherTarget::HMGetHelpMenuHandle,
+        ("InterfaceLib", "HMGetBalloons") => PpcImportDispatcherTarget::HMGetBalloons,
         ("InterfaceLib", "HiliteMenu") => PpcImportDispatcherTarget::HiliteMenu,
         ("InterfaceLib", "InvalMenuBar") => PpcImportDispatcherTarget::InvalMenuBar,
         ("InterfaceLib", "DrawGrowIcon") => PpcImportDispatcherTarget::DrawGrowIcon,
@@ -16193,6 +16479,8 @@ fn dispatcher_target_for_import(
         | ("InterfaceLib", "PBHGetVInfo")
         | ("InterfaceLib", "PBHGetVInfoSync")
         | ("InterfaceLib", "PBHGetVInfoAsync") => PpcImportDispatcherTarget::PBHGetVInfo,
+        ("InterfaceLib", "PBDTGetPath") => PpcImportDispatcherTarget::PBDTGetPath,
+        ("InterfaceLib", "PBDTGetCommentSync") => PpcImportDispatcherTarget::PBDTGetCommentSync,
         ("InterfaceLib", "PBGetFCBInfo")
         | ("InterfaceLib", "PBGetFCBInfoSync")
         | ("InterfaceLib", "PBGetFCBInfoAsync") => PpcImportDispatcherTarget::PBGetFCBInfo,
@@ -16304,6 +16592,10 @@ fn dispatcher_target_for_import(
         ("InterfaceLib" | "AppearanceLib", "SetDialogCancelItem") => {
             PpcImportDispatcherTarget::SetDialogCancelItem
         }
+        ("InterfaceLib" | "AppearanceLib", "SetDialogTracksCursor") => {
+            PpcImportDispatcherTarget::SetDialogTracksCursor
+        }
+        ("InterfaceLib", "StdFilterProc") => PpcImportDispatcherTarget::StdFilterProc,
         ("InterfaceLib", "DrawDialog") => PpcImportDispatcherTarget::DrawDialog,
         ("InterfaceLib", "DrawControls") => PpcImportDispatcherTarget::DrawControls,
         ("InterfaceLib", "ModalDialog") => PpcImportDispatcherTarget::ModalDialog,
@@ -16478,40 +16770,48 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::C2PStr
         }
         ("InterfaceLib", "UpperText") => PpcImportDispatcherTarget::UpperText,
-        ("InterfaceLib", "GetCurrentThread" | "MacGetCurrentThread") => {
+        // Native Thread Manager exports also live in ThreadsLib.
+        // Inside Macintosh: Thread Manager (1999), pp. 15, 62.
+        ("InterfaceLib" | "ThreadsLib", "GetCurrentThread" | "MacGetCurrentThread") => {
             PpcImportDispatcherTarget::GetCurrentThread
         }
-        ("InterfaceLib", "GetThreadCurrentTaskRef") => {
+        ("InterfaceLib" | "ThreadsLib", "SetThreadTerminator") => {
+            PpcImportDispatcherTarget::SetThreadTerminator
+        }
+        ("InterfaceLib" | "ThreadsLib", "SetThreadSwitcher") => {
+            PpcImportDispatcherTarget::SetThreadSwitcher
+        }
+        ("InterfaceLib" | "ThreadsLib", "GetThreadCurrentTaskRef") => {
             PpcImportDispatcherTarget::GetThreadCurrentTaskRef
         }
-        ("InterfaceLib", "GetThreadStateGivenTaskRef") => {
+        ("InterfaceLib" | "ThreadsLib", "GetThreadStateGivenTaskRef") => {
             PpcImportDispatcherTarget::GetThreadStateGivenTaskRef
         }
-        ("InterfaceLib", "SetThreadReadyGivenTaskRef") => {
+        ("InterfaceLib" | "ThreadsLib", "SetThreadReadyGivenTaskRef") => {
             PpcImportDispatcherTarget::SetThreadReadyGivenTaskRef
         }
-        ("InterfaceLib", "GetThreadState") => PpcImportDispatcherTarget::GetThreadState,
-        ("InterfaceLib", "SetThreadState") => PpcImportDispatcherTarget::SetThreadState,
-        ("InterfaceLib", "SetThreadStateEndCritical") => {
+        ("InterfaceLib" | "ThreadsLib", "GetThreadState") => PpcImportDispatcherTarget::GetThreadState,
+        ("InterfaceLib" | "ThreadsLib", "SetThreadState") => PpcImportDispatcherTarget::SetThreadState,
+        ("InterfaceLib" | "ThreadsLib", "SetThreadStateEndCritical") => {
             PpcImportDispatcherTarget::SetThreadStateEndCritical
         }
-        ("InterfaceLib", "CreateThreadPool") => PpcImportDispatcherTarget::CreateThreadPool,
-        ("InterfaceLib", "GetFreeThreadCount") => PpcImportDispatcherTarget::GetFreeThreadCount,
-        ("InterfaceLib", "GetSpecificFreeThreadCount") => {
+        ("InterfaceLib" | "ThreadsLib", "CreateThreadPool") => PpcImportDispatcherTarget::CreateThreadPool,
+        ("InterfaceLib" | "ThreadsLib", "GetFreeThreadCount") => PpcImportDispatcherTarget::GetFreeThreadCount,
+        ("InterfaceLib" | "ThreadsLib", "GetSpecificFreeThreadCount") => {
             PpcImportDispatcherTarget::GetSpecificFreeThreadCount
         }
-        ("InterfaceLib", "GetDefaultThreadStackSize") => {
+        ("InterfaceLib" | "ThreadsLib", "GetDefaultThreadStackSize") => {
             PpcImportDispatcherTarget::GetDefaultThreadStackSize
         }
-        ("InterfaceLib", "ThreadCurrentStackSpace") => {
+        ("InterfaceLib" | "ThreadsLib", "ThreadCurrentStackSpace") => {
             PpcImportDispatcherTarget::ThreadCurrentStackSpace
         }
-        ("InterfaceLib", "NewThread") => PpcImportDispatcherTarget::NewThread,
-        ("InterfaceLib", "YieldToThread") => PpcImportDispatcherTarget::YieldToThread,
-        ("InterfaceLib", "YieldToAnyThread") => PpcImportDispatcherTarget::YieldToAnyThread,
-        ("InterfaceLib", "DisposeThread") => PpcImportDispatcherTarget::DisposeThread,
-        ("InterfaceLib", "ThreadBeginCritical") => PpcImportDispatcherTarget::ThreadBeginCritical,
-        ("InterfaceLib", "ThreadEndCritical") => PpcImportDispatcherTarget::ThreadEndCritical,
+        ("InterfaceLib" | "ThreadsLib", "NewThread") => PpcImportDispatcherTarget::NewThread,
+        ("InterfaceLib" | "ThreadsLib", "YieldToThread") => PpcImportDispatcherTarget::YieldToThread,
+        ("InterfaceLib" | "ThreadsLib", "YieldToAnyThread") => PpcImportDispatcherTarget::YieldToAnyThread,
+        ("InterfaceLib" | "ThreadsLib", "DisposeThread") => PpcImportDispatcherTarget::DisposeThread,
+        ("InterfaceLib" | "ThreadsLib", "ThreadBeginCritical") => PpcImportDispatcherTarget::ThreadBeginCritical,
+        ("InterfaceLib" | "ThreadsLib", "ThreadEndCritical") => PpcImportDispatcherTarget::ThreadEndCritical,
         ("InterfaceLib", "GetCurrentProcess" | "GetFrontProcess") => {
             PpcImportDispatcherTarget::GetCurrentProcess
         }
@@ -16743,6 +17043,9 @@ fn dispatcher_target_for_import(
         ),
         ("InterfaceLib", "CalcVis") => PpcImportDispatcherTarget::LegacyWindow(
             PpcLegacyWindowOperation::CalculateVisibleRegion,
+        ),
+        ("InterfaceLib", "CheckUpdate") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::CheckUpdate,
         ),
         ("InterfaceLib", "DisposeWindow") => PpcImportDispatcherTarget::LegacyWindow(
             PpcLegacyWindowOperation::DisposeWindow,
@@ -17180,6 +17483,9 @@ fn dispatcher_target_for_import(
         ),
         ("MathLib", "floor") => PpcImportDispatcherTarget::MathCompatibility(
             PpcMathCompatibilityOperation::Floor,
+        ),
+        ("MathLib", "ldtox80") => PpcImportDispatcherTarget::MathCompatibility(
+            PpcMathCompatibilityOperation::LdToX80,
         ),
         ("MathLib", "modf") => PpcImportDispatcherTarget::MathCompatibility(
             PpcMathCompatibilityOperation::Modf,
@@ -17718,6 +18024,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         heap_limit,
         cfm_connections,
         cfm_library_fragments,
+        vfs_files,
+        vfs_resource_files,
+        vfs_directories,
         next_cfm_connection_id,
         import_run_state,
     }) {
@@ -18357,6 +18666,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             controls,
             gworlds,
             window_list,
+            draw_sprocket,
             current_gworld,
             current_gdevice,
             quickdraw_fore_color,
@@ -18542,6 +18852,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::HandAndHand
         | PpcImportDispatcherTarget::NewHandle { .. }
         | PpcImportDispatcherTarget::TempNewHandle
+        | PpcImportDispatcherTarget::HoldMemory
         | PpcImportDispatcherTarget::DisposeHandle
         | PpcImportDispatcherTarget::EmptyHandle
         | PpcImportDispatcherTarget::GetHandleSize
@@ -18603,6 +18914,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::InvalMenuBar
         | PpcImportDispatcherTarget::FlashMenuBar
         | PpcImportDispatcherTarget::HMGetHelpMenuHandle
+        | PpcImportDispatcherTarget::HMGetBalloons
         | PpcImportDispatcherTarget::HiliteMenu
         | PpcImportDispatcherTarget::MenuNoop
         | PpcImportDispatcherTarget::MenuKey
@@ -18614,6 +18926,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             unreachable!("menu imports return through dispatch_menu_import")
         }
         PpcImportDispatcherTarget::GetCurrentThread
+        | PpcImportDispatcherTarget::SetThreadTerminator
+        | PpcImportDispatcherTarget::SetThreadSwitcher
         | PpcImportDispatcherTarget::GetThreadState
         | PpcImportDispatcherTarget::GetThreadCurrentTaskRef
         | PpcImportDispatcherTarget::GetThreadStateGivenTaskRef
@@ -18673,6 +18987,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::DSpGetMouse
         | PpcImportDispatcherTarget::DSpFindContextFromPoint
         | PpcImportDispatcherTarget::DSpContextGlobalToLocal
+        | PpcImportDispatcherTarget::DSpContextLocalToGlobal
         | PpcImportDispatcherTarget::DSpFindBestContext
         | PpcImportDispatcherTarget::DSpUserSelectContext
         | PpcImportDispatcherTarget::DSpSetBlankingColor
@@ -18681,6 +18996,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::DSpContextReserve
         | PpcImportDispatcherTarget::DSpContextRelease
         | PpcImportDispatcherTarget::DSpContextSetState
+        | PpcImportDispatcherTarget::DSpContextGetState
         | PpcImportDispatcherTarget::DSpContextFadeGamma
         | PpcImportDispatcherTarget::DSpContextFadeGammaIn
         | PpcImportDispatcherTarget::DSpContextFadeGammaOut
@@ -18823,6 +19139,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::FlushVol
         | PpcImportDispatcherTarget::PBFlushVol
         | PpcImportDispatcherTarget::PBHGetVInfo
+        | PpcImportDispatcherTarget::PBDTGetPath
+        | PpcImportDispatcherTarget::PBDTGetCommentSync
         | PpcImportDispatcherTarget::PBGetFInfo
         | PpcImportDispatcherTarget::PBHGetFInfo
         | PpcImportDispatcherTarget::PBSetFInfo
@@ -18847,6 +19165,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             unreachable!("file imports return through dispatch_file_import")
         }
         PpcImportDispatcherTarget::SetResLoad
+        | PpcImportDispatcherTarget::LMGetResLoad
         | PpcImportDispatcherTarget::LoadResource
         | PpcImportDispatcherTarget::GetResource
         | PpcImportDispatcherTarget::Get1Resource
@@ -19166,7 +19485,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::CountSymbols
         | PpcImportDispatcherTarget::GetIndSymbol
         | PpcImportDispatcherTarget::CloseConnection
-        | PpcImportDispatcherTarget::GetMemFragment => {
+        | PpcImportDispatcherTarget::GetMemFragment
+        | PpcImportDispatcherTarget::GetDiskFragment => {
             unreachable!("cfm imports return through dispatch_cfm_import")
         }
         PpcImportDispatcherTarget::StandardGetFile => {
@@ -19199,6 +19519,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::SetDialogItemText
         | PpcImportDispatcherTarget::SetDialogDefaultItem
         | PpcImportDispatcherTarget::SetDialogCancelItem
+        | PpcImportDispatcherTarget::SetDialogTracksCursor
+        | PpcImportDispatcherTarget::StdFilterProc
         | PpcImportDispatcherTarget::DrawDialog
         | PpcImportDispatcherTarget::ModalDialog => {
             unreachable!("dialog imports return through dispatch_dialog_import")
@@ -19830,6 +20152,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::LMGetMenuFlash
         | PpcImportDispatcherTarget::LMGetPaintWhite
         | PpcImportDispatcherTarget::LMGetSysMap
+        | PpcImportDispatcherTarget::LMGetSysEvtMask
+        | PpcImportDispatcherTarget::LMSetSysEvtMask
         | PpcImportDispatcherTarget::LMGetDefltStack
         | PpcImportDispatcherTarget::LMGetCurStackBase
         | PpcImportDispatcherTarget::LMSetPaintWhite
@@ -38983,8 +39307,8 @@ fn ppc_gestalt(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
     }
     if ppc_hle_trace_enabled() {
         eprintln!(
-            "[PPC-TRACE] Gestalt({:?}) -> ${response:08X} err={err}",
-            ppc_res_type_text(selector)
+            "[PPC-TRACE] Gestalt({:?}) -> ${response:08X} err={err} lr=${:08X}",
+            ppc_res_type_text(selector), cpu.lr
         );
     }
     err
@@ -39028,6 +39352,10 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
         )),
         b"snd " => Some((0x1CFB, PPC_NO_ERR)),
         b"tmgr" => Some((2, PPC_NO_ERR)),
+        // Thread Manager (1999), p. 19: bits 0 and 2 advertise the manager
+        // and its PowerPC ThreadsLib. Exact stack-size matching (bit 1)
+        // remains unavailable.
+        b"thds" => Some((0b101, PPC_NO_ERR)),
         b"dplv" => Some((0x0002_0006, PPC_NO_ERR)),
         b"dply" => Some((0x0000_0007, PPC_NO_ERR)),
         b"alis" => Some((1, PPC_NO_ERR)),
@@ -46578,6 +46906,31 @@ fn ppc_dsp_context_set_state(cpu: &PpcCpu, draw_sprocket: &mut PpcDrawSprocketSt
     PPC_NO_ERR
 }
 
+fn ppc_dsp_context_get_state(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    draw_sprocket: &PpcDrawSprocketState,
+) -> i16 {
+    let context = cpu.gpr[3];
+    if let Some(error) = ppc_dsp_context_error(context) {
+        return error;
+    }
+    let state_out = cpu.gpr[4];
+    if state_out == 0 || !ppc_memory_can_write_bytes(memory, state_out, 4) {
+        return PPC_PARAM_ERR;
+    }
+    if draw_sprocket.reserved_context != Some(context) {
+        return PPC_DSP_CONTEXT_NOT_RESERVED_ERR;
+    }
+    let state = match draw_sprocket.context_state {
+        PpcDspContextPlayState::Active => PPC_DSP_CONTEXT_STATE_ACTIVE,
+        PpcDspContextPlayState::Paused => PPC_DSP_CONTEXT_STATE_PAUSED,
+        PpcDspContextPlayState::Inactive => PPC_DSP_CONTEXT_STATE_INACTIVE,
+    };
+    let _ = memory.write_u32_be(state_out, state);
+    PPC_NO_ERR
+}
+
 fn ppc_read_rgb_color(memory: &mut PpcSectionMem, color: u32) -> Option<PpcRgbColor> {
     Some(PpcRgbColor {
         red: memory.read_u16_be(color)?,
@@ -47140,6 +47493,8 @@ fn ppc_draw_sprocket_action_name(target: &PpcImportDispatcherTarget) -> Option<&
         PpcImportDispatcherTarget::DSpGetMouse => Some("get_mouse"),
         PpcImportDispatcherTarget::DSpFindContextFromPoint => Some("find_context_from_point"),
         PpcImportDispatcherTarget::DSpContextGlobalToLocal => Some("context_global_to_local"),
+        PpcImportDispatcherTarget::DSpContextLocalToGlobal => Some("context_local_to_global"),
+        PpcImportDispatcherTarget::DSpContextGetState => Some("context_get_state"),
         PpcImportDispatcherTarget::DSpFindBestContext => Some("find_best_context"),
         PpcImportDispatcherTarget::DSpUserSelectContext => Some("user_select_context"),
         PpcImportDispatcherTarget::DSpSetBlankingColor => Some("set_blanking_color"),
@@ -49300,10 +49655,11 @@ pub(super) fn ppc_get_ind_resource(
     if ppc_hle_trace_enabled() {
         let record = &vfs_resources[index];
         eprintln!(
-            "[PPC-TRACE] Get{}IndResource('{}', {}) current_ref={} -> handle=${:08X} id={} home_ref={} path=\"{}\" size={}",
+            "[PPC-TRACE] Get{}IndResource('{}', {}) lr=${:08X} current_ref={} -> handle=${:08X} id={} home_ref={} path=\"{}\" size={}",
             if current_only { "1" } else { "" },
             ppc_res_type_text(res_type),
             requested_index,
+            cpu.lr,
             current_resource_refnum,
             handle,
             record.res_id,
@@ -65233,6 +65589,9 @@ fn ppc_fs_close(
     writable_refnums: &mut HashSet<u16>,
 ) -> i16 {
     let ref_num = ppc_ref_num_from_gpr(cpu.gpr[3]);
+    if std::env::var_os("SYSTEMLESS_PPC_FILE_TRACE").is_some() {
+        eprintln!("[PPC-FILE-TRACE] FSClose ref={} path={:?}", ref_num, files.iter().find(|file| file.ref_num == ref_num).map(|file| &file.path));
+    }
     files.retain(|file| file.ref_num != ref_num);
     writable_refnums.remove(&(ref_num as u16));
     PPC_NO_ERR
@@ -65250,6 +65609,9 @@ fn ppc_pb_close(
     };
     if !files.iter().any(|file| file.ref_num == ref_num) {
         return ppc_complete_pb(memory, pb, PPC_RF_NUM_ERR);
+    }
+    if std::env::var_os("SYSTEMLESS_PPC_FILE_TRACE").is_some() {
+        eprintln!("[PPC-FILE-TRACE] PBClose ref={} path={:?}", ref_num, files.iter().find(|file| file.ref_num == ref_num).map(|file| &file.path));
     }
     files.retain(|file| file.ref_num != ref_num);
     writable_refnums.remove(&(ref_num as u16));
@@ -65357,6 +65719,9 @@ fn ppc_pb_read(
     } else {
         PPC_NO_ERR
     };
+    if std::env::var_os("SYSTEMLESS_PPC_FILE_TRACE").is_some() {
+        eprintln!("[PPC-FILE-TRACE] PBRead path=\"{}\" start={} requested={} read={} result={}", vfs_file.path, start, requested_len, read_len, result);
+    }
     ppc_complete_pb(memory, pb, result)
 }
 
@@ -66237,6 +66602,9 @@ fn ppc_fs_read(
     let read_count = u32::try_from(read_len).unwrap_or(u32::MAX);
     file.position = file.position.saturating_add(read_count);
     let _ = memory.write_u32_be(count_ptr, read_count);
+    if std::env::var_os("SYSTEMLESS_PPC_FILE_TRACE").is_some() {
+        eprintln!("[PPC-FILE-TRACE] FSRead path=\"{}\" start={} requested={} read={} result={}", vfs_file.path, start, requested_len, read_len, if read_count < requested_count { PPC_EOF_ERR } else { PPC_NO_ERR });
+    }
     if read_count < requested_count {
         PPC_EOF_ERR
     } else {

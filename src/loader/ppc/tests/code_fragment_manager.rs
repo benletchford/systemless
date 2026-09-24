@@ -16,8 +16,7 @@ fn cfm_initializer_storage_reuses_only_completed_or_refused_allocations() {
     );
     memory.add_region(0x8000, vec![0; 128]);
     let mut cursor = PPC_HEAP_BASE;
-    let mut allocate = |manager: &mut ProcessNativeMemoryManager,
-                        memory: &mut PpcSectionMem| {
+    let mut allocate = |manager: &mut ProcessNativeMemoryManager, memory: &mut PpcSectionMem| {
         ppc_create_mem_fragment_init_block(
             Some(manager),
             memory,
@@ -745,7 +744,10 @@ fn initial_application_imports_bind_bundled_library_data_and_tvectors() {
 
         let binding_address = loaded.import_binding(0).unwrap().address;
         assert_ne!(binding_address, 0);
-        assert_eq!(loaded.memory.read_u32_be(PPC_DATA_BASE), Some(binding_address));
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_DATA_BASE),
+            Some(binding_address)
+        );
         assert_eq!(
             loaded.cfm.as_ref().unwrap().connections[0]
                 .exports
@@ -1066,7 +1068,7 @@ fn close_connection_import_preserves_live_registry_on_protected_output_and_retri
         loaded.cpu.gpr[3] = pointer + 8;
         let probe = loaded.run_with_hle_imports(64);
         assert_eq!(probe.unsupported_import_index, None);
-            assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.cpu.gpr[3], 0);
         assert_eq!(loaded.memory.read_u32_be(pointer + 8), Some(0));
         let mut expected = before.unwrap();
         expected.connections.remove(0);
@@ -1130,8 +1132,7 @@ fn find_symbol_returns_real_export_class_before_hle_fallback() {
 fn find_symbol_import_refuses_partial_outputs_retries_and_reuses_callable_bindings() {
     const OUTPUT: u32 = PPC_HEAP_BASE + 0x100;
     for dynamic in [false, true] {
-        let mut loaded =
-            load_pef_application(&synthetic_pef_with_import(b"FindSymbol")).unwrap();
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FindSymbol")).unwrap();
         loaded.memory.add_region(OUTPUT, vec![0xa5; 128]);
         loaded.memory.add_readonly_region(OUTPUT + 8, vec![0xa5]);
         let symbol = if dynamic {
@@ -1246,11 +1247,7 @@ fn find_symbol_import_refuses_partial_outputs_retries_and_reuses_callable_bindin
             loaded.import_count = PPC_IMPORT_CAPACITY;
             let mut bindings = loaded.cfm_symbol_bindings();
             assert_eq!(
-                crate::cfm::CfmSymbolBindings::prepare(
-                    &mut bindings,
-                    "InterfaceLib",
-                    "TickCount"
-                ),
+                crate::cfm::CfmSymbolBindings::prepare(&mut bindings, "InterfaceLib", "TickCount"),
                 Ok((vector, 2))
             );
             crate::cfm::CfmSymbolBindings::commit(&mut bindings);
@@ -1374,7 +1371,8 @@ fn memory_fragment_preparation_rejects_without_publication_and_retries() {
                 &mut memory,
                 &mut cursor,
                 LIMIT,
-                &mut import_run_state
+                &mut import_run_state,
+                &[],
             ),
             Err(PPC_FRAG_NO_ADDR_SPACE),
             "refusal {refusal}"
@@ -1403,6 +1401,7 @@ fn memory_fragment_preparation_rejects_without_publication_and_retries() {
             &mut cursor,
             LIMIT,
             &mut import_run_state,
+            &[],
         )
         .unwrap();
         assert_eq!(manager.native_heap_state().unwrap().heap_cursor, cursor);
@@ -1420,6 +1419,43 @@ fn memory_fragment_preparation_rejects_without_publication_and_retries() {
             Some(PPC_IMPORT_TVECTOR_BASE)
         );
     }
+}
+
+#[test]
+fn dynamic_fragment_imports_resolve_existing_guest_library_exports() {
+    let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+    let fragment = synthetic_pef_with_library_import(b"Storm", b"__register_fragment");
+    let connection = PpcCfmConnection {
+        id: 7,
+        library_name: "Storm".into(),
+        main_addr: 0,
+        init_addr: 0,
+        term_addr: 0,
+        exports: vec![PpcCfmExport {
+            name: "__register_fragment".into(),
+            class: 2,
+            address: 0x0400_1000,
+        }],
+    };
+    let mut cursor = loaded.heap_cursor();
+    let limit = loaded.heap_limit();
+    let mut imports = PpcImportRunState::from_parts(Vec::new(), 0, ppc_import_layout());
+    let mut manager = loaded.process_memory_manager.0.borrow_mut();
+
+    ppc_prepare_mem_fragment(
+        &fragment,
+        &mut manager,
+        &mut loaded.memory,
+        &mut cursor,
+        limit,
+        &mut imports,
+        &[connection],
+    )
+    .unwrap();
+
+    let binding = imports.binding_cloned(0).unwrap();
+    assert_eq!(binding.address, 0x0400_1000);
+    assert_eq!(binding.tvector_address, None);
 }
 
 #[test]

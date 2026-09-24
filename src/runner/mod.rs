@@ -4427,6 +4427,7 @@ impl FixtureRunner {
         }) {
             ppc_app.grow_application_partition(partition_size.min(ram_size));
         }
+        ppc_app.reserve_ppc_system_storage();
         assert!(self.process_context.install_cfm_seed(&mut ppc_app.cfm));
         if let Some(time_base) = self.launch_ppc_time_base_override {
             ppc_app.cpu.set_time_base(time_base);
@@ -7048,6 +7049,89 @@ impl FixtureRunner {
             });
         let profile_run_us = elapsed_profile_micros(profile_run_start);
         let ppc_cycles = ppc_run_result_cycles(probe.result);
+        let mut thread_switcher_cycles = 0u64;
+        let guest_calls = ppc_app.toolbox_startup.execution.calls().shared_handle();
+        let next_ppc_task = guest_calls.current_task();
+        if next_ppc_task != ppc_task && !guest_calls.has_classic_task_handoff() {
+            // Thread Manager switchers save and restore process state around a
+            // cooperative handoff. Run both before the successor's next guest
+            // instruction, using the saved stack/TOC for the outgoing thread.
+            if let (Some((procedure, parameter)), Some(context)) = (
+                guest_calls.thread_switcher(ppc_task, false),
+                guest_calls.saved_native_thread_context(ppc_task),
+            ) {
+                if procedure != 0 {
+                    let callback = self.process_context.with_memory_and_cfm(|memory_manager, cfm| {
+                        ppc_app.run_thread_switcher_callback_with_process_services(
+                            ppc_task.thread_id(),
+                            procedure,
+                            parameter,
+                            Some(context),
+                            PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
+                            trace_ppc_imports,
+                            trace_ppc_fetches,
+                            memory_manager,
+                            cfm,
+                        )
+                    });
+                    thread_switcher_cycles = thread_switcher_cycles
+                        .saturating_add(ppc_run_result_cycles(callback.result));
+                    if std::env::var_os("SYSTEMLESS_PPC_THREAD_TRACE").is_some() {
+                        eprintln!("[PPC-THREAD-TRACE] switch-out thread={} result={:?}", ppc_task.thread_id(), callback.result);
+                    }
+                }
+            }
+            if let Some((procedure, parameter)) = guest_calls.thread_switcher(next_ppc_task, true) {
+                if procedure != 0 {
+                    let callback = self.process_context.with_memory_and_cfm(|memory_manager, cfm| {
+                        ppc_app.run_thread_switcher_callback_with_process_services(
+                            next_ppc_task.thread_id(),
+                            procedure,
+                            parameter,
+                            None,
+                            PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
+                            trace_ppc_imports,
+                            trace_ppc_fetches,
+                            memory_manager,
+                            cfm,
+                        )
+                    });
+                    thread_switcher_cycles = thread_switcher_cycles
+                        .saturating_add(ppc_run_result_cycles(callback.result));
+                    if std::env::var_os("SYSTEMLESS_PPC_THREAD_TRACE").is_some() {
+                        eprintln!("[PPC-THREAD-TRACE] switch-in thread={} result={:?}", next_ppc_task.thread_id(), callback.result);
+                    }
+                }
+            }
+        }
+        let mut file_completion_cycles = 0u64;
+        for _ in 0..16 {
+            let Some((parameter_block, completion)) = ppc_app.pending_file_completions.pop_front() else {
+                break;
+            };
+            let callback = self.process_context.with_memory_and_cfm(|memory_manager, cfm| {
+                ppc_app.run_file_completion_callback_with_process_services(
+                    parameter_block,
+                    completion,
+                    PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
+                    trace_ppc_imports,
+                    trace_ppc_fetches,
+                    memory_manager,
+                    cfm,
+                )
+            });
+            if std::env::var_os("SYSTEMLESS_PPC_FILE_TRACE").is_some() {
+                let context = ppc_app.memory.read_u32_be(parameter_block + 0x50);
+                eprintln!(
+                    "[PPC-FILE-TRACE] completion pb=${parameter_block:08X} proc=${completion:08X} context={context:?} flag={:?} result={:?} imports={}",
+                    context.and_then(|ptr| ppc_app.memory.read_u32_be(ptr + 8)),
+                    callback.result,
+                    callback.handled_import_count,
+                );
+            }
+            file_completion_cycles = file_completion_cycles
+                .saturating_add(ppc_run_result_cycles(callback.result));
+        }
         let resumed_m68k = self.resume_m68k_after_powerpc(&mut ppc_app);
         let mixed_mode_budget =
             ppc_max_steps.saturating_sub(usize::try_from(ppc_cycles).unwrap_or(usize::MAX));
@@ -7058,7 +7142,10 @@ impl FixtureRunner {
             self.run_pending_m68k_guest_call(&mut ppc_app, mixed_mode_budget)
         };
         let mixed_mode_cycles = mixed_mode.map_or(0, |(cycles, _)| cycles as u64);
-        let cycles = ppc_cycles.saturating_add(mixed_mode_cycles);
+        let cycles = ppc_cycles
+            .saturating_add(thread_switcher_cycles)
+            .saturating_add(file_completion_cycles)
+            .saturating_add(mixed_mode_cycles);
         let pc = ppc_app.cpu.pc;
         let sp = ppc_app.cpu.gpr[1];
         let gpr3 = ppc_app.cpu.gpr[3];

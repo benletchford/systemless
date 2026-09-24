@@ -10,6 +10,7 @@ pub(crate) const PPC_CWINDOW_GO_AWAY_OFFSET: u32 = 112;
 pub(crate) const PPC_CWINDOW_STRUCTURE_RGN_OFFSET: u32 = 114;
 pub(crate) const PPC_CWINDOW_CONTENT_RGN_OFFSET: u32 = 118;
 pub(crate) const PPC_CWINDOW_UPDATE_RGN_OFFSET: u32 = 122;
+pub(crate) const PPC_CWINDOW_WINDOW_PIC_OFFSET: u32 = 148;
 pub(crate) const PPC_CWINDOW_DEF_PROC_OFFSET: u32 = 126;
 pub(crate) const PPC_CWINDOW_STATE_HANDLE_OFFSET: u32 = 130;
 pub(crate) const PPC_CWINDOW_TITLE_HANDLE_OFFSET: u32 = 134;
@@ -85,6 +86,7 @@ pub(super) struct PpcWindowDispatchContext<'a> {
     pub(super) controls: &'a mut Vec<PpcControlRecord>,
     pub(super) gworlds: &'a mut Vec<PpcGWorldRecord>,
     pub(super) window_list: &'a SharedProcessWindowList,
+    pub(super) draw_sprocket: &'a PpcDrawSprocketState,
     pub(super) current_gworld: &'a mut u32,
     pub(super) current_gdevice: &'a mut u32,
     pub(super) quickdraw_fore_color: &'a mut PpcRgbColor,
@@ -116,6 +118,7 @@ pub(super) fn dispatch_window_import(
         controls,
         gworlds,
         window_list,
+        draw_sprocket,
         current_gworld,
         current_gdevice,
         quickdraw_fore_color,
@@ -750,13 +753,23 @@ pub(super) fn dispatch_window_import(
                 .unwrap_or(ppc_main_screen_height() as i16);
             let menu_bar_height = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16;
             let in_screen = (0..screen_height).contains(&v) && (0..screen_width).contains(&h);
-            let in_menu_bar = in_screen && v < menu_bar_height.max(0).min(screen_height);
+            let fullscreen_context_active = draw_sprocket.active_context.is_some();
+            let in_menu_bar = !fullscreen_context_active
+                && in_screen
+                && v < menu_bar_height.max(0).min(screen_height);
             let (part, window) = if in_menu_bar {
                 (1, 0)
             } else if in_screen {
                 ppc_find_window_at_point(memory, gworlds, window_list, v, h, menu_bar_height)
             } else {
                 (0, 0)
+            };
+            // An active DrawSprocket context covers the display without a
+            // WindowPtr. Full-screen games still receive content clicks.
+            let (part, window) = if fullscreen_context_active && in_screen && part == 0 {
+                (3, 0)
+            } else {
+                (part, window)
             };
             if window_out != 0 && ppc_memory_can_write_bytes(memory, window_out, 4) {
                 let _ = memory.write_u32_be(window_out, window);
@@ -2662,6 +2675,74 @@ pub(super) fn ppc_dispatch_legacy_window(
     last_resource_error: &mut i16,
 ) -> Option<PpcImportAction> {
     match operation {
+        PpcLegacyWindowOperation::CheckUpdate => {
+            // Macintosh Toolbox Essentials (1992), p. 4-116: scan the
+            // visible windows front to back. Pictured windows are redrawn
+            // internally; the first ordinary dirty window produces an event.
+            for window in window_list.windows() {
+                if !ppc_window_is_visible(memory, window) {
+                    continue;
+                }
+                let update_region = memory
+                    .read_u32_be(window + PPC_CWINDOW_UPDATE_RGN_OFFSET)
+                    .unwrap_or(0);
+                let dirty = ppc_read_rgn_bbox(memory, update_region)
+                    .is_some_and(|(top, left, bottom, right)| top < bottom && left < right);
+                if !dirty {
+                    continue;
+                }
+                let picture = memory
+                    .read_u32_be(window + PPC_CWINDOW_WINDOW_PIC_OFFSET)
+                    .unwrap_or(0);
+                if picture != 0 && memory.read_u32_be(picture).unwrap_or(0) != 0 {
+                    let saved_r3 = cpu.gpr[3];
+                    let saved_r4 = cpu.gpr[4];
+                    cpu.gpr[3] = picture;
+                    cpu.gpr[4] = window + 16;
+                    let _ = ppc_draw_picture(
+                        cpu,
+                        memory,
+                        handles,
+                        vfs_resources,
+                        gworlds,
+                        window,
+                        screen_clut,
+                        color_manager_clut,
+                    );
+                    cpu.gpr[3] = saved_r3;
+                    cpu.gpr[4] = saved_r4;
+                    let _ = ppc_set_empty_rgn(memory, update_region);
+                    if let Some(index) = event_queue
+                        .iter()
+                        .position(|event| event.what == 6 && event.message == window)
+                    {
+                        event_queue.remove(index);
+                    }
+                    continue;
+                }
+                let event_ptr = cpu.gpr[3];
+                if event_ptr != 0 {
+                    let _ = ppc_write_event_record(
+                        memory,
+                        event_ptr,
+                        6,
+                        window,
+                        when,
+                        input.mouse_v,
+                        input.mouse_h,
+                        0,
+                    );
+                }
+                if let Some(index) = event_queue
+                    .iter()
+                    .position(|event| event.what == 6 && event.message == window)
+                {
+                    event_queue.remove(index);
+                }
+                return Some(PpcImportAction::Return(1));
+            }
+            Some(PpcImportAction::Return(0))
+        }
         PpcLegacyWindowOperation::NewWindow => {
             let previous_front = ppc_front_visible_process_window(memory, window_list);
             let mut allocator = PpcProcessAllocatorView {

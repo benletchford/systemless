@@ -1228,6 +1228,8 @@ struct ExecutionTaskCalls {
     cooperative_contexts: ExecutionTaskContextBank<CooperativeThread>,
     native_threads: ExecutionTaskContextBank<NativeThreadContext>,
     thread_storage: ExecutionTaskContextBank<ThreadStorage>,
+    thread_terminators: ExecutionTaskContextBank<(u32, u32)>,
+    thread_switchers: ExecutionTaskContextBank<((u32, u32), (u32, u32))>,
     thread_pool: Vec<(GuestIsa, ThreadStorage)>,
     native_cpu_task: Option<ExecutionTaskId>,
     handoff: Option<(ExecutionTaskId, TaskResumeContext)>,
@@ -1248,6 +1250,8 @@ impl Clone for ExecutionTaskCalls {
             cooperative_contexts: self.cooperative_contexts.clone(),
             native_threads: self.native_threads.clone(),
             thread_storage: self.thread_storage.clone(),
+            thread_terminators: self.thread_terminators.clone(),
+            thread_switchers: self.thread_switchers.clone(),
             thread_pool: self.thread_pool.clone(),
             native_cpu_task: self.native_cpu_task,
             handoff: self.handoff.clone(),
@@ -1268,6 +1272,8 @@ impl PartialEq for ExecutionTaskCalls {
             && self.cooperative_contexts == other.cooperative_contexts
             && self.native_threads.same_tasks(&other.native_threads)
             && self.thread_storage == other.thread_storage
+            && self.thread_terminators == other.thread_terminators
+            && self.thread_switchers == other.thread_switchers
             && self.thread_pool == other.thread_pool
             && self.native_cpu_task == other.native_cpu_task
             && self
@@ -1294,6 +1300,8 @@ impl Default for ExecutionTaskCalls {
             cooperative_contexts: ExecutionTaskContextBank::default(),
             native_threads: ExecutionTaskContextBank::default(),
             thread_storage: ExecutionTaskContextBank::default(),
+            thread_terminators: ExecutionTaskContextBank::default(),
+            thread_switchers: ExecutionTaskContextBank::default(),
             thread_pool: Vec::new(),
             native_cpu_task: None,
             handoff: None,
@@ -1529,6 +1537,8 @@ impl ExecutionTaskCalls {
         self.cooperative_contexts.remove(task);
         self.native_threads.remove(task);
         self.thread_storage.remove(task);
+        self.thread_terminators.remove(task);
+        self.thread_switchers.remove(task);
         self.menu_calls
             .with_mut(|calls| calls.calls.retain(|call| call.task != task));
         if let Some(isa) = pooled_isa {
@@ -1889,6 +1899,8 @@ impl SharedGuestCallStack {
         tasks.cooperative_contexts.remove(task);
         tasks.native_threads.remove(task);
         tasks.thread_storage.remove(task);
+        tasks.thread_terminators.remove(task);
+        tasks.thread_switchers.remove(task);
         tasks
             .menu_calls
             .with_mut(|calls| calls.calls.retain(|call| call.task != task));
@@ -1928,6 +1940,76 @@ impl SharedGuestCallStack {
         let tasks = self.0.borrow();
         tasks.kernel.scheduling_state(task)?;
         Some(tasks.thread_storage.get(task).copied().unwrap_or_default())
+    }
+
+    pub(crate) fn set_thread_terminator(
+        &self,
+        task: ExecutionTaskId,
+        procedure: u32,
+        parameter: u32,
+    ) -> Result<(), i16> {
+        let mut tasks = self.0.borrow_mut();
+        if tasks.kernel.scheduling_state(task).is_none() {
+            return Err(crate::thread_manager::THREAD_NOT_FOUND_ERR);
+        }
+        tasks.thread_terminators.insert(task, (procedure, parameter));
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn thread_terminator(&self, task: ExecutionTaskId) -> Option<(u32, u32)> {
+        let tasks = self.0.borrow();
+        tasks.kernel.scheduling_state(task)?;
+        tasks.thread_terminators.get(task).copied()
+    }
+
+    pub(crate) fn take_thread_terminator(&self, task: ExecutionTaskId) -> Option<(u32, u32)> {
+        let mut tasks = self.0.borrow_mut();
+        tasks.kernel.scheduling_state(task)?;
+        tasks.thread_terminators.remove(task)
+    }
+
+    pub(crate) fn set_thread_switcher(
+        &self,
+        task: ExecutionTaskId,
+        procedure: u32,
+        parameter: u32,
+        switch_in: bool,
+    ) -> Result<(), i16> {
+        let mut tasks = self.0.borrow_mut();
+        if tasks.kernel.scheduling_state(task).is_none() {
+            return Err(crate::thread_manager::THREAD_NOT_FOUND_ERR);
+        }
+        let mut callbacks = tasks.thread_switchers.get(task).copied().unwrap_or_default();
+        if switch_in {
+            callbacks.0 = (procedure, parameter);
+        } else {
+            callbacks.1 = (procedure, parameter);
+        }
+        tasks.thread_switchers.insert(task, callbacks);
+        Ok(())
+    }
+
+    pub(crate) fn thread_switcher(
+        &self,
+        task: ExecutionTaskId,
+        switch_in: bool,
+    ) -> Option<(u32, u32)> {
+        let tasks = self.0.borrow();
+        tasks.kernel.scheduling_state(task)?;
+        let callbacks = tasks.thread_switchers.get(task)?;
+        Some(if switch_in { callbacks.0 } else { callbacks.1 })
+    }
+
+    pub(crate) fn saved_native_thread_context(
+        &self,
+        task: ExecutionTaskId,
+    ) -> Option<PpcExecutionContext> {
+        self.0
+            .borrow()
+            .native_threads
+            .get(task)
+            .map(|thread| thread.context.clone())
     }
 
     /// Observe the thread's original stack without exposing a parked engine.
