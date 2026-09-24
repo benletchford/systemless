@@ -12,9 +12,20 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
   status: playable
   verified:
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
+    systemless_version: "0.57.0 + local site build"
+    architecture: 68k
+    environment: >-
+      Browser launch from the immutable hosted archive at localhost:8080;
+      completed the 21-file installer, automatic handoff, unregistered trial
+      notice, New Game story and live first-level gameplay
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2458
   - date: "2026-09-23"
     tester: Catalogue maintainer
     systemless_version: "0.51.0 + PR #2457"
