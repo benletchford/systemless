@@ -12,9 +12,22 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+launch_enabled: true
 compatibility:
-  status: boots
+  status: playable
   verified:
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
+    systemless_version: "0.58.0 + local release-mode site build"
+    architecture: 68k
+    environment: >-
+      Launched the immutable hosted StuffIt demo at localhost:8080, dismissed
+      the FPU advisory, selected Begin New Game, reached the Utah Beach map,
+      cleared the opening staff tip, and selected an Allied unit to display its
+      details. Briefly holding the mouse button was needed for the game's
+      polled controls during browser automation.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/2688
   - date: "2026-09-24"
     tester: Catalogue maintainer
     systemless_version: 0.58.0 + clean deterministic runner
@@ -23,7 +36,7 @@ compatibility:
       Loaded the unchanged StuffIt demo with its non-FPU executable in an 800-by-600,
       256-colour display. Dismissed the FPU advisory, watched the original logos,
       selected Begin New Game, reached the Utah Beach map and dismissed its opening staff
-      briefing. Release-mode browser verification remains pending.
+      briefing.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/2684
 artifacts:
@@ -89,4 +102,5 @@ hexagonal map while the staff assistant reports the changing situation.
 This is Atomic Games' original Macintosh demonstration, not the complete
 commercial series. It includes only the introductory Utah Beach scenario;
 Save and Restore are disabled. At startup, the non-FPU application may advise
-using the FPU version on a suitable Macintosh. Press Return to continue.
+using the FPU version on a suitable Macintosh. Press Return to continue. If a
+control does not respond to a very quick tap, hold the mouse button briefly.
