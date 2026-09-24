@@ -2731,7 +2731,7 @@ impl FixtureRunner {
         if self.guest_work_is_suspended() {
             return;
         }
-        let Some(tracking) = self.process_context.menu_tracking() else {
+        let Some(tracking) = self.process_context.menu_tracking().snapshot() else {
             self.menu_presentation_remainder = 0;
             return;
         };

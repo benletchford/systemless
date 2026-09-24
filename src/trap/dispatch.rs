@@ -25,7 +25,7 @@ use crate::list_manager::ProcessListRecord;
 use crate::machine_profile::reference_machine_profile;
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
-use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
+use crate::menu_manager::SharedNativeMenuSelection;
 use crate::process_context::{
     MigratedProcessHandles, PendingFileCompletion, ProcessContext, ProcessForkMap,
     ProcessLoadedResources, ProcessResourceFileMap, ProcessResourceManagerState,
@@ -3407,7 +3407,7 @@ impl TrapDispatcher {
             ticks: tick_state,
             execution: guest_calls,
         } = handles;
-        let menu_tracking = guest_calls.menu_tracking_view();
+        let menu_tracking = guest_calls.menu_tracking_view().into();
         let process_file_system = SharedProcessFileSystem::default();
         process_file_system.vfs_directories.replace(vec![ProcessVfsDirectory {
             dir_id: 2,
@@ -3834,18 +3834,18 @@ impl TrapDispatcher {
     /// must let that guest callback return to the original menu trap.
     #[cfg(test)]
     pub(crate) fn is_menu_definition_callback_pending(&self) -> bool {
-        self.is_menu_definition_callback_pending_with_tracking(self.menu_tracking.as_ref())
+        self.is_menu_definition_callback_pending_with_tracking(&self.menu_tracking)
     }
 
     pub(crate) fn is_menu_definition_callback_pending_with_tracking(
         &self,
-        menu_tracking: Option<&ProcessMenuTrackingState>,
+        menu_tracking: &SharedProcessMenuTracking,
     ) -> bool {
         self.guest_calls.menu_bar_build().is_some()
             || self
                 .menu_tracking
                 .as_ref()
-                .or(menu_tracking)
+                .or_else(|| menu_tracking.as_ref())
                 .and_then(crate::menu_manager::MenuTrackingState::active_definition)
                 .or(self.menu_tracking.context().definition.as_ref())
                 .is_some_and(|tracking| tracking.pending_invocation().is_some())

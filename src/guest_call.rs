@@ -884,7 +884,6 @@ impl SharedMenuTracking {
         self.calls.ptr_eq(&tasks.menu_calls) && self.execution.ptr_eq(calls)
     }
 
-    #[cfg(test)]
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
         self.calls.ptr_eq(&other.calls)
     }
@@ -1209,7 +1208,7 @@ impl SharedMenuTracking {
             });
         });
     }
-    #[cfg(test)]
+
     pub(crate) fn snapshot(&self) -> Option<crate::menu_manager::ProcessMenuTrackingState> {
         (**self).clone()
     }
