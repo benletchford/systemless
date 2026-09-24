@@ -53,8 +53,10 @@ artifacts:
     notes: >-
       Downloaded 754,038-byte StuffIt 5 archive, SHA-256
       cb93f4ae64a70a1b00f7bab9e9ba1ce66bb16e2238f74302a605331d3f2a01c9. The archive contains Out of this World Demo
-      1.0.1 and a limited set of game data files. Its outer StuffIt packaging may be
-      an archival repack; no retail data or altered executable was identified.
+      1.0.1 and a limited set of game data files. The outer folder bears a 2023
+      archival timestamp while the application and demo data bear 1992 dates;
+      this does not establish that the StuffIt envelope is the publisher's
+      original package.
 - id: gameplay-screenshot
   role: screenshot
   format: png
