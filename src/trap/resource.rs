@@ -2842,6 +2842,8 @@ impl super::TrapDispatcher {
                     && native_call.is_none()
                     && !old_trap_standard
                     && !old_trap_think;
+                let saved_gateway_reentry = direct_saved_gateway
+                    .then(|| bus.read_long(sp.wrapping_sub(4)).wrapping_sub(6));
 
                 let (seg_num, entry_addr, fmt, refresh_from_resource) = if native_old_trap_standard
                 {
@@ -2873,9 +2875,11 @@ impl super::TrapDispatcher {
                     let sn = bus.read_word(entry + 6) as i16;
                     (sn, Some(entry), "thinkc-oldtrap", true)
                 } else if direct_saved_gateway {
-                    // A caller can push a return PC and segment argument,
-                    // then JMP through a saved auto-pop LoadSeg gateway. It
-                    // has no calling jump-table entry to re-execute.
+                    // A caller can push a synthetic return PC and segment
+                    // argument, then JMP through a saved auto-pop gateway.
+                    // The six preceding bytes are the dispatch sequence to
+                    // re-execute after loading. Inside Macintosh Volume II,
+                    // II-60, describes the same six-byte LoadSeg re-entry.
                     let sn = bus.read_word(sp) as i16;
                     cpu.write_reg(Register::A7, sp + 2);
                     (sn, None, "saved-gateway", false)
@@ -2921,7 +2925,14 @@ impl super::TrapDispatcher {
                         self.finish_loadseg(bus, cpu, seg_num, Some(entry_addr), false)
                     }
                 } else {
-                    self.finish_loadseg(bus, cpu, seg_num, None, false)
+                    let result = self.finish_loadseg(bus, cpu, seg_num, None, false);
+                    if result.is_ok() {
+                        if let Some(reentry) = saved_gateway_reentry {
+                            self.preserve_auto_pop_pc_once = true;
+                            cpu.write_reg(Register::PC, reentry);
+                        }
+                    }
+                    result
                 }
             }
 
@@ -12935,10 +12946,11 @@ mod tests {
     }
 
     #[test]
-    fn loadseg_saved_gateway_call_returns_to_wrapper_after_patching_segment() {
+    fn loadseg_saved_gateway_reenters_wrapper_dispatch_after_patching_segment() {
         // Inside Macintosh Volume II (1985), II-60: LoadSeg consumes a
         // segment-number word. A saved auto-pop gateway may be invoked by a
-        // wrapper rather than by an unloaded jump-table entry.
+        // wrapper rather than by an unloaded jump-table entry. It must still
+        // re-enter the six-byte dispatch sequence before the synthetic return.
         let (mut disp, mut cpu, mut bus) = setup_with_trap_tables();
         let seg_addr = 0x230000u32;
         bus.write_word(seg_addr, 0);
@@ -12962,7 +12974,7 @@ mod tests {
 
         call_trap_word(&mut disp, 0xADF0, &mut cpu, &mut bus).unwrap();
 
-        assert_eq!(cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(cpu.read_reg(Register::PC), return_pc - 6);
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
         assert_eq!(bus.read_word(TEST_SP + 6), 0xBEEF);
         assert_eq!(bus.read_word(entry_addr), 12);
