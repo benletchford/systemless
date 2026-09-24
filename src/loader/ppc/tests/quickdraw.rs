@@ -4020,3 +4020,507 @@ fn hle_import_runner_handles_index2_color() {
     );
 }
 
+#[test]
+fn restore_entries_updates_selected_device_colors_without_reseeding() {
+    let pef = synthetic_pef_with_import(b"RestoreEntries");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut source_bytes = vec![0; 24];
+    source_bytes[0..4].copy_from_slice(&0x1234_5678u32.to_be_bytes());
+    source_bytes[6..8].copy_from_slice(&1u16.to_be_bytes());
+    source_bytes[8..10].copy_from_slice(&9u16.to_be_bytes());
+    source_bytes[10..12].copy_from_slice(&0x1111u16.to_be_bytes());
+    source_bytes[12..14].copy_from_slice(&0x2222u16.to_be_bytes());
+    source_bytes[14..16].copy_from_slice(&0x3333u16.to_be_bytes());
+    source_bytes[16..18].copy_from_slice(&10u16.to_be_bytes());
+    source_bytes[18..20].copy_from_slice(&0x4444u16.to_be_bytes());
+    source_bytes[20..22].copy_from_slice(&0x5555u16.to_be_bytes());
+    source_bytes[22..24].copy_from_slice(&0x6666u16.to_be_bytes());
+    let source = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &source_bytes,
+    );
+    let selection = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(selection, vec![0; 6]);
+    loaded.memory.write_u16_be(selection, 1).unwrap();
+    loaded.memory.write_u16_be(selection + 2, 42).unwrap();
+    loaded.memory.write_u16_be(selection + 4, 300).unwrap();
+    let destination = loaded.memory.read_u32_be(PPC_MAIN_CTABLE_HANDLE).unwrap();
+    let original_seed = loaded.memory.read_u32_be(destination).unwrap();
+    let original_sp = loaded.cpu.gpr[1];
+    loaded.cpu.gpr[3] = source;
+    loaded.cpu.gpr[4] = PPC_MAIN_CTABLE_HANDLE;
+    loaded.cpu.gpr[5] = selection;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[1], original_sp);
+    assert_eq!(loaded.screen_clut[42], [0x1111, 0x2222, 0x3333]);
+    assert_eq!(loaded.memory.read_u16_be(destination + 8 + 42 * 8), Some(9));
+    assert_eq!(
+        loaded.memory.read_u16_be(destination + 10 + 42 * 8),
+        Some(0x1111)
+    );
+    assert_eq!(loaded.memory.read_u32_be(destination), Some(original_seed));
+    assert_eq!(loaded.memory.read_u16_be(selection + 4), Some(u16::MAX));
+}
+
+#[test]
+fn direct_video_set_entries_updates_screen_clut() {
+    let parameter_block = 0x2000;
+    let request = 0x2100;
+    let table = 0x2200;
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(parameter_block, vec![0; 64]);
+    memory.add_region(request, vec![0; 8]);
+    memory.add_region(table, vec![0; 8]);
+    memory.write_u16_be(parameter_block + 26, 8).unwrap();
+    memory.write_u32_be(parameter_block + 28, request).unwrap();
+    memory.write_u32_be(request, table).unwrap();
+    memory.write_u16_be(request + 4, 7).unwrap();
+    memory.write_u16_be(request + 6, 0).unwrap();
+    memory.write_u16_be(table, 99).unwrap();
+    memory.write_u16_be(table + 2, 0x1111).unwrap();
+    memory.write_u16_be(table + 4, 0x2222).unwrap();
+    memory.write_u16_be(table + 6, 0x3333).unwrap();
+    let mut screen_clut = [[0; 3]; 256];
+    let display_gamma = SharedProcessDisplayGamma::default();
+    let mut startup = PpcToolboxStartupState::default();
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[3] = parameter_block;
+
+    assert_eq!(
+        ppc_pb_control(
+            &cpu,
+            &mut memory,
+            0,
+            &mut screen_clut,
+            &display_gamma,
+            &mut startup,
+        ),
+        PPC_NO_ERR
+    );
+    assert_eq!(screen_clut[7], [0x1111, 0x2222, 0x3333]);
+    assert_eq!(display_gamma.table(), crate::display::linear_display_gamma());
+    assert_eq!(memory.read_u16_be(parameter_block + 16), Some(0));
+
+    let installed_gamma = [[42; 256]; 3];
+    display_gamma.install(installed_gamma);
+    assert_eq!(
+        ppc_pb_control(
+            &cpu,
+            &mut memory,
+            0,
+            &mut screen_clut,
+            &display_gamma,
+            &mut startup,
+        ),
+        PPC_NO_ERR
+    );
+    assert_eq!(display_gamma.table(), installed_gamma);
+}
+
+#[test]
+fn video_status_returns_device_owned_linear_gamma_table() {
+    let pef = synthetic_pef_with_import(b"PBStatusSync");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let parameter_block = PPC_DATA_BASE + 0x1000;
+    let vd_gamma = parameter_block + 64;
+    loaded.memory.add_region(parameter_block, vec![0; 128]);
+    loaded.memory.write_u16_be(parameter_block + 24, 0).unwrap();
+    loaded.memory.write_u16_be(parameter_block + 26, 8).unwrap();
+    loaded
+        .memory
+        .write_u32_be(parameter_block + 28, vd_gamma)
+        .unwrap();
+    loaded.cpu.gpr[3] = parameter_block;
+
+    assert_eq!(ppc_pb_status(&loaded.cpu, &mut loaded.memory), PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u16_be(parameter_block + 16), Some(0));
+    assert_eq!(
+        loaded.memory.read_u32_be(vd_gamma),
+        Some(PPC_MAIN_GAMMA_TABLE)
+    );
+    assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_GAMMA_TABLE), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_GAMMA_TABLE + 6), Some(1));
+    assert_eq!(
+        loaded.memory.read_u16_be(PPC_MAIN_GAMMA_TABLE + 8),
+        Some(256)
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(PPC_MAIN_GAMMA_TABLE + 10),
+        Some(8)
+    );
+    for value in 0..256u32 {
+        assert_eq!(
+            loaded.memory.read_u8(PPC_MAIN_GAMMA_TABLE + 12 + value),
+            Some(value as u8)
+        );
+    }
+}
+
+#[test]
+fn synthetic_main_color_table_does_not_overlap_gamma_storage() {
+    let color_table_end = PPC_MAIN_CTABLE + PPC_MAIN_CTABLE_SIZE;
+    let gamma_table_end = PPC_MAIN_GAMMA_TABLE + PPC_MAIN_GAMMA_TABLE_SIZE;
+
+    assert!(
+        color_table_end <= PPC_MAIN_GAMMA_TABLE || gamma_table_end <= PPC_MAIN_CTABLE,
+        "the 256-entry ColorTable and device GammaTbl must occupy disjoint storage"
+    );
+}
+
+#[test]
+fn video_control_installs_three_channel_gamma_table() {
+    let parameter_block = 0x2000;
+    let vd_gamma = 0x2100;
+    let table = 0x2200;
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(parameter_block, vec![0; 64]);
+    memory.add_region(vd_gamma, vec![0; 4]);
+    memory.add_region(table, vec![0; 24]);
+    memory.write_u16_be(parameter_block + 26, 4).unwrap();
+    memory.write_u32_be(parameter_block + 28, vd_gamma).unwrap();
+    memory.write_u32_be(vd_gamma, table).unwrap();
+    memory.write_u16_be(table, 0).unwrap();
+    memory.write_u16_be(table + 2, 0).unwrap();
+    memory.write_u16_be(table + 4, 0).unwrap();
+    memory.write_u16_be(table + 6, 3).unwrap();
+    memory.write_u16_be(table + 8, 4).unwrap();
+    memory.write_u16_be(table + 10, 2).unwrap();
+    memory
+        .write_bytes(table + 12, &[0, 10, 20, 30, 1, 11, 21, 31, 2, 12, 22, 32])
+        .unwrap();
+    let mut screen_clut = [[0; 3]; 256];
+    let display_gamma = SharedProcessDisplayGamma::default();
+    let mut startup = PpcToolboxStartupState::default();
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[3] = parameter_block;
+
+    assert_eq!(
+        ppc_pb_control(
+            &cpu,
+            &mut memory,
+            0,
+            &mut screen_clut,
+            &display_gamma,
+            &mut startup,
+        ),
+        PPC_NO_ERR
+    );
+    let installed = display_gamma.table();
+    assert_eq!(installed[0][0], 0);
+    assert_eq!(installed[0][64], 10);
+    assert_eq!(installed[0][255], 30);
+    assert_eq!(installed[1][64], 11);
+    assert_eq!(installed[2][255], 32);
+    assert!(display_gamma.is_explicit());
+}
+
+#[test]
+fn direct_video_set_entries_does_not_replace_quickdraws_logical_color_table() {
+    let pef = synthetic_pef_with_import(b"PBControlSync");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let parameter_block = scratch;
+    let request = scratch + 0x100;
+    let table = scratch + 0x200;
+    loaded.memory.add_region(scratch, vec![0; 0x300]);
+    loaded.memory.write_u16_be(parameter_block + 26, 8).unwrap();
+    loaded
+        .memory
+        .write_u32_be(parameter_block + 28, request)
+        .unwrap();
+    loaded.memory.write_u32_be(request, table).unwrap();
+    loaded.memory.write_u16_be(request + 4, 7).unwrap();
+    loaded.memory.write_u16_be(request + 6, 0).unwrap();
+    loaded.memory.write_u16_be(table, 7).unwrap();
+    loaded.memory.write_u16_be(table + 2, 0x1111).unwrap();
+    loaded.memory.write_u16_be(table + 4, 0x2222).unwrap();
+    loaded.memory.write_u16_be(table + 6, 0x3333).unwrap();
+    let ctable_handle =
+        ppc_gdevice_ctable_handle(&mut loaded.memory, *loaded.current_gdevice).unwrap();
+    let logical_before = ppc_read_ctable_clut(
+        &mut loaded.memory,
+        ctable_handle,
+        &loaded.color_manager_clut,
+    )
+    .unwrap();
+    let screen_clut = loaded.screen_clut;
+    let display_gamma = loaded.display_gamma.shared_handle();
+    let mut startup = loaded.toolbox_startup;
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[3] = parameter_block;
+
+    assert_eq!(
+        screen_clut.with_mut(|screen_clut| ppc_pb_control(
+            &cpu,
+            &mut loaded.memory,
+            *loaded.current_gdevice,
+            screen_clut,
+            &display_gamma,
+            &mut startup,
+        )),
+        PPC_NO_ERR
+    );
+    assert_eq!(screen_clut[7], [0x1111, 0x2222, 0x3333]);
+    assert_eq!(
+        ppc_read_ctable_clut(
+            &mut loaded.memory,
+            ctable_handle,
+            &loaded.color_manager_clut,
+        )
+        .unwrap(),
+        logical_before
+    );
+}
+
+#[test]
+fn ppc_rgb2hsl_converts_primary_and_gray_colors() {
+    let rgb = 0x2000;
+    let hsl = 0x2100;
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(rgb, vec![0; 0x200]);
+    memory.write_u16_be(rgb, 0xffff).unwrap();
+    memory.write_u16_be(rgb + 2, 0).unwrap();
+    memory.write_u16_be(rgb + 4, 0).unwrap();
+
+    assert!(ppc_rgb2hsl(&mut memory, rgb, hsl));
+    assert_eq!(memory.read_u16_be(hsl), Some(0));
+    assert_eq!(memory.read_u16_be(hsl + 2), Some(0xffff));
+    assert_eq!(memory.read_u16_be(hsl + 4), Some(0x8000));
+
+    memory.write_u16_be(rgb, 0x2468).unwrap();
+    memory.write_u16_be(rgb + 2, 0x2468).unwrap();
+    memory.write_u16_be(rgb + 4, 0x2468).unwrap();
+    assert!(ppc_rgb2hsl(&mut memory, rgb, hsl));
+    assert_eq!(memory.read_u16_be(hsl), Some(0));
+    assert_eq!(memory.read_u16_be(hsl + 2), Some(0));
+    assert_eq!(memory.read_u16_be(hsl + 4), Some(0x2468));
+}
+
+#[test]
+fn ppc_rgb2hsv_converts_primary_and_gray_colors() {
+    let rgb = 0x2000;
+    let hsv = 0x2100;
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(rgb, vec![0; 0x200]);
+    memory.write_u16_be(rgb, 0).unwrap();
+    memory.write_u16_be(rgb + 2, 0xffff).unwrap();
+    memory.write_u16_be(rgb + 4, 0).unwrap();
+
+    assert!(ppc_rgb2hsv(&mut memory, rgb, hsv));
+    assert_eq!(memory.read_u16_be(hsv), Some(0x5555));
+    assert_eq!(memory.read_u16_be(hsv + 2), Some(0xffff));
+    assert_eq!(memory.read_u16_be(hsv + 4), Some(0xffff));
+
+    memory.write_u16_be(rgb, 0x2468).unwrap();
+    memory.write_u16_be(rgb + 2, 0x2468).unwrap();
+    memory.write_u16_be(rgb + 4, 0x2468).unwrap();
+    assert!(ppc_rgb2hsv(&mut memory, rgb, hsv));
+    assert_eq!(memory.read_u16_be(hsv), Some(0));
+    assert_eq!(memory.read_u16_be(hsv + 2), Some(0));
+    assert_eq!(memory.read_u16_be(hsv + 4), Some(0x2468));
+
+    memory.write_u16_be(hsv, 0xaaaa).unwrap();
+    memory.write_u16_be(hsv + 2, 0xffff).unwrap();
+    memory.write_u16_be(hsv + 4, 0xffff).unwrap();
+    assert!(ppc_hsv2rgb(&mut memory, hsv, rgb));
+    assert_eq!(memory.read_u16_be(rgb), Some(0));
+    assert_eq!(memory.read_u16_be(rgb + 2), Some(0));
+    assert_eq!(memory.read_u16_be(rgb + 4), Some(0xffff));
+}
+
+#[test]
+fn protected_ppc_clut_entries_are_unchanged_by_set_entries() {
+    let table = 0x2000;
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(table, vec![0; 8]);
+    memory.write_u16_be(table, 7).unwrap();
+    memory.write_u16_be(table + 2, 0x1111).unwrap();
+    memory.write_u16_be(table + 4, 0x2222).unwrap();
+    memory.write_u16_be(table + 6, 0x3333).unwrap();
+    let mut screen_clut = [[0; 3]; 256];
+    let mut startup = PpcToolboxStartupState::default();
+    ppc_set_clut_entry_flag(&mut startup.clut_protected, 7, true);
+
+    let protected = startup.clut_protected;
+    assert!(ppc_apply_set_entries(
+        &mut memory,
+        -1,
+        0,
+        table,
+        0,
+        &mut screen_clut,
+        &protected,
+        None,
+        true,
+        &mut startup,
+    ));
+    assert_eq!(screen_clut[7], [0, 0, 0]);
+
+    ppc_set_clut_entry_flag(&mut startup.clut_protected, 7, false);
+    let protected = startup.clut_protected;
+    assert!(ppc_apply_set_entries(
+        &mut memory,
+        -1,
+        0,
+        table,
+        0,
+        &mut screen_clut,
+        &protected,
+        None,
+        true,
+        &mut startup,
+    ));
+    assert_eq!(screen_clut[7], [0x1111, 0x2222, 0x3333]);
+}
+
+#[test]
+fn ppc_clut_entry_flags_ignore_invalid_indices_and_can_be_cleared() {
+    let mut flags = [false; 256];
+    ppc_set_clut_entry_flag(&mut flags, 3, true);
+    ppc_set_clut_entry_flag(&mut flags, -1, true);
+    ppc_set_clut_entry_flag(&mut flags, 256, true);
+    assert!(flags[3]);
+    assert_eq!(flags.iter().filter(|flag| **flag).count(), 1);
+
+    ppc_set_clut_entry_flag(&mut flags, 3, false);
+    assert!(!flags[3]);
+}
+
+#[test]
+fn color_manager_entry_flags_are_scoped_per_gdevice() {
+    let mut startup = PpcToolboxStartupState::default();
+    let other_gdevice = PPC_DATA_BASE + 0x9000;
+    ppc_set_clut_entry_flag(
+        ppc_device_clut_protected_mut(&mut startup, other_gdevice),
+        7,
+        true,
+    );
+    ppc_set_clut_entry_flag(
+        ppc_device_clut_reserved_mut(&mut startup, other_gdevice),
+        8,
+        true,
+    );
+
+    assert!(!ppc_device_clut_protected(&startup, PPC_MAIN_GDEVICE)[7]);
+    assert!(!ppc_device_clut_reserved(&startup, PPC_MAIN_GDEVICE)[8]);
+    assert!(ppc_device_clut_protected(&startup, other_gdevice)[7]);
+    assert!(ppc_device_clut_reserved(&startup, other_gdevice)[8]);
+}
+
+#[test]
+fn make_itable_resizes_target_and_excludes_reserved_colors() {
+    let heap_base = 0x3000;
+    let heap_limit = heap_base + 0x20_000;
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(heap_base, vec![0; (heap_limit - heap_base) as usize]);
+    let mut heap_cursor = heap_base;
+    let mut handles = Vec::new();
+    let mut ctable = Vec::new();
+    ctable.extend_from_slice(&0x1234_5678u32.to_be_bytes());
+    ctable.extend_from_slice(&0u16.to_be_bytes());
+    ctable.extend_from_slice(&1u16.to_be_bytes());
+    for (index, color) in [(7u16, [0u16, 0, 0]), (9u16, [0xffffu16; 3])] {
+        ctable.extend_from_slice(&index.to_be_bytes());
+        for component in color {
+            ctable.extend_from_slice(&component.to_be_bytes());
+        }
+    }
+    let ctable_handle = ppc_alloc_handle_with_bytes(
+        &mut memory,
+        &mut heap_cursor,
+        heap_limit,
+        &mut handles,
+        &ctable,
+    );
+    let itable_handle = ppc_alloc_handle(
+        &mut memory,
+        &mut heap_cursor,
+        heap_limit,
+        &mut handles,
+        1,
+        true,
+    );
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[3] = ctable_handle;
+    cpu.gpr[4] = itable_handle;
+    cpu.gpr[5] = 4;
+    let mut startup = PpcToolboxStartupState::default();
+    ppc_set_clut_entry_flag(&mut startup.clut_reserved, 7, true);
+    let mut last_mem_error = PPC_NO_ERR;
+
+    ppc_make_itable(
+        &cpu,
+        None,
+        &mut memory,
+        &mut heap_cursor,
+        heap_limit,
+        &mut last_mem_error,
+        &mut handles,
+        PPC_MAIN_GDEVICE,
+        &[[0; 3]; 256],
+        &mut startup,
+    );
+
+    assert_eq!(*startup.last_quickdraw_error, PPC_NO_ERR);
+    let record = handles
+        .iter()
+        .find(|record| record.handle == itable_handle)
+        .unwrap();
+    assert_eq!(record.size, 6 + 4096);
+    let itable = memory.read_u32_be(itable_handle).unwrap();
+    assert_eq!(memory.read_u32_be(itable), Some(0x1234_5678));
+    assert_eq!(memory.read_u16_be(itable + 4), Some(4));
+    assert!(ppc_memory_read_bytes(&mut memory, itable + 6, 4096)
+        .unwrap()
+        .iter()
+        .all(|index| *index == 9));
+}
+
+#[test]
+fn make_itable_reports_invalid_resolution_without_touching_target() {
+    let heap_base = 0x3000;
+    let heap_limit = heap_base + 0x1000;
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(heap_base, vec![0; (heap_limit - heap_base) as usize]);
+    let mut heap_cursor = heap_base;
+    let mut handles = Vec::new();
+    let itable_handle = ppc_alloc_handle_with_bytes(
+        &mut memory,
+        &mut heap_cursor,
+        heap_limit,
+        &mut handles,
+        b"unchanged",
+    );
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[4] = itable_handle;
+    cpu.gpr[5] = 2;
+    let mut startup = PpcToolboxStartupState::default();
+    let mut last_mem_error = PPC_NO_ERR;
+
+    ppc_make_itable(
+        &cpu,
+        None,
+        &mut memory,
+        &mut heap_cursor,
+        heap_limit,
+        &mut last_mem_error,
+        &mut handles,
+        0,
+        &[[0; 3]; 256],
+        &mut startup,
+    );
+
+    assert_eq!(*startup.last_quickdraw_error, PPC_C_RES_ERR);
+    let itable = memory.read_u32_be(itable_handle).unwrap();
+    assert_eq!(
+        ppc_memory_read_bytes(&mut memory, itable, 9),
+        Some(b"unchanged".to_vec())
+    );
+}
