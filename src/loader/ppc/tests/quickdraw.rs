@@ -1,4 +1,6 @@
 use super::*;
+use crate::cpu::{CpuOps, Register};
+use crate::trap::test_helpers::MockCpu;
 
 #[test]
 fn hle_import_runner_converts_one_bit_bitmaps_to_regions() {
@@ -2006,5 +2008,461 @@ fn text_face_writes_the_cgrafport_style_byte() {
 
     let plain_advance = ppc_text_byte_advance(b'H', loaded.quickdraw_text_size);
     assert_eq!(loaded.quickdraw_pen_h, 20 + plain_advance + 1);
+}
+
+#[test]
+fn hle_import_runner_op_color_records_the_arithmetic_transfer_operand() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "OpColor"),
+        PpcImportDispatcherTarget::OpColor
+    );
+    let pef = synthetic_pef_with_import(b"OpColor");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let color_ptr = PPC_DATA_BASE + 0x1000;
+    let color = PpcRgbColor {
+        red: 0x1234,
+        green: 0x5678,
+        blue: 0x9abc,
+    };
+    loaded.memory.add_region(color_ptr, vec![0; 6]);
+    ppc_write_rgb_color(&mut loaded.memory, color_ptr, color).unwrap();
+    loaded.cpu.gpr[3] = color_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.quickdraw_op_colors.quickdraw_op_color(PPC_MAIN_GWORLD),
+        Some((color.red, color.green, color.blue))
+    );
+}
+
+#[test]
+fn hle_import_runner_hilite_color_records_the_highlight_operand() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "HiliteColor"),
+        PpcImportDispatcherTarget::HiliteColor
+    );
+    let pef = synthetic_pef_with_import(b"HiliteColor");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let color_ptr = PPC_DATA_BASE + 0x1000;
+    let color = PpcRgbColor {
+        red: 0x1234,
+        green: 0x5678,
+        blue: 0x9abc,
+    };
+    loaded.memory.add_region(color_ptr, vec![0; 6]);
+    ppc_write_rgb_color(&mut loaded.memory, color_ptr, color).unwrap();
+    loaded.cpu.gpr[3] = color_ptr;
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HiliteColor);
+
+    assert_eq!(
+        loaded
+            .quickdraw_hilite_colors
+            .quickdraw_hilite_color(PPC_MAIN_GWORLD),
+        Some((color.red, color.green, color.blue))
+    );
+    assert_eq!(
+        ppc_current_hilite_color(
+            &mut loaded.memory,
+            PPC_MAIN_GWORLD,
+            &loaded.quickdraw_hilite_colors,
+        ),
+        color
+    );
+}
+
+#[test]
+fn classic_hilite_color_is_immediately_visible_to_attached_native_get_ctable() {
+    let pef = synthetic_pef_with_import(b"GetCTable");
+    let mut native = load_pef_application(&pef).unwrap();
+    let mut classic = TrapDispatcher::new();
+    let mut context = ProcessContext::default();
+    native.attach_unconverted_process_services(&mut context);
+    classic.attach_unconverted_process_services(&mut context);
+
+    let mut classic_bus = MacMemoryBus::new(0x2000);
+    classic_bus.attach_guest_address_space(native.memory.shared_view());
+    context.attach_classic_memory_bus(&mut classic_bus);
+    let mut classic_cpu = MockCpu::new();
+    let sp = 0x0100;
+    let color_ptr = 0x0120;
+    classic_cpu.write_reg(Register::A7, sp);
+    classic_bus.write_long(sp, color_ptr);
+    classic_bus.write_word(color_ptr, 0x1357);
+    classic_bus.write_word(color_ptr + 2, 0x2468);
+    classic_bus.write_word(color_ptr + 4, 0x369a);
+    assert!(classic
+        .dispatch_quickdraw(true, 0x222, &mut classic_cpu, &mut classic_bus)
+        .expect("HiliteColor trap")
+        .is_ok());
+    assert_eq!(classic_cpu.read_reg(Register::A7), sp + 4);
+    assert_eq!(
+        native
+            .quickdraw_hilite_colors
+            .quickdraw_hilite_color(PPC_MAIN_GWORLD),
+        Some((0x1357, 0x2468, 0x369a))
+    );
+
+    native.cpu.gpr[3] = 66;
+    run_test_import(&mut native, PpcImportDispatcherTarget::GetCTable);
+    let ctable = native.cpu.gpr[3];
+    let ctable_ptr = native
+        .memory
+        .read_u32_be(ctable)
+        .expect("native enhanced ColorTable handle");
+    assert_eq!(native.memory.read_u16_be(ctable_ptr + 6), Some(3));
+    assert_eq!(native.memory.read_u16_be(ctable_ptr + 8 + 2 * 8 + 2), Some(0x1357));
+    assert_eq!(native.memory.read_u16_be(ctable_ptr + 8 + 2 * 8 + 4), Some(0x2468));
+    assert_eq!(native.memory.read_u16_be(ctable_ptr + 8 + 2 * 8 + 6), Some(0x369a));
+}
+
+#[test]
+fn native_hilite_color_is_immediately_visible_to_attached_classic_grafvars() {
+    let pef = synthetic_pef_with_import(b"HiliteColor");
+    let mut native = load_pef_application(&pef).unwrap();
+    let mut classic = TrapDispatcher::new();
+    let mut context = ProcessContext::default();
+    native.attach_unconverted_process_services(&mut context);
+    classic.attach_unconverted_process_services(&mut context);
+
+    let base = PPC_HEAP_BASE + 0x15_000;
+    let port = base;
+    let graf_vars_handle = base + 0x100;
+    let graf_vars = base + 0x110;
+    let color_ptr = base + 0x120;
+    native.memory.add_region(base, vec![0; 0x140]);
+    native.memory.write_u16_be(port + 6, 0xc000).unwrap();
+    native
+        .memory
+        .write_u32_be(port + PPC_CGRAF_PORT_GRAF_VARS_OFFSET, graf_vars_handle)
+        .unwrap();
+    native.memory.write_u32_be(graf_vars_handle, graf_vars).unwrap();
+    let color = PpcRgbColor {
+        red: 0x1357,
+        green: 0x2468,
+        blue: 0x369a,
+    };
+    ppc_write_rgb_color(&mut native.memory, color_ptr, color).unwrap();
+    native
+        .current_gworld
+        .with_mut(|current_gworld| *current_gworld = port);
+
+    native.cpu.gpr[3] = color_ptr;
+    run_test_import(&mut native, PpcImportDispatcherTarget::HiliteColor);
+
+    let mut classic_bus = MacMemoryBus::new(0x2000);
+    classic_bus.attach_guest_address_space(native.memory.shared_view());
+    context.attach_classic_memory_bus(&mut classic_bus);
+    assert_eq!(*classic.current_port, port);
+    assert_eq!(classic_bus.read_word(graf_vars + 6), color.red);
+    assert_eq!(classic_bus.read_word(graf_vars + 8), color.green);
+    assert_eq!(classic_bus.read_word(graf_vars + 10), color.blue);
+    assert_eq!(classic.current_hilite_color(&classic_bus), (color.red, color.green, color.blue));
+}
+
+#[test]
+fn hilite_color_keeps_distinct_values_when_switching_between_ports() {
+    let pef = synthetic_pef_with_import(b"HiliteColor");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let base = PPC_HEAP_BASE + 0x16_000;
+    let first_port = base;
+    let second_port = base + 0x40;
+    let basic_port = base + 0x80;
+    let first_color_ptr = base + 0x100;
+    let second_color_ptr = base + 0x110;
+    let basic_color_ptr = base + 0x120;
+    loaded.memory.add_region(base, vec![0; 0x140]);
+    for port in [first_port, second_port] {
+        loaded.memory.write_u16_be(port + 6, 0xc000).unwrap();
+    }
+    loaded.memory.write_u16_be(basic_port + 6, 0).unwrap();
+    let first_color = PpcRgbColor {
+        red: 0x1111,
+        green: 0x2222,
+        blue: 0x3333,
+    };
+    let second_color = PpcRgbColor {
+        red: 0xaaaa,
+        green: 0xbbbb,
+        blue: 0xcccc,
+    };
+    let basic_color = PpcRgbColor {
+        red: 0xdddd,
+        green: 0xeeee,
+        blue: 0xffff,
+    };
+    ppc_write_rgb_color(&mut loaded.memory, first_color_ptr, first_color).unwrap();
+    ppc_write_rgb_color(&mut loaded.memory, second_color_ptr, second_color).unwrap();
+    ppc_write_rgb_color(&mut loaded.memory, basic_color_ptr, basic_color).unwrap();
+
+    loaded
+        .current_gworld
+        .with_mut(|current_gworld| *current_gworld = first_port);
+    loaded.cpu.gpr[3] = first_color_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HiliteColor);
+    loaded
+        .current_gworld
+        .with_mut(|current_gworld| *current_gworld = second_port);
+    loaded.cpu.gpr[3] = second_color_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HiliteColor);
+
+    assert_eq!(
+        ppc_current_hilite_color(
+            &mut loaded.memory,
+            first_port,
+            &loaded.quickdraw_hilite_colors,
+        ),
+        first_color
+    );
+    assert_eq!(
+        ppc_current_hilite_color(
+            &mut loaded.memory,
+            second_port,
+            &loaded.quickdraw_hilite_colors,
+        ),
+        second_color
+    );
+
+    loaded
+        .current_gworld
+        .with_mut(|current_gworld| *current_gworld = basic_port);
+    loaded.cpu.gpr[3] = basic_color_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HiliteColor);
+    assert_eq!(
+        loaded
+            .quickdraw_hilite_colors
+            .quickdraw_hilite_color(basic_port),
+        None
+    );
+    let (red, green, blue) = DEFAULT_QUICKDRAW_HILITE_COLOR;
+    assert_eq!(
+        ppc_current_hilite_color(
+            &mut loaded.memory,
+            basic_port,
+            &loaded.quickdraw_hilite_colors,
+        ),
+        PpcRgbColor { red, green, blue }
+    );
+}
+
+#[test]
+fn detached_ppc_clone_has_independent_quickdraw_hilite_colors() {
+    let pef = synthetic_pef_with_import(b"HiliteColor");
+    let loaded = load_pef_application(&pef).unwrap();
+    let port = PPC_HEAP_BASE + 0x17_000;
+    loaded
+        .quickdraw_hilite_colors
+        .set_quickdraw_hilite_color(port, (0x1111, 0x2222, 0x3333));
+    let detached = loaded.clone();
+    loaded
+        .quickdraw_hilite_colors
+        .set_quickdraw_hilite_color(port, (0xaaaa, 0xbbbb, 0xcccc));
+
+    assert_eq!(
+        loaded
+            .quickdraw_hilite_colors
+            .quickdraw_hilite_color(port),
+        Some((0xaaaa, 0xbbbb, 0xcccc))
+    );
+    assert_eq!(
+        detached
+            .quickdraw_hilite_colors
+            .quickdraw_hilite_color(port),
+        Some((0x1111, 0x2222, 0x3333))
+    );
+}
+
+#[test]
+fn classic_op_color_is_consumed_by_attached_native_copybits() {
+    // The native CopyBits implementation is the current arithmetic-mode
+    // consumer. Exercise the actual 68K -> process state -> PPC path.
+    let pef = synthetic_pef_with_import(b"CopyBits");
+    let mut native = load_pef_application(&pef).unwrap();
+    let mut classic = TrapDispatcher::new();
+    let mut context = ProcessContext::default();
+    native.attach_unconverted_process_services(&mut context);
+    classic.attach_unconverted_process_services(&mut context);
+
+    let mut classic_bus = MacMemoryBus::new(0x2000);
+    classic_bus.attach_guest_address_space(native.memory.shared_view());
+    context.attach_classic_memory_bus(&mut classic_bus);
+    let mut classic_cpu = MockCpu::new();
+    let sp = 0x0100;
+    let color_ptr = 0x0120;
+    classic_cpu.write_reg(Register::A7, sp);
+    classic_bus.write_long(sp, color_ptr);
+    classic_bus.write_word(color_ptr, 0x8000);
+    classic_bus.write_word(color_ptr + 2, 0x8000);
+    classic_bus.write_word(color_ptr + 4, 0x8000);
+    assert!(classic
+        .dispatch_quickdraw(true, 0x221, &mut classic_cpu, &mut classic_bus)
+        .expect("OpColor trap")
+        .is_ok());
+    assert_eq!(classic_cpu.read_reg(Register::A7), sp + 4);
+    assert_eq!(
+        native.quickdraw_op_colors.quickdraw_op_color(PPC_MAIN_GWORLD),
+        Some((0x8000, 0x8000, 0x8000))
+    );
+
+    let scratch = PPC_HEAP_BASE + 0x11600;
+    let src_pixels = scratch;
+    let dst_pixels = scratch + 4;
+    let src_pixmap = scratch + 8;
+    let dst_pixmap = scratch + 64;
+    let rect = scratch + 120;
+    native.memory.add_region(scratch, vec![0; 128]);
+    ppc_write_pixmap(
+        &mut native.memory,
+        src_pixmap,
+        src_pixels,
+        2,
+        0,
+        0,
+        1,
+        1,
+        16,
+    )
+    .unwrap();
+    ppc_write_pixmap(
+        &mut native.memory,
+        dst_pixmap,
+        dst_pixels,
+        2,
+        0,
+        0,
+        1,
+        1,
+        16,
+    )
+    .unwrap();
+    native.memory.write_u16_be(src_pixels, 0x7c00).unwrap();
+    native.memory.write_u16_be(dst_pixels, 0x001f).unwrap();
+    ppc_write_rect(&mut native.memory, rect, 0, 0, 1, 1).unwrap();
+    native.cpu.gpr[3] = src_pixmap;
+    native.cpu.gpr[4] = dst_pixmap;
+    native.cpu.gpr[5] = rect;
+    native.cpu.gpr[6] = rect;
+    native.cpu.gpr[7] = 32;
+    native.cpu.gpr[8] = 0;
+
+    run_test_import(&mut native, PpcImportDispatcherTarget::CopyBits);
+
+    assert_eq!(native.memory.read_u16_be(dst_pixels), Some(0x3c0f));
+}
+
+#[test]
+fn native_op_color_is_immediately_visible_to_attached_classic_grafvars() {
+    let pef = synthetic_pef_with_import(b"OpColor");
+    let mut native = load_pef_application(&pef).unwrap();
+    let mut classic = TrapDispatcher::new();
+    let mut context = ProcessContext::default();
+    native.attach_unconverted_process_services(&mut context);
+    classic.attach_unconverted_process_services(&mut context);
+
+    let base = PPC_HEAP_BASE + 0x12_000;
+    let port = base;
+    let graf_vars_handle = base + 0x100;
+    let graf_vars = base + 0x110;
+    let color_ptr = base + 0x120;
+    native.memory.add_region(base, vec![0; 0x140]);
+    native.memory.write_u16_be(port + 6, 0xc000).unwrap();
+    native
+        .memory
+        .write_u32_be(port + PPC_CGRAF_PORT_GRAF_VARS_OFFSET, graf_vars_handle)
+        .unwrap();
+    native.memory.write_u32_be(graf_vars_handle, graf_vars).unwrap();
+    let color = PpcRgbColor {
+        red: 0x1234,
+        green: 0x5678,
+        blue: 0x9abc,
+    };
+    ppc_write_rgb_color(&mut native.memory, color_ptr, color).unwrap();
+    native
+        .current_gworld
+        .with_mut(|current_gworld| *current_gworld = port);
+
+    native.cpu.gpr[3] = color_ptr;
+    run_test_import(&mut native, PpcImportDispatcherTarget::OpColor);
+
+    let mut classic_bus = MacMemoryBus::new(0x2000);
+    classic_bus.attach_guest_address_space(native.memory.shared_view());
+    context.attach_classic_memory_bus(&mut classic_bus);
+    assert_eq!(*classic.current_port, port);
+    assert_eq!(classic_bus.read_word(graf_vars), color.red);
+    assert_eq!(classic_bus.read_word(graf_vars + 2), color.green);
+    assert_eq!(classic_bus.read_word(graf_vars + 4), color.blue);
+}
+
+#[test]
+fn op_color_keeps_distinct_values_when_switching_between_ports() {
+    let pef = synthetic_pef_with_import(b"OpColor");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let base = PPC_HEAP_BASE + 0x13_000;
+    let first_port = base;
+    let second_port = base + 0x40;
+    let first_color_ptr = base + 0x80;
+    let second_color_ptr = base + 0x90;
+    loaded.memory.add_region(base, vec![0; 0xa0]);
+    for port in [first_port, second_port] {
+        loaded.memory.write_u16_be(port + 6, 0xc000).unwrap();
+    }
+    let first_color = PpcRgbColor {
+        red: 0x1111,
+        green: 0x2222,
+        blue: 0x3333,
+    };
+    let second_color = PpcRgbColor {
+        red: 0xaaaa,
+        green: 0xbbbb,
+        blue: 0xcccc,
+    };
+    ppc_write_rgb_color(&mut loaded.memory, first_color_ptr, first_color).unwrap();
+    ppc_write_rgb_color(&mut loaded.memory, second_color_ptr, second_color).unwrap();
+
+    loaded
+        .current_gworld
+        .with_mut(|current_gworld| *current_gworld = first_port);
+    loaded.cpu.gpr[3] = first_color_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::OpColor);
+    loaded
+        .current_gworld
+        .with_mut(|current_gworld| *current_gworld = second_port);
+    loaded.cpu.gpr[3] = second_color_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::OpColor);
+
+    assert_eq!(
+        ppc_current_op_color(&mut loaded.memory, first_port, &loaded.quickdraw_op_colors),
+        first_color
+    );
+    assert_eq!(
+        ppc_current_op_color(&mut loaded.memory, second_port, &loaded.quickdraw_op_colors),
+        second_color
+    );
+}
+
+#[test]
+fn detached_ppc_clone_has_independent_quickdraw_op_colors() {
+    let pef = synthetic_pef_with_import(b"OpColor");
+    let loaded = load_pef_application(&pef).unwrap();
+    let port = PPC_HEAP_BASE + 0x14_000;
+    loaded
+        .quickdraw_op_colors
+        .set_quickdraw_op_color(port, (0x1111, 0x2222, 0x3333));
+    let detached = loaded.clone();
+    loaded
+        .quickdraw_op_colors
+        .set_quickdraw_op_color(port, (0xaaaa, 0xbbbb, 0xcccc));
+
+    assert_eq!(
+        loaded.quickdraw_op_colors.quickdraw_op_color(port),
+        Some((0xaaaa, 0xbbbb, 0xcccc))
+    );
+    assert_eq!(
+        detached.quickdraw_op_colors.quickdraw_op_color(port),
+        Some((0x1111, 0x2222, 0x3333))
+    );
 }
 
