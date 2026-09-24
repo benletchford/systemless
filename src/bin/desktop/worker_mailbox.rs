@@ -77,7 +77,8 @@ impl<T> Default for LatestSlot<T> {
 
 impl<T> LatestSlot<T> {
     pub(super) fn replace(&self, value: T) {
-        *self.pending.lock().unwrap() = Some(value);
+        let replaced = self.pending.lock().unwrap().replace(value);
+        drop(replaced);
     }
 
     pub(super) fn take(&self) -> Option<T> {
