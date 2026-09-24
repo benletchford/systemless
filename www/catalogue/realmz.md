@@ -17,6 +17,19 @@ compatibility:
   verified:
   - date: "2026-09-24"
     tester: Catalogue maintainer
+    systemless_version: 0.59.0 + stuffit 0.3.0 release-mode browser build
+    architecture: 68k
+    environment: >-
+      Chromium loaded the exact promoted BinHex archive without console errors.
+      The registration screen rendered, and choosing Not Yet advanced to the
+      Realmz title card. Two 12-second samples achieved only 16-18 guest
+      ticks/second at about 55-56 host frames/second, with long runtime frames
+      and a low audio queue. Browser launch remains disabled pending a generic
+      pacing fix and interactive gameplay approval.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/2699
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
     systemless_version: local runtime with corrected StuffIt codebook-four decoder
     architecture: 68k
     environment: >-
@@ -79,6 +92,7 @@ references:
 - https://www.nic.funet.fi/pub/files/index/mac/info-mac/game/adv/rlmz/
 - https://ftp.funet.fi/pub/mac/info-mac/game/adv/rlmz/realmz-51.hqx
 - https://github.com/benletchford/systemless/issues/2695
+- https://github.com/benletchford/systemless/issues/2699
 ---
 
 ## Begin in Bywater
@@ -91,3 +105,4 @@ surrounding encounters. This entry uses the original, complete 5.1 shareware
 distribution; registration and any restrictions on additional scenarios are
 unchanged. The bundled licence permits non-profit distribution of complete,
 unmodified copies. The game and artwork remain Fantasoft's property.
+Browser launch is currently disabled while its performance is investigated.
