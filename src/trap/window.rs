@@ -3579,7 +3579,16 @@ impl super::TrapDispatcher {
             && wind_left <= 2
             && wind_bottom >= screen_h as i16 - 2
             && wind_right >= screen_w as i16 - 2;
+        // Only a near-screen-sized window can borrow the full screen-backed
+        // PixMap as its content. An oversized window may temporarily cover
+        // the screen while retaining a much larger portRect; replacing its
+        // contRgn with the PixMap bounds would shrink it before MoveWindow.
+        // Inside Macintosh Volume I, I-278, I-287, I-289 (WindowRecord
+        // regions and moving windows); Volume V, V-245 (visRgn/menu bar).
+        let near_screen_sized = port_height <= (screen_h as i16).saturating_add(2)
+            && port_width <= (screen_w as i16).saturating_add(2);
         if matches!(wind_proc_id, 1 | 2 | 3 | 5)
+            && near_screen_sized
             && (exact_fullscreen || host_hidden_near_fullscreen)
         {
             // Kiosk-mode expansion genuinely enlarges the content area to the
@@ -6768,6 +6777,56 @@ mod tests {
             read_window_region_rect(&bus, window_addr, 24),
             (0, 0, 600, 800),
             "an exact full-screen plain window must accept drawing behind the menu before MBarHeight reaches zero"
+        );
+    }
+
+    #[test]
+    fn oversized_dialog_keeps_its_content_region_when_moved() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_addr = bus.alloc(256);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_addr,
+            disp.screen_mode.0,
+            0,
+            -1000,
+            1024,
+            1000,
+            "",
+            2,
+            false,
+            false,
+            false,
+            0,
+        );
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_addr,
+                super::super::TrapDispatcher::WINDOW_CONT_RGN_OFFSET
+            ),
+            (0, -1000, 1024, 1000),
+        );
+
+        disp.move_window_to_global(&mut bus, window_addr, -600, -212, false);
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_addr,
+                super::super::TrapDispatcher::WINDOW_CONT_RGN_OFFSET
+            ),
+            (-212, -600, 812, 1400),
+        );
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_addr,
+                super::super::TrapDispatcher::WINDOW_STRUC_RGN_OFFSET
+            ),
+            (-213, -601, 813, 1401),
         );
     }
 
