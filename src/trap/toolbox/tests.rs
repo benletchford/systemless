@@ -6580,6 +6580,7 @@
         assert!(result.unwrap().is_ok());
 
         assert!(!disp.policy.res_load());
+        assert_eq!(bus.read_word(crate::memory::globals::addr::RES_LOAD), 0);
         assert_eq!(bus.read_word(0x0A60), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 2);
 
@@ -6592,6 +6593,10 @@
         assert!(result.unwrap().is_ok());
 
         assert!(disp.policy.res_load());
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::RES_LOAD),
+            0x0100
+        );
         assert_eq!(bus.read_word(0x0A60), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 2);
     }

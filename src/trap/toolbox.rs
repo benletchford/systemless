@@ -9563,6 +9563,10 @@ impl super::TrapDispatcher {
                 // reading the whole word turns SetResLoad(FALSE) into TRUE.
                 let load = (bus.read_word(sp) >> 8) != 0;
                 self.policy.set_res_load(load);
+                bus.write_word(
+                    crate::memory::globals::addr::RES_LOAD,
+                    u16::from(load) << 8,
+                );
                 // Clear ResErr on success — real ROM does, and callers
                 // that probe ResError after a successful SetResLoad
                 // otherwise see stale values from boot-time auto-loads.

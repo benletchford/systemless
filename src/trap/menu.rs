@@ -1620,6 +1620,7 @@ impl super::TrapDispatcher {
         requested_type: [u8; 4],
     ) -> Vec<Vec<u8>> {
         self.policy.set_res_load(true);
+        bus.write_word(crate::memory::globals::addr::RES_LOAD, 0x0100);
         let resource_types = if requested_type == *b"FONT" {
             [Some(*b"FOND"), Some(*b"FONT")]
         } else {
@@ -7109,6 +7110,10 @@ mod tests {
         assert!(
             disp.policy.res_load(),
             "AppendResMenu must restore SetResLoad(TRUE)"
+        );
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::RES_LOAD),
+            0x0100
         );
 
         let menu = disp

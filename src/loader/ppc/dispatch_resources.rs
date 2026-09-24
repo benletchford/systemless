@@ -41,7 +41,10 @@ pub(super) fn dispatch_resource_import(
         PpcImportDispatcherTarget::SetResLoad => {
             // Inside Macintosh Volume I (1985), I-118: SetResLoad controls
             // whether subsequent Resource Manager lookups load resource data.
-            resource_policy.set_res_load(cpu.gpr[3] != 0);
+            let load = cpu.gpr[3] != 0;
+            resource_policy.set_res_load(load);
+            let _ =
+                memory.write_u16_be(crate::memory::globals::addr::RES_LOAD, u16::from(load) << 8);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LoadResource => {

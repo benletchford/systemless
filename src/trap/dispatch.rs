@@ -7488,6 +7488,13 @@ impl TrapDispatcher {
             });
         });
         bus.write_word(0x0A5A, 0);
+        // ResLoad is guest-visible as well as process policy. Applications
+        // save it directly before temporarily disabling automatic loading.
+        // Inside Macintosh Volume I (1985), p. I-118.
+        bus.write_word(
+            crate::memory::globals::addr::RES_LOAD,
+            u16::from(self.policy.res_load()) << 8,
+        );
 
         // Some classic runtimes locate relocation resources by walking the
         // Resource Manager's guest-visible map through TopMapHndl. Keep the
@@ -10991,6 +10998,10 @@ mod tests {
 
         disp.load_resources(&fork, &mut bus);
 
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::RES_LOAD),
+            0x0100
+        );
         let map_handle = bus.read_long(0x0A50);
         let map_ptr = bus.read_long(map_handle);
         let resource_handle = bus.read_long(map_ptr + reference_offset + 8);
