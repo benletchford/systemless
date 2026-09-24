@@ -12,9 +12,21 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
-  status: boots
+  status: playable
   verified:
+  - date: "2026-09-24"
+    tester: Catalogue maintainer
+    systemless_version: "0.58.0 + local site build"
+    architecture: 68k
+    environment: >-
+      Release-mode browser launch from the immutable hosted original Spectre
+      demo at localhost:8080. A held menu click selected Play and the default
+      vehicle; Level 1 rendered with its active bonus timer, and Space fired
+      once, reducing ammunition from 40 to 39.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2658
   - date: "2026-09-23"
     tester: Catalogue maintainer
     systemless_version: "0.53.0"
