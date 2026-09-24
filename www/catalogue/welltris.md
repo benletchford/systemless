@@ -31,7 +31,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://download.classicmacdemos.com/Welltris%20Demo.sit
+    url: https://classicmacdemos.com/download/welltris/
     download_page: https://classicmacdemos.com/welltris
     expected_sha256: 89fa666641c00e0484241f6be734a3078c684dcc4a37ccca2133184778214153
     expected_size: 111943
