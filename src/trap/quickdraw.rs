@@ -15406,7 +15406,9 @@ impl super::TrapDispatcher {
                             // resume with the DisplayDispatch result slot atop
                             // the caller's stack.
                             let resume_sp = sp + 20;
-                            let return_pc = cpu.read_reg(Register::PC);
+                            let return_pc = self
+                                .current_trap_caller
+                                .unwrap_or_else(|| cpu.read_reg(Register::PC));
                             let cleanup = bus.alloc(12);
                             if cleanup == 0 {
                                 bus.write_word(resume_sp, (-108i16) as u16);
@@ -15429,6 +15431,7 @@ impl super::TrapDispatcher {
                                 bus.write_long(sp + 4, cleanup);
                                 cpu.write_reg(Register::A7, sp + 4);
                                 cpu.write_reg(Register::PC, callback);
+                                self.preserve_auto_pop_pc_once = self.current_trap_caller.is_some();
                                 cpu.write_reg(Register::D0, 0);
                             }
                         }

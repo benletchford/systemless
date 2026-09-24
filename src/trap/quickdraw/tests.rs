@@ -17564,6 +17564,38 @@
     }
 
     #[test]
+    fn displaydispatch_auto_pop_indexed_mode_enters_callback_and_returns_to_caller() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let list = bus.alloc(DM_MODE_LIST_ENTRY_STRIDE);
+        let callback = bus.alloc(4);
+        let caller_pc = 0x0031_2200;
+        let trap_pc = 0x0031_2300;
+        bus.write_long(list, DM_MODE_LIST_MAGIC);
+        bus.write_long(list + 8, 1);
+        bus.write_word(callback, 0x4e75);
+        bus.write_long(TEST_SP, caller_pc);
+        bus.write_long(TEST_SP + 4, 0); // userData
+        bus.write_long(TEST_SP + 8, callback);
+        bus.write_long(TEST_SP + 12, 0); // reserved
+        bus.write_long(TEST_SP + 16, 0); // itemIndex
+        bus.write_long(TEST_SP + 20, list);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::D0, 0x0A37);
+
+        dispatcher.dispatch(0xAFEB, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::PC), callback);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        let cleanup = bus.read_long(TEST_SP + 8);
+        assert_eq!(bus.read_word(cleanup), 0x2E7C); // MOVEA.L #resume_sp,A7
+        assert_eq!(bus.read_long(cleanup + 2), TEST_SP + 24);
+        assert_eq!(bus.read_word(cleanup + 6), 0x4EF9); // JMP caller_pc
+        assert_eq!(bus.read_long(cleanup + 8), caller_pc);
+        assert!(!dispatcher.preserve_auto_pop_pc_once);
+    }
+
+    #[test]
     fn displaydispatch_mode_list_advertises_compact_standard_and_native_geometries() {
         let (mut d, mut cpu, mut bus) = setup();
         let list_out = 0x0031_1080u32;
