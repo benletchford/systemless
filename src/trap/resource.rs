@@ -4162,14 +4162,22 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::D0, (-44i32) as u32);
                         return Some(Ok(()));
                     }
-                    let refnum = self.allocate_process_file_refnum();
+                    let writable = matches!(permission, 0 | 2 | 3 | 4) && !read_only;
+                    let refnum = match self.allocate_data_file_fcb(bus, &vfs_name, writable) {
+                        Ok(refnum) => refnum,
+                        Err(err) => {
+                            bus.write_word(pb + 16, err as u16);
+                            cpu.write_reg(Register::D0, err as i32 as u32);
+                            return Some(Ok(()));
+                        }
+                    };
                     self.open_files.insert(refnum, vfs_name.clone());
                     // Files 1992, 2-8: fsCurPerm (0) grants read/write when
                     // write access is available; fsWrPerm (2), fsRdWrPerm
                     // (3), and fsRdWrShPerm (4) explicitly request it.
                     // PBGetFCBInfo exposes the granted mode through bit 8 of
                     // ioFCBFlags (Files 1992, 2-108).
-                    if matches!(permission, 0 | 2 | 3 | 4) && !read_only {
+                    if writable {
                         self.write_refnums.insert(refnum);
                     }
                     self.file_positions.insert(refnum, 0);
@@ -4463,6 +4471,7 @@ impl super::TrapDispatcher {
                 let closed_file = if self.open_files.remove(&ref_num).is_some() {
                     self.file_positions.remove(&ref_num);
                     self.write_refnums.remove(&ref_num);
+                    Self::clear_file_fcb(bus, ref_num);
                     true
                 } else {
                     false
@@ -5848,6 +5857,7 @@ impl super::TrapDispatcher {
                         self.open_files.remove(&refnum);
                         self.file_positions.remove(&refnum);
                         self.write_refnums.remove(&refnum);
+                        Self::clear_file_fcb(bus, refnum);
                     }
 
                     if let Some(ref dir) = self.output_dir {
@@ -15456,12 +15466,40 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::D0), 0, "D0 should be noErr");
         let refnum = bus.read_word(pb + 24);
-        assert!(refnum >= 100);
+        assert_eq!(refnum % 94, 2, "HFS refnum must index an FCB");
+        let fcb_buffer = bus.read_long(crate::memory::globals::addr::FCB_S_PTR);
+        let fcb = fcb_buffer + u32::from(refnum);
+        let vcb = bus.read_long(fcb + 20);
+        assert_ne!(vcb, 0);
+        assert_eq!(bus.read_word(vcb + 78) as i16, -1);
+        assert_eq!(bus.read_long(fcb + 8), 5);
+        assert_eq!(bus.read_word(fcb + 4) & 0x0300, 0x0100);
         assert!(disp.open_files.contains_key(&refnum));
         assert!(
             disp.write_refnums.contains(&refnum),
             "fsCurPerm should grant write access when it is available"
         );
+    }
+
+    #[test]
+    fn pb_open_reuses_fcb_after_close() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.vfs.insert("TestFile".to_string(), vec![1, 2, 3]);
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"TestFile");
+
+        call(&mut disp, false, 0x00, &mut cpu, &mut bus).unwrap();
+        let refnum = bus.read_word(pb + 24);
+        let fcb_buffer = bus.read_long(crate::memory::globals::addr::FCB_S_PTR);
+        assert_ne!(bus.read_long(fcb_buffer + u32::from(refnum) + 20), 0);
+
+        call(&mut disp, false, 0x01, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(fcb_buffer + u32::from(refnum) + 20), 0);
+
+        setup_param_block(&mut bus, &mut cpu, pb, b"TestFile");
+        call(&mut disp, false, 0x00, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_word(pb + 24), refnum);
     }
 
     #[test]
@@ -18659,7 +18697,7 @@ mod tests {
         setup_param_block(&mut bus, &mut cpu, pb, b"Flush.dat");
         call(&mut disp, false, 0x00, &mut cpu, &mut bus).unwrap(); // PBOpen → assigns refnum
         let refnum = bus.read_word(pb + 24);
-        assert!(refnum >= 100, "expected open refnum");
+        assert_eq!(refnum % 94, 2, "expected HFS FCB offset");
 
         for i in 0u32..32 {
             bus.write_byte(pb + i, 0);

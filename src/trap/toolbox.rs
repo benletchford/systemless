@@ -5120,6 +5120,7 @@ impl super::TrapDispatcher {
         if closed_data_fork {
             self.file_positions.remove(&refnum);
             self.write_refnums.remove(&refnum);
+            Self::clear_file_fcb(bus, refnum);
         }
 
         if closed_resource_file || closed_data_fork {
