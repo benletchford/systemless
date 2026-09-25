@@ -1732,6 +1732,7 @@ pub struct FixtureRunner {
     /// Guest-memory address of the Time Manager interrupt trampoline code.
     /// Allocated once on first use and reused for all subsequent timer fires.
     timer_trampoline: u32,
+    deferred_task_trampoline: u32,
     /// Guest-memory address of the Vertical Retrace Manager trampoline code.
     /// Allocated once on first use and reused for all VBL callbacks.
     vbl_trampoline: u32,
@@ -1972,6 +1973,7 @@ impl FixtureRunner {
             frozen_ticks: None,
             menu_presentation_remainder: 0,
             timer_trampoline: 0,
+            deferred_task_trampoline: 0,
             vbl_trampoline: 0,
             cursor_task_trampoline: 0,
             default_cursor_task: 0,
@@ -6210,6 +6212,9 @@ impl FixtureRunner {
                         );
                     }
                     self.refill_foreground_budget_after_async_return();
+                    if self.fire_deferred_task() {
+                        continue;
+                    }
                     if completed_modeless_dialog_draw_proc && self.fire_modeless_dialog_draw_proc()
                     {
                         continue;
@@ -6609,6 +6614,17 @@ impl FixtureRunner {
                     }
 
                     self.dispatcher.yield_for_ui = yield_for_ui;
+                    if opcode == 0xA082 {
+                        self.dispatcher.deferred_install_in_interrupt =
+                            self.active_interrupt_callback.is_some_and(|callback| {
+                                !matches!(
+                                    callback.source,
+                                    ActiveInterruptCallbackSource::DeferredTask
+                                        | ActiveInterruptCallbackSource::DialogDrawProc
+                                        | ActiveInterruptCallbackSource::DialogFilterProc
+                                )
+                            });
+                    }
                     let dispatch_result = self.dispatch_classic_with_process_services(opcode);
                     match dispatch_result {
                         Ok(()) => {
@@ -9524,7 +9540,37 @@ impl FixtureRunner {
         self.fire_cursor_task();
         self.fire_vbl_tasks();
         self.fire_timer_tasks(new_tick);
+        self.fire_deferred_task();
         new_tick
+    }
+
+    /// Deferred tasks execute once after an interrupt has been reenabled.
+    /// Inside Macintosh: Processes (1994), pp. 6-11--6-13.
+    fn fire_deferred_task(&mut self) -> bool {
+        if self.callback_suspends_guest_clock() {
+            return false;
+        }
+        let tick = self.guest_tick();
+        let Some(task) = self.dispatcher.pop_ready_deferred_task(&mut self.bus, tick) else {
+            return false;
+        };
+        let address = self.bus.read_long(task + 8);
+        if address == 0 {
+            return false;
+        }
+        let parameter = self.bus.read_long(task + 12);
+        if self.deferred_task_trampoline == 0 {
+            let trampoline = self.bus.alloc(16);
+            self.bus.write_word(trampoline, 0x227C); // MOVEA.L #dtParm,A1
+            self.bus.write_word(trampoline + 6, 0x4EB9); // JSR dtAddr
+            self.bus.write_word(trampoline + 12, 0x4E75); // RTS
+            self.deferred_task_trampoline = trampoline;
+        }
+        let trampoline = self.deferred_task_trampoline;
+        self.bus.write_long(trampoline + 2, parameter);
+        self.bus.write_long(trampoline + 8, address);
+        self.inject_interrupt_callback(ActiveInterruptCallbackSource::DeferredTask, trampoline);
+        true
     }
 
     fn deliver_pending_wait_next_event_if_available(&mut self) -> bool {

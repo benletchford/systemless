@@ -2002,6 +2002,11 @@ pub struct TrapDispatcher {
     /// Installed Time Manager tasks.
     /// Processes 1994, 3-14
     pub(crate) timer_tasks: crate::process_context::SharedProcessTimerTasks,
+    /// Deferred Task Manager queue in FIFO order, with the first guest tick
+    /// on which each entry may run. Guest qLink and DTQueue mirror this queue.
+    pub(crate) deferred_tasks: VecDeque<(u32, u32)>,
+    /// A task installed by a hardware callback may run at that interrupt's end.
+    pub(crate) deferred_install_in_interrupt: bool,
     /// Process-owned callback scheduling metadata.
     pub(crate) callback_scheduling: crate::process_context::SharedProcessCallbackScheduling,
     /// Ordered Power Manager sleep queue. Each entry is a guest SleepQRec;
@@ -2906,6 +2911,46 @@ impl TrapDispatcher {
         self.tick_state.current_tick()
     }
 
+    /// Queue a one-shot deferred task and maintain the guest-visible DTQueue.
+    /// Inside Macintosh: Processes (1994), pp. 6-11--6-13.
+    pub(crate) fn enqueue_deferred_task(&mut self, bus: &mut MacMemoryBus, task: u32) {
+        if self.deferred_tasks.iter().any(|(queued, _)| *queued == task) {
+            return;
+        }
+        let queue = crate::memory::globals::addr::DT_QUEUE;
+        bus.write_long(task, 0);
+        if let Some((tail, _)) = self.deferred_tasks.back() {
+            bus.write_long(*tail, task);
+        } else {
+            bus.write_long(queue + 2, task);
+        }
+        bus.write_long(queue + 6, task);
+        let ready = self
+            .current_tick()
+            .wrapping_add(u32::from(!self.deferred_install_in_interrupt));
+        self.deferred_tasks.push_back((task, ready));
+    }
+
+    pub(crate) fn pop_ready_deferred_task(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        tick: u32,
+    ) -> Option<u32> {
+        let (task, ready) = *self.deferred_tasks.front()?;
+        if (tick.wrapping_sub(ready) as i32) < 0 {
+            return None;
+        }
+        self.deferred_tasks.pop_front();
+        let queue = crate::memory::globals::addr::DT_QUEUE;
+        let next = self.deferred_tasks.front().map_or(0, |(ptr, _)| *ptr);
+        bus.write_long(queue + 2, next);
+        if next == 0 {
+            bus.write_long(queue + 6, 0);
+        }
+        bus.write_long(task, 0);
+        Some(task)
+    }
+
     /// Resolve the architecture-neutral TickCount operation from the
     /// guest-visible low-memory value. A direct guest write is accepted at
     /// the ABI boundary and updates the host pacing snapshot; it is never
@@ -3717,6 +3762,8 @@ impl TrapDispatcher {
             pending_native_trap_calls: HashMap::new(),
             bits_proc_reentry: None,
             timer_tasks: Default::default(),
+            deferred_tasks: VecDeque::new(),
+            deferred_install_in_interrupt: false,
             callback_scheduling: Default::default(),
             sleep_queue: Vec::new(),
             vbl_tasks: Default::default(),
