@@ -1365,3 +1365,61 @@ fn hle_import_runner_reuses_retained_state_allocations_between_slices() {
     assert_eq!(loaded.q3_objects.capacity(), q3_objects_capacity);
     assert_eq!(loaded.q3_objects.len(), 1);
 }
+
+#[test]
+fn hle_import_runner_traces_supported_import_context_when_requested() {
+    let pef = synthetic_pef_with_import(b"NewPtrClear");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[2] = 0x1234_5678;
+    loaded.cpu.gpr[3] = 16;
+
+    let probe = loaded.run_with_hle_import_trace(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(probe.import_trace.len(), 1);
+    let entry = &probe.import_trace[0];
+    assert_eq!(entry.import_index, 0);
+    assert_eq!(entry.library_name, "InterfaceLib");
+    assert_eq!(entry.symbol_name, "NewPtrClear");
+    assert_eq!(entry.pc, PPC_IMPORT_TRAP_BASE);
+    assert_eq!(entry.rtoc, 0x1234_5678);
+    assert_eq!(entry.sp, loaded.stack_pointer);
+    assert_eq!(
+        entry.dispatcher_target,
+        PpcImportDispatcherTarget::NewPtr { clear: true }
+    );
+}
+
+#[test]
+fn hle_import_runner_records_fetch_histogram_when_requested() {
+    let pef = synthetic_pef_with_import(b"NewPtrClear");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 16;
+
+    let normal_probe = loaded.run_with_hle_imports(64);
+    assert!(normal_probe.fetch_histogram.is_none());
+
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 16;
+    let probe = loaded.run_with_hle_import_fetch_histogram(64);
+    let histogram = probe
+        .fetch_histogram
+        .as_ref()
+        .expect("histogram should be present for explicit fetch probe");
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(histogram.total(), 7);
+    assert_eq!(histogram.primary_count(19), 2);
+    assert_eq!(histogram.primary_count(31), 2);
+    assert_eq!(histogram.secondary_count(19, 16), 1);
+    assert_eq!(histogram.secondary_count(19, 528), 1);
+    assert_eq!(histogram.secondary_count(31, 467), 2);
+
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 16;
+    let probe = loaded.run_with_hle_import_trace_and_fetch_histogram(64);
+
+    assert_eq!(probe.import_trace.len(), 1);
+    assert!(probe.fetch_histogram.is_some());
+}
