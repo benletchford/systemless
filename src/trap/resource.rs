@@ -2665,8 +2665,9 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume VI, VI-13
             //
             // More Macintosh Toolbox 1993, 1-77--1-78: an absent type
-            // returns NIL with noErr; a missing resource of a present type
-            // returns resNotFound.
+            // returns NIL with noErr; resNotFound reports a resource entry
+            // whose data cannot be loaded. System 8.1 also leaves noErr when
+            // the type exists but no entry matches the requested name.
             (true, 0x020) => {
                 let sp = cpu.read_reg(Register::A7);
                 let name_ptr = bus.read_long(sp);
@@ -2682,6 +2683,7 @@ impl super::TrapDispatcher {
                 let name = String::from_utf8_lossy(&name_bytes).to_string();
                 eprintln!("[TRAP] Get1NamedResource('{}', \"{}\")", type_str, name);
 
+                let entry_exists = self.find_named_resource_current(res_type, &name).is_some();
                 // Look up by (type, name) in the named resources index
                 let handle = self
                     .find_named_resource_current_loaded(bus, res_type, &name)
@@ -2702,11 +2704,9 @@ impl super::TrapDispatcher {
                     bus.write_long(sp + 8, 0);
                     cpu.write_reg(Register::A7, sp + 8);
                     cpu.write_reg(Register::D0, 0);
-                    let has_type =
-                        self.resource_file_contains_type(self.current_resource_refnum(), res_type);
                     bus.write_word(
                         0x0A60,
-                        if has_type { RES_NOT_FOUND_ERR as u16 } else { 0 },
+                        if entry_exists { RES_NOT_FOUND_ERR as u16 } else { 0 },
                     );
                 }
                 Ok(())
@@ -12077,7 +12077,7 @@ mod tests {
     }
 
     #[test]
-    fn get1_named_resource_miss_returns_nil_in_a0() {
+    fn get1_named_resource_missing_name_returns_nil_without_error() {
         let (mut disp, mut cpu, mut bus) = setup();
         setup_resources(&mut disp, &mut bus, b"STR ", 500, b"present type");
         let name_addr = 0x200000u32;
@@ -12085,6 +12085,7 @@ mod tests {
 
         bus.write_long(TEST_SP, name_addr);
         bus.write_long(TEST_SP + 4, u32::from_be_bytes(*b"STR "));
+        bus.write_word(0x0A60, (-43i16) as u16);
 
         call(&mut disp, true, 0x020, &mut cpu, &mut bus).unwrap();
 
@@ -12092,6 +12093,35 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A0), 0);
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_long(TEST_SP + 8), 0);
+        assert_eq!(bus.read_word(0x0A60), 0);
+    }
+
+    #[test]
+    fn get1_named_resource_existing_entry_without_data_reports_not_found() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_loaded_resources_for_test(LoadedResources {
+            files: HashMap::from([(
+                0,
+                ResourceFileMap {
+                    loaded: HashMap::from([((*b"PICT", 500), 0)]),
+                    named: HashMap::from([((*b"PICT", "hidden".to_string()), (500, 0))]),
+                    names_by_id: HashMap::new(),
+                    attrs: HashMap::new(),
+                    map_attrs: 0,
+                },
+            )]),
+            names: HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+        let name_addr = 0x200000u32;
+        write_pstring(&mut bus, name_addr, b"hidden");
+        bus.write_long(TEST_SP, name_addr);
+        bus.write_long(TEST_SP + 4, u32::from_be_bytes(*b"PICT"));
+
+        call(&mut disp, true, 0x020, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A0), 0);
         assert_eq!(bus.read_word(0x0A60) as i16, super::RES_NOT_FOUND_ERR);
     }
 
