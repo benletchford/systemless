@@ -1815,3 +1815,52 @@ fn cloned_native_adapter_detaches_control_manager_metadata() {
     assert_eq!(detached.controls.proc_id(0x0031_2000), 2);
     assert!(!original.controls.contains_handle(0x0031_3000));
 }
+
+#[test]
+fn system_compatibility_imports_pre_resolve_to_typed_operations() {
+    for (symbol, operation) in [
+        ("BuildDDPwds", PpcSystemCompatibilityOperation::BuildDdPwds),
+        ("CTBGetCTBVersion", PpcSystemCompatibilityOperation::CtbGetCtbVersion),
+        ("CallComponentUPP", PpcSystemCompatibilityOperation::CallComponentUpp),
+        ("DIBadMount", PpcSystemCompatibilityOperation::DiBadMount),
+        ("DILoad", PpcSystemCompatibilityOperation::DiLoad),
+        ("DIUnload", PpcSystemCompatibilityOperation::DiUnload),
+        ("Debugger", PpcSystemCompatibilityOperation::Debugger),
+        ("Dequeue", PpcSystemCompatibilityOperation::Dequeue),
+        ("Enqueue", PpcSystemCompatibilityOperation::Enqueue),
+        ("FindNextComponent", PpcSystemCompatibilityOperation::FindNextComponent),
+        ("GetNextProcess", PpcSystemCompatibilityOperation::GetNextProcess),
+        ("GetScript", PpcSystemCompatibilityOperation::GetScript),
+        ("GetScriptManagerVariable", PpcSystemCompatibilityOperation::GetScriptManagerVariable),
+        ("GetScriptVariable", PpcSystemCompatibilityOperation::GetScriptVariable),
+        ("GetSysBeepVolume", PpcSystemCompatibilityOperation::GetSysBeepVolume),
+        ("IUCompString", PpcSystemCompatibilityOperation::IuCompString),
+        ("IUDateString", PpcSystemCompatibilityOperation::IuDateString),
+        ("InitCRM", PpcSystemCompatibilityOperation::InitCrm),
+        ("InitCTBUtilities", PpcSystemCompatibilityOperation::InitCtbUtilities),
+        ("KeyTranslate", PpcSystemCompatibilityOperation::KeyTranslate),
+        ("LaunchApplication", PpcSystemCompatibilityOperation::LaunchApplication),
+        ("LMGetCurApName", PpcSystemCompatibilityOperation::LmGetCurApName),
+        ("LMGetSysFontFam", PpcSystemCompatibilityOperation::LmGetSysFontFam),
+        ("LMGetSysFontSize", PpcSystemCompatibilityOperation::LmGetSysFontSize),
+        ("MIDIAddPort", PpcSystemCompatibilityOperation::MidiAddPort),
+        ("MIDIRemovePort", PpcSystemCompatibilityOperation::MidiRemovePort),
+        ("MIDISignOut", PpcSystemCompatibilityOperation::MidiSignOut),
+        ("MIDIWritePacket", PpcSystemCompatibilityOperation::MidiWritePacket),
+        ("Munger", PpcSystemCompatibilityOperation::Munger),
+        ("NMRemove", PpcSystemCompatibilityOperation::NmRemove),
+        ("ObscureCursor", PpcSystemCompatibilityOperation::ObscureCursor),
+        ("OpenDefaultComponent", PpcSystemCompatibilityOperation::OpenDefaultComponent),
+        ("ResetAlertStage", PpcSystemCompatibilityOperation::ResetAlertStage),
+        ("SetFrontProcess", PpcSystemCompatibilityOperation::SetFrontProcess),
+        ("StyledLineBreak", PpcSystemCompatibilityOperation::StyledLineBreak),
+        ("SystemEdit", PpcSystemCompatibilityOperation::SystemEdit),
+        ("TruncText", PpcSystemCompatibilityOperation::TruncText),
+        ("UpperString", PpcSystemCompatibilityOperation::UpperString),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::SystemCompatibility(operation),
+        );
+    }
+}
