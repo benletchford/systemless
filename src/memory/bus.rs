@@ -4653,6 +4653,56 @@ mod tests {
         assert_eq!(PpcMemory::write_u8(&mut memory, ALIAS + 4, before ^ 0xff), None);
     }
 
+    /// The front-buffer mirror presents the bus's own RAM through a local
+    /// shared alias. Whole-range ledger caching must keep that promotion
+    /// (`Flat`, byte-identical reads), and must drop it the moment a read-only
+    /// alias shadows the range.
+    #[test]
+    fn cached_ledger_keeps_the_mirror_flat_and_byte_identical() {
+        use crate::memory::GuestAddressSpace;
+
+        const ALIAS: u32 = 0x2000;
+        const ROW: usize = 0x100;
+
+        let pattern: Vec<u8> = (0..ROW).map(|i| (i * 7) as u8).collect();
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        bus.write_bytes(ALIAS, &pattern);
+
+        let mut memory = GuestAddressSpace::new();
+        let shared = bus
+            .shared_ram_region(ALIAS, ROW as u32)
+            .expect("local alias");
+        // SAFETY: this test serializes access to the bus and address space.
+        unsafe {
+            memory.add_shared_region(ALIAS, shared);
+        }
+        bus.attach_guest_address_space(memory.shared_view());
+
+        // Warm the range ledger once, then read the mirror row the way the
+        // front-buffer copy does on every row of every blit.
+        for round in 0..3 {
+            assert_eq!(
+                bus.route(ALIAS, ROW),
+                GuestMemoryRoute::Flat,
+                "round {round}"
+            );
+            assert_eq!(bus.untraced_ram_slice(ALIAS, ROW), Some(&pattern[..]));
+            assert_eq!(bus.read_bytes(ALIAS, ROW), pattern);
+        }
+
+        // A read-only alias over the same bytes is authoritative: the mirror
+        // must stop treating the row as its own flat RAM, cached or not.
+        let readonly = bus
+            .shared_ram_region(ALIAS, ROW as u32)
+            .expect("local alias");
+        // SAFETY: access remains serialized as above.
+        unsafe {
+            memory.add_shared_readonly_region(None, ALIAS, readonly);
+        }
+        assert_eq!(bus.route(ALIAS, ROW), GuestMemoryRoute::SharedReadOnly);
+        assert_eq!(bus.untraced_ram_slice(ALIAS, ROW), None);
+    }
+
     #[test]
     fn mapped_query_uses_shared_sparse_and_24_bit_routes() {
         use crate::memory::GuestAddressSpace;

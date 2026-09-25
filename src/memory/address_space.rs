@@ -41,13 +41,6 @@ struct SharedRun {
     end: u64,
 }
 
-impl SharedRun {
-    #[inline]
-    fn covers(&self, start: u64, end: u64) -> bool {
-        self.start <= start && end <= self.end
-    }
-}
-
 /// What the shared-mapping ledger says about a maximal interval of addresses:
 /// the mapping backing it, or a proof that no mapping touches it. Both answers
 /// let a later access in the same interval skip the ledger.
@@ -60,13 +53,104 @@ enum SharedLookup {
 impl SharedLookup {
     #[inline]
     fn covers(&self, start: u64, end: u64) -> bool {
+        let (lookup_start, lookup_end) = self.span();
+        lookup_start <= start && end <= lookup_end
+    }
+
+    /// The interval this answer describes uniformly.
+    #[inline]
+    fn span(&self) -> (u64, u64) {
         match self {
-            Self::Owned(run) => run.covers(start, end),
-            Self::Gap {
-                start: gap_start,
-                end: gap_end,
-            } => *gap_start <= start && end <= *gap_end,
+            Self::Owned(run) => (run.start, run.end),
+            Self::Gap { start, end } => (*start, *end),
         }
+    }
+}
+
+/// What one ledger lookup proves about a whole range.
+#[derive(Debug, Clone, Copy)]
+enum RangeSpan {
+    /// One shared mapping owns every byte of the range.
+    Owned(SharedRun),
+    /// The range lies inside a ledger gap: no shared mapping touches it.
+    NoMapping,
+    /// The range crosses ledger boundaries, so only the walking queries can
+    /// classify it.
+    Unresolved,
+}
+
+/// Entries in each scalar ledger cache.
+///
+/// Guest code interleaves its stack, heap, and aliased RAM, which sit in
+/// different maximal ledger intervals; with one entry, an access in any other
+/// interval misses and re-walks the whole mapping ledger before routing. A few
+/// entries keep the intervals a running program cycles through resident.
+const LOOKUP_SLOTS: usize = 4;
+const LOOKUP_REPLACE_MASK: usize = LOOKUP_SLOTS - 1;
+
+/// A small associative cache of ledger answers.
+///
+/// Entries are intervals from [`shared_lookup_at`] and are validated by
+/// [`SharedLookup::covers`] before use, so a hit is always sound. Lookup scans
+/// the entries rather than indexing by address: a cached interval covers a
+/// whole run, so a streaming access hits the entry that is already resident
+/// however far the address has advanced. Every entry is dropped by
+/// [`GuestAddressSpaceState::push_shared_mapping`], because an appended mapping
+/// can shadow a cached span or fall inside a cached gap.
+#[derive(Debug, Default, Clone, Copy)]
+struct LookupCache {
+    entries: [Option<SharedLookup>; LOOKUP_SLOTS],
+    /// Slot the next miss replaces, so misses evict in rotation.
+    next: usize,
+}
+
+impl LookupCache {
+    /// A resident answer whose interval covers `[start, end)`, if any.
+    #[inline]
+    fn covering(&self, start: u64, end: u64) -> Option<SharedLookup> {
+        self.entries
+            .iter()
+            .flatten()
+            .find(|entry| entry.covers(start, end))
+            .copied()
+    }
+
+    /// The ledger answer covering `[start, end)`, reusing a resident entry when
+    /// one already does. Always worth storing back: the answer describes an
+    /// interval either way.
+    #[inline]
+    fn resolve(
+        &self,
+        state: &GuestAddressSpaceState,
+        address: u32,
+        start: u64,
+        end: u64,
+    ) -> SharedLookup {
+        self.covering(start, end)
+            .unwrap_or_else(|| shared_lookup_at(state, address))
+    }
+
+    #[inline]
+    fn store(&mut self, lookup: SharedLookup) {
+        let (start, end) = lookup.span();
+        // A resident entry that already spans this answer makes a new copy
+        // redundant, which keeps a scan through one long run from filling every
+        // slot with the same interval and evicting the others.
+        if self
+            .entries
+            .iter()
+            .flatten()
+            .any(|entry| entry.covers(start, end))
+        {
+            return;
+        }
+        self.entries[self.next] = Some(lookup);
+        self.next = (self.next + 1) & LOOKUP_REPLACE_MASK;
+    }
+
+    fn clear(&mut self) {
+        self.entries = [None; LOOKUP_SLOTS];
+        self.next = 0;
     }
 }
 
@@ -110,11 +194,15 @@ struct GuestAddressSpaceState {
     /// envelope spanned by the runner's RAM aliases.
     shared_pages: PageIndex,
     readonly_allocation_exclusions: Vec<(u32, u32)>,
-    /// Last ledger answer for instruction fetches, plus two recent data spans.
-    /// Data reads often alternate between two regions. Appending a mapping can
-    /// shadow an `Owned` span or fall inside a `Gap`, so it clears both caches.
-    instruction_lookup: Option<SharedLookup>,
-    data_lookups: [Option<SharedLookup>; 2],
+    /// Recent ledger answers, one cache for instruction fetches and one for
+    /// data accesses. Two caches because code and data addresses interleave.
+    instruction_lookup: LookupCache,
+    data_lookup: LookupCache,
+    /// Recent ledger answers for whole ranges, used by the range router and by
+    /// the classic adapter's local-alias promotion. Both ask about the same
+    /// bulk ranges (a mirror row is routed and then promoted), and a range
+    /// spans many scalar intervals, so this cache needs its own entries.
+    route_lookup: LookupCache,
     /// Pages we have issued a writable-code token for. A write into one of
     /// them may have rewritten a cached decode, so it retires that page's
     /// tokens; a clear bit proves the write cannot have touched executed code
@@ -143,8 +231,9 @@ impl GuestAddressSpaceState {
             self.shared_pages.mark(start, end);
         }
         // A new mapping can shadow a cached span or fall inside a cached gap.
-        self.instruction_lookup = None;
-        self.data_lookups = [None; 2];
+        self.instruction_lookup.clear();
+        self.data_lookup.clear();
+        self.route_lookup.clear();
         self.instruction_token_cache = None;
         self.shared_regions.push(mapping);
     }
@@ -229,6 +318,39 @@ impl GuestAddressSpaceState {
         }
     }
 
+    /// Resolve the shared ledger for a whole range with one lookup, reusing a
+    /// resident answer once its interval spans the range.
+    ///
+    /// A ledger answer describes a maximal uniform interval, so when it covers
+    /// the range the range has one meaning: an `Owned` run proves a single
+    /// mapping owns every byte, and a `Gap` proves no mapping touches it. Only
+    /// a range crossing ledger boundaries falls back to the walking queries.
+    #[inline]
+    fn resolve_range_span(&mut self, address: u32, start: u64, end: u64) -> RangeSpan {
+        // A resident answer is checked first: it is the hit path for the bulk
+        // ranges that repeat frame after frame.
+        if let Some(lookup) = self.route_lookup.covering(start, end) {
+            return match lookup {
+                SharedLookup::Owned(run) => RangeSpan::Owned(run),
+                SharedLookup::Gap { .. } => RangeSpan::NoMapping,
+            };
+        }
+        // On a miss the envelope and page filter reject a range no mapping can
+        // reach before the ledger is walked.
+        if !self.may_overlap_shared(start, end) {
+            return RangeSpan::NoMapping;
+        }
+        let lookup = shared_lookup_at(self, address);
+        self.route_lookup.store(lookup);
+        if !lookup.covers(start, end) {
+            return RangeSpan::Unresolved;
+        }
+        match lookup {
+            SharedLookup::Owned(run) => RangeSpan::Owned(run),
+            SharedLookup::Gap { .. } => RangeSpan::NoMapping,
+        }
+    }
+
     #[inline]
     fn overlaps_shared(&self, start: u64, end: u64) -> bool {
         self.may_overlap_shared(start, end)
@@ -302,6 +424,28 @@ fn ranges_cover_shared(state: &GuestAddressSpaceState, start: u64, end: u64) -> 
         cursor = covered_end;
     }
     true
+}
+
+/// The route for a range wholly inside one ledger run.
+///
+/// A run's span lies inside the single mapping that owns it, so that mapping's
+/// writability decides the route outright. [`shared_range_route`] rediscovers
+/// the same answer by walking every mapping boundary in the range.
+#[inline]
+fn shared_run_route(state: &GuestAddressSpaceState, run: SharedRun) -> GuestMemoryRoute {
+    let Some(mapping) = state.shared_regions.get(run.index) else {
+        return GuestMemoryRoute::Mixed;
+    };
+    debug_assert_eq!(
+        mapping.writable,
+        shared_range_route(state, run.start, run.end) == GuestMemoryRoute::Shared,
+        "a ledger run must route exactly as the walking classifier"
+    );
+    if mapping.writable {
+        GuestMemoryRoute::Shared
+    } else {
+        GuestMemoryRoute::SharedReadOnly
+    }
 }
 
 /// Classify a completely shared range while retaining its write protection.
@@ -421,46 +565,6 @@ fn shared_lookup_at(state: &GuestAddressSpaceState, address: u32) -> SharedLooku
         }
     }
     SharedLookup::Gap { start, end }
-}
-
-/// Ledger answer covering `[start, end)`, reusing `cached` when it already
-/// does. Always worth storing back: it describes the interval either way.
-#[inline]
-fn resolve_lookup(
-    state: &GuestAddressSpaceState,
-    cached: Option<SharedLookup>,
-    address: u32,
-    start: u64,
-    end: u64,
-) -> SharedLookup {
-    match cached {
-        Some(cached) if cached.covers(start, end) => cached,
-        _ => shared_lookup_at(state, address),
-    }
-}
-
-#[inline]
-fn resolve_data_lookup(
-    state: &mut GuestAddressSpaceState,
-    address: u32,
-    start: u64,
-    end: u64,
-) -> SharedLookup {
-    if let Some(lookup) = state.data_lookups[0] {
-        if lookup.covers(start, end) {
-            return lookup;
-        }
-    }
-    if let Some(lookup) = state.data_lookups[1] {
-        if lookup.covers(start, end) {
-            state.data_lookups.swap(0, 1);
-            return lookup;
-        }
-    }
-    let lookup = shared_lookup_at(state, address);
-    state.data_lookups[1] = state.data_lookups[0];
-    state.data_lookups[0] = Some(lookup);
-    lookup
 }
 
 /// Read the four bytes at `start` out of the mapping `run` names. Equivalent
@@ -754,12 +858,22 @@ fn route_range_state(
     };
     let start = u64::from(address);
 
-    let shared_overlap = state.overlaps_shared(start, end);
-    if shared_overlap {
-        if ranges_cover_shared(state, start, end) {
-            return shared_range_route(state, start, end);
+    // One ledger lookup classifies the whole range whenever a resident
+    // interval already spans it: a run proves a single mapping owns every
+    // byte, a gap proves no mapping touches the range. Both are exact, so the
+    // walking overlap queries only run for a range crossing ledger
+    // boundaries, which is the rare case on the flat-RAM bulk paths.
+    match state.resolve_range_span(address, start, end) {
+        RangeSpan::Owned(run) => return shared_run_route(state, run),
+        RangeSpan::NoMapping => {}
+        RangeSpan::Unresolved => {
+            if state.overlaps_shared(start, end) {
+                if ranges_cover_shared(state, start, end) {
+                    return shared_range_route(state, start, end);
+                }
+                return GuestMemoryRoute::Mixed;
+            }
         }
-        return GuestMemoryRoute::Mixed;
     }
 
     // Scalar CPU accesses dominate this path. Let the sparse region map prove
@@ -1046,13 +1160,28 @@ impl SharedGuestAddressSpace {
         local_ram: &SharedRamRegion,
     ) -> bool {
         self.with_state_mut(|state| {
-            if len == 0 || route_range_state(state, address, len, None) != GuestMemoryRoute::Shared
-            {
+            if len == 0 {
                 return false;
             }
             let Some(end) = range_end(address, len) else {
                 return false;
             };
+            // One lookup answers the mirror case outright: a ledger run that
+            // spans the range names the single mapping that has to be the
+            // local alias, where the loop below would rediscover it segment by
+            // segment after routing the same range a second time.
+            if let RangeSpan::Owned(run) =
+                state.resolve_range_span(address, u64::from(address), end)
+            {
+                return state.shared_regions.get(run.index).is_some_and(|mapping| {
+                    mapping.writable
+                        && mapping.region.same_backing(local_ram)
+                        && mapping.region.backing_offset() == mapping.base as usize
+                });
+            }
+            if route_range_state(state, address, len, None) != GuestMemoryRoute::Shared {
+                return false;
+            }
             let mut cursor = u64::from(address);
             while cursor < end {
                 let guest = u32::try_from(cursor).expect("guest range remains 32-bit");
@@ -1191,8 +1320,9 @@ impl Clone for GuestAddressSpace {
                 .collect(),
             readonly_allocation_exclusions: state.readonly_allocation_exclusions.clone(),
             // Detached regions are fresh allocations; let the clone re-resolve.
-            instruction_lookup: None,
-            data_lookups: [None; 2],
+            instruction_lookup: LookupCache::default(),
+            data_lookup: LookupCache::default(),
+            route_lookup: LookupCache::default(),
             executed_pages: state.executed_pages.clone(),
             // A detached clone holds independent copies of the same regions,
             // which then diverge. Inheriting its parent's tokens would let a
@@ -1832,7 +1962,8 @@ impl PpcMemory for GuestAddressSpace {
         };
         let state = self.state_mut();
         let start = u64::from(addr);
-        let lookup = resolve_data_lookup(state, addr, start, end);
+        let lookup = state.data_lookup.resolve(state, addr, start, end);
+        state.data_lookup.store(lookup);
         if lookup.covers(start, end) {
             return match lookup {
                 SharedLookup::Gap { .. } => PpcMemory::read_u16_be(&mut state.regions, addr),
@@ -1866,7 +1997,8 @@ impl PpcMemory for GuestAddressSpace {
         };
         let state = self.state_mut();
         let start = u64::from(addr);
-        let lookup = resolve_data_lookup(state, addr, start, end);
+        let lookup = state.data_lookup.resolve(state, addr, start, end);
+        state.data_lookup.store(lookup);
         if lookup.covers(start, end) {
             return match lookup {
                 SharedLookup::Gap { .. } => PpcMemory::read_u32_be(&mut state.regions, addr),
@@ -1874,6 +2006,14 @@ impl PpcMemory for GuestAddressSpace {
                     read_shared_word(state, run, start).map(u32::from_be_bytes)
                 }
             };
+        }
+        // No shared mapping overlaps this word, so the sparse region map is the
+        // only backing it can have: the native PPC adapter supplies no flat
+        // fallback, and a scalar read that the map cannot serve is unmapped.
+        // Reading once here replaces the router's proof-read followed by this
+        // same read, which would resolve the region map twice per access.
+        if !state.overlaps_shared(start, end) {
+            return PpcMemory::read_u32_be(&mut state.regions, addr);
         }
         match route_range_state(state, addr, 4, None) {
             GuestMemoryRoute::Sparse
@@ -1919,9 +2059,8 @@ impl PpcMemory for GuestAddressSpace {
         let start = u64::from(addr);
         // Prove where this word lives once per interval, not per fetch. A
         // `Gap` is the `!overlaps_shared` early-out below, without the walk.
-        let cached = state.instruction_lookup;
-        let lookup = resolve_lookup(state, cached, addr, start, end);
-        state.instruction_lookup = Some(lookup);
+        let lookup = state.instruction_lookup.resolve(state, addr, start, end);
+        state.instruction_lookup.store(lookup);
         if lookup.covers(start, end) {
             return match lookup {
                 SharedLookup::Gap { .. } => state.regions.read_instruction_u32_be(addr),
@@ -1981,7 +2120,8 @@ impl PpcMemory for GuestAddressSpace {
         let state = self.state_mut();
         let start = u64::from(addr);
         let bytes = value.to_be_bytes();
-        let lookup = resolve_data_lookup(state, addr, start, end);
+        let lookup = state.data_lookup.resolve(state, addr, start, end);
+        state.data_lookup.store(lookup);
         if lookup.covers(start, end) {
             return match lookup {
                 SharedLookup::Gap { .. } => {
@@ -2019,7 +2159,8 @@ impl PpcMemory for GuestAddressSpace {
         let state = self.state_mut();
         let start = u64::from(addr);
         let bytes = value.to_be_bytes();
-        let lookup = resolve_data_lookup(state, addr, start, end);
+        let lookup = state.data_lookup.resolve(state, addr, start, end);
+        state.data_lookup.store(lookup);
         if lookup.covers(start, end) {
             return match lookup {
                 SharedLookup::Gap { .. } => {
@@ -2040,6 +2181,15 @@ impl PpcMemory for GuestAddressSpace {
                     Some(())
                 }
             };
+        }
+        // Mirror of the read path above: with no shared overlap the sparse map
+        // is the only backing, so one write replaces the router's proof-read
+        // followed by this same write. A read-only sparse region fails both,
+        // and an unmapped one cannot accept the write either.
+        if !state.overlaps_shared(start, end) {
+            PpcMemory::write_u32_be(&mut state.regions, addr, value)?;
+            state.note_write(addr, &bytes);
+            return Some(());
         }
         match route_range_state(state, addr, 4, None) {
             GuestMemoryRoute::Sparse
@@ -2146,7 +2296,7 @@ impl AddressBus for GuestAddressSpace {
 #[cfg(test)]
 mod tests {
     use super::{shared_lookup_at, GuestAddressSpace, GuestIsa, SharedLookup};
-    use crate::memory::{MacMemoryBus, MemoryBus};
+    use crate::memory::{GuestMemoryRoute, MacMemoryBus, MemoryBus};
     use m68k::{AddressBus, BatchExit, CpuCore, StepResult};
     use ppc::{PpcCpu, PpcMemory, PpcRunResult};
 
@@ -3486,6 +3636,542 @@ mod tests {
         assert_eq!(
             detached.mapping_ranges(),
             vec![(0x1200, 0x1300), (0x1400, 0x1700)]
+        );
+    }
+
+    /// Opt-in measurement of the scalar routing fast paths.
+    ///
+    /// Two patterns, because they stress different properties of the ledger
+    /// cache. `interleaved` alternates one ordinary sparse access with two
+    /// shared RAM aliases, which each fall in a different maximal ledger
+    /// interval. `streaming` walks one span in order, where the interval an
+    /// entry already holds should keep covering the next word.
+    ///
+    /// ```sh
+    /// cargo test --profile fast --lib scalar_routing_microbench -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "measurement harness; prints scalar routing timings"]
+    fn scalar_routing_microbench() {
+        use crate::memory::bus::SharedRamRegion;
+
+        const ORDINARY: u32 = 0x2000_0000;
+        const SHARED_A: u32 = 0x0004_0000;
+        const SHARED_B: u32 = 0x0100_0000;
+        const LEN: u32 = 1 << 20;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(ORDINARY, vec![0u8; LEN as usize]);
+        // SAFETY: the benchmark owns every allocation and accesses them
+        // serially from this thread, and retains no RAM slice or window.
+        unsafe {
+            memory.add_shared_region(
+                SHARED_A,
+                SharedRamRegion::from_owned_bytes(vec![0u8; LEN as usize]),
+            );
+            memory.add_shared_region(
+                SHARED_B,
+                SharedRamRegion::from_owned_bytes(vec![0u8; LEN as usize]),
+            );
+        }
+
+        let iterations: u32 = std::env::var("SYSTEMLESS_ROUTE_ITERATIONS")
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(1_000_000);
+
+        let mut acc = 0u32;
+        let start = std::time::Instant::now();
+        for i in 0..iterations {
+            let offset = (i.wrapping_mul(4)) & (LEN - 4);
+            acc = acc.wrapping_add(PpcMemory::read_u32_be(&mut memory, ORDINARY + offset).unwrap());
+            PpcMemory::write_u32_be(&mut memory, SHARED_A + offset, acc).unwrap();
+            acc = acc.wrapping_add(PpcMemory::read_u32_be(&mut memory, SHARED_B + offset).unwrap());
+            std::hint::black_box(PpcMemory::read_instruction_u32_be(
+                &mut memory,
+                ORDINARY + offset,
+            ));
+        }
+        let elapsed = start.elapsed();
+        std::hint::black_box(acc);
+        eprintln!(
+            "scalar_routing_microbench interleaved: {iterations} rounds in {elapsed:?} ({:?}/round)",
+            elapsed / iterations
+        );
+
+        let start = std::time::Instant::now();
+        for i in 0..iterations {
+            let offset = (i.wrapping_mul(4)) & (LEN - 4);
+            acc = acc.wrapping_add(PpcMemory::read_u32_be(&mut memory, ORDINARY + offset).unwrap());
+        }
+        let elapsed = start.elapsed();
+        std::hint::black_box(acc);
+        eprintln!(
+            "scalar_routing_microbench streaming: {iterations} reads in {elapsed:?} ({:?}/read)",
+            elapsed / iterations
+        );
+    }
+
+    /// Opt-in measurement of the bulk range router the classic adapter uses.
+    ///
+    /// Mirrors one front-buffer mirror row: route a whole row, then ask
+    /// whether a wholly-local shared alias owns it (`MacMemoryBus` promotes
+    /// that answer to `Flat`). Both steps walked the shared ledger per row.
+    ///
+    /// ```sh
+    /// cargo test --profile fast --lib bulk_range_routing_microbench -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "measurement harness; prints bulk range routing timings"]
+    fn bulk_range_routing_microbench() {
+        use crate::memory::bus::SharedRamRegion;
+        use crate::memory::GuestMemoryRoute;
+
+        const ALIAS: u32 = 0x0004_0000;
+        const ORDINARY: u32 = 0x2000_0000;
+        const LEN: u32 = 1 << 20;
+        const ROW: usize = 640;
+
+        let local = SharedRamRegion::from_owned_bytes(vec![0u8; LEN as usize]);
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(ORDINARY, vec![0u8; LEN as usize]);
+        // SAFETY: the benchmark owns every allocation and accesses them
+        // serially from this thread, and retains no RAM slice or window.
+        unsafe {
+            memory.add_shared_region(ALIAS, local.clone());
+            // Further process mappings, so the ledger walk this measures
+            // scales the way a real native process's mapping list does.
+            for index in 1..16u32 {
+                memory.add_shared_region(
+                    0x0100_0000 + index * 0x0008_0000,
+                    SharedRamRegion::from_owned_bytes(vec![0u8; 0x1000]),
+                );
+            }
+        }
+        let view = memory.shared_view();
+
+        let iterations: u32 = std::env::var("SYSTEMLESS_ROUTE_ITERATIONS")
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(200_000);
+
+        // The mirror's rows: one local alias promoted to `Flat` per row.
+        let mut acc = 0u32;
+        let start = std::time::Instant::now();
+        for i in 0..iterations {
+            let address = ALIAS + ((i.wrapping_mul(ROW as u32)) & (LEN - ROW as u32));
+            acc += u32::from(view.route(address, ROW, Some(LEN)) == GuestMemoryRoute::Flat);
+            acc += u32::from(view.shared_range_is_local_flat(address, ROW, &local));
+        }
+        let elapsed = start.elapsed();
+        std::hint::black_box(acc);
+        eprintln!(
+            "bulk_range_routing_microbench mirror: {iterations} rows in {elapsed:?} ({:?}/row)",
+            elapsed / iterations
+        );
+
+        // Ordinary sparse mappings: the same range size with no alias to
+        // promote, which must not regress.
+        let mut acc = 0u32;
+        let start = std::time::Instant::now();
+        for i in 0..iterations {
+            let address = ORDINARY + ((i.wrapping_mul(ROW as u32)) & (LEN - ROW as u32));
+            acc += u32::from(view.route(address, ROW, Some(LEN)) != GuestMemoryRoute::Unmapped);
+        }
+        let elapsed = start.elapsed();
+        std::hint::black_box(acc);
+        eprintln!(
+            "bulk_range_routing_microbench ordinary: {iterations} rows in {elapsed:?} ({:?}/row)",
+            elapsed / iterations
+        );
+    }
+
+    /// The addresses used by the ledger-cache agreement tests: both ends of
+    /// each backing, the boundaries between backings, and an address outside
+    /// every mapping.
+    const CACHE_PROBE_ADDRESSES: [u32; 12] = [
+        0x0001_fffc, // word just below the shared alias
+        0x0002_0000, // first word of the shared alias
+        0x0002_0ffc, // last word of the shared alias
+        0x0002_1000, // first word of the gap above it
+        0x0100_0000, // first word of the ordinary writable region
+        0x0100_1000, // first word of the ordinary read-only region
+        0x0100_2000, // gap between the ordinary regions
+        0x0200_0000, // outside every mapping
+        0x0300_0ffc, // last word of the read-only region
+        0x0300_1000, // first word past it
+        0xffff_fffc, // top of the address space
+        0x0000_0000, // bottom of the address space
+    ];
+
+    /// Drop the resident ledger answers so the next access resolves from
+    /// scratch. Only tests need this; production invalidation happens in
+    /// [`GuestAddressSpaceState::push_shared_mapping`].
+    fn clear_ledger_caches(memory: &mut GuestAddressSpace) {
+        let state = memory.state_mut();
+        state.instruction_lookup.clear();
+        state.data_lookup.clear();
+        state.route_lookup.clear();
+    }
+
+    fn mixed_backing_memory() -> GuestAddressSpace {
+        use crate::memory::bus::SharedRamRegion;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x0100_0000, vec![0x11; 0x1000]);
+        memory.add_readonly_region(0x0100_1000, vec![0x22; 0x1000]);
+        memory.add_region(0x0300_0000, vec![0x33; 0x1000]);
+        // SAFETY: the test owns every allocation and accesses one address
+        // space at a time, retaining no RAM slice or fast-memory window.
+        unsafe {
+            memory.add_shared_region(
+                0x0002_0000,
+                SharedRamRegion::from_owned_bytes(vec![0x44; 0x1000]),
+            );
+        }
+        memory
+    }
+
+    /// A resident ledger answer must never change what an access resolves to.
+    /// Comparing a warm cache against a cleared one across every backing
+    /// boundary is the reference check for that.
+    #[test]
+    fn scalar_accesses_agree_with_a_cold_ledger_cache() {
+        let mut memory = mixed_backing_memory();
+
+        // Warm the caches with a different, unrelated address first so the
+        // comparison is never accidentally against a freshly cleared state.
+        let _ = PpcMemory::read_u32_be(&mut memory, 0x0100_0000);
+
+        for &address in &CACHE_PROBE_ADDRESSES {
+            for _ in 0..2 {
+                let warm = PpcMemory::read_u32_be(&mut memory, address);
+                clear_ledger_caches(&mut memory);
+                let cold = PpcMemory::read_u32_be(&mut memory, address);
+                assert_eq!(warm, cold, "data read at {address:#010x}");
+
+                let warm = PpcMemory::read_instruction_u32_be(&mut memory, address);
+                clear_ledger_caches(&mut memory);
+                let cold = PpcMemory::read_instruction_u32_be(&mut memory, address);
+                assert_eq!(warm, cold, "instruction read at {address:#010x}");
+            }
+        }
+
+        // Writes are compared on two copies of the same state: a warm cache and
+        // a cold one, with the resulting bytes read back byte-wise.
+        for &address in &CACHE_PROBE_ADDRESSES {
+            if address >= 0xffff_fffc || address < 0x0000_0004 {
+                continue;
+            }
+            let mut warm = mixed_backing_memory();
+            let mut cold = mixed_backing_memory();
+            let _ = PpcMemory::read_u32_be(&mut warm, 0x0100_0000);
+            clear_ledger_caches(&mut cold);
+            let warm_result = PpcMemory::write_u32_be(&mut warm, address, 0xdead_beef);
+            let cold_result = PpcMemory::write_u32_be(&mut cold, address, 0xdead_beef);
+            assert_eq!(warm_result, cold_result, "write at {address:#010x}");
+            for offset in 0..4 {
+                assert_eq!(
+                    PpcMemory::read_u8(&mut warm, address + offset),
+                    PpcMemory::read_u8(&mut cold, address + offset),
+                    "byte {offset} of the write at {address:#010x}"
+                );
+            }
+        }
+    }
+
+    /// More distinct intervals than the cache holds, revisited in rotation:
+    /// every access misses, evicts, and must still resolve correctly.
+    #[test]
+    fn scalar_accesses_survive_ledger_cache_eviction() {
+        use crate::memory::bus::SharedRamRegion;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x4000_0000, vec![0x55; 0x1000]);
+        let count = super::LOOKUP_SLOTS * 3;
+        for index in 0..count {
+            // SAFETY: see `mixed_backing_memory`.
+            unsafe {
+                memory.add_shared_region(
+                    0x0002_0000 + index as u32 * 0x0002_0000,
+                    SharedRamRegion::from_owned_bytes(vec![index as u8; 0x1000]),
+                );
+            }
+        }
+
+        let probes: Vec<u32> = (0..count)
+            .map(|index| 0x0002_0000 + index as u32 * 0x0002_0000 + 8)
+            .chain([0x4000_0008, 0x0002_0008, 0x1000_0000])
+            .collect();
+        for _ in 0..3 {
+            for &address in &probes {
+                let warm = PpcMemory::read_u32_be(&mut memory, address);
+                clear_ledger_caches(&mut memory);
+                let cold = PpcMemory::read_u32_be(&mut memory, address);
+                assert_eq!(warm, cold, "read at {address:#010x}");
+            }
+        }
+    }
+
+    /// A new shared mapping takes precedence immediately, so it must also drop
+    /// the ledger answers and code tokens that describe the address it covers.
+    #[test]
+    fn push_shared_mapping_invalidates_ledger_answers_and_tokens() {
+        use crate::memory::bus::SharedRamRegion;
+
+        const CODE: u32 = 0x0500_0000;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(CODE, vec![0x66; 0x1000]);
+        assert_eq!(PpcMemory::read_u32_be(&mut memory, CODE), Some(0x6666_6666));
+        assert_eq!(PpcMemory::read_instruction_u32_be(&mut memory, CODE), Some(0x6666_6666));
+        let token = PpcMemory::instruction_cache_token(&mut memory, CODE).expect("sparse token");
+
+        // SAFETY: see `mixed_backing_memory`.
+        unsafe {
+            memory.add_shared_region(CODE, SharedRamRegion::from_owned_bytes(vec![0x77; 0x1000]));
+        }
+
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut memory, CODE),
+            Some(0x7777_7777),
+            "the newest shared alias must win on the first access"
+        );
+        assert_eq!(
+            PpcMemory::read_instruction_u32_be(&mut memory, CODE),
+            Some(0x7777_7777)
+        );
+        assert_eq!(
+            PpcMemory::instruction_cache_token(&mut memory, CODE),
+            None,
+            "shared-mapped code has no writable-code token"
+        );
+        // The retired sparse token must not be handed out again for the page.
+        assert_ne!(token, 0);
+    }
+
+    /// The scalar fast path must keep reporting writes: a write that lands in
+    /// executed code rotates its token even when no shared mapping overlaps.
+    #[test]
+    fn scalar_write_without_shared_overlap_still_retires_code_tokens() {
+        const CODE: u32 = 0x0600_0000;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(CODE, vec![0x60; 0x1000]);
+        let first = PpcMemory::instruction_cache_token(&mut memory, CODE).expect("token");
+        PpcMemory::write_u32_be(&mut memory, CODE, 0x1122_3344).expect("writable code");
+        let second = PpcMemory::instruction_cache_token(&mut memory, CODE).expect("token");
+        assert_ne!(first, second, "a write must retire the page's token");
+
+        // A read-only ordinary region cannot accept the write, and the failure
+        // must not depend on the ledger cache being warm.
+        memory.add_readonly_region(0x0700_0000, vec![0x88; 0x1000]);
+        let _ = PpcMemory::read_u32_be(&mut memory, 0x0700_0000);
+        assert_eq!(PpcMemory::write_u32_be(&mut memory, 0x0700_0000, 1), None);
+        clear_ledger_caches(&mut memory);
+        assert_eq!(PpcMemory::write_u32_be(&mut memory, 0x0700_0000, 1), None);
+    }
+
+    /// Every whole-range probe with the route it must produce, for the tests
+    /// that compare the cached ledger against a cleared one.
+    ///
+    /// The probes cover: a writable alias and its interior, the alias end (a
+    /// partially shared range), a read-only alias, two adjacent writable
+    /// aliases (no single ledger run spans both), a covered range followed by a
+    /// gap, ordinary writable and read-only regions, and unmapped gaps.
+    const BULK_RANGE_PROBES: [(u32, usize, GuestMemoryRoute); 10] = [
+        (0x0002_0000, 0x1000, GuestMemoryRoute::Shared),
+        (0x0002_0400, 0x0100, GuestMemoryRoute::Shared),
+        (0x0002_0f80, 0x0100, GuestMemoryRoute::Mixed),
+        (0x0010_0400, 0x0100, GuestMemoryRoute::SharedReadOnly),
+        (0x0040_0800, 0x1000, GuestMemoryRoute::Shared),
+        (0x0040_1800, 0x1000, GuestMemoryRoute::Mixed),
+        (0x0100_0100, 0x0100, GuestMemoryRoute::Sparse),
+        (0x0200_0100, 0x0100, GuestMemoryRoute::Sparse),
+        (0x0003_0000, 0x0100, GuestMemoryRoute::Unmapped),
+        (0x0500_0000, 0x0100, GuestMemoryRoute::Unmapped),
+    ];
+
+    /// A writable shared alias, a read-only alias, adjacent writable aliases
+    /// that no single ledger run spans, and ordinary mappings.
+    fn bulk_backing_memory() -> GuestAddressSpace {
+        use crate::memory::bus::SharedRamRegion;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x0100_0000, vec![0x11; 0x1000]);
+        memory.add_readonly_region(0x0200_0000, vec![0x22; 0x1000]);
+        memory.add_region(0x0300_0000, vec![0x33; 0x1000]);
+        // SAFETY: see `mixed_backing_memory`.
+        unsafe {
+            memory.add_shared_region(
+                0x0002_0000,
+                SharedRamRegion::from_owned_bytes(vec![0x44; 0x1000]),
+            );
+            memory.add_shared_readonly_region(
+                None,
+                0x0010_0000,
+                SharedRamRegion::from_owned_bytes(vec![0x55; 0x1000]),
+            );
+            memory.add_shared_region(
+                0x0040_0000,
+                SharedRamRegion::from_owned_bytes(vec![0x66; 0x1000]),
+            );
+            memory.add_shared_region(
+                0x0040_1000,
+                SharedRamRegion::from_owned_bytes(vec![0x77; 0x1000]),
+            );
+        }
+        memory
+    }
+
+    /// The whole-range fast path must agree with a cleared ledger for every
+    /// backing it can be asked about, including ranges that cross ledger
+    /// boundaries and therefore fall back to the walking classifier.
+    #[test]
+    fn bulk_range_routes_match_every_backing_and_a_cold_cache() {
+        let mut memory = bulk_backing_memory();
+        // Warm the cache with an unrelated range first, so a comparison is
+        // never accidentally against a freshly cleared state.
+        let _ = memory.shared_view().route(0x0100_0100, 0x40, None);
+
+        for &(address, len, expected) in &BULK_RANGE_PROBES {
+            for round in 0..2 {
+                let warm = memory.shared_view().route(address, len, None);
+                assert_eq!(warm, expected, "warm route {address:#010x}+{len:#x}");
+                clear_ledger_caches(&mut memory);
+                let cold = memory.shared_view().route(address, len, None);
+                assert_eq!(cold, expected, "cold route {address:#010x}+{len:#x}");
+                assert_eq!(warm, cold, "round {round} {address:#010x}+{len:#x}");
+            }
+        }
+    }
+
+    /// More ledger intervals than the range cache holds, revisited in rotation:
+    /// every route misses and evicts, and each must still find the newest alias.
+    #[test]
+    fn bulk_range_routes_survive_ledger_cache_eviction() {
+        use crate::memory::bus::SharedRamRegion;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x4000_0000, vec![0x55; 0x1000]);
+        let count = super::LOOKUP_SLOTS * 3;
+        for index in 0..count {
+            // SAFETY: see `mixed_backing_memory`.
+            unsafe {
+                memory.add_shared_region(
+                    0x0002_0000 + index as u32 * 0x0002_0000,
+                    SharedRamRegion::from_owned_bytes(vec![index as u8; 0x1000]),
+                );
+            }
+        }
+
+        for round in 0..3 {
+            for index in 0..count {
+                let address = 0x0002_0000 + index as u32 * 0x0002_0000;
+                assert_eq!(
+                    memory.shared_view().route(address, 0x800, None),
+                    GuestMemoryRoute::Shared,
+                    "revisited alias {index} in round {round}"
+                );
+            }
+        }
+    }
+
+    /// The classic adapter promotes a wholly-local alias to `Flat`. The cached
+    /// ledger run must answer like the walking check for that case.
+    #[test]
+    fn shared_range_is_local_flat_matches_a_wholly_local_alias() {
+        use crate::memory::bus::SharedRamRegion;
+
+        // A region at base 0 has offset 0, so it can be the local alias itself.
+        let local = SharedRamRegion::from_owned_bytes(vec![0u8; 0x3000]);
+        let other = SharedRamRegion::from_owned_bytes(vec![0u8; 0x3000]);
+        let mut memory = GuestAddressSpace::new();
+        // SAFETY: see `mixed_backing_memory`.
+        unsafe {
+            memory.add_shared_region(0x0000_0000, local.clone());
+            memory.add_shared_region(0x0010_0000, other.clone());
+        }
+
+        assert!(memory
+            .shared_view()
+            .shared_range_is_local_flat(0x0000_0400, 0x100, &local));
+        // A foreign backing is never promoted, and a range crossing the alias
+        // end is not wholly shared at all.
+        assert!(!memory
+            .shared_view()
+            .shared_range_is_local_flat(0x0000_0400, 0x100, &other));
+        assert!(!memory
+            .shared_view()
+            .shared_range_is_local_flat(0x0000_2f80, 0x100, &local));
+        assert!(!memory
+            .shared_view()
+            .shared_range_is_local_flat(0x0010_0400, 0x100, &local));
+
+        clear_ledger_caches(&mut memory);
+        assert!(memory
+            .shared_view()
+            .shared_range_is_local_flat(0x0000_0400, 0x100, &local));
+
+        // A read-only alias over the same bytes is authoritative: the cached
+        // run must stop the promotion immediately.
+        // SAFETY: see `mixed_backing_memory`.
+        unsafe {
+            memory.add_shared_readonly_region(
+                None,
+                0x0000_0000,
+                SharedRamRegion::from_owned_bytes(vec![0u8; 0x400]),
+            );
+        }
+        assert!(
+            !memory
+                .shared_view()
+                .shared_range_is_local_flat(0x0000_0000, 0x100, &local),
+            "a read-only alias must not be promoted"
+        );
+        // The rest of the alias is still the local writable one.
+        assert!(memory
+            .shared_view()
+            .shared_range_is_local_flat(0x0000_0400, 0x100, &local));
+    }
+
+    /// An appended mapping invalidates whole-range answers immediately, for the
+    /// router and for the local-alias promotion alike.
+    #[test]
+    fn push_shared_mapping_invalidates_bulk_range_answers() {
+        use crate::memory::bus::SharedRamRegion;
+
+        let local = SharedRamRegion::from_owned_bytes(vec![0x11; 0x1000]);
+        let shadow = SharedRamRegion::from_owned_bytes(vec![0x22; 0x0400]);
+        let mut memory = GuestAddressSpace::new();
+        // SAFETY: see `mixed_backing_memory`.
+        unsafe {
+            memory.add_shared_region(0x0002_0000, local.clone());
+        }
+        assert_eq!(
+            memory.shared_view().route(0x0002_0000, 0x800, None),
+            GuestMemoryRoute::Shared
+        );
+
+        // A shorter read-only alias over the same bytes is authoritative from
+        // the first access, so the cached run must not still decide the route.
+        // SAFETY: see `mixed_backing_memory`.
+        unsafe {
+            memory.add_shared_readonly_region(None, 0x0002_0000, shadow);
+        }
+        assert_eq!(
+            memory.shared_view().route(0x0002_0000, 0x100, None),
+            GuestMemoryRoute::SharedReadOnly
+        );
+        assert_eq!(
+            memory.shared_view().route(0x0002_0000, 0x800, None),
+            GuestMemoryRoute::Mixed,
+            "a range over the read-only alias and the writable one is mixed"
+        );
+        clear_ledger_caches(&mut memory);
+        assert_eq!(
+            memory.shared_view().route(0x0002_0000, 0x100, None),
+            GuestMemoryRoute::SharedReadOnly
         );
     }
 }
