@@ -17248,7 +17248,7 @@
     }
 
     #[test]
-    fn tracking_refire_freeze_policy_keeps_modaldialog_ticks_live() {
+    fn tracking_refire_freeze_policy_keeps_dialog_ticks_live() {
         // Menu/control tracking may freeze app-visible ticks while the GUI
         // renders intermediate tracking frames.
         assert!(tracking_refire_should_freeze_ticks(0xA93D));
@@ -17274,6 +17274,12 @@
         assert!(tracking_refire_uses_dialog_callbacks(0xA991));
         assert!(!tracking_refire_uses_dialog_callbacks(0xA9EA));
         assert!(tracking_refire_advances_gui_idle_tick(0xA991));
+        for alert in [0xA985, 0xA986, 0xA987, 0xA988] {
+            assert!(!tracking_refire_should_freeze_ticks(alert));
+            assert!(tracking_refire_uses_dialog_callbacks(alert));
+            assert!(tracking_refire_advances_gui_idle_tick(alert));
+            assert!(tracking_refire_advances_gui_idle_tick(alert | 0x0400));
+        }
         assert!(tracking_refire_advances_gui_idle_tick(0xA9EA));
     }
 
