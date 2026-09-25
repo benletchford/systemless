@@ -6418,7 +6418,37 @@ impl super::TrapDispatcher {
                         // FUNCTION AcceptHighLevelEvent(VAR sender: TargetID;
                         //   VAR msgRefcon: LongInt; msgBuff: Ptr; VAR msgLen: LongInt): OSErr;
                         // Inside Macintosh Volume VI, 5-29 and Macintosh Toolbox Essentials 1992, 2-90.
-                        write_osdispatch_oseerr_result(cpu, bus, sp + 16, NO_OUTSTANDING_HLE_ERR);
+                        if self.apple_event_launch_state.accept_open_application_event() {
+                            let msg_len_ptr = bus.read_long(sp);
+                            let msg_refcon_ptr = bus.read_long(sp + 8);
+                            let sender_ptr = bus.read_long(sp + 12);
+                            if msg_len_ptr != 0 {
+                                bus.write_long(msg_len_ptr, 0);
+                            }
+                            if msg_refcon_ptr != 0 {
+                                bus.write_long(msg_refcon_ptr, 0);
+                            }
+                            if sender_ptr != 0 {
+                                // The local launch event has no additional data.
+                                // A TargetID is 252 bytes with 68K two-byte
+                                // packing: sessionID, two PPCPortRecs, and a
+                                // LocationNameRec. The Mac OS sender uses
+                                // session -1 and the local port name "MacOS".
+                                // Inside Macintosh Volume VI, 5-10 and 7-15.
+                                bus.write_bytes(sender_ptr, &[0; 252]);
+                                bus.write_long(sender_ptr, u32::MAX);
+                                bus.write_byte(sender_ptr + 6, 5);
+                                bus.write_bytes(sender_ptr + 7, b"MacOS");
+                            }
+                            write_osdispatch_oseerr_result(cpu, bus, sp + 16, 0);
+                        } else {
+                            write_osdispatch_oseerr_result(
+                                cpu,
+                                bus,
+                                sp + 16,
+                                NO_OUTSTANDING_HLE_ERR,
+                            );
+                        }
                         Ok(())
                     }
                     0x0034 => {
@@ -19771,6 +19801,48 @@ mod tests {
         assert_eq!(bus.read_long(msg_refcon_ptr), 0xBBBB_BBBB);
         assert_eq!(bus.read_long(msg_len_ptr), 128);
         assert_eq!(bus.read_byte(msg_buff_ptr), 0);
+    }
+
+    #[test]
+    fn osdispatch_accepthighlevelevent_accepts_empty_open_application_event() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.apple_event_launch_state
+            .set_high_level_event_aware(true);
+        let (what, message, _, _, _, _, delivered) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+        assert!(delivered);
+        assert_eq!(what, 23);
+        assert_eq!(message, u32::from_be_bytes(*b"aevt"));
+
+        let sender_ptr = 0x2A0400u32;
+        let msg_refcon_ptr = 0x2A0500u32;
+        let msg_buff_ptr = 0x2A0600u32;
+        let msg_len_ptr = 0x2A0700u32;
+        bus.write_bytes(sender_ptr, &[0xAA; 252]);
+        bus.write_long(msg_refcon_ptr, 0xBBBB_BBBB);
+        bus.write_long(msg_len_ptr, 128);
+        bus.write_byte(msg_buff_ptr, 0xCC);
+        bus.write_word(TEST_SP, 0x0033);
+        bus.write_long(TEST_SP + 2, msg_len_ptr);
+        bus.write_long(TEST_SP + 6, msg_buff_ptr);
+        bus.write_long(TEST_SP + 10, msg_refcon_ptr);
+        bus.write_long(TEST_SP + 14, sender_ptr);
+
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(bus.read_word(TEST_SP + 18), 0);
+        assert_eq!(bus.read_long(msg_len_ptr), 0);
+        assert_eq!(bus.read_long(msg_refcon_ptr), 0);
+        assert_eq!(bus.read_byte(msg_buff_ptr), 0xCC);
+        assert_eq!(bus.read_long(sender_ptr), u32::MAX);
+        assert_eq!(bus.read_word(sender_ptr + 4), 0);
+        assert_eq!(bus.read_byte(sender_ptr + 6), 5);
+        assert_eq!(bus.read_bytes(sender_ptr + 7, 5), b"MacOS");
+        assert_eq!(bus.read_byte(sender_ptr + 251), 0);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_word(TEST_SP + 18) as i16, -608);
     }
 
     #[test]

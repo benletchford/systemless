@@ -1938,6 +1938,8 @@ pub(crate) struct SharedProcessDisplayGamma(SharedProcessValue<ProcessDisplayGam
 pub(crate) struct ProcessAppleEventLaunchState {
     high_level_event_aware: bool,
     open_application_event_sent: bool,
+    open_application_event_delivered: bool,
+    outstanding_open_application_event: bool,
 }
 
 /// Semantic contents of an Apple Event Manager descriptor. Guest `AEDesc`
@@ -5175,7 +5177,26 @@ impl SharedProcessAppleEventLaunchState {
         self.with_mut(|state| {
             state.high_level_event_aware = high_level_event_aware;
             state.open_application_event_sent = false;
+            state.open_application_event_delivered = false;
+            state.outstanding_open_application_event = false;
         });
+    }
+
+    /// Delivery exposes the launch high-level event to AcceptHighLevelEvent.
+    /// Its data is empty, but it is still an outstanding event until accepted.
+    pub(crate) fn note_open_application_event_delivered(&self) {
+        self.with_mut(|state| {
+            state.open_application_event_delivered = true;
+            state.outstanding_open_application_event = true;
+        });
+    }
+
+    pub(crate) fn is_open_application_event_delivered(&self) -> bool {
+        self.with_ref(|state| state.open_application_event_delivered)
+    }
+
+    pub(crate) fn accept_open_application_event(&self) -> bool {
+        self.with_mut(|state| std::mem::take(&mut state.outstanding_open_application_event))
     }
 
     /// Atomically claim the process-wide one-shot launch event. The caller

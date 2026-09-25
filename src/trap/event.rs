@@ -9,7 +9,7 @@ use crate::Result;
 
 impl super::TrapDispatcher {
     const HIGH_LEVEL_EVENT_MASK: u16 = 0x0400;
-    const K_HIGH_LEVEL_EVENT: u16 = 23;
+    pub(crate) const K_HIGH_LEVEL_EVENT: u16 = 23;
     const K_CORE_EVENT_CLASS: u32 = 0x61657674; // 'aevt'
     const K_AE_OPEN_APPLICATION: u32 = 0x6F617070; // 'oapp'
     const AUTO_KEY_EVENT: u16 = 5;
@@ -669,6 +669,14 @@ impl super::TrapDispatcher {
             }
             let event = self.event_queue.remove(idx).unwrap();
             self.acknowledge_window_activation_event(bus, &event);
+            if event.what == Self::K_HIGH_LEVEL_EVENT
+                && event.message == Self::K_CORE_EVENT_CLASS
+                && ((event.where_v as u16 as u32) << 16 | event.where_h as u16 as u32)
+                    == Self::K_AE_OPEN_APPLICATION
+            {
+                self.apple_event_launch_state
+                    .note_open_application_event_delivered();
+            }
             if trace_input_enabled() || super::dispatch::trace_delivered_events_enabled() {
                 eprintln!(
                     "[INPUT] dequeue what={} message=${:08X} where=({}, {}) mask=${:04X}",
