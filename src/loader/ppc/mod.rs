@@ -8661,6 +8661,8 @@ impl PpcLoadedApp {
                             | PpcImportDispatcherTarget::Microseconds
                             | PpcImportDispatcherTarget::GetCurrentThread
                             | PpcImportDispatcherTarget::YieldToThread
+                            | PpcImportDispatcherTarget::GetMenuHandle
+                            | PpcImportDispatcherTarget::StdFilterProc
                             | PpcImportDispatcherTarget::EnableMenuItem
                             | PpcImportDispatcherTarget::DisableMenuItem
                     )
@@ -8765,6 +8767,15 @@ impl PpcLoadedApp {
                             }
                             action
                         }
+                        PpcImportDispatcherTarget::GetMenuHandle => {
+                            let menu_list = ppc_current_menu_list(memory);
+                            PpcImportAction::Return(ppc_get_menu_handle(
+                                memory,
+                                menu_list,
+                                cpu.gpr[3] as u16 as i16,
+                            ))
+                        }
+                        PpcImportDispatcherTarget::StdFilterProc => PpcImportAction::Return(0),
                         PpcImportDispatcherTarget::EnableMenuItem
                         | PpcImportDispatcherTarget::DisableMenuItem => {
                             ppc_set_menu_item_enabled(
