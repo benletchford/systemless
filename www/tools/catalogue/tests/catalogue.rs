@@ -193,6 +193,29 @@ fn compiled(c: &Catalogue) -> CompiledCatalogue {
 }
 
 #[test]
+fn screen_depth_is_validated_and_reaches_generated_settings() {
+    let mut entry = common::catalogue().documents.remove(0).entry;
+    assert!(!catalogue::serialize_document(&entry, "")
+        .unwrap()
+        .contains("screen_depth"));
+    entry.runtime.screen_depth = Some(4);
+    validate::entry(&entry).unwrap();
+
+    let root = repo();
+    save(root.path(), &entry, "\nGameplay notes.\n");
+    let loaded = load(root.path(), Mode::Preview).unwrap();
+    assert_eq!(loaded.documents[0].entry.runtime.screen_depth, Some(4));
+    let generated = site::rust_games(&compiled(&loaded)).unwrap();
+    assert!(generated.contains("screen_depth: Some(4)"));
+
+    entry.runtime.screen_depth = Some(3);
+    assert!(validate::entry(&entry)
+        .unwrap_err()
+        .to_string()
+        .contains("screen_depth must be 1, 2, 4, or 8"));
+}
+
+#[test]
 fn empty_directory_marker_cannot_hide_content_or_missing_entries() {
     let root = repo();
     let marker = root.path().join("catalogue/.gitkeep");

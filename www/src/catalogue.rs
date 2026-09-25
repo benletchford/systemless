@@ -67,6 +67,7 @@ pub struct GameSettings {
     pub launch_modifiers: &'static [LaunchModifier],
     pub mobile_controls: MobileControls,
     pub show_menu_bar: bool,
+    pub screen_depth: Option<u16>,
     pub application_partition_size: Option<u32>,
     pub remove_paths: &'static [&'static str],
     pub file_mappings: &'static [(&'static str, &'static str)],

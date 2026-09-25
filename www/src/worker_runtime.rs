@@ -11,6 +11,7 @@ struct BootConfig {
     architecture: String,
     launch_modifiers: Vec<LaunchModifier>,
     show_menu_bar: bool,
+    screen_depth: Option<u16>,
     application_partition_size: Option<u32>,
     remove_paths: Vec<String>,
     #[serde(default)]
@@ -51,6 +52,7 @@ impl WorkerMachine {
             architecture,
             &config.launch_modifiers,
             config.show_menu_bar,
+            config.screen_depth,
             config.application_partition_size,
             &paths,
             &mappings,
