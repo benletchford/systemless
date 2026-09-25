@@ -997,3 +997,43 @@ fn hle_import_runner_fast_forwards_microseconds_poll_loops() {
     );
     assert_ne!(loaded.memory.read_u32_be(microseconds_ptr + 4), Some(0));
 }
+
+#[test]
+fn driver_services_uptime_uses_deterministic_virtual_clock() {
+    let pef = synthetic_pef_with_library_import(b"DriverServicesLib", b"UpTime");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let time_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(time_ptr, vec![0xaa; 8]);
+    loaded.cpu.gpr[3] = time_ptr;
+    loaded.set_tick_count(100);
+    loaded.set_clock_cycle_timing(64, 0);
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.memory.read_u64_be(time_ptr),
+        Some(ppc_virtual_microseconds(100, 64, 0, 4))
+    );
+}
+
+#[test]
+fn driver_services_absolute_time_converts_to_nanoseconds() {
+    let pef = synthetic_pef_with_library_import(b"DriverServicesLib", b"AbsoluteToNanoseconds");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let output = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(output, vec![0xaa; 8]);
+    loaded.cpu.gpr[3] = output;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = 2;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.memory.read_u64_be(output),
+        Some(((1u64 << 32) | 2) * 1_000)
+    );
+}

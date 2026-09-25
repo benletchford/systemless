@@ -651,3 +651,18 @@ fn import_bindings_classify_control_title_and_value_imports() {
         PpcImportDispatcherTarget::SetControlValue
     );
 }
+
+#[test]
+fn hle_import_runner_handles_set_control_value_defaults() {
+    let pef = synthetic_pef_with_import(b"SetControlValue");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = PPC_HEAP_BASE + 0x100;
+    loaded.cpu.gpr[4] = 7;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], PPC_HEAP_BASE + 0x100);
+    assert_eq!(loaded.cpu.gpr[4], 7);
+}

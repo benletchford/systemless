@@ -4865,3 +4865,40 @@ fn hle_import_runner_gets_and_sets_gray_region_low_memory_handle() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 0x0300_1234);
 }
+
+#[test]
+fn hle_import_runner_handles_get_fore_color() {
+    let pef = synthetic_pef_with_import(b"GetForeColor");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let color_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(color_ptr, vec![0xaa; 6]);
+    loaded.cpu.gpr[3] = color_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], color_ptr);
+    assert_eq!(
+        ppc_read_rgb_color(&mut loaded.memory, color_ptr),
+        Some(PpcRgbColor {
+            red: 0,
+            green: 0,
+            blue: 0,
+        })
+    );
+}
+
+#[test]
+fn drawing_imports_charge_guest_time_below_one_tick_per_redraw() {
+    use PpcImportDispatcherTarget as T;
+    for target in [T::DrawText, T::DrawPicture, T::CopyBits, T::PaintRect, T::GetIndString] {
+        assert!(ppc_import_extra_cycles_for_target(&target) > 0);
+    }
+    let tick_cycles = (crate::runner::DEFAULT_REALTIME_PPC_CPU_MHZ * 1_000_000.0
+        / crate::runner::DEFAULT_VBL_HZ) as u64;
+    let redraw = 370 * ppc_import_extra_cycles_for_target(&T::DrawText)
+        + 165 * ppc_import_extra_cycles_for_target(&T::DrawPicture)
+        + 135 * ppc_import_extra_cycles_for_target(&T::CopyBits);
+    assert!(redraw < tick_cycles / 2, "{redraw} of {tick_cycles}");
+}
