@@ -12,7 +12,6 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
-launch_enabled: false
 compatibility:
   status: playable
   verified:
@@ -21,10 +20,10 @@ compatibility:
     systemless_version: "0.61.1 + PR #2853"
     architecture: 68k
     environment: >-
-      Deterministic local Tutorial replay from the unchanged original BinHex
-      package. The network-selection dialog chooses Tutorial, the map draws
-      blue water and green terrain, and holding Q advances the boat and the
-      lesson sequence. Browser launch has not yet been approved.
+      Deterministic local Tutorial replay from the unchanged original BinHex package.
+      The network-selection dialog chooses Tutorial, the map draws blue water and
+      green terrain, and holding Q advances the boat and the lesson sequence. Browser
+      launch has not yet been approved.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2463
 artifacts:
@@ -32,10 +31,9 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/bolo/bolo-0997.hqx
-    expected_sha256: c83deab0eefdde13d8868446530cc763536b9366b223da549b94b701f16af205
-    expected_size: 835727
+    type: sha256
+    sha256: c83deab0eefdde13d8868446530cc763536b9366b223da549b94b701f16af205
+    size_bytes: 835727
   provenance:
     redistribution: permitted
     original: true
@@ -56,8 +54,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/bolo/bolo-tutorial.png
+    type: sha256
+    sha256: 3d4681856b7d859536c7b2f0371642a134e568cb2028eb0fc733cd0526070868
+    size_bytes: 10156
   provenance:
     redistribution: permitted
     original: true
@@ -65,17 +64,10 @@ artifacts:
     sources:
     - https://github.com/benletchford/systemless/issues/2462
     permission: >-
-      Original gameplay screenshot captured for this catalogue from the
-      unregistered Bolo shareware package. Underlying game artwork remains
-      Stuart Cheshire's property.
-    notes: >-
-      Fresh deterministic Systemless 0.61.1 plus PR #2853 capture on
-      2026-09-25, after the boat moves in the local Tutorial. Cropped the
-      800-by-600 guest framebuffer to the 472-by-246 game content surface,
-      excluding desktop, menu bar and window chrome without altering game
-      pixels. PNG SHA-256
-      3d4681856b7d859536c7b2f0371642a134e568cb2028eb0fc733cd0526070868;
-      10,156 bytes.
+      Original gameplay screenshot captured for this catalogue from the unregistered
+      Bolo shareware package. Underlying game artwork remains Stuart Cheshire's
+      property.
+    notes: "Fresh deterministic Systemless 0.61.1 plus PR #2853 capture on 2026-09-25, after the boat moves in the local Tutorial. Cropped the 800-by-600 guest framebuffer to the 472-by-246 game content surface, excluding desktop, menu bar and window chrome without altering game pixels. PNG SHA-256 3d4681856b7d859536c7b2f0371642a134e568cb2028eb0fc733cd0526070868; 10,156 bytes."
 references:
 - https://info-mac.org/viewtopic.php?t=4778
 ---
@@ -92,7 +84,7 @@ included.
 
 ## Tank country
 
-![Bolo's island Tutorial after moving the boat](incoming/bolo/bolo-tutorial.png)
+![Bolo's island Tutorial after moving the boat](https://assets.systemless.org/catalogue/media/sha256/3d/3d4681856b7d859536c7b2f0371642a134e568cb2028eb0fc733cd0526070868.png)
 
 Bolo's islands are working landscapes rather than fixed arenas. A tank can cut
 through forest, lay roads, repair bridges, place mines and move pillboxes while
