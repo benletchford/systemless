@@ -477,3 +477,34 @@ fn stdio_imports_pre_resolve_to_typed_operations() {
         );
     }
 }
+
+#[test]
+fn import_bindings_classify_stdclib_utility_imports() {
+    assert_eq!(
+        dispatcher_target_for_import("StdCLib", "__setjmp"),
+        PpcImportDispatcherTarget::ReturnNoErr
+    );
+    assert_eq!(
+        dispatcher_target_for_import("StdCLib", "sprintf"),
+        PpcImportDispatcherTarget::StdSprintf
+    );
+    assert_eq!(
+        dispatcher_target_for_import("StdCLib", "time"),
+        PpcImportDispatcherTarget::StdTime
+    );
+    assert_eq!(
+        dispatcher_target_for_import("StdCLib", "signal"),
+        PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::Signal)
+    );
+    for (symbol, operation) in [
+        ("qsort", PpcStdCCompatibilityOperation::Qsort),
+        ("sscanf", PpcStdCCompatibilityOperation::Sscanf),
+        ("strftime", PpcStdCCompatibilityOperation::Strftime),
+        ("vsprintf", PpcStdCCompatibilityOperation::Vsprintf),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("StdCLib", symbol),
+            PpcImportDispatcherTarget::StdCCompatibility(operation),
+        );
+    }
+}

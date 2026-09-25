@@ -2716,3 +2716,36 @@ fn hle_import_runner_quicktime_importer_resolves_unique_archive_suffix_path() {
         Some((0, 0, 1, 8))
     );
 }
+
+#[test]
+fn import_bindings_classify_quicktime_compatibility_imports() {
+    for (symbol, operation) in [
+        (
+            "GetMovieTimeBase",
+            PpcQuickTimeCompatibilityOperation::GetMovieTimeBase,
+        ),
+        (
+            "GetMovieVolume",
+            PpcQuickTimeCompatibilityOperation::GetMovieVolume,
+        ),
+        (
+            "NewMovieFromDataFork",
+            PpcQuickTimeCompatibilityOperation::NewMovieFromDataFork,
+        ),
+        ("PrerollMovie", PpcQuickTimeCompatibilityOperation::PrerollMovie),
+        (
+            "SetMovieVolume",
+            PpcQuickTimeCompatibilityOperation::SetMovieVolume,
+        ),
+        (
+            "SetTimeBaseFlags",
+            PpcQuickTimeCompatibilityOperation::SetTimeBaseFlags,
+        ),
+        ("UpdateMovie", PpcQuickTimeCompatibilityOperation::UpdateMovie),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("QuickTimeLib", symbol),
+            PpcImportDispatcherTarget::QuickTimeCompatibility(operation),
+        );
+    }
+}

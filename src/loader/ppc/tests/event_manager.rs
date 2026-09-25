@@ -684,3 +684,35 @@ fn hle_import_runner_event_time_outputs_are_all_or_nothing() {
     assert_eq!(loaded.cpu.gpr[3], 0);
     assert_eq!(loaded.memory.read_u32_be(event_ptr), Some(0xeeee_eeee));
 }
+
+#[test]
+fn import_bindings_classify_event_manager_imports() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetNextEvent"),
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent)
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "WaitNextEvent"),
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetOSEvent"),
+        PpcImportDispatcherTarget::GetOSEvent
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "OSEventAvail"),
+        PpcImportDispatcherTarget::OSEventAvail
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "PostEvent"),
+        PpcImportDispatcherTarget::PostEvent
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "Button"),
+        PpcImportDispatcherTarget::Button
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetKeys"),
+        PpcImportDispatcherTarget::GetKeys
+    );
+}

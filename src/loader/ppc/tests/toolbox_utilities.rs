@@ -310,3 +310,105 @@ fn hle_import_runner_upper_text_converts_only_the_requested_bytes() {
         Some(vec![b'A', b'Z', 0x83, b'!', b'q'])
     );
 }
+
+#[test]
+fn import_bindings_classify_toolbox_init_and_dialog_lifecycle_imports() {
+    for (symbol, target) in [
+        ("InitGraf", PpcImportDispatcherTarget::InitGraf),
+        ("InitFonts", PpcImportDispatcherTarget::InitFonts),
+        ("InitWindows", PpcImportDispatcherTarget::InitWindows),
+        ("InitMenus", PpcImportDispatcherTarget::InitMenus),
+        ("TEInit", PpcImportDispatcherTarget::TEInit),
+        ("InitDialogs", PpcImportDispatcherTarget::InitDialogs),
+        ("FlushEvents", PpcImportDispatcherTarget::FlushEvents),
+        ("CloseDialog", PpcImportDispatcherTarget::CloseDialog),
+        ("DisposeDialog", PpcImportDispatcherTarget::DisposeDialog),
+        ("DisposDialog", PpcImportDispatcherTarget::DisposeDialog),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            target,
+            "{symbol}"
+        );
+    }
+}
+
+#[test]
+fn import_bindings_classify_timing_and_date_imports() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetDateTime"),
+        PpcImportDispatcherTarget::GetDateTime
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetTime"),
+        PpcImportDispatcherTarget::GetTime
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "Delay"),
+        PpcImportDispatcherTarget::Delay
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetDblTime"),
+        PpcImportDispatcherTarget::GetDblTime
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LMGetTime"),
+        PpcImportDispatcherTarget::LMGetTime
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SecondsToDate"),
+        PpcImportDispatcherTarget::SecondsToDate
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "Secs2Date"),
+        PpcImportDispatcherTarget::SecondsToDate
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "Microseconds"),
+        PpcImportDispatcherTarget::Microseconds
+    );
+}
+
+#[test]
+fn import_bindings_classify_text_and_conversion_imports() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SysEnvirons"),
+        PpcImportDispatcherTarget::SysEnvirons
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "TextWidth"),
+        PpcImportDispatcherTarget::TextWidth
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "StringWidth"),
+        PpcImportDispatcherTarget::StringWidth
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "EqualString"),
+        PpcImportDispatcherTarget::EqualString
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "X2Fix"),
+        PpcImportDispatcherTarget::X2Fix
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "NumToString"),
+        PpcImportDispatcherTarget::NumToString
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "StringToNum"),
+        PpcImportDispatcherTarget::StringToNum
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "Random"),
+        PpcImportDispatcherTarget::Random
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "p2cstr"),
+        PpcImportDispatcherTarget::P2CStr
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "c2pstr"),
+        PpcImportDispatcherTarget::C2PStr
+    );
+}

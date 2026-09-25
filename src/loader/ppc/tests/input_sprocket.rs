@@ -1489,3 +1489,31 @@ fn import_bindings_classify_input_sprocket_imports() {
         PpcImportDispatcherTarget::ISpConfigure
     );
 }
+
+#[test]
+fn import_bindings_classify_input_sprocket_compatibility_imports() {
+    for (symbol, operation) in [
+        (
+            "ISpDevices_ActivateClass",
+            PpcInputSprocketCompatibilityOperation::DevicesActivateClass,
+        ),
+        (
+            "ISpElement_DisposeVirtual",
+            PpcInputSprocketCompatibilityOperation::ElementDisposeVirtual,
+        ),
+        (
+            "ISpElement_Flush",
+            PpcInputSprocketCompatibilityOperation::ElementFlush,
+        ),
+        (
+            "ISpElement_GetNextEvent",
+            PpcInputSprocketCompatibilityOperation::ElementGetNextEvent,
+        ),
+        ("ISpTickle", PpcInputSprocketCompatibilityOperation::Tickle),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InputSprocketLib", symbol),
+            PpcImportDispatcherTarget::InputSprocketCompatibility(operation),
+        );
+    }
+}

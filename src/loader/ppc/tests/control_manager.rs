@@ -639,3 +639,15 @@ fn legacy_control_imports_pre_resolve_to_typed_operations() {
         );
     }
 }
+
+#[test]
+fn import_bindings_classify_control_title_and_value_imports() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetControlTitle"),
+        PpcImportDispatcherTarget::SetControlTitle
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetControlValue"),
+        PpcImportDispatcherTarget::SetControlValue
+    );
+}

@@ -1117,3 +1117,75 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
         .iter()
         .any(|record| record.ptr == dialog));
 }
+
+#[test]
+fn import_bindings_classify_dialog_imports() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetNewDialog"),
+        PpcImportDispatcherTarget::GetNewDialog
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "NewDialog"),
+        PpcImportDispatcherTarget::NewDialog
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetDialogItem"),
+        PpcImportDispatcherTarget::GetDialogItem
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetDialogItemText"),
+        PpcImportDispatcherTarget::GetDialogItemText
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "getdialogitemtext"),
+        PpcImportDispatcherTarget::GetDialogItemText
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetDialogItemText"),
+        PpcImportDispatcherTarget::SetDialogItemText
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "setdialogitemtext"),
+        PpcImportDispatcherTarget::SetDialogItemText
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetDialogTracksCursor"),
+        PpcImportDispatcherTarget::SetDialogTracksCursor
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "StdFilterProc"),
+        PpcImportDispatcherTarget::StdFilterProc
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "ModalDialog"),
+        PpcImportDispatcherTarget::ModalDialog
+    );
+    for (symbol, operation) in [
+        ("AppendDITL", PpcDialogCompatibilityOperation::AppendDitl),
+        ("CountDITL", PpcDialogCompatibilityOperation::CountDitl),
+        ("DialogSelect", PpcDialogCompatibilityOperation::DialogSelect),
+        (
+            "FindDialogItem",
+            PpcDialogCompatibilityOperation::FindDialogItem,
+        ),
+        (
+            "HideDialogItem",
+            PpcDialogCompatibilityOperation::HideDialogItem,
+        ),
+        (
+            "IsDialogEvent",
+            PpcDialogCompatibilityOperation::IsDialogEvent,
+        ),
+        ("ShortenDITL", PpcDialogCompatibilityOperation::ShortenDitl),
+        (
+            "ShowDialogItem",
+            PpcDialogCompatibilityOperation::ShowDialogItem,
+        ),
+        ("UpdateDialog", PpcDialogCompatibilityOperation::UpdateDialog),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::DialogCompatibility(operation),
+        );
+    }
+}
