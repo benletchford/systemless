@@ -6632,8 +6632,8 @@ mod redraw_chrome_tests {
                 bus.write_word(ctab + 8 + index * 8 + 2 + component as u32 * 2, level);
             }
         };
-        let (mut cached, mut actual, base) = fixture();
-        let (mut fresh, mut expected, _) = fixture();
+        let (cached, mut actual, base) = fixture();
+        let (fresh, mut expected, _) = fixture();
         cached.draw_window_chrome(&mut actual, true);
         assert_eq!(cached.window_title_cache.borrow().len(), 1);
 
