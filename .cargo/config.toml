@@ -1,2 +1,6 @@
 [target.wasm32-unknown-unknown]
-rustflags = ["-C", "target-feature=+simd128,+bulk-memory,+mutable-globals,+sign-ext,+nontrapping-fptoint"]
+# Constructing the PowerPC runner in a browser worker exceeds the default Wasm stack.
+rustflags = [
+    "-C", "target-feature=+simd128,+bulk-memory,+mutable-globals,+sign-ext,+nontrapping-fptoint",
+    "-C", "link-arg=-zstack-size=4194304",
+]

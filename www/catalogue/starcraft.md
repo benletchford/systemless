@@ -11,6 +11,7 @@ year: 1998
 architectures:
 - ppc
 default_architecture: ppc
+launch_enabled: true
 category: Strategy
 compatibility:
   status: playable
@@ -22,9 +23,19 @@ compatibility:
     environment: >-
       Deterministic local PowerPC play of the unchanged 1.05 demo at 800 by 600, 256
       colours. Created a profile, entered the Terran Prequel mission, dismissed its
-      tip, and selected an SCV on the live map. Browser review is pending.
+      tip, and selected an SCV on the live map.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2717
+  - date: "2026-09-26"
+    tester: Catalogue maintainer
+    systemless_version: 0.61.1-dev
+    architecture: ppc
+    environment: >-
+      Local release WebAssembly browser worker with the promoted 1.05 demo archive.
+      Created a profile, started Terran Prequel, skipped the introduction, dismissed
+      the tip, and selected an SCV on the live map.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/2858
 runtime:
   worker: true
 artifacts:
@@ -87,12 +98,11 @@ references:
 
 Blizzard's original Macintosh demonstration includes a playable Terran
 mission. Create a player profile, choose the mission, and use the command panel
-to direct workers and troops across the map. The demo opens with a cinematic
-introduction and mission briefing; Escape advances past the introduction.
+to direct workers and troops across the map. Click the initial splash screen
+once to continue. The demo opens with a cinematic introduction and mission
+briefing; Escape advances past the introduction.
 
 This is the version 1.05 Power Macintosh demo, with its original game data and
 Read Me preserved in the archive. Systemless reaches the live mission and
-accepts unit selection in a deterministic local run. A local browser worker
-preview boots and renders the title screen without a long main-thread startup
-stall, but still runs below the guest-tick launch target.
-The public browser route will be enabled after browser review.
+accepts unit selection in both deterministic local play and a release browser
+worker preview.

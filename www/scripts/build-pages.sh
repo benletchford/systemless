@@ -90,7 +90,8 @@ install_trunk
 NO_COLOR=false
 export NO_COLOR
 
-SYSTEMLESS_WASM_RUSTFLAGS="-C target-feature=+simd128"
+# RUSTFLAGS overrides .cargo/config.toml, so preserve the worker stack size here.
+SYSTEMLESS_WASM_RUSTFLAGS="-C target-feature=+simd128 -C link-arg=-zstack-size=4194304"
 if [ -n "${RUSTFLAGS:-}" ]; then
   RUSTFLAGS="$RUSTFLAGS $SYSTEMLESS_WASM_RUSTFLAGS"
 else
