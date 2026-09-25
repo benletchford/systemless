@@ -87,13 +87,86 @@ struct GuestFrameProfile {
 enum FrameMetadata {
     Guest(GuestFrameMetadata),
     Raster {
-        source_size: (u32, u32),
+        layout: RasterLayout,
         drawable_size: (u32, u32),
     },
 }
 
+/// Which pixels the presenter must show, and where they sit in the frame buffer
+/// that carries them.
+///
+/// The raster path hands its caller's whole frame buffer to the mailbox without
+/// cropping it, so the worker uploads `left`/`top`/`width`/`height` in place
+/// using `buffer_width` as the row stride. A cropped presentation therefore
+/// never materialises a cropped copy of the frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RasterLayout {
+    pub left: u32,
+    pub top: u32,
+    pub width: u32,
+    pub height: u32,
+    pub buffer_width: u32,
+}
+
+impl RasterLayout {
+    /// The rectangle covering all of `size`, for a frame presented uncropped.
+    fn whole(size: (u32, u32)) -> Self {
+        Self {
+            left: 0,
+            top: 0,
+            width: size.0,
+            height: size.1,
+            buffer_width: size.0,
+        }
+    }
+
+    /// Byte offset of the rectangle's first texel inside a buffer of `byte_len`
+    /// bytes, or `None` when the rectangle reaches past the buffer.
+    fn texel_byte_offset(&self, byte_len: usize) -> Option<usize> {
+        if self.width == 0 || self.height == 0 {
+            return None;
+        }
+        if self.left.checked_add(self.width)? > self.buffer_width {
+            return None;
+        }
+        let last_row = u64::from(self.top).checked_add(u64::from(self.height) - 1)?;
+        let last_texel = last_row
+            .checked_mul(u64::from(self.buffer_width))?
+            .checked_add(u64::from(self.left))?
+            .checked_add(u64::from(self.width))?;
+        if last_texel.checked_mul(size_of::<u32>() as u64)? > u64::try_from(byte_len).ok()? {
+            return None;
+        }
+        let first_texel = u64::from(self.top)
+            .checked_mul(u64::from(self.buffer_width))?
+            .checked_add(u64::from(self.left))?;
+        usize::try_from(first_texel.checked_mul(size_of::<u32>() as u64)?).ok()
+    }
+}
+
+/// The storage one queued frame carries.
+///
+/// Guest frames are packed indexed bytes the shader decodes; raster frames are
+/// ARGB words. Keeping the two apart lets the raster path lend its caller's
+/// allocation to the mailbox — the caller receives a spare buffer in exchange —
+/// instead of copying the frame into storage the mailbox owns.
+enum FramePixels {
+    Indexed(Vec<u8>),
+    Argb(Vec<u32>),
+}
+
+impl FramePixels {
+    /// The frame as bytes, borrowing raster ARGB in place.
+    fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Indexed(bytes) => bytes,
+            Self::Argb(pixels) => argb_bytes(pixels),
+        }
+    }
+}
+
 struct GuestFrameSubmission {
-    framebuffer: Vec<u8>,
+    pixels: FramePixels,
     metadata: FrameMetadata,
 }
 
@@ -101,6 +174,7 @@ struct GuestFrameSubmission {
 struct GuestFrameMailboxState {
     pending: Option<GuestFrameSubmission>,
     recycled: Vec<Vec<u8>>,
+    recycled_argb: Vec<Vec<u32>>,
     paused: bool,
     active: bool,
     drawable_in_use: bool,
@@ -110,6 +184,16 @@ struct GuestFrameMailboxState {
     coalesced: u64,
     drawable_wait_time: Duration,
     render_time: Duration,
+}
+
+impl GuestFrameMailboxState {
+    /// Return a submission's storage to the pool its format came from.
+    fn recycle(&mut self, pixels: FramePixels) {
+        match pixels {
+            FramePixels::Indexed(bytes) => self.recycled.push(bytes),
+            FramePixels::Argb(pixels) => self.recycled_argb.push(pixels),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -155,23 +239,73 @@ impl Default for GuestCursorData {
     }
 }
 
+/// Take back the storage of a superseded pending frame, or `None` when nothing
+/// was pending. A superseded frame has never been handed to the worker.
+fn take_superseded_pending(state: &mut GuestFrameMailboxState) -> Option<FramePixels> {
+    let previous = state.pending.take()?;
+    state.coalesced = state.coalesced.saturating_add(1);
+    Some(previous.pixels)
+}
+
+/// The staging buffer an indexed frame should be copied into: the superseded
+/// frame's storage when it already held indexed bytes, otherwise a pooled one.
+fn indexed_staging_buffer(state: &mut GuestFrameMailboxState) -> Vec<u8> {
+    match take_superseded_pending(state) {
+        Some(FramePixels::Indexed(bytes)) => bytes,
+        Some(other) => {
+            state.recycle(other);
+            state.recycled.pop().unwrap_or_default()
+        }
+        None => state.recycled.pop().unwrap_or_default(),
+    }
+}
+
 fn replace_pending_guest_frame(
     state: &mut GuestFrameMailboxState,
     framebuffer: &[u8],
     layout: GuestVisibleByteLayout,
     metadata: FrameMetadata,
 ) {
-    let mut pixels = if let Some(previous) = state.pending.take() {
-        state.coalesced = state.coalesced.saturating_add(1);
-        previous.framebuffer
-    } else {
-        state.recycled.pop().unwrap_or_default()
-    };
+    let mut pixels = indexed_staging_buffer(state);
     copy_guest_visible_pixels(&mut pixels, framebuffer, layout);
     state.pending = Some(GuestFrameSubmission {
-        framebuffer: pixels,
+        pixels: FramePixels::Indexed(pixels),
         metadata,
     });
+}
+
+/// Queue a raster frame by taking ownership of its buffer, and hand a spare
+/// buffer back for the caller's next frame.
+///
+/// The frame is copied nowhere: the mailbox owns `pixels` until the worker has
+/// uploaded `layout` out of it, then recycles it. The returned buffer is the
+/// superseded pending frame's storage when one was queued, otherwise a pooled
+/// spare, so the caller never has to allocate a replacement.
+fn replace_pending_raster_frame(
+    state: &mut GuestFrameMailboxState,
+    pixels: Vec<u32>,
+    layout: RasterLayout,
+    drawable_size: (u32, u32),
+) -> Vec<u32> {
+    let spare = match take_superseded_pending(state) {
+        Some(FramePixels::Argb(superseded)) => Some(superseded),
+        Some(other) => {
+            state.recycle(other);
+            None
+        }
+        None => None,
+    };
+    let spare = spare
+        .or_else(|| state.recycled_argb.pop())
+        .unwrap_or_default();
+    state.pending = Some(GuestFrameSubmission {
+        pixels: FramePixels::Argb(pixels),
+        metadata: FrameMetadata::Raster {
+            layout,
+            drawable_size,
+        },
+    });
+    spare
 }
 
 impl AsyncGuestPresenter {
@@ -197,27 +331,59 @@ impl AsyncGuestPresenter {
         self.enqueue_frame(framebuffer, layout, FrameMetadata::Guest(metadata))
     }
 
+    /// Queue a borrowed raster frame, copying it into a pooled buffer.
+    ///
+    /// A caller that owns its frame should use [`Self::enqueue_raster_owned`]
+    /// instead: this path can only borrow the pixels, so it must stage them.
     fn enqueue_raster(
         &self,
         pixels: &[u32],
         source_size: (u32, u32),
         drawable_size: (u32, u32),
     ) -> Result<(), String> {
-        let bytes = argb_bytes(pixels);
-        let row_bytes = source_size.0 as usize * size_of::<u32>();
-        self.enqueue_frame(
-            bytes,
-            GuestVisibleByteLayout {
-                first_row_offset: 0,
-                row_stride: row_bytes,
-                visible_row_bytes: row_bytes,
-                row_count: source_size.1 as usize,
-            },
-            FrameMetadata::Raster {
-                source_size,
-                drawable_size,
-            },
-        )
+        let mut state = self
+            .mailbox
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(error) = state.error.as_ref() {
+            return Err(error.clone());
+        }
+        state.paused = false;
+        let mut staged = state.recycled_argb.pop().unwrap_or_default();
+        staged.clear();
+        staged.extend_from_slice(pixels);
+        let spare = replace_pending_raster_frame(
+            &mut state,
+            staged,
+            RasterLayout::whole(source_size),
+            drawable_size,
+        );
+        state.recycled_argb.push(spare);
+        self.mailbox.changed.notify_one();
+        Ok(())
+    }
+
+    /// Queue a raster frame the caller hands over, returning the buffer the
+    /// caller should reuse for its next frame. No pixel is copied.
+    fn enqueue_raster_owned(
+        &self,
+        pixels: Vec<u32>,
+        layout: RasterLayout,
+        drawable_size: (u32, u32),
+    ) -> Result<Vec<u32>, String> {
+        let mut state = self
+            .mailbox
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(error) = state.error.as_ref() {
+            return Err(error.clone());
+        }
+        state.paused = false;
+        let spare = replace_pending_raster_frame(&mut state, pixels, layout, drawable_size);
+        self.mailbox.changed.notify_one();
+        Ok(spare)
     }
 
     fn enqueue_frame(
@@ -252,7 +418,7 @@ impl AsyncGuestPresenter {
             .unwrap_or_else(|error| error.into_inner());
         state.paused = true;
         if let Some(pending) = state.pending.take() {
-            state.recycled.push(pending.framebuffer);
+            state.recycle(pending.pixels);
         }
         self.mailbox.changed.notify_all();
         while state.active || state.drawable_in_use {
@@ -374,7 +540,7 @@ impl GuestRenderWorker {
             } else if state.error.is_none() {
                 state.error = result.err();
             }
-            state.recycled.push(submission.framebuffer);
+            state.recycle(submission.pixels);
             mailbox.changed.notify_all();
         }
     }
@@ -384,17 +550,18 @@ impl GuestRenderWorker {
         submission: &GuestFrameSubmission,
         drawable: &ProtocolObject<dyn CAMetalDrawable>,
     ) -> Result<(), String> {
-        let framebuffer = &submission.framebuffer;
+        let framebuffer = submission.pixels.as_bytes();
         let metadata = match &submission.metadata {
             FrameMetadata::Guest(metadata) => metadata,
             FrameMetadata::Raster {
-                source_size,
+                layout,
                 drawable_size,
             } => {
-                if self.upload_size != *source_size {
+                let source_size = (layout.width, layout.height);
+                if self.upload_size != source_size {
                     self.upload_textures =
                         upload_textures(&self.device, source_size.0, source_size.1)?;
-                    self.upload_size = *source_size;
+                    self.upload_size = source_size;
                     self.next_upload_texture = 0;
                 }
                 let index = self.next_upload_texture;
@@ -405,7 +572,7 @@ impl GuestRenderWorker {
                     &self.upload_textures[index],
                     drawable,
                     framebuffer,
-                    *source_size,
+                    *layout,
                     *drawable_size,
                     false,
                 );
@@ -644,6 +811,12 @@ impl MetalPresenter {
         unsafe { self.layer.setPresentsWithTransaction(enabled) };
     }
 
+    /// Present a raster frame supplied as a borrowed slice.
+    ///
+    /// The mailbox must own the pixels it queues, so this path stages them into
+    /// a pool buffer. Callers that own their frame should use
+    /// [`Self::present_owned`], which hands the frame over instead of copying
+    /// it.
     pub fn present(
         &mut self,
         pixels: &[u32],
@@ -688,11 +861,68 @@ impl MetalPresenter {
             upload,
             &drawable,
             argb_bytes(pixels),
-            (source_width, source_height),
+            RasterLayout::whole((source_width, source_height)),
             (drawable_width, drawable_height),
             true,
         )?;
         Ok(())
+    }
+
+    /// Present a raster frame the caller hands over, returning the buffer the
+    /// caller should reuse for its next frame.
+    ///
+    /// `frame` is the whole frame buffer and `layout` selects the pixels to
+    /// show, so a cropped presentation needs neither a cropped copy nor a
+    /// staging copy: the presenter worker uploads the rectangle in place and
+    /// recycles the buffer once the driver has read it.
+    pub fn present_owned(
+        &mut self,
+        frame: Vec<u32>,
+        layout: RasterLayout,
+        drawable_width: u32,
+        drawable_height: u32,
+    ) -> Result<Vec<u32>, String> {
+        let byte_len = frame.len().saturating_mul(size_of::<u32>());
+        if layout.texel_byte_offset(byte_len).is_none() {
+            return Err("framebuffer dimensions do not match its pixel data".to_string());
+        }
+        if drawable_width == 0 || drawable_height == 0 {
+            return Ok(frame);
+        }
+
+        self.resize_drawable(drawable_width, drawable_height);
+        self.last_guest_metadata = None;
+        if !unsafe { self.layer.presentsWithTransaction() } {
+            return self.async_guest_presenter.enqueue_raster_owned(
+                frame,
+                layout,
+                (drawable_width, drawable_height),
+            );
+        }
+        self.async_guest_presenter.pause_and_wait();
+        self.ensure_upload_textures(layout.width, layout.height)?;
+
+        // Acquire the drawable before recycling the corresponding upload
+        // texture. With a two-drawable layer, nextDrawable blocks until the
+        // oldest in-flight frame is complete, making the matching texture safe
+        // for the CPU to overwrite without adding a third queued frame.
+        let Some(drawable) = (unsafe { self.layer.nextDrawable() }) else {
+            return Ok(frame);
+        };
+        let upload_index = self.next_upload_texture;
+        self.next_upload_texture = (upload_index + 1) % self.upload_textures.len();
+        let upload = &self.upload_textures[upload_index];
+        encode_raster_frame(
+            &self.command_queue,
+            &self.pipeline,
+            upload,
+            &drawable,
+            argb_bytes(&frame),
+            layout,
+            (drawable_width, drawable_height),
+            true,
+        )?;
+        Ok(frame)
     }
 
     /// Snapshot and present a native Classic Macintosh framebuffer. The GPU
@@ -982,36 +1212,56 @@ fn finish_presentation(
     }
 }
 
+/// Upload the rectangle a raster frame presents into its upload texture.
+///
+/// The frame buffer arrives whole: `layout` selects the presented pixels and
+/// supplies the row stride of the buffer that carries them, so the driver reads
+/// the rectangle in place and the CPU never materialises a cropped copy.
+fn upload_raster_region(
+    upload: &ProtocolObject<dyn MTLTexture>,
+    pixels: &[u8],
+    layout: RasterLayout,
+) -> Result<(), String> {
+    let offset = layout
+        .texel_byte_offset(pixels.len())
+        .ok_or_else(|| "presented rectangle does not fit its framebuffer".to_string())?;
+    let region = MTLRegion {
+        origin: objc2_metal::MTLOrigin { x: 0, y: 0, z: 0 },
+        size: objc2_metal::MTLSize {
+            width: layout.width as usize,
+            height: layout.height as usize,
+            depth: 1,
+        },
+    };
+    let first_texel = pixels
+        .get(offset..)
+        .ok_or_else(|| "presented rectangle starts past its framebuffer".to_string())?;
+    let source = NonNull::new(first_texel.as_ptr().cast_mut().cast::<c_void>())
+        .ok_or_else(|| "a non-empty framebuffer has a non-null pointer".to_string())?;
+    unsafe {
+        upload.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+            region,
+            0,
+            source,
+            layout.buffer_width as usize * size_of::<u32>(),
+        );
+    }
+    Ok(())
+}
+
 fn encode_raster_frame(
     command_queue: &ProtocolObject<dyn MTLCommandQueue>,
     pipeline: &ProtocolObject<dyn MTLRenderPipelineState>,
     upload: &ProtocolObject<dyn MTLTexture>,
     drawable: &ProtocolObject<dyn CAMetalDrawable>,
     pixels: &[u8],
-    source_size: (u32, u32),
+    layout: RasterLayout,
     drawable_size: (u32, u32),
     transactional: bool,
 ) -> Result<(), String> {
-    let (source_width, source_height) = source_size;
+    let (source_width, source_height) = (layout.width, layout.height);
     let (drawable_width, drawable_height) = drawable_size;
-    let region = MTLRegion {
-        origin: objc2_metal::MTLOrigin { x: 0, y: 0, z: 0 },
-        size: objc2_metal::MTLSize {
-            width: source_width as usize,
-            height: source_height as usize,
-            depth: 1,
-        },
-    };
-    let pixel_bytes = NonNull::new(pixels.as_ptr().cast_mut().cast::<c_void>())
-        .expect("a non-empty framebuffer has a non-null pointer");
-    unsafe {
-        upload.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
-            region,
-            0,
-            pixel_bytes,
-            source_width as usize * size_of::<u32>(),
-        );
-    }
+    upload_raster_region(upload, pixels, layout)?;
 
     let drawable_texture = unsafe { drawable.texture() };
     let pass = unsafe { MTLRenderPassDescriptor::new() };
@@ -1353,10 +1603,10 @@ fn copy_guest_visible_pixels_to_ptr(
 #[cfg(test)]
 mod tests {
     use super::{
-        aspect_fit_viewport, copy_guest_visible_pixels, guest_cursor_data,
+        argb_bytes, aspect_fit_viewport, copy_guest_visible_pixels, guest_cursor_data,
         guest_packed_content_left, guest_visible_byte_layout, guest_visible_pixels_equal,
-        replace_pending_guest_frame, GuestCursorData, GuestFrameMailboxState, GuestFrameMetadata,
-        GuestFrameUniforms, FrameMetadata,
+        replace_pending_guest_frame, FrameMetadata, FramePixels, GuestCursorData,
+        GuestFrameMailboxState, GuestFrameMetadata, GuestFrameUniforms, RasterLayout,
     };
     use systemless::display::CursorImage;
 
@@ -1630,11 +1880,11 @@ mod tests {
             assert!(state.drawable_in_use && state.active);
             assert_eq!(state.coalesced, 1);
             let frame = state.pending.as_ref().unwrap();
-            assert_eq!(frame.framebuffer, argb_bytes(&[0xffabcdef; 16]));
+            assert_eq!(frame.pixels.as_bytes(), argb_bytes(&[0xffabcdef; 16]));
             assert!(
                 frame.metadata
                     == FrameMetadata::Raster {
-                        source_size: (4, 4),
+                        layout: RasterLayout::whole((4, 4)),
                         drawable_size: (8, 8),
                     }
             );
@@ -1657,7 +1907,7 @@ mod tests {
             .unwrap();
         let state = mailbox.state.lock().unwrap();
         assert_eq!(state.coalesced, 2);
-        assert_eq!(state.pending.as_ref().unwrap().framebuffer, [7, 8]);
+        assert_eq!(state.pending.as_ref().unwrap().pixels.as_bytes(), &[7u8, 8]);
     }
 
     #[test]
@@ -1688,8 +1938,18 @@ mod tests {
 
         assert_eq!(state.coalesced, 1);
         let pending = state.pending.as_ref().unwrap();
-        assert_eq!(pending.framebuffer, [5, 6, 7, 8]);
+        assert_eq!(pending.pixels.as_bytes(), &[5u8, 6, 7, 8]);
         assert!(pending.metadata == FrameMetadata::Guest(metadata));
+    }
+
+    /// The raster present path reinterprets the caller's pixels instead of
+    /// copying them, leaving the mailbox staging copy as the frame's only copy.
+    #[test]
+    fn raster_present_bytes_borrow_the_caller_pixels() {
+        let pixels = vec![0xff00_0000u32, 0x0012_3456];
+        let bytes = argb_bytes(&pixels);
+        assert_eq!(bytes.as_ptr(), pixels.as_ptr().cast());
+        assert_eq!(bytes.len(), pixels.len() * std::mem::size_of::<u32>());
     }
 
     #[test]
@@ -1717,7 +1977,10 @@ mod tests {
             FrameMetadata::Guest(metadata),
         );
 
-        assert_eq!(state.pending.unwrap().framebuffer, [8, 9, 10, 14, 15, 16]);
+        assert_eq!(
+            state.pending.unwrap().pixels.as_bytes(),
+            &[8u8, 9, 10, 14, 15, 16]
+        );
     }
 
     #[test]
@@ -1747,6 +2010,303 @@ mod tests {
 
         framebuffer[4 + 2] = 0x80;
         assert!(!guest_visible_pixels_equal(&snapshot, &framebuffer, layout));
+    }
+
+    /// Opt-in measurement of the raster frame path into the present mailbox.
+    ///
+    /// A borrowed raster frame (`MetalPresenter::present`, used when the
+    /// resolved outline image is presented from the bus cache) is staged into a
+    /// pool buffer. An owned frame (`MetalPresenter::present_owned`, used by the
+    /// cropped software path) is handed to the mailbox with the rectangle to
+    /// upload, so the caller copies nothing — not even the crop, which the
+    /// worker now reads in place out of the whole frame. This harness times all
+    /// three at the geometry the EV Nova capture presents.
+    ///
+    /// ```sh
+    /// cargo test --profile fast --bin systemless mailbox_raster_copy_microbench -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "measurement harness; prints raster mailbox path timings"]
+    fn mailbox_raster_copy_microbench() {
+        use super::{AsyncGuestPresenter, GuestFrameMailbox};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        const WIDTH: u32 = 800;
+        const HEIGHT: u32 = 600;
+        // The capture presented a letterboxed rectangle inside the guest screen.
+        const CROP: (u32, u32, u32, u32) = (0, 40, 800, 520);
+        const FRAMES: usize = 600;
+
+        let (crop_left, crop_top, crop_width, crop_height) = CROP;
+        let crop_texels = (crop_width * crop_height) as usize;
+        let full = vec![0u32; (WIDTH * HEIGHT) as usize];
+        let presenter = AsyncGuestPresenter {
+            mailbox: Arc::new(GuestFrameMailbox::default()),
+            thread: None,
+        };
+
+        // Borrowed frame: staged into a pool buffer, one copy on this thread.
+        let mut staged_borrowed = Vec::new();
+        for _ in 0..FRAMES {
+            let start = Instant::now();
+            presenter
+                .enqueue_raster(&full, (WIDTH, HEIGHT), (WIDTH, HEIGHT))
+                .unwrap();
+            staged_borrowed.push(start.elapsed());
+        }
+
+        // Owned frame: the whole buffer is lent to the mailbox and a spare comes
+        // back, so the caller copies nothing.
+        let layout = RasterLayout {
+            left: crop_left,
+            top: crop_top,
+            width: crop_width,
+            height: crop_height,
+            buffer_width: WIDTH,
+        };
+        let mut handoff_owned = Vec::new();
+        let mut scratch = full.clone();
+        for _ in 0..FRAMES {
+            let start = Instant::now();
+            scratch = presenter
+                .enqueue_raster_owned(scratch, layout, (WIDTH, HEIGHT))
+                .unwrap();
+            handoff_owned.push(start.elapsed());
+            std::hint::black_box(&scratch);
+        }
+        drop(presenter);
+
+        // The crop `crop_argb_frame` used to compact in place, as a per-row
+        // `copy_within` over the full-size buffer, timed on the same buffer the
+        // caller no longer walks.
+        let mut crop_move = Vec::new();
+        let mut frame = full.clone();
+        for _ in 0..FRAMES {
+            frame.extend_from_slice(&full[..(WIDTH * HEIGHT) as usize - frame.len()]);
+            let start = Instant::now();
+            for row in 0..crop_height as usize {
+                let source = (crop_top as usize + row) * WIDTH as usize + crop_left as usize;
+                frame.copy_within(
+                    source..source + crop_width as usize,
+                    row * crop_width as usize,
+                );
+            }
+            frame.truncate(crop_texels);
+            crop_move.push(start.elapsed());
+            std::hint::black_box(&frame);
+        }
+
+        let full_bytes_per_frame = (WIDTH * HEIGHT) as usize * size_of::<u32>();
+        let crop_bytes_per_frame = crop_texels * size_of::<u32>();
+        eprintln!(
+            "frame={WIDTH}x{HEIGHT} crop={crop_width}x{crop_height}@{crop_left},{crop_top} \
+             full_bytes={full_bytes_per_frame} crop_bytes={crop_bytes_per_frame}"
+        );
+        summarise("staged_borrowed_frame", staged_borrowed);
+        summarise("handoff_owned_frame", handoff_owned);
+        summarise("materialised_crop", crop_move);
+        eprintln!(
+            "main-thread bytes/frame: cropped software frame before={} after={}",
+            crop_bytes_per_frame * 2,
+            0
+        );
+
+        fn summarise(name: &str, mut samples: Vec<Duration>) {
+            samples.sort();
+            let total: Duration = samples.iter().copied().sum();
+            eprintln!(
+                "{name}: mean={:?} p50={:?} p95={:?}",
+                total / samples.len() as u32,
+                samples[samples.len() / 2],
+                samples[samples.len() * 95 / 100]
+            );
+        }
+    }
+
+    /// The raster handoff lends the caller's frame to the mailbox instead of
+    /// copying it, and coalescing hands the superseded frame straight back as
+    /// the caller's next scratch buffer — so no pixel moves.
+    #[test]
+    fn raster_handoff_lends_the_frame_and_recycles_it_through_the_mailbox() {
+        use super::{AsyncGuestPresenter, GuestFrameMailbox};
+        let presenter = AsyncGuestPresenter {
+            mailbox: std::sync::Arc::new(GuestFrameMailbox::default()),
+            thread: None,
+        };
+        let layout = RasterLayout {
+            left: 1,
+            top: 2,
+            width: 2,
+            height: 2,
+            buffer_width: 4,
+        };
+
+        let first: Vec<u32> = (0..16).collect();
+        let first_pixels = first.as_ptr();
+        let spare = presenter
+            .enqueue_raster_owned(first, layout, (8, 8))
+            .unwrap();
+        assert!(
+            spare.is_empty(),
+            "nothing has been presented yet, so there is no spare to hand back"
+        );
+        {
+            let state = presenter.mailbox.state.lock().unwrap();
+            let pending = state.pending.as_ref().unwrap();
+            match &pending.pixels {
+                FramePixels::Argb(pixels) => assert_eq!(
+                    pixels.as_ptr(),
+                    first_pixels,
+                    "the queued frame is the caller's own allocation"
+                ),
+                FramePixels::Indexed(_) => panic!("raster frames queue ARGB words"),
+            }
+            assert!(
+                pending.metadata
+                    == FrameMetadata::Raster {
+                        layout,
+                        drawable_size: (8, 8),
+                    }
+            );
+        }
+
+        // A second frame supersedes the first before the worker takes it.
+        let second: Vec<u32> = (100..116).collect();
+        let second_pixels = second.as_ptr();
+        let spare = presenter
+            .enqueue_raster_owned(second, layout, (8, 8))
+            .unwrap();
+        assert_eq!(
+            spare.as_ptr(),
+            first_pixels,
+            "the superseded frame becomes the caller's next scratch buffer"
+        );
+        assert_eq!(spare, (0..16).collect::<Vec<u32>>());
+        let state = presenter.mailbox.state.lock().unwrap();
+        assert_eq!(state.coalesced, 1);
+        match &state.pending.as_ref().unwrap().pixels {
+            FramePixels::Argb(pixels) => assert_eq!(pixels.as_ptr(), second_pixels),
+            FramePixels::Indexed(_) => panic!("raster frames queue ARGB words"),
+        }
+    }
+
+    /// A presented rectangle must lie inside the buffer it is read from, and
+    /// the stride must reach every row it names.
+    #[test]
+    fn raster_layout_rejects_rectangles_past_the_buffer() {
+        let inside = RasterLayout {
+            left: 2,
+            top: 3,
+            width: 2,
+            height: 1,
+            buffer_width: 4,
+        };
+        let buffer_bytes = 4 * 4 * size_of::<u32>();
+        assert_eq!(
+            inside.texel_byte_offset(buffer_bytes),
+            Some((3 * 4 + 2) * size_of::<u32>())
+        );
+        assert_eq!(inside.texel_byte_offset(buffer_bytes - 1), None);
+
+        let past_the_row = RasterLayout {
+            left: 3,
+            width: 2,
+            ..inside
+        };
+        assert_eq!(past_the_row.texel_byte_offset(buffer_bytes), None);
+        assert_eq!(
+            RasterLayout::whole((0, 4)).texel_byte_offset(buffer_bytes),
+            None
+        );
+        assert_eq!(
+            RasterLayout::whole((4, 0)).texel_byte_offset(buffer_bytes),
+            None
+        );
+        assert_eq!(
+            RasterLayout::whole((4, 4)).texel_byte_offset(buffer_bytes),
+            Some(0)
+        );
+    }
+
+    /// The cropped handoff must upload exactly the pixels a materialised crop
+    /// would have: the same rectangle, read out of the whole frame with the
+    /// frame's own row stride.
+    #[test]
+    fn cropped_upload_matches_a_materialised_crop() {
+        use super::*;
+        const WIDTH: u32 = 6;
+        const HEIGHT: u32 = 4;
+        let frame: Vec<u32> = (0..WIDTH * HEIGHT).map(|i| 0xff00_0000 | i).collect();
+        let layout = RasterLayout {
+            left: 1,
+            top: 1,
+            width: 3,
+            height: 2,
+            buffer_width: WIDTH,
+        };
+        // What `crop_argb_frame` used to materialise for the same rectangle.
+        let mut materialised = Vec::new();
+        for row in 0..layout.height as usize {
+            let start = (layout.top as usize + row) * WIDTH as usize + layout.left as usize;
+            materialised.extend_from_slice(&frame[start..start + layout.width as usize]);
+        }
+        assert_eq!(materialised.len(), 6);
+
+        autoreleasepool(|_| {
+            let device = unsafe { Retained::retain(MTLCreateSystemDefaultDevice()) }
+                .expect("Metal device required");
+            let texture = |width: u32, height: u32| {
+                let descriptor = unsafe {
+                    MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                        MTLPixelFormat::RGBA8Unorm,
+                        width as usize,
+                        height as usize,
+                        false,
+                    )
+                };
+                descriptor.setStorageMode(MTLStorageMode::Shared);
+                descriptor.setUsage(MTLTextureUsage::ShaderRead);
+                device.newTextureWithDescriptor(&descriptor).unwrap()
+            };
+            let read = |texture: &ProtocolObject<dyn MTLTexture>| {
+                let mut bytes = vec![0u8; (layout.width * layout.height) as usize * 4];
+                let region = MTLRegion {
+                    origin: objc2_metal::MTLOrigin { x: 0, y: 0, z: 0 },
+                    size: objc2_metal::MTLSize {
+                        width: layout.width as usize,
+                        height: layout.height as usize,
+                        depth: 1,
+                    },
+                };
+                unsafe {
+                    texture.getBytes_bytesPerRow_fromRegion_mipmapLevel(
+                        NonNull::new(bytes.as_mut_ptr().cast()).unwrap(),
+                        layout.width as usize * 4,
+                        region,
+                        0,
+                    );
+                }
+                bytes
+            };
+            let size = (layout.width, layout.height);
+            let strided = texture(size.0, size.1);
+            upload_raster_region(&strided, argb_bytes(&frame), layout).unwrap();
+            let packed = texture(size.0, size.1);
+            upload_raster_region(
+                &packed,
+                argb_bytes(&materialised),
+                RasterLayout::whole(size),
+            )
+            .unwrap();
+
+            let strided = read(&strided);
+            assert_eq!(strided, read(&packed));
+            let mut expected = Vec::new();
+            for pixel in &materialised {
+                expected.extend_from_slice(&pixel.to_ne_bytes());
+            }
+            assert_eq!(strided, expected);
+        });
     }
 
     #[test]

@@ -851,6 +851,9 @@ struct App {
     #[cfg(not(target_os = "macos"))]
     surface_size: Option<(u32, u32)>,
     frame_argb: Vec<u32>,
+    /// Pre-overlay snapshot of `frame_argb` for the outline present path,
+    /// rebuilt in place every frame so the diff does not allocate.
+    guest_frame_argb: Vec<u32>,
     presentation_argb: Vec<u32>,
     #[cfg(target_os = "macos")]
     content_rect: Option<ContentRect>,
@@ -1034,6 +1037,7 @@ impl App {
             #[cfg(not(target_os = "macos"))]
             surface_size: None,
             frame_argb: Vec::new(),
+            guest_frame_argb: Vec::new(),
             presentation_argb: Vec::new(),
             #[cfg(target_os = "macos")]
             content_rect: cached_content.as_ref().map(|cache| cache.content),
@@ -2215,7 +2219,7 @@ impl App {
                 &device_gamma,
                 &mut frame_argb,
             );
-            has_outline_detail.then(|| frame_argb.clone())
+            has_outline_detail.then(|| refresh_guest_frame(&mut self.guest_frame_argb, &frame_argb))
         };
         if let Some(cursor) = cursor.as_ref() {
             display::render_cursor_argb(&mut frame_argb, game_w, game_h, cursor, mouse_pos);
@@ -2306,7 +2310,8 @@ impl App {
                             &device_gamma,
                             &mut frame_argb,
                         );
-                        guest_frame = Some(frame_argb.clone());
+                        guest_frame =
+                            Some(refresh_guest_frame(&mut self.guest_frame_argb, &frame_argb));
                     }
                 }
             }
@@ -2319,27 +2324,57 @@ impl App {
         let drawable_rect = aspect_fit_dimensions(game_w, game_h, buf_w, buf_h);
         #[cfg(target_os = "macos")]
         let output_scale = display::outline_output_scale(logical_size, (buf_w, buf_h));
+        #[cfg(target_os = "macos")]
+        // The resolved outline image only needs patching where a host overlay
+        // wrote a pixel, and its crop is only a copy when the content rectangle
+        // is smaller than the screen. Frames with neither can present the
+        // resolved image in place instead of copying it through `presented`.
+        // Only frames that would take the outline path may borrow its image;
+        // frames without visible outline detail keep the raster presenter.
+        let borrowed_outline = if guest_frame.is_some()
+            && cursor.is_none()
+            && !self.debug_overlay_visible
+        {
+            runner
+                .bus()
+                .presented_argb_cached(output_scale)
+                .filter(|outline| {
+                    let (width, height) = outline.size();
+                    let scale = width / game_w;
+                    presentation_rect.left * scale == 0
+                        && presentation_rect.top * scale == 0
+                        && presentation_rect.width * scale == width
+                        && presentation_rect.height * scale == height
+                })
+        } else {
+            None
+        };
+        #[cfg(target_os = "macos")]
+        let borrowed_size = borrowed_outline.as_ref().map(|outline| outline.size());
+        #[cfg(not(target_os = "macos"))]
+        let borrowed_size: Option<(u32, u32)> = None;
         let mut used_outlines = false;
         #[allow(unused_variables)] // macOS crops by the physical presentation rectangle.
-        let (game_w, game_h) = if let Some((width, height)) =
-            guest_frame.as_ref().and_then(|guest| {
-                let _timing = FramePhaseTimer::new("outline pixel expansion");
-                #[cfg(target_os = "macos")]
-                {
-                    runner
-                        .bus()
-                        .presented_argb_scaled(guest, &frame_argb, output_scale, &mut presented)
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    runner.bus().presented_argb_resized(
-                        guest,
-                        &frame_argb,
-                        (drawable_rect.2, drawable_rect.3),
-                        &mut presented,
-                    )
-                }
-            }) {
+        let (game_w, game_h) = if let Some(size) = borrowed_size {
+            size
+        } else if let Some((width, height)) = guest_frame.as_ref().and_then(|guest| {
+            let _timing = FramePhaseTimer::new("outline pixel expansion");
+            #[cfg(target_os = "macos")]
+            {
+                runner
+                    .bus()
+                    .presented_argb_scaled(guest, &frame_argb, output_scale, &mut presented)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                runner.bus().presented_argb_resized(
+                    guest,
+                    &frame_argb,
+                    (drawable_rect.2, drawable_rect.3),
+                    &mut presented,
+                )
+            }
+        }) {
             #[cfg(target_os = "macos")]
             {
                 let scale = width / game_w;
@@ -2354,6 +2389,9 @@ impl App {
         } else {
             (game_w, game_h)
         };
+        if let Some(snapshot) = guest_frame.take() {
+            self.guest_frame_argb = snapshot;
+        }
 
         #[cfg(target_os = "macos")]
         {
@@ -2365,17 +2403,33 @@ impl App {
                 self.frame_argb = frame_argb;
                 return;
             };
-            crop_argb_frame(&mut frame_argb, game_w, presentation_rect);
             let _timing = FramePhaseTimer::new("raster presentation submission");
-            surface
-                .present(
-                    &frame_argb,
-                    presentation_rect.width,
-                    presentation_rect.height,
-                    buf_w,
-                    buf_h,
-                )
-                .expect("Failed to present Metal framebuffer");
+            match borrowed_outline.as_ref() {
+                // The resolved image is the whole presentation, so it is
+                // already cropped and patched and can go straight to the GPU.
+                Some(outline) => {
+                    let (width, height) = outline.size();
+                    let pixels = outline.pixels();
+                    surface
+                        .present(&pixels, width, height, buf_w, buf_h)
+                        .expect("Failed to present Metal framebuffer");
+                }
+                None => {
+                    // The presenter worker uploads `layout` out of the whole
+                    // frame buffer, so neither the crop nor the staging copy
+                    // runs on this thread; it returns the buffer to reuse for
+                    // the next frame.
+                    frame_argb = surface
+                        .present_owned(
+                            frame_argb,
+                            presentation_layout(presentation_rect, game_w),
+                            buf_w,
+                            buf_h,
+                        )
+                        .expect("Failed to present Metal framebuffer");
+                }
+            }
+            drop(borrowed_outline);
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -2531,14 +2585,32 @@ fn mac_to_physical_in_viewport(
     ))
 }
 
+/// Rebuild the pre-overlay snapshot in a buffer `App` owns.
+///
+/// The outline present path diffs the software frame against the pixels the
+/// host overlays wrote over it, so the snapshot is rewritten every frame; only
+/// the allocation is reused.
+fn refresh_guest_frame(pool: &mut Vec<u32>, frame: &[u32]) -> Vec<u32> {
+    let mut snapshot = std::mem::take(pool);
+    snapshot.clear();
+    snapshot.extend_from_slice(frame);
+    snapshot
+}
+
 #[cfg(target_os = "macos")]
-fn crop_argb_frame(frame: &mut Vec<u32>, screen_width: u32, content: ContentRect) {
-    let width = content.width as usize;
-    for row in 0..content.height as usize {
-        let source = (content.top as usize + row) * screen_width as usize + content.left as usize;
-        frame.copy_within(source..source + width, row * width);
+/// Where the presented content rectangle sits inside a whole raster frame.
+///
+/// `frame_width` is the buffer's row length, which the presenter uses as the
+/// upload stride: it reads the rectangle in place instead of receiving a
+/// cropped copy of the frame.
+fn presentation_layout(content: ContentRect, frame_width: u32) -> metal_present::RasterLayout {
+    metal_present::RasterLayout {
+        left: content.left,
+        top: content.top,
+        width: content.width,
+        height: content.height,
+        buffer_width: frame_width,
     }
-    frame.truncate(width * content.height as usize);
 }
 
 #[cfg(target_os = "macos")]
@@ -5576,18 +5648,27 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn software_presentation_uses_the_same_cropped_pixels() {
-        let mut frame: Vec<u32> = (0..24).collect();
-        crop_argb_frame(
-            &mut frame,
-            6,
+        // The presenter reads this rectangle out of the whole frame with the
+        // frame's own row stride; metal_present tests the upload itself.
+        let layout = presentation_layout(
             ContentRect {
                 left: 1,
                 top: 1,
                 width: 4,
                 height: 3,
             },
+            6,
         );
-        assert_eq!(frame, vec![7, 8, 9, 10, 13, 14, 15, 16, 19, 20, 21, 22]);
+        assert_eq!(
+            layout,
+            metal_present::RasterLayout {
+                left: 1,
+                top: 1,
+                width: 4,
+                height: 3,
+                buffer_width: 6,
+            }
+        );
     }
 
     #[cfg(target_os = "macos")]

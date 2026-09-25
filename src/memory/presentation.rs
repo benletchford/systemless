@@ -63,6 +63,37 @@ pub(crate) struct ScreenMark {
     epoch: u64,
 }
 
+/// A resolved outline image borrowed from the presentation for one present.
+///
+/// [`MacMemoryBus::presented_argb_scaled`] copies the resolved image into the
+/// caller's buffer so host overlays can be patched into it. Frames where no
+/// overlay wrote a pixel skip that copy and present this image in place.
+pub struct PresentedOutline<'a> {
+    slot: std::cell::Ref<'a, Presentation>,
+    scale: u32,
+    size: (u32, u32),
+}
+
+impl PresentedOutline<'_> {
+    /// Image size in pixels.
+    pub fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    /// The resolved ARGB image, valid until the presentation is mutated again.
+    pub fn pixels(&self) -> std::cell::Ref<'_, [u32]> {
+        self.slot.resolved_argb(self.scale)
+    }
+}
+
+impl std::fmt::Debug for PresentedOutline<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PresentedOutline")
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
+}
+
 impl std::fmt::Debug for PresentationSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("PresentationSlot")
@@ -2331,6 +2362,26 @@ impl MacMemoryBus {
         Some((width, p.height * scale))
     }
 
+    /// Borrow the resolved outline image at `scale` for a caller that knows no
+    /// overlay changed a pixel this frame.
+    ///
+    /// [`MacMemoryBus::presented_argb_scaled`] copies the resolved image into
+    /// the caller's buffer so that host overlays can be patched in. When the
+    /// cursor is hidden and no debug overlay is drawn, that buffer would be a
+    /// byte-for-byte copy, so the present path can read the image in place and
+    /// skip both the copy and the guest/overlay comparison.
+    pub fn presented_argb_cached(&self, scale: u32) -> Option<PresentedOutline<'_>> {
+        let slot = self.presentation.as_ref()?;
+        if !(1..=4).contains(&scale) {
+            return None;
+        }
+        let size = (slot.logical_width() * scale, slot.height * scale);
+        if size.0 == 0 || size.1 == 0 {
+            return None;
+        }
+        Some(PresentedOutline { slot, scale, size })
+    }
+
     /// RGBA version of `presented_argb_scaled`, using the same coverage rules.
     pub fn presented_rgba_scaled(
         &self,
@@ -3870,6 +3921,47 @@ mod tests {
         bus.presented_argb_scaled(&guest, &guest, 2, &mut output)
             .unwrap();
         assert_ne!(output, expected);
+    }
+
+    /// The borrowed outline image must be byte-identical to what the copying
+    /// presenter produces, in every state a frame can present.
+    #[test]
+    fn borrowed_outline_matches_copied_presentation() {
+        let mut bus = bus();
+        let screen = (0x1000, 8, 8, 8, 8);
+        let palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.prepare_outline_presentation(screen, palette);
+        paint_detail(&mut bus, 0x1000);
+        let guest = [0; 64];
+        for scale in 1..=4 {
+            let mut copied = Vec::new();
+            bus.presented_argb_scaled(&guest, &guest, scale, &mut copied)
+                .unwrap();
+            let outline = bus.presented_argb_cached(scale).unwrap();
+            assert_eq!(outline.size(), (8 * scale, 8 * scale));
+            let pixels = outline.pixels();
+            assert_eq!(pixels.len(), copied.len());
+            assert_eq!(&pixels[..], &copied[..]);
+        }
+        assert!(bus.presented_argb_cached(0).is_none());
+        assert!(bus.presented_argb_cached(5).is_none());
+
+        // A guest write must be visible through both, and the overlay-aware
+        // presenter must still differ once an overlay actually changes a pixel.
+        bus.write_byte(0x1000, 7);
+        let mut copied = Vec::new();
+        bus.presented_argb_scaled(&guest, &guest, 2, &mut copied)
+            .unwrap();
+        let outline = bus.presented_argb_cached(2).unwrap();
+        assert_eq!(&outline.pixels()[..], &copied[..]);
+        let cached = outline.pixels().to_vec();
+        drop(outline);
+        let mut overlay = guest;
+        overlay[0] = 0xffabcdef;
+        let mut patched = Vec::new();
+        bus.presented_argb_scaled(&guest, &overlay, 2, &mut patched)
+            .unwrap();
+        assert_ne!(patched, cached);
     }
 
     #[test]
