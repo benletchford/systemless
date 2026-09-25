@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -26,6 +27,21 @@ compatibility:
       launch has not yet been approved.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2463
+  - date: "2026-09-25"
+    tester: Catalogue maintainer
+    systemless_version: "0.61.1 + merged PR #2853"
+    architecture: 68k
+    environment: >-
+      Optimized local Chromium preview of /next/bolo with the exact
+      SHA-256-matched shareware archive supplied through the browser test
+      harness. The Network Selection dialog opened with Tutorial selected;
+      the first lessons, Q-driven boat movement and unobstructed coloured
+      map rendered. The archive and screenshot were separately fetched from
+      their immutable hosted URLs and matched their recorded hashes. Browser
+      pacing held near 60 host FPS and 59 guest ticks per second without
+      console errors.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/2854
 artifacts:
 - id: archive
   role: archive
@@ -96,6 +112,6 @@ The included tutorial teaches the terrain and construction tools without a
 network. The larger game was made for groups: up to sixteen commanders sharing a
 map, with optional programmable “brains” assisting their tanks.
 
-Systemless currently reaches the local Tutorial, paints its water and terrain,
-and responds to the boat's forward control. Browser launch remains disabled
-until the released runtime and hosted assets pass an in-browser check.
+Systemless reaches the local Tutorial, paints its water and terrain, and
+responds to the boat's forward control. The optimized browser preview also
+passed through the opening lessons into the unobstructed map.
