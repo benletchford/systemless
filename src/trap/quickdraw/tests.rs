@@ -15949,6 +15949,26 @@
     }
 
     #[test]
+    fn newpixmap_copies_current_device_baseaddr() {
+        // Imaging With QuickDraw (1994), p. 4-86: NewPixMap copies every
+        // device PixMap field other than the color table.
+        let (mut d, mut cpu, mut bus) = setup();
+        let gd_handle = d.ensure_main_gdevice(&mut bus);
+        let gd_ptr = bus.read_long(gd_handle);
+        let device_pm_handle = bus.read_long(gd_ptr + 22);
+        let device_pm_ptr = bus.read_long(device_pm_handle);
+        let screen_base = bus.read_long(device_pm_ptr);
+        assert_ne!(screen_base, 0);
+
+        d.dispatch_quickdraw(true, 0x203, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let pm_handle = bus.read_long(TEST_SP);
+        let pm_ptr = bus.read_long(pm_handle);
+        assert_eq!(bus.read_long(pm_ptr), screen_base);
+    }
+
+    #[test]
     fn newpixmap_allocates_pixmap_handle_before_color_table_handle() {
         let (mut d, mut cpu, mut bus) = setup();
         d.dispatch_quickdraw(true, 0x203, &mut cpu, &mut bus)
