@@ -52154,6 +52154,26 @@ fn ppc_set_menu_item_enabled(
     item: i16,
     enabled: bool,
 ) {
+    // A title or item already in the requested state needs no record rebuild.
+    // Keep the decoded path below for actual changes and malformed records.
+    if !(0..=31).contains(&item) {
+        return;
+    }
+    if handles
+        .iter()
+        .any(|record| record.handle == menu_handle && record.size >= 14)
+    {
+        if let Some(menu) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) {
+            if let Some(flags_addr) = menu.checked_add(10) {
+                if let Some(flags) = memory.read_u32_be(flags_addr) {
+                    let bit = 1u32 << u32::from(item as u16);
+                    if (flags & bit != 0) == enabled {
+                        return;
+                    }
+                }
+            }
+        }
+    }
     ppc_mutate_menu_items_in_place(memory, handles, menu_handle, |items| {
         items.set_enabled(item, enabled)
     });
