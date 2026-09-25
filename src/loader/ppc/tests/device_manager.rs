@@ -39,3 +39,25 @@ fn open_driver_reports_open_err_and_clears_the_output_refnum() {
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_OPEN_ERR));
     assert_eq!(loaded.memory.read_u16_be(refnum), Some(0));
 }
+
+#[test]
+fn import_bindings_classify_printing_imports() {
+    for (symbol, operation) in [
+        ("PrClose", PpcPrintingCompatibilityOperation::PrClose),
+        ("PrCloseDoc", PpcPrintingCompatibilityOperation::PrCloseDoc),
+        ("PrClosePage", PpcPrintingCompatibilityOperation::PrClosePage),
+        ("PrError", PpcPrintingCompatibilityOperation::PrError),
+        ("PrJobDialog", PpcPrintingCompatibilityOperation::PrJobDialog),
+        ("PrOpen", PpcPrintingCompatibilityOperation::PrOpen),
+        ("PrOpenDoc", PpcPrintingCompatibilityOperation::PrOpenDoc),
+        ("PrOpenPage", PpcPrintingCompatibilityOperation::PrOpenPage),
+        ("PrPicFile", PpcPrintingCompatibilityOperation::PrPicFile),
+        ("PrStlDialog", PpcPrintingCompatibilityOperation::PrStlDialog),
+        ("PrintDefault", PpcPrintingCompatibilityOperation::PrintDefault),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::PrintingCompatibility(operation),
+        );
+    }
+}

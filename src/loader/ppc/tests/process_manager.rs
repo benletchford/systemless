@@ -308,3 +308,23 @@ fn hle_import_runner_handles_get_process_information() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PROC_NOT_FOUND_ERR));
 }
+
+#[test]
+fn import_bindings_classify_process_manager_imports() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetCurrentProcess"),
+        PpcImportDispatcherTarget::GetCurrentProcess
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "WakeUpProcess"),
+        PpcImportDispatcherTarget::WakeUpProcess
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetProcessInformation"),
+        PpcImportDispatcherTarget::GetProcessInformation
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "ExitToShell"),
+        PpcImportDispatcherTarget::ExitToShell
+    );
+}

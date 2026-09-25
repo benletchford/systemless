@@ -1568,3 +1568,44 @@ use crate::sound::PendingSoundCallback;
             Some((-4i16) as u16)
         );
     }
+
+#[test]
+fn import_bindings_classify_speech_and_sound_input_imports() {
+    for (symbol, operation) in [
+        ("CountVoices", PpcSpeechCompatibilityOperation::CountVoices),
+        (
+            "DisposeSpeechChannel",
+            PpcSpeechCompatibilityOperation::DisposeSpeechChannel,
+        ),
+        ("GetIndVoice", PpcSpeechCompatibilityOperation::GetIndVoice),
+        (
+            "GetVoiceDescription",
+            PpcSpeechCompatibilityOperation::GetVoiceDescription,
+        ),
+        (
+            "NewSpeechChannel",
+            PpcSpeechCompatibilityOperation::NewSpeechChannel,
+        ),
+        ("SpeakString", PpcSpeechCompatibilityOperation::SpeakString),
+        ("SpeakText", PpcSpeechCompatibilityOperation::SpeakText),
+        ("SpeechBusy", PpcSpeechCompatibilityOperation::SpeechBusy),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("SpeechLib", symbol),
+            PpcImportDispatcherTarget::SpeechCompatibility(operation),
+        );
+    }
+    for (symbol, operation) in [
+        ("SPBCloseDevice", PpcSoundInputCompatibilityOperation::CloseDevice),
+        ("SPBGetDeviceInfo", PpcSoundInputCompatibilityOperation::GetDeviceInfo),
+        ("SPBOpenDevice", PpcSoundInputCompatibilityOperation::OpenDevice),
+        ("SPBRecord", PpcSoundInputCompatibilityOperation::Record),
+        ("SPBSetDeviceInfo", PpcSoundInputCompatibilityOperation::SetDeviceInfo),
+        ("SPBStopRecording", PpcSoundInputCompatibilityOperation::StopRecording),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::SoundInputCompatibility(operation),
+        );
+    }
+}
