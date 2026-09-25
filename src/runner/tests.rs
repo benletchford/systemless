@@ -13179,7 +13179,7 @@
     }
 
     #[test]
-    fn deferred_task_runs_at_next_interrupt_with_parameter_in_a1() {
+    fn deferred_task_runs_at_next_interrupt_with_task_in_a0_and_parameter_in_a1() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let task = runner.bus.alloc(24);
         let callback = 0x0004_1234;
@@ -13187,15 +13187,18 @@
         let interrupted_pc = 0x0002_0000;
         let interrupted_sp = 0x007F_FFC0;
         let marker = 0x0005_0000;
-        runner.bus.write_word(callback, 0x23C9); // MOVE.L A1,marker
+        runner.bus.write_word(callback, 0x23C8); // MOVE.L A0,marker
         runner.bus.write_long(callback + 2, marker);
-        runner.bus.write_word(callback + 6, 0x4E75); // RTS
+        runner.bus.write_word(callback + 6, 0x23C9); // MOVE.L A1,marker+4
+        runner.bus.write_long(callback + 8, marker + 4);
+        runner.bus.write_word(callback + 12, 0x4E75); // RTS
         runner.bus.write_word(interrupted_pc, 0x4E71); // NOP
         runner.bus.write_word(task + 4, 7);
         runner.bus.write_long(task + 8, callback);
         runner.bus.write_long(task + 12, parameter);
         runner.m68k.cpu.write_reg(Register::PC, interrupted_pc);
         runner.m68k.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.m68k.cpu.write_reg(Register::A0, 0x1234_5678);
         runner
             .dispatcher
             .enqueue_deferred_task(&mut runner.bus, task);
@@ -13210,16 +13213,20 @@
         assert_eq!(active.resume_pc, interrupted_pc);
         assert_eq!(active.resume_sp, interrupted_sp);
         let trampoline = runner.deferred_task_trampoline;
-        assert_eq!(runner.bus.read_word(trampoline), 0x227C);
-        assert_eq!(runner.bus.read_long(trampoline + 2), parameter);
-        assert_eq!(runner.bus.read_word(trampoline + 6), 0x4EB9);
-        assert_eq!(runner.bus.read_long(trampoline + 8), callback);
-        assert_eq!(runner.bus.read_word(trampoline + 12), 0x4E75);
+        assert_eq!(runner.bus.read_word(trampoline), 0x207C);
+        assert_eq!(runner.bus.read_long(trampoline + 2), task);
+        assert_eq!(runner.bus.read_word(trampoline + 6), 0x227C);
+        assert_eq!(runner.bus.read_long(trampoline + 8), parameter);
+        assert_eq!(runner.bus.read_word(trampoline + 12), 0x4EB9);
+        assert_eq!(runner.bus.read_long(trampoline + 14), callback);
+        assert_eq!(runner.bus.read_word(trampoline + 18), 0x4E75);
         assert!(runner.dispatcher.deferred_tasks.is_empty());
 
-        runner.run_steps(6, None);
-        assert_eq!(runner.bus.read_long(marker), parameter);
+        runner.run_steps(8, None);
+        assert_eq!(runner.bus.read_long(marker), task);
+        assert_eq!(runner.bus.read_long(marker + 4), parameter);
         assert!(runner.active_interrupt_callback.is_none());
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A0), 0x1234_5678);
         assert_eq!(runner.m68k.cpu.read_reg(Register::A7), interrupted_sp);
     }
 

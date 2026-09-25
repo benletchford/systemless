@@ -9560,15 +9560,19 @@ impl FixtureRunner {
         }
         let parameter = self.bus.read_long(task + 12);
         if self.deferred_task_trampoline == 0 {
-            let trampoline = self.bus.alloc(16);
-            self.bus.write_word(trampoline, 0x227C); // MOVEA.L #dtParm,A1
-            self.bus.write_word(trampoline + 6, 0x4EB9); // JSR dtAddr
-            self.bus.write_word(trampoline + 12, 0x4E75); // RTS
+            let trampoline = self.bus.alloc(20);
+            // Processes (1994), pp. 6-13--6-14 specifies dtParm in A1.
+            // Native deferred callbacks also receive the dequeued record in A0.
+            self.bus.write_word(trampoline, 0x207C); // MOVEA.L #task,A0
+            self.bus.write_word(trampoline + 6, 0x227C); // MOVEA.L #dtParm,A1
+            self.bus.write_word(trampoline + 12, 0x4EB9); // JSR dtAddr
+            self.bus.write_word(trampoline + 18, 0x4E75); // RTS
             self.deferred_task_trampoline = trampoline;
         }
         let trampoline = self.deferred_task_trampoline;
-        self.bus.write_long(trampoline + 2, parameter);
-        self.bus.write_long(trampoline + 8, address);
+        self.bus.write_long(trampoline + 2, task);
+        self.bus.write_long(trampoline + 8, parameter);
+        self.bus.write_long(trampoline + 14, address);
         self.inject_interrupt_callback(ActiveInterruptCallbackSource::DeferredTask, trampoline);
         true
     }
