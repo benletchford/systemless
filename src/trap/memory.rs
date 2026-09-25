@@ -1858,19 +1858,52 @@ impl super::TrapDispatcher {
                 match self.reallocate_process_handle(bus, handle, size) {
                     Ok((_old_ptr, new_ptr)) => {
                         self.with_resource_manager_mut(|resource_manager| {
+                            let resource_key = resource_manager
+                                .loaded_handles
+                                .get(&handle)
+                                .and_then(|&(_, res_type, res_id)| {
+                                    resource_manager
+                                        .resource_handle_files
+                                        .get(&handle)
+                                        .copied()
+                                        .map(|refnum| (refnum, res_type, res_id))
+                                });
                             if let Some(entry) = resource_manager.loaded_handles.get_mut(&handle) {
                                 entry.0 = new_ptr;
                             }
                             if let Some(resources) = resource_manager.resources.as_mut() {
-                                for file in resources.files.values_mut() {
-                                    for loaded_ptr in file.loaded.values_mut() {
-                                        if *loaded_ptr == indexed_old_ptr {
-                                            *loaded_ptr = new_ptr;
+                                // NIL is shared by every unloaded resource; only a
+                                // resource-owned handle may change its own map entry.
+                                if indexed_old_ptr == 0 {
+                                    if let Some((refnum, res_type, res_id)) = resource_key {
+                                        if let Some(file) = resources.files.get_mut(&refnum) {
+                                            if file.loaded.get(&(res_type, res_id)).copied()
+                                                == Some(0)
+                                            {
+                                                file.loaded.insert((res_type, res_id), new_ptr);
+                                            }
+                                            for ((named_type, _), (named_id, ptr)) in &mut file.named
+                                            {
+                                                if *named_type == res_type
+                                                    && *named_id == res_id
+                                                    && *ptr == 0
+                                                {
+                                                    *ptr = new_ptr;
+                                                }
+                                            }
                                         }
                                     }
-                                    for (_id, named_ptr) in file.named.values_mut() {
-                                        if *named_ptr == indexed_old_ptr {
-                                            *named_ptr = new_ptr;
+                                } else {
+                                    for file in resources.files.values_mut() {
+                                        for loaded_ptr in file.loaded.values_mut() {
+                                            if *loaded_ptr == indexed_old_ptr {
+                                                *loaded_ptr = new_ptr;
+                                            }
+                                        }
+                                        for (_id, named_ptr) in file.named.values_mut() {
+                                            if *named_ptr == indexed_old_ptr {
+                                                *named_ptr = new_ptr;
+                                            }
                                         }
                                     }
                                 }
@@ -4973,6 +5006,39 @@ mod tests {
         );
         assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x20));
         assert_eq!(bus.read_bytes(old_ptr, 8), b"original");
+    }
+
+    #[test]
+    fn reallocate_empty_ordinary_handle_preserves_unloaded_resource_entries() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        dispatcher.install_test_resource(&mut bus, *b"Prfl", 128, b"preferences");
+        dispatcher.insert_resource_pointer_for_test(0, (*b"Prfl", 128), 0);
+        dispatcher.insert_named_resource_for_test(
+            0,
+            (*b"Prfl", "Preferences".to_string()),
+            (128, 0),
+        );
+
+        dispatcher
+            .dispatch_memory(false, 0x66, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let ordinary_handle = cpu.read_reg(Register::A0);
+        assert_eq!(bus.read_long(ordinary_handle), 0);
+
+        cpu.write_reg(Register::A0, ordinary_handle);
+        cpu.write_reg(Register::D0, 32);
+        dispatcher
+            .dispatch_memory(false, 0x27, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_ne!(bus.read_long(ordinary_handle), 0);
+        let file = &dispatcher.resources.as_ref().unwrap().files[&0];
+        assert_eq!(file.loaded[&(*b"Prfl", 128)], 0);
+        assert_eq!(
+            file.named[&(*b"Prfl", "Preferences".to_string())],
+            (128, 0)
+        );
     }
 
     #[test]
