@@ -110,12 +110,11 @@ struct GuestAddressSpaceState {
     /// envelope spanned by the runner's RAM aliases.
     shared_pages: PageIndex,
     readonly_allocation_exclusions: Vec<(u32, u32)>,
-    /// Last ledger answer, for an instruction fetch and for a data access.
-    /// Two slots because code and data addresses interleave. Appending a
-    /// mapping can shadow an `Owned` span or fall inside a `Gap`, so
-    /// `push_shared_mapping` clears both.
+    /// Last ledger answer for instruction fetches, plus two recent data spans.
+    /// Data reads often alternate between two regions. Appending a mapping can
+    /// shadow an `Owned` span or fall inside a `Gap`, so it clears both caches.
     instruction_lookup: Option<SharedLookup>,
-    data_lookup: Option<SharedLookup>,
+    data_lookups: [Option<SharedLookup>; 2],
     /// Pages we have issued a writable-code token for. A write into one of
     /// them may have rewritten a cached decode, so it retires that page's
     /// tokens; a clear bit proves the write cannot have touched executed code
@@ -145,7 +144,7 @@ impl GuestAddressSpaceState {
         }
         // A new mapping can shadow a cached span or fall inside a cached gap.
         self.instruction_lookup = None;
-        self.data_lookup = None;
+        self.data_lookups = [None; 2];
         self.instruction_token_cache = None;
         self.shared_regions.push(mapping);
     }
@@ -438,6 +437,30 @@ fn resolve_lookup(
         Some(cached) if cached.covers(start, end) => cached,
         _ => shared_lookup_at(state, address),
     }
+}
+
+#[inline]
+fn resolve_data_lookup(
+    state: &mut GuestAddressSpaceState,
+    address: u32,
+    start: u64,
+    end: u64,
+) -> SharedLookup {
+    if let Some(lookup) = state.data_lookups[0] {
+        if lookup.covers(start, end) {
+            return lookup;
+        }
+    }
+    if let Some(lookup) = state.data_lookups[1] {
+        if lookup.covers(start, end) {
+            state.data_lookups.swap(0, 1);
+            return lookup;
+        }
+    }
+    let lookup = shared_lookup_at(state, address);
+    state.data_lookups[1] = state.data_lookups[0];
+    state.data_lookups[0] = Some(lookup);
+    lookup
 }
 
 /// Read the four bytes at `start` out of the mapping `run` names. Equivalent
@@ -1169,7 +1192,7 @@ impl Clone for GuestAddressSpace {
             readonly_allocation_exclusions: state.readonly_allocation_exclusions.clone(),
             // Detached regions are fresh allocations; let the clone re-resolve.
             instruction_lookup: None,
-            data_lookup: None,
+            data_lookups: [None; 2],
             executed_pages: state.executed_pages.clone(),
             // A detached clone holds independent copies of the same regions,
             // which then diverge. Inheriting its parent's tokens would let a
@@ -1809,8 +1832,7 @@ impl PpcMemory for GuestAddressSpace {
         };
         let state = self.state_mut();
         let start = u64::from(addr);
-        let lookup = resolve_lookup(state, state.data_lookup, addr, start, end);
-        state.data_lookup = Some(lookup);
+        let lookup = resolve_data_lookup(state, addr, start, end);
         if lookup.covers(start, end) {
             return match lookup {
                 SharedLookup::Gap { .. } => PpcMemory::read_u16_be(&mut state.regions, addr),
@@ -1844,9 +1866,7 @@ impl PpcMemory for GuestAddressSpace {
         };
         let state = self.state_mut();
         let start = u64::from(addr);
-        let cached = state.data_lookup;
-        let lookup = resolve_lookup(state, cached, addr, start, end);
-        state.data_lookup = Some(lookup);
+        let lookup = resolve_data_lookup(state, addr, start, end);
         if lookup.covers(start, end) {
             return match lookup {
                 SharedLookup::Gap { .. } => PpcMemory::read_u32_be(&mut state.regions, addr),
@@ -1961,8 +1981,7 @@ impl PpcMemory for GuestAddressSpace {
         let state = self.state_mut();
         let start = u64::from(addr);
         let bytes = value.to_be_bytes();
-        let lookup = resolve_lookup(state, state.data_lookup, addr, start, end);
-        state.data_lookup = Some(lookup);
+        let lookup = resolve_data_lookup(state, addr, start, end);
         if lookup.covers(start, end) {
             return match lookup {
                 SharedLookup::Gap { .. } => {
@@ -2000,9 +2019,7 @@ impl PpcMemory for GuestAddressSpace {
         let state = self.state_mut();
         let start = u64::from(addr);
         let bytes = value.to_be_bytes();
-        let cached = state.data_lookup;
-        let lookup = resolve_lookup(state, cached, addr, start, end);
-        state.data_lookup = Some(lookup);
+        let lookup = resolve_data_lookup(state, addr, start, end);
         if lookup.covers(start, end) {
             return match lookup {
                 SharedLookup::Gap { .. } => {
@@ -2931,6 +2948,32 @@ mod tests {
         assert_eq!(memory.read_u32_be(0x3000), Some(0x7777_7777));
         // The mapping published first is still reachable and unchanged.
         assert_eq!(memory.read_u32_be(0x8000), Some(0x4444_4444));
+    }
+
+    #[test]
+    fn alternating_data_spans_are_invalidated_by_later_overlay() {
+        let mut memory = GuestAddressSpace::new();
+        let mut bus = MacMemoryBus::new(0x10000);
+        MemoryBus::write_long(&mut bus, 0, 0x1111_1111);
+        MemoryBus::write_long(&mut bus, 4, 0x3333_3333);
+        // SAFETY: the source bus and address space are accessed serially here.
+        unsafe {
+            memory.add_shared_region(0x1000, bus.shared_ram_region(0, 4).unwrap());
+            memory.add_shared_region(0x3000, bus.shared_ram_region(4, 4).unwrap());
+        }
+
+        for _ in 0..3 {
+            assert_eq!(memory.read_u32_be(0x1000), Some(0x1111_1111));
+            assert_eq!(memory.read_u32_be(0x3000), Some(0x3333_3333));
+        }
+
+        let mut overlay = MacMemoryBus::new(0x10000);
+        MemoryBus::write_long(&mut overlay, 0, 0x2222_2222);
+        // SAFETY: as above, and the later mapping takes priority at 0x1000.
+        unsafe { memory.add_shared_region(0x1000, overlay.shared_ram_region(0, 4).unwrap()) };
+
+        assert_eq!(memory.read_u32_be(0x1000), Some(0x2222_2222));
+        assert_eq!(memory.read_u32_be(0x3000), Some(0x3333_3333));
     }
 
     #[test]
