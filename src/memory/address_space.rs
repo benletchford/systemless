@@ -390,6 +390,15 @@ fn shared_run_at(state: &GuestAddressSpaceState, address: u32) -> Option<SharedR
 /// span one mapping owns, or the gap between mappings.
 #[inline]
 fn shared_lookup_at(state: &GuestAddressSpaceState, address: u32) -> SharedLookup {
+    let page_start =
+        u64::from(address >> super::page_index::PAGE_SHIFT) << super::page_index::PAGE_SHIFT;
+    let page_end = page_start + (1u64 << super::page_index::PAGE_SHIFT);
+    if !state.shared_pages.may_overlap(page_start, page_end) {
+        return SharedLookup::Gap {
+            start: page_start,
+            end: page_end,
+        };
+    }
     if let Some(run) = shared_run_at(state, address) {
         return SharedLookup::Owned(run);
     }
@@ -2087,7 +2096,7 @@ impl AddressBus for GuestAddressSpace {
 
 #[cfg(test)]
 mod tests {
-    use super::{GuestAddressSpace, GuestIsa};
+    use super::{shared_lookup_at, GuestAddressSpace, GuestIsa, SharedLookup};
     use crate::memory::{MacMemoryBus, MemoryBus};
     use m68k::{AddressBus, BatchExit, CpuCore, StepResult};
     use ppc::{PpcCpu, PpcMemory, PpcRunResult};
@@ -2890,6 +2899,29 @@ mod tests {
         assert_eq!(memory.read_u32_be(0x3000), Some(0x7777_7777));
         // The mapping published first is still reachable and unchanged.
         assert_eq!(memory.read_u32_be(0x8000), Some(0x4444_4444));
+    }
+
+    #[test]
+    fn unshared_page_gap_stops_at_shared_page_boundary() {
+        let mut memory = GuestAddressSpace::new();
+        let mut bus = MacMemoryBus::new(0x10000);
+        // SAFETY: the bus and address space are accessed serially here.
+        unsafe { memory.add_shared_region(0x2000, bus.shared_ram_region(0, 4).unwrap()) };
+
+        let gap = shared_lookup_at(memory.state(), 0x1ffc);
+        assert!(matches!(
+            gap,
+            SharedLookup::Gap {
+                start: 0x1000,
+                end: 0x2000
+            }
+        ));
+        assert!(gap.covers(0x1ffc, 0x2000));
+        assert!(!gap.covers(0x1ffc, 0x2004));
+        assert!(matches!(
+            shared_lookup_at(memory.state(), 0x2000),
+            SharedLookup::Owned(_)
+        ));
     }
 
     /// A cached span must not wave a write through to a read-only mapping.
