@@ -195,7 +195,9 @@ fn compiled(c: &Catalogue) -> CompiledCatalogue {
 #[test]
 fn screen_depth_is_validated_and_reaches_generated_settings() {
     let mut entry = common::catalogue().documents.remove(0).entry;
-    assert!(!catalogue::serialize_document(&entry, "").unwrap().contains("screen_depth"));
+    assert!(!catalogue::serialize_document(&entry, "")
+        .unwrap()
+        .contains("screen_depth"));
     entry.runtime.screen_depth = Some(4);
     validate::entry(&entry).unwrap();
 

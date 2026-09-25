@@ -1594,7 +1594,10 @@ mod tests {
 
     #[test]
     fn web_runtime_uses_systemless_presentation_theme() {
-        assert_eq!(new_web_runner(None).ui_theme_id(), UiThemeId::ClassicSystem7);
+        assert_eq!(
+            new_web_runner(None).ui_theme_id(),
+            UiThemeId::ClassicSystem7
+        );
         assert_eq!(new_web_runner(None).configured_screen_depth(), 8);
         assert_eq!(new_web_runner(Some(4)).configured_screen_depth(), 4);
     }
