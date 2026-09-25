@@ -12,8 +12,36 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
+  verified:
+  - date: "2026-09-25"
+    tester: Catalogue maintainer
+    systemless_version: "0.61.1 + PR #2853"
+    architecture: 68k
+    environment: >-
+      Deterministic local Tutorial replay from the unchanged original BinHex package.
+      The network-selection dialog chooses Tutorial, the map draws blue water and
+      green terrain, and holding Q advances the boat and the lesson sequence. Browser
+      launch has not yet been approved.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2463
+  - date: "2026-09-25"
+    tester: Catalogue maintainer
+    systemless_version: "0.61.1 + merged PR #2853"
+    architecture: 68k
+    environment: >-
+      Optimized local Chromium preview of /next/bolo with the exact
+      SHA-256-matched shareware archive supplied through the browser test
+      harness. The Network Selection dialog opened with Tutorial selected;
+      the first lessons, Q-driven boat movement and unobstructed coloured
+      map rendered. The archive and screenshot were separately fetched from
+      their immutable hosted URLs and matched their recorded hashes. Browser
+      pacing held near 60 host FPS and 59 guest ticks per second without
+      console errors.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/2854
 artifacts:
 - id: archive
   role: archive
@@ -38,6 +66,24 @@ artifacts:
       Info-Mac identifies this as the author's official Bolo 0.99.7 package. The
       unchanged BinHex file is 835727 bytes with SHA-256
       c83deab0eefdde13d8868446530cc763536b9366b223da549b94b701f16af205.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: sha256
+    sha256: 3d4681856b7d859536c7b2f0371642a134e568cb2028eb0fc733cd0526070868
+    size_bytes: 10156
+  provenance:
+    redistribution: permitted
+    original: true
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/2462
+    permission: >-
+      Original gameplay screenshot captured for this catalogue from the unregistered
+      Bolo shareware package. Underlying game artwork remains Stuart Cheshire's
+      property.
+    notes: "Fresh deterministic Systemless 0.61.1 plus PR #2853 capture on 2026-09-25, after the boat moves in the local Tutorial. Cropped the 800-by-600 guest framebuffer to the 472-by-246 game content surface, excluding desktop, menu bar and window chrome without altering game pixels. PNG SHA-256 3d4681856b7d859536c7b2f0371642a134e568cb2028eb0fc733cd0526070868; 10,156 bytes."
 references:
 - https://info-mac.org/viewtopic.php?t=4778
 ---
@@ -47,9 +93,14 @@ references:
 This is Stuart Cheshire's complete electronic distribution: Bolo itself, its
 sound file, the Standard Autopilot brain and the manuals and technical notes that
 travelled with the game. It remains in the original BinHex wrapper submitted to
-Info-Mac.
+Info-Mac. The bundled shareware notice permits free, noncommercial electronic
+redistribution of this complete, unmodified package; it asks players to pay
+the shareware fee after a one-month evaluation. No registered copy or key is
+included.
 
 ## Tank country
+
+![Bolo's island Tutorial after moving the boat](https://assets.systemless.org/catalogue/media/sha256/3d/3d4681856b7d859536c7b2f0371642a134e568cb2028eb0fc733cd0526070868.png)
 
 Bolo's islands are working landscapes rather than fixed arenas. A tank can cut
 through forest, lay roads, repair bridges, place mines and move pillboxes while
@@ -60,3 +111,7 @@ and long territorial campaigns.
 The included tutorial teaches the terrain and construction tools without a
 network. The larger game was made for groups: up to sixteen commanders sharing a
 map, with optional programmable “brains” assisting their tanks.
+
+Systemless reaches the local Tutorial, paints its water and terrain, and
+responds to the boat's forward control. The optimized browser preview also
+passed through the opening lessons into the unobstructed map.
