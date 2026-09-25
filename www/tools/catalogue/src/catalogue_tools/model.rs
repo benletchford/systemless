@@ -202,6 +202,8 @@ pub struct Runtime {
     pub launch_modifiers: Vec<LaunchModifier>,
     pub show_menu_bar: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen_depth: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub application_partition_size: Option<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub remove_paths: Vec<String>,

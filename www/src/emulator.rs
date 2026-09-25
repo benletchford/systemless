@@ -327,6 +327,7 @@ impl Machine {
         architecture: GameArchitecture,
         launch_modifiers: &[LaunchModifier],
         show_menu_bar: bool,
+        screen_depth: Option<u16>,
         application_partition_size: Option<u32>,
         remove_paths: &[&str],
         file_mappings: &[(&str, &str)],
@@ -336,7 +337,10 @@ impl Machine {
     where
         F: FnMut(BootProgress),
     {
-        let mut runner = new_web_runner();
+        if screen_depth.is_some_and(|depth| !matches!(depth, 1 | 2 | 4 | 8)) {
+            return Err("Unsupported screen depth; expected 1, 2, 4, or 8 bits".into());
+        }
+        let mut runner = new_web_runner(screen_depth);
         runner.set_prefer_powerpc_executables(architecture == GameArchitecture::PowerPc);
         runner.set_app_start_time(current_mac_epoch_seconds());
         runner.set_application_partition_size(application_partition_size);
@@ -1167,8 +1171,8 @@ fn take_due_launch_modifiers(
     }
 }
 
-fn new_web_runner() -> FixtureRunner {
-    let mut runner = game::new_runner();
+fn new_web_runner(screen_depth: Option<u16>) -> FixtureRunner {
+    let mut runner = screen_depth.map_or_else(game::new_runner, game::new_runner_with_screen_depth);
     runner.set_ui_theme(UiThemeId::ClassicSystem7);
     runner
 }
@@ -1590,7 +1594,9 @@ mod tests {
 
     #[test]
     fn web_runtime_uses_systemless_presentation_theme() {
-        assert_eq!(new_web_runner().ui_theme_id(), UiThemeId::ClassicSystem7);
+        assert_eq!(new_web_runner(None).ui_theme_id(), UiThemeId::ClassicSystem7);
+        assert_eq!(new_web_runner(None).configured_screen_depth(), 8);
+        assert_eq!(new_web_runner(Some(4)).configured_screen_depth(), 4);
     }
 
     #[test]

@@ -278,6 +278,7 @@ fn GameRuntime(
         let arrows_as_numpad = game.settings.arrows_as_numpad;
         let launch_modifiers = game.settings.launch_modifiers;
         let show_menu_bar = game.settings.show_menu_bar;
+        let screen_depth = game.settings.screen_depth;
         let application_partition_size = game.settings.application_partition_size;
         let remove_paths = game.settings.remove_paths;
         let file_mappings = game.settings.file_mappings;
@@ -403,6 +404,7 @@ fn GameRuntime(
                 architecture,
                 launch_modifiers,
                 show_menu_bar,
+                screen_depth,
                 application_partition_size,
                 remove_paths,
                 file_mappings,
@@ -1989,6 +1991,7 @@ async fn boot_catalogue_worker(
         "id": game.id, "architecture": architecture.key(),
         "launch_modifiers": game.settings.launch_modifiers,
         "show_menu_bar": game.settings.show_menu_bar,
+        "screen_depth": game.settings.screen_depth,
         "application_partition_size": game.settings.application_partition_size,
         "remove_paths": game.settings.remove_paths,
         "file_mappings": game.settings.file_mappings,

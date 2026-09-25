@@ -309,6 +309,12 @@ pub fn entry(e: &Entry) -> Result<()> {
     );
     ensure!(
         e.runtime
+            .screen_depth
+            .is_none_or(|depth| matches!(depth, 1 | 2 | 4 | 8)),
+        "screen_depth must be 1, 2, 4, or 8 bits"
+    );
+    ensure!(
+        e.runtime
             .application_partition_size
             .is_none_or(|n| n >= 128 * 1024),
         "application_partition_size must be at least 128 KiB"
