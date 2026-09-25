@@ -4902,3 +4902,18 @@ fn drawing_imports_charge_guest_time_below_one_tick_per_redraw() {
         + 135 * ppc_import_extra_cycles_for_target(&T::CopyBits);
     assert!(redraw < tick_cycles / 2, "{redraw} of {tick_cycles}");
 }
+
+#[test]
+fn hle_import_runner_handles_text_width() {
+    let pef = synthetic_pef_with_import(b"TextWidth");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = PPC_DATA_BASE;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 7;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 42);
+}
