@@ -8389,10 +8389,19 @@ impl PpcLoadedApp {
                         recent_imports.pop_front();
                     }
                 }
+                // A null event cannot select an item. Pending callbacks
+                // still need the general dispatch path.
+                let null_dialog_poll = matches!(
+                    dispatcher_target,
+                    PpcImportDispatcherTarget::DialogCompatibility(
+                        PpcDialogCompatibilityOperation::DialogSelect
+                    )
+                ) && dialog_callback_stack.is_empty()
+                    && memory.read_u16_be(cpu.gpr[3]) == Some(0);
                 if !trace_ppc
                     && (*dispatcher_target != PpcImportDispatcherTarget::TickCount
                         || !trace_imports)
-                    && matches!(
+                    && (matches!(
                         dispatcher_target,
                         PpcImportDispatcherTarget::Button
                             | PpcImportDispatcherTarget::StillDown
@@ -8406,7 +8415,7 @@ impl PpcLoadedApp {
                             | PpcImportDispatcherTarget::StdFilterProc
                             | PpcImportDispatcherTarget::EnableMenuItem
                             | PpcImportDispatcherTarget::DisableMenuItem
-                    )
+                    ) || null_dialog_poll)
                 {
                     if trace_imports {
                         if binding.is_none() {
@@ -8517,6 +8526,9 @@ impl PpcLoadedApp {
                             ))
                         }
                         PpcImportDispatcherTarget::StdFilterProc => PpcImportAction::Return(0),
+                        PpcImportDispatcherTarget::DialogCompatibility(
+                            PpcDialogCompatibilityOperation::DialogSelect,
+                        ) => PpcImportAction::Return(0),
                         PpcImportDispatcherTarget::EnableMenuItem
                         | PpcImportDispatcherTarget::DisableMenuItem => {
                             ppc_set_menu_item_enabled(
