@@ -1423,3 +1423,179 @@ fn hle_import_runner_records_fetch_histogram_when_requested() {
     assert_eq!(probe.import_trace.len(), 1);
     assert!(probe.fetch_histogram.is_some());
 }
+
+#[test]
+fn ppc_watch_parser_accepts_hex_address_and_optional_length() {
+    assert_eq!(
+        parse_ppc_watch_range_value(std::ffi::OsStr::new("0x02000000")),
+        Some(PpcWatchRange {
+            start: 0x0200_0000,
+            len: 1
+        })
+    );
+    assert_eq!(
+        parse_ppc_watch_range_value(std::ffi::OsStr::new("$02000000:4")),
+        Some(PpcWatchRange {
+            start: 0x0200_0000,
+            len: 4
+        })
+    );
+    assert_eq!(
+        parse_ppc_watch_range_value(std::ffi::OsStr::new("02000000:0x10")),
+        Some(PpcWatchRange {
+            start: 0x0200_0000,
+            len: 16
+        })
+    );
+}
+
+#[test]
+fn ppc_watch_parser_rejects_empty_zero_and_overflow_ranges() {
+    assert_eq!(parse_ppc_watch_range_value(std::ffi::OsStr::new("")), None);
+    assert_eq!(
+        parse_ppc_watch_range_value(std::ffi::OsStr::new("02000000:0")),
+        None
+    );
+    assert_eq!(
+        parse_ppc_watch_range_value(std::ffi::OsStr::new("FFFFFFFF:2")),
+        None
+    );
+    assert_eq!(
+        parse_ppc_watch_range_value(std::ffi::OsStr::new("02000000:4:extra")),
+        None
+    );
+}
+
+#[test]
+fn ppc_watch_range_contains_only_selected_bytes() {
+    let range = PpcWatchRange {
+        start: 0x0200_0002,
+        len: 3,
+    };
+
+    assert!(!range.contains(0x0200_0001));
+    assert!(range.contains(0x0200_0002));
+    assert!(range.contains(0x0200_0004));
+    assert!(!range.contains(0x0200_0005));
+}
+
+#[test]
+fn ppc_watch_formatter_includes_context_and_written_byte() {
+    let line = format_ppc_watch_write(PpcWatchWriteRecord {
+        pc: 0x0100_0004,
+        lr: 0x0100_0010,
+        rtoc: 0x0200_0000,
+        sp: 0x03fe_ffc0,
+        addr: 0x0200_0002,
+        value: 0xaa,
+    });
+
+    assert_eq!(
+        line,
+        "[PPC-WATCH] pc=$01000004 lr=$01000010 rtoc=$02000000 sp=$03FEFFC0 addr=$02000002 value=$AA"
+    );
+}
+
+#[test]
+fn ppc_trace_fetch_formatter_includes_pc_and_instruction_word() {
+    assert_eq!(
+        format_ppc_trace_fetch(0x0100_0004, 0x4e80_0020),
+        "[PPC-TRACE] fetch pc=$01000004 word=$4E800020"
+    );
+}
+
+#[test]
+fn ppc_trace_import_formatter_includes_import_and_context() {
+    let entry = PpcHleImportTraceEntry {
+        import_index: 12,
+        library_name: "InterfaceLib".to_string(),
+        symbol_name: "NewPtrClear".to_string(),
+        pc: 0x01f0_0030,
+        lr: 0x0100_0010,
+        rtoc: 0x0200_0000,
+        sp: 0x03fe_ffc0,
+        dispatcher_target: PpcImportDispatcherTarget::NewPtr { clear: true },
+        repeat_count: 1,
+    };
+
+    assert_eq!(
+        format_ppc_trace_import(&entry),
+        "[PPC-TRACE] import #12 InterfaceLib:NewPtrClear pc=$01F00030 lr=$01000010 rtoc=$02000000 sp=$03FEFFC0 target=NewPtr { clear: true }"
+    );
+    assert_eq!(
+        format_ppc_trace_unknown_import(13, 0x01f0_0034, 0x0100_0020, 0x0200_0004, 0x03fe_ffb0),
+        "[PPC-TRACE] import #13 <unknown> pc=$01F00034 lr=$01000020 rtoc=$02000004 sp=$03FEFFB0"
+    );
+}
+
+#[test]
+fn marathon_runtime_imports_have_native_dispatch_targets() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "EventAvail"),
+        PpcImportDispatcherTarget::EventAvail
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "PBControlSync"),
+        PpcImportDispatcherTarget::PBControl
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "HandToHand"),
+        PpcImportDispatcherTarget::HandToHand
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetEntries"),
+        PpcImportDispatcherTarget::SetEntries
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "RestoreEntries"),
+        PpcImportDispatcherTarget::RestoreEntries
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "MakeITable"),
+        PpcImportDispatcherTarget::MakeITable
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "QDError"),
+        PpcImportDispatcherTarget::QDError
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "RGB2HSL"),
+        PpcImportDispatcherTarget::RGB2HSL
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "RGB2HSV"),
+        PpcImportDispatcherTarget::RGB2HSV
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "HSV2RGB"),
+        PpcImportDispatcherTarget::HSV2RGB
+    );
+    assert_eq!(
+        dispatcher_target_for_import("AppearanceLib", "MenuEvent"),
+        PpcImportDispatcherTarget::MenuEvent
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "TEUseStyleScrap"),
+        PpcImportDispatcherTarget::TEUseStyleScrap
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "FixRatio"),
+        PpcImportDispatcherTarget::FixRatio
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "FixMul"),
+        PpcImportDispatcherTarget::FixMul
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "Long2Fix"),
+        PpcImportDispatcherTarget::Long2Fix
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "CountMItems"),
+        PpcImportDispatcherTarget::CountMItems
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetItemCmd"),
+        PpcImportDispatcherTarget::SetItemCmd
+    );
+}
