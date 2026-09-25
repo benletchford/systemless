@@ -4793,3 +4793,75 @@ fn quickdraw_compatibility_imports_pre_resolve_to_typed_operations() {
         );
     }
 }
+
+#[test]
+fn init_graf_initializes_application_quickdraw_globals() {
+    let pef = synthetic_pef_with_import(b"InitGraf");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let global_ptr = PPC_DATA_BASE + 0x2000;
+    loaded.memory.add_region(global_ptr - 126, vec![0; 130]);
+    loaded.cpu.gpr[3] = global_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.memory.read_u32_be(global_ptr - 126), Some(1));
+    assert_eq!(
+        loaded.memory.read_u32_be(global_ptr - 122),
+        Some(PPC_MAIN_SCREEN_BASE)
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(global_ptr - 118),
+        Some(ppc_main_screen_row_bytes() as u16)
+    );
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, global_ptr - 116),
+        Some((
+            0,
+            0,
+            ppc_main_screen_height() as i16,
+            ppc_main_screen_width() as i16,
+        ))
+    );
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, global_ptr - 24, 8),
+        Some(vec![0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55])
+    );
+    assert_eq!(loaded.memory.read_u32_be(global_ptr), Some(PPC_MAIN_GWORLD));
+}
+
+#[test]
+fn hle_import_runner_gets_and_sets_gray_region_low_memory_handle() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LMSetGrayRgn"),
+        PpcImportDispatcherTarget::LMSetGrayRgn
+    );
+
+    let pef = synthetic_pef_with_import(b"LMSetGrayRgn");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    assert_eq!(
+        loaded.memory.read_u32_be(PPC_GRAY_RGN_ADDR),
+        Some(PPC_GRAY_RGN_HANDLE)
+    );
+
+    loaded.cpu.gpr[3] = 0x0300_1234;
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.memory.read_u32_be(PPC_GRAY_RGN_ADDR),
+        Some(0x0300_1234)
+    );
+
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetGrayRgn;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0x0300_1234);
+}
