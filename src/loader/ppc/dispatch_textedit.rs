@@ -669,13 +669,34 @@ pub(super) fn dispatch_textedit_import(
             cpu.gpr[3] as u16,
         ))),
         PpcImportDispatcherTarget::TEScroll { pinned } => {
-            ppc_te_scroll(
+            let moved = ppc_te_scroll(
                 memory,
                 cpu.gpr[5],
                 cpu.gpr[3] as u16 as i16,
                 cpu.gpr[4] as u16 as i16,
                 pinned,
             );
+            // Text (1993), p. 2-89: TEScroll scrolls the text within the
+            // viewRect, leaving uncovered areas in the background color as
+            // ScrollRect does. Erasing the viewRect before redrawing gives
+            // the same image; redrawing over the old pixels would accumulate
+            // srcOr text at every previous position.
+            if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[5]).filter(|_| moved) {
+                let port = memory
+                    .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
+                    .filter(|port| *port != 0 && gworlds.iter().any(|g| g.port == *port))
+                    .unwrap_or(current_gworld);
+                if let Some(view) = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET) {
+                    let _ = ppc_paint_rect_bounds(
+                        memory,
+                        gworlds,
+                        port,
+                        view,
+                        *quickdraw_back_color,
+                        toolbox_startup.quickdraw_back_indices.get(&port).copied(),
+                    );
+                }
+            }
             ppc_te_draw(
                 memory,
                 handles,

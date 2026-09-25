@@ -22277,6 +22277,37 @@ pub(super) fn ppc_draw_text_bytes(
     explicit_index: Option<u8>,
     bytes: &[u8],
 ) -> i16 {
+    ppc_draw_text_bytes_clipped(
+        memory,
+        gworlds,
+        current_gworld,
+        pen,
+        text_font,
+        text_size,
+        text_mode,
+        color,
+        explicit_index,
+        None,
+        bytes,
+    )
+}
+
+/// [`ppc_draw_text_bytes`], additionally clipped to `clip_rect` in port
+/// coordinates.
+#[allow(clippy::too_many_arguments)]
+fn ppc_draw_text_bytes_clipped(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    pen: (i16, i16),
+    text_font: i16,
+    text_size: i16,
+    text_mode: i16,
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+    clip_rect: Option<(i16, i16, i16, i16)>,
+    bytes: &[u8],
+) -> i16 {
     let advance = ppc_text_bytes_advance_for_font(bytes, text_font, text_size);
     ppc_draw_text_chars(
         memory,
@@ -22288,6 +22319,7 @@ pub(super) fn ppc_draw_text_bytes(
         text_mode,
         color,
         explicit_index,
+        clip_rect,
         bytes.iter().map(|byte| char::from(*byte)),
     );
     advance
@@ -22305,6 +22337,39 @@ fn ppc_draw_text_bytes_styled(
     color: PpcRgbColor,
     explicit_index: Option<u8>,
     style: u8,
+    bytes: &[u8],
+) -> i16 {
+    ppc_draw_text_bytes_styled_clipped(
+        memory,
+        gworlds,
+        current_gworld,
+        pen,
+        text_font,
+        text_size,
+        text_mode,
+        color,
+        explicit_index,
+        style,
+        None,
+        bytes,
+    )
+}
+
+/// [`ppc_draw_text_bytes_styled`], additionally clipped to `clip_rect` in
+/// port coordinates.
+#[allow(clippy::too_many_arguments)]
+fn ppc_draw_text_bytes_styled_clipped(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    pen: (i16, i16),
+    text_font: i16,
+    text_size: i16,
+    text_mode: i16,
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+    style: u8,
+    clip_rect: Option<(i16, i16, i16, i16)>,
     bytes: &[u8],
 ) -> i16 {
     let style = QuickDrawTextStyle::from_bits(style);
@@ -22328,6 +22393,7 @@ fn ppc_draw_text_bytes_styled(
             text_mode,
             color,
             explicit_index,
+            clip_rect,
             bytes.iter().map(|byte| char::from(*byte)),
         );
     } else {
@@ -22343,6 +22409,7 @@ fn ppc_draw_text_bytes_styled(
             explicit_index,
             style,
             base_advance,
+            clip_rect,
             bytes.iter().map(|byte| char::from(*byte)),
         );
     }
@@ -22360,6 +22427,7 @@ fn ppc_draw_text_chars(
     text_mode: i16,
     color: PpcRgbColor,
     explicit_index: Option<u8>,
+    clip_rect: Option<(i16, i16, i16, i16)>,
     chars: impl IntoIterator<Item = char>,
 ) {
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
@@ -22374,9 +22442,7 @@ fn ppc_draw_text_chars(
     else {
         return;
     };
-    let clip_storage = memory
-        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
-        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let clip_storage = ppc_port_clip_storage(memory, current_gworld, clip_rect);
     let vis_storage = memory
         .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
         .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
@@ -22493,6 +22559,7 @@ fn ppc_draw_text_chars_styled(
     explicit_index: Option<u8>,
     style: QuickDrawTextStyle,
     line_advance: i32,
+    clip_rect: Option<(i16, i16, i16, i16)>,
     chars: impl IntoIterator<Item = char>,
 ) {
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
@@ -22507,9 +22574,7 @@ fn ppc_draw_text_chars_styled(
     else {
         return;
     };
-    let clip_storage = memory
-        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
-        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let clip_storage = ppc_port_clip_storage(memory, current_gworld, clip_rect);
     let vis_storage = memory
         .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
         .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
@@ -32111,13 +32176,15 @@ fn ppc_te_get_point(
     (u32::from(v as u16) << 16) | u32::from(h as u16)
 }
 
-fn ppc_te_scroll(memory: &mut PpcSectionMem, te_handle: u32, dh: i16, dv: i16, pinned: bool) {
+/// Moves destRect by (dh, dv), pinned to the text when requested. Returns
+/// whether destRect actually moved.
+fn ppc_te_scroll(memory: &mut PpcSectionMem, te_handle: u32, dh: i16, dv: i16, pinned: bool) -> bool {
     let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
-        return;
+        return false;
     };
     let Some((top, left, bottom, right)) = ppc_read_rect(memory, te_ptr + PPC_TE_DEST_RECT_OFFSET)
     else {
-        return;
+        return false;
     };
     let mut next_top = top.saturating_add(dv);
     let mut next_left = left.saturating_add(dh);
@@ -32160,6 +32227,7 @@ fn ppc_te_scroll(memory: &mut PpcSectionMem, te_handle: u32, dh: i16, dv: i16, p
         next_top.saturating_add(height),
         next_left.saturating_add(width),
     );
+    (next_top, next_left) != (top, left)
 }
 
 fn ppc_te_scrap_handle(
@@ -32362,7 +32430,10 @@ pub(super) fn ppc_te_draw(
     let selection_end = memory
         .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
         .unwrap_or(0) as usize;
-    let view = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET).unwrap_or((0, 0, 0, 0));
+    // Text (1993), pp. 2-16 and 2-29: viewRect bounds the visible portion of
+    // the text, so drawing is clipped to it.
+    let view_clip = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET);
+    let view = view_clip.unwrap_or((0, 0, 0, 0));
     for line in 0..line_count {
         let start = usize::from(
             memory
@@ -32416,7 +32487,7 @@ pub(super) fn ppc_te_draw(
                     .unwrap_or(visible_end)
                     .min(visible_end)
                     .max(offset + 1);
-                let advance = ppc_draw_text_bytes_styled(
+                let advance = ppc_draw_text_bytes_styled_clipped(
                     memory,
                     gworlds,
                     port,
@@ -32427,13 +32498,14 @@ pub(super) fn ppc_te_draw(
                     style.color,
                     None,
                     style.face,
+                    view_clip,
                     &text[offset..run_end],
                 );
                 pen = pen.saturating_add(advance);
                 offset = run_end;
             }
         } else {
-            let _ = ppc_draw_text_bytes(
+            let _ = ppc_draw_text_bytes_clipped(
                 memory,
                 gworlds,
                 port,
@@ -32443,6 +32515,7 @@ pub(super) fn ppc_te_draw(
                 mode,
                 fallback_color,
                 explicit_index,
+                view_clip,
                 &text[start..visible_end],
             );
         }
@@ -35604,6 +35677,7 @@ fn ppc_draw_tracked_menu(
                 PPC_QD_TEXT_MODE_SRC_OR,
                 mark_color,
                 mark_index,
+                None,
                 std::iter::once(mark_char),
             );
         }
@@ -35659,6 +35733,7 @@ fn ppc_draw_tracked_menu(
                 mode,
                 command_color,
                 command_index,
+                None,
                 ['\u{2318}', char::from(command)],
             );
         }
@@ -39310,6 +39385,53 @@ fn ppc_region_storage(memory: &mut PpcSectionMem, rgn_handle: u32) -> Option<Vec
     (0..size)
         .map(|offset| memory.read_u8(ptr + offset))
         .collect()
+}
+
+/// The port's clipRgn storage, further intersected with `clip_rect` when the
+/// caller imposes its own bound (TextEdit's viewRect). Imaging With QuickDraw
+/// (1994), p. 3-94: an empty intersection is an empty region, which clips
+/// every pixel.
+fn ppc_port_clip_storage(
+    memory: &mut PpcSectionMem,
+    port: u32,
+    clip_rect: Option<(i16, i16, i16, i16)>,
+) -> Option<Vec<u8>> {
+    let clip_storage = memory
+        .read_u32_be(port.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let Some((top, left, bottom, right)) = clip_rect else {
+        return clip_storage;
+    };
+    const EMPTY_REGION: [u8; 10] = [0, 10, 0, 0, 0, 0, 0, 0, 0, 0];
+    if bottom <= top || right <= left {
+        return Some(EMPTY_REGION.to_vec());
+    }
+    let mut rect_storage = vec![0, 10];
+    for word in [top, left, bottom, right] {
+        rect_storage.extend_from_slice(&word.to_be_bytes());
+    }
+    let Some(clip_storage) = clip_storage else {
+        return Some(rect_storage);
+    };
+    let Some(bbox) = ppc_region_storage_bbox(&clip_storage) else {
+        return Some(EMPTY_REGION.to_vec());
+    };
+    let (band_top, band_bottom) = (bbox.0.max(top), bbox.2.min(bottom));
+    if band_bottom <= band_top {
+        return Some(EMPTY_REGION.to_vec());
+    }
+    let (Some(clip_rows), Some(rect_rows)) = (
+        ppc_region_rows_for_band(&clip_storage, band_top, band_bottom),
+        ppc_region_rows_for_band(&rect_storage, band_top, band_bottom),
+    ) else {
+        return Some(clip_storage);
+    };
+    let rows = clip_rows
+        .iter()
+        .zip(&rect_rows)
+        .map(|(clip, rect)| ppc_region_intersect_rows(clip, rect))
+        .collect::<Vec<_>>();
+    Some(ppc_region_storage_from_rows(band_top, &rows).unwrap_or_else(|| EMPTY_REGION.to_vec()))
 }
 
 fn ppc_region_storage_bbox(storage: &[u8]) -> Option<(i16, i16, i16, i16)> {

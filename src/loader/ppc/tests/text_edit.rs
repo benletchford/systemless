@@ -795,3 +795,141 @@ fn textedit_and_te_text_box_use_explicit_foreground_index() {
     }));
 }
 
+#[test]
+fn te_update_clips_text_to_the_view_rect() {
+    // Text (1993), pp. 2-16 and 2-29: TextEdit draws only inside viewRect.
+    let pef = synthetic_pef_with_import(b"TEUpdate");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let dest_rect = scratch;
+    let view_rect = scratch + 8;
+    loaded.memory.add_region(scratch, vec![0; 0x20]);
+    ppc_write_rect(&mut loaded.memory, dest_rect, 60, 10, 200, 100).unwrap();
+    ppc_write_rect(&mut loaded.memory, view_rect, 60, 10, 80, 100).unwrap();
+    loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 103);
+    let mut last_mem_error = PPC_NO_ERR;
+    let te_handle = ppc_te_initialize_record(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        dest_rect,
+        view_rect,
+        PPC_MAIN_GWORLD,
+        0,
+        PPC_QD_TEXT_MODE_SRC_OR,
+        12,
+        loaded.quickdraw_fore_color,
+        false,
+    );
+    assert_eq!(
+        ppc_te_set_text(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            te_handle,
+            b"0\r0\r0\r0\r0",
+        ),
+        PPC_NO_ERR
+    );
+    loaded.cpu.gpr[3] = view_rect;
+    loaded.cpu.gpr[4] = te_handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let mut ink_rows = |rows: std::ops::Range<i32>| {
+        rows.filter(|&y| {
+            (10..100)
+                .any(|x| ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)) == Some(103))
+        })
+        .count()
+    };
+    assert!(ink_rows(60..80) > 0, "lines inside viewRect must still draw");
+    assert_eq!(ink_rows(80..200), 0, "lines below viewRect must be clipped");
+}
+
+#[test]
+fn te_scroll_erases_the_previous_text_position() {
+    // Text (1993), p. 2-89: TEScroll scrolls the text within viewRect, so
+    // srcOr text must not remain at its previous position.
+    let pef = synthetic_pef_with_import(b"TEScroll");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let dest_rect = scratch;
+    let view_rect = scratch + 8;
+    loaded.memory.add_region(scratch, vec![0; 0x20]);
+    ppc_write_rect(&mut loaded.memory, dest_rect, 60, 10, 200, 100).unwrap();
+    ppc_write_rect(&mut loaded.memory, view_rect, 60, 10, 120, 100).unwrap();
+    loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 103);
+    let mut last_mem_error = PPC_NO_ERR;
+    let te_handle = ppc_te_initialize_record(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        dest_rect,
+        view_rect,
+        PPC_MAIN_GWORLD,
+        0,
+        PPC_QD_TEXT_MODE_SRC_OR,
+        12,
+        loaded.quickdraw_fore_color,
+        false,
+    );
+    assert_eq!(
+        ppc_te_set_text(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            te_handle,
+            b"0\r0\r0\r0\r0\r0\r0\r0",
+        ),
+        PPC_NO_ERR
+    );
+    ppc_te_draw(
+        &mut loaded.memory,
+        test_handles!(loaded),
+        &loaded.gworlds,
+        te_handle,
+        PPC_MAIN_GWORLD,
+        loaded.quickdraw_fore_color,
+        &loaded.quickdraw_fore_indices,
+    );
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let ink_rows = |memory: &mut PpcSectionMem| {
+        (60..120)
+            .filter(|&y| {
+                (10..100).any(|x| ppc_quickdraw_read_pixel(memory, front, (x, y)) == Some(103))
+            })
+            .collect::<Vec<i32>>()
+    };
+    let before = ink_rows(&mut loaded.memory);
+    assert!(!before.is_empty());
+    let dv = -7i32;
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = dv as u32;
+    loaded.cpu.gpr[5] = te_handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    let after = ink_rows(&mut loaded.memory);
+    let shifted_top = before.iter().map(|y| y + dv).filter(|y| *y >= 60).collect::<Vec<_>>();
+    assert_eq!(
+        after[..shifted_top.len()],
+        shifted_top[..],
+        "only the scrolled text may remain inside the view"
+    );
+}
