@@ -107,6 +107,7 @@ try {
     probe.raf_trace,
     probe.long_tasks,
     probe.frame_trace,
+    probe.worker_trace,
     probe.started_at,
   );
   report.archive_server_requests = archiveServer.requests();
@@ -246,6 +247,7 @@ async function runtimeProbe(sampleMs) {
         dt: frameTimestamp - lastFrameTimestamp,
         status: status ? status.textContent : null,
         runtime: canvas ? canvas.getAttribute("data-runtime-game-id") : null,
+        worker: canvas?.getAttribute("data-runtime-worker") === "true",
       });
       lastFrameTimestamp = frameTimestamp;
 
@@ -259,6 +261,7 @@ async function runtimeProbe(sampleMs) {
           raf_trace: window.__systemlessRafTrace || [],
           long_tasks: window.__systemlessLongTasks || [],
           frame_trace: window.__systemlessFrameTrace || [],
+          worker_trace: window.__systemlessWorkerTrace || [],
         });
       }
     }
@@ -272,11 +275,46 @@ function runtimeTracePrelude() {
     const originalRequestAnimationFrame = window.requestAnimationFrame.bind(window);
     const rafTrace = [];
     const frameTrace = [];
+    const workerTrace = [];
     const longTasks = [];
     let nextRafId = 0;
     window.__systemlessRafTrace = rafTrace;
     window.__systemlessFrameTrace = frameTrace;
+    window.__systemlessWorkerTrace = workerTrace;
     window.__systemlessLongTasks = longTasks;
+    const NativeWorker = window.Worker;
+    window.Worker = new Proxy(NativeWorker, {
+      construct(Target, args) {
+        const worker = Reflect.construct(Target, args);
+        const postMessage = worker.postMessage.bind(worker);
+        let frameSentAt = null;
+        worker.postMessage = (...messageArgs) => {
+          if (messageArgs[0]?.type === "frame") {
+            frameSentAt = performance.now();
+          }
+          return postMessage(...messageArgs);
+        };
+        worker.addEventListener("message", (event) => {
+          const data = event.data;
+          if (data?.type !== "frame") return;
+          const t = performance.now();
+          workerTrace.push({
+            t,
+            // Includes worker execution, message transfer, and scheduling.
+            totalMs: frameSentAt === null ? null : t - frameSentAt,
+            guestTick: data.guestTick,
+            ticksBehind: data.ticksBehind,
+            lastSteps: data.lastSteps,
+            cpuBudgetMs: data.cpuBudgetMs,
+            audioQueueMs: data.audioQueueMs,
+            visualWork: data.visualWork,
+            painted: !!(data.frame || data.gpuFrame),
+          });
+          if (workerTrace.length > 6000) workerTrace.splice(0, workerTrace.length - 6000);
+        });
+        return worker;
+      },
+    });
     window.requestAnimationFrame = (callback) => {
       const id = ++nextRafId;
       const scheduledAt = performance.now();
@@ -324,7 +362,7 @@ function runtimeTracePrelude() {
   })();`;
 }
 
-function buildReport(samples, console, rafTrace, longTasks, frameTrace, probeStartedAt) {
+function buildReport(samples, console, rafTrace, longTasks, frameTrace, workerTrace, probeStartedAt) {
   const gaps = samples.filter((sample) => Number.isFinite(sample.dt) && sample.dt > 50);
   const runtimeStart = samples.find((sample) => sample.runtime)?.t ?? null;
   const runtimeStartedAt = runtimeStart === null ? null : probeStartedAt + runtimeStart;
@@ -344,9 +382,11 @@ function buildReport(samples, console, rafTrace, longTasks, frameTrace, probeSta
   const runtimeLongTasks = measuredRuntimeStartedAt === null
     ? []
     : longTasks.filter((entry) => entry.startTime >= measuredRuntimeStartedAt);
+  const worker = samples.some((sample) => sample.worker);
+  const allFrames = worker ? workerTrace : frameTrace;
   const runtimeFrames = measuredRuntimeStartedAt === null
     ? []
-    : frameTrace.filter((entry) => entry.t >= measuredRuntimeStartedAt);
+    : allFrames.filter((entry) => entry.t >= measuredRuntimeStartedAt);
   const runtimeCpuBudgets = runtimeFrames
     .map((entry) => entry.cpuBudgetMs)
     .filter(Number.isFinite);
@@ -369,6 +409,7 @@ function buildReport(samples, console, rafTrace, longTasks, frameTrace, probeSta
 
   return {
     route,
+    runtime_mode: worker ? "worker" : "main-thread",
     archive_url: archiveUrl,
     archive_path: archivePath,
     sample_ms: sampleMs,
