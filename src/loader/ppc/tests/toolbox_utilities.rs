@@ -582,3 +582,58 @@ fn native_lmgetcurstackbase_reads_the_live_low_memory_long() {
     run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetCurStackBase);
     assert_eq!(loaded.cpu.gpr[3], 0x2345_6780);
 }
+
+#[test]
+fn hle_import_runner_handles_date_and_time_utilities() {
+    let pef = synthetic_pef_with_import(b"GetDateTime");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let secs_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(secs_ptr, vec![0; 4]);
+    loaded.cpu.gpr[3] = secs_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.memory.read_u32_be(secs_ptr),
+        Some(PPC_FIXED_MAC_TIME)
+    );
+
+    let pef = synthetic_pef_with_import(b"LMGetTime");
+    let mut loaded = load_pef_application(&pef).unwrap();
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], PPC_FIXED_MAC_TIME);
+
+    for (seconds, expected) in [
+        (0, [1904, 1, 1, 0, 0, 0, 6]),
+        (
+            59 * 86_400 + 23 * 3_600 + 59 * 60 + 58,
+            [1904, 2, 29, 23, 59, 58, 2],
+        ),
+        (366 * 86_400, [1905, 1, 1, 0, 0, 0, 1]),
+    ] {
+        let pef = synthetic_pef_with_import(b"SecondsToDate");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let date_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(date_ptr, vec![0xaa; 14]);
+        loaded.cpu.gpr[3] = seconds;
+        loaded.cpu.gpr[4] = date_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        for (index, field) in expected.into_iter().enumerate() {
+            assert_eq!(
+                loaded.memory.read_u16_be(date_ptr + index as u32 * 2),
+                Some(field),
+                "field {index} for {seconds} seconds"
+            );
+        }
+    }
+}

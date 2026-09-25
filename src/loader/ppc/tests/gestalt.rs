@@ -126,3 +126,47 @@ fn hle_import_runner_reports_unknown_gestalt_selector() {
     );
     assert_eq!(loaded.memory.read_u32_be(response_ptr), Some(0));
 }
+
+#[test]
+fn hle_import_runner_handles_sys_environs() {
+    let pef = synthetic_pef_with_import(b"SysEnvirons");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let sys_env_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(sys_env_ptr, vec![0xaa; 16]);
+    loaded.cpu.gpr[3] = 2;
+    loaded.cpu.gpr[4] = sys_env_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u16_be(sys_env_ptr), Some(2));
+    assert_eq!(
+        loaded.memory.read_u16_be(sys_env_ptr + 2),
+        Some(REFERENCE_MACHINE_PROFILE.gestalt_machine_type)
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(sys_env_ptr + 4),
+        Some(REFERENCE_MACHINE_PROFILE.system_version_bcd)
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(sys_env_ptr + 6),
+        Some(REFERENCE_MACHINE_PROFILE.gestalt_processor_type as u16)
+    );
+    assert_eq!(
+        loaded.memory.read_u8(sys_env_ptr + 8),
+        Some(u8::from(REFERENCE_MACHINE_PROFILE.has_fpu()))
+    );
+    assert_eq!(loaded.memory.read_u8(sys_env_ptr + 9), Some(1));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[4] = 0x30;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3] as i32, i32::from(PPC_PARAM_ERR));
+}

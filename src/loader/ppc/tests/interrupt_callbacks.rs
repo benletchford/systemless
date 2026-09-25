@@ -1037,3 +1037,74 @@ fn driver_services_absolute_time_converts_to_nanoseconds() {
         Some(((1u64 << 32) | 2) * 1_000)
     );
 }
+
+#[test]
+fn hle_import_runner_handles_delay_microseconds_and_tick_count() {
+    assert_eq!(
+        ppc_virtual_microseconds(100, 100, 25, 50),
+        100 * PPC_MICROSECONDS_PER_TICK + 3 * PPC_MICROSECONDS_PER_TICK / 4
+    );
+
+    let pef = synthetic_pef_with_import(b"Delay");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let final_ticks_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(final_ticks_ptr, vec![0xaa; 4]);
+    loaded.set_clock_cycle_timing(1_000_000, 0);
+    loaded.set_tick_count(42);
+    loaded.cpu.gpr[3] = 2;
+    loaded.cpu.gpr[4] = final_ticks_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.result, PpcRunResult::CycleLimit { cycles: 64 });
+    assert_eq!(loaded.cpu.pc, loaded.import_trap_base);
+    assert_eq!(
+        loaded.memory.read_u32_be(final_ticks_ptr),
+        Some(0xaaaa_aaaa)
+    );
+
+    loaded.set_tick_count(43);
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.result, PpcRunResult::CycleLimit { cycles: 64 });
+
+    loaded.set_tick_count(44);
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.memory.read_u32_be(final_ticks_ptr), Some(44));
+    assert_eq!(loaded.toolbox_startup.delay_deadline, None);
+
+    let pef = synthetic_pef_with_import(b"Microseconds");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let microseconds_ptr = PPC_DATA_BASE + 0x1000;
+    let tick_count = 100u32;
+    let cycles_per_tick = 64;
+    let expected_usecs = ppc_virtual_microseconds(tick_count, cycles_per_tick, 0, 4);
+    loaded.memory.add_region(microseconds_ptr, vec![0xaa; 8]);
+    loaded.cpu.gpr[3] = microseconds_ptr;
+    loaded.set_tick_count(tick_count);
+    loaded.set_clock_cycle_timing(cycles_per_tick, 0);
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.memory.read_u32_be(microseconds_ptr),
+        Some((expected_usecs >> 32) as u32)
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(microseconds_ptr + 4),
+        Some(expected_usecs as u32)
+    );
+
+    let pef = synthetic_pef_with_import(b"TickCount");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.set_tick_count(0x1234_5678);
+    loaded.set_clock_cycle_timing(64, 0);
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
+}

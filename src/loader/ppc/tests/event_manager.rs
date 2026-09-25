@@ -716,3 +716,64 @@ fn import_bindings_classify_event_manager_imports() {
         PpcImportDispatcherTarget::GetKeys
     );
 }
+
+#[test]
+fn hle_import_runner_handles_get_keys() {
+    let pef = synthetic_pef_with_import(b"GetKeys");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let key_map_ptr = PPC_DATA_BASE + 0x1000;
+    loaded
+        .memory
+        .add_region(key_map_ptr, vec![0xaa; PPC_KEY_MAP_SIZE as usize]);
+    loaded.cpu.gpr[3] = key_map_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    for offset in 0..PPC_KEY_MAP_SIZE {
+        assert_eq!(loaded.memory.read_u8(key_map_ptr + offset), Some(0));
+    }
+
+    let pef = synthetic_pef_with_import(b"GetKeys");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let key_map_ptr = PPC_DATA_BASE + 0x1000;
+    let mut input = PpcInputSnapshot::default();
+    input.key_map[(PPC_KEY_LEFT / 8) as usize] |= 1u8 << (PPC_KEY_LEFT % 8);
+    loaded.set_input_snapshot(input);
+    loaded
+        .memory
+        .add_region(key_map_ptr, vec![0; PPC_KEY_MAP_SIZE as usize]);
+    loaded.cpu.gpr[3] = key_map_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_ne!(
+        loaded
+            .memory
+            .read_u8(key_map_ptr + u32::from(PPC_KEY_LEFT / 8))
+            .unwrap()
+            & (1u8 << (PPC_KEY_LEFT % 8)),
+        0
+    );
+}
+
+#[test]
+fn hle_run_mirrors_shared_process_input_into_powerpc_low_memory() {
+    use crate::memory::globals::addr;
+
+    let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+    let mut key_map = [0; PPC_KEY_MAP_SIZE as usize];
+    key_map[2] = 0x20;
+    loaded.process_input.set_key_map_snapshot(key_map);
+    loaded.process_input.set_mouse_state((115, 210), true);
+
+    let _ = loaded.run_with_hle_imports(0);
+
+    assert_eq!(loaded.memory.read_u8(addr::MB_STATE), Some(0));
+    assert_eq!(loaded.memory.read_u8(addr::KEY_MAP_LM + 2), Some(0x20));
+    assert_eq!(loaded.memory.read_u16_be(addr::MOUSE_LOC2), Some(115));
+    assert_eq!(loaded.memory.read_u16_be(addr::MOUSE_LOC2 + 2), Some(210));
+}
