@@ -90,6 +90,7 @@ artifacts:
 references:
 - https://classicmacdemos.com/bad-mojo
 - https://github.com/benletchford/systemless/issues/2814
+- https://github.com/benletchford/systemless/issues/2819
 ---
 
 ## Under Eddie's bar
@@ -101,4 +102,5 @@ Macintosh demo introduces the setting, then offers **Play Demo** alongside its
 plot and trailer options. It is a limited promotional release, not the retail CD.
 
 The 68K run reaches the first scene in Systemless. Browser performance is still
-below the launch threshold, so direct launch remains disabled for now.
+below the launch threshold, so direct launch remains disabled while
+[browser pacing is investigated](https://github.com/benletchford/systemless/issues/2819).
