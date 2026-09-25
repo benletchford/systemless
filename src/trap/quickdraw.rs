@@ -5057,7 +5057,8 @@ impl super::TrapDispatcher {
             // NewPixMap ($AA03)
             // Allocates an initialized PixMap with its own color-table handle.
             // FUNCTION NewPixMap: PixMapHandle;
-            // Inside Macintosh Volume V (1986), p. V-57.
+            // Imaging With QuickDraw (1994), p. 4-86: copy every field from
+            // the current device PixMap except its color table.
             (true, 0x203) => {
                 let gd_handle = self.ensure_main_gdevice(bus);
                 let gd_ptr = bus.read_long(gd_handle);
@@ -5072,7 +5073,6 @@ impl super::TrapDispatcher {
                 for i in 0..50u32 {
                     bus.write_byte(pm_ptr + i, bus.read_byte(gd_pmap + i));
                 }
-                bus.write_long(pm_ptr, 0);
                 let depth = bus.read_word(pm_ptr + 32) as u32;
                 let source_ctab_handle = bus.read_long(pm_ptr + 42);
                 let ctab_handle = if let Some(clut) =
