@@ -4606,3 +4606,32 @@ fn hle_import_runner_ptr_to_hand_copies_bytes_into_a_new_handle() {
     );
 }
 
+#[test]
+fn hle_import_runner_holds_resident_native_memory() {
+    let pef = synthetic_pef_with_import(b"HoldMemory");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = PPC_DATA_BASE;
+    loaded.cpu.gpr[4] = 4096;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+}
+
+#[test]
+fn system_arena_leaves_a_separate_resource_tail_after_max_block() {
+    let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+    loaded.reserve_ppc_system_storage();
+
+    let limit = loaded.heap_limit();
+    let arena = limit - 2 * 1024 * 1024 - PPC_SYSTEM_ALLOCATION_POOL_SIZE;
+    let (total, largest) = ppc_heap_free_capacity(&loaded.memory, loaded.heap_cursor(), limit);
+    assert!(loaded
+        .memory
+        .has_readonly_allocation_exclusion(arena, PPC_SYSTEM_ALLOCATION_POOL_SIZE));
+    assert!(loaded.memory.read_u8(arena).is_some());
+    assert_eq!(total - largest, 2 * 1024 * 1024);
+}
+

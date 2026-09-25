@@ -8788,3 +8788,39 @@ fn native_parameter_block_working_directory_lifecycle_uses_process_registry() {
     assert_eq!(volume_close_probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
 }
+
+#[test]
+fn hle_import_runner_gets_desktop_database_path_for_boot_volume() {
+    let pef = synthetic_pef_with_import(b"PBDTGetPath");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(pb, vec![0; 26]);
+    let _ = loaded.memory.write_u16_be(pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16);
+    loaded.cpu.gpr[3] = pb;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(PPC_NO_ERR as u16));
+    assert_eq!(loaded.memory.read_u16_be(pb + 24), Some(0x7f00));
+}
+
+#[test]
+fn hle_import_runner_reports_missing_desktop_comment() {
+    let pef = synthetic_pef_with_import(b"PBDTGetCommentSync");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(pb, vec![0; 44]);
+    let _ = loaded.memory.write_u16_be(pb + 24, 0x7f00);
+    loaded.cpu.gpr[3] = pb;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-5012));
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some((-5012i16) as u16));
+    assert_eq!(loaded.memory.read_u32_be(pb + 40), Some(0));
+}
