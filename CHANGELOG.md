@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.61.0](https://github.com/benletchford/systemless/compare/v0.60.0...v0.61.0) (2026-09-25)
+
+
+### Features
+
+* **catalogue:** add Bad Mojo promotional demo ([#2818](https://github.com/benletchford/systemless/issues/2818)) ([ecca897](https://github.com/benletchford/systemless/commit/ecca897829472a1918723f09c9130aefaa00ea2c))
+* **catalogue:** add Oids promotional demo ([#2810](https://github.com/benletchford/systemless/issues/2810)) ([826314e](https://github.com/benletchford/systemless/commit/826314e9f2e3e92b31d553f5b34ebe6cb4a878e2))
+* **catalogue:** add SimEarth Explorer demo ([#2558](https://github.com/benletchford/systemless/issues/2558)) ([ae8ab97](https://github.com/benletchford/systemless/commit/ae8ab97f0aaf67ed68a3b8186f8505fe25337b63))
+* **catalogue:** support per-game screen depth ([#2808](https://github.com/benletchford/systemless/issues/2808)) ([1c99f47](https://github.com/benletchford/systemless/commit/1c99f47ee0ffa3bfc5afbdcaf6101f64fea197ad))
+* **ppc:** read text QuickDraw 3D metafiles ([#2776](https://github.com/benletchford/systemless/issues/2776)) ([5b8f999](https://github.com/benletchford/systemless/commit/5b8f9992035557aba07b0814daa38865b6784086))
+
+
+### Bug Fixes
+
+* **quickdraw:** preserve device base address in new pixel maps ([#2805](https://github.com/benletchford/systemless/issues/2805)) ([6cf156d](https://github.com/benletchford/systemless/commit/6cf156dd5e07b8c6ced41880939667360863af9a))
+* **resource:** isolate empty-handle resize updates ([#2781](https://github.com/benletchford/systemless/issues/2781)) ([f2dfd59](https://github.com/benletchford/systemless/commit/f2dfd598c8cf494e743030742a40c4818185946d))
+* **resource:** match current resource names without case ([#2795](https://github.com/benletchford/systemless/issues/2795)) ([30019c9](https://github.com/benletchford/systemless/commit/30019c99877576a965dbe5cb4f5b9f2631b5c683))
+* **resource:** preserve noErr for absent named resource types ([#2787](https://github.com/benletchford/systemless/issues/2787)) ([7f3a688](https://github.com/benletchford/systemless/commit/7f3a6880cf299bf3d99f3fd0b76f3b70c0d81c6a))
+
+
+### Performance Improvements
+
+* cache shared halfword memory routes ([#2800](https://github.com/benletchford/systemless/issues/2800)) ([8192062](https://github.com/benletchford/systemless/commit/81920629f95374763ed6d8efdab626f921322611))
+* skip shared mapping scans for unshared pages ([#2797](https://github.com/benletchford/systemless/issues/2797)) ([2dc9030](https://github.com/benletchford/systemless/commit/2dc90309fffc9c5ba7e184fab94cca9907c4451f))
+
+
+### Code Refactoring
+
+* **ppc:** extract dialog and utility import tests into domain modules ([#2785](https://github.com/benletchford/systemless/issues/2785)) ([b01bbea](https://github.com/benletchford/systemless/commit/b01bbea995c37486a77d4661548f7dc8709f4b16))
+* **ppc:** extract final memory, desktop, and resource tests into domain modules ([#2817](https://github.com/benletchford/systemless/issues/2817)) ([5eaa9f1](https://github.com/benletchford/systemless/commit/5eaa9f1f8babec32b37906b6d915f4aafae37189))
+* **ppc:** extract import classification and conversion tests into domain modules ([#2779](https://github.com/benletchford/systemless/issues/2779)) ([f71207f](https://github.com/benletchford/systemless/commit/f71207f2155fca00f6ee4980167988311787c36c))
+* **ppc:** extract live trap patch and gateway tests into mixed_mode module ([#2789](https://github.com/benletchford/systemless/issues/2789)) ([6e9c096](https://github.com/benletchford/systemless/commit/6e9c0967b48adc049cfd6e3854d87036c6a737ad))
+* **ppc:** extract quickdraw, font, control, and driver services tests into domain modules ([#2809](https://github.com/benletchford/systemless/issues/2809)) ([1e31ae3](https://github.com/benletchford/systemless/commit/1e31ae33257c58f213bc75811e6b013fa94b1f31))
+* **ppc:** extract system compatibility and loader execution tests into domain modules ([#2783](https://github.com/benletchford/systemless/issues/2783)) ([d0bb680](https://github.com/benletchford/systemless/commit/d0bb680e32b2f5fb10959c5a66331964901e93ac))
+* **ppc:** extract toolbox startup, QuickDraw, and device tests into domain modules ([#2799](https://github.com/benletchford/systemless/issues/2799)) ([f6aba5c](https://github.com/benletchford/systemless/commit/f6aba5ce35af80766a9ac0a0043c149f2b7477eb))
+* **ppc:** extract Trap Manager and loader trace tests into domain modules ([#2796](https://github.com/benletchford/systemless/issues/2796)) ([28a7517](https://github.com/benletchford/systemless/commit/28a7517099ef7d1a14669fb237a11ce648b42483))
+* **ppc:** extract utility, time, input, and environment tests into domain modules ([#2812](https://github.com/benletchford/systemless/issues/2812)) ([51856ce](https://github.com/benletchford/systemless/commit/51856cec1afe38c3dc5e4e404c4627d953f726af))
+* **ppc:** extract watch, trace, and stack global tests into domain modules ([#2804](https://github.com/benletchford/systemless/issues/2804)) ([c93144c](https://github.com/benletchford/systemless/commit/c93144c59afa12e6344943840bfb5f51d3c0357f))
+* **trap:** extract trap dispatcher unit tests into dedicated child module ([#2821](https://github.com/benletchford/systemless/issues/2821)) ([f6d2430](https://github.com/benletchford/systemless/commit/f6d2430cff3bebec6f12b4987344d660a543db02))
+
 ## [0.60.0](https://github.com/benletchford/systemless/compare/v0.59.0...v0.60.0) (2026-09-24)
 
 
