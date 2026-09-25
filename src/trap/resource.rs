@@ -12077,6 +12077,25 @@ mod tests {
     }
 
     #[test]
+    fn get1_named_resource_matches_name_without_case() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let data_ptr = setup_resources(&mut disp, &mut bus, b"PICT", 10002, b"picture");
+        disp.insert_named_resource_for_test(0, (*b"PICT", "HIDDEN".to_string()), (10002, data_ptr));
+        let name_ptr = 0x200000u32;
+        write_pstring(&mut bus, name_ptr, b"hidden");
+        bus.write_long(TEST_SP, name_ptr);
+        bus.write_long(TEST_SP + 4, u32::from_be_bytes(*b"PICT"));
+        bus.write_word(0x0A60, (-192i16) as u16);
+
+        call(&mut disp, true, 0x020, &mut cpu, &mut bus).unwrap();
+
+        let handle = bus.read_long(TEST_SP + 8);
+        assert_ne!(handle, 0);
+        assert_eq!(bus.read_long(handle), data_ptr);
+        assert_eq!(bus.read_word(0x0A60), 0);
+    }
+
+    #[test]
     fn get1_named_resource_miss_returns_nil_in_a0() {
         let (mut disp, mut cpu, mut bus) = setup();
         setup_resources(&mut disp, &mut bus, b"STR ", 500, b"present type");

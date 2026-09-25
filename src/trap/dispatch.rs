@@ -7277,11 +7277,21 @@ impl TrapDispatcher {
         let res_type = Self::normalize_ostype(res_type);
         let resources = self.resources.as_ref()?;
         let refnum = self.current_resource_refnum();
-        resources
-            .files
-            .get(&refnum)
-            .and_then(|file| file.named.get(&(res_type, name.to_string())).copied())
-            .map(|(id, ptr)| (refnum, id, ptr))
+        let file = resources.files.get(&refnum)?;
+        let entry = file
+            .named
+            .get(&(res_type, name.to_string()))
+            .copied()
+            .or_else(|| {
+                // Resource names compare without case; an application's
+                // spelling need not match the resource map's spelling.
+                // Inside Macintosh Volume I (1985), p. I-119.
+                let needle = name.to_lowercase();
+                file.named.iter().find_map(|((kind, candidate), entry)| {
+                    (*kind == res_type && candidate.to_lowercase() == needle).then_some(*entry)
+                })
+            })?;
+        Some((refnum, entry.0, entry.1))
     }
 
     /// Collect every named resource of `res_type` reachable through the
