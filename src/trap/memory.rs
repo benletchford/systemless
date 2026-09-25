@@ -3234,7 +3234,7 @@ impl super::TrapDispatcher {
             //
             // A0 = pointer to DeferredTask record. Returns noErr for a
             // valid qType and vTypErr when qType != ORD(dtQType) = 7.
-            // In our emulator, deferred task queue insertion is not modeled.
+            // Queue a valid task for one-shot delivery after an interrupt.
             //
             // Contract coverage:
             //   src/trap/memory.rs::tests::dtinstall_uses_a0_dttaskptr_register_calling_convention
@@ -3245,6 +3245,7 @@ impl super::TrapDispatcher {
                 let result = if task_ptr == 0 || bus.read_word(task_ptr + 4) != DT_QTYPE {
                     (-2i32) as u32 // vTypErr
                 } else {
+                    self.enqueue_deferred_task(bus, task_ptr);
                     0
                 };
                 cpu.write_reg(Register::D0, result);
@@ -8738,6 +8739,43 @@ mod tests {
             0,
             "DTInstall should return noErr in D0 for a valid record"
         );
+        let queue = crate::memory::globals::addr::DT_QUEUE;
+        assert_eq!(bus.read_long(queue + 2), dt_task_ptr);
+        assert_eq!(bus.read_long(queue + 6), dt_task_ptr);
+        assert_eq!(dispatcher.deferred_tasks.len(), 1);
+        let now = dispatcher.current_tick();
+        assert_eq!(dispatcher.pop_ready_deferred_task(&mut bus, now), None);
+        assert_eq!(
+            dispatcher.pop_ready_deferred_task(&mut bus, now + 1),
+            Some(dt_task_ptr)
+        );
+        assert_eq!(bus.read_long(queue + 2), 0);
+        assert_eq!(bus.read_long(queue + 6), 0);
+    }
+
+    #[test]
+    fn dtinstall_queues_multiple_records_in_fifo_order() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let first = bus.alloc(24);
+        let second = bus.alloc(24);
+        let queue = crate::memory::globals::addr::DT_QUEUE;
+        for task in [first, second] {
+            bus.write_word(task + 4, super::DT_QTYPE);
+            cpu.write_reg(Register::A0, task);
+            dispatcher
+                .dispatch_memory(false, 0x82, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+        }
+        assert_eq!(bus.read_long(first), second);
+        assert_eq!(bus.read_long(queue + 2), first);
+        assert_eq!(bus.read_long(queue + 6), second);
+        let ready = dispatcher.current_tick() + 1;
+        assert_eq!(dispatcher.pop_ready_deferred_task(&mut bus, ready), Some(first));
+        assert_eq!(bus.read_long(queue + 2), second);
+        assert_eq!(dispatcher.pop_ready_deferred_task(&mut bus, ready), Some(second));
+        assert_eq!(bus.read_long(queue + 2), 0);
+        assert_eq!(bus.read_long(queue + 6), 0);
     }
 
     #[test]

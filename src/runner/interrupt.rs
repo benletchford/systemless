@@ -6,6 +6,7 @@ pub(crate) enum ActiveInterruptCallbackSource {
     Timer,
     Vbl,
     CursorTask,
+    DeferredTask,
     SoundCallback,
     SoundFileCompletion,
     SoundDoubleBack,

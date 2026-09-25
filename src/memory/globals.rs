@@ -152,6 +152,10 @@ pub mod addr {
     /// routines) and V-571 (assembly globals table).
     pub const MENU_C_INFO: u32 = 0x0D50;
 
+    /// DTQueue: deferred task queue header (qFlags, qHead, qTail).
+    /// Inside Macintosh Volume V (1986), low-memory globals table, p. V-571.
+    pub const DT_QUEUE: u32 = 0x0D92;
+
     // QuickDraw globals
     pub const THE_PORT: u32 = 0x09DA; // Current GrafPort (ptr)
     pub const SCRN_BASE: u32 = 0x0824; // Screen base address (ptr) - Inside Macintosh II, II-19
