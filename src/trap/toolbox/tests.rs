@@ -15406,6 +15406,53 @@
     }
 
     #[test]
+    fn pack8_aeprocessappleevent_accepts_empty_delivered_open_application_without_callback() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let event_record_ptr = 0x0032_0000u32;
+        let handler_ptr = 0x0040_8000u32;
+        disp.apple_event_launch_state
+            .set_high_level_event_aware(true);
+
+        cpu.write_reg(Register::D0, 0x091F);
+        bus.write_word(sp, 0);
+        bus.write_long(sp + 2, 0x29);
+        bus.write_long(sp + 6, handler_ptr);
+        bus.write_long(sp + 10, u32::from_be_bytes(*b"oapp"));
+        bus.write_long(sp + 14, u32::from_be_bytes(*b"aevt"));
+        bus.write_word(sp + 18, 0xBEEF);
+        disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let (what, message, when, where_v, where_h, modifiers, delivered) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+        assert!(delivered);
+        assert_eq!(what, 23);
+        bus.write_word(event_record_ptr, what);
+        bus.write_long(event_record_ptr + 2, message);
+        bus.write_long(event_record_ptr + 6, when);
+        bus.write_word(event_record_ptr + 10, where_v as u16);
+        bus.write_word(event_record_ptr + 12, where_h as u16);
+        bus.write_word(event_record_ptr + 14, modifiers);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, 0x00F0_1234);
+        cpu.write_reg(Register::D0, 0x021B);
+        bus.write_long(sp, event_record_ptr);
+        bus.write_word(sp + 4, 0xBEEF);
+        disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::PC), 0x00F0_1234);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(bus.read_word(sp + 4), 0);
+        assert!(!disp.fired_oapp_handler);
+        assert!(disp.ae_call_state.is_none());
+    }
+
+    #[test]
     fn pack8_aeprocessappleevent_dispatches_matching_event_to_installed_handler() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;

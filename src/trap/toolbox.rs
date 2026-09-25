@@ -8671,19 +8671,39 @@ impl super::TrapDispatcher {
                 // entry (param_bytes = 4):
                 //   SP+0   theEventRecord ptr (4 bytes)
                 //   SP+4   result OSErr slot (2 bytes)
-                // We synthesize a kAEOpenApplication invocation whenever
-                // the matching handler is registered. The OAPP path is
-                // what unblocks `WaitForStartupEvent`-style splash gates
-                // in apps that call `AEProcessAppleEvent` directly
-                // instead of going through `WaitNextEvent`. Unlike the
-                // older one-shot gate, repeated direct calls are allowed:
-                // each `AEProcessAppleEvent` invocation can dispatch the
-                // registered handler again.
+                // A delivered zero-data launch event has no AppleEvent
+                // descriptor to dispatch. Calls made without such an
+                // outstanding event retain the synthetic OAPP fallback
+                // used by applications that process startup events directly;
+                // repeated direct calls may dispatch again.
                 if routine == 27 && param_bytes == 4 {
                     let oapp_class = AE_TYPE_APPLE_EVENT;
                     let oapp_id = u32::from_be_bytes(*b"oapp");
+                    let event_record = bus.read_long(sp);
+                    let event_id = ((bus.read_word(event_record + 10) as u32) << 16)
+                        | bus.read_word(event_record + 12) as u32;
+                    if bus.read_word(event_record) == Self::K_HIGH_LEVEL_EVENT
+                        && bus.read_long(event_record + 2) == oapp_class
+                        && event_id == oapp_id
+                        && self
+                            .apple_event_launch_state
+                            .is_open_application_event_delivered()
+                    {
+                        self.apple_event_launch_state
+                            .accept_open_application_event();
+                        // A delivered launch event with no AppleEvent data is
+                        // accepted, but has no attributes from which to build
+                        // a descriptor or route a registered handler.
+                        // Inside Macintosh: Interapplication Communication
+                        // (1993), pp. 4-66--4-68; Macintosh Toolbox Essentials
+                        // (1992), pp. 2-90--2-91.
+                        let result_slot = sp + param_bytes;
+                        bus.write_word(result_slot, 0);
+                        cpu.write_reg(Register::A7, result_slot);
+                        cpu.write_reg(Register::D0, 0);
+                        return Some(Ok(()));
+                    }
                     if trace_ae_enabled() {
-                        let event_record = bus.read_long(sp);
                         let what = bus.read_word(event_record);
                         let message = bus.read_long(event_record + 2);
                         let where_v = bus.read_word(event_record + 10);
