@@ -61,3 +61,36 @@ fn import_bindings_classify_printing_imports() {
         );
     }
 }
+
+#[test]
+fn hle_import_runner_get_adb_info_exposes_standard_devices() {
+    for (address, expected) in [(2, [2, 2]), (3, [1, 3])] {
+        let pef = synthetic_pef_with_import(b"GetADBInfo");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let info_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(info_ptr, vec![0xaa; 12]);
+        loaded.cpu.gpr[3] = info_ptr;
+        loaded.cpu.gpr[4] = address;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.memory.read_u8(info_ptr), Some(expected[0]));
+        assert_eq!(loaded.memory.read_u8(info_ptr + 1), Some(expected[1]));
+        assert_eq!(loaded.memory.read_u32_be(info_ptr + 2), Some(0));
+        assert_eq!(loaded.memory.read_u32_be(info_ptr + 6), Some(0));
+        assert_eq!(loaded.memory.read_u16_be(info_ptr + 10), Some(0xaaaa));
+    }
+
+    let pef = synthetic_pef_with_import(b"GetADBInfo");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 4;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-1));
+}

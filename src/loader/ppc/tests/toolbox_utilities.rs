@@ -412,3 +412,142 @@ fn import_bindings_classify_text_and_conversion_imports() {
         PpcImportDispatcherTarget::C2PStr
     );
 }
+
+#[test]
+fn hle_import_runner_handles_lm_get_current_a5() {
+    let pef = synthetic_pef_with_import(b"LMGetCurrentA5");
+    let mut loaded = load_pef_application(&pef).unwrap();
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], PPC_DATA_BASE);
+}
+
+#[test]
+fn hle_import_runner_tracks_toolbox_startup_manager_state() {
+    fn run_toolbox_import(
+        loaded: &mut PpcLoadedApp,
+        target: PpcImportDispatcherTarget,
+        gpr3: u32,
+        gpr4: u32,
+    ) -> PpcHleRunProbe {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = target;
+        loaded.cpu.gpr[3] = gpr3;
+        loaded.cpu.gpr[4] = gpr4;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert!(
+            matches!(
+                probe.result,
+                PpcRunResult::Halted {
+                    pc: PPC_HALT_PC,
+                    ..
+                }
+            ),
+            "{:?}",
+            probe.result
+        );
+        assert_eq!(loaded.cpu.gpr[3], gpr3);
+        assert_eq!(loaded.cpu.gpr[4], gpr4);
+        probe
+    }
+
+    let pef = synthetic_pef_with_import(b"InitGraf");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    assert_eq!(loaded.toolbox_startup, PpcToolboxStartupState::default());
+
+    run_toolbox_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InitGraf,
+        PPC_DATA_BASE + 0x40,
+        0x1234_5678,
+    );
+    assert_eq!(loaded.toolbox_startup.init_graf_count, 1);
+    assert_eq!(
+        loaded.toolbox_startup.init_graf_global_ptr,
+        PPC_DATA_BASE + 0x40
+    );
+
+    run_toolbox_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InitFonts,
+        0xfeed_face,
+        0x1111_2222,
+    );
+    assert!(loaded.toolbox_startup.fonts_initialized);
+
+    run_toolbox_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InitWindows,
+        0xabcd_1234,
+        0x2222_3333,
+    );
+    assert!(loaded.toolbox_startup.windows_initialized);
+
+    run_toolbox_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InitMenus,
+        0x8765_4321,
+        0x3333_4444,
+    );
+    assert!(loaded.toolbox_startup.menus_initialized);
+
+    run_toolbox_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::TEInit,
+        0x1357_2468,
+        0x4444_5555,
+    );
+    assert!(loaded.toolbox_startup.text_edit_initialized);
+
+    run_toolbox_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InitDialogs,
+        0x2468_1357,
+        0x5555_6666,
+    );
+    assert!(loaded.toolbox_startup.dialogs_initialized);
+    assert_eq!(loaded.toolbox_startup.dialog_resume_proc, 0x2468_1357);
+
+    run_toolbox_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::FlushEvents,
+        0x0001_ffff,
+        0x0002_0002,
+    );
+    assert_eq!(loaded.toolbox_startup.flush_events_count, 1);
+    assert_eq!(loaded.toolbox_startup.last_flush_event_mask, 0xffff);
+    assert_eq!(loaded.toolbox_startup.last_flush_stop_mask, 0x0002);
+
+    run_toolbox_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SetEventMask,
+        0x0000_ffdf,
+        0,
+    );
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(crate::memory::globals::addr::SYS_EVT_MASK),
+        Some(0xffdf)
+    );
+
+    run_toolbox_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DisposeDialog,
+        PPC_HEAP_BASE + 0x80,
+        0x6666_7777,
+    );
+    assert_eq!(loaded.toolbox_startup.dispose_dialog_count, 1);
+    assert_eq!(
+        loaded.toolbox_startup.last_disposed_dialog,
+        PPC_HEAP_BASE + 0x80
+    );
+}
