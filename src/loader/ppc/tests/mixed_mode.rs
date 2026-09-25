@@ -2942,3 +2942,300 @@ fn native_universal_proc_prepares_resources_runs_initializers_and_retries_failur
         assert_eq!(loaded.heap_cursor(), cursor);
     }
 }
+
+#[test]
+fn tick_count_import_calls_live_native_trap_patch_with_and_without_tracing() {
+    const DESCRIPTOR: u32 = PPC_HEAP_BASE + 0x1000;
+    const TVECTOR: u32 = PPC_HEAP_BASE + 0x1080;
+    const CALLBACK: u32 = PPC_HEAP_BASE + 0x2000;
+    const CALLBACK_RTOC: u32 = PPC_HEAP_BASE + 0x3000;
+    const RESULT: u32 = 0x1234_5678;
+
+    for trace in [false, true] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"TickCount")).unwrap();
+        let table_entry = ppc_raw_trap_table_entry(0xA975, true);
+        let initial_handler = if trace { 0x00f0_0000 } else { DESCRIPTOR };
+        loaded
+            .memory
+            .add_region(table_entry, initial_handler.to_be_bytes().to_vec());
+        if trace {
+            assert!(ppc_set_logical_trap_address(
+                &mut loaded.memory,
+                0xA975,
+                true,
+                DESCRIPTOR,
+            ));
+        }
+        loaded.memory.add_region(DESCRIPTOR, vec![0; 0x100]);
+        loaded.memory.add_region(CALLBACK_RTOC, vec![0; 0x100]);
+
+        let mut callback = Vec::new();
+        for word in [
+            d_form_u(15, 3, 0, (RESULT >> 16) as u16),
+            d_form_u(24, 3, 3, RESULT as u16),
+            BLR,
+        ] {
+            callback.extend_from_slice(&word.to_be_bytes());
+        }
+        loaded.memory.add_region(CALLBACK, callback);
+        loaded
+            .memory
+            .write_u16_be(DESCRIPTOR, PPC_MIXED_MODE_TRAP)
+            .unwrap();
+        loaded
+            .memory
+            .write_u8(DESCRIPTOR + 2, PPC_ROUTINE_DESCRIPTOR_VERSION)
+            .unwrap();
+        loaded.memory.write_u16_be(DESCRIPTOR + 10, 0).unwrap();
+        ppc_write_routine_record(
+            &mut loaded.memory,
+            DESCRIPTOR + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE,
+            0x30,
+            PPC_ROUTINE_RECORD_POWERPC_ISA,
+            PPC_ROUTINE_FLAG_USE_NATIVE_ISA,
+            TVECTOR,
+        );
+        loaded.memory.write_u32_be(TVECTOR, CALLBACK).unwrap();
+        loaded
+            .memory
+            .write_u32_be(TVECTOR + 4, CALLBACK_RTOC)
+            .unwrap();
+
+        let probe = if trace {
+            loaded.run_with_hle_import_trace(64)
+        } else {
+            loaded.run_with_hle_imports(64)
+        };
+
+        assert_eq!(probe.handled_import_count, 1, "trace={trace}");
+        assert_eq!(probe.unsupported_import_index, None, "trace={trace}");
+        assert_eq!(loaded.cpu.gpr[3], RESULT, "trace={trace}");
+        assert!(loaded.guest_calls().is_empty(), "trace={trace}");
+        assert_eq!(probe.import_trace.len(), usize::from(trace), "trace={trace}");
+    }
+}
+
+#[test]
+fn tick_count_import_keeps_explicit_system_gateway_on_hle_path() {
+    const DEFAULT_GATEWAY: u32 = 0x00f0_1000;
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TickCount")).unwrap();
+    let table_entry = ppc_raw_trap_table_entry(0xA975, true);
+    loaded
+        .memory
+        .add_region(table_entry, DEFAULT_GATEWAY.to_be_bytes().to_vec());
+    loaded.attach_trap_default_gateway(0xA975, DEFAULT_GATEWAY);
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 4);
+    assert!(loaded.guest_calls().is_empty());
+}
+
+#[test]
+fn tick_count_import_refuses_invalid_live_patch_atomically() {
+    const INVALID_HANDLER: u32 = 0x00f0_2000;
+    const ORIGINAL_R3: u32 = 0xcafe_babe;
+    const ORIGINAL_R4: u32 = 0x1234_5678;
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TickCount")).unwrap();
+    let table_entry = ppc_raw_trap_table_entry(0xA975, true);
+    loaded
+        .memory
+        .add_region(table_entry, INVALID_HANDLER.to_be_bytes().to_vec());
+    loaded.cpu.gpr[3] = ORIGINAL_R3;
+    loaded.cpu.gpr[4] = ORIGINAL_R4;
+    loaded.cpu.gpr[5] = 0x8765_4321;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 0);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ORIGINAL_R3);
+    assert_eq!(loaded.cpu.gpr[4], ORIGINAL_R4);
+    assert_eq!(loaded.cpu.gpr[5], 0x8765_4321);
+    assert!(loaded.guest_calls().is_empty());
+}
+
+#[test]
+fn tick_count_import_schedules_live_classic_trap_patch_through_mixed_mode() {
+    const CLASSIC_HANDLER: u32 = PPC_HEAP_BASE + 0x1000;
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TickCount")).unwrap();
+    let table_entry = ppc_raw_trap_table_entry(0xA975, true);
+    loaded
+        .memory
+        .add_region(table_entry, CLASSIC_HANDLER.to_be_bytes().to_vec());
+    loaded
+        .memory
+        .add_region(CLASSIC_HANDLER, 0x4e75u16.to_be_bytes().to_vec());
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    let pending = loaded
+        .guest_calls()
+        .activate_m68k()
+        .expect("live classic TickCount patch should hand off to the 68K adapter");
+    assert_eq!(pending.entry, CLASSIC_HANDLER);
+    assert_eq!(pending.final_sp, pending.initial_sp + 4);
+}
+
+#[test]
+fn boolean_input_imports_call_live_native_trap_patches_before_hot_paths() {
+    const DESCRIPTOR: u32 = PPC_HEAP_BASE + 0x1000;
+    const TVECTOR: u32 = PPC_HEAP_BASE + 0x1080;
+    const CALLBACK: u32 = PPC_HEAP_BASE + 0x2000;
+    const CALLBACK_RTOC: u32 = PPC_HEAP_BASE + 0x3000;
+    const RESULT: u32 = 0x1234_5678;
+
+    for (symbol, trap_word) in [
+        (b"StillDown".as_slice(), 0xA973),
+        (b"Button".as_slice(), 0xA974),
+        (b"WaitMouseUp".as_slice(), 0xA977),
+    ] {
+        for trace in [false, true] {
+            let mut loaded =
+                load_pef_application(&synthetic_pef_with_import(symbol)).unwrap();
+            let table_entry = ppc_raw_trap_table_entry(trap_word, true);
+            loaded
+                .memory
+                .add_region(table_entry, DESCRIPTOR.to_be_bytes().to_vec());
+            loaded.memory.add_region(DESCRIPTOR, vec![0; 0x100]);
+            loaded.memory.add_region(CALLBACK_RTOC, vec![0; 0x100]);
+            loaded.memory.add_region(
+                CALLBACK,
+                [
+                    d_form_u(15, 3, 0, (RESULT >> 16) as u16),
+                    d_form_u(24, 3, 3, RESULT as u16),
+                    BLR,
+                ]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+            );
+            loaded
+                .memory
+                .write_u16_be(DESCRIPTOR, PPC_MIXED_MODE_TRAP)
+                .unwrap();
+            loaded
+                .memory
+                .write_u8(DESCRIPTOR + 2, PPC_ROUTINE_DESCRIPTOR_VERSION)
+                .unwrap();
+            loaded.memory.write_u16_be(DESCRIPTOR + 10, 0).unwrap();
+            ppc_write_routine_record(
+                &mut loaded.memory,
+                DESCRIPTOR + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE,
+                0x10,
+                PPC_ROUTINE_RECORD_POWERPC_ISA,
+                PPC_ROUTINE_FLAG_USE_NATIVE_ISA,
+                TVECTOR,
+            );
+            loaded.memory.write_u32_be(TVECTOR, CALLBACK).unwrap();
+            loaded
+                .memory
+                .write_u32_be(TVECTOR + 4, CALLBACK_RTOC)
+                .unwrap();
+
+            let probe = if trace {
+                loaded.run_with_hle_import_trace(64)
+            } else {
+                loaded.run_with_hle_imports(64)
+            };
+
+            assert_eq!(probe.handled_import_count, 1, "{symbol:?} trace={trace}");
+            assert_eq!(loaded.cpu.gpr[3], RESULT & 0xff, "{symbol:?} trace={trace}");
+            assert!(loaded.guest_calls().is_empty(), "{symbol:?} trace={trace}");
+        }
+    }
+}
+
+#[test]
+fn get_keys_import_calls_live_native_trap_patch_with_pointer_argument() {
+    const DESCRIPTOR: u32 = PPC_HEAP_BASE + 0x1000;
+    const TVECTOR: u32 = PPC_HEAP_BASE + 0x1080;
+    const CALLBACK: u32 = PPC_HEAP_BASE + 0x2000;
+    const CALLBACK_RTOC: u32 = PPC_HEAP_BASE + 0x3000;
+    const OUTPUT: u32 = PPC_HEAP_BASE + 0x4000;
+    const MARKER: u32 = 0xcafe_babe;
+
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetKeys")).unwrap();
+    let table_entry = ppc_raw_trap_table_entry(0xA976, true);
+    loaded
+        .memory
+        .add_region(table_entry, DESCRIPTOR.to_be_bytes().to_vec());
+    loaded.memory.add_region(DESCRIPTOR, vec![0; 0x100]);
+    loaded.memory.add_region(CALLBACK_RTOC, vec![0; 0x100]);
+    loaded.memory.add_region(OUTPUT, vec![0; 16]);
+    loaded.memory.add_region(
+        CALLBACK,
+        [
+            d_form_u(15, 4, 0, (MARKER >> 16) as u16),
+            d_form_u(24, 4, 4, MARKER as u16),
+            d_form_u(36, 4, 3, 0),
+            BLR,
+        ]
+        .into_iter()
+        .flat_map(u32::to_be_bytes)
+        .collect(),
+    );
+    loaded
+        .memory
+        .write_u16_be(DESCRIPTOR, PPC_MIXED_MODE_TRAP)
+        .unwrap();
+    loaded
+        .memory
+        .write_u8(DESCRIPTOR + 2, PPC_ROUTINE_DESCRIPTOR_VERSION)
+        .unwrap();
+    loaded.memory.write_u16_be(DESCRIPTOR + 10, 0).unwrap();
+    ppc_write_routine_record(
+        &mut loaded.memory,
+        DESCRIPTOR + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE,
+        0xC0,
+        PPC_ROUTINE_RECORD_POWERPC_ISA,
+        PPC_ROUTINE_FLAG_USE_NATIVE_ISA,
+        TVECTOR,
+    );
+    loaded.memory.write_u32_be(TVECTOR, CALLBACK).unwrap();
+    loaded
+        .memory
+        .write_u32_be(TVECTOR + 4, CALLBACK_RTOC)
+        .unwrap();
+    loaded.cpu.gpr[3] = OUTPUT;
+
+    let probe = loaded.run_with_hle_import_trace(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(MARKER));
+    assert_eq!(loaded.cpu.gpr[3], OUTPUT);
+    assert!(loaded.guest_calls().is_empty());
+}
+
+#[test]
+fn get_keys_import_adapts_pointer_for_live_classic_trap_patch() {
+    const CLASSIC_HANDLER: u32 = PPC_HEAP_BASE + 0x1000;
+    const OUTPUT: u32 = PPC_HEAP_BASE + 0x2000;
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetKeys")).unwrap();
+    let table_entry = ppc_raw_trap_table_entry(0xA976, true);
+    loaded
+        .memory
+        .add_region(table_entry, CLASSIC_HANDLER.to_be_bytes().to_vec());
+    loaded
+        .memory
+        .add_region(CLASSIC_HANDLER, 0x4e75u16.to_be_bytes().to_vec());
+    loaded.memory.add_region(OUTPUT, vec![0; 16]);
+    loaded.cpu.gpr[3] = OUTPUT;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    let pending = loaded
+        .guest_calls()
+        .activate_m68k()
+        .expect("live classic GetKeys patch should hand off to the 68K adapter");
+    assert_eq!(pending.entry, CLASSIC_HANDLER);
+    assert_eq!(loaded.memory.read_u32_be(pending.initial_sp + 4), Some(OUTPUT));
+    assert_eq!(pending.final_sp, pending.initial_sp + 8);
+}
