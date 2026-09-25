@@ -8939,6 +8939,10 @@ impl PpcLoadedApp {
                             | PpcImportDispatcherTarget::GetKeys
                             | PpcImportDispatcherTarget::TickCount
                             | PpcImportDispatcherTarget::Microseconds
+                            | PpcImportDispatcherTarget::GetCurrentThread
+                            | PpcImportDispatcherTarget::YieldToThread
+                            | PpcImportDispatcherTarget::EnableMenuItem
+                            | PpcImportDispatcherTarget::DisableMenuItem
                     )
                 {
                     if trace_imports {
@@ -9013,6 +9017,45 @@ impl PpcLoadedApp {
                             ),
                             Some(&mut idle_poll_counts),
                         ),
+                        PpcImportDispatcherTarget::GetCurrentThread => {
+                            let id = ThreadManager::new(toolbox_startup.execution.calls())
+                                .current_thread();
+                            let result = if cpu.gpr[3] != 0
+                                && memory.write_u32_be(cpu.gpr[3], id).is_some()
+                            {
+                                PPC_NO_ERR
+                            } else {
+                                PPC_PARAM_ERR
+                            };
+                            PpcImportAction::Return(ppc_i16_result(result))
+                        }
+                        PpcImportDispatcherTarget::YieldToThread => {
+                            let suggested = cpu.gpr[3];
+                            let action = match toolbox_startup
+                                .execution
+                                .calls()
+                                .yield_native_thread(cpu, suggested)
+                            {
+                                Ok(true) => PpcImportAction::Yield(1),
+                                Ok(false) => PpcImportAction::Return(0),
+                                Err(error) => PpcImportAction::Return(ppc_i16_result(error)),
+                            };
+                            if std::env::var_os("SYSTEMLESS_PPC_THREAD_TRACE").is_some() {
+                                eprintln!("[PPC-THREAD-TRACE] YieldToThread caller={} suggested={} action={:?} pc=${:08X}", toolbox_startup.execution.calls().current_task().thread_id(), suggested, action, cpu.pc);
+                            }
+                            action
+                        }
+                        PpcImportDispatcherTarget::EnableMenuItem
+                        | PpcImportDispatcherTarget::DisableMenuItem => {
+                            ppc_set_menu_item_enabled(
+                                memory,
+                                process_memory_manager.native_handle_records(),
+                                cpu.gpr[3],
+                                cpu.gpr[4] as u16 as i16,
+                                *dispatcher_target == PpcImportDispatcherTarget::EnableMenuItem,
+                            );
+                            PpcImportAction::ReturnPreserve
+                        }
                         _ => unreachable!(),
                     };
                     handled_import_count = handled_import_count.saturating_add(1);
