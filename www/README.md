@@ -105,7 +105,8 @@ array containing the catalogue ID, route, archive URL, and local archive path.
 Menu, save, keyboard, and runtime probes accept their additional checkpoints
 and thresholds through that case data. The single-case runtime probe instead
 uses `SYSTEMLESS_RUNTIME_ROUTE`, `SYSTEMLESS_RUNTIME_ARCHIVE_URL`, and
-`SYSTEMLESS_RUNTIME_ARCHIVE_PATH`.
+`SYSTEMLESS_RUNTIME_ARCHIVE_PATH`. It detects worker-backed catalogue games and
+measures their frame replies as well as main-thread runtime frames.
 
 The catalogue tooling retains its MIT license and notice under
 `tools/catalogue/`. The runtime and browser frontend use the repository's root
