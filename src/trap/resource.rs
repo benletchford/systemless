@@ -986,6 +986,18 @@ impl super::TrapDispatcher {
         false
     }
 
+    pub(crate) fn resource_file_contains_type(&self, refnum: u16, res_type: [u8; 4]) -> bool {
+        self.resources.as_ref().is_some_and(|resources| {
+            resources
+                .files
+                .get(&refnum)
+                .is_some_and(|file| file.loaded.keys().any(|(kind, _)| *kind == res_type))
+        }) || self
+            .resource_backing_data
+            .keys()
+            .any(|(file, kind, _)| *file == refnum && *kind == res_type)
+    }
+
     fn resource_ptr_referenced_elsewhere(&self, refnum: u16, ptr: u32) -> bool {
         self.resources.as_ref().is_some_and(|resources| {
             resources.files.iter().any(|(other_refnum, file)| {
@@ -2652,12 +2664,9 @@ impl super::TrapDispatcher {
             // FUNCTION Get1NamedResource(theType: ResType; name: Str255): Handle;
             // Inside Macintosh Volume VI, VI-13
             //
-            // Like Get1Resource vs. GetResource, Get1NamedResource only
-            // searches the current resource file, while GetNamedResource
-            // walks the full resource chain. Both must write ResErr per
-            // IM:I I-119.
-            //
-            // Get1NamedResource ($A820): Searches by Pascal name string; writes ResErr per IM:IV IV-15
+            // More Macintosh Toolbox 1993, 1-77--1-78: an absent type
+            // returns NIL with noErr; a missing resource of a present type
+            // returns resNotFound.
             (true, 0x020) => {
                 let sp = cpu.read_reg(Register::A7);
                 let name_ptr = bus.read_long(sp);
@@ -2693,7 +2702,12 @@ impl super::TrapDispatcher {
                     bus.write_long(sp + 8, 0);
                     cpu.write_reg(Register::A7, sp + 8);
                     cpu.write_reg(Register::D0, 0);
-                    bus.write_word(0x0A60, (-192i16) as u16); // ResErr = resNotFound
+                    let has_type =
+                        self.resource_file_contains_type(self.current_resource_refnum(), res_type);
+                    bus.write_word(
+                        0x0A60,
+                        if has_type { RES_NOT_FOUND_ERR as u16 } else { 0 },
+                    );
                 }
                 Ok(())
             }
@@ -12065,6 +12079,7 @@ mod tests {
     #[test]
     fn get1_named_resource_miss_returns_nil_in_a0() {
         let (mut disp, mut cpu, mut bus) = setup();
+        setup_resources(&mut disp, &mut bus, b"STR ", 500, b"present type");
         let name_addr = 0x200000u32;
         write_pstring(&mut bus, name_addr, b"Missing");
 
@@ -12077,6 +12092,24 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A0), 0);
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_long(TEST_SP + 8), 0);
+        assert_eq!(bus.read_word(0x0A60) as i16, super::RES_NOT_FOUND_ERR);
+    }
+
+    #[test]
+    fn get1_named_resource_absent_type_returns_nil_without_error() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        setup_resources(&mut disp, &mut bus, b"VPIC", 500, b"other type");
+        let name_addr = 0x200000u32;
+        write_pstring(&mut bus, name_addr, b"hidden");
+        bus.write_long(TEST_SP, name_addr);
+        bus.write_long(TEST_SP + 4, u32::from_be_bytes(*b"PICT"));
+        bus.write_word(0x0A60, super::RES_NOT_FOUND_ERR as u16);
+
+        call(&mut disp, true, 0x020, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(bus.read_long(TEST_SP + 8), 0);
+        assert_eq!(bus.read_word(0x0A60), 0);
     }
 
     #[test]

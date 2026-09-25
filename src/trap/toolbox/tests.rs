@@ -6853,6 +6853,29 @@
     }
 
     #[test]
+    fn get_named_resource_distinguishes_absent_type_from_missing_name() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.install_named_test_resource_in_file(
+            &mut bus, 0, *b"VPIC", 500, "visible", b"other type",
+        );
+        let name_addr = 0x200000u32;
+        bus.write_byte(name_addr, 6);
+        bus.write_bytes(name_addr + 1, b"hidden");
+
+        for (kind, expected_error) in [(b"PICT", 0), (b"VPIC", -192i16)] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, name_addr);
+            bus.write_long(TEST_SP + 4, u32::from_be_bytes(*kind));
+            bus.write_word(0x0A60, (-43i16) as u16);
+            let result = disp.dispatch_toolbox(true, 0x1A1, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A0), 0);
+            assert_eq!(bus.read_long(TEST_SP + 8), 0);
+            assert_eq!(bus.read_word(0x0A60) as i16, expected_error);
+        }
+    }
+
+    #[test]
     fn get_named_resource_reloads_after_release() {
         let (mut disp, mut cpu, mut bus) = setup();
         let data = [0x42, 0x43, 0x44, 0x45];
