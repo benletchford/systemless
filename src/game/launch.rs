@@ -264,11 +264,19 @@ fn append_web_pack_files(out: &mut Vec<u8>, file_entries: Vec<PayloadFile>) -> R
     Ok(())
 }
 
-/// Load a game from a file path, trying explicit containers before macOS resource forks.
+/// Load a game from a file or an extracted host directory, trying explicit
+/// containers before macOS resource forks.
 pub fn load_game_from_path(
     runner: &mut FixtureRunner,
     path: &std::path::Path,
 ) -> Result<LoadedApp, String> {
+    // A directory is an extracted host tree: load the whole folder, taking
+    // resource forks from macOS extended attributes (or sidecars) and decoding
+    // any MacBinary members.
+    if path.is_dir() {
+        return load_game_directory(runner, path);
+    }
+
     let file_data =
         std::fs::read(path).map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
 
@@ -957,8 +965,12 @@ fn insert_forks_into_vfs(
             .insert(normalized_name.clone(), data);
     }
 
+    // Some tooling (ResForge, `Rez -o` on non-Mac hosts) exports a resource
+    // fork as a flat blob in the data fork, using `.rsrc`/`.rsrx` names. If the
+    // bytes parse as a resource fork, mirror them into the resource-fork slot.
+    let lower_name = name.to_ascii_lowercase();
     let data_backed_rsrc = rsrc.is_empty()
-        && name.to_ascii_lowercase().ends_with(".rsrc")
+        && (lower_name.ends_with(".rsrc") || lower_name.ends_with(".rsrx"))
         && ResourceFork::has_valid_layout(
             runner
                 .dispatcher()
@@ -991,119 +1003,6 @@ fn insert_forks_into_vfs(
         creator,
         finder_flags,
     );
-}
-
-fn load_exported_host_tree(
-    runner: &mut FixtureRunner,
-    root: &std::path::Path,
-    app_rel: &str,
-    app_data: Vec<u8>,
-    app_rsrc: Vec<u8>,
-) -> Result<LoadedApp, String> {
-    let mut executable_entry: Option<ExecutableCandidate> = None;
-    let mut payload = payload_from_exported_host_tree(root, app_rel)?;
-
-    if !payload
-        .files
-        .iter()
-        .any(|file| file.name.eq_ignore_ascii_case(app_rel))
-    {
-        payload.files.push(PayloadFile {
-            name: app_rel.to_string(),
-            data: app_data,
-            rsrc: app_rsrc,
-            file_type: *b"APPL",
-            creator: *b"????",
-            finder_flags: 0,
-            executable_priority: 2,
-        });
-    }
-
-    insert_payload_into_vfs(runner, payload, &mut executable_entry);
-    log_vfs(runner);
-
-    let executable = executable_entry.ok_or("No executable found in exported host tree")?;
-    load_selected_executable(runner, &executable)
-}
-
-fn payload_from_exported_host_tree(
-    root: &std::path::Path,
-    app_rel: &str,
-) -> Result<Payload, String> {
-    let mut dirs = Vec::new();
-    let mut files = Vec::new();
-    collect_exported_host_tree(root, root, app_rel, &mut dirs, &mut files)?;
-    Ok(Payload {
-        dirs,
-        files,
-        volumes: Vec::new(),
-        installer_roots: Vec::new(),
-        skipped_disk_image_errors: Vec::new(),
-    })
-}
-
-fn collect_exported_host_tree(
-    root: &std::path::Path,
-    dir: &std::path::Path,
-    app_rel: &str,
-    dirs: &mut Vec<String>,
-    files: &mut Vec<PayloadFile>,
-) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|err| format!("read exported host directory {}: {}", dir.display(), err))?;
-    for entry in entries {
-        let entry = entry.map_err(|err| {
-            format!(
-                "read exported host directory entry in {}: {}",
-                dir.display(),
-                err
-            )
-        })?;
-        let path = entry.path();
-        let rel = match path.strip_prefix(root) {
-            Ok(rel) => rel,
-            Err(_) => continue,
-        };
-        let rel_name = rel.to_string_lossy().to_string();
-        if rel_name.is_empty()
-            || rel_name.starts_with("__rsrc__")
-            || rel
-                .components()
-                .any(|component| component.as_os_str() == ".rsrc")
-        {
-            continue;
-        }
-        let file_type = entry.file_type().map_err(|err| {
-            format!(
-                "stat exported host directory entry {}: {}",
-                path.display(),
-                err
-            )
-        })?;
-        if file_type.is_dir() {
-            dirs.push(rel_name.clone());
-            collect_exported_host_tree(root, &path, app_rel, dirs, files)?;
-            continue;
-        }
-        if !file_type.is_file() || exported_host_file_is_harness_artifact(&rel_name) {
-            continue;
-        }
-
-        let data = std::fs::read(&path)
-            .map_err(|err| format!("read exported host file {}: {}", path.display(), err))?;
-        let rsrc = read_exported_resource_sidecar_for_rel(root, rel).unwrap_or_default();
-        let is_app = rel_name.eq_ignore_ascii_case(app_rel);
-        files.push(PayloadFile {
-            name: rel_name,
-            data,
-            rsrc,
-            file_type: if is_app { *b"APPL" } else { *b"????" },
-            creator: *b"????",
-            finder_flags: 0,
-            executable_priority: if is_app { 2 } else { 1 },
-        });
-    }
-    Ok(())
 }
 
 fn exported_host_file_is_harness_artifact(rel_name: &str) -> bool {
@@ -1156,6 +1055,261 @@ fn read_exported_resource_sidecar_for_rel(
     std::fs::read(sidecar)
         .ok()
         .filter(|bytes| !bytes.is_empty())
+}
+
+/// Load a game from an extracted host directory.
+///
+/// This is the entry point for folders produced by tools such as The
+/// Unarchiver. It walks the tree, reads each file's resource fork from the
+/// macOS extended attribute (falling back to `.rsrc`/`__rsrc__` sidecars),
+/// reads Finder type/creator/flags from `com.apple.FinderInfo`, and decodes
+/// MacBinary members so they mount as their constituent forks. Everything is
+/// then handed to the same executable-selection and VFS machinery used by the
+/// archive loaders.
+fn load_game_directory(
+    runner: &mut FixtureRunner,
+    root: &std::path::Path,
+) -> Result<LoadedApp, String> {
+    let payload = payload_from_host_directory(root)?;
+    load_host_payload(runner, payload, "directory")
+}
+
+/// Load an application file whose resource fork is an exported sidecar: the
+/// rest of the tree under `root` mounts alongside it, and `app_rel` is the
+/// application to launch.
+fn load_exported_host_tree(
+    runner: &mut FixtureRunner,
+    root: &std::path::Path,
+    app_rel: &str,
+    app_data: Vec<u8>,
+    app_rsrc: Vec<u8>,
+) -> Result<LoadedApp, String> {
+    let mut payload = payload_from_host_directory(root)?;
+    match payload
+        .files
+        .iter_mut()
+        .find(|file| file.name.eq_ignore_ascii_case(app_rel))
+    {
+        Some(app) => {
+            app.file_type = *b"APPL";
+            app.executable_priority = 2;
+        }
+        None => payload.files.push(PayloadFile {
+            name: app_rel.to_string(),
+            data: app_data,
+            rsrc: app_rsrc,
+            file_type: *b"APPL",
+            creator: *b"????",
+            finder_flags: 0,
+            executable_priority: 2,
+        }),
+    }
+    load_host_payload(runner, payload, "exported host tree")
+}
+
+fn load_host_payload(
+    runner: &mut FixtureRunner,
+    payload: Payload,
+    source: &str,
+) -> Result<LoadedApp, String> {
+    let mut executable_entry: Option<ExecutableCandidate> = None;
+    insert_payload_into_vfs(runner, payload, &mut executable_entry);
+    log_vfs(runner);
+
+    let executable =
+        executable_entry.ok_or_else(|| format!("No executable found in {source}"))?;
+    if crate::runner::trace_load_enabled() {
+        eprintln!("[LOAD] Selected executable: {}", executable.name);
+    }
+    load_selected_executable(runner, &executable)
+}
+
+fn payload_from_host_directory(root: &std::path::Path) -> Result<Payload, String> {
+    let mut payload = Payload {
+        dirs: Vec::new(),
+        files: Vec::new(),
+        volumes: Vec::new(),
+        installer_roots: Vec::new(),
+        skipped_disk_image_errors: Vec::new(),
+    };
+    collect_host_directory(root, root, &mut payload)?;
+    Ok(payload)
+}
+
+fn collect_host_directory(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    payload: &mut Payload,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|err| format!("read host directory {}: {}", dir.display(), err))?;
+    for entry in entries {
+        let entry = entry
+            .map_err(|err| format!("read host directory entry in {}: {}", dir.display(), err))?;
+        let path = entry.path();
+        let rel = match path.strip_prefix(root) {
+            Ok(rel) => rel,
+            Err(_) => continue,
+        };
+        let rel_name = rel.to_string_lossy().to_string();
+        if rel_name.is_empty() || host_directory_entry_is_ignored(rel, &rel_name) {
+            if crate::runner::trace_load_enabled() && !rel_name.is_empty() {
+                eprintln!("[DIR] {}: skipped (metadata/sidecar)", rel_name);
+            }
+            continue;
+        }
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("stat host directory entry {}: {}", path.display(), err))?;
+        if file_type.is_dir() {
+            payload.dirs.push(rel_name.clone());
+            collect_host_directory(root, &path, payload)?;
+            continue;
+        }
+        if !file_type.is_file() || exported_host_file_is_harness_artifact(&rel_name) {
+            continue;
+        }
+
+        let data = std::fs::read(&path)
+            .map_err(|err| format!("read host file {}: {}", path.display(), err))?;
+
+        // A MacBinary member carries its own type/creator and forks, so prefer
+        // it over reading the raw host file.
+        if looks_like_macbinary(&data) {
+            let parent = rel
+                .parent()
+                .map(|parent| parent.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let decoded = parse_macbinary_payload(&data, &parent, 1)?;
+            if crate::runner::trace_load_enabled() {
+                eprintln!(
+                    "[DIR] {}: MacBinary -> {} data={} rsrc={} type={} creator={}",
+                    rel_name,
+                    decoded.name,
+                    decoded.data.len(),
+                    decoded.rsrc.len(),
+                    fourcc_lossy(decoded.file_type),
+                    fourcc_lossy(decoded.creator),
+                );
+            }
+            payload.files.push(decoded);
+            continue;
+        }
+
+        let rsrc = read_host_resource_fork(root, rel, &path).unwrap_or_default();
+        let (file_type, creator, finder_flags) = match read_host_finder_info(&path) {
+            Some((file_type, creator, finder_flags)) => (file_type, creator, finder_flags),
+            None if resource_fork_is_application(&rsrc) => (*b"APPL", *b"????", 0),
+            None => (*b"????", *b"????", 0),
+        };
+        if crate::runner::trace_load_enabled() {
+            eprintln!(
+                "[DIR] {}: data={} rsrc={} type={} creator={} flags={:#06x}",
+                rel_name,
+                data.len(),
+                rsrc.len(),
+                fourcc_lossy(file_type),
+                fourcc_lossy(creator),
+                finder_flags,
+            );
+        }
+
+        let entry_payload = payload_from_forks(
+            &rel_name,
+            data,
+            rsrc,
+            file_type,
+            creator,
+            finder_flags,
+            1,
+        )?;
+        merge_payload(payload, entry_payload);
+    }
+    Ok(())
+}
+
+/// Skip host-tree entries that are not part of the game: metadata files,
+/// hidden/AppleDouble files, the resource-fork sidecar namespace, and the
+/// classic Mac "Icon\r" files.
+fn host_directory_entry_is_ignored(rel: &std::path::Path, rel_name: &str) -> bool {
+    if rel_name.starts_with("__rsrc__") {
+        return true;
+    }
+    if rel.components().any(|component| {
+        let name = component.as_os_str().to_string_lossy();
+        name.starts_with('.')
+    }) {
+        return true;
+    }
+    rel_name.starts_with("Icon\r")
+        || matches!(rel_name, "Desktop DB" | "Desktop DF")
+        || rel_name.to_ascii_lowercase().ends_with(".webloc")
+}
+
+/// Read a file's resource fork. macOS exposes it as a named fork; extracted
+/// trees on other platforms use `.rsrc/<name>` or `__rsrc__<rel>` sidecars.
+fn read_host_resource_fork(
+    root: &std::path::Path,
+    rel: &std::path::Path,
+    path: &std::path::Path,
+) -> Option<Vec<u8>> {
+    if let Ok(bytes) = std::fs::read(path.join("..namedfork/rsrc")) {
+        if !bytes.is_empty() {
+            return Some(bytes);
+        }
+    }
+    read_exported_resource_sidecar_for_rel(root, rel)
+}
+
+fn resource_fork_is_application(rsrc: &[u8]) -> bool {
+    ResourceFork::parse(rsrc)
+        .map(|fork| fork.get(*b"cfrg", 0).is_some())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn read_host_finder_info(path: &std::path::Path) -> Option<([u8; 4], [u8; 4], u16)> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let name = std::ffi::CString::new("com.apple.FinderInfo").ok()?;
+    let mut buffer = [0u8; 32];
+    // SAFETY: `cpath` and `name` are NUL-terminated, and `buffer` is a valid
+    // 32-byte output region; `getxattr` writes at most `buffer.len()` bytes.
+    let len = unsafe {
+        getxattr(
+            cpath.as_ptr(),
+            name.as_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            0,
+            0,
+        )
+    };
+    if len < 10 {
+        return None;
+    }
+    let file_type = buffer[0..4].try_into().ok()?;
+    let creator = buffer[4..8].try_into().ok()?;
+    let finder_flags = u16::from_be_bytes([buffer[8], buffer[9]]);
+    Some((file_type, creator, finder_flags))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_host_finder_info(_path: &std::path::Path) -> Option<([u8; 4], [u8; 4], u16)> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+extern "C" {
+    fn getxattr(
+        path: *const std::os::raw::c_char,
+        name: *const std::os::raw::c_char,
+        value: *mut std::os::raw::c_void,
+        size: usize,
+        position: u32,
+        options: i32,
+    ) -> isize;
 }
 
 #[derive(Debug)]
@@ -4809,6 +4963,79 @@ mod tests {
             runner.dispatcher().vfs_rsrc.get("Self Opening App"),
             Some(&rsrc)
         );
+    }
+
+    #[test]
+    fn host_directory_mounts_macbinary_and_sidecar_forks() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let app_data = b"directory application data";
+        let app_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        fs::write(
+            dir.path().join("Game App.bin"),
+            make_macbinary_application("Game App", app_data, &app_rsrc),
+        )
+        .unwrap();
+
+        let data_rsrc = make_single_resource_fork_bytes(*b"DATA", 128, &[1, 2, 3, 4]);
+        fs::create_dir_all(dir.path().join("Nova Files/.rsrc")).unwrap();
+        fs::write(dir.path().join("Nova Files/Nova Data 1"), []).unwrap();
+        fs::write(dir.path().join("Nova Files/.rsrc/Nova Data 1"), &data_rsrc).unwrap();
+
+        let mut runner = new_runner();
+        load_game_directory(&mut runner, dir.path()).expect("directory should load");
+
+        assert_eq!(
+            runner.dispatcher().vfs.get("Game App"),
+            Some(&app_data.to_vec())
+        );
+        assert_eq!(
+            runner.dispatcher().vfs_rsrc.get("Game App"),
+            Some(&app_rsrc)
+        );
+        assert_eq!(
+            runner
+                .dispatcher()
+                .vfs
+                .get("Nova Files/Nova Data 1")
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            runner.dispatcher().vfs_rsrc.get("Nova Files/Nova Data 1"),
+            Some(&data_rsrc)
+        );
+        assert_eq!(runner.dispatcher().launched_app_path(), Some("Game App"));
+    }
+
+    #[test]
+    fn sidecar_application_file_mounts_its_host_tree() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let app_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        fs::create_dir_all(dir.path().join(".rsrc")).unwrap();
+        fs::write(dir.path().join("Game App"), b"sidecar application data").unwrap();
+        fs::write(dir.path().join(".rsrc/Game App"), &app_rsrc).unwrap();
+        fs::create_dir_all(dir.path().join("Data")).unwrap();
+        fs::write(dir.path().join("Data/Level 1"), b"level").unwrap();
+        fs::write(dir.path().join(".DS_Store"), b"finder").unwrap();
+
+        let mut runner = new_runner();
+        load_game_from_path(&mut runner, &dir.path().join("Game App"))
+            .expect("sidecar application should load");
+
+        assert_eq!(
+            runner.dispatcher().vfs_rsrc.get("Game App"),
+            Some(&app_rsrc)
+        );
+        assert_eq!(
+            runner.dispatcher().vfs.get("Data/Level 1"),
+            Some(&b"level".to_vec())
+        );
+        assert!(runner.dispatcher().vfs.get(".DS_Store").is_none());
+        assert_eq!(runner.dispatcher().launched_app_path(), Some("Game App"));
     }
 
     #[test]
