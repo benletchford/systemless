@@ -135,3 +135,29 @@ pub struct PpcAliasRecord {
     pub target_dir_id: u32,
     pub target_name: Vec<u8>,
 }
+
+pub fn ppc_read_rgb_color(
+    memory: &mut crate::memory::GuestAddressSpace,
+    color: u32,
+) -> Option<PpcRgbColor> {
+    use ppc::PpcMemory;
+    Some(PpcRgbColor {
+        red: memory.read_u16_be(color)?,
+        green: memory.read_u16_be(color + 2)?,
+        blue: memory.read_u16_be(color + 4)?,
+    })
+}
+
+pub fn ppc_write_rgb_color(
+    memory: &mut crate::memory::GuestAddressSpace,
+    color: u32,
+    value: PpcRgbColor,
+) -> Option<()> {
+    use ppc::PpcMemory;
+    memory.write_u16_be(color, value.red)?;
+    memory.write_u16_be(color + 2, value.green)?;
+    memory.write_u16_be(color + 4, value.blue)?;
+    Some(())
+}
+
+

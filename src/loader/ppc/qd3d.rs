@@ -10,7 +10,7 @@ use super::{
     ppc_res_type_text, ppc_rgb555_to_clut_index, qd3d_collision_trace_enabled,
     qd3d_dump_frame_enabled, qd3d_text, qd3d_trace_enabled, qd3d_trimesh_trace_enabled, BLR,
     PpcCpu, PpcImportAction, PpcSectionMem, PpcVfsDirectory, PpcVfsFileRecord,
-    PPC_MEM_FULL_ERR, PPC_NO_ERR,
+    ppc_i16_result, PPC_MEM_FULL_ERR, PPC_NO_ERR, PPC_PARAM_ERR,
 };
 use crate::memory::GuestWritableSpan;
 use crate::process_context::ProcessNativeMemoryManager;
@@ -16048,3 +16048,56 @@ pub fn ppc_read_f32_be(memory: &mut PpcSectionMem, addr: u32) -> Option<f32> {
 pub fn ppc_write_f32_be(memory: &mut PpcSectionMem, addr: u32, value: f32) -> Option<()> {
     memory.write_u32_be(addr, value.to_bits())
 }
+
+pub(crate) fn ppc_qa_engine_gestalt(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> u32 {
+    let engine = cpu.gpr[3];
+    let selector = cpu.gpr[4];
+    let response = cpu.gpr[5];
+    if engine != PPC_QA_ENGINE || response == 0 {
+        return ppc_i16_result(PPC_PARAM_ERR);
+    }
+
+    let response_size = if selector == 6 {
+        PPC_QA_ENGINE_NAME.len() as u32 + 1
+    } else {
+        4
+    };
+    if !ppc_memory_can_write_bytes(memory, response, response_size) {
+        return ppc_i16_result(PPC_PARAM_ERR);
+    }
+
+    let write_result = match selector {
+        0 => memory.write_u32_be(response, ppc_qa_optional_features()),
+        1 => memory.write_u32_be(response, ppc_qa_fast_features()),
+        2 => memory.write_u32_be(response, PPC_QA_VENDOR_APPLE),
+        3 => memory.write_u32_be(response, PPC_QA_ENGINE_APPLE_SW),
+        4 => memory.write_u32_be(response, 1),
+        5 => memory.write_u32_be(response, PPC_QA_ENGINE_NAME.len() as u32),
+        6 => ppc_write_c_string(memory, response, PPC_QA_ENGINE_NAME),
+        7 => memory.write_u32_be(response, PPC_QA_AVAILABLE_TEXTURE_MEMORY),
+        _ => memory.write_u32_be(response, 0),
+    };
+
+    if write_result.is_some() {
+        0
+    } else {
+        ppc_i16_result(PPC_PARAM_ERR)
+    }
+}
+
+pub(crate) fn ppc_qa_optional_features() -> u32 {
+    PPC_QA_OPTIONAL_TEXTURE | PPC_QA_OPTIONAL_TEXTURE_COLOR | PPC_QA_OPTIONAL_PERSPECTIVE_Z
+}
+
+pub(crate) fn ppc_qa_fast_features() -> u32 {
+    PPC_QA_FAST_LINE | PPC_QA_FAST_GOURAUD | PPC_QA_FAST_TEXTURE
+}
+
+fn ppc_write_c_string(memory: &mut PpcSectionMem, ptr: u32, bytes: &[u8]) -> Option<()> {
+    for (offset, byte) in bytes.iter().copied().enumerate() {
+        memory.write_u8(ptr + offset as u32, byte)?;
+    }
+    memory.write_u8(ptr + bytes.len() as u32, 0)?;
+    Some(())
+}
+
