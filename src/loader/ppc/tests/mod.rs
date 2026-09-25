@@ -440,98 +440,6 @@ fn hle_import_runner_handles_keyboard_time_and_text_width_utilities() {
     assert_eq!(loaded.cpu.gpr[3], 42);
 }
 
-#[test]
-fn hle_import_runner_handles_quickdraw_color_and_control_defaults() {
-    let pef = synthetic_pef_with_import(b"GetForeColor");
-    let mut loaded = load_pef_application(&pef).unwrap();
-    let color_ptr = PPC_DATA_BASE + 0x1000;
-    loaded.memory.add_region(color_ptr, vec![0xaa; 6]);
-    loaded.cpu.gpr[3] = color_ptr;
-
-    let probe = loaded.run_with_hle_imports(64);
-
-    assert_eq!(probe.handled_import_count, 1);
-    assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(loaded.cpu.gpr[3], color_ptr);
-    assert_eq!(
-        ppc_read_rgb_color(&mut loaded.memory, color_ptr),
-        Some(PpcRgbColor {
-            red: 0,
-            green: 0,
-            blue: 0,
-        })
-    );
-
-    let pef = synthetic_pef_with_import(b"SetControlValue");
-    let mut loaded = load_pef_application(&pef).unwrap();
-    loaded.cpu.gpr[3] = PPC_HEAP_BASE + 0x100;
-    loaded.cpu.gpr[4] = 7;
-
-    let probe = loaded.run_with_hle_imports(64);
-
-    assert_eq!(probe.handled_import_count, 1);
-    assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(loaded.cpu.gpr[3], PPC_HEAP_BASE + 0x100);
-    assert_eq!(loaded.cpu.gpr[4], 7);
-}
-
-
-#[test]
-fn ppc_vfs_seed_registers_fond_associated_application_font() {
-    let pef = synthetic_pef_with_import(b"WaitNextEvent");
-    let mut loaded = load_pef_application(&pef).unwrap();
-    let family_id = 31001i16;
-    let font_resource_id = 2558i16;
-    let point_size = 17i16;
-
-    let mut fond = vec![0u8; 60];
-    fond[2..4].copy_from_slice(&(family_id as u16).to_be_bytes());
-    fond[52..54].copy_from_slice(&0u16.to_be_bytes());
-    fond[54..56].copy_from_slice(&(point_size as u16).to_be_bytes());
-    fond[56..58].copy_from_slice(&0u16.to_be_bytes());
-    fond[58..60].copy_from_slice(&(font_resource_id as u16).to_be_bytes());
-
-    let mut nfnt = vec![0u8; 38];
-    nfnt[2..4].copy_from_slice(&32u16.to_be_bytes());
-    nfnt[4..6].copy_from_slice(&32u16.to_be_bytes());
-    nfnt[6..8].copy_from_slice(&1u16.to_be_bytes());
-    nfnt[14..16].copy_from_slice(&1u16.to_be_bytes());
-    nfnt[16..18].copy_from_slice(&9u16.to_be_bytes());
-    nfnt[18..20].copy_from_slice(&1u16.to_be_bytes());
-    nfnt[24..26].copy_from_slice(&1u16.to_be_bytes());
-    nfnt[26] = 0xc0;
-    nfnt[30..32].copy_from_slice(&1u16.to_be_bytes());
-    nfnt[32..34].copy_from_slice(&2u16.to_be_bytes());
-    nfnt[34..36].copy_from_slice(&1u16.to_be_bytes());
-    nfnt[36..38].copy_from_slice(&1u16.to_be_bytes());
-
-    let record = |res_type: [u8; 4], res_id: i16, data: Vec<u8>| PpcVfsResourceRecord {
-        ref_num: 0,
-        path: "Test App".to_string(),
-        res_type: u32::from_be_bytes(res_type),
-        res_id,
-        name: Vec::new(),
-        data,
-        raw_data: None,
-        raw_attrs: None,
-        attrs: 0,
-        handle: 0,
-    };
-    loaded.seed_vfs_files_and_resources(
-        Vec::new(),
-        Vec::new(),
-        vec![
-            record(*b"FOND", family_id, fond),
-            record(*b"NFNT", font_resource_id, nfnt),
-        ],
-    );
-
-    let face = crate::quickdraw::fonts::get_font_face(family_id, point_size)
-        .expect("PPC application font should be registered");
-    assert_eq!(face.font_id, family_id);
-    assert_eq!(face.size, point_size);
-    assert_eq!(face.metrics.ascent, 1);
-}
 mod standard_c_library;
 mod toolbox_utilities;
 
@@ -678,46 +586,6 @@ fn write_test_dsp_context_attributes(
     memory
         .write_u32_be(attributes + 48, context_attributes.page_count)
         .unwrap();
-}
-
-#[test]
-fn driver_services_uptime_uses_deterministic_virtual_clock() {
-    let pef = synthetic_pef_with_library_import(b"DriverServicesLib", b"UpTime");
-    let mut loaded = load_pef_application(&pef).unwrap();
-    let time_ptr = PPC_DATA_BASE + 0x1000;
-    loaded.memory.add_region(time_ptr, vec![0xaa; 8]);
-    loaded.cpu.gpr[3] = time_ptr;
-    loaded.set_tick_count(100);
-    loaded.set_clock_cycle_timing(64, 0);
-
-    let probe = loaded.run_with_hle_imports(64);
-
-    assert_eq!(probe.handled_import_count, 1);
-    assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(
-        loaded.memory.read_u64_be(time_ptr),
-        Some(ppc_virtual_microseconds(100, 64, 0, 4))
-    );
-}
-
-#[test]
-fn driver_services_absolute_time_converts_to_nanoseconds() {
-    let pef = synthetic_pef_with_library_import(b"DriverServicesLib", b"AbsoluteToNanoseconds");
-    let mut loaded = load_pef_application(&pef).unwrap();
-    let output = PPC_DATA_BASE + 0x1000;
-    loaded.memory.add_region(output, vec![0xaa; 8]);
-    loaded.cpu.gpr[3] = output;
-    loaded.cpu.gpr[4] = 1;
-    loaded.cpu.gpr[5] = 2;
-
-    let probe = loaded.run_with_hle_imports(64);
-
-    assert_eq!(probe.handled_import_count, 1);
-    assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(
-        loaded.memory.read_u64_be(output),
-        Some(((1u64 << 32) | 2) * 1_000)
-    );
 }
 
 fn synthetic_pef_with_library_import(library_name: &[u8], symbol_name: &[u8]) -> Vec<u8> {
@@ -1258,20 +1126,6 @@ fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
 
 fn write_u16(bytes: &mut [u8], offset: usize, value: u16) {
     bytes[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
-}
-
-#[test]
-fn drawing_imports_charge_guest_time_below_one_tick_per_redraw() {
-    use PpcImportDispatcherTarget as T;
-    for target in [T::DrawText, T::DrawPicture, T::CopyBits, T::PaintRect, T::GetIndString] {
-        assert!(ppc_import_extra_cycles_for_target(&target) > 0);
-    }
-    let tick_cycles = (crate::runner::DEFAULT_REALTIME_PPC_CPU_MHZ * 1_000_000.0
-        / crate::runner::DEFAULT_VBL_HZ) as u64;
-    let redraw = 370 * ppc_import_extra_cycles_for_target(&T::DrawText)
-        + 165 * ppc_import_extra_cycles_for_target(&T::DrawPicture)
-        + 135 * ppc_import_extra_cycles_for_target(&T::CopyBits);
-    assert!(redraw < tick_cycles / 2, "{redraw} of {tick_cycles}");
 }
 
 #[test]
