@@ -1808,8 +1808,21 @@ impl PpcMemory for GuestAddressSpace {
             return None;
         };
         let state = self.state_mut();
-        if !state.overlaps_shared(u64::from(addr), end) {
-            return PpcMemory::read_u16_be(&mut state.regions, addr);
+        let start = u64::from(addr);
+        let lookup = resolve_lookup(state, state.data_lookup, addr, start, end);
+        state.data_lookup = Some(lookup);
+        if lookup.covers(start, end) {
+            return match lookup {
+                SharedLookup::Gap { .. } => PpcMemory::read_u16_be(&mut state.regions, addr),
+                SharedLookup::Owned(run) => {
+                    let mapping = &state.shared_regions[run.index];
+                    let offset = (start - u64::from(mapping.base)) as usize;
+                    let mut bytes = [0; 2];
+                    // SAFETY: the cached span proves both bytes have this owner.
+                    unsafe { mapping.region.read_into(offset, &mut bytes) }?;
+                    Some(u16::from_be_bytes(bytes))
+                }
+            };
         }
         match route_range_state(state, addr, 2, None) {
             GuestMemoryRoute::Sparse
@@ -1946,10 +1959,29 @@ impl PpcMemory for GuestAddressSpace {
             return None;
         };
         let state = self.state_mut();
-        if !state.overlaps_shared(u64::from(addr), end) {
-            PpcMemory::write_u16_be(&mut state.regions, addr, value)?;
-            state.note_write(addr, &value.to_be_bytes());
-            return Some(());
+        let start = u64::from(addr);
+        let bytes = value.to_be_bytes();
+        let lookup = resolve_lookup(state, state.data_lookup, addr, start, end);
+        state.data_lookup = Some(lookup);
+        if lookup.covers(start, end) {
+            return match lookup {
+                SharedLookup::Gap { .. } => {
+                    PpcMemory::write_u16_be(&mut state.regions, addr, value)?;
+                    state.note_write(addr, &bytes);
+                    Some(())
+                }
+                SharedLookup::Owned(run) => {
+                    let mapping = &state.shared_regions[run.index];
+                    if !mapping.writable {
+                        return None;
+                    }
+                    let offset = (start - u64::from(mapping.base)) as usize;
+                    // SAFETY: the cached span proves both bytes have this owner.
+                    unsafe { mapping.region.write_from(offset, &bytes) }?;
+                    state.note_write(addr, &bytes);
+                    Some(())
+                }
+            };
         }
         match route_range_state(state, addr, 2, None) {
             GuestMemoryRoute::Sparse
@@ -2940,6 +2972,44 @@ mod tests {
             Some(0xABAB_ABAB),
             "a refused write must not have landed"
         );
+    }
+
+    #[test]
+    fn cached_halfword_accesses_respect_shared_overlay_boundaries() {
+        let mut memory = GuestAddressSpace::new();
+        let mut base = MacMemoryBus::new(0x10000);
+        let mut overlay = MacMemoryBus::new(0x10000);
+        MemoryBus::write_long(&mut base, 0, 0x1122_3344);
+        MemoryBus::write_word(&mut overlay, 0, 0xaabb);
+        // SAFETY: all source and address-space accesses are serialized here.
+        unsafe {
+            memory.add_shared_region(0x1000, base.shared_ram_region(0, 4).unwrap());
+            memory.add_shared_region(0x1002, overlay.shared_ram_region(0, 2).unwrap());
+        }
+
+        assert_eq!(memory.read_u16_be(0x1000), Some(0x1122));
+        assert_eq!(memory.read_u16_be(0x1001), Some(0x22aa));
+        assert_eq!(memory.read_u16_be(0x1002), Some(0xaabb));
+        assert_eq!(memory.write_u16_be(0x1000, 0x5566), Some(()));
+        assert_eq!(memory.read_u16_be(0x1000), Some(0x5566));
+        assert_eq!(memory.write_u16_be(0x1001, 0x7788), Some(()));
+        assert_eq!(memory.read_u16_be(0x1001), Some(0x7788));
+        assert_eq!(memory.read_u16_be(0x1002), Some(0x88bb));
+
+        let mut readonly = MacMemoryBus::new(0x10000);
+        MemoryBus::write_word(&mut readonly, 0, 0xccdd);
+        // SAFETY: as above; a later mapping shadows the writable overlay.
+        unsafe {
+            memory.add_shared_readonly_region(
+                None,
+                0x1002,
+                readonly.shared_ram_region(0, 2).unwrap(),
+            );
+        }
+        assert_eq!(memory.read_u16_be(0x1002), Some(0xccdd));
+        assert_eq!(memory.write_u16_be(0x1002, 0), None);
+        assert_eq!(memory.write_u16_be(0x1001, 0), None);
+        assert_eq!(memory.read_u16_be(0x1001), Some(0x77cc));
     }
 
     #[test]
