@@ -166,6 +166,12 @@ const CONTENT_RECT_CONFIRMATIONS: u16 = 5;
 /// After rejecting a crop, require a longer quiet-margin period before
 /// shrinking again so startup phases cannot make the native window oscillate.
 const CONTENT_RECT_RELEARN_CONFIRMATIONS: u16 = 120;
+/// A stable crop only needs the margin histogram refreshed periodically: its
+/// verdict changes only when the guest paints into the excluded margins. At
+/// 60 Hz eight frames bound that staleness to roughly 130 ms, and the per-frame
+/// confirmation counter keeps its cadence because the cached verdict is still
+/// consulted on every frame.
+const CONTENT_RECT_MARGIN_REFRESH_FRAMES: u16 = 8;
 
 fn foreground_cpu_batch_instructions(powerpc: bool, instructions_per_tick: u32) -> usize {
     if powerpc {
@@ -854,6 +860,13 @@ struct App {
     content_rect_copybits_count: u64,
     #[cfg(target_os = "macos")]
     content_rect_active_margin_frames: u16,
+    /// Last margin-histogram verdict for one crop, and how many frames remain
+    /// before it is recomputed from the framebuffer. Cleared whenever the
+    /// screen mode changes, so a same-shaped crop cannot reuse stale pixels.
+    #[cfg(target_os = "macos")]
+    content_rect_margin_cache: Option<(ContentRect, bool)>,
+    #[cfg(target_os = "macos")]
+    content_rect_margin_refresh: u16,
     /// Continue looking for a valid crop after active margins forced this run
     /// back to the full screen; a startup splash may later become letterboxed.
     #[cfg(target_os = "macos")]
@@ -1030,6 +1043,10 @@ impl App {
             content_rect_copybits_count: 0,
             #[cfg(target_os = "macos")]
             content_rect_active_margin_frames: 0,
+            #[cfg(target_os = "macos")]
+            content_rect_margin_cache: None,
+            #[cfg(target_os = "macos")]
+            content_rect_margin_refresh: 0,
             #[cfg(target_os = "macos")]
             content_rect_relearn_after_full: false,
             #[cfg(target_os = "macos")]
@@ -1779,6 +1796,8 @@ impl App {
                 self.content_rect_candidate = None;
                 self.content_rect_copybits_count = 0;
                 self.content_rect_active_margin_frames = 0;
+                self.content_rect_margin_cache = None;
+                self.content_rect_margin_refresh = 0;
                 self.content_rect_relearn_after_full = false;
                 self.content_rect_previous_frame.clear();
             }
@@ -1795,17 +1814,36 @@ impl App {
                 .dispatcher()
                 .visible_dialog_structure_bounds(runner.bus())
                 .is_some();
+            // The histogram walks every framebuffer byte, so a crop that is
+            // already accepted only needs it refreshed every
+            // CONTENT_RECT_MARGIN_REFRESH_FRAMES frames. A reused verdict can be
+            // that many frames stale, so paint entering the margins is noticed
+            // up to one refresh period late.
+            let mut margin_cache = self.content_rect_margin_cache;
+            let mut margin_refresh = self.content_rect_margin_refresh;
+            let mut has_inactive_margins = |rect: ContentRect| {
+                if let Some((cached_rect, verdict)) = margin_cache {
+                    if cached_rect == rect && margin_refresh > 0 {
+                        margin_refresh -= 1;
+                        return verdict;
+                    }
+                }
+                let verdict = content_rect_has_inactive_margins_8bpp(
+                    framebuffer,
+                    screen_mode.1 as usize,
+                    usize::from(screen_mode.2),
+                    usize::from(screen_mode.3),
+                    rect,
+                );
+                margin_cache = Some((rect, verdict));
+                margin_refresh = CONTENT_RECT_MARGIN_REFRESH_FRAMES - 1;
+                verdict
+            };
             let active_margin_crop = self.content_rect.filter(|&rect| {
                 rect != full_screen
                     && !visible_dialog
                     && screen_mode.4 == 8
-                    && !content_rect_has_inactive_margins_8bpp(
-                        framebuffer,
-                        screen_mode.1 as usize,
-                        usize::from(screen_mode.2),
-                        usize::from(screen_mode.3),
-                        rect,
-                    )
+                    && !has_inactive_margins(rect)
             });
             if active_margin_crop.is_some() {
                 self.content_rect_active_margin_frames =
@@ -1830,13 +1868,7 @@ impl App {
                 .filter(|&rect| {
                     !self.content_rect_relearn_after_full
                         || screen_mode.4 != 8
-                        || content_rect_has_inactive_margins_8bpp(
-                            framebuffer,
-                            screen_mode.1 as usize,
-                            usize::from(screen_mode.2),
-                            usize::from(screen_mode.3),
-                            rect,
-                        )
+                        || has_inactive_margins(rect)
                 });
             let authoritative_rect = framed_rect.or_else(|| {
                 learning_content_rect.then(|| {
@@ -1845,16 +1877,7 @@ impl App {
                         .manual_cport_presentation_rect(runner.bus())
                         .or_else(|| dispatcher.declared_centered_presentation_rect(runner.bus()))
                         .and_then(|rect| content_rect_from_copybits(rect, game_w, game_h))
-                        .filter(|&rect| {
-                            screen_mode.4 != 8
-                                || content_rect_has_inactive_margins_8bpp(
-                                    framebuffer,
-                                    screen_mode.1 as usize,
-                                    usize::from(screen_mode.2),
-                                    usize::from(screen_mode.3),
-                                    rect,
-                                )
-                        })
+                        .filter(|&rect| screen_mode.4 != 8 || has_inactive_margins(rect))
                 })?
             });
 
@@ -1887,16 +1910,7 @@ impl App {
                         .dispatcher()
                         .last_screen_copybits_rect
                         .and_then(|rect| content_rect_from_copybits(rect, game_w, game_h))
-                        .filter(|&rect| {
-                            screen_mode.4 != 8
-                                || content_rect_has_inactive_margins_8bpp(
-                                    framebuffer,
-                                    screen_mode.1 as usize,
-                                    usize::from(screen_mode.2),
-                                    usize::from(screen_mode.3),
-                                    rect,
-                                )
-                        })
+                        .filter(|&rect| screen_mode.4 != 8 || has_inactive_margins(rect))
                         .map(|rect| (rect, confirmations));
                 }
                 if detected.is_none()
@@ -1983,6 +1997,8 @@ impl App {
                 self.window_sized_content_rect = Some(rect);
             }
 
+            self.content_rect_margin_cache = margin_cache;
+            self.content_rect_margin_refresh = margin_refresh;
             let stable_content = self.content_rect.unwrap_or(ContentRect {
                 left: 0,
                 top: 0,
