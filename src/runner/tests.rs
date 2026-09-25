@@ -12068,6 +12068,11 @@
             0x0020_0000 + APP_ZONE_HEADER_SIZE,
             "HeapEnd should expose the initial application-zone extent"
         );
+        assert_eq!(
+            runner.bus.read_word(runner.bus.read_long(addr::APP_L_ZONE) + 20),
+            64,
+            "the launch-time application zone should expose the standard moreMast increment"
+        );
         assert!(
             appl_limit.saturating_sub(heap_end) >= 2300 * 1024,
             "direct low-memory startup checks should see growable heap room below ApplLimit"

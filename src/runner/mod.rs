@@ -4111,6 +4111,11 @@ impl FixtureRunner {
             visible_zone_start + zone_header_size,
         ); // hFstFree
         self.bus.write_long(visible_zone_start + 12, free_bytes); // zcbFree: total free
+        // The Process Manager initializes the application zone before entry.
+        // Keep its moreMast field consistent with InitApplZone's default;
+        // guest startup code can read the zone header directly.
+        // Inside Macintosh: Memory (1992), pp. 2-20 and 2-88.
+        self.bus.write_word(visible_zone_start + 20, 64);
         self.bus.write_long(
             visible_zone_start + 56,
             visible_zone_start + zone_header_size,
