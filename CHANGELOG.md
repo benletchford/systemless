@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.62.0](https://github.com/benletchford/systemless/compare/v0.61.1...v0.62.0) (2026-09-25)
+
+
+### Features
+
+* add PowerPC StarCraft demo to catalogue ([#2858](https://github.com/benletchford/systemless/issues/2858)) ([8365200](https://github.com/benletchford/systemless/commit/8365200eab1cca32fa99ab7d4b50c03f21dff4db))
+* **catalogue:** stage Bolo shareware for promotion ([#2854](https://github.com/benletchford/systemless/issues/2854)) ([402d814](https://github.com/benletchford/systemless/commit/402d814fd1af54b129102ca7d81bb2f0e8c3a3a9))
+* **launch:** load games from extracted host directories ([#2855](https://github.com/benletchford/systemless/issues/2855)) ([b9133db](https://github.com/benletchford/systemless/commit/b9133db3e6ce649301823bf56689c16120f19423))
+
+
+### Bug Fixes
+
+* **memory:** initialize application zone master-pointer increment ([#2860](https://github.com/benletchford/systemless/issues/2860)) ([fbd4da7](https://github.com/benletchford/systemless/commit/fbd4da702157252e92e670f8a1efe69521c6e7d8))
+* **ppc:** blend CopyMask through pixel-map masks ([#2848](https://github.com/benletchford/systemless/issues/2848)) ([05f905b](https://github.com/benletchford/systemless/commit/05f905b32ff7e381d4466c884a2a14ba7b41c0d7))
+* **ppc:** clip TextEdit to viewRect and erase it on TEScroll ([#2849](https://github.com/benletchford/systemless/issues/2849)) ([6a49bee](https://github.com/benletchford/systemless/commit/6a49bee3fdd38f86b96a373b4ba82e543c02fbf5))
+* **runtime:** pass deferred task record to callback in A0 ([#2853](https://github.com/benletchford/systemless/issues/2853)) ([4d7f2a0](https://github.com/benletchford/systemless/commit/4d7f2a0a14bcd36cb60dba56f661e1b8b854fa90))
+
+
+### Performance Improvements
+
+* **ppc:** skip null dialog selection dispatch ([#2847](https://github.com/benletchford/systemless/issues/2847)) ([43f299f](https://github.com/benletchford/systemless/commit/43f299f2df8f6587e63ba020cdfc72a4b1e3f4e0))
+
 ## [0.61.1](https://github.com/benletchford/systemless/compare/v0.61.0...v0.61.1) (2026-09-25)
 
 
