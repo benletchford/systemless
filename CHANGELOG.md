@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.61.1](https://github.com/benletchford/systemless/compare/v0.61.0...v0.61.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* **quickdraw:** return screen buffer errors in Pascal result slot ([#2846](https://github.com/benletchford/systemless/issues/2846)) ([334df9a](https://github.com/benletchford/systemless/commit/334df9af26b0b31a5d8b3df7cfbcd99a6fa16a6e))
+* **runner:** advance guest ticks during retained alerts ([#2829](https://github.com/benletchford/systemless/issues/2829)) ([aa57274](https://github.com/benletchford/systemless/commit/aa57274b6bcbaaab12a2d4d586ad2534cd6d9256))
+* **runtime:** execute queued deferred tasks after interrupts ([#2835](https://github.com/benletchford/systemless/issues/2835)) ([4dcd3e4](https://github.com/benletchford/systemless/commit/4dcd3e4e2430b68b54285dd6c8702dd121db004d))
+
+
+### Performance Improvements
+
+* **gui:** stop per-frame screen rescans in the presentation path ([#2838](https://github.com/benletchford/systemless/issues/2838)) ([52a56df](https://github.com/benletchford/systemless/commit/52a56df83164695f0fb10b2c0f3777a245b14634))
+* **memory:** cache two recent PPC data spans ([#2823](https://github.com/benletchford/systemless/issues/2823)) ([fa5d194](https://github.com/benletchford/systemless/commit/fa5d194c5d6fd6cc5b059ced112acecfad882810))
+* **memory:** route guest accesses from cached ledger intervals ([#2839](https://github.com/benletchford/systemless/issues/2839)) ([804a4de](https://github.com/benletchford/systemless/commit/804a4deac3d5dd1efe70823f3c0fee3eb52ec3fc))
+* **menu:** skip redundant PPC item enable updates ([#2826](https://github.com/benletchford/systemless/issues/2826)) ([a5e6b37](https://github.com/benletchford/systemless/commit/a5e6b3750850682f4731e3869bfe06bc8fbc3a50))
+* **ppc:** dispatch common imports directly ([#2834](https://github.com/benletchford/systemless/issues/2834)) ([bc14217](https://github.com/benletchford/systemless/commit/bc142172e7a10e7eb5869b5c99ec7d0899d07774))
+* **ppc:** dispatch simple dialog polling imports directly ([#2844](https://github.com/benletchford/systemless/issues/2844)) ([0a55676](https://github.com/benletchford/systemless/commit/0a55676417324ded9450f07e00fb3fe6cfcff366))
+* **present:** hand frames to the GPU instead of copying them ([#2840](https://github.com/benletchford/systemless/issues/2840)) ([7358dae](https://github.com/benletchford/systemless/commit/7358daed103e6322be67185d47e32ea42fda8c63))
+
+
+### Code Refactoring
+
+* **ppc:** extract drawsprocket and inputsprocket into sprockets module ([#2843](https://github.com/benletchford/systemless/issues/2843)) ([b9cca8d](https://github.com/benletchford/systemless/commit/b9cca8d9cd0b42f47f1e4f44f6e3607bb6c9152a)), closes [#2841](https://github.com/benletchford/systemless/issues/2841)
+* **ppc:** extract quickdraw 3d scene graph, math, and 3dmf into qd3d module ([#2833](https://github.com/benletchford/systemless/issues/2833)) ([1943520](https://github.com/benletchford/systemless/commit/1943520443c8fbf45efa9d03bebf0a01064d6f7f))
+* **ppc:** extract quickdraw 3d software rasterizer and depth buffer into qd3d module ([74c6464](https://github.com/benletchford/systemless/commit/74c646460e6524a696ea283bea017d5453602fb9))
+* **ppc:** extract quicktime decoder implementation from loader into quicktime module ([#2825](https://github.com/benletchford/systemless/issues/2825)) ([c572542](https://github.com/benletchford/systemless/commit/c572542632808360184ea1bfdf93359d3a210e3e))
+* **ppc:** extract sound manager and speech synthesis into sound module ([#2837](https://github.com/benletchford/systemless/issues/2837)) ([2b83ed0](https://github.com/benletchford/systemless/commit/2b83ed05857b04655d380f1214357974bc4067d7))
+
 ## [0.61.0](https://github.com/benletchford/systemless/compare/v0.60.0...v0.61.0) (2026-09-25)
 
 
