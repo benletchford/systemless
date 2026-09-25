@@ -3937,6 +3937,74 @@ use super::*;
     }
 
     #[test]
+    fn hle_import_runner_copymask_blends_through_a_deep_mask() {
+        // Imaging With QuickDraw (1994), pp. 3-119--3-122: a pixel-map mask
+        // weights the average of source and destination by its color.
+        let pef = synthetic_pef_with_import(b"CopyMask");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x13c00;
+        let src_pixels = scratch;
+        let mask_pixels = scratch + 0x10;
+        let dst_pixels = scratch + 0x20;
+        let src_pixmap = scratch + 0x40;
+        let mask_pixmap = scratch + 0x80;
+        let dst_pixmap = scratch + 0xc0;
+        let rects = scratch + 0x100;
+        loaded.memory.add_region(scratch, vec![0; 0x180]);
+        for (pixmap, pixels) in [
+            (src_pixmap, src_pixels),
+            (mask_pixmap, mask_pixels),
+            (dst_pixmap, dst_pixels),
+        ] {
+            ppc_write_pixmap(&mut loaded.memory, pixmap, pixels, 6, 0, 0, 1, 3, 16).unwrap();
+        }
+        let source_pixel = 0x7c00u16; // red in RGB555
+        let destination_pixel = 0x001fu16; // blue in RGB555
+        let grey_mask = 0x4210u16;
+        for (index, mask) in [0x0000u16, 0x7fff, grey_mask].into_iter().enumerate() {
+            let offset = index as u32 * 2;
+            loaded.memory.write_u16_be(src_pixels + offset, source_pixel).unwrap();
+            loaded.memory.write_u16_be(mask_pixels + offset, mask).unwrap();
+            loaded
+                .memory
+                .write_u16_be(dst_pixels + offset, destination_pixel)
+                .unwrap();
+        }
+        for offset in [0, 8, 16] {
+            ppc_write_rect(&mut loaded.memory, rects + offset, 0, 0, 1, 3).unwrap();
+        }
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = mask_pixmap;
+        loaded.cpu.gpr[5] = dst_pixmap;
+        loaded.cpu.gpr[6] = rects;
+        loaded.cpu.gpr[7] = rects + 8;
+        loaded.cpu.gpr[8] = rects + 16;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let blend = ppc_blend_deep_mask_rgb(
+            ppc_rgb555_to_rgb16(source_pixel),
+            ppc_rgb555_to_rgb16(destination_pixel),
+            ppc_rgb555_to_rgb16(grey_mask),
+        );
+        let blended = ppc_rgb_color_to_rgb555(PpcRgbColor {
+            red: blend[0],
+            green: blend[1],
+            blue: blend[2],
+        });
+        let result: Vec<_> = (0..3)
+            .map(|index| loaded.memory.read_u16_be(dst_pixels + index * 2))
+            .collect();
+        assert_eq!(
+            result,
+            [Some(source_pixel), Some(destination_pixel), Some(blended)],
+            "black copies the source, white keeps the destination, grey blends"
+        );
+    }
+
+    #[test]
     fn hle_import_runner_copydeepmask_preserves_transparent_and_region_excluded_pixels() {
         let pef = synthetic_pef_with_import(b"CopyDeepMask");
         let mut loaded = load_pef_application(&pef).unwrap();

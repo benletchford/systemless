@@ -24647,6 +24647,14 @@ fn ppc_copy_mask(
     let src_rect_ptr = cpu.gpr[6];
     let mask_rect_ptr = cpu.gpr[7];
     let dst_rect_ptr = cpu.gpr[8];
+    // Imaging With QuickDraw (1994), pp. 3-119--3-122: a pixel-map mask
+    // averages source and destination weighted by the mask's color instead
+    // of gating the transfer. That is CopyDeepMask's srcCopy transfer with
+    // no mask region.
+    if ppc_resolve_pixmap_bits(memory, gworlds, mask_bits_ptr).is_some_and(|mask| mask.depth != 1)
+    {
+        return ppc_copy_deep_mask_with(cpu, memory, gworlds, color_manager_clut, 0, 0, "CopyMask");
+    }
     let mut reason = "ok";
     let mut trace_details = None;
     let copied = (|| {
@@ -24664,10 +24672,6 @@ fn ppc_copy_mask(
         };
         if src_bits.depth != dst_bits.depth || !matches!(src_bits.depth, 1 | 2 | 4 | 8 | 16) {
             reason = "depth";
-            return None;
-        }
-        if mask_bits.depth != 1 {
-            reason = "mask-depth";
             return None;
         }
         let src_rect = ppc_read_rect(memory, src_rect_ptr)?;
@@ -24807,14 +24811,29 @@ fn ppc_copy_deep_mask(
     gworlds: &[PpcGWorldRecord],
     color_manager_clut: &[[u16; 3]; 256],
 ) -> bool {
+    let mode = cpu.gpr[9] as u16 & 0x3f;
+    let mask_rgn = cpu.gpr[10];
+    ppc_copy_deep_mask_with(cpu, memory, gworlds, color_manager_clut, mode, mask_rgn, "CopyDeepMask")
+}
+
+/// CopyDeepMask's transfer, reading the shared bitmap and rectangle arguments
+/// from r3-r8; `mode` and `mask_rgn` come from the caller so CopyMask can
+/// reuse it for deep masks. `name` labels the trace line.
+fn ppc_copy_deep_mask_with(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    color_manager_clut: &[[u16; 3]; 256],
+    mode: u16,
+    mask_rgn: u32,
+    name: &str,
+) -> bool {
     let src_bits_ptr = cpu.gpr[3];
     let mask_bits_ptr = cpu.gpr[4];
     let dst_bits_ptr = cpu.gpr[5];
     let src_rect_ptr = cpu.gpr[6];
     let mask_rect_ptr = cpu.gpr[7];
     let dst_rect_ptr = cpu.gpr[8];
-    let mode = cpu.gpr[9] as u16 & 0x3f;
-    let mask_rgn = cpu.gpr[10];
     let mut reason = "ok";
     let mut trace_details = None;
     let copied = (|| {
@@ -25013,7 +25032,7 @@ fn ppc_copy_deep_mask(
     if ppc_hle_trace_enabled() {
         if let Some((src, mask, dst, src_rect, mask_rect, dst_rect)) = trace_details {
             eprintln!(
-                "[PPC-TRACE] CopyDeepMask src=${src_bits_ptr:08X}[rb={} depth={} bounds=({},{},{},{})] mask=${mask_bits_ptr:08X}[rb={} depth={} bounds=({},{},{},{})] dst=${dst_bits_ptr:08X}[rb={} depth={} bounds=({},{},{},{})] srcRect={src_rect:?} maskRect={mask_rect:?} dstRect={dst_rect:?} mode={mode} maskRgn=${mask_rgn:08X} copied={copied} reason={reason}",
+                "[PPC-TRACE] {name} src=${src_bits_ptr:08X}[rb={} depth={} bounds=({},{},{},{})] mask=${mask_bits_ptr:08X}[rb={} depth={} bounds=({},{},{},{})] dst=${dst_bits_ptr:08X}[rb={} depth={} bounds=({},{},{},{})] srcRect={src_rect:?} maskRect={mask_rect:?} dstRect={dst_rect:?} mode={mode} maskRgn=${mask_rgn:08X} copied={copied} reason={reason}",
                 src.row_bytes,
                 src.depth,
                 src.top,
@@ -25035,7 +25054,7 @@ fn ppc_copy_deep_mask(
             );
         } else {
             eprintln!(
-                "[PPC-TRACE] CopyDeepMask src=${src_bits_ptr:08X} mask=${mask_bits_ptr:08X} dst=${dst_bits_ptr:08X} mode={mode} maskRgn=${mask_rgn:08X} copied={copied} reason={reason}"
+                "[PPC-TRACE] {name} src=${src_bits_ptr:08X} mask=${mask_bits_ptr:08X} dst=${dst_bits_ptr:08X} mode={mode} maskRgn=${mask_rgn:08X} copied={copied} reason={reason}"
             );
         }
     }
