@@ -7960,6 +7960,7 @@ impl super::TrapDispatcher {
                     // FUNCTION NewTempScreenBuffer(globalRect: Rect; purgeable: Boolean;
                     //                              VAR gdh: GDHandle;
                     //                              VAR offscreenPixMap: PixMapHandle): QDErr;
+                    // Imaging With QuickDraw (1994), pp. 6-33--6-34.
                     0x0010 => {
                         let offscreen_pixmap_out_ptr = bus.read_long(sp);
                         let gdh_out_ptr = bus.read_long(sp + 4);
@@ -7973,6 +7974,7 @@ impl super::TrapDispatcher {
                             offscreen_pixmap_out_ptr,
                             false,
                         );
+                        bus.write_word(sp + 14, result as u16);
                         cpu.write_reg(Register::D0, result);
                         cpu.write_reg(Register::A7, sp + 14);
                     }
@@ -7994,6 +7996,7 @@ impl super::TrapDispatcher {
                             offscreen_pixmap_out_ptr,
                             true,
                         );
+                        bus.write_word(sp + 14, result as u16);
                         cpu.write_reg(Register::D0, result);
                         cpu.write_reg(Register::A7, sp + 14);
                     }

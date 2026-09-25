@@ -111,6 +111,43 @@
     }
 
     #[test]
+    fn new_screen_buffer_selectors_return_qderr_in_pascal_result_slot() {
+        for selector in [0x000E_0010, 0x000E_0015] {
+            let (mut d, mut cpu, mut bus) = setup();
+            d.current_trap_word = 0xAB1D;
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, selector);
+            let pixmap_out = TEST_SP + 0x40;
+            let gdh_out = TEST_SP + 0x44;
+            let rect = TEST_SP + 0x48;
+            write_rect(&mut bus, rect, 0, 0, 16, 16);
+            bus.write_long(TEST_SP, pixmap_out);
+            bus.write_long(TEST_SP + 4, gdh_out);
+            bus.write_word(TEST_SP + 8, 0);
+            bus.write_long(TEST_SP + 10, rect);
+            bus.write_word(TEST_SP + 14, 0x7F7F);
+
+            d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus)
+                .expect("QDExtensions arm")
+                .expect("buffer allocation");
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 14);
+            assert_eq!(bus.read_word(TEST_SP + 14), 0);
+            assert_ne!(bus.read_long(pixmap_out), 0);
+            assert_ne!(bus.read_long(gdh_out), 0);
+
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, selector);
+            bus.write_long(TEST_SP + 10, 0);
+            bus.write_word(TEST_SP + 14, 0x7F7F);
+            d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus)
+                .expect("QDExtensions arm")
+                .expect("parameter error");
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 14);
+            assert_eq!(bus.read_word(TEST_SP + 14), (-50i16) as u16);
+        }
+    }
+
+    #[test]
     fn growing_region_releases_each_superseded_backing_allocation() {
         let (_d, _cpu, mut bus) = setup();
         let handle = bus.alloc(4);
