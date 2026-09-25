@@ -1215,7 +1215,10 @@ fn tracking_refire_uses_dialog_callbacks(opcode: u16) -> bool {
 /// while waiting for input. MenuSelect and the control/window/region drag
 /// loops instead freeze time while their transient tracking state is presented.
 fn tracking_refire_advances_gui_idle_tick(opcode: u16) -> bool {
-    matches!(opcode & !0x0400, 0xA991 | 0xA9EA)
+    matches!(
+        opcode & !0x0400,
+        0xA991 | 0xA985 | 0xA986 | 0xA987 | 0xA988 | 0xA9EA
+    )
 }
 
 fn canonical_trap_number(opcode: u16) -> (bool, u16) {
