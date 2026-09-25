@@ -9689,7 +9689,9 @@ impl super::TrapDispatcher {
             // Returns a handle to the named resource, searching the resource chain.
             // FUNCTION GetNamedResource(theType: ResType; name: Str255): Handle;
             // More Macintosh Toolbox 1993, 1-75
-            // GetNamedResource ($A9A1): Searches the resource chain by Pascal name string
+            // An absent type throughout the chain returns NIL with noErr;
+            // a missing resource of a present type returns resNotFound.
+            // More Macintosh Toolbox 1993, 1-75--1-76
             (true, 0x1A1) => {
                 let sp = cpu.read_reg(Register::A7);
                 let name_ptr = bus.read_long(sp);
@@ -9719,7 +9721,10 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::A7, sp + 8);
                 } else {
                     eprintln!("[TRAP] GetNamedResource -> NULL (not found)");
-                    bus.write_word(0x0A60, (-192i16) as u16); // ResErr = resNotFound
+                    let has_type = self.resource_search_order().into_iter().any(|refnum| {
+                        self.resource_file_contains_type(refnum, res_type)
+                    });
+                    bus.write_word(0x0A60, if has_type { -192i16 as u16 } else { 0 });
                     cpu.write_reg(Register::A0, 0);
                     cpu.write_reg(Register::D0, 0);
                     bus.write_long(sp + 8, 0);
