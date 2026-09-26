@@ -5605,6 +5605,54 @@ pub(crate) struct ProcessNativeAllocatorState {
     pub(crate) free_handle_blocks: Vec<ProcessHandleRecord>,
 }
 
+impl ProcessNativeAllocatorState {
+    /// Return a pointer block to the free list, merging it with adjacent free
+    /// blocks so a heap churned by blocks of varying sizes (offscreen GWorlds,
+    /// decoded images) can satisfy a later large request without growing.
+    fn release_ptr_block(&mut self, ptr: u32, size: u32) {
+        let block_end = |ptr: u32, size: u32| {
+            ProcessNativeMemoryManager::native_allocation_size(size)
+                .and_then(|capacity| ptr.checked_add(capacity))
+        };
+        let Some(mut end) = block_end(ptr, size) else {
+            self.free_ptr_blocks.push(ProcessPtrRecord { ptr, size });
+            return;
+        };
+        let mut start = ptr;
+        let mut merged = false;
+        while let Some(index) = self.free_ptr_blocks.iter().position(|free| {
+            free.ptr == end || block_end(free.ptr, free.size) == Some(start)
+        }) {
+            let free = self.free_ptr_blocks.swap_remove(index);
+            start = start.min(free.ptr);
+            end = end.max(block_end(free.ptr, free.size).unwrap_or(end));
+            merged = true;
+        }
+        self.free_ptr_blocks.push(if merged {
+            ProcessPtrRecord {
+                ptr: start,
+                size: end - start,
+            }
+        } else {
+            ProcessPtrRecord { ptr, size }
+        });
+    }
+
+    /// Remove free block `index` for an allocation of `required` aligned
+    /// bytes, returning its unused tail to the free list.
+    fn take_ptr_block(&mut self, index: usize, required: u32) {
+        let free = self.free_ptr_blocks.swap_remove(index);
+        if let Some(capacity) = ProcessNativeMemoryManager::native_allocation_size(free.size) {
+            if capacity > required {
+                self.free_ptr_blocks.push(ProcessPtrRecord {
+                    ptr: free.ptr + required,
+                    size: capacity - required,
+                });
+            }
+        }
+    }
+}
+
 /// Shared process metadata indexed by a guest address.
 ///
 /// CPU adapters retain clones of this handle, not copies of its map, so
@@ -6255,10 +6303,7 @@ impl ProcessNativeMemoryManager {
         });
         if let Some(allocator) = &mut self.native_allocator {
             if record.ptr != 0 {
-                allocator.free_ptr_blocks.push(ProcessPtrRecord {
-                    ptr: record.ptr,
-                    size: record.capacity,
-                });
+                allocator.release_ptr_block(record.ptr, record.capacity);
             }
             allocator.heap.last_mem_error = Self::NO_ERR;
             self.native_allocator_dirty = true;
@@ -7826,7 +7871,7 @@ impl ProcessNativeMemoryManager {
             .as_mut()
             .expect("native allocator remains registered");
         if let Some(index) = reusable_index {
-            allocator.free_ptr_blocks.swap_remove(index);
+            allocator.take_ptr_block(index, required);
         }
         if let Some(next_cursor) = next_cursor {
             allocator.heap.heap_cursor = next_cursor;
@@ -7842,7 +7887,7 @@ impl ProcessNativeMemoryManager {
         if let Some(allocator) = &mut self.native_allocator {
             if let Some(index) = allocator.ptrs.iter().position(|record| record.ptr == ptr) {
                 let record = allocator.ptrs.remove(index);
-                allocator.free_ptr_blocks.push(record);
+                allocator.release_ptr_block(record.ptr, record.size);
                 disposed = Some(record);
             }
             allocator.heap.last_mem_error = Self::NO_ERR;
@@ -8653,7 +8698,7 @@ impl ProcessNativeMemoryManager {
             allocator.free_handle_blocks.swap_remove(index);
         }
         if let Some(index) = reusable_ptr_index {
-            allocator.free_ptr_blocks.swap_remove(index);
+            allocator.take_ptr_block(index, required);
         }
         if let Some(next_cursor) = next_cursor {
             allocator.heap.heap_cursor = next_cursor;
@@ -9153,7 +9198,7 @@ impl ProcessNativeMemoryManager {
                 .as_mut()
                 .expect("native allocator remains registered");
             if let Some(index) = reusable_ptr_index {
-                allocator.free_ptr_blocks.swap_remove(index);
+                allocator.take_ptr_block(index, required);
             }
             if let Some(next_cursor) = next_cursor {
                 allocator.heap.heap_cursor = next_cursor;
@@ -9382,15 +9427,12 @@ impl ProcessNativeMemoryManager {
             .as_mut()
             .expect("native allocator remains registered");
         if let Some(index) = recycled_ptr_index {
-            allocator.free_ptr_blocks.swap_remove(index);
-        }
-        if new_ptr != current_ptr && current_ptr != 0 {
-            allocator.free_ptr_blocks.push(ProcessPtrRecord {
-                ptr: current_ptr,
-                size: record.capacity,
-            });
+            allocator.take_ptr_block(index, new_aligned);
         }
         allocator.heap.heap_cursor = new_cursor;
+        if new_ptr != current_ptr && current_ptr != 0 {
+            allocator.release_ptr_block(current_ptr, record.capacity);
+        }
         allocator.heap.last_mem_error = Self::NO_ERR;
         self.native_allocator_dirty = true;
         Ok((current_ptr, new_ptr))
@@ -11916,9 +11958,16 @@ mod tests {
         assert_eq!(bus.read_bytes(old_ptr, 17), vec![0xA5; 17]);
         assert_eq!(manager.recover_handle(old_ptr), Some(handle));
         assert_eq!(manager.state_for_handle(handle), Some(0x20));
-        assert!(manager
-            .native_allocator()
-            .is_some_and(|allocator| allocator.free_ptr_blocks.is_empty()));
+        // The 64-byte block serves the 32-byte request and keeps its tail free.
+        assert_eq!(
+            manager
+                .native_allocator()
+                .map(|allocator| allocator.free_ptr_blocks.clone()),
+            Some(vec![ProcessPtrRecord {
+                ptr: old_ptr + 32,
+                size: 32,
+            }])
+        );
     }
 
     #[test]
@@ -12002,6 +12051,56 @@ mod tests {
         assert_eq!(
             allocator.heap.last_mem_error,
             ProcessMemoryManager::MEM_FULL_ERR
+        );
+    }
+
+    #[test]
+    fn process_memory_manager_merges_adjacent_free_native_ptrs() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let mut native = GuestAddressSpace::new();
+        native.add_region(HEAP_BASE, vec![0; 0x100]);
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor: HEAP_BASE,
+                heap_limit: HEAP_BASE + 0x100,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        let first = manager.new_native_ptr(&mut native, 16, false);
+        let second = manager.new_native_ptr(&mut native, 32, false);
+        let third = manager.new_native_ptr(&mut native, 16, false);
+        let _pinned = manager.new_native_ptr(&mut native, 16, false);
+        let cursor = manager.native_heap_state().unwrap().heap_cursor;
+
+        // Freeing out of order still leaves one 64-byte block.
+        manager.dispose_native_ptr(third);
+        manager.dispose_native_ptr(first);
+        manager.dispose_native_ptr(second);
+        assert_eq!(
+            manager.native_allocator().unwrap().free_ptr_blocks,
+            vec![ProcessPtrRecord {
+                ptr: first,
+                size: 64,
+            }]
+        );
+
+        // A request larger than any single freed block reuses the merged
+        // block instead of growing the heap, and its tail stays free.
+        assert_eq!(manager.new_native_ptr(&mut native, 40, false), first);
+        assert_eq!(manager.native_heap_state().unwrap().heap_cursor, cursor);
+        assert_eq!(
+            manager.native_allocator().unwrap().free_ptr_blocks,
+            vec![ProcessPtrRecord {
+                ptr: first + 48,
+                size: 16,
+            }]
         );
     }
 

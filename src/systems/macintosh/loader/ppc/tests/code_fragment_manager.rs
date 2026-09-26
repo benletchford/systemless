@@ -118,7 +118,8 @@ fn cfm_initializer_storage_reuses_only_completed_or_refused_allocations() {
     assert!(calls.complete_powerpc_releasing_scratch(&mut cpu, &mut manager));
     assert_eq!(cpu.pc, 0x4000);
     assert!(manager.native_ptr_records().is_empty());
-    assert_eq!(manager.native_free_ptr_blocks().len(), 2);
+    // The two adjacent scratch blocks merge into one free block.
+    assert_eq!(manager.native_free_ptr_blocks().len(), 1);
 }
 
 #[test]
