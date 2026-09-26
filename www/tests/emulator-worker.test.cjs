@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 
-function worker(steps = () => 1, frameTicks = 6, cloneTransfers = false) {
+function worker(steps = () => 1, frameTicks = 6, cloneTransfers = false, options = {}) {
   const keys = new Set();
   const frames = [];
   const messages = [];
@@ -29,11 +29,12 @@ function worker(steps = () => 1, frameTicks = 6, cloneTransfers = false) {
     },
   };
   const context = vm.createContext({
-    self: { postMessage(message, transfer = []) { messages.push(cloneTransfers ? structuredClone(message, { transfer }) : message); } },
+    URL, loadRenderer: options.loadRenderer,
+    self: { location: {href:"https://example.test/emulator-worker.js?runtime=test"}, postMessage(message, transfer = []) { messages.push(cloneTransfers ? structuredClone(message, { transfer }) : message); } },
     stub,
     performance: { now: () => now },
   });
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/emulator-worker.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/emulator-worker.js'), 'utf8').replace('await import(url.href)', 'await loadRenderer(url.href)'), context);
   vm.runInContext('machine = stub; saveFilesVersion = stub.saveFilesVersion()', context);
   return {
     send: (type, fields = {}) => context.self.onmessage({ data: { type, generation: 0, ...fields } }),
@@ -324,4 +325,30 @@ test('compact owner snapshots transfer cells and empty detail without guest rest
   assert.deepEqual(calls,[[-1,false,1,false,false,true,true]]);
   assert.equal(compact.cells.byteLength,0);
   assert.equal(w.messages.find(message=>message.type==='frame').compactFrame.compact.cells[0],0x123456);
+});
+
+
+test('cancelled renderer import never attaches a stale port or stops the owner', async () => {
+  let resolve, constructed=0;
+  const load = new Promise(done=>{resolve=done;});
+  const w=worker(()=>1,6,false,{loadRenderer:()=>load});
+  const port={close(){this.closed=true;}};
+  const connecting=w.send('connectRenderer',{rendererGeneration:2,rendererProtocol:4,port});
+  await w.send('frame');
+  await w.send('disconnectRenderer',{rendererGeneration:2});
+  resolve({DIRECT_RENDERER_PROTOCOL:1,RendererOwner:class {constructor(){constructed++;}}});
+  await connecting;
+  await w.send('frame');
+  assert.equal(port.closed,true);assert.equal(constructed,0);assert.equal(w.frames.length,2);
+  assert.equal(w.messages.some(m=>m.type==='error'),false);
+});
+
+test('renderer module failure remains a presenter error while guest execution continues', async () => {
+  const w=worker(()=>1,6,false,{loadRenderer:async()=>{throw new Error('module unavailable');}});
+  const port={close(){this.closed=true;}};
+  await w.send('connectRenderer',{rendererGeneration:2,rendererProtocol:4,port});
+  await w.send('frame');
+  assert.equal(port.closed,true);assert.equal(w.frames.length,1);
+  assert.equal(w.messages.find(m=>m.type==='rendererStatus').event,'error');
+  assert.equal(w.messages.some(m=>m.type==='error'),false);
 });

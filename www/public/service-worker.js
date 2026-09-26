@@ -49,7 +49,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  if (["/emulator-worker.js", "/renderer-worker.js", "/renderer-transport.js", "/renderer-client.js", "/renderer-gpu.js"].includes(url.pathname)
+  if (["/emulator-worker.js", "/renderer-worker.js", "/renderer-transport.js", "/renderer-client.js", "/renderer-gpu.js", "/renderer-owner.js"].includes(url.pathname)
       || url.pathname.startsWith("/snippets/")) {
     event.respondWith(networkFirst(request));
     return;

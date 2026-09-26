@@ -1619,6 +1619,7 @@ mod tests {
             js_frame: None,
             gpu_frame: None,
             owned_frame: None,
+            direct_frame: false,
             running: true,
             requests: super::WorkerFrameRequests::default(),
         };
@@ -1659,6 +1660,7 @@ mod tests {
             js_frame: None,
             gpu_frame: None,
             owned_frame: None,
+            direct_frame: false,
             running: true,
             requests: super::WorkerFrameRequests::default(),
         };
@@ -1688,6 +1690,12 @@ mod tests {
             super::take_worker_visual_frame(&mut state),
             Some(super::WorkerVisualFrame::Software(_, _, _))
         ));
+        super::replace_worker_visual_frame(&mut state, super::WorkerVisualFrame::Direct);
+        assert!(state.frame.is_none() && state.js_frame.is_none() && state.owned_frame.is_none());
+        assert!(matches!(
+            super::take_worker_visual_frame(&mut state),
+            Some(super::WorkerVisualFrame::Direct)
+        ));
         assert!(super::take_worker_visual_frame(&mut state).is_none());
     }
 
@@ -1700,6 +1708,7 @@ mod tests {
             js_frame: None,
             gpu_frame: None,
             owned_frame: None,
+            direct_frame: false,
             running: true,
             requests: super::WorkerFrameRequests::default(),
         };
@@ -2049,6 +2058,7 @@ struct WorkerFrameState {
     js_frame: Option<(u32, u32, Uint8Array)>,
     gpu_frame: Option<JsValue>,
     owned_frame: Option<JsValue>,
+    direct_frame: bool,
     running: bool,
     requests: WorkerFrameRequests<Object>,
 }
@@ -2094,6 +2104,7 @@ impl<T> WorkerFrameRequests<T> {
 }
 
 enum WorkerVisualFrame {
+    Direct,
     Gpu(JsValue),
     Owned(JsValue),
     Software(u32, u32, Vec<u8>),
@@ -2104,7 +2115,14 @@ fn replace_worker_visual_frame(state: &mut WorkerFrameState, frame: WorkerVisual
     // Catch-up completions can arrive before the next paint. Keep only the
     // newest result, including when debug mode changes the rendering backend.
     state.owned_frame = None;
+    state.direct_frame = false;
     match frame {
+        WorkerVisualFrame::Direct => {
+            state.frame = None;
+            state.js_frame = None;
+            state.gpu_frame = None;
+            state.direct_frame = true;
+        }
         WorkerVisualFrame::Owned(frame) => {
             state.frame = None;
             state.js_frame = None;
@@ -2130,7 +2148,9 @@ fn replace_worker_visual_frame(state: &mut WorkerFrameState, frame: WorkerVisual
 }
 
 fn take_worker_visual_frame(state: &mut WorkerFrameState) -> Option<WorkerVisualFrame> {
-    if let Some(frame) = state.owned_frame.take() {
+    if std::mem::take(&mut state.direct_frame) {
+        Some(WorkerVisualFrame::Direct)
+    } else if let Some(frame) = state.owned_frame.take() {
         Some(WorkerVisualFrame::Owned(frame))
     } else if let Some(frame) = state.gpu_frame.take() {
         Some(WorkerVisualFrame::Gpu(frame))
@@ -2251,6 +2271,7 @@ fn halt_worker(
     state.frame = None;
     state.js_frame = None;
     state.owned_frame = None;
+    state.direct_frame = false;
     state.gpu_frame = None;
 }
 
@@ -2312,6 +2333,7 @@ impl WorkerRuntime {
         state.frame = None;
         state.js_frame = None;
         state.owned_frame = None;
+        state.direct_frame = false;
         state.gpu_frame = None;
     }
 
@@ -2429,7 +2451,7 @@ async fn boot_catalogue_worker(
         "generation",
         &JsValue::from_f64(generation as f64),
     );
-    set_js_property(&message, "protocolVersion", &JsValue::from_f64(6.0));
+    set_js_property(&message, "protocolVersion", &JsValue::from_f64(7.0));
     set_js_property(&message, "moduleUrl", &JsValue::from_str(&module_url));
     set_js_property(&message, "wasmUrl", &JsValue::from_str(&wasm_url));
     set_js_property(&message, "gameBytes", bytes.buffer().as_ref());
@@ -2496,6 +2518,7 @@ async fn boot_catalogue_worker(
         js_frame: None,
         gpu_frame: None,
         owned_frame: None,
+        direct_frame: false,
         running: true,
         requests: WorkerFrameRequests::default(),
     }));
@@ -2612,10 +2635,14 @@ async fn boot_catalogue_worker(
                 let width = js_number_property(&data, "width").unwrap_or(1.0) as u32;
                 let height = js_number_property(&data, "height").unwrap_or(1.0) as u32;
                 state.output_scale = js_number_property(&data, "outputScale").unwrap_or(1.0) as u32;
-                replace_worker_visual_frame(
-                    &mut state,
-                    WorkerVisualFrame::SoftwareJs(width, height, Uint8Array::new(&frame)),
-                );
+                if let Ok(pixels) = frame.dyn_into::<Uint8Array>() {
+                    // This array is already owned by the host after transfer.
+                    // Constructing Uint8Array from it would clone every pixel.
+                    replace_worker_visual_frame(
+                        &mut state,
+                        WorkerVisualFrame::SoftwareJs(width, height, pixels),
+                    );
+                }
             }
         }
         if let Ok(frame) = Reflect::get(&data, &JsValue::from_str("gpuFrame")) {
@@ -2633,6 +2660,12 @@ async fn boot_catalogue_worker(
             if !frame.is_undefined() {
                 state.output_scale = js_number_property(&data, "outputScale").unwrap_or(1.0) as u32;
                 replace_worker_visual_frame(&mut state, WorkerVisualFrame::Owned(frame));
+            }
+        }
+        if let Ok(frame) = Reflect::get(&data, &JsValue::from_str("directFrame")) {
+            if !frame.is_undefined() {
+                state.output_scale = js_number_property(&data, "outputScale").unwrap_or(1.0) as u32;
+                replace_worker_visual_frame(&mut state, WorkerVisualFrame::Direct);
             }
         }
         let running = state.running;
@@ -2715,7 +2748,9 @@ fn start_worker_render_loop(
     debug_visible: RwSignal<bool>,
     on_first_paint: Box<dyn FnOnce()>,
 ) {
-    let Some(renderer) = CanvasFrame::new_worker(&canvas, 640, 480, runtime.generation) else {
+    let Some(renderer) =
+        CanvasFrame::new_worker(&canvas, 640, 480, runtime.generation, &runtime.worker)
+    else {
         set_status(
             runtime.status,
             "Unable to initialize the game display".into(),
@@ -2761,6 +2796,10 @@ fn start_worker_render_loop(
             take_worker_visual_frame(&mut state)
         };
         match visual_frame {
+            Some(WorkerVisualFrame::Direct) => {
+                // The renderer's submitted notice applies coherent display and
+                // input geometry. This marker only discards older host images.
+            }
             Some(WorkerVisualFrame::Owned(frame)) => {
                 let width = js_number_property(&frame, "width").unwrap_or(1.0) as u32;
                 let height = js_number_property(&frame, "height").unwrap_or(1.0) as u32;
@@ -2830,6 +2869,7 @@ fn start_worker_render_loop(
                 callback();
             }
         }
+        let direct_render = renderer.direct();
         let indexed_render = renderer.supports_packet("indexed8");
         let compact_render = renderer.supports_packet("compact");
         let force_snapshot = renderer.needs_snapshot();
@@ -2857,6 +2897,7 @@ fn start_worker_render_loop(
                 "compactRender",
                 &JsValue::from_bool(compact_render),
             );
+            set_js_property(&message, "directRender", &JsValue::from_bool(direct_render));
             let scale = canvas_backing_scale(&canvas);
             let logical = (canvas.width() / scale, canvas.height() / scale);
             set_js_property(

@@ -118,11 +118,10 @@ Neither measures physical display completion. `data-render-packet-kind` and `dat
 representation and payload size, including palette and cursor data. Indexed
 snapshots copy packed guest pixels into a reusable owned allocation, then copy
 the indices, palette and cursor patch into JavaScript buffers. Those buffers
-transfer through the host to the renderer, where indices, palette and any cursor
-patch are uploaded separately. RGBA fallback still expands on the owner and
-copies into JavaScript. These paths are not zero-copy. Direct owner-to-renderer
-transport, producer reuse of returned buffers and full pipeline measurements
-remain pending. Compact export currently decodes and clones logical ARGB pixels
+transfer through the host to the renderer in the relay path, where indices,
+palette and any cursor patch are uploaded separately. RGBA fallback still expands on the owner and
+copies into JavaScript. These paths are not zero-copy. Producer reuse of returned buffers and full
+pipeline qualification remain pending. Compact export currently decodes and clones logical ARGB pixels
 when composing a cursor, then copies the native cells and detail into JavaScript
 buffers. The renderer uploads those two arrays and resolves high-resolution
 pixels on the GPU. This avoids owner-side high-resolution expansion but does not
@@ -154,3 +153,45 @@ intervals all use the same host clock. The worker reports only its local upload
 and submission duration. These measurements expose host scheduling/queue waits
 but do not establish GPU completion or physical display latency. Raw traces are
 bounded and include packet kind, payload bytes and matched guest progress.
+
+
+Add `&renderer_direct=1` to the experimental renderer query to test direct
+owner-to-renderer `MessagePort` transport. This remains an additional opt-in
+capability. The owner sends complete RGBA, indexed or compact packets, with one
+active and one newest pending image and at most two returned buffers. Audio,
+saves, input and host display demand retain their existing routes. The host
+receives image metadata and submission notices rather than image buffers.
+Cancelled module imports and presenter failures close the port route and request
+fresh RGBA from the same running guest. The existing relay path also now retains
+the received RGBA typed array directly, avoiding a redundant JavaScript copy.
+
+Submission notices go directly from the renderer to the host; buffer credits
+return separately to the owner. A long guest batch can delay credit processing
+without delaying the host's submission notice. Layout and input geometry follow
+the submitted image, including output scale, rather than a newer pending image
+that could be dropped. `data-render-transport=direct` identifies this route and
+`data-render-credit-return-ms` reports owner-clock credit round trips. It does
+not represent display latency. Direct-route diagnostics measure host request to
+renderer submission acknowledgement entirely on the host clock. They leave
+relay-only wait/round-trip and in-flight observations unavailable rather than
+reporting them as zero.
+
+
+Initial release comparisons at matched tick 1801 produced exact full-page image
+matches for indexed WebGL, retained-text WebGL at device scale 3, and Canvas2D.
+With separate presentation diagnostics enabled, median host request-to-submission
+acknowledgement changed from 16.8 to 13.2 ms, 19.6 to 14.8 ms, and 17.3 to 13.7 ms
+respectively. All six pacing checks passed. These are single startup/menu pairs
+on one Chrome/macOS host; retained-text transition tails varied between runs.
+They do not qualify sustained gameplay, end-to-end visible input response or
+other platforms. Direct routing remains opt-in pending broader qualification.
+
+
+A direct-route navigation check covered 12 owner starts, including cancelled
+startup and a controlled runtime crash, plus held-key focus release and touch
+release coordinates. All 12 owners, 11 created renderer workers and 12 audio
+contexts closed after navigation, without browser errors. Collected main
+JavaScript heap samples ranged from 7.52 to 9.51 MB and ended at 7.67 MB. This
+short lifecycle check does not measure total process, Wasm or GPU memory. A
+separate injected renderer crash during compact presentation preserved the same
+guest and input canvas and recovered to a nonblank Canvas2D image.

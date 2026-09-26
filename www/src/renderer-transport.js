@@ -47,7 +47,7 @@ export class RendererTransport {
     this.inFlight = { sequence: packet.sequence, sentAt: this.now(), kind: packet.kind,
       bytes: views.reduce((bytes, view) => bytes + view.byteLength, 0) };
     try {
-      this.endpoint.postMessage({ ...packet, ...this.identity, type: "frame", protocolVersion: 3 },
+      this.endpoint.postMessage({ ...packet, ...this.identity, type: "frame", protocolVersion: 4 },
         [...new Set(views.map(view => view.buffer))]);
     } catch (error) {
       // A failed structured clone normally retains ownership. Return the newest
@@ -60,7 +60,7 @@ export class RendererTransport {
   receive(message) {
     if (this.closed || message?.generation !== this.identity.generation
         || message.rendererGeneration !== this.identity.rendererGeneration) return;
-    if (message.protocolVersion !== 3) {
+    if (message.protocolVersion !== 4) {
       this.fail(new Error("Renderer protocol mismatch"));
       return;
     }

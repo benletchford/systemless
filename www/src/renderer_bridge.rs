@@ -3,7 +3,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
 #[wasm_bindgen(inline_js = r#"
-export function createSystemlessRenderer(canvas, generation) {
+export function createSystemlessRenderer(canvas, generation, owner) {
   if (new URLSearchParams(location.search).get('renderer') !== 'worker'
       || typeof canvas.transferControlToOffscreen !== 'function'
       || typeof ResizeObserver !== 'function' || typeof Worker !== 'function') return null;
@@ -29,7 +29,8 @@ export function createSystemlessRenderer(canvas, generation) {
   import(moduleUrl.href).then(({ RendererClient }) => {
     if (handle.disposed || handle.error) return;
     handle.client = new RendererClient(canvas, workerUrl.href, generation, {
-      backend: new URLSearchParams(location.search).get("renderer_gpu") === "1" ? "webgl" : "canvas2d"
+      backend: new URLSearchParams(location.search).get("renderer_gpu") === "1" ? "webgl" : "canvas2d",
+      owner, direct: new URLSearchParams(location.search).get("renderer_direct") === "1"
     });
     const frame = handle.pending;
     handle.pending = null;
@@ -71,8 +72,11 @@ export function disposeSystemlessRenderer(handle) {
 "#)]
 extern "C" {
     #[wasm_bindgen(catch, js_name = createSystemlessRenderer)]
-    pub fn create_renderer(canvas: &HtmlCanvasElement, generation: u32)
-        -> Result<JsValue, JsValue>;
+    pub fn create_renderer(
+        canvas: &HtmlCanvasElement,
+        generation: u32,
+        owner: &web_sys::Worker,
+    ) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(js_name = paintSystemlessRenderer)]
     pub fn paint_renderer(handle: &JsValue, width: u32, height: u32, pixels: &Uint8Array);
     #[wasm_bindgen(js_name = paintSystemlessPacket)]

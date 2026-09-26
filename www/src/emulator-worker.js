@@ -1,4 +1,4 @@
-const PROTOCOL_VERSION = 6;
+const PROTOCOL_VERSION = 7;
 let machine = null;
 let generation = 0;
 let frameSequence = 0;
@@ -6,6 +6,37 @@ let booting = false;
 let failed = false;
 let stopping = false;
 let saveFilesVersion = null;
+let rendererLink = null;
+
+function disconnectRenderer() {
+  const link = rendererLink;
+  rendererLink = null;
+  if (link) {
+    link.cancelled = true;
+    link.presenter?.dispose();
+    link.port.close();
+  }
+}
+
+async function connectRenderer(message) {
+  disconnectRenderer();
+  const link = rendererLink = { id: message.rendererGeneration, port: message.port, cancelled: false, presenter: null };
+  try {
+    if (message.rendererProtocol !== 4) throw new Error("Direct renderer protocol mismatch");
+    const url = new URL("./renderer-owner.js", self.location.href);
+    url.search = new URL(self.location.href).search;
+    const bindings = await import(url.href);
+    if (link.cancelled || stopping || failed) return;
+    if (bindings.DIRECT_RENDERER_PROTOCOL !== 1) throw new Error("Direct transport assets mismatch");
+    link.presenter = new bindings.RendererOwner(link.port,
+      { generation, rendererGeneration: link.id },
+      { sequence: message.sequence, displayGeneration: message.displayGeneration, notify: reply });
+  } catch (error) {
+    if (link.cancelled) return;
+    reply({ type: "rendererStatus", rendererGeneration: link.id, event: "error", message: String(error?.message || error) });
+    disconnectRenderer();
+  }
+}
 
 function publishSaveFiles(type = "saveFiles", requestId) {
   const version = machine.saveFilesVersion();
@@ -79,7 +110,13 @@ self.onmessage = async (event) => {
       return;
     }
     if (message.generation !== generation || !machine || failed || stopping) return;
+    if (message.type === "connectRenderer") { await connectRenderer(message); return; }
+    if (message.type === "disconnectRenderer") {
+      if (rendererLink?.id === message.rendererGeneration) disconnectRenderer();
+      return;
+    }
     if (message.type === "shutdown") {
+      disconnectRenderer();
       stopping = true;
       await machine.flushSaves();
       machine.free();
@@ -101,6 +138,10 @@ self.onmessage = async (event) => {
           apply();
           pendingReleases.delete(id);
         }
+      }
+      if (message.directRender && rendererLink?.presenter) {
+        try { rendererLink.presenter.submit(result); }
+        catch (error) { rendererLink.presenter.fail(error); }
       }
       const transfer = [];
       if (result.frame) transfer.push(result.frame.buffer);
@@ -134,6 +175,7 @@ self.onmessage = async (event) => {
   } catch (error) {
     const fatal = !["importSave", "deleteSave"].includes(message.type);
     failed ||= fatal;
+    if (fatal) disconnectRenderer();
     reply({
       type: "error",
       fatal,

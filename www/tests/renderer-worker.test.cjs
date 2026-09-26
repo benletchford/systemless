@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 const read = name => fs.readFileSync(path.join(__dirname, '../src', name), 'utf8');
-const identity = { generation: 7, rendererGeneration: 2, protocolVersion: 3 };
+const identity = { generation: 7, rendererGeneration: 2, protocolVersion: 4 };
 const frame = (sequence, fields = {}) => ({ ...identity, type: 'frame', kind: 'rgba', complete: true,
   sequence, guestTick: 100, displayGeneration: 1, width: 2, height: 1,
   pixels: new Uint8Array([sequence, 2, 3, 255, 4, 5, 6, 255]), ...fields });
@@ -229,4 +229,20 @@ test('compact frames preserve native words and return bounded cells/detail owner
   assert.equal(t.failures.length,0);
   t.client.receive({...identity,type:'submitted',sequence:1,buffer:sent.compact.cells.buffer,detailBuffer:sent.compact.detail.buffer});
   assert.equal(t.submitted[0].kind,'compact');assert.equal(t.submitted[0].bytes,4);assert.equal(t.client.recycled.length,1);
+});
+
+
+test('direct owner port returns image ownership without sending pixels through the host', () => {
+  const w=renderer(), packets=[];
+  const port={start(){},postMessage(message,transfer=[]){packets.push(structuredClone(message,{transfer}));}};
+  w.send({...identity,type:'connectOwner',port});
+  const image=frame(1);
+  port.onmessage({data:image});w.flush();
+  assert.equal(image.pixels.byteLength,0);
+  assert.deepEqual(w.messages.map(m=>m.type),['ready','directSubmitted']);
+  assert.equal(w.messages[1].buffer,undefined);
+  assert.deepEqual(packets.map(m=>m.type),['submitted']);
+  w.send(frame(2));
+  assert.equal(w.messages.at(-1).type,'error');
+  assert.equal(packets.at(-1).type,'error');
 });
