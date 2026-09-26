@@ -108,7 +108,9 @@ separate thread while the window consumes complete owned snapshots. Closing the
 window requests an asynchronous save flush and runtime shutdown. On macOS,
 native Quit also defers termination until that owner has flushed saves and
 destroyed the guest; its completion runs in AppKit’s termination modal loop.
-This integration still requires interactive qualification. The default
+Native application identity inspection also runs on the owner while a loading
+window remains available; the host relaunches only after that owner finishes.
+These integrations still require interactive qualification. The default
 remains the same-thread compatibility path until windowed responsiveness and
 platform qualification are complete; leave the variable unset to use it.
 

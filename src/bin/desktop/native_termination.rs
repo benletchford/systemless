@@ -176,15 +176,23 @@ impl NativeTermination {
     }
 
     pub fn activate(&self, mailbox: Arc<RuntimeMailbox>) {
-        ACTIVE.with(|slot| {
-            *slot.borrow_mut() = Some(Active {
-                mailbox,
-                timer: None,
-                pending: false,
-                replied: false,
-            })
-        });
+        activate(mailbox);
     }
+}
+
+/// Replace a completed bootstrap owner after a failed native bundle exec.
+/// This is still pre-game startup, and no pending native Quit may be replaced.
+pub(super) fn activate(mailbox: Arc<RuntimeMailbox>) {
+    ACTIVE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        assert!(!slot.as_ref().is_some_and(|active| active.pending));
+        *slot = Some(Active {
+            mailbox,
+            timer: None,
+            pending: false,
+            replied: false,
+        });
+    });
 }
 
 pub(super) fn pending() -> bool {

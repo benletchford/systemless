@@ -58,6 +58,37 @@ pub fn cached_bundle(game_path: &Path) -> io::Result<Option<NativeBundle>> {
     Ok((target == layout.current_exe).then_some(layout.bundle))
 }
 
+/// Inspect a native launch without executing guest instructions. Threaded GUI
+/// callers run this on the execution owner; the inline compatibility path keeps
+/// its pre-window behavior. The returned bundle contains only owned paths.
+pub fn prepare_for_game(game_path: &Path) -> Result<Option<NativeBundle>, String> {
+    if already_relaunched() {
+        return Ok(None);
+    }
+    match cached_bundle(game_path) {
+        Ok(Some(bundle)) => return Ok(Some(bundle)),
+        Ok(None) => {}
+        Err(error) => eprintln!("[SYSTEMLESS] Could not inspect native bundle cache: {error}"),
+    }
+    let mut runner = systemless::game::new_runner();
+    systemless::game::load_game_from_path(&mut runner, game_path)
+        .map_err(|error| format!("could not inspect guest application: {error}"))?;
+    let Some(app_path) = runner.dispatcher().launched_app_path() else {
+        return Ok(None);
+    };
+    let app_name = app_path
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(app_path)
+        .to_owned();
+    drop(runner);
+    let bundle = prepare_bundle(game_path, &app_name)
+        .map_err(|error| format!("could not prepare native identity for {app_name}: {error}"))?;
+    eprintln!("[SYSTEMLESS] Native app identity: {app_name}");
+    Ok(Some(bundle))
+}
+
 /// Create or refresh the tiny bundle that gives Launch Services the guest name.
 pub fn prepare_bundle(game_path: &Path, guest_name: &str) -> io::Result<NativeBundle> {
     let display_name = normalize_display_name(guest_name);
