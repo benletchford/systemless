@@ -1090,8 +1090,6 @@ impl super::TrapDispatcher {
                 let h = bus.read_word(sp + 2) as i16;
                 cpu.write_reg(Register::A7, sp + 4);
                 let port_ptr = self.effective_the_port(bus, cpu.read_reg(Register::A5));
-                let hidden_window_regions =
-                    self.hidden_window_local_regions_for_origin_change(bus, port_ptr);
                 let top = bus.read_word(port_ptr + 16) as i16;
                 let left = bus.read_word(port_ptr + 18) as i16;
                 let bottom = bus.read_word(port_ptr + 20) as i16;
@@ -1162,11 +1160,6 @@ impl super::TrapDispatcher {
                         bus.write_word(vis_ptr + 8, rr.wrapping_add(dh) as u16);
                     }
                 }
-                self.sync_hidden_window_regions_after_origin_change(
-                    bus,
-                    port_ptr,
-                    hidden_window_regions,
-                );
                 Ok(())
             }
 
