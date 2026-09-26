@@ -39,6 +39,8 @@ mod native_bundle;
 #[cfg(target_os = "macos")]
 #[path = "desktop/native_menu.rs"]
 mod native_menu;
+#[path = "desktop/runtime_driver.rs"]
+mod runtime_driver;
 
 #[cfg(all(feature = "debug-server", unix))]
 #[path = "desktop/debug_server.rs"]
@@ -74,12 +76,11 @@ use desktop_save_store::DesktopSaveStore;
 use objc2::{msg_send, runtime::NSObject};
 #[cfg(target_os = "macos")]
 use objc2_quartz_core::CATransaction;
+use runtime_driver::GuiDriver;
 use systemless::debug_overlay::DebugOverlayFrameStats;
 use systemless::display;
 use systemless::game;
 use systemless::runner::FixtureRunner;
-#[cfg(target_os = "macos")]
-use systemless::runner::MenuBarPolicy;
 use systemless::trap::dispatch::ScreenCopyBitsRect;
 use systemless::ui_theme::UiThemeId;
 
@@ -842,6 +843,7 @@ struct PendingGpuFrame {
 }
 
 struct App {
+    driver: GuiDriver,
     #[cfg(target_os = "windows")]
     gpu: Option<d3d_present::D3dPresenter>,
     #[cfg(target_os = "windows")]
@@ -904,39 +906,14 @@ struct App {
     window_resize_events: u64,
     #[cfg(not(target_os = "macos"))]
     scaled_frame: Vec<u32>,
-    runner: Option<FixtureRunner>,
-    debug_server: Option<debug_server::DebugServer>,
-    save_store: Option<DesktopSaveStore>,
-    guest_exit_reported: bool,
     game_path: PathBuf,
-    initialized: bool,
-    total_instructions: u64,
-    /// Wall-clock origin for deriving tick targets.
-    start_time: Option<std::time::Instant>,
-    /// Next frame target for pacing.
-    next_frame_time: Option<std::time::Instant>,
-    /// Adaptive CPU/render split for the single-threaded GUI loop.
-    render_headroom: std::time::Duration,
-    /// Fractional host samples carried between GUI slices to preserve rate.
-    audio_sample_remainder: f64,
-    /// Wall-clock instant represented by the most recently queued audio.
-    /// Unlike video, audio cannot simply drop a late host frame without
-    /// starving the device ring buffer.
-    last_audio_mix_time: Option<std::time::Instant>,
     /// Current mouse position in physical window pixels
     mouse_physical: (f64, f64),
     /// Guest displacement used when the window system cannot warp its pointer.
     mouse_guest_offset: (i16, i16),
-    mouse_release_latch: HostMouseReleaseLatch,
     /// Current game screen dimensions (tracks screen_mode changes)
     current_screen_width: u32,
     current_screen_height: u32,
-    /// Frame counter for diagnostic screenshots
-    frame_count: u64,
-    /// Guest tick last presented to the host window.
-    last_presented_guest_tick: Option<u32>,
-    /// Force the next host present even if the guest tick has not advanced.
-    force_next_render: bool,
     /// Force a Metal submission even if all visible guest inputs are
     /// unchanged, for native expose/resize events that need a fresh drawable.
     #[cfg(target_os = "macos")]
@@ -951,15 +928,9 @@ struct App {
     debug_frame_ms: Option<f64>,
     /// Remap arrow keys to numpad equivalents (for keyboards without a numpad)
     arrows_as_numpad: bool,
-    /// Start the guest with 24-bit rather than 32-bit address translation.
-    addressing_24_bit: bool,
-    /// Explicit guest framebuffer depth, or architecture defaults.
-    screen_depth: Option<u16>,
     /// None chooses a comfortable monitor-aware size; Some preserves an
     /// explicit physical guest-to-host pixel ratio.
     display_scale: Option<u32>,
-    /// Selected guest chrome presentation provider.
-    ui_theme: UiThemeId,
     #[cfg(target_os = "macos")]
     native_integrations: bool,
     #[cfg(target_os = "macos")]
@@ -1031,6 +1002,14 @@ impl App {
             );
         }
         Self {
+            driver: GuiDriver::new(
+                game_path.clone(),
+                arrows_as_numpad,
+                native_integrations,
+                addressing_24_bit,
+                screen_depth,
+                ui_theme,
+            ),
             window: None,
             #[cfg(target_os = "windows")]
             gpu: None,
@@ -1076,26 +1055,11 @@ impl App {
             window_resize_events: 0,
             #[cfg(not(target_os = "macos"))]
             scaled_frame: Vec::new(),
-            runner: None,
-            debug_server: None,
-            save_store: None,
-            guest_exit_reported: false,
             game_path,
-            initialized: false,
-            total_instructions: 0,
-            start_time: None,
-            next_frame_time: None,
-            render_headroom: MIN_RENDER_HEADROOM,
-            audio_sample_remainder: 0.0,
-            last_audio_mix_time: None,
             mouse_physical: (0.0, 0.0),
             mouse_guest_offset: (0, 0),
-            mouse_release_latch: HostMouseReleaseLatch::default(),
             current_screen_width: initial_screen_width(),
             current_screen_height: initial_screen_height(),
-            frame_count: 0,
-            last_presented_guest_tick: None,
-            force_next_render: true,
             #[cfg(target_os = "macos")]
             force_gpu_present: true,
             start_fullscreen,
@@ -1106,10 +1070,7 @@ impl App {
             debug_host_fps: None,
             debug_frame_ms: None,
             arrows_as_numpad,
-            addressing_24_bit,
-            screen_depth,
             display_scale,
-            ui_theme,
             #[cfg(target_os = "macos")]
             native_integrations,
             #[cfg(target_os = "macos")]
@@ -1122,6 +1083,12 @@ impl App {
             #[cfg(target_os = "macos")]
             native_app_icon: None,
         }
+    }
+
+    fn init_game(&mut self) {
+        self.driver.init_game();
+        #[cfg(target_os = "macos")]
+        self.sync_native_application_identity();
     }
 
     /// Convert physical window coordinates to Mac screen coordinates.
@@ -1150,14 +1117,14 @@ impl App {
                     width: sw,
                     height: sh,
                 }),
-                self.runner.as_ref().and_then(|runner| {
+                self.driver.runner.as_ref().and_then(|runner| {
                     runner
                         .dispatcher()
                         .visible_dialog_structure_bounds(runner.bus())
                 }),
                 sw,
                 sh,
-                native_menu_bar_height(self.runner.as_ref(), self.native_integrations),
+                native_menu_bar_height(self.driver.runner.as_ref(), self.native_integrations),
             )
         };
         #[cfg(not(target_os = "macos"))]
@@ -1181,6 +1148,7 @@ impl App {
 
     fn sync_guest_cursor_warp(&mut self) {
         let Some((v, h)) = self
+            .driver
             .runner
             .as_mut()
             .and_then(FixtureRunner::take_guest_cursor_warp)
@@ -1209,14 +1177,14 @@ impl App {
                     width: sw,
                     height: sh,
                 }),
-                self.runner.as_ref().and_then(|runner| {
+                self.driver.runner.as_ref().and_then(|runner| {
                     runner
                         .dispatcher()
                         .visible_dialog_structure_bounds(runner.bus())
                 }),
                 sw,
                 sh,
-                native_menu_bar_height(self.runner.as_ref(), self.native_integrations),
+                native_menu_bar_height(self.driver.runner.as_ref(), self.native_integrations),
             )
         };
         #[cfg(not(target_os = "macos"))]
@@ -1243,68 +1211,6 @@ impl App {
         }
     }
 
-    fn init_game(&mut self) {
-        let _timing = FramePhaseTimer::new("guest initialization");
-        if self.initialized {
-            return;
-        }
-
-        let mut runner = match self.screen_depth {
-            Some(screen_depth) => {
-                game::new_runner_with_configuration(!self.addressing_24_bit, screen_depth)
-            }
-            None => game::new_runner_with_addressing(!self.addressing_24_bit),
-        };
-        runner.set_ui_theme(self.ui_theme);
-        #[cfg(target_os = "macos")]
-        if self.native_integrations {
-            runner.set_menu_bar_policy(MenuBarPolicy::ForceHidden);
-        }
-        let app =
-            game::load_game_from_path(&mut runner, &self.game_path).expect("Failed to load game");
-        let mut save_store = DesktopSaveStore::for_loaded_archive(&self.game_path, &mut runner);
-        eprintln!(
-            "[SYSTEMLESS] Desktop save dir: {}",
-            save_store.root().display()
-        );
-        let restored_saves = save_store.load_saved_files();
-        for file in &restored_saves {
-            runner.import_vfs_file(file);
-        }
-        if !restored_saves.is_empty() {
-            eprintln!(
-                "[SYSTEMLESS] Restored {} desktop save file(s)",
-                restored_saves.len()
-            );
-        }
-        game::init_game(&mut runner, &app);
-        runner.prepare_text_presentation();
-        runner.set_arrows_as_numpad(self.arrows_as_numpad);
-
-        let ipt = configure_realtime_execution_rate(&mut runner);
-        eprintln!("[SYSTEMLESS] Instructions per tick: {}", ipt);
-
-        // Initialize audio output.
-        if let Some(audio) = systemless::audio::CpalAudioBackend::new() {
-            runner.set_audio(Box::new(audio));
-        } else {
-            eprintln!("[SYSTEMLESS] Warning: could not initialize audio output");
-        }
-
-        eprintln!("[SYSTEMLESS] Game loaded: {}", self.game_path.display());
-        eprintln!(
-            "[SYSTEMLESS] A5=${:08X}, Entry=${:08X}",
-            app.a5_base,
-            app.entry_point(app.a5_base)
-        );
-
-        self.runner = Some(runner);
-        self.save_store = Some(save_store);
-        self.initialized = true;
-        #[cfg(target_os = "macos")]
-        self.sync_native_application_identity();
-    }
-
     #[cfg(target_os = "macos")]
     fn sync_native_application_identity(&mut self) {
         if !self.native_integrations {
@@ -1318,6 +1224,7 @@ impl App {
         // A foreground application switch changes `launched_app_path` and
         // therefore still refreshes the native name, icon, and window title.
         let application_unchanged = self
+            .driver
             .runner
             .as_ref()
             .and_then(|runner| runner.dispatcher().launched_app_path())
@@ -1327,6 +1234,7 @@ impl App {
         }
 
         let Some(identity) = self
+            .driver
             .runner
             .as_ref()
             .and_then(game::loaded_application_identity)
@@ -1346,65 +1254,6 @@ impl App {
         self.native_app_icon = identity.icon;
     }
 
-    fn sync_save_files(&mut self, force: bool) {
-        let Some(save_store) = self.save_store.as_mut() else {
-            return;
-        };
-        let Some(runner) = self.runner.as_mut() else {
-            return;
-        };
-        if force {
-            save_store.sync_save_files_now(runner);
-        } else {
-            save_store.sync_save_files(runner);
-        }
-    }
-
-    fn guest_requested_exit(&self) -> bool {
-        self.runner
-            .as_ref()
-            .is_some_and(FixtureRunner::halted_by_exit_to_shell)
-    }
-
-    /// Wall-clock origin such that `tick_due_at(origin, now)` equals `guest_tick`.
-    /// Shifts the origin back so a boot-seeded, non-zero TickCount does not make
-    /// the pacer wait real time before running any guest CPU work.
-    fn wall_clock_origin_for_guest_tick(
-        now: std::time::Instant,
-        guest_tick: u32,
-    ) -> std::time::Instant {
-        // Add a half-tick of lead before flooring so `tick_due_at` reliably
-        // maps `now` back to `guest_tick` (rather than `guest_tick - 1` after
-        // float truncation), guaranteeing the first frame already has runnable
-        // guest work. The half-tick (~8ms) lead is sub-frame and harmless.
-        now.checked_sub(std::time::Duration::from_secs_f64(
-            (guest_tick as f64 + 0.5) / systemless::runner::DEFAULT_VBL_HZ,
-        ))
-        .unwrap_or(now)
-    }
-
-    fn tick_due_at(origin: std::time::Instant, at: std::time::Instant) -> u32 {
-        at.checked_duration_since(origin)
-            .unwrap_or_default()
-            .as_secs_f64()
-            .mul_add(systemless::runner::DEFAULT_VBL_HZ, 0.0)
-            .floor() as u32
-    }
-
-    fn audio_samples_for_duration(duration: std::time::Duration, remainder: &mut f64) -> usize {
-        let total_samples = duration
-            .as_secs_f64()
-            .mul_add(systemless::sound::OUTPUT_RATE as f64, *remainder);
-        let whole_samples = total_samples.floor();
-        *remainder = total_samples - whole_samples;
-        whole_samples as usize
-    }
-
-    fn next_render_headroom(render_time: std::time::Duration) -> std::time::Duration {
-        let target = render_time.saturating_add(RENDER_HEADROOM_MARGIN);
-        target.clamp(MIN_RENDER_HEADROOM, MAX_RENDER_HEADROOM)
-    }
-
     fn update_debug_frame_stats(&mut self, now: std::time::Instant) {
         let Some(previous) = self.debug_last_frame_at.replace(now) else {
             return;
@@ -1420,275 +1269,6 @@ impl App {
             .unwrap_or(frame_ms);
         self.debug_frame_ms = Some(smoothed_ms);
         self.debug_host_fps = Some(1000.0 / smoothed_ms);
-    }
-
-    fn next_frame_target(
-        now: std::time::Instant,
-        scheduled: std::time::Instant,
-    ) -> (std::time::Instant, bool) {
-        if now.saturating_duration_since(scheduled) >= FRAME_DURATION {
-            (now + FRAME_DURATION, true)
-        } else {
-            (scheduled + FRAME_DURATION, false)
-        }
-    }
-
-    fn flush_ready_mouse_release(&mut self) {
-        let Some((v, h)) = self.mouse_release_latch.take_ready_release() else {
-            return;
-        };
-        if let Some(runner) = self.runner.as_mut() {
-            runner.push_mouse_up(v, h);
-        }
-    }
-
-    fn step_frame(&mut self) {
-        self.step_frame_with_clock(std::time::Instant::now);
-    }
-
-    fn step_frame_with_clock(&mut self, mut host_now: impl FnMut() -> std::time::Instant) {
-        let _timing = FramePhaseTimer::new("CPU and audio frame");
-        let Some(runner) = self.runner.as_ref() else {
-            return;
-        };
-
-        if runner.is_halted() {
-            return;
-        }
-
-        let now = host_now();
-        // Seed the wall-clock origin from the guest's current tick, not `now`.
-        // The runner boots with a non-zero TickCount (DEFAULT_LAUNCH_TICKS ≈ 600
-        // ≈ 10s of simulated post-boot time), so anchoring the origin at `now`
-        // would leave the guest clock 600 ticks "ahead" of the wall clock. With
-        // `ticks_behind` saturating to 0, the CPU loop would advance no work for
-        // ~10 real seconds until the wall clock caught up — a launch stall. See
-        // wall_clock_origin_for_guest_tick in systemless.org/src/emulator.rs.
-        let start = *self.start_time.get_or_insert_with(|| {
-            Self::wall_clock_origin_for_guest_tick(now, runner.guest_tick())
-        });
-        let scheduled_frame_end = self.next_frame_time.unwrap_or(now + FRAME_DURATION);
-
-        // Wall-clock tick target: where the game clock should be right now.
-        let target_tick = Self::tick_due_at(start, scheduled_frame_end);
-        let current_tick = runner.guest_tick();
-
-        // Cap ticks-to-advance at 2 per frame. If the game is behind,
-        // we accept the lag rather than trying to catch up (which causes
-        // the CPU to run for 100ms+ and drops frames further). When the
-        // game is more than 2 ticks behind, we reset the wall-clock
-        // origin so it can recover without a runaway spiral.
-        let ticks_behind = target_tick.saturating_sub(current_tick);
-        if ticks_behind > 4 {
-            // Game fell too far behind — snap the wall-clock origin forward
-            // so the target aligns with where the game actually is.
-            // This prevents the death spiral where each frame tries to
-            // catch up, takes too long, falls further behind, repeat.
-            self.start_time = Some(
-                now - std::time::Duration::from_secs_f64(
-                    (current_tick + 2) as f64 / systemless::runner::DEFAULT_VBL_HZ,
-                ),
-            );
-        }
-        // Host input wakes the foreground application even when its TickCount
-        // is ahead of the wall-clock target. Give each mouse transition one
-        // bounded guest slice so a polling loop cannot be starved by pacing.
-        let input_progress_ticks = u32::from(self.mouse_release_latch.requires_guest_progress());
-        let effective_target =
-            current_tick.saturating_add(ticks_behind.min(2).max(input_progress_ticks));
-
-        // CPU budget: wall-clock time left in this frame, minus render headroom.
-        // The CPU runs in small batches, checking the clock between batches.
-        let cpu_deadline = scheduled_frame_end
-            .checked_sub(self.render_headroom)
-            .map(|d| d.max(now))
-            .unwrap_or(now);
-
-        let slice_budget = game::MAX_INSTRUCTIONS_PER_FRAME;
-        let presentation_interval = self
-            .last_audio_mix_time
-            .replace(now)
-            .map(|previous| now.saturating_duration_since(previous))
-            .unwrap_or(FRAME_DURATION);
-        let audio_interval = presentation_interval.min(MAX_AUDIO_MIX_INTERVAL);
-        let audio_samples =
-            Self::audio_samples_for_duration(audio_interval, &mut self.audio_sample_remainder);
-        if std::env::var_os("SYSTEMLESS_TRACE_AUDIO").is_some()
-            && audio_interval > FRAME_DURATION + FRAME_DURATION / 2
-        {
-            eprintln!(
-                "[AUDIO] recovering {:.1} ms of host time ({} source samples)",
-                audio_interval.as_secs_f64() * 1000.0,
-                audio_samples
-            );
-        }
-
-        let runner = self.runner.as_mut().expect("runner checked above");
-        runner.advance_menu_presentation_clock(presentation_interval);
-        // A PPC HLE slice currently borrows its large mutable state by moving
-        // collections into a dispatch closure and restoring them afterward.
-        // Yield a few times per guest VBL rather than paying that boundary
-        // thousands of times per second, so the wall-clock CPU deadline is
-        // still rechecked within a tick. The interpreter stops at the tick cap.
-        let foreground_batch_instructions = foreground_cpu_batch_instructions(
-            runner.is_powerpc_app(),
-            runner.instructions_per_tick(),
-        );
-
-        // Mix one host frame of audio per GUI frame. Sound Manager doubleback
-        // callbacks run at interrupt time, including while menu/control
-        // tracking keeps the application-visible TickCount fixed, so same-tick
-        // frames still need audio. Do not catch up multiple late host frames at
-        // once: that drains SndPlayDoubleBuffer queues faster than their
-        // callbacks can refill them and turns low-rate effects into fragments.
-        // Sound 1994, 2-72 and 2-146 to 2-148.
-        let mut audio_mixed = 0usize;
-        let mut total_steps = 0usize;
-        let mut foreground_steps = 0usize;
-        let mut reserved_sound_steps = 0usize;
-
-        loop {
-            if runner.guest_tick() >= effective_target || runner.is_halted() {
-                break;
-            }
-            if host_now() >= cpu_deadline {
-                break;
-            }
-
-            let remaining = slice_budget.saturating_sub(total_steps);
-            if remaining == 0 {
-                break;
-            }
-
-            let batch_size = remaining.min(foreground_batch_instructions);
-            let remaining_audio = audio_samples.saturating_sub(audio_mixed);
-            let batches_left = remaining.div_ceil(foreground_batch_instructions).max(1);
-            let batch_audio = if remaining_audio == 0 {
-                0
-            } else {
-                remaining_audio.div_ceil(batches_left)
-            };
-            let (steps, running) = {
-                let _timing = FramePhaseTimer::new("foreground CPU batch");
-                runner.run_gui_cpu_slice(batch_size, effective_target)
-            };
-            total_steps += steps;
-            foreground_steps += steps;
-            audio_mixed += batch_audio;
-            if batch_audio > 0 {
-                // CPU batches share one presentation pass in render_frame.
-                // Keep audio callbacks serviced without repainting every window.
-                runner.mix_gui_audio_slice(batch_audio);
-                if let Some(steps) = service_pending_sound_work(
-                    runner,
-                    cpu_deadline,
-                    slice_budget,
-                    total_steps,
-                    &mut reserved_sound_steps,
-                ) {
-                    total_steps += steps;
-                }
-            }
-            if !running || runner.is_ui_tracking_active() {
-                break;
-            }
-        }
-
-        if audio_mixed < audio_samples {
-            if let Some(steps) = service_pending_sound_work(
-                runner,
-                cpu_deadline,
-                slice_budget,
-                total_steps,
-                &mut reserved_sound_steps,
-            ) {
-                total_steps += steps;
-            }
-        }
-
-        if audio_mixed < audio_samples {
-            let mut remaining_audio = audio_samples - audio_mixed;
-            while remaining_audio > 0 && !runner.is_halted() {
-                let chunk_audio = remaining_audio.min(AUDIO_CALLBACK_CHUNK_SAMPLES);
-                runner.mix_gui_audio_slice(chunk_audio);
-                remaining_audio -= chunk_audio;
-                if let Some(steps) = service_pending_sound_work(
-                    runner,
-                    cpu_deadline,
-                    slice_budget,
-                    total_steps,
-                    &mut reserved_sound_steps,
-                ) {
-                    total_steps += steps;
-                }
-            }
-        }
-
-        if let Some(steps) = service_pending_sound_work(
-            runner,
-            cpu_deadline,
-            slice_budget,
-            total_steps,
-            &mut reserved_sound_steps,
-        ) {
-            total_steps += steps;
-        }
-
-        self.total_instructions += total_steps as u64;
-        if foreground_steps > 0 {
-            self.mouse_release_latch.observe_guest_progress();
-        }
-        if foreground_steps > 0 && runner.guest_tick() == current_tick {
-            // Loading and animation code can draw substantial work before the
-            // next VBL tick. Present that progress instead of batching it into
-            // a later tick, which makes startup look choppy.
-            self.force_next_render = true;
-        }
-
-        // Optional tick-lag instrumentation. Gate on
-        // SYSTEMLESS_TRACE_TICK_LAG=1. Logs target/current tick counts and
-        // CPU budget vs instructions actually executed each frame.
-        //   - Logs EVERY frame when ticks_behind > 0 (lag event).
-        //   - Also logs ONCE PER SECOND (every 60 frames) as a steady-
-        //     state sample so the user sees baseline performance.
-        // Interpretation: if cpu_used / slice_budget < 1.0 consistently,
-        // the host CPU can't keep up with the 25 MHz target and
-        // animations will lag.
-        if std::env::var_os("SYSTEMLESS_TRACE_TICK_LAG").is_some() {
-            let final_tick = runner.guest_tick();
-            let advanced = final_tick.saturating_sub(current_tick);
-            let steady_sample = self.frame_count.is_multiple_of(60);
-            if ticks_behind > 0 || steady_sample {
-                let tag = if ticks_behind > 0 { "LAG" } else { "OK " };
-                eprintln!(
-                    "[TICK_LAG {}] frame={} target={} current={} behind={} \
-                     advanced={} budget={} used={}",
-                    tag,
-                    self.frame_count,
-                    target_tick,
-                    current_tick,
-                    ticks_behind,
-                    advanced,
-                    slice_budget,
-                    total_steps,
-                );
-            }
-        }
-    }
-
-    fn should_render_frame(&self) -> bool {
-        if self.force_next_render {
-            return true;
-        }
-        if self.debug_overlay_visible {
-            return true;
-        }
-        let Some(runner) = self.runner.as_ref() else {
-            return false;
-        };
-        runner.is_halted()
-            || runner.is_ui_tracking_active()
-            || self.last_presented_guest_tick != Some(runner.guest_tick())
     }
 
     #[cfg(target_os = "windows")]
@@ -1711,14 +1291,14 @@ impl App {
             // The resize event prepares the new geometry. Never submit an
             // old-size pending image into the replacement drawable.
             gpu.cancel_retry();
-            self.force_next_render = true;
+            self.driver.force_next_render = true;
             return;
         }
         let _timing = FramePhaseTimer::new("GPU readiness retry work");
         match gpu.present(self.gpu_frame.frame(), pending.size, pending.rect) {
             Ok(true) => {
                 self.gpu_pending = None;
-                self.last_presented_guest_tick = Some(pending.guest_tick);
+                self.driver.last_presented_guest_tick = Some(pending.guest_tick);
             }
             Ok(false) => {}
             Err(message) => {
@@ -1732,7 +1312,7 @@ impl App {
                     Surface::new(&context, window).expect("Failed to create software surface"),
                 );
                 self.surface_size = None;
-                self.force_next_render = true;
+                self.driver.force_next_render = true;
                 self.render_frame();
             }
         }
@@ -1753,7 +1333,7 @@ impl App {
         if size.width == 0 || size.height == 0 {
             return;
         }
-        let Some(runner) = self.runner.as_mut() else {
+        let Some(runner) = self.driver.runner.as_mut() else {
             return;
         };
         {
@@ -2058,7 +1638,7 @@ impl App {
                     // Retain the last complete drawable. Presenting the live
                     // guest framebuffer here would expose the dialog through
                     // the old crop for one or two display frames.
-                    self.force_next_render = true;
+                    self.driver.force_next_render = true;
                     return;
                 }
             }
@@ -2160,7 +1740,7 @@ impl App {
                         target_size,
                         required_resize_event: self.window_resize_events.saturating_add(1),
                     });
-                    self.force_next_render = true;
+                    self.driver.force_next_render = true;
                     return;
                 }
             }
@@ -2188,10 +1768,11 @@ impl App {
                     surface.set_transactional_presentation(false);
                 }
                 if presented_directly {
-                    self.last_presented_guest_tick = Some(presented_tick);
-                    self.force_next_render = false;
+                    self.driver.last_presented_guest_tick = Some(presented_tick);
+                    self.driver.force_next_render = false;
                     self.force_gpu_present = false;
-                    self.render_headroom = Self::next_render_headroom(render_start.elapsed());
+                    self.driver.render_headroom =
+                        GuiDriver::next_render_headroom(render_start.elapsed());
                     return;
                 }
             }
@@ -2250,9 +1831,11 @@ impl App {
             } else {
                 let _timing = FramePhaseTimer::new("GPU compact preparation");
                 if let Some(guest) = guest_frame.as_ref() {
-                    runner
-                        .bus()
-                        .compact_presentation(guest, &frame_argb, self.gpu_frame.frame_mut())
+                    runner.bus().compact_presentation(
+                        guest,
+                        &frame_argb,
+                        self.gpu_frame.frame_mut(),
+                    )
                 } else {
                     let output = self.gpu_frame.frame_mut();
                     output.width = game_w;
@@ -2286,13 +1869,14 @@ impl App {
                     self.frame_argb = frame_argb;
                     if submitted {
                         self.gpu_pending = None;
-                        self.last_presented_guest_tick = Some(presented_tick);
+                        self.driver.last_presented_guest_tick = Some(presented_tick);
                     }
                     // The prepared image satisfies this redraw request. A
                     // readiness wake submits it without recompositing. Later
                     // input/expose requests must survive that submission.
-                    self.force_next_render = false;
-                    self.render_headroom = Self::next_render_headroom(render_start.elapsed());
+                    self.driver.force_next_render = false;
+                    self.driver.render_headroom =
+                        GuiDriver::next_render_headroom(render_start.elapsed());
                     return;
                 }
                 Err(message) => {
@@ -2504,9 +2088,9 @@ impl App {
         }
         self.presentation_argb = presented;
         self.frame_argb = frame_argb;
-        self.last_presented_guest_tick = Some(presented_tick);
-        self.force_next_render = false;
-        self.render_headroom = Self::next_render_headroom(render_start.elapsed());
+        self.driver.last_presented_guest_tick = Some(presented_tick);
+        self.driver.force_next_render = false;
+        self.driver.render_headroom = GuiDriver::next_render_headroom(render_start.elapsed());
     }
 }
 
@@ -2997,7 +2581,8 @@ impl App {
     /// Keep the host pointer in step with the guest cursor image, visibility,
     /// and the window's guest-to-screen scale.
     fn sync_host_cursor(&mut self, _event_loop: &ActiveEventLoop) {
-        let (Some(window), Some(runner)) = (self.window.as_ref(), self.runner.as_ref()) else {
+        let (Some(window), Some(runner)) = (self.window.as_ref(), self.driver.runner.as_ref())
+        else {
             return;
         };
         // The cursor's guest-pixel scale must match the presentation viewport
@@ -3075,7 +2660,7 @@ impl ApplicationHandler for App {
                     None,
                     initial_screen_width(),
                     initial_screen_height(),
-                    native_menu_bar_height(self.runner.as_ref(), self.native_integrations),
+                    native_menu_bar_height(self.driver.runner.as_ref(), self.native_integrations),
                 );
                 (content.width, content.height)
             };
@@ -3191,10 +2776,10 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
-                self.sync_save_files(true);
+                self.driver.sync_save_files(true);
                 eprintln!(
                     "[SYSTEMLESS] Window closed. Total instructions: {}",
-                    self.total_instructions
+                    self.driver.total_instructions
                 );
                 systemless::runner::dump_wait_stats();
                 event_loop.exit();
@@ -3218,10 +2803,10 @@ impl ApplicationHandler for App {
                     self.host_cursor.set_pointer_inside(true);
                     self.host_cursor.reassert();
                 }
-                self.force_next_render = true;
+                self.driver.force_next_render = true;
                 self.mouse_physical = (position.x, position.y);
                 let (v, h) = self.host_mouse_to_mac(position.x, position.y);
-                if let Some(runner) = self.runner.as_mut() {
+                if let Some(runner) = self.driver.runner.as_mut() {
                     runner.set_mouse_position(v, h);
                     runner.dispatcher_mut().show_cursor();
                 }
@@ -3234,17 +2819,17 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.force_next_render = true;
+                self.driver.force_next_render = true;
                 let (v, h) = self.host_mouse_to_mac(self.mouse_physical.0, self.mouse_physical.1);
-                if let Some(runner) = self.runner.as_mut() {
+                if let Some(runner) = self.driver.runner.as_mut() {
                     match state {
                         ElementState::Pressed => {
                             runner.push_mouse_down(v, h);
-                            self.mouse_release_latch.press();
+                            self.driver.mouse_release_latch.press();
                         }
                         ElementState::Released => {
                             if let Some((release_v, release_h)) =
-                                self.mouse_release_latch.release((v, h))
+                                self.driver.mouse_release_latch.release((v, h))
                             {
                                 runner.push_mouse_up(release_v, release_h);
                             }
@@ -3254,7 +2839,7 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
-                self.force_next_render = true;
+                self.driver.force_next_render = true;
                 let translated = host_keyboard_event_to_mac(
                     &event.logical_key,
                     &event.physical_key,
@@ -3280,7 +2865,7 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
-                if let Some(runner) = self.runner.as_mut() {
+                if let Some(runner) = self.driver.runner.as_mut() {
                     match event.state {
                         ElementState::Pressed => {
                             runner.push_key_down(mac_key, char_code);
@@ -3293,7 +2878,7 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::Resized(size) => {
-                self.force_next_render = true;
+                self.driver.force_next_render = true;
                 #[cfg(target_os = "macos")]
                 {
                     self.force_gpu_present = true;
@@ -3302,13 +2887,13 @@ impl ApplicationHandler for App {
                 // Live resizing runs independently of the guest VBL. Present
                 // the latest complete guest image at the new drawable size
                 // immediately instead of stretching a stale drawable.
-                if size.width != 0 && size.height != 0 && self.runner.is_some() {
+                if size.width != 0 && size.height != 0 && self.driver.runner.is_some() {
                     self.render_frame();
                 }
             }
 
             WindowEvent::RedrawRequested => {
-                self.force_next_render = true;
+                self.driver.force_next_render = true;
                 #[cfg(target_os = "macos")]
                 {
                     self.force_gpu_present = true;
@@ -3319,11 +2904,14 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let (Some(server), Some(runner)) = (self.debug_server.as_mut(), self.runner.as_mut()) {
+        if let (Some(server), Some(runner)) = (
+            self.driver.debug_server.as_mut(),
+            self.driver.runner.as_mut(),
+        ) {
             server.pump(runner);
         }
         let now = std::time::Instant::now();
-        let next = self.next_frame_time.unwrap_or(now);
+        let next = self.driver.next_frame_time.unwrap_or(now);
 
         #[cfg(target_os = "windows")]
         if self
@@ -3350,13 +2938,13 @@ impl ApplicationHandler for App {
         // Schedule the next host frame. If startup/resource loading makes us
         // miss a full presentation interval, drop the missed host frame instead
         // of running immediate catch-up frames that bunch audio and graphics.
-        let (next_target, _) = Self::next_frame_target(now, next);
-        self.next_frame_time = Some(next_target);
+        let (next_target, _) = GuiDriver::next_frame_target(now, next);
+        self.driver.next_frame_time = Some(next_target);
         event_loop.set_control_flow(ControlFlow::WaitUntil(next_target));
 
         #[cfg(target_os = "macos")]
         if let Some(native_menu) = self.native_menu.as_mut() {
-            if let Some(runner) = self.runner.as_mut() {
+            if let Some(runner) = self.driver.runner.as_mut() {
                 for (menu_id, item_number) in native_menu.drain_commands() {
                     runner.select_guest_menu_item(menu_id, item_number);
                 }
@@ -3364,24 +2952,24 @@ impl ApplicationHandler for App {
         }
 
         // Step emulation, then render
-        self.step_frame();
+        self.driver.step_frame();
         self.sync_guest_cursor_warp();
-        self.flush_ready_mouse_release();
-        if self.guest_requested_exit() {
-            if !self.guest_exit_reported {
-                self.sync_save_files(true);
+        self.driver.flush_ready_mouse_release();
+        if self.driver.guest_requested_exit() {
+            if !self.driver.guest_exit_reported {
+                self.driver.sync_save_files(true);
                 eprintln!(
                     "[SYSTEMLESS] Guest exited. Total instructions: {}",
-                    self.total_instructions
+                    self.driver.total_instructions
                 );
-                self.guest_exit_reported = true;
+                self.driver.guest_exit_reported = true;
             }
-            if self.debug_server.is_none() {
+            if self.driver.debug_server.is_none() {
                 event_loop.exit();
                 return;
             }
         }
-        self.sync_save_files(false);
+        self.driver.sync_save_files(false);
 
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         self.sync_host_cursor(event_loop);
@@ -3391,13 +2979,18 @@ impl ApplicationHandler for App {
 
         #[cfg(target_os = "macos")]
         if let Some(native_menu) = self.native_menu.as_mut() {
-            if let Some(snapshot) = self.runner.as_mut().map(FixtureRunner::guest_menu_snapshot) {
+            if let Some(snapshot) = self
+                .driver
+                .runner
+                .as_mut()
+                .map(FixtureRunner::guest_menu_snapshot)
+            {
                 native_menu.sync(snapshot);
             }
         }
 
         // Check if screen mode changed
-        if let Some(runner) = &self.runner {
+        if let Some(runner) = &self.driver.runner {
             let (_, _, sw, sh, _) = runner.dispatcher().screen_mode;
             let sw = sw as u32;
             let sh = sh as u32;
@@ -3413,17 +3006,17 @@ impl ApplicationHandler for App {
                             window.request_inner_size(guest_scaled_physical_size(sw, sh, scale));
                     }
                 }
-                self.force_next_render = true;
+                self.driver.force_next_render = true;
             }
         }
 
-        if self.should_render_frame() {
+        if self.driver.should_render_frame(self.debug_overlay_visible) {
             self.render_frame();
         }
-        if let Some(runner) = self.runner.as_mut() {
+        if let Some(runner) = self.driver.runner.as_mut() {
             runner.finish_gui_frame();
         }
-        self.frame_count += 1;
+        self.driver.frame_count += 1;
         #[cfg(target_os = "windows")]
         if let Some(at) = self.gpu.as_ref().and_then(|gpu| gpu.retry_at()) {
             event_loop.set_control_flow(ControlFlow::WaitUntil(next_target.min(at)));
@@ -3468,7 +3061,7 @@ fn run_gui(
     }
     if let Some(path) = debug_socket {
         match debug_server::DebugServer::bind(&path) {
-            Ok(server) => app.debug_server = Some(server),
+            Ok(server) => app.driver.debug_server = Some(server),
             Err(error) => {
                 eprintln!(
                     "Error: cannot bind debug socket {}: {error}",
@@ -3589,7 +3182,10 @@ fn bind_headless_debug_server(
 ) -> Option<debug_server::DebugServer> {
     let path = path?;
     let server = debug_server::DebugServer::bind(&path).unwrap_or_else(|error| {
-        eprintln!("Error: cannot bind debug socket {}: {error}", path.display());
+        eprintln!(
+            "Error: cannot bind debug socket {}: {error}",
+            path.display()
+        );
         std::process::exit(1);
     });
     #[cfg(all(feature = "debug-server", unix))]
@@ -4497,13 +4093,13 @@ mod tests {
         runner.bus_mut().write_word(base, 0xA9F4); // _ExitToShell
         runner.cpu_mut().write_reg(Register::PC, base);
         runner.cpu_mut().write_reg(Register::A7, 0x0010_0000);
-        app.runner = Some(runner);
+        app.driver.runner = Some(runner);
 
-        assert!(!app.guest_requested_exit());
-        let (_steps, running) = app.runner.as_mut().unwrap().run_steps(1, None);
+        assert!(!app.driver.guest_requested_exit());
+        let (_steps, running) = app.driver.runner.as_mut().unwrap().run_steps(1, None);
 
         assert!(!running);
-        assert!(app.guest_requested_exit());
+        assert!(app.driver.guest_requested_exit());
     }
 
     #[test]
@@ -4514,10 +4110,10 @@ mod tests {
         // wall clock to reach tick 600 before running any CPU.
         let now = std::time::Instant::now();
         let seeded_tick = 600;
-        let origin = App::wall_clock_origin_for_guest_tick(now, seeded_tick);
+        let origin = GuiDriver::wall_clock_origin_for_guest_tick(now, seeded_tick);
 
         assert_eq!(
-            App::tick_due_at(origin, now),
+            GuiDriver::tick_due_at(origin, now),
             seeded_tick,
             "a non-zero launch TickCount must not make the pacer wait real time before running CPU"
         );
@@ -4529,11 +4125,11 @@ mod tests {
         // tick ahead of the seeded guest tick so the CPU loop has runnable work.
         let start = std::time::Instant::now();
         let seeded_tick = 600;
-        let origin = App::wall_clock_origin_for_guest_tick(start, seeded_tick);
+        let origin = GuiDriver::wall_clock_origin_for_guest_tick(start, seeded_tick);
         let one_frame_later = start + FRAME_DURATION;
 
         assert!(
-            App::tick_due_at(origin, one_frame_later) > seeded_tick,
+            GuiDriver::tick_due_at(origin, one_frame_later) > seeded_tick,
             "the first post-boot frame should have runnable guest work"
         );
     }
@@ -4859,7 +4455,7 @@ mod tests {
         let mut total = 0usize;
 
         for _ in 0..120 {
-            let samples = App::audio_samples_for_duration(FRAME_DURATION, &mut remainder);
+            let samples = GuiDriver::audio_samples_for_duration(FRAME_DURATION, &mut remainder);
             assert!(samples > 0);
             total += samples;
         }
@@ -4877,11 +4473,11 @@ mod tests {
         let now = std::time::Instant::now();
         let (runner, queued) = gui_runner_with_counting_audio();
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
-        app.runner = Some(runner);
-        app.start_time = Some(now);
-        app.next_frame_time = Some(now);
+        app.driver.runner = Some(runner);
+        app.driver.start_time = Some(now);
+        app.driver.next_frame_time = Some(now);
 
-        app.step_frame();
+        app.driver.step_frame();
 
         assert!(
             (732..=734).contains(&*queued.borrow()),
@@ -4931,19 +4527,19 @@ mod tests {
         runner.bus_mut().fill_bytes(screen, 800 * 20, 0xAA);
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
-        app.runner = Some(runner);
-        app.start_time = Some(now - FRAME_DURATION);
-        app.next_frame_time = Some(now + FRAME_DURATION * 4);
-        app.last_presented_guest_tick = Some(0);
-        app.force_next_render = false;
+        app.driver.runner = Some(runner);
+        app.driver.start_time = Some(now - FRAME_DURATION);
+        app.driver.next_frame_time = Some(now + FRAME_DURATION * 4);
+        app.driver.last_presented_guest_tick = Some(0);
+        app.driver.force_next_render = false;
 
         // Keep the frame budget independent of emulator setup time and host
         // scheduling. The instruction cap still bounds foreground execution.
-        app.step_frame_with_clock(|| now);
+        app.driver.step_frame_with_clock(|| now);
 
-        let runner = app.runner.as_ref().unwrap();
+        let runner = app.driver.runner.as_ref().unwrap();
         assert!(
-            app.total_instructions > 0,
+            app.driver.total_instructions > 0,
             "test setup should execute foreground startup work"
         );
         assert_eq!(
@@ -4958,12 +4554,17 @@ mod tests {
             "test setup should stay within the same VBL tick"
         );
         assert!(
-            app.should_render_frame(),
+            app.driver.should_render_frame(app.debug_overlay_visible),
             "same-tick foreground drawing progress should force a present"
         );
-        app.runner.as_mut().unwrap().composite_frame();
+        app.driver.runner.as_mut().unwrap().composite_frame();
         assert_ne!(
-            app.runner.as_ref().unwrap().bus().read_byte(screen + 400),
+            app.driver
+                .runner
+                .as_ref()
+                .unwrap()
+                .bus()
+                .read_byte(screen + 400),
             0xAA,
             "the presentation pass must still paint the menu"
         );
@@ -4994,31 +4595,31 @@ mod tests {
         runner.push_mouse_down(350, 580);
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
-        app.runner = Some(runner);
-        app.start_time = Some(now + FRAME_DURATION * 240);
-        app.next_frame_time = Some(now + FRAME_DURATION * 120);
-        app.mouse_release_latch.press();
-        assert_eq!(app.mouse_release_latch.release((350, 580)), None);
-        assert!(app.mouse_release_latch.requires_guest_progress());
+        app.driver.runner = Some(runner);
+        app.driver.start_time = Some(now + FRAME_DURATION * 240);
+        app.driver.next_frame_time = Some(now + FRAME_DURATION * 120);
+        app.driver.mouse_release_latch.press();
+        assert_eq!(app.driver.mouse_release_latch.release((350, 580)), None);
+        assert!(app.driver.mouse_release_latch.requires_guest_progress());
 
-        app.step_frame();
+        app.driver.step_frame();
 
-        let runner = app.runner.as_ref().unwrap();
-        assert!(app.total_instructions > 0);
+        let runner = app.driver.runner.as_ref().unwrap();
+        assert!(app.driver.total_instructions > 0);
         assert_eq!(runner.guest_tick(), input_tick);
         assert_eq!(runner.bus().read_byte(0x0172), 0x00);
 
-        app.flush_ready_mouse_release();
+        app.driver.flush_ready_mouse_release();
 
-        let runner = app.runner.as_ref().unwrap();
+        let runner = app.driver.runner.as_ref().unwrap();
         assert_eq!(runner.bus().read_byte(0x0172), 0x80);
-        assert!(app.mouse_release_latch.requires_guest_progress());
+        assert!(app.driver.mouse_release_latch.requires_guest_progress());
 
-        let instructions_after_press = app.total_instructions;
-        app.step_frame();
+        let instructions_after_press = app.driver.total_instructions;
+        app.driver.step_frame();
 
-        assert!(app.total_instructions > instructions_after_press);
-        assert!(!app.mouse_release_latch.requires_guest_progress());
+        assert!(app.driver.total_instructions > instructions_after_press);
+        assert!(!app.driver.mouse_release_latch.requires_guest_progress());
     }
 
     #[test]
@@ -5091,9 +4692,7 @@ mod tests {
             waiting_for_callback: true,
             pending_callback_buffers: [true, false],
         });
-        runner
-            .dispatcher_mut()
-            .add_sound_channel(chan);
+        runner.dispatcher_mut().add_sound_channel(chan);
         runner
             .dispatcher_mut()
             .queue_sound_doubleback_callback(PendingDoubleBackCallback {
@@ -5104,14 +4703,14 @@ mod tests {
             });
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
-        app.runner = Some(runner);
-        app.start_time = Some(scheduled_frame_end);
-        app.next_frame_time = Some(scheduled_frame_end);
+        app.driver.runner = Some(runner);
+        app.driver.start_time = Some(scheduled_frame_end);
+        app.driver.next_frame_time = Some(scheduled_frame_end);
 
         if headless {
-            headless_time::frame(app.runner.as_mut().unwrap(), 366);
+            headless_time::frame(app.driver.runner.as_mut().unwrap(), 366);
         } else {
-            app.step_frame();
+            app.driver.step_frame();
         }
 
         let queued = queued.borrow();
@@ -5125,7 +4724,7 @@ mod tests {
             "pending doubleback must refill before same-tick audio is mixed"
         );
         assert!(
-            !app.runner.as_ref().unwrap().has_pending_sound_work(),
+            !app.driver.runner.as_ref().unwrap().has_pending_sound_work(),
             "sound callback should complete during the GUI sound-work slice"
         );
     }
@@ -5218,19 +4817,17 @@ mod tests {
             1,
             8,
         );
-        runner
-            .dispatcher_mut()
-            .add_sound_channel(chan);
+        runner.dispatcher_mut().add_sound_channel(chan);
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
-        app.runner = Some(runner);
-        app.start_time = Some(now);
-        app.next_frame_time = Some(now);
+        app.driver.runner = Some(runner);
+        app.driver.start_time = Some(now);
+        app.driver.next_frame_time = Some(now);
 
         if headless {
-            headless_time::frame(app.runner.as_mut().unwrap(), 366);
+            headless_time::frame(app.driver.runner.as_mut().unwrap(), 366);
         } else {
-            app.step_frame();
+            app.driver.step_frame();
         }
 
         let queued = queued.borrow();
@@ -5255,13 +4852,13 @@ mod tests {
         let now = std::time::Instant::now();
         let (runner, queued) = gui_runner_with_counting_audio();
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
-        app.runner = Some(runner);
-        app.start_time = Some(now);
-        app.next_frame_time = Some(now);
-        app.last_audio_mix_time =
+        app.driver.runner = Some(runner);
+        app.driver.start_time = Some(now);
+        app.driver.next_frame_time = Some(now);
+        app.driver.last_audio_mix_time =
             Some(std::time::Instant::now() - std::time::Duration::from_millis(100));
 
-        app.step_frame();
+        app.driver.step_frame();
 
         assert!(
             (4_400..=4_600).contains(&*queued.borrow()),
@@ -5285,11 +4882,11 @@ mod tests {
         runner.set_instructions_per_tick(1);
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
-        app.runner = Some(runner);
-        app.start_time = Some(now - FRAME_DURATION * 2);
-        app.next_frame_time = Some(now + FRAME_DURATION);
+        app.driver.runner = Some(runner);
+        app.driver.start_time = Some(now - FRAME_DURATION * 2);
+        app.driver.next_frame_time = Some(now + FRAME_DURATION);
 
-        app.step_frame();
+        app.driver.step_frame();
 
         assert!(
             (732..=734).contains(&*queued.borrow()),
@@ -5301,15 +4898,15 @@ mod tests {
     #[test]
     fn render_headroom_tracks_render_cost_with_bounds() {
         assert_eq!(
-            App::next_render_headroom(std::time::Duration::from_micros(200)),
+            GuiDriver::next_render_headroom(std::time::Duration::from_micros(200)),
             MIN_RENDER_HEADROOM
         );
         assert_eq!(
-            App::next_render_headroom(std::time::Duration::from_micros(3_000)),
+            GuiDriver::next_render_headroom(std::time::Duration::from_micros(3_000)),
             std::time::Duration::from_micros(3_500)
         );
         assert_eq!(
-            App::next_render_headroom(std::time::Duration::from_micros(20_000)),
+            GuiDriver::next_render_headroom(std::time::Duration::from_micros(20_000)),
             MAX_RENDER_HEADROOM
         );
     }
@@ -5319,11 +4916,12 @@ mod tests {
         let scheduled = std::time::Instant::now();
         let half_frame = std::time::Duration::from_secs_f64(FRAME_DURATION.as_secs_f64() / 2.0);
 
-        let (on_time_target, on_time_dropped) = App::next_frame_target(scheduled, scheduled);
+        let (on_time_target, on_time_dropped) = GuiDriver::next_frame_target(scheduled, scheduled);
         assert_eq!(on_time_target, scheduled + FRAME_DURATION);
         assert!(!on_time_dropped);
 
-        let (late_target, late_dropped) = App::next_frame_target(scheduled + half_frame, scheduled);
+        let (late_target, late_dropped) =
+            GuiDriver::next_frame_target(scheduled + half_frame, scheduled);
         assert_eq!(late_target, scheduled + FRAME_DURATION);
         assert!(!late_dropped);
     }
@@ -5334,12 +4932,13 @@ mod tests {
 
         let full_frame_late = scheduled + FRAME_DURATION;
         let (full_frame_target, full_frame_dropped) =
-            App::next_frame_target(full_frame_late, scheduled);
+            GuiDriver::next_frame_target(full_frame_late, scheduled);
         assert_eq!(full_frame_target, full_frame_late + FRAME_DURATION);
         assert!(full_frame_dropped);
 
         let several_frames_late = scheduled + FRAME_DURATION * 4;
-        let (late_target, late_dropped) = App::next_frame_target(several_frames_late, scheduled);
+        let (late_target, late_dropped) =
+            GuiDriver::next_frame_target(several_frames_late, scheduled);
         assert_eq!(late_target, several_frames_late + FRAME_DURATION);
         assert!(late_dropped);
     }
@@ -5376,31 +4975,38 @@ mod tests {
     #[test]
     fn render_gate_waits_for_guest_tick_unless_forced() {
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
-        app.runner = Some(FixtureRunner::new(
+        app.driver.runner = Some(FixtureRunner::new(
             8 * 1024 * 1024,
             systemless::runner::FixtureRunnerConfig::default(),
         ));
 
         assert!(
-            app.should_render_frame(),
+            app.driver.should_render_frame(app.debug_overlay_visible),
             "initial forced render should present the first frame"
         );
 
-        let tick = app.runner.as_ref().unwrap().guest_tick();
-        app.last_presented_guest_tick = Some(tick);
-        app.force_next_render = false;
+        let tick = app.driver.runner.as_ref().unwrap().guest_tick();
+        app.driver.last_presented_guest_tick = Some(tick);
+        app.driver.force_next_render = false;
         assert!(
-            !app.should_render_frame(),
+            !app.driver.should_render_frame(app.debug_overlay_visible),
             "same guest tick should not present another partial frame"
         );
 
-        app.force_next_render = true;
-        assert!(app.should_render_frame(), "host input can force a present");
-        app.force_next_render = false;
-
-        app.runner.as_mut().unwrap().force_advance_guest_tick();
+        app.driver.force_next_render = true;
         assert!(
-            app.should_render_frame(),
+            app.driver.should_render_frame(app.debug_overlay_visible),
+            "host input can force a present"
+        );
+        app.driver.force_next_render = false;
+
+        app.driver
+            .runner
+            .as_mut()
+            .unwrap()
+            .force_advance_guest_tick();
+        assert!(
+            app.driver.should_render_frame(app.debug_overlay_visible),
             "a new guest tick is a fresh VBL presentation point"
         );
     }
