@@ -1,9 +1,8 @@
 # Host responsiveness review handoff
 
 This change is delivered as a draft for review. It is not approved for merging,
-release or a broader default rollout. Remaining interactive native qualification
-is explicitly deferred; no additional unlocked desktop session is required for
-this handoff.
+release or a broader default rollout. Additional native qualification is recorded below; coverage limits remain
+explicit and the desktop backend stays opt-in.
 
 ## Delivery status
 
@@ -28,11 +27,29 @@ dismissed the native application menu, zoomed/resized with coherent rendering,
 and exited with status 0 through the actual AppKit Quit command. These are
 functional observations, not matched timing measurements.
 
+A subsequent diagnostic run blocked only the owner for 38.946 seconds. During
+that interval the native window zoomed/resized with a coherent retained image,
+and its application menu remained usable. Selecting AppKit Quit returned while
+the process remained alive; releasing the owner then produced a clean exit with
+status 0. This verifies the deferred termination path under a real owner stall;
+it is not a latency-percentile measurement.
+
+A PowerPC Nova pilot was created through the native UI in isolated storage.
+Closing the window exited with status 0 and persisted both pilot files, including
+forks and metadata. A fresh owner-thread launch restored both files; manually
+opening the pilot reproduced its name and ship. Automatic last-pilot selection
+was not observed. Fullscreen entry rendered correctly.
+
+Nova's guest File → Quit command did not exit in this check. The same command
+also failed to exit on the unchanged inline compatibility backend before entering
+fullscreen, so this is not demonstrated to be an owner-thread regression. Both
+backends exited with status 0 through the window close control. The fullscreen
+exit shortcut attempt was inconclusive and is not counted as a pass.
+
 The following remain **unverified**, rather than silently counted as passes:
 
-- Native host responsiveness and deferred Quit during a controlled owner stall.
-- Interactive save/restart parity, live-resize behavior during a stall, and
-  complete focus, cursor-warp, fullscreen and DPI transition coverage.
+- Complete focus, cursor-warp, continuous drag-resize, fullscreen-exit and
+  cross-display DPI transition coverage.
 - Windows/Linux interactive native behavior and broader macOS workload coverage.
 
 A local diagnostic stall hook is excluded from the public implementation. The

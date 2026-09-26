@@ -114,9 +114,11 @@ The desktop suite passes 128 tests, including owner-thread lifetime, stalled
 initialization, ordered input, shutdown and save persistence, with debugger
 support enabled. An offscreen Metal text/dialog capture also passes. Available
 macOS interactive checks cover launch, gameplay, application-menu tracking,
-window zoom/resizing and a successful AppKit Quit. Native host responsiveness
-under an owner stall, interactive save/restart parity and broader platform
-coverage remain unverified and are deferred. The default remains the same-thread
+window zoom/resizing and a successful AppKit Quit. A controlled owner stall also
+preserved native menu and resize response, with
+AppKit Quit completing after owner release. Native pilot save/restart checks
+passed; broader input, fullscreen-exit and cross-display/platform coverage
+remain limited. The default remains the same-thread
 compatibility path; leave the variable unset to use it. See
 [review qualification](HOST_RESPONSIVENESS_REVIEW.md) for the scope and limits.
 
