@@ -195,3 +195,19 @@ JavaScript heap samples ranged from 7.52 to 9.51 MB and ended at 7.67 MB. This
 short lifecycle check does not measure total process, Wasm or GPU memory. A
 separate injected renderer crash during compact presentation preserved the same
 guest and input canvas and recovered to a nonblank Canvas2D image.
+
+
+An extended direct-route check completed 50 navigation/restart cycles in about
+400 seconds, plus cancelled startup and a controlled runtime crash. All 52
+runtime workers, 51 renderer workers and 52 audio contexts closed, with no
+browser errors. Median main JavaScript heap in the first and last ten teardown
+samples was 7.669 and 7.735 MB. Summed Chrome process-tree RSS ranged from 471 to
+1,848 MiB and ended at 714 MiB. RSS can count shared pages more than once and
+varies with resident-page pressure; compilation was active during part of this
+run. These measurements do not isolate GPU allocations or prove leak absence.
+
+A separate controlled check stalled the owner for 500 ms immediately after
+sending a direct image, before its host metadata reply. The renderer acknowledged
+that exact packet and a host control painted while the owner was still busy.
+The guest resumed without restarting, and worker/audio teardown completed.
+This tests independent delivery during a stall, not normal frame-time performance.
