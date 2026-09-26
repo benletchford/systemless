@@ -47,8 +47,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format website and catalogue tools
         run: cargo fmt -p systemless-org -p systemless-catalogue-tools -- --check
-      - name: Test promotion authorization and browser worker
-        run: node --test .github/scripts/promote-review.test.cjs www/tests/emulator-worker.test.cjs
+      - name: Test promotion authorization and browser runtimes
+        run: node --test .github/scripts/promote-review.test.cjs www/tests/*.test.cjs
       - name: Test and lint catalogue tools
         run: |
           cargo test --locked -p systemless-catalogue-tools

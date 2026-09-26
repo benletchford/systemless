@@ -77,10 +77,7 @@ pub(super) fn frame(runner: &mut FixtureRunner, audio_samples: usize) -> FrameWo
             runner.mix_gui_audio_slice(batch_audio);
             service_sound(runner, &mut work.instructions, &mut reserve_used);
         }
-        if !running
-            || runner.guest_tick() >= target
-            || steps == 0
-            || runner.is_ui_tracking_active()
+        if !running || runner.guest_tick() >= target || steps == 0 || runner.is_ui_tracking_active()
         {
             break;
         }
@@ -447,28 +444,35 @@ mod tests {
 
     #[test]
     fn retained_modal_wait_matches_desktop_tick_scheduling_without_a_window() {
-        use super::super::{App, FRAME_DURATION};
+        use super::super::{runtime_driver::GuiDriver, FRAME_DURATION};
         let mut timed = modal_runner();
         let start = timed.guest_tick();
-        let mut app = App::new("dummy".into(), false, true, false, 8);
-        app.runner = Some(modal_runner());
+        let mut driver = GuiDriver::new(
+            "dummy".into(),
+            false,
+            true,
+            false,
+            Some(8),
+            systemless::ui_theme::UiThemeId::ClassicSystem7,
+        );
+        driver.runner = Some(modal_runner());
         let origin = std::time::Instant::now();
-        app.start_time = Some(App::wall_clock_origin_for_guest_tick(origin, start));
+        driver.start_time = Some(GuiDriver::wall_clock_origin_for_guest_tick(origin, start));
         for elapsed in 0..10 {
             let now = origin + FRAME_DURATION * elapsed;
-            app.next_frame_time = Some(now + FRAME_DURATION);
-            app.step_frame_with_clock(|| now);
+            driver.next_frame_time = Some(now + FRAME_DURATION);
+            driver.step_frame_with_clock(|| now);
             let work = frame(&mut timed, 366);
             assert_eq!(work.foreground, 1, "one modal refire per frontend tick");
             assert!(!work.budget_exhausted);
-            let gui = app.runner.as_ref().unwrap();
+            let gui = driver.runner.as_ref().unwrap();
             assert_eq!(timed.guest_tick(), start + elapsed + 1);
             assert_eq!(timed.guest_tick(), gui.guest_tick());
             for register in [Register::PC, Register::A7] {
                 assert_eq!(timed.cpu().read_reg(register), gui.cpu().read_reg(register));
             }
         }
-        assert_eq!(app.total_instructions, 10);
+        assert_eq!(driver.total_instructions, 10);
     }
 
     #[test]

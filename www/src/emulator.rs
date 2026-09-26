@@ -191,8 +191,12 @@ pub fn begin_audio_from_user_gesture() {
     begin_audio_bootstrap(true);
 }
 
-pub fn prepare_audio_for_boot() {
-    begin_audio_bootstrap(false);
+pub(crate) fn prepare_audio_for_boot() -> Rc<RefCell<Option<AudioBootstrap>>> {
+    // A runtime owns its bootstrap from creation, so cancellation cannot leave
+    // an unlocked context in the global handoff slot or steal the next launch's.
+    Rc::new(RefCell::new(
+        take_pending_audio_bootstrap().or_else(|| AudioBootstrap::new(false)),
+    ))
 }
 
 fn begin_audio_bootstrap(resume_from_gesture: bool) {
@@ -228,6 +232,11 @@ pub struct Machine {
     /// epoch avoids decoding an unchanged guest screen before drawing host
     /// overlays.
     frame_rgba: Vec<u8>,
+    indexed_frame: crate::indexed_frame::IndexedFrame,
+    compact_frame: systemless::memory::CompactPresentation,
+    compact_guest: Vec<u32>,
+    compact_overlay: Vec<u32>,
+    rendered_packet: bool,
     overlay_rgba: Vec<u8>,
     cursor_backup: CursorBackup,
     presented_rgba: Vec<u8>,
@@ -302,7 +311,7 @@ impl From<&VfsFileSnapshot> for SaveFingerprint {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum BootProgress {
     MountingArchive {
         loaded_bytes: usize,
@@ -332,6 +341,7 @@ impl Machine {
         remove_paths: &[&str],
         file_mappings: &[(&str, &str)],
         runtime_pacing: RuntimePacing,
+        audio_bootstrap: &RefCell<Option<AudioBootstrap>>,
         mut on_progress: F,
     ) -> Result<Self, String>
     where
@@ -399,7 +409,13 @@ impl Machine {
         let archive_vfs_stats = vfs_stats(&mut runner);
         let restored_saves = save_store::load_saved_files(game_id)
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|error| {
+                save_store::report_save_error(
+                    game_id,
+                    format!("Could not load saved files: {error}"),
+                );
+                Vec::new()
+            });
         let persisted_save_paths = restored_saves
             .iter()
             .map(|file| file.path.clone())
@@ -420,14 +436,7 @@ impl Machine {
                 .saturating_add(LAUNCH_MODIFIER_HOLD_TICKS)
         });
         on_progress(BootProgress::PreparingAudio);
-        let audio = if let Some(bootstrap) = take_pending_audio_bootstrap() {
-            match bootstrap.finish().await {
-                Some(audio) => Some(audio),
-                None => WebAudioBackend::new().await,
-            }
-        } else {
-            WebAudioBackend::new().await
-        };
+        let audio = WebAudioBackend::from_bootstrap(audio_bootstrap).await;
         let audio_started_at_ms = performance_now();
         let started_at_ms =
             wall_clock_origin_for_guest_tick(audio_started_at_ms, runner.guest_tick());
@@ -445,6 +454,11 @@ impl Machine {
             last_cpu_budget_ms: 0.0,
             last_audio_queue_ms: None,
             frame_rgba: Vec::new(),
+            indexed_frame: crate::indexed_frame::IndexedFrame::default(),
+            compact_frame: systemless::memory::CompactPresentation::default(),
+            compact_guest: Vec::new(),
+            compact_overlay: Vec::new(),
+            rendered_packet: false,
             overlay_rgba: Vec::new(),
             cursor_backup: CursorBackup::default(),
             presented_rgba: Vec::new(),
@@ -486,10 +500,6 @@ impl Machine {
 
     pub fn set_arrows_as_numpad(&mut self, enabled: bool) {
         self.runner.set_arrows_as_numpad(enabled);
-    }
-
-    pub fn arrows_as_numpad(&self) -> bool {
-        self.runner.arrows_as_numpad()
     }
 
     pub fn screen_size(&self) -> (u32, u32) {
@@ -784,6 +794,15 @@ impl Machine {
         &self.save_files
     }
 
+    pub fn flush_save_files(&mut self) -> String {
+        self.sync_save_files_now();
+        self.game_id.clone()
+    }
+
+    pub fn take_save_error(&self) -> Option<String> {
+        save_store::take_save_error(&self.game_id)
+    }
+
     pub fn save_files_version(&self) -> u64 {
         self.save_files_version
     }
@@ -827,10 +846,123 @@ impl Machine {
         Ok(())
     }
 
+    pub fn render_indexed(&mut self) -> Option<&crate::indexed_frame::IndexedFrame> {
+        if self.runner.bus().has_visible_outline_detail() {
+            return None;
+        }
+        let (mode, clut, mouse, cursor) = {
+            let dispatcher = self.runner.dispatcher();
+            (
+                dispatcher.screen_mode,
+                *dispatcher.device_clut,
+                dispatcher.mouse_position(),
+                dispatcher.cursor().cloned(),
+            )
+        };
+        if !self
+            .indexed_frame
+            .capture(self.runner.bus(), mode, &clut, cursor.as_ref(), mouse)
+        {
+            return None;
+        }
+        self.record_owned_presentation(
+            mode,
+            clut,
+            mouse,
+            cursor,
+            false,
+            (u32::from(mode.2), u32::from(mode.3)),
+        );
+        Some(&self.indexed_frame)
+    }
+
+    pub fn render_compact(&mut self) -> Option<&systemless::memory::CompactPresentation> {
+        if !self.runner.bus().has_visible_outline_detail() {
+            return None;
+        }
+        let (mode, clut, mouse, cursor) = {
+            let dispatcher = self.runner.dispatcher();
+            (
+                dispatcher.screen_mode,
+                *dispatcher.device_clut,
+                dispatcher.mouse_position(),
+                dispatcher.cursor().cloned(),
+            )
+        };
+        let logical = (u32::from(mode.2), u32::from(mode.3));
+        let size = (logical.0 * self.output_scale, logical.1 * self.output_scale);
+        // Bound even a worst-case 4x detail tile in every logical cell before
+        // export allocates it. Larger capability classes retain scalar RGBA.
+        if logical.0 * logical.1 > 1024 * 1024
+            || !(1..=4).contains(&self.output_scale)
+            || size.0 == 0
+            || size.1 == 0
+            || size.0 > 8192
+            || size.1 > 8192
+            || size.0 * size.1 > 16 * 1024 * 1024
+        {
+            return None;
+        }
+        let exported = if let Some(cursor) = cursor.as_ref() {
+            display::render_screen_argb(self.runner.bus(), mode, &clut, &mut self.compact_guest);
+            self.compact_overlay.clone_from(&self.compact_guest);
+            display::render_cursor_argb(
+                &mut self.compact_overlay,
+                logical.0,
+                logical.1,
+                cursor,
+                mouse,
+            );
+            self.runner.bus().compact_presentation(
+                &self.compact_guest,
+                &self.compact_overlay,
+                &mut self.compact_frame,
+            )
+        } else {
+            self.runner
+                .bus()
+                .compact_presentation_without_overlays(logical, &mut self.compact_frame)
+        };
+        if !exported {
+            return None;
+        }
+        self.record_owned_presentation(mode, clut, mouse, cursor, true, size);
+        Some(&self.compact_frame)
+    }
+
+    fn record_owned_presentation(
+        &mut self,
+        mode: (u32, u32, u16, u16, u16),
+        clut: [[u16; 3]; 256],
+        mouse: (i16, i16),
+        cursor: Option<display::CursorImage>,
+        outline: bool,
+        size: (u32, u32),
+    ) {
+        self.rendered_epoch = self.runner.bus().presentation_visible_epoch();
+        self.rendered_screen_mode = Some(mode);
+        self.rendered_scale = self.output_scale;
+        self.rendered_outline = outline;
+        self.rendered_mouse_pos = mouse;
+        self.rendered_cursor = cursor;
+        self.frame_palette_clut = clut;
+        self.frame_palette = display::rgba_palette_from_clut(&clut);
+        self.frame_palette_valid = true;
+        self.rendered_packet = true;
+        self.presented_size = size;
+    }
+
     pub fn render_rgba(
         &mut self,
         debug_stats: Option<DebugOverlayFrameStats>,
     ) -> ((u32, u32), &[u8]) {
+        if self.rendered_packet {
+            // Owned presentation packets update metadata without updating the
+            // retained RGBA bytes. A backend switch must decode a fresh base.
+            self.rendered_epoch = None;
+            self.frame_epoch = None;
+            self.rendered_packet = false;
+        }
         let (screen_mode, clut, mouse_pos, cursor) = {
             let dispatcher = self.runner.dispatcher();
             (
@@ -1316,7 +1448,7 @@ fn current_mac_epoch_seconds() -> u32 {
         .min(u32::MAX as u64) as u32
 }
 
-fn performance_now() -> f64 {
+pub(crate) fn performance_now() -> f64 {
     js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("performance"))
         .ok()
         .and_then(|value| value.dyn_into::<web_sys::Performance>().ok())
@@ -1352,31 +1484,16 @@ fn wall_clock_origin_for_guest_tick(now_ms: f64, guest_tick: u32) -> f64 {
 }
 
 async fn yield_to_browser_task() {
-    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        let Some(window) = web_sys::window() else {
-            let _ = resolve.call0(&JsValue::UNDEFINED);
-            return;
-        };
-        let resolve_for_timeout = resolve.clone();
-        let timeout_cb = Closure::once(move || {
-            let _ = resolve_for_timeout.call0(&JsValue::UNDEFINED);
-        });
-        if window
-            .set_timeout_with_callback_and_timeout_and_arguments_0(
-                timeout_cb.as_ref().unchecked_ref(),
-                0,
-            )
-            .is_ok()
-        {
-            timeout_cb.forget();
-        } else {
-            let _ = resolve.call0(&JsValue::UNDEFINED);
-        }
-    });
-    let _ = JsFuture::from(promise).await;
+    // WorkerGlobalScope has timers too. A resolved Promise only yields a
+    // microtask and can starve worker command/progress delivery during boot.
+    let _ = JsFuture::from(crate::browser_bridge::yield_systemless_task()).await;
 }
 
 async fn yield_to_browser_frame() {
+    if web_sys::window().is_none() {
+        yield_to_browser_task().await;
+        return;
+    }
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
         let Some(window) = web_sys::window() else {
             let _ = resolve.call0(&JsValue::UNDEFINED);
@@ -2317,7 +2434,7 @@ pub(crate) struct ScriptProcessorAudioBackend {
     dropped_while_suspended: bool,
 }
 
-struct AudioBootstrap {
+pub(crate) struct AudioBootstrap {
     ctx: Option<AudioContext>,
     resume: Option<js_sys::Promise>,
     worklet_module: Option<js_sys::Promise>,
@@ -2339,6 +2456,9 @@ impl AudioBootstrap {
                 .add_module(&asset_path("/assets/audio-worklet.js"))
                 .ok()
         });
+        for promise in [&resume, &worklet_module].into_iter().flatten() {
+            crate::browser_bridge::observe_systemless_promise(promise);
+        }
         Some(Self {
             ctx: Some(ctx),
             resume,
@@ -2349,6 +2469,9 @@ impl AudioBootstrap {
     fn resume_from_user_gesture(&mut self) {
         if self.resume.is_none() {
             self.resume = self.ctx.as_ref().and_then(|ctx| ctx.resume().ok());
+            if let Some(promise) = &self.resume {
+                crate::browser_bridge::observe_systemless_promise(promise);
+            }
         }
     }
 
@@ -2372,7 +2495,27 @@ impl Drop for AudioBootstrap {
     }
 }
 
+struct PendingAudioContext(Option<AudioContext>);
+
+impl Drop for PendingAudioContext {
+    fn drop(&mut self) {
+        if let Some(context) = self.0.take() {
+            let _ = context.close();
+        }
+    }
+}
+
 impl WebAudioBackend {
+    pub(crate) async fn from_bootstrap(slot: &RefCell<Option<AudioBootstrap>>) -> Option<Self> {
+        let bootstrap = slot.borrow_mut().take();
+        if let Some(bootstrap) = bootstrap {
+            if let Some(audio) = bootstrap.finish().await {
+                return Some(audio);
+            }
+        }
+        Self::new().await
+    }
+
     pub(crate) async fn new() -> Option<Self> {
         let ctx = create_audio_context()?;
         // Context starts suspended outside a user-gesture microtask; kick
@@ -2390,13 +2533,20 @@ impl WebAudioBackend {
         ctx: AudioContext,
         worklet_module: Option<js_sys::Promise>,
     ) -> Option<Self> {
-        if let Some(worklet) = WorkletAudioBackend::from_context(ctx.clone(), worklet_module).await
+        let mut pending = PendingAudioContext(Some(ctx.clone()));
+        let backend = if let Some(worklet) =
+            WorkletAudioBackend::from_context(ctx.clone(), worklet_module).await
         {
-            return Some(Self::Worklet(worklet));
+            Some(Self::Worklet(worklet))
+        } else {
+            ScriptProcessorAudioBackend::from_context(ctx)
+                .await
+                .map(Self::ScriptProcessor)
+        };
+        if backend.is_some() {
+            pending.0.take();
         }
-        ScriptProcessorAudioBackend::from_context(ctx)
-            .await
-            .map(Self::ScriptProcessor)
+        backend
     }
 
     pub(crate) fn queue_samples(&mut self, samples: &[u8]) {

@@ -102,10 +102,29 @@ Windows uses D3D11 presentation by default, with automatic software fallback if
 GPU initialization or presentation fails. Set `SYSTEMLESS_D3D11=0` before launching
 to force software presentation.
 
+The experimental desktop execution owner can be selected with
+`SYSTEMLESS_DESKTOP_RUNTIME=thread`. It constructs and runs the guest on a
+separate thread while the window consumes complete owned snapshots. Closing the
+window requests an asynchronous save flush and runtime shutdown. On macOS,
+native Quit also defers termination until that owner has flushed saves and
+destroyed the guest; its completion runs in AppKit’s termination modal loop.
+Native application identity inspection also runs on the owner while a loading
+window remains available; the host relaunches only after that owner finishes.
+These integrations still require interactive qualification. The default
+remains the same-thread compatibility path until windowed responsiveness and
+platform qualification are complete; leave the variable unset to use it.
+
 For intermittent desktop stalls, set `SYSTEMLESS_PROFILE_FRAMES=1` when launching.
 The terminal reports CPU, compositing, outline rendering and Metal drawable-wait
 phases that take at least 50 ms. During normal gameplay, drawable waits on the
 presentation worker do not block the guest CPU or input handling.
+
+For distributions below the stall threshold, set `SYSTEMLESS_MEASURE_FRAMES=1`.
+This opt-in measurement reports p50/p95/p99 and maximum milliseconds for each
+host phase in non-overlapping batches of 600 samples, with bounded storage.
+Short runs may not fill a batch. Measurement adds clock and reporting overhead;
+use the same setting for both sides of a comparison and record guest progress
+separately. These host phase timings do not measure visible input latency.
 
 ### Headless replays
 

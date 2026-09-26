@@ -4,9 +4,10 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 
-function worker(steps = () => 1, frameTicks = 6) {
+function worker(steps = () => 1, frameTicks = 6, cloneTransfers = false, options = {}) {
   const keys = new Set();
   const frames = [];
+  const messages = [];
   let mouse = false;
   let releasedAt;
   let now = 0;
@@ -14,6 +15,8 @@ function worker(steps = () => 1, frameTicks = 6) {
   let running = true;
   let uiTracking = false;
   const stub = {
+    saveFilesVersion: () => "0",
+    saveFiles: () => [],
     keyDown: key => keys.add(key),
     keyUp: key => keys.delete(key),
     mouseDown: () => { mouse = true; },
@@ -26,15 +29,18 @@ function worker(steps = () => 1, frameTicks = 6) {
     },
   };
   const context = vm.createContext({
-    self: { postMessage(message) { if (message.type === 'error') throw new Error(message.message); } },
+    URL, loadRenderer: options.loadRenderer,
+    self: { location: {href:"https://example.test/emulator-worker.js?runtime=test"}, postMessage(message, transfer = []) { messages.push(cloneTransfers ? structuredClone(message, { transfer }) : message); } },
     stub,
     performance: { now: () => now },
   });
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/emulator-worker.js'), 'utf8'), context);
-  vm.runInContext('machine = stub', context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/emulator-worker.js'), 'utf8').replace('await import(url.href)', 'await loadRenderer(url.href)'), context);
+  vm.runInContext('machine = stub; saveFilesVersion = stub.saveFilesVersion()', context);
   return {
-    send: (type, fields = {}) => context.self.onmessage({ data: { type, ...fields } }),
+    send: (type, fields = {}) => context.self.onmessage({ data: { type, generation: 0, ...fields } }),
     frames,
+    messages,
+    override: fields => Object.assign(stub, fields),
     advance: ms => { now += ms; },
     setTick: tick => { guestTick = tick; },
     halt: () => { running = false; },
@@ -183,4 +189,166 @@ test('tracking still gives new input a guest slice before releasing it', async (
   await w.send('frame');
   await w.send('frame');
   assert.deepEqual(w.frames.map(f => f.keys), [[], [53], [53], []]);
+});
+
+
+test('stale generation commands cannot affect the current runtime', async () => {
+  const w = worker();
+  await w.send('keyDown', { generation: 99, macKey: 37 });
+  await w.send('frame', { generation: 99 });
+  await w.send('frame');
+  assert.deepEqual(w.frames.map(f => f.keys), [[]]);
+  assert.equal(w.messages.length, 1);
+  assert.equal(w.messages[0].generation, 0);
+});
+
+test('completed frames have monotonic sequence IDs even with frozen guest ticks', async () => {
+  const w = worker(() => 1, 0);
+  await w.send('frame');
+  await w.send('frame');
+  assert.deepEqual(w.messages.map(m => m.sequence), [1, 2]);
+  assert.deepEqual(w.messages.map(m => m.guestTick), [0, 0]);
+});
+
+test('a failed runtime frame stops execution without retrying guest work', async () => {
+  const w = worker(() => { throw new Error('guest failure'); });
+  await w.send('frame');
+  await w.send('frame');
+  assert.equal(w.frames.length, 1);
+  assert.equal(w.messages[0].type, 'error');
+  assert.equal(w.messages[0].fatal, true);
+  assert.match(w.messages[0].message, /guest failure/);
+});
+
+test('a save command failure remains visible without stopping gameplay', async () => {
+  const w = worker();
+  w.override({ importSave() { throw new Error('invalid save'); } });
+  await w.send('importSave', { bytes: new Uint8Array() });
+  await w.send('frame');
+  assert.equal(w.messages[0].fatal, false);
+  assert.equal(w.messages[0].operation, 'importSave');
+  assert.equal(w.messages[1].type, 'frame');
+});
+
+test('normal gameplay publishes saves only when the version changes', async () => {
+  const w = worker();
+  let version = "0";
+  let exports = 0;
+  w.override({ saveFilesVersion: () => version, saveFiles: () => { exports++; return []; } });
+  await w.send('frame');
+  version = "1";
+  await w.send('frame');
+  await w.send('frame');
+  version = "2";
+  await w.send('frame');
+  assert.equal(exports, 2);
+  assert.deepEqual(w.messages.filter(m => m.type === 'saveFiles').map(m => m.saveFilesVersion), ['1', '2']);
+});
+
+test('save commands acknowledge even an unchanged list and recover after errors', async () => {
+  const w = worker();
+  w.override({ deleteSave() {}, importSave() { throw new Error('invalid import'); } });
+  await w.send('deleteSave', { path: 'Pilots/Test', requestId: 1 });
+  await w.send('importSave', { bytes: new Uint8Array(), requestId: 2 });
+  await w.send('deleteSave', { path: 'Pilots/Test', requestId: 3 });
+  assert.deepEqual(w.messages.map(m => [m.type, m.requestId]), [['saveFiles', 1], ['error', 2], ['saveFiles', 3]]);
+  assert.equal(w.messages[1].fatal, false);
+});
+
+test('commands acknowledge after application, including recoverable save errors', async () => {
+  const w = worker();
+  await w.send('keyDown', { macKey: 37, commandSequence: 1 });
+  await w.send('frame', { commandSequence: 2 });
+  await w.send('importSave', { bytes: new Uint8Array(), requestId: 1, commandSequence: 3 });
+  assert.deepEqual(w.messages.map(m => [m.type, m.commandSequence]), [
+    ['commandAck', 1], ['frame', undefined], ['commandAck', 2],
+    ['error', undefined], ['commandAck', 3],
+  ]);
+  assert.deepEqual(w.frames[0].keys, [37]);
+});
+
+test('shutdown finishes saves before releasing the owning machine', async () => {
+  const w = worker();
+  let commit;
+  let freed = false;
+  w.override({ flushSaves: () => new Promise(resolve => { commit = resolve; }), free: () => { freed = true; } });
+  const shutdown = w.send('shutdown', { commandSequence: 1 });
+  await w.send('frame');
+  assert.equal(w.frames.length, 0);
+  assert.equal(freed, false);
+  assert.equal(w.messages.length, 0);
+  commit();
+  await shutdown;
+  assert.equal(freed, true);
+  assert.deepEqual(w.messages.map(m => m.type), ['stopped', 'commandAck']);
+});
+
+test('shutdown reports a save failure without claiming a completed flush', async () => {
+  const w = worker();
+  w.override({ flushSaves: async () => { throw new Error('write aborted'); } });
+  await w.send('shutdown');
+  assert.equal(w.messages[0].type, 'error');
+  assert.match(w.messages[0].message, /write aborted/);
+  assert.equal(w.messages.some(m => m.type === 'stopped'), false);
+});
+
+
+test('presenter recovery requests a fresh image without recreating the guest', async () => {
+  const w = worker();
+  const calls = [];
+  w.override({ runFrame: (...args) => { calls.push(args); return { running: false, guestTick: 100, lastSteps: 0 }; } });
+  await w.send('frame', { forceRender: true, outputScale: 2 });
+  assert.deepEqual(calls, [[-1, false, 2, true, false, false, false]]);
+  assert.equal(w.messages.filter(message => message.type === 'frame').length, 1);
+});
+
+
+test('indexed owner packets transfer indices, palette and cursor together', async () => {
+  const w = worker(() => 1, 6, true);
+  const packet = { pixels: new Uint8Array(6), palette: new Uint8Array(1024), cursor: { pixels: new Uint8Array(4) } };
+  const calls = [];
+  w.override({ runFrame: (...args) => { calls.push(args); return { running: true, guestTick: 100, lastSteps: 0, indexedFrame: packet }; } });
+  await w.send('frame', { indexedRender: true });
+  assert.deepEqual(calls, [[-1, false, 1, false, true, false, false]]);
+  assert.equal(w.messages.find(message => message.type === 'frame').indexedFrame.palette.byteLength, 1024);
+  assert.equal(packet.pixels.byteLength, 0); assert.equal(packet.palette.byteLength, 0);
+  assert.equal(packet.cursor.pixels.byteLength, 0);
+});
+
+
+test('compact owner snapshots transfer cells and empty detail without guest restart', async () => {
+  const w = worker(() => 1, 6, true);
+  const compact = { cells:new Uint32Array([0x123456]), detail:new Uint32Array(0) };
+  const calls = [];
+  w.override({ runFrame:(...args)=>{calls.push(args);return {running:true,guestTick:100,lastSteps:0,compactFrame:{compact}};} });
+  await w.send('frame',{compactRender:true,measurePresentation:true});
+  assert.deepEqual(calls,[[-1,false,1,false,false,true,true]]);
+  assert.equal(compact.cells.byteLength,0);
+  assert.equal(w.messages.find(message=>message.type==='frame').compactFrame.compact.cells[0],0x123456);
+});
+
+
+test('cancelled renderer import never attaches a stale port or stops the owner', async () => {
+  let resolve, constructed=0;
+  const load = new Promise(done=>{resolve=done;});
+  const w=worker(()=>1,6,false,{loadRenderer:()=>load});
+  const port={close(){this.closed=true;}};
+  const connecting=w.send('connectRenderer',{rendererGeneration:2,rendererProtocol:4,port});
+  await w.send('frame');
+  await w.send('disconnectRenderer',{rendererGeneration:2});
+  resolve({DIRECT_RENDERER_PROTOCOL:1,RendererOwner:class {constructor(){constructed++;}}});
+  await connecting;
+  await w.send('frame');
+  assert.equal(port.closed,true);assert.equal(constructed,0);assert.equal(w.frames.length,2);
+  assert.equal(w.messages.some(m=>m.type==='error'),false);
+});
+
+test('renderer module failure remains a presenter error while guest execution continues', async () => {
+  const w=worker(()=>1,6,false,{loadRenderer:async()=>{throw new Error('module unavailable');}});
+  const port={close(){this.closed=true;}};
+  await w.send('connectRenderer',{rendererGeneration:2,rendererProtocol:4,port});
+  await w.send('frame');
+  assert.equal(port.closed,true);assert.equal(w.frames.length,1);
+  assert.equal(w.messages.find(m=>m.type==='rendererStatus').event,'error');
+  assert.equal(w.messages.some(m=>m.type==='error'),false);
 });

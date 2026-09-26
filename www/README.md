@@ -142,3 +142,82 @@ measures their frame replies as well as main-thread runtime frames.
 The catalogue tooling retains its MIT license and notice under
 `tools/catalogue/`. The runtime and browser frontend use the repository's root
 license.
+
+The runtime pacing probe reports p50/p95/p99 distributions as well as maxima.
+It keeps GPU-disabled fallback coverage by default; set `SYSTEMLESS_RUNTIME_GPU=1`
+to allow GPU rendering for a separate comparable run. This enables the browser
+GPU but does not assert which renderer the runtime selected. Keep warm-up,
+archive, inputs, initial saves and guest progress equal when comparing results.
+Set `SYSTEMLESS_RUNTIME_DEBUG=0` to measure without the probe's debug overlay.
+Optional `SYSTEMLESS_RUNTIME_TRACE_PATH` and `SYSTEMLESS_RUNTIME_SCREENSHOT_PATH`
+write raw bounded samples and the final browser screenshot to tester-chosen
+local paths. Reports include the actual renderer, display scale, CPU setting
+and guest instruction/tick endpoints; wall-time samples alone are insufficient
+to establish equal guest progress.
+Large diagnostic reports are retrieved in bounded CDP chunks after sampling,
+without dropping samples. Connection failures and unresponsive CDP commands fail
+the probe explicitly instead of leaving an unresolved report request.
+
+The save probe verifies gameplay-created saves, download, removal from IndexedDB,
+and re-import with identical data and resource forks. Cases can set `requireWorker`
+to require worker execution. For installed-plugin coverage, supply
+`selectedPluginIds` and `pluginAssets` (each with `url` and local `path`). Optional
+`expectedMetadata` and `forkLengths` check the transferred plugin metadata and both
+forks. `workerBootFailure: true` injects a startup failure after transfer to check
+compatibility fallback. `SYSTEMLESS_SAVE_SMOKE_SCREENSHOT_DIR` retains the final
+browser image on success or failure.
+
+Worker protocol and lifecycle tests run without browser fixtures:
+
+```sh
+node --test www/tests/*.test.cjs
+```
+
+The experimental indexed GPU presenter also has a fixture-free differential
+probe. It runs in a real OffscreenCanvas worker and compares GPU readback with
+scalar RGBA for padded indexed rows, all palette indices, palette-only changes,
+odd dimensions, typed-array offsets and RGBA/indexed transitions. It also checks
+compact retained-image expansion at scales 1–4 against reference vectors verified
+by the Rust `CompactPresentation` resolver, plus detail-texture row boundaries.
+A direct MessagePort check sends 1,000 packets through the production owner and
+renderer with an injected 80 ms paint delay. It verifies exact submitted pixels,
+mode/palette changes, newest-pending coalescing and bounded returned buffers:
+
+```sh
+node www/scripts/verify-renderer-gpu-cdp.mjs
+```
+
+Set `CHROME_BIN` if Chrome/Chromium is not in a standard installation location.
+This validates conversion and bounded transport in a real browser. It does not
+measure normal performance or physical display latency; see
+[measured gameplay and remaining coverage](RESPONSIVENESS.md).
+
+Worker commands carry a runtime generation and monotonic command sequence. The
+bridge allows eight commands in flight and 256 pending commands (plus one reserved shutdown); consecutive
+pending mouse moves can coalesce, but key/button/save boundaries stay ordered.
+Queue exhaustion stops the runtime visibly. Normal navigation stops display and
+audio immediately, then asks the owner to flush saves before terminating it.
+Shutdown failures appear in a dismissible notice even after leaving the game.
+
+`verifyShutdown: true` checks navigation cleanup and save-flush acknowledgement.
+`verifyRestart: true` also immediately reopens the same game and checks that its
+new owner starts after the previous save flush completes. Other games can start
+independently while an earlier game finishes saving.
+
+Catalogue `runtime.worker` defaults to `true`; set it explicitly to `false` to
+use compatibility execution. This applies to installed-plugin launches too.
+Startup worker failures retain the downloaded archive and plugin forks for
+compatibility fallback, reported on the canvas's `data-runtime-fallback`
+attribute. A failure after startup stops the game visibly without restarting it.
+The service worker fetches runtime worker scripts and binding snippets from the
+network first; offline stale code is checked by the runtime protocol handshake.
+
+For comparisons over matching guest-time intervals, set
+`SYSTEMLESS_RUNTIME_TARGET_TICK` on the runtime pacing probe. The sample duration
+then acts as a timeout. Reports include the requested and observed tick and
+instruction endpoint; a frame can pass the requested tick, so inspect the raw
+traces and compare their common interval. This does not force matching retired
+instruction counts or establish image correctness by itself.
+
+See [browser responsiveness measurements](RESPONSIVENESS.md) for the qualified
+workloads, cold-start tradeoff, lifecycle checks and coverage limits.

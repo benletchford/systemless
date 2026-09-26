@@ -194,7 +194,7 @@ pub struct Verification {
     pub evidence: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Runtime {
     pub worker: bool,
@@ -210,6 +210,21 @@ pub struct Runtime {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub file_mappings: BTreeMap<String, String>,
     pub runtime_pacing: RuntimePacing,
+}
+
+impl Default for Runtime {
+    fn default() -> Self {
+        Self {
+            worker: true,
+            launch_modifiers: Vec::new(),
+            show_menu_bar: false,
+            screen_depth: None,
+            application_partition_size: None,
+            remove_paths: Vec::new(),
+            file_mappings: BTreeMap::new(),
+            runtime_pacing: RuntimePacing::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
