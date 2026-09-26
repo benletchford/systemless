@@ -234,6 +234,14 @@ enum IndexedColor {
 }
 
 impl IndexedColor {
+    /// Whether `map` leaves every index in this colour unchanged.
+    fn fixed_under(&self, map: &mut impl FnMut(u8) -> u8) -> bool {
+        match self {
+            Self::Solid(index) => map(*index) == *index,
+            Self::Mix(fg, bg, _) => fg.fixed_under(map) && bg.fixed_under(map),
+        }
+    }
+
     fn map(&mut self, map: &mut impl FnMut(u8) -> u8) {
         match self {
             Self::Solid(index) => *index = map(*index),
@@ -355,6 +363,21 @@ impl<T> From<Vec<T>> for SavedPixels<T> {
             values,
             identity: next_snapshot_identity(),
             detail: HashMap::default(),
+        }
+    }
+}
+impl<T> SavedPixels<T> {
+    /// Whether the logical byte at `offset` carries retained subpixel detail.
+    pub(crate) fn has_detail_at(&self, offset: usize) -> bool {
+        self.detail.contains_key(&offset)
+    }
+
+    /// Whether any logical byte in `span` carries retained subpixel detail.
+    pub(crate) fn has_detail_in(&self, span: std::ops::Range<usize>) -> bool {
+        if self.detail.len() < span.len() {
+            self.detail.keys().any(|key| span.contains(key))
+        } else {
+            span.into_iter().any(|key| self.detail.contains_key(&key))
         }
     }
 }
@@ -1798,15 +1821,16 @@ impl MacMemoryBus {
         self.presentation.as_ref().map(|p| p.visible_image.clone())
     }
 
-    /// CopyBits rows usually carry no retained text on either side. Such a
+    /// Most CopyBits spans carry no retained text on either side. Such a
     /// span is an ordinary byte copy, so write it in bulk and update the
     /// presentation's guest values once, instead of one presentation write per
-    /// pixel. Returns false, having written nothing, whenever the per-pixel
-    /// path could behave differently: source detail in the span, an active
-    /// glyph capture, observed offscreen detail, a non-plain screen row, or
-    /// any diagnostic, probe or protection gate `write_plain_presented_bytes`
+    /// pixel. The caller guarantees the source span holds no detail (see
+    /// `SavedPixels::has_detail_in`). Returns false, having written nothing,
+    /// whenever the per-pixel path could behave differently: an active glyph
+    /// capture, observed offscreen detail, a non-plain screen row, or any
+    /// diagnostic, probe or protection gate `write_plain_presented_bytes`
     /// refuses.
-    pub(crate) fn write_plain_copy_pixels(
+    pub(crate) fn write_plain_copy_span(
         &mut self,
         address: u32,
         pixels: &SavedPixels,
@@ -1814,18 +1838,11 @@ impl MacMemoryBus {
         len: usize,
         palette: Option<&[u8; 256]>,
     ) -> bool {
+        debug_assert!(!pixels.has_detail_in(offset..offset + len));
         if len == 0 {
             return false;
         }
         let span = offset..offset + len;
-        let source_detail = if pixels.detail.len() < len {
-            pixels.detail.keys().any(|key| span.contains(key))
-        } else {
-            span.clone().any(|key| pixels.detail.contains_key(&key))
-        };
-        if source_detail {
-            return false;
-        }
         let Some(destination) = self.range_translates_contiguously(address, len) else {
             return false;
         };
@@ -2010,16 +2027,28 @@ impl MacMemoryBus {
         let value = map(pixels[offset]);
         self.write_byte(address, value);
         if let Some(cell) = pixels.detail.get(&offset) {
-            let mut cell = cell.clone();
-            let mapped = Arc::make_mut(&mut cell);
-            mapped.value = value;
-            for index in &mut mapped.indices {
-                *index = map(*index);
-            }
-            for ink in mapped.ink.values_mut() {
-                ink.foreground = map(ink.foreground);
-                ink.background.map(&mut map);
-            }
+            // Most copies map nothing (no colour translation, same value):
+            // share the snapshot's cell instead of cloning an identical one.
+            let unchanged = cell.value == value
+                && cell.indices.iter().all(|&index| map(index) == index)
+                && cell.ink.values().all(|ink| {
+                    map(ink.foreground) == ink.foreground && ink.background.fixed_under(&mut map)
+                });
+            let cell = if unchanged {
+                cell.clone()
+            } else {
+                let mut cell = cell.clone();
+                let mapped = Arc::make_mut(&mut cell);
+                mapped.value = value;
+                for index in &mut mapped.indices {
+                    *index = map(*index);
+                }
+                for ink in mapped.ink.values_mut() {
+                    ink.foreground = map(ink.foreground);
+                    ink.background.map(&mut map);
+                }
+                cell
+            };
             if let Some(mut p) = self.presentation.as_mut() {
                 p.put_detail(address, &cell);
             }
@@ -3004,6 +3033,8 @@ mod tests {
             (0x4_0000 - 2, 4, vec![], false),
             // The screen row that already holds unrelated text: declines.
             (0x1000 + 10 * 3, 8, vec![], false),
+            // Source text onto that row: the plain runs decline too.
+            (0x1000 + 10 * 3, 8, vec![4usize], false),
         ] {
             for palette in [None, Some(&inverted)] {
                 let mut fast = setup();
@@ -3026,7 +3057,8 @@ mod tests {
                     paint_detail(&mut probe, source + offset as u32);
                 }
                 assert_eq!(
-                    probe.write_plain_copy_pixels(destination, &pixels, 0, len, palette),
+                    !pixels.has_detail_in(0..len)
+                        && probe.write_plain_copy_span(destination, &pixels, 0, len, palette),
                     bulk,
                     "{context}: fast path taken"
                 );
