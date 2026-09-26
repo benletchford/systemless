@@ -2087,7 +2087,6 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let (_, _, screen_w, screen_h, _) = self.screen_mode;
         let old_port_rect = self.window_global_port_rect(bus, the_window);
         let old_structure = if self.window_visible(bus, the_window) {
             self.window_structure_rect(bus, the_window)
@@ -2119,25 +2118,20 @@ impl super::TrapDispatcher {
         let delta_v = v_global.wrapping_sub(old_port_rect.0);
         let delta_h = h_global.wrapping_sub(old_port_rect.1);
 
-        // portRect stays in local coordinates (0,0,h,w) — unchanged.
-        // Update pixmap bounds so local (0,0) maps to the new screen position.
-        // Per Executor windInit.cpp lines 370-373 and
-        // Inside Macintosh Volume I, I-289 (SetOrigin)
+        // MoveWindow changes the global position without changing the local
+        // coordinate system, including a nonzero SetOrigin. Translate all
+        // bitmap bounds by the movement delta rather than assuming (0,0).
+        // Inside Macintosh Volume I, I-287..I-289; SetOrigin, I-166.
         let port_version = bus.read_word(the_window + 6);
         let is_cgraf = (port_version & 0xC000) == 0xC000;
-        if is_cgraf {
-            let pixmap_handle = bus.read_long(the_window + 2);
-            let pixmap = bus.read_long(pixmap_handle);
-            bus.write_word(pixmap + 6, (-v_global) as u16);
-            bus.write_word(pixmap + 8, (-h_global) as u16);
-            bus.write_word(pixmap + 10, (screen_h as i16 - v_global) as u16);
-            bus.write_word(pixmap + 12, (screen_w as i16 - h_global) as u16);
+        let bitmap_bounds = if is_cgraf {
+            bus.read_long(bus.read_long(the_window + 2)) + 6
         } else {
-            // GrafPort: portBits.bounds at offset 2+6=8
-            bus.write_word(the_window + 8, (-v_global) as u16);
-            bus.write_word(the_window + 10, (-h_global) as u16);
-            bus.write_word(the_window + 12, (screen_h as i16 - v_global) as u16);
-            bus.write_word(the_window + 14, (screen_w as i16 - h_global) as u16);
+            the_window + 8
+        };
+        for (offset, delta) in [(0, delta_v), (2, delta_h), (4, delta_v), (6, delta_h)] {
+            let coordinate = bus.read_word(bitmap_bounds + offset) as i16;
+            bus.write_word(bitmap_bounds + offset, coordinate.wrapping_sub(delta) as u16);
         }
 
         // portRect, visRgn, clipRgn stay in local coords — no update needed.
@@ -12499,6 +12493,40 @@ mod tests {
     //     Pops 10 bytes.
     // ---------------------------------------------------------------
     #[test]
+    fn move_window_preserves_nonzero_local_origin() {
+        for trap in [0x113, 0x245] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let bounds = bus.alloc(8);
+            for (offset, value) in [(0, 57), (2, 105), (4, 343), (6, 458)] {
+                bus.write_word(bounds + offset, value);
+            }
+            let sp = TEST_SP - 30;
+            cpu.write_reg(Register::A7, sp);
+            bus.write_bytes(sp, &[0; 30]);
+            bus.write_long(sp + 6, u32::MAX);
+            bus.write_long(sp + 18, bounds);
+            dispatch(&mut disp, trap, &mut cpu, &mut bus).unwrap().unwrap();
+            let window = bus.read_long(cpu.read_reg(Register::A7));
+            disp.set_current_port_state(&mut bus, &mut cpu, window, None);
+            cpu.write_reg(Register::A7, TEST_SP - 4);
+            bus.write_word(TEST_SP - 4, (-152i16) as u16);
+            bus.write_word(TEST_SP - 2, (-195i16) as u16);
+            disp.dispatch_quickdraw(true, 0x078, &mut cpu, &mut bus).unwrap().unwrap();
+            let local_before = disp.window_port_rect(&bus, window);
+            let sp = TEST_SP - 10;
+            cpu.write_reg(Register::A7, sp);
+            bus.write_word(sp, 0);
+            bus.write_word(sp + 2, 166);
+            bus.write_word(sp + 4, 222);
+            bus.write_long(sp + 6, window);
+            dispatch(&mut disp, 0x11B, &mut cpu, &mut bus).unwrap().unwrap();
+            assert_eq!(disp.window_port_rect(&bus, window), local_before);
+            assert_eq!(disp.port_bounds_top_left(&bus, window), (-318, -417));
+            assert_eq!(disp.window_global_port_rect(&bus, window), (166, 222, 452, 575));
+        }
+    }
+
+    #[test]
     fn test_move_window() {
         let (mut disp, mut cpu, mut bus) = setup();
 
@@ -12540,11 +12568,11 @@ mod tests {
             "portRect.right unchanged"
         );
 
-        // portBits.bounds updated: top=-vGlobal, left=-hGlobal
+        // Bitmap bounds preserve portRect origin: top=40-vGlobal, left=-hGlobal
         // GrafPort portBits.bounds at offset 8..16
         assert_eq!(
             bus.read_word(window_addr + 8) as i16,
-            -100,
+            -60,
             "portBits.bounds.top"
         );
         assert_eq!(
