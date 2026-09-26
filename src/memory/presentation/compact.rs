@@ -16,6 +16,26 @@ pub struct CompactPresentation {
 }
 
 impl CompactPresentation {
+    /// Replace cells changed by a host software overlay. Unchanged cells retain
+    /// their original high-resolution coverage. Invalid inputs leave this image
+    /// intact, matching the opaque transport's existing export requirements.
+    pub fn apply_overlay(&mut self, guest: &[u32], overlays: &[u32]) -> bool {
+        let count = self.width as usize * self.height as usize;
+        if self.cells.len() != count
+            || guest.len() != count
+            || overlays.len() != count
+            || overlays.iter().any(|pixel| pixel >> 24 != 255)
+        {
+            return false;
+        }
+        for (cell, (&before, &after)) in self.cells.iter_mut().zip(guest.iter().zip(overlays)) {
+            if before != after {
+                *cell = after & 0xffffff;
+            }
+        }
+        true
+    }
+
     /// Resolve an owned retained image at a host drawable size without guest
     /// memory. Uses the same coverage footprints and rounding as the live
     /// retained-image renderer. Invalid packets leave the previous output intact.
@@ -139,27 +159,34 @@ impl CompactPresentationCache {
     /// Offscreen-only drawing does not invalidate this image. Returns false
     /// for an absent or mismatched surface, leaving the previous pixels intact.
     pub fn prepare(&mut self, bus: &MacMemoryBus, size: (u32, u32)) -> bool {
+        self.prepare_changed(bus, size).is_some()
+    }
+
+    /// Like `prepare`, but distinguish a fresh export from retained reuse.
+    /// Owners can share an immutable copy until visible content changes, without
+    /// comparing or copying all cells for every guest tick. None means invalid.
+    pub fn prepare_changed(&mut self, bus: &MacMemoryBus, size: (u32, u32)) -> Option<bool> {
         let Some(p) = bus.presentation.as_ref() else {
             self.source = None;
-            return false;
+            return None;
         };
         if (p.logical_width(), p.height) != size {
             self.source = None;
-            return false;
+            return None;
         }
         if self
             .source
             .as_ref()
             .is_some_and(|source| source.matches(&p.visible_image))
         {
-            return true;
+            return Some(false);
         }
         self.source = None;
         if !p.export_compact(std::iter::repeat(None), &mut self.frame) {
-            return false;
+            return None;
         }
         self.source = Some(p.visible_image.clone());
-        true
+        Some(true)
     }
 }
 
@@ -333,6 +360,21 @@ mod tests {
     }
 
     #[test]
+    fn changed_export_distinguishes_reuse_from_visible_changes() {
+        use crate::memory::MemoryBus;
+        let mut bus = super::super::tests::bus();
+        bus.enable_outline_presentation((0x1000, 8, 8, 8, 8), [[0, 0, 0]; 256], 2);
+        let mut cache = CompactPresentationCache::default();
+        assert_eq!(cache.prepare_changed(&bus, (8, 8)), Some(true));
+        assert_eq!(cache.prepare_changed(&bus, (8, 8)), Some(false));
+        bus.write_byte(0x1000, 42);
+        assert_eq!(cache.prepare_changed(&bus, (8, 8)), Some(true));
+        assert_eq!(cache.prepare_changed(&bus, (8, 8)), Some(false));
+        assert_eq!(cache.prepare_changed(&bus, (4, 8)), None);
+        assert_eq!(cache.prepare_changed(&bus, (8, 8)), Some(true));
+    }
+
+    #[test]
     fn owned_compact_resizing_matches_live_retained_pixels_and_overlays() {
         for depth in [8u16, 16, 32] {
             for scale in 2..=4 {
@@ -352,6 +394,9 @@ mod tests {
                     }
                     let mut compact = CompactPresentation::default();
                     assert!(bus.compact_presentation(&guest, &overlays, &mut compact));
+                    let mut owned_overlay = CompactPresentation::default();
+                    assert!(bus.compact_presentation_without_overlays((8, 8), &mut owned_overlay));
+                    assert!(owned_overlay.apply_overlay(&guest, &overlays));
                     for size in [
                         (8, 8),
                         (16, 16),
@@ -368,6 +413,22 @@ mod tests {
                         );
                         let mut actual = Vec::new();
                         assert!(compact.render_argb_resized(size, &mut actual));
+                        let mut owned_actual = Vec::new();
+                        assert!(owned_overlay.render_argb_resized(size, &mut owned_actual));
+                        assert_eq!(owned_actual, actual);
+                        if size.0 == size.1 && size.0 % 8 == 0 {
+                            let mut scaled = Vec::new();
+                            assert_eq!(
+                                bus.presented_argb_scaled(
+                                    &guest,
+                                    &overlays,
+                                    size.0 / 8,
+                                    &mut scaled
+                                ),
+                                Some(size)
+                            );
+                            assert_eq!(actual, scaled, "integer-scale native presentation");
+                        }
                         assert_eq!(
                             actual, expected,
                             "depth={depth} scale={scale} overlay={overlay} size={size:?}"
