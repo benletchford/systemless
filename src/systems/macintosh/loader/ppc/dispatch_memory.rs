@@ -57,14 +57,17 @@ pub(super) fn dispatch_memory_import(
             );
             if ppc_hle_trace_enabled() {
                 eprintln!(
-                    "[PPC-TRACE] {} size={} -> ${:08X} heap=${:08X}..${:08X} err={}",
-                    binding.symbol_name, size, ptr, *heap_cursor, heap_limit, *last_mem_error
+                    "[PPC-TRACE] {} size={} lr=${:08X} -> ${:08X} heap=${:08X}..${:08X} err={}",
+                    binding.symbol_name, size, cpu.lr, ptr, *heap_cursor, heap_limit, *last_mem_error
                 );
             }
             Some(PpcImportAction::Return(ptr))
         }
         PpcImportDispatcherTarget::DisposePtr => {
             let ptr = cpu.gpr[3];
+            if ppc_hle_trace_enabled() {
+                eprintln!("[PPC-TRACE] DisposePtr ${ptr:08X} lr=${:08X}", cpu.lr);
+            }
             if process_memory_manager.dispose_native_ptr(ptr).is_none() {
                 process_memory_manager.dispose_classic_ptr_from_native_import(ptr);
             }
@@ -375,6 +378,12 @@ pub(super) fn dispatch_memory_import(
             if let Some(record) = process_memory_manager.native_allocation(handle) {
                 handles.push(record);
             }
+            if ppc_hle_trace_enabled() {
+                eprintln!(
+                    "[PPC-TRACE] TempNewHandle size={} lr=${:08X} -> ${:08X} heap=${:08X}..${:08X} err={}",
+                    cpu.gpr[3], cpu.lr, handle, *heap_cursor, heap_limit, *last_mem_error
+                );
+            }
             if result_code_ptr != 0
                 && memory
                     .write_u16_be(result_code_ptr, *last_mem_error as u16)
@@ -391,6 +400,9 @@ pub(super) fn dispatch_memory_import(
             // then report MemError through the caller-owned result pointer.
             let handle = cpu.gpr[3];
             let result_code_ptr = cpu.gpr[4];
+            if ppc_hle_trace_enabled() {
+                eprintln!("[PPC-TRACE] TempDisposeHandle ${handle:08X} lr=${:08X}", cpu.lr);
+            }
             ppc_dispose_handle(
                 handle,
                 memory,
@@ -409,6 +421,9 @@ pub(super) fn dispatch_memory_import(
         }
         PpcImportDispatcherTarget::DisposeHandle => {
             let handle = cpu.gpr[3];
+            if ppc_hle_trace_enabled() {
+                eprintln!("[PPC-TRACE] DisposeHandle ${handle:08X} lr=${:08X}", cpu.lr);
+            }
             ppc_dispose_handle(
                 handle,
                 memory,
@@ -644,9 +659,16 @@ pub(super) fn dispatch_memory_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::HeapFreeBytes => Some(PpcImportAction::Return(
-            ppc_heap_free_capacity(memory, *heap_cursor, heap_limit).0,
-        )),
+        PpcImportDispatcherTarget::HeapFreeBytes => {
+            let free = ppc_heap_free_capacity(memory, *heap_cursor, heap_limit).0;
+            if ppc_hle_trace_enabled() {
+                eprintln!(
+                    "[PPC-TRACE] {} lr=${:08X} -> {} heap=${:08X}..${:08X}",
+                    binding.symbol_name, cpu.lr, free, *heap_cursor, heap_limit
+                );
+            }
+            Some(PpcImportAction::Return(free))
+        }
         PpcImportDispatcherTarget::MaxMem => {
             let free_ptr_blocks = process_memory_manager.native_free_ptr_blocks();
             let free =
@@ -654,6 +676,12 @@ pub(super) fn dispatch_memory_import(
             let grow_ptr = cpu.gpr[3];
             if grow_ptr != 0 {
                 let _ = memory.write_u32_be(grow_ptr, 0);
+            }
+            if ppc_hle_trace_enabled() {
+                eprintln!(
+                    "[PPC-TRACE] MaxMem lr=${:08X} -> {} heap=${:08X}..${:08X}",
+                    cpu.lr, free, *heap_cursor, heap_limit
+                );
             }
             Some(PpcImportAction::Return(free))
         }
