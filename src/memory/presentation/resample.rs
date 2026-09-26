@@ -5,13 +5,13 @@ use super::{
 };
 use crate::display::coverage_quotient;
 
-struct Span {
-    cell: usize,
-    weight: u64,
-    samples: Vec<(usize, u64)>,
+pub(super) struct Span {
+    pub(super) cell: usize,
+    pub(super) weight: u64,
+    pub(super) samples: Vec<(usize, u64)>,
 }
 
-fn axis(logical: u32, scale: u32, destination: u32) -> Vec<Vec<Span>> {
+pub(super) fn axis(logical: u32, scale: u32, destination: u32) -> Vec<Vec<Span>> {
     let source = u64::from(logical) * u64::from(scale);
     let unit = u64::from(destination);
     (0..destination)

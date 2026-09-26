@@ -389,6 +389,20 @@ fn validated_screen_framebuffer_len(
     if width == 0 || height == 0 {
         return Some(0);
     }
+    let length = packed_screen_framebuffer_len(row_bytes, width, height, pixel_size)?;
+    let end = u64::from(base).checked_add(u64::from(length))?;
+    (end <= u64::from(bus.ram_size())).then_some(length)
+}
+
+fn packed_screen_framebuffer_len(
+    row_bytes: u32,
+    width: u16,
+    height: u16,
+    pixel_size: u16,
+) -> Option<u32> {
+    if width == 0 || height == 0 {
+        return Some(0);
+    }
     let bits_per_row = u32::from(width).checked_mul(u32::from(pixel_size))?;
     let minimum_row_bytes = match pixel_size {
         1 | 2 | 4 | 8 | 16 => bits_per_row.checked_add(7)? / 8,
@@ -397,9 +411,7 @@ fn validated_screen_framebuffer_len(
     if row_bytes < minimum_row_bytes {
         return None;
     }
-    let framebuffer_len = row_bytes.checked_mul(u32::from(height))?;
-    let framebuffer_end = u64::from(base).checked_add(u64::from(framebuffer_len))?;
-    (framebuffer_end <= u64::from(bus.ram_size())).then_some(framebuffer_len)
+    row_bytes.checked_mul(u32::from(height))
 }
 
 fn fill_black_rgba(pixels: &mut [u8]) {
@@ -906,6 +918,58 @@ pub fn screen_pixel_rgb_with_gamma(
     }
 }
 
+/// An owned, complete packed screen and its display palette. Capturing at an
+/// owner-controlled boundary keeps pixels and gamma-adjusted colors coherent;
+/// a presenter can retain this frame after guest memory changes or disappears.
+#[derive(Clone)]
+pub struct PackedScreenFrame {
+    pub screen_mode: (u32, u32, u16, u16, u16),
+    pub pixels: Vec<u8>,
+    pub palette: [u32; 256],
+}
+
+impl Default for PackedScreenFrame {
+    fn default() -> Self {
+        Self {
+            screen_mode: (0, 0, 0, 0, 0),
+            pixels: Vec::new(),
+            palette: [BLACK_ARGB; 256],
+        }
+    }
+}
+
+impl PackedScreenFrame {
+    /// Reuse the existing byte allocation. Invalid guest framebuffer ranges
+    /// retain the layout but clear the bytes, producing a black software frame.
+    pub fn capture(
+        &mut self,
+        bus: &MacMemoryBus,
+        screen_mode: (u32, u32, u16, u16, u16),
+        device_clut: &[[u16; 3]; 256],
+        device_gamma: &DisplayGamma,
+    ) {
+        self.screen_mode = screen_mode;
+        self.palette = argb_palette_from_clut_with_gamma(device_clut, device_gamma);
+        self.pixels.clear();
+        if let Some(length) =
+            validated_screen_framebuffer_len(bus, screen_mode).filter(|&length| length != 0)
+        {
+            self.pixels
+                .extend_from_slice(bus.ram_slice(screen_mode.0, length));
+        }
+    }
+
+    pub fn render_argb(&self, output: &mut Vec<u32>) {
+        let (_, stride, width, height, depth) = self.screen_mode;
+        render_packed_screen_argb(
+            &self.pixels,
+            (stride, width, height, depth),
+            &self.palette,
+            output,
+        );
+    }
+}
+
 /// Render the current screen to an ARGB pixel buffer suitable for desktop backends.
 ///
 /// Reuses the provided allocation so interactive frontends do not allocate a new
@@ -933,24 +997,42 @@ pub fn render_screen_argb_with_gamma(
     device_gamma: &DisplayGamma,
     pixels: &mut Vec<u32>,
 ) {
-    let (scrn_base, row_bytes, scrn_w, scrn_h, pixel_size) = screen_mode;
-    let w = scrn_w as usize;
-    let h = scrn_h as usize;
-    let len = w.saturating_mul(h);
+    let (base, row_bytes, width, height, depth) = screen_mode;
+    let framebuffer = validated_screen_framebuffer_len(bus, screen_mode)
+        .filter(|&length| length != 0)
+        .map(|length| bus.ram_slice(base, length))
+        .unwrap_or(&[]);
+    let palette = argb_palette_from_clut_with_gamma(device_clut, device_gamma);
+    render_packed_screen_argb(
+        framebuffer,
+        (row_bytes, width, height, depth),
+        &palette,
+        pixels,
+    );
+}
 
-    pixels.resize(len, BLACK_ARGB);
+/// Render owned or borrowed packed screen bytes without accessing guest memory.
+/// Invalid strides, depths or short buffers produce the same black fallback as
+/// the guest-memory renderer. Direct RGB555 values retain their existing path;
+/// indexed colors use the already gamma-adjusted palette from the same frame.
+pub fn render_packed_screen_argb(
+    fb: &[u8],
+    layout: (u32, u16, u16, u16),
+    palette: &[u32; 256],
+    pixels: &mut Vec<u32>,
+) {
+    let (row_bytes, scrn_w, scrn_h, pixel_size) = layout;
+    let w = usize::from(scrn_w);
+    let h = usize::from(scrn_h);
+    pixels.resize(w.saturating_mul(h), BLACK_ARGB);
     pixels.fill(BLACK_ARGB);
-
-    if w == 0 || h == 0 || row_bytes == 0 {
+    let Some(length) = packed_screen_framebuffer_len(row_bytes, scrn_w, scrn_h, pixel_size) else {
+        return;
+    };
+    if w == 0 || h == 0 || fb.len() < length as usize {
         return;
     }
 
-    let Some(framebuffer_len) = validated_screen_framebuffer_len(bus, screen_mode) else {
-        return;
-    };
-    let fb = bus.ram_slice(scrn_base, framebuffer_len);
-
-    let palette = argb_palette_from_clut_with_gamma(device_clut, device_gamma);
     match pixel_size {
         16 => {
             for gy in 0..h {
@@ -2304,5 +2386,99 @@ mod tests {
             screen_pixel_rgb(&bus, (base, 1, 4, 1, 1), &clut, 4, 0),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod owned_frame_tests {
+    use super::*;
+
+    #[test]
+    fn packed_rows_preserve_bit_order_stride_and_rgb555_endian() {
+        let palette = std::array::from_fn(|index| 0xff000000 | index as u32);
+        for (depth, stride, bytes, indices) in [
+            (
+                1,
+                2,
+                vec![0xa0, 0xee, 0x50, 0xdd],
+                vec![1, 0, 1, 0, 0, 1, 0, 1],
+            ),
+            (
+                2,
+                2,
+                vec![0x1b, 0xee, 0xe4, 0xdd],
+                vec![0, 1, 2, 3, 3, 2, 1, 0],
+            ),
+            (
+                4,
+                3,
+                vec![0x12, 0x34, 0xee, 0x56, 0x78, 0xdd],
+                (1..=8).collect(),
+            ),
+            (
+                8,
+                5,
+                vec![1, 2, 3, 4, 0xee, 5, 6, 7, 8, 0xdd],
+                (1..=8).collect(),
+            ),
+        ] {
+            let mut output = Vec::new();
+            render_packed_screen_argb(&bytes, (stride, 4, 2, depth), &palette, &mut output);
+            assert_eq!(
+                output,
+                indices.into_iter().map(|i| palette[i]).collect::<Vec<_>>(),
+                "depth={depth}"
+            );
+        }
+        let mut output = Vec::new();
+        render_packed_screen_argb(
+            &[0x7c, 0, 0x03, 0xe0, 0, 0x1f, 0x7f, 0xff, 0xee, 0xee],
+            (10, 4, 1, 16),
+            &palette,
+            &mut output,
+        );
+        assert_eq!(output, [0xffff0000, 0xff00ff00, 0xff0000ff, 0xffffffff]);
+        render_packed_screen_argb(&[0x6f], (1, 3, 1, 2), &palette, &mut output);
+        assert_eq!(output, [palette[1], palette[2], palette[3]]);
+    }
+
+    #[test]
+    fn malformed_owned_layouts_keep_black_fallback() {
+        let mut output = vec![0xffffffff; 9];
+        for (bytes, layout) in [
+            (vec![1; 5], (4, 4, 2, 8)),
+            (vec![0xff; 2], (1, 9, 1, 1)),
+            (vec![0xff; 16], (16, 4, 1, 32)),
+        ] {
+            render_packed_screen_argb(&bytes, layout, &[0xffffffff; 256], &mut output);
+            assert_eq!(
+                output,
+                vec![BLACK_ARGB; usize::from(layout.1) * usize::from(layout.2)]
+            );
+        }
+        render_packed_screen_argb(&[], (0, 0, 4, 8), &[0; 256], &mut output);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn captured_pixels_and_palette_are_independent_of_later_guest_changes() {
+        let mut bus = MacMemoryBus::new(1024 * 1024);
+        let base = 0x1000;
+        bus.write_byte(base, 1);
+        bus.write_byte(base + 1, 2);
+        let mut clut = [[0; 3]; 256];
+        clut[1] = [65535, 0, 0];
+        clut[2] = [0, 65535, 0];
+        let mut frame = PackedScreenFrame::default();
+        frame.capture(&bus, (base, 2, 2, 1, 8), &clut, &linear_display_gamma());
+        bus.write_byte(base, 0);
+        clut[1] = [0, 0, 65535];
+        let mut output = Vec::new();
+        frame.render_argb(&mut output);
+        assert_eq!(output, [0xffff0000, 0xff00ff00]);
+        bus.write_byte(base, 1);
+        frame.capture(&bus, (base, 2, 2, 1, 8), &clut, &linear_display_gamma());
+        frame.render_argb(&mut output);
+        assert_eq!(output, [0xff0000ff, 0xff00ff00]);
     }
 }
