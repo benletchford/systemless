@@ -321,33 +321,41 @@ pub fn mem_write_trace_active() -> bool {
     false
 }
 
-/// 0 = not yet read from the environment, 1 = off, 2 = on. Every guest read
-/// checks this, so the common "off" case must stay one inlined relaxed load.
-#[cfg(not(target_arch = "wasm32"))]
-static MEM_READ_TRACE_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// Read hooks: 0 = the read tracer not yet read from the environment;
+/// otherwise 1, plus 1 while the tracer is on, plus 2 per armed access watch
+/// (any bus). Every guest read checks this, so the common "nothing to do"
+/// case must stay one inlined relaxed load.
+static READ_HOOK_STATE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-#[inline(always)]
-fn maybe_log_mem_read(address: u32, width: u8, value: u32) {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = (address, width, value);
+/// Whether the read tracer is on or an access watch is armed: every guest
+/// access must then pass through the bus. Replaces a separate tracer check
+/// in the per-batch paths, so an armed watch costs them nothing extra.
+#[inline]
+pub(crate) fn read_hooks_active() -> bool {
+    let state = READ_HOOK_STATE.load(std::sync::atomic::Ordering::Relaxed);
+    if state == 0 {
+        init_read_hooks();
+        return READ_HOOK_STATE.load(std::sync::atomic::Ordering::Relaxed) > 1;
     }
+    state > 1
+}
+
+fn init_read_hooks() {
     #[cfg(not(target_arch = "wasm32"))]
-    if MEM_READ_TRACE_STATE.load(std::sync::atomic::Ordering::Relaxed) != 1 {
-        log_mem_read_slow(address, width, value);
-    }
+    let tracing = mem_read_trace_range().is_some();
+    #[cfg(target_arch = "wasm32")]
+    let tracing = false;
+    let _ = READ_HOOK_STATE.compare_exchange(
+        0,
+        1 + u32::from(tracing),
+        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,
+    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cold]
-#[inline(never)]
-fn log_mem_read_slow(address: u32, width: u8, value: u32) {
-    let range = mem_read_trace_range();
-    MEM_READ_TRACE_STATE.store(
-        if range.is_some() { 2 } else { 1 },
-        std::sync::atomic::Ordering::Relaxed,
-    );
-    if let Some((start, end)) = range {
+fn log_mem_read(address: u32, width: u8, value: u32) {
+    if let Some((start, end)) = mem_read_trace_range() {
         if address >= start && address <= end {
             let pc = CURRENT_PC.with(|p| *p.borrow());
             eprintln!(
@@ -574,6 +582,143 @@ pub trait MemoryBus {
     }
 }
 
+/// Who made a watched access: the one guest instruction a single-instruction
+/// batch executed, or host (trap) code. Hits stay `Pending` until the runner
+/// attributes them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AccessSource {
+    Pending,
+    Instruction(u32),
+    Host,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AccessHit {
+    pub(crate) write: bool,
+    pub(crate) address: u32,
+    pub(crate) len: u32,
+    pub(crate) source: AccessSource,
+}
+
+/// The range an armed access watch records and the hits so far. It lives
+/// in a thread-local, so the read hook's slow path is a free function and
+/// the hot read functions need not keep the bus alive across it; the runner
+/// arms and reads a watch on the thread that executes the guest.
+struct AccessWatchState {
+    start: u32,
+    end: u32,
+    hits: Vec<AccessHit>,
+}
+
+thread_local! {
+    static ACCESS_WATCH: std::cell::RefCell<Option<AccessWatchState>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A bus's claim on the armed watch; see `arm_access_watch`. Holds its share
+/// of `READ_HOOK_STATE` and the thread's watch state for as long as it
+/// exists, so guest reads take the hooked path exactly while a watch is
+/// armed.
+struct AccessWatch(());
+
+impl AccessWatch {
+    fn new(start: u32, end: u32) -> Self {
+        init_read_hooks();
+        READ_HOOK_STATE.fetch_add(2, std::sync::atomic::Ordering::Relaxed);
+        ACCESS_WATCH.with(|watch| {
+            *watch.borrow_mut() = Some(AccessWatchState {
+                start,
+                end,
+                hits: Vec::new(),
+            });
+        });
+        Self(())
+    }
+
+    fn take_hits(&self) -> Vec<AccessHit> {
+        ACCESS_WATCH.with(|watch| {
+            watch
+                .borrow_mut()
+                .as_mut()
+                .map(|state| std::mem::take(&mut state.hits))
+                .unwrap_or_default()
+        })
+    }
+}
+
+impl Drop for AccessWatch {
+    fn drop(&mut self) {
+        READ_HOOK_STATE.fetch_sub(2, std::sync::atomic::Ordering::Relaxed);
+        ACCESS_WATCH.with(|watch| *watch.borrow_mut() = None);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn attribute_access_hits_slow(source: AccessSource) {
+    ACCESS_WATCH.with(|watch| {
+        if let Some(state) = watch.borrow_mut().as_mut() {
+            for hit in &mut state.hits {
+                if hit.source == AccessSource::Pending {
+                    hit.source = source;
+                }
+            }
+        }
+    });
+}
+
+#[cold]
+#[inline(never)]
+fn note_watched_write(address: u32, len: u32) {
+    note_watched_access(true, address, len);
+}
+
+#[cold]
+#[inline(never)]
+fn note_watched_read(address: u32, len: u32) {
+    note_watched_access(false, address, len);
+}
+
+/// Record an access overlapping the armed watch's range.
+fn note_watched_access(write: bool, address: u32, len: u32) {
+    ACCESS_WATCH.with(|watch| {
+        let mut watch = watch.borrow_mut();
+        let Some(state) = watch.as_mut() else {
+            return;
+        };
+        let end = u64::from(address) + u64::from(len);
+        if len > 0 && u64::from(address) < u64::from(state.end) && end > u64::from(state.start) {
+            state.hits.push(AccessHit {
+                write,
+                address,
+                len,
+                source: AccessSource::Pending,
+            });
+        }
+    });
+}
+
+/// The read tracer and access watch, behind one relaxed load.
+#[inline(always)]
+fn read_hooks(address: u32, width: u8, value: u32) {
+    if READ_HOOK_STATE.load(std::sync::atomic::Ordering::Relaxed) != 1 {
+        read_hooks_slow(address, width, value);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn read_hooks_slow(address: u32, width: u8, value: u32) {
+    if READ_HOOK_STATE.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        init_read_hooks();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    log_mem_read(address, width, value);
+    #[cfg(target_arch = "wasm32")]
+    let _ = value;
+    note_watched_access(false, address, u32::from(width));
+}
+
 /// Flat guest RAM with low-memory globals, a process heap adapter, and diagnostics.
 pub struct MacMemoryBus {
     ram: RamStorage,
@@ -606,6 +751,11 @@ pub struct MacMemoryBus {
     /// guest memory unchanged, while still allowing temporary stack writes
     /// that are restored before the cycle closes.
     write_probe_original: Option<WriteProbeJournal>,
+    /// Accesses to a few bytes of guest RAM, recorded while the runner
+    /// verifies which instructions touch an idle loop's counter. While
+    /// armed, fast-memory windows are withdrawn so every guest access
+    /// passes through the bus.
+    access_watch: Option<AccessWatch>,
     pub(crate) presentation: super::presentation::PresentationSlot,
     /// Inline JIT store filter (`m68k::AddressBus::tracked_store_filter`):
     /// byte 0 global, then one byte per 4 KiB page of RAM and one spare.
@@ -1422,6 +1572,7 @@ impl MacMemoryBus {
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
             write_probe_original: None,
+            access_watch: None,
             presentation: Default::default(),
             store_filter: None,
             store_filter_seen: 0,
@@ -1515,6 +1666,7 @@ impl MacMemoryBus {
             readonly_code_ranges: Vec::new(),
             readonly_code_span: None,
             write_probe_original: None,
+            access_watch: None,
             presentation: Default::default(),
             store_filter: None,
             store_filter_seen: 0,
@@ -1856,6 +2008,7 @@ impl MacMemoryBus {
     /// Discard an incomplete write probe and restore normal fast-memory use.
     pub(crate) fn cancel_write_probe(&mut self) {
         super::note_store_filter_event();
+        let _ = self.take_access_watch();
         self.park_write_probe_journal();
         self.write_probe_invalid = false;
         self.write_probe_overflowed = false;
@@ -1885,6 +2038,30 @@ impl MacMemoryBus {
 
     /// Finish a write probe and report whether guest RAM is byte-for-byte
     /// identical at every address written during the probe.
+    /// Close the probe, returning each journaled word whose final value
+    /// differs from its original as `(word address, original, final)`, in
+    /// address order. `None` when the probe was voided.
+    pub(crate) fn finish_write_probe_changes(&mut self) -> Option<Vec<(u32, u32, u32)>> {
+        super::note_store_filter_event();
+        let original = self.write_probe_original.take()?;
+        let changes = (!self.write_probe_invalid).then(|| {
+            let mut changes: Vec<(u32, u32, u32)> = original
+                .iter()
+                .filter_map(|(&word, &(value, _))| {
+                    let now = self.ram.read_long_in_bounds(word as usize);
+                    (now != value).then_some((word, value, now))
+                })
+                .collect();
+            changes.sort_unstable();
+            changes
+        });
+        self.write_probe_spare = original;
+        self.write_probe_invalid = false;
+        self.write_probe_overflowed = false;
+        self.write_probe_uncapped = false;
+        changes
+    }
+
     pub(crate) fn finish_write_probe_unchanged(&mut self) -> bool {
         super::note_store_filter_event();
         let Some(original) = self.write_probe_original.take() else {
@@ -1958,12 +2135,42 @@ impl MacMemoryBus {
         self.write_probe_original.is_some() && fb_write_trace_range().is_none()
     }
 
+    /// Record every access overlapping `[start, end)` until
+    /// `take_access_watch`. Only meaningful while a write probe is armed:
+    /// guest and host writes then reach `record_write_probe_range`, and the
+    /// withdrawn fast-memory windows send every guest read through the bus.
+    pub(crate) fn arm_access_watch(&mut self, start: u32, end: u32) {
+        self.access_watch = None;
+        self.access_watch = Some(AccessWatch::new(start, end));
+        super::note_store_filter_event();
+    }
+
+    /// Attribute every not-yet-attributed hit to `source`.
+    #[inline(always)]
+    pub(crate) fn attribute_access_hits(&self, source: AccessSource) {
+        if self.access_watch.is_some() {
+            attribute_access_hits_slow(source);
+        }
+    }
+
+    /// Disarm the watch, returning its hits in order.
+    pub(crate) fn take_access_watch(&mut self) -> Option<Vec<AccessHit>> {
+        let watch = self.access_watch.take()?;
+        super::note_store_filter_event();
+        Some(watch.take_hits())
+    }
+
     /// Journal the aligned words covering `len` bytes at the translated
     /// `address`. Must run before the write.
     #[inline]
     fn record_write_probe_range(&mut self, address: u32, len: u32) {
         if self.write_probe_original.is_none() || len == 0 {
             return;
+        }
+        // A watch is armed only while a probe's journal is. Keep its
+        // bookkeeping out of line: every guest write calls this function.
+        if self.access_watch.is_some() {
+            note_watched_write(address, len);
         }
         let end = u64::from(address) + u64::from(len);
         if end > u64::from(self.ram_size) {
@@ -2899,11 +3106,13 @@ impl MacMemoryBus {
         if !self.addressing_32_bit
             || self.foreign_address_space.is_some()
             || fb_write_trace_range().is_some()
-            || mem_read_trace_active()
+            || read_hooks_active()
             || mem_write_trace_active()
             || watchpoint_armed()
             || self.write_probe_original.is_some()
         {
+            // An access watch is armed only while a write probe is, so this
+            // window is already withdrawn for it.
             return None;
         }
         let ptr = match &mut self.ram {
@@ -2923,7 +3132,7 @@ impl MacMemoryBus {
             || !self.addressing_32_bit
             || self.foreign_address_space.is_some()
             || fb_write_trace_range().is_some()
-            || mem_read_trace_active()
+            || read_hooks_active()
             || mem_write_trace_active()
             || watchpoint_armed()
         {
@@ -2974,7 +3183,7 @@ impl MemoryBus for MacMemoryBus {
                 }
             }
         };
-        maybe_log_mem_read(address, 1, v as u32);
+        read_hooks(address, 1, v as u32);
         v
     }
 
@@ -3006,7 +3215,7 @@ impl MemoryBus for MacMemoryBus {
                 (hi << 8) | lo
             }
         };
-        maybe_log_mem_read(address, 2, v as u32);
+        read_hooks(address, 2, v as u32);
         v
     }
 
@@ -3035,7 +3244,7 @@ impl MemoryBus for MacMemoryBus {
                 (hi << 16) | lo
             }
         };
-        maybe_log_mem_read(address, 4, v);
+        read_hooks(address, 4, v);
         v
     }
 
@@ -3251,6 +3460,9 @@ impl MemoryBus for MacMemoryBus {
         if translated.is_some() && end <= self.ram_size as u64 {
             if let Some(slice) = self.ram.slice_at(translated_address as usize, len) {
                 dst.copy_from_slice(slice);
+                if self.access_watch.is_some() {
+                    note_watched_read(address, len as u32);
+                }
                 return;
             }
         }

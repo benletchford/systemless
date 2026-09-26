@@ -16,6 +16,7 @@ pub use bus::{
     set_watch_registers, watchpoint_armed, STEP_COUNTER,
 };
 pub use bus::{MacMemoryBus, MemoryBus};
+pub(crate) use bus::{AccessHit, AccessSource};
 pub use globals::LowMemGlobals;
 
 pub(crate) const APP_HEAP_COMPAT_FREE_FLOOR: u32 = 24 * 1024 * 1024;
