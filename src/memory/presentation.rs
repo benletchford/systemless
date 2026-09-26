@@ -318,6 +318,101 @@ struct DetailCell {
     ink: HashMap<usize, Ink, BuildHasherDefault<SampleOffsetHasher>>,
 }
 
+/// A snapshot cell copied with `map` applied to its value, indices and ink.
+/// Most copies map nothing (no colour translation, same value): those share
+/// the snapshot's cell instead of cloning an identical one.
+fn mapped_detail_cell(
+    cell: &Arc<DetailCell>,
+    value: u8,
+    map: &mut impl FnMut(u8) -> u8,
+) -> Arc<DetailCell> {
+    let unchanged = cell.value == value
+        && cell.indices.iter().all(|&index| map(index) == index)
+        && cell.ink.values().all(|ink| {
+            map(ink.foreground) == ink.foreground && ink.background.fixed_under(&mut *map)
+        });
+    if unchanged {
+        return cell.clone();
+    }
+    let mut cell = cell.clone();
+    let mapped = Arc::make_mut(&mut cell);
+    mapped.value = value;
+    for index in &mut mapped.indices {
+        *index = map(*index);
+    }
+    for ink in mapped.ink.values_mut() {
+        ink.foreground = map(ink.foreground);
+        ink.background.map(&mut *map);
+    }
+    cell
+}
+
+/// Mapped cells for one CopyBits colour table, keyed by source content and
+/// mapped value. A mapped cell is a pure function of those, so sharing it is
+/// exact. Keys are owned copies rather than the snapshot's `Arc`s, so the
+/// cache never makes a live offscreen cell look shared (which would make the
+/// next glyph drawn into it clone the cell).
+#[derive(Default)]
+pub(crate) struct CopyMapCache {
+    table: Option<Box<[u8; 256]>>,
+    cells: HashMap<u64, Vec<(DetailCell, u8, Arc<DetailCell>)>>,
+    len: usize,
+}
+
+/// Entries kept before the cache starts over.
+const COPY_MAP_CACHE_LIMIT: usize = 4096;
+
+impl CopyMapCache {
+    fn mapped(&mut self, cell: &Arc<DetailCell>, value: u8, table: &[u8; 256]) -> Arc<DetailCell> {
+        if self.table.as_deref() != Some(table) {
+            self.table = Some(Box::new(*table));
+            self.cells.clear();
+            self.len = 0;
+        }
+        let key = detail_fingerprint(cell, value);
+        if let Some(entry) = self.cells.get(&key).and_then(|bucket| {
+            bucket
+                .iter()
+                .find(|(source, mapped_value, _)| *mapped_value == value && source == &**cell)
+        }) {
+            return entry.2.clone();
+        }
+        let mapped = mapped_detail_cell(cell, value, &mut |index| table[index as usize]);
+        if self.len >= COPY_MAP_CACHE_LIMIT {
+            self.cells.clear();
+            self.len = 0;
+        }
+        self.cells
+            .entry(key)
+            .or_default()
+            .push(((**cell).clone(), value, mapped.clone()));
+        self.len += 1;
+        mapped
+    }
+}
+
+/// A content hash of a cell and the value it is copied as.
+fn detail_fingerprint(cell: &DetailCell, value: u8) -> u64 {
+    fn mix(hash: u64, word: u64) -> u64 {
+        (hash ^ word).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(29)
+    }
+    fn color(hash: u64, indexed: &IndexedColor) -> u64 {
+        match indexed {
+            IndexedColor::Solid(index) => mix(hash, u64::from(*index)),
+            IndexedColor::Mix(a, b, alpha) => color(color(mix(hash, 0x100 | u64::from(*alpha)), a), b),
+        }
+    }
+    let mut hash = mix(u64::from(value), u64::from(cell.value));
+    for (i, &index) in cell.indices.iter().enumerate() {
+        hash = mix(hash, u64::from(index));
+        if let Some(ink) = cell.ink.get(&i) {
+            hash = mix(hash, (i as u64) << 40 | u64::from(ink.foreground) << 32 | u64::from(ink.alpha));
+            hash = color(hash, &ink.background);
+        }
+    }
+    hash
+}
+
 /// Evidence for an indexed recoloring performed by guest CPU stores between
 /// Toolbox calls. Only a consistent, one-to-one color map can preserve detail;
 /// fills, conflicting writes, and unobserved colors retain ordinary invalidation.
@@ -1640,6 +1735,13 @@ impl Presentation {
             // software-rendered animation pay the text cost for every pixel.
             return;
         }
+        self.clear_text_cell(cell, x, value);
+    }
+
+    /// Replace the text at screen cell `cell` (column `x`) with plain
+    /// `value`: the text half of `write`, shared with
+    /// `sync_screen_row_over_text`.
+    fn clear_text_cell(&mut self, cell: usize, x: u32, value: u8) {
         self.detail_cache.get_mut()[cell] = None;
         Self::set_text_cell(&mut self.text_cells, &mut self.text_cell_count, cell, false);
         let color = self.palette_at(x)[value as usize];
@@ -1665,6 +1767,51 @@ impl Presentation {
         }
         if !self.text_cells[cell] {
             self.samples.release(cell);
+        }
+    }
+
+    /// Whether `sync_screen_row_over_text` may stand in for one `write` per
+    /// byte of a single screen-row span: no glyph capture, CPU drawing or
+    /// recolor tracking, text erasing or text run in progress, each of which
+    /// gives `write` per-byte behaviour.
+    pub(crate) fn can_sync_screen_row_over_text(&self, address: u32, len: usize) -> bool {
+        !self.cpu_drawing
+            && self.cpu_recolor.is_none()
+            && self.glyph.is_none()
+            && !self.erasing_text
+            && self.run_ink.is_empty()
+            && self.screen_row_span(address, len).is_some()
+    }
+
+    /// The first cell of a span within one screen row, if it is one.
+    fn screen_row_span(&self, address: u32, len: usize) -> Option<usize> {
+        let last = u32::try_from(len.checked_sub(1)?).ok().and_then(|n| address.checked_add(n))?;
+        let ((x, y), (_, last_y)) = (self.position(address)?, self.position(last)?);
+        let end_x = x.checked_add(u32::try_from(len).ok()?)?;
+        (y == last_y && end_x <= self.width).then_some((y * self.width + x) as usize)
+    }
+
+    /// Apply stored `bytes` at `address` exactly as one `write` per byte
+    /// would, for a span `can_sync_screen_row_over_text` admits: unchanged
+    /// plain cells stay put, changed plain cells take their value, and text
+    /// cells are cleared to plain.
+    pub(crate) fn sync_screen_row_over_text(&mut self, address: u32, bytes: &[u8]) {
+        let Some((x, y)) = self.position(address) else {
+            return;
+        };
+        let start = (y * self.width + x) as usize;
+        for (i, &value) in bytes.iter().enumerate() {
+            let cell = start + i;
+            let cell_x = x + i as u32;
+            if self.guest_values[cell] == u16::from(value) && !self.text_cells[cell] {
+                continue;
+            }
+            self.touch_screen(cell_x, y);
+            self.changed(true);
+            self.guest_values[cell] = u16::from(value);
+            if self.text_cells[cell] {
+                self.clear_text_cell(cell, cell_x, value);
+            }
         }
     }
 
@@ -1885,7 +2032,14 @@ impl MacMemoryBus {
                 && (p.can_sync_plain_screen_row(destination, len)
                     || !p.observes_range(destination, len))
         });
-        if !plain {
+        // Plain bytes landing on a screen row that holds text (text
+        // scrolling away) clear it cell by cell, still in one pass.
+        let over_text = !plain
+            && self
+                .presentation
+                .as_ref()
+                .is_some_and(|p| p.can_sync_screen_row_over_text(destination, len));
+        if !plain && !over_text {
             return false;
         }
         let mut row = pixels.values[span].to_vec();
@@ -1893,6 +2047,9 @@ impl MacMemoryBus {
             for pixel in &mut row {
                 *pixel = palette[*pixel as usize];
             }
+        }
+        if over_text {
+            return self.write_presented_bytes_over_text(address, &row);
         }
         self.write_plain_presented_bytes(address, &row)
     }
@@ -2063,34 +2220,42 @@ impl MacMemoryBus {
             self.write_byte(address, value);
             return;
         };
-        // Most copies map nothing (no colour translation, same value):
-        // share the snapshot's cell instead of cloning an identical one.
-        let unchanged = cell.value == value
-            && cell.indices.iter().all(|&index| map(index) == index)
-            && cell.ink.values().all(|ink| {
-                map(ink.foreground) == ink.foreground && ink.background.fixed_under(&mut map)
-            });
-        let cell = if unchanged {
-            cell.clone()
-        } else {
-            let mut cell = cell.clone();
-            let mapped = Arc::make_mut(&mut cell);
-            mapped.value = value;
-            for index in &mut mapped.indices {
-                *index = map(*index);
-            }
-            for ink in mapped.ink.values_mut() {
-                ink.foreground = map(ink.foreground);
-                ink.background.map(&mut map);
-            }
-            cell
+        let cell = mapped_detail_cell(cell, value, &mut map);
+        self.store_detail_pixel(address, value, &cell);
+    }
+
+    /// `copy_saved_pixel` through a CopyBits colour table. Text copied
+    /// through the same table repeats the same source cells (a scrolling
+    /// crawl redraws its glyphs every frame), so their mapped cells come
+    /// from `copy_map_cache` instead of a fresh clone per pixel.
+    pub(crate) fn copy_saved_pixel_through(
+        &mut self,
+        address: u32,
+        pixels: &SavedPixels,
+        offset: usize,
+        table: Option<&[u8; 256]>,
+    ) {
+        let mut map = |index: u8| table.map_or(index, |table| table[index as usize]);
+        let value = map(pixels[offset]);
+        let Some(cell) = pixels.detail.get(&offset) else {
+            self.write_byte(address, value);
+            return;
         };
+        let cell = match table {
+            Some(table) => self.copy_map_cache.mapped(cell, value, table),
+            None => mapped_detail_cell(cell, value, &mut map),
+        };
+        self.store_detail_pixel(address, value, &cell);
+    }
+
+    /// Store a copied text byte and its cell.
+    fn store_detail_pixel(&mut self, address: u32, value: u8, cell: &Arc<DetailCell>) {
         // `put_detail` replaces the destination's whole cell, so the store's
         // own presentation update (clearing any text there first) is wasted.
         // When the cell is already in place (a HUD redrawn every frame),
         // `put_detail` then leaves the presentation untouched as well.
         let superseded = self.presentation.as_mut().is_some_and(|mut p| {
-            let superseded = p.detail_supersedes_store(address, &cell);
+            let superseded = p.detail_supersedes_store(address, cell);
             if superseded {
                 p.superseded_write = Some(address);
             }
@@ -2101,7 +2266,7 @@ impl MacMemoryBus {
             if superseded {
                 p.superseded_write = None;
             }
-            p.put_detail(address, &cell);
+            p.put_detail(address, cell);
         }
     }
 
@@ -3082,9 +3247,10 @@ mod tests {
             (0x2_0100, 8, vec![0usize, 7], false),
             // Overwrites the retained offscreen glyph: declines.
             (0x4_0000 - 2, 4, vec![], false),
-            // The screen row that already holds unrelated text: declines.
-            (0x1000 + 10 * 3, 8, vec![], false),
-            // Source text onto that row: the plain runs decline too.
+            // The screen row that already holds unrelated text: cleared
+            // cell by cell in one pass.
+            (0x1000 + 10 * 3, 8, vec![], true),
+            // Source text onto that row: not a plain span.
             (0x1000 + 10 * 3, 8, vec![4usize], false),
         ] {
             for palette in [None, Some(&inverted)] {
@@ -3209,6 +3375,48 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// CopyBits through a colour table shares one mapped cell among equal
+    /// source cells, starts over when the table changes, and always leaves
+    /// the same result as mapping each pixel afresh.
+    #[test]
+    fn copying_text_through_a_table_shares_mapped_cells() {
+        use crate::copy_bits::CopyBitsMemory;
+        let inverted: [u8; 256] = std::array::from_fn(|i| (255 - i) as u8);
+        let rotated: [u8; 256] = std::array::from_fn(|i| (i as u8).wrapping_add(1));
+        let source = 0x3_0000u32;
+        let setup = || {
+            let mut bus = padded_bus(10, 8, 6, 2);
+            // Two equal glyph cells and a plain byte between them.
+            paint_detail(&mut bus, source);
+            bus.write_byte(source + 1, 9);
+            paint_detail(&mut bus, source + 2);
+            bus
+        };
+        let mut fast = setup();
+        let mut slow = setup();
+        let pixels = fast.save_pixel_bytes(source, 3);
+        assert_eq!(**pixels.detail.get(&0).unwrap(), **pixels.detail.get(&2).unwrap());
+        for (row, table) in [(1u32, &inverted), (2, &inverted), (3, &rotated)] {
+            let destination = 0x1000 + 10 * row + 1;
+            fast.write_copy_pixels(destination, &pixels, 0, 3, Some(table)).expect("writable");
+            for i in 0..3 {
+                slow.copy_saved_pixel(destination + i as u32, &pixels, i, |index| table[index as usize]);
+            }
+            let context = format!("row {row}");
+            assert_eq!(fast.read_bytes(destination, 3), slow.read_bytes(destination, 3), "{context}: RAM");
+            assert_eq!(fast.outline_presentation_rgb(), slow.outline_presentation_rgb(), "{context}: rendered");
+            assert_eq!(
+                fast.save_pixel_bytes(destination, 3),
+                slow.save_pixel_bytes(destination, 3),
+                "{context}: snapshot"
+            );
+            // Equal source cells share one entry; a new table starts over.
+            assert_eq!(fast.copy_map_cache.len, 1, "{context}: cache entries");
+        }
+        let mapped = |bus: &MacMemoryBus, address| bus.save_pixel_bytes(address, 1).detail.get(&0).cloned().unwrap();
+        assert!(Arc::ptr_eq(&mapped(&fast, 0x1000 + 10 + 1), &mapped(&fast, 0x1000 + 10 + 3)));
     }
 
     /// The proof `restore_saved_pixels` used before the range walk existed,
