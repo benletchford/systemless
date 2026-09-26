@@ -175,15 +175,19 @@ probe. It runs in a real OffscreenCanvas worker and compares GPU readback with
 scalar RGBA for padded indexed rows, all palette indices, palette-only changes,
 odd dimensions, typed-array offsets and RGBA/indexed transitions. It also checks
 compact retained-image expansion at scales 1–4 against reference vectors verified
-by the Rust `CompactPresentation` resolver, plus detail-texture row boundaries:
+by the Rust `CompactPresentation` resolver, plus detail-texture row boundaries.
+A direct MessagePort check sends 1,000 packets through the production owner and
+renderer with an injected 80 ms paint delay. It verifies exact submitted pixels,
+mode/palette changes, newest-pending coalescing and bounded returned buffers:
 
 ```sh
 node www/scripts/verify-renderer-gpu-cdp.mjs
 ```
 
 Set `CHROME_BIN` if Chrome/Chromium is not in a standard installation location.
-This validates the presenter kernel, not the unfinished indexed gameplay export
-or full-pipeline performance.
+This validates conversion and bounded transport in a real browser. It does not
+measure normal performance or physical display latency; see
+[measured gameplay and remaining coverage](RESPONSIVENESS.md).
 
 Worker commands carry a runtime generation and monotonic command sequence. The
 bridge allows eight commands in flight and 256 pending commands (plus one reserved shutdown); consecutive
