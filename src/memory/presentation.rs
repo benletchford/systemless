@@ -234,6 +234,14 @@ enum IndexedColor {
 }
 
 impl IndexedColor {
+    /// Whether `map` leaves every index in this colour unchanged.
+    fn fixed_under(&self, map: &mut impl FnMut(u8) -> u8) -> bool {
+        match self {
+            Self::Solid(index) => map(*index) == *index,
+            Self::Mix(fg, bg, _) => fg.fixed_under(map) && bg.fixed_under(map),
+        }
+    }
+
     fn map(&mut self, map: &mut impl FnMut(u8) -> u8) {
         match self {
             Self::Solid(index) => *index = map(*index),
@@ -355,6 +363,21 @@ impl<T> From<Vec<T>> for SavedPixels<T> {
             values,
             identity: next_snapshot_identity(),
             detail: HashMap::default(),
+        }
+    }
+}
+impl<T> SavedPixels<T> {
+    /// Whether the logical byte at `offset` carries retained subpixel detail.
+    pub(crate) fn has_detail_at(&self, offset: usize) -> bool {
+        self.detail.contains_key(&offset)
+    }
+
+    /// Whether any logical byte in `span` carries retained subpixel detail.
+    pub(crate) fn has_detail_in(&self, span: std::ops::Range<usize>) -> bool {
+        if self.detail.len() < span.len() {
+            self.detail.keys().any(|key| span.contains(key))
+        } else {
+            span.into_iter().any(|key| self.detail.contains_key(&key))
         }
     }
 }
@@ -559,6 +582,10 @@ pub(crate) struct Presentation {
     pub erasing_text: bool,
     glyph: Option<(OutlineGlyph, i16, i16)>,
     pub glyph_count: usize,
+    /// The address of a pending store whose presentation update the
+    /// following `put_detail` supersedes (see `detail_supersedes_store`);
+    /// its `write` does nothing.
+    superseded_write: Option<u32>,
 }
 
 impl Presentation {
@@ -1382,11 +1409,23 @@ impl Presentation {
         {
             return false;
         }
-        if self.detail_cache.borrow()[(y * self.width + x) as usize]
-            .as_ref()
-            .is_some_and(|cached| Arc::ptr_eq(cached, cell))
-        {
-            return true;
+        // A cached cell is exactly this cell's current state (`detail`
+        // returns it as such), so comparing with it settles the question
+        // either way. Snapshots taken each frame hold equal cells with new
+        // identities, which would otherwise miss the pointer check and
+        // compare every sample against the shared ink map.
+        let cached = match self.detail_cache.borrow()[(y * self.width + x) as usize].as_ref() {
+            Some(cached) if Arc::ptr_eq(cached, cell) => return true,
+            Some(cached) => Some(**cached == **cell),
+            None => None,
+        };
+        match cached {
+            Some(false) => return false,
+            Some(true) => {
+                self.detail_cache.borrow_mut()[(y * self.width + x) as usize] = Some(cell.clone());
+                return true;
+            }
+            None => {}
         }
         let index = (y * self.width + x) as usize;
         let samples = self.samples.get(index);
@@ -1401,6 +1440,21 @@ impl Presentation {
         // after comparing once, so idle frames do not repeat every ink lookup.
         self.detail_cache.borrow_mut()[(y * self.width + x) as usize] = Some(cell.clone());
         true
+    }
+
+    /// Whether a store of `cell.value` at `address`, followed by
+    /// `put_detail(address, cell)`, may skip the store's presentation update.
+    /// Outside text drawing, glyph capture and CPU recolor tracking, that
+    /// update only clears the destination's text, and `put_detail` then
+    /// replaces every part of the cell anyway: its value, text flag, samples,
+    /// ink and cached detail (or the whole offscreen entry).
+    fn detail_supersedes_store(&self, address: u32, cell: &Arc<DetailCell>) -> bool {
+        !self.cpu_drawing
+            && self.glyph.is_none()
+            && !self.erasing_text
+            && self.run_ink.is_empty()
+            && (self.position(address).is_none()
+                || cell.indices.len() == (self.scale * self.scale) as usize)
     }
 
     fn put_detail(&mut self, address: u32, cell: &Arc<DetailCell>) {
@@ -1514,6 +1568,9 @@ impl Presentation {
     }
 
     pub fn write(&mut self, address: u32, value: u8) {
+        if self.superseded_write.take() == Some(address) {
+            return;
+        }
         let Some((x, y)) = self.position(address) else {
             if self.glyph.is_none()
                 && !self.may_have_offscreen_detail(address, u64::from(address) + 1)
@@ -1798,15 +1855,16 @@ impl MacMemoryBus {
         self.presentation.as_ref().map(|p| p.visible_image.clone())
     }
 
-    /// CopyBits rows usually carry no retained text on either side. Such a
+    /// Most CopyBits spans carry no retained text on either side. Such a
     /// span is an ordinary byte copy, so write it in bulk and update the
     /// presentation's guest values once, instead of one presentation write per
-    /// pixel. Returns false, having written nothing, whenever the per-pixel
-    /// path could behave differently: source detail in the span, an active
-    /// glyph capture, observed offscreen detail, a non-plain screen row, or
-    /// any diagnostic, probe or protection gate `write_plain_presented_bytes`
+    /// pixel. The caller guarantees the source span holds no detail (see
+    /// `SavedPixels::has_detail_in`). Returns false, having written nothing,
+    /// whenever the per-pixel path could behave differently: an active glyph
+    /// capture, observed offscreen detail, a non-plain screen row, or any
+    /// diagnostic, probe or protection gate `write_plain_presented_bytes`
     /// refuses.
-    pub(crate) fn write_plain_copy_pixels(
+    pub(crate) fn write_plain_copy_span(
         &mut self,
         address: u32,
         pixels: &SavedPixels,
@@ -1814,18 +1872,11 @@ impl MacMemoryBus {
         len: usize,
         palette: Option<&[u8; 256]>,
     ) -> bool {
+        debug_assert!(!pixels.has_detail_in(offset..offset + len));
         if len == 0 {
             return false;
         }
         let span = offset..offset + len;
-        let source_detail = if pixels.detail.len() < len {
-            pixels.detail.keys().any(|key| span.contains(key))
-        } else {
-            span.clone().any(|key| pixels.detail.contains_key(&key))
-        };
-        if source_detail {
-            return false;
-        }
         let Some(destination) = self.range_translates_contiguously(address, len) else {
             return false;
         };
@@ -2008,8 +2059,20 @@ impl MacMemoryBus {
         mut map: impl Fn(u8) -> u8,
     ) {
         let value = map(pixels[offset]);
-        self.write_byte(address, value);
-        if let Some(cell) = pixels.detail.get(&offset) {
+        let Some(cell) = pixels.detail.get(&offset) else {
+            self.write_byte(address, value);
+            return;
+        };
+        // Most copies map nothing (no colour translation, same value):
+        // share the snapshot's cell instead of cloning an identical one.
+        let unchanged = cell.value == value
+            && cell.indices.iter().all(|&index| map(index) == index)
+            && cell.ink.values().all(|ink| {
+                map(ink.foreground) == ink.foreground && ink.background.fixed_under(&mut map)
+            });
+        let cell = if unchanged {
+            cell.clone()
+        } else {
             let mut cell = cell.clone();
             let mapped = Arc::make_mut(&mut cell);
             mapped.value = value;
@@ -2020,9 +2083,25 @@ impl MacMemoryBus {
                 ink.foreground = map(ink.foreground);
                 ink.background.map(&mut map);
             }
-            if let Some(mut p) = self.presentation.as_mut() {
-                p.put_detail(address, &cell);
+            cell
+        };
+        // `put_detail` replaces the destination's whole cell, so the store's
+        // own presentation update (clearing any text there first) is wasted.
+        // When the cell is already in place (a HUD redrawn every frame),
+        // `put_detail` then leaves the presentation untouched as well.
+        let superseded = self.presentation.as_mut().is_some_and(|mut p| {
+            let superseded = p.detail_supersedes_store(address, &cell);
+            if superseded {
+                p.superseded_write = Some(address);
             }
+            superseded
+        });
+        self.write_byte(address, value);
+        if let Some(mut p) = self.presentation.as_mut() {
+            if superseded {
+                p.superseded_write = None;
+            }
+            p.put_detail(address, &cell);
         }
     }
 
@@ -2541,6 +2620,7 @@ impl MacMemoryBus {
             erasing_text: false,
             glyph: None,
             glyph_count: 0,
+            superseded_write: None,
         };
         for y in 0..u32::from(height) {
             for x in 0..u32::from(width) {
@@ -3004,6 +3084,8 @@ mod tests {
             (0x4_0000 - 2, 4, vec![], false),
             // The screen row that already holds unrelated text: declines.
             (0x1000 + 10 * 3, 8, vec![], false),
+            // Source text onto that row: the plain runs decline too.
+            (0x1000 + 10 * 3, 8, vec![4usize], false),
         ] {
             for palette in [None, Some(&inverted)] {
                 let mut fast = setup();
@@ -3026,7 +3108,8 @@ mod tests {
                     paint_detail(&mut probe, source + offset as u32);
                 }
                 assert_eq!(
-                    probe.write_plain_copy_pixels(destination, &pixels, 0, len, palette),
+                    !pixels.has_detail_in(0..len)
+                        && probe.write_plain_copy_span(destination, &pixels, 0, len, palette),
                     bulk,
                     "{context}: fast path taken"
                 );
@@ -3048,6 +3131,82 @@ mod tests {
                     k
                 };
                 assert_eq!(keys(&after_fast), keys(&after_slow), "{context}: snapshot detail");
+            }
+        }
+    }
+
+    /// Copying text skips the store's own presentation update, which only
+    /// clears the destination before `put_detail` replaces the cell. The
+    /// result must equal doing both, whatever the destination held: the same
+    /// text (a HUD redrawn every frame), other text, or plain pixels.
+    #[test]
+    fn copying_text_matches_the_full_store_and_detail() {
+        let source = 0x3_0000u32;
+        let inverted: [u8; 256] = std::array::from_fn(|i| (255 - i) as u8);
+        for destination in [0x1000u32 + 10 * 2 + 1, 0x4_0000] {
+            for prior in ["same text", "other text", "plain"] {
+                for palette in [None, Some(&inverted)] {
+                    let map = |index: u8| palette.map_or(index, |table: &[u8; 256]| table[index as usize]);
+                    let setup = || {
+                        let mut bus = padded_bus(10, 8, 6, 2);
+                        paint_detail(&mut bus, source);
+                        paint_detail(&mut bus, source + 1);
+                        bus.write_byte(source + 2, 9);
+                        let pixels = bus.save_pixel_bytes(source, 3);
+                        for i in 0..3 {
+                            let address = destination + i as u32;
+                            match prior {
+                                "same text" => bus.copy_saved_pixel(address, &pixels, i, map),
+                                "other text" => paint_detail(&mut bus, address),
+                                _ => bus.write_byte(address, 3),
+                            }
+                        }
+                        bus
+                    };
+                    let mut fast = setup();
+                    let mut full = setup();
+                    let pixels = fast.save_pixel_bytes(source, 3);
+                    assert!(pixels.has_detail_at(0) && pixels.has_detail_in(0..2));
+                    let revision = |bus: &MacMemoryBus| bus.presentation.as_ref().unwrap().revision;
+                    let (fast_before, full_before) = (revision(&fast), revision(&full));
+                    for i in 0..3 {
+                        let address = destination + i as u32;
+                        fast.copy_saved_pixel(address, &pixels, i, map);
+                        // The full store, as copies worked before: the byte,
+                        // then the mapped cell.
+                        full.write_byte(address, map(pixels[i]));
+                        if let Some(cell) = pixels.detail.get(&i) {
+                            let mut cell = cell.clone();
+                            let mapped = Arc::make_mut(&mut cell);
+                            mapped.value = map(mapped.value);
+                            for index in &mut mapped.indices {
+                                *index = map(*index);
+                            }
+                            for ink in mapped.ink.values_mut() {
+                                ink.foreground = map(ink.foreground);
+                                ink.background.map(&mut |index| map(index));
+                            }
+                            full.presentation.as_mut().unwrap().put_detail(address, &cell);
+                        }
+                    }
+                    let context = format!("{destination:#x} {prior} palette={}", palette.is_some());
+                    if prior == "same text" {
+                        assert_eq!(revision(&fast), fast_before, "{context}: presentation untouched");
+                        assert_ne!(revision(&full), full_before, "{context}: full store rebuilt");
+                    }
+                    assert_eq!(fast.read_bytes(destination, 3), full.read_bytes(destination, 3), "{context}: RAM");
+                    assert_eq!(fast.outline_presentation_rgb(), full.outline_presentation_rgb(), "{context}: rendered");
+                    let after_fast = fast.save_pixel_bytes(destination - 1, 5);
+                    let after_full = full.save_pixel_bytes(destination - 1, 5);
+                    assert_eq!(after_fast, after_full, "{context}: snapshot");
+                    assert!(after_fast.has_detail_at(1) && after_fast.has_detail_at(2), "{context}: text kept");
+                    // A later plain store must still clear the copied text.
+                    fast.write_byte(destination, 7);
+                    full.write_byte(destination, 7);
+                    assert_eq!(fast.save_pixel_bytes(destination, 1), full.save_pixel_bytes(destination, 1));
+                    assert!(!fast.save_pixel_bytes(destination, 1).has_detail_at(0), "{context}: cleared");
+                    assert_eq!(fast.outline_presentation_rgb(), full.outline_presentation_rgb(), "{context}: cleared render");
+                }
             }
         }
     }

@@ -76,6 +76,7 @@ mod list_manager;
 pub mod loader;
 mod mac_roman;
 pub mod machine_profile;
+mod fast_hash;
 pub mod managers;
 pub mod memory;
 mod menu_manager;

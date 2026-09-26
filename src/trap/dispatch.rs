@@ -50,6 +50,7 @@ use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
 use crate::{Error, Result};
 use std::collections::BTreeMap;
+use crate::fast_hash::{FastHashMap, FastHashSet};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -1154,16 +1155,16 @@ pub struct TrapDispatcher {
     /// Per-page hold refcounts for `HoldMemory`/`UnholdMemory`.
     /// Keys are 4 KiB page numbers in logical address space.
     /// Inside Macintosh: Memory (1992), 3-25 to 3-27.
-    pub(crate) vm_held_page_counts: HashMap<u32, u16>,
+    pub(crate) vm_held_page_counts: FastHashMap<u32, u16>,
     /// Pages that have ever been held by `HoldMemory`. `UnholdMemory`
     /// treats a previously-held page span as idempotent when callers
     /// release it again after the count reaches zero.
-    pub(crate) vm_held_page_history: HashSet<u32>,
+    pub(crate) vm_held_page_history: FastHashSet<u32>,
     /// Per-page lock refcounts for `LockMemory`/`UnlockMemory` and
     /// `LockMemoryContiguous`. `GetPhysical` requires all queried pages to
     /// be present in this map.
     /// Inside Macintosh: Memory (1992), 3-28 to 3-32.
-    pub(crate) vm_locked_page_counts: HashMap<u32, u16>,
+    pub(crate) vm_locked_page_counts: FastHashMap<u32, u16>,
     /// Simulated instruction-cache enabled state for `_HWPriv`
     /// selector $0000 (`SwapInstructionCache`). The trap returns the
     /// previous state and installs the requested new state.
@@ -1180,10 +1181,10 @@ pub struct TrapDispatcher {
     /// attaches to the runner-owned process context.
     standalone_memory_manager: SharedProcessMemoryManager,
     /// Movie Toolbox handles returned by NewMovieFromFile/NewMovie-style traps.
-    pub(crate) movie_states: HashMap<u32, MovieState>,
+    pub(crate) movie_states: FastHashMap<u32, MovieState>,
     /// Maps a movie-controller component instance to the Movie it drives, set
     /// by MCNewAttachedController so MCDoAction can start the right movie.
-    pub(crate) movie_by_controller: HashMap<u32, u32>,
+    pub(crate) movie_by_controller: FastHashMap<u32, u32>,
     /// Movie Toolbox current error value for GetMoviesError.
     pub(crate) movie_error: i16,
     /// Movie Toolbox sticky error value for GetMoviesStickyError.
@@ -1193,7 +1194,7 @@ pub struct TrapDispatcher {
     /// entry. Inside Macintosh Volume I, I-415 (ModalDialog) and I-411
     /// (DrawDialog). Repainting would erase whatever the application drew
     /// into the dialog between its own DrawDialog and the ModalDialog call.
-    pub(crate) dialogs_drawn_by_app: std::collections::HashSet<u32>,
+    pub(crate) dialogs_drawn_by_app: FastHashSet<u32>,
     /// Map of Segment ID -> Loaded Address (for LoadSeg)
     pub(crate) segment_map: HashMap<i16, u32>,
     /// Process-owned application and system AppleEvent dispatch tables.
@@ -1208,7 +1209,7 @@ pub struct TrapDispatcher {
     pub(crate) ae_object_accessors: HashMap<(bool, u32, u32), AeObjectAccessor>,
     /// Private Object Support Library hash tables created through Pack8
     /// selector $092E and accessed through selectors $0831/$0833/$0632.
-    pub(crate) ae_private_hash_tables: HashMap<u32, AePrivateHashTable>,
+    pub(crate) ae_private_hash_tables: FastHashMap<u32, AePrivateHashTable>,
     /// Special AppleEvent handlers registered through
     /// AEInstallSpecialHandler or AESetObjectCallbacks. Key is
     /// `(isSysHandler, functionClass)`.
@@ -1224,7 +1225,7 @@ pub struct TrapDispatcher {
     /// trap handler, so a subsequent `Gestalt` query of a registry-only
     /// selector still returns `gestaltUndefSelectorErr`. Operating
     /// System Utilities 1994, 1-34/1-35.
-    pub(crate) gestalt_registry: HashMap<u32, u32>,
+    pub(crate) gestalt_registry: FastHashMap<u32, u32>,
     /// State stashed across an AE handler invocation. When a Pack8
     /// `AEProcessAppleEvent` (routine 27) call dispatches an installed
     /// handler, the trap pushes a trampoline return address onto the
@@ -1287,10 +1288,10 @@ pub struct TrapDispatcher {
     /// Ports that have already been queried through QDDone. BasiliskII
     /// reports TRUE for each query against a live port, so this state is
     /// currently unused by the HLE path.
-    pub(crate) qddone_seen_ports: std::collections::HashSet<u32>,
+    pub(crate) qddone_seen_ports: FastHashSet<u32>,
     /// Live Picture Utilities survey IDs minted by NewPictInfo and
     /// cleared by DisposPictInfo.
-    pub(crate) pict_info_ids: HashSet<u32>,
+    pub(crate) pict_info_ids: FastHashSet<u32>,
     /// Whether the PPC Toolbox has been initialized via selector $0000.
     /// Most PPC selectors gate on this bit; selector $000A (`IPCListPorts`)
     /// on the zero-request local path is allowed before init in the baked
@@ -1304,12 +1305,12 @@ pub struct TrapDispatcher {
     /// `GetDefaultThreadStackSize` and used when `NewThread` is passed 0.
     /// Synthetic Component Manager instances opened for HLE-provided
     /// components such as the QuickTime movie controller.
-    pub(crate) synthetic_component_instances: HashSet<u32>,
+    pub(crate) synthetic_component_instances: FastHashSet<u32>,
     /// Next opaque ComponentInstance value returned by OpenComponent.
     pub(crate) next_synthetic_component_instance: u32,
     /// Saved old structure/content regions keyed by window pointer.
     /// SaveOld snapshots this state and DrawNew consumes it.
-    pub(crate) saved_draw_old_regions: HashMap<u32, DrawOldState>,
+    pub(crate) saved_draw_old_regions: FastHashMap<u32, DrawOldState>,
     /// Whether the registered `kAEOpenApplication` handler has already
     /// been fired via an `AEProcessAppleEvent` dispatch. Distinct from
     /// the process launch state's one-shot bit (which tracks the synthetic
@@ -1487,7 +1488,7 @@ pub struct TrapDispatcher {
     /// PixPatHandle. The ROM expands these into depth-specific pattern data;
     /// HLE keeps the source RGB so color fills can resolve it for the current
     /// destination depth at draw time.
-    pub(crate) makergbpat_colors: HashMap<u32, (u16, u16, u16)>,
+    pub(crate) makergbpat_colors: FastHashMap<u32, (u16, u16, u16)>,
     /// Extra horizontal pixels added to each non-space character
     /// when drawing text, expressed as a Fixed16.16 value. Set by
     /// CharExtra ($AA23) per IM:V V-149.
@@ -1561,7 +1562,7 @@ pub struct TrapDispatcher {
     /// each window's actual procID instead of the globally-tracked
     /// front-window one — otherwise plainDBox (procID=2) windows get a
     /// document-style title bar. Inside Macintosh Volume I, I-274 / I-299.
-    pub(crate) window_proc_ids: HashMap<u32, i16>,
+    pub(crate) window_proc_ids: FastHashMap<u32, i16>,
     /// Windows whose `NewWindow` bounds lay entirely outside the screen.
     ///
     /// Real hardware draws such a window's frame where the application asked
@@ -1570,26 +1571,26 @@ pub struct TrapDispatcher {
     /// than let the Window Manager place it; synthesising chrome for one at a
     /// position the application never requested invents pixels the Mac would
     /// not have shown.
-    pub(crate) windows_placed_offscreen: std::collections::HashSet<u32>,
+    pub(crate) windows_placed_offscreen: FastHashSet<u32>,
     /// Aux-window handles keyed by WindowPtr. BasiliskII/System 7.5.3 gives
     /// each freshly created window a non-NIL AuxWin record, and SetWinColor
     /// mutates that record in place instead of allocating the first one on
     /// demand.
-    pub(crate) window_aux_records: HashMap<u32, u32>,
+    pub(crate) window_aux_records: FastHashMap<u32, u32>,
     /// Original PixMapHandle installed when Systemless creates a CGrafPort
     /// window. If guest code later replaces portPixMap with SetPortPix, that
     /// handle describes scratch/offscreen pixels rather than the Window
     /// Manager-owned backing store.
-    pub(crate) window_original_pixmaps: HashMap<u32, u32>,
+    pub(crate) window_original_pixmaps: FastHashMap<u32, u32>,
     /// Saved framebuffer pixels under transient/non-document windows.
     /// Used to emulate Window Manager save-under behavior for dialog-like
     /// windows created through the Window Manager rather than Dialog Manager.
-    pub(crate) window_saved_under_pixels: HashMap<u32, (i16, i16, i16, i16, SavedPixels)>,
+    pub(crate) window_saved_under_pixels: FastHashMap<u32, (i16, i16, i16, i16, SavedPixels)>,
     /// Aux-control state keyed by ControlHandle. On System 7.5.3 in 32-bit
     /// mode, each control has a stable AuxCtlRec even before custom colors are
     /// installed, so HLE GetAuxCtl currently treats aux-record presence as the
     /// caller-visible success bit.
-    pub(crate) control_aux_records: HashMap<u32, ControlAuxRecordState>,
+    pub(crate) control_aux_records: FastHashMap<u32, ControlAuxRecordState>,
     /// Head of the guest-visible AuxCtlRec linked list (`AuxCtlHead`).
     pub(crate) control_aux_head: u32,
     /// Whether the current front window has a close box (goAwayFlag)
@@ -1842,18 +1843,18 @@ pub struct TrapDispatcher {
     /// for draw state shared with the native QuickDraw adapter.
     pub(crate) process_quickdraw_port_state_attached: bool,
     /// Per-port pen/color/text state restored by SetPort and SetGWorld.
-    pub(crate) port_draw_states: HashMap<u32, PortDrawState>,
+    pub(crate) port_draw_states: FastHashMap<u32, PortDrawState>,
     /// Bit 0/1 mark CGrafPort fgColor/bkColor fields that QuickDraw has
     /// resolved through a color-setting call. Once resolved, guest writes to
     /// those indexed pixel fields remain authoritative for drawing.
-    pub(crate) resolved_port_color_fields: HashMap<u32, u8>,
+    pub(crate) resolved_port_color_fields: FastHashMap<u32, u8>,
     /// Associated GDevice handle for each offscreen GWorld port.
-    pub(crate) gworld_devices: HashMap<u32, u32>,
+    pub(crate) gworld_devices: FastHashMap<u32, u32>,
     /// Compatibility map for `&port->portBits` addresses (key = `port + 2`)
     /// to their most recently known-good bitmap snapshot. Used to recover
     /// CopyBits calls when guest code passes a stale/clobbered cGrafPort
     /// portBits record whose live handle/pixmap fields are invalid.
-    pub(crate) disposed_gworld_portbits: HashMap<u32, CachedCopyBitmapInfo>,
+    pub(crate) disposed_gworld_portbits: FastHashMap<u32, CachedCopyBitmapInfo>,
     /// Process-owned pixel-state flags keyed by offscreen PixMapHandle. The
     /// `keepLocal`, `pixelsPurgeable`, and `pixelsLocked` subset is surfaced by
     /// GetPixelsState / SetPixelsState and the direct LockPixels /
@@ -1862,11 +1863,11 @@ pub struct TrapDispatcher {
     pub(crate) gworld_pixel_states: SharedProcessQuickDrawPixelStates,
     /// Non-GWorld CGrafPorts opened via OpenCPort/InitCPort, tracked so
     /// sync_canonical_offscreen_ctabs_to_clut can reach their pixmaps.
-    pub(crate) cport_ports: HashSet<u32>,
+    pub(crate) cport_ports: FastHashSet<u32>,
     /// PixMapHandle installed when OpenCPort/InitCPort initialized each
     /// app-managed CGrafPort. SetPortPix can replace that handle with an
     /// offscreen scratch image; such a replacement is not an onscreen port.
-    pub(crate) cport_original_pixmaps: HashMap<u32, u32>,
+    pub(crate) cport_original_pixmaps: FastHashMap<u32, u32>,
     /// Non-window CGrafPort selected for HLE fallback presentation.
     pub(crate) manual_cport_presented_port: u32,
     /// Sparse snapshot of the screen immediately after presenting the manual
@@ -1934,9 +1935,9 @@ pub struct TrapDispatcher {
     pub(crate) recent_resource_ctable_fetch: Option<RecentColorTableFetch>,
     /// Window palette associations keyed by WindowPtr. A key of `0xFFFF_FFFF`
     /// acts as the application/default palette sentinel.
-    pub(crate) window_palettes: HashMap<u32, (u32, i16)>,
+    pub(crate) window_palettes: FastHashMap<u32, (u32, i16)>,
     /// Palette update flags keyed by PaletteHandle.
-    pub(crate) palette_updates: HashMap<u32, i16>,
+    pub(crate) palette_updates: FastHashMap<u32, i16>,
     /// Device indices assigned to palette entries by the most recent
     /// activation. Ordinary tolerant entries are not tied to their palette
     /// positions, so Entry2Index must consult this allocation rather than
@@ -1959,7 +1960,7 @@ pub struct TrapDispatcher {
     /// Color tables produced from palettes whose entries are all pmExplicit.
     /// Their pixel values are literal device indices, so indexed CopyBits
     /// must preserve those values instead of color-matching duplicate RGBs.
-    pub(crate) explicit_palette_ctabs: HashSet<u32>,
+    pub(crate) explicit_palette_ctabs: FastHashSet<u32>,
     /// Transform supplied by an Icon Utilities handle call while it routes
     /// through the legacy icon renderer. Zero for ordinary PlotCIcon calls.
     pub(crate) icon_transform_override: i16,
@@ -2026,46 +2027,46 @@ pub struct TrapDispatcher {
     /// These surfaces draw directly into the framebuffer without WindowRecords.
     pub(crate) external_host_overlay_rects: Vec<(i16, i16, i16, i16)>,
     /// Parsed dialog items keyed by dialog pointer, for GetDItem/ModalDialog
-    pub dialog_items: HashMap<u32, Vec<DialogItem>>,
+    pub dialog_items: FastHashMap<u32, Vec<DialogItem>>,
     /// Original rects for items hidden via HideDialogItem,
     /// keyed by (dialog_ptr, 1-based item_no). Restored by ShowDialogItem.
     pub(crate) hidden_dialog_item_rects: HashMap<(u32, i16), (i16, i16, i16, i16)>,
     /// Maps guest handle address → (dialog_ptr, 0-based item index) for SetDialogItemText
-    pub(crate) dialog_item_handles: HashMap<u32, (u32, usize)>,
+    pub(crate) dialog_item_handles: FastHashMap<u32, (u32, usize)>,
     /// Control values for dialog items: (dialog_ptr, 1-based item_no) → value (0/1 for checkboxes)
     /// Inside Macintosh Volume I, I-327
     pub(crate) dialog_control_values: HashMap<(u32, i16), i16>,
     /// Maps guest ControlHandle address → (dialog_ptr, 1-based item_no) for Get/SetControlValue
-    pub(crate) dialog_control_handles: HashMap<u32, (u32, i16)>,
+    pub(crate) dialog_control_handles: FastHashMap<u32, (u32, i16)>,
     /// Guest-resident shim returned by DialogDispatch selector $03
     /// GetStdFilterProc. Lazily allocated on first use; 0 = not yet
     /// allocated.
     pub(crate) dialog_std_filter_proc: u32,
     /// Host-side per-dialog cancel-item overrides set before ModalDialog
     /// creates a tracking state.
-    pub(crate) dialog_cancel_items: HashMap<u32, i16>,
+    pub(crate) dialog_cancel_items: FastHashMap<u32, i16>,
     /// Guest-memory address of the 2-byte scratch location where the filter
     /// proc trampoline writes its Boolean return value. Set by the runner
     /// when the trampoline is first allocated; 0 = not yet allocated.
     pub(crate) dialog_filter_result_addr: u32,
     /// Saved background pixels for dialogs that returned a non-dismissing item
     /// (e.g., checkbox click). Keyed by dialog_ptr. Reused when ModalDialog re-enters.
-    pub(crate) dialog_saved_pixels: HashMap<u32, SavedPixels>,
+    pub(crate) dialog_saved_pixels: FastHashMap<u32, SavedPixels>,
     /// Rendered front-dialog pixels retained after a visible dialog draw,
     /// including first-show shells and ModalDialog returns before DisposDialog
     /// closes the window.
-    pub(crate) dialog_visible_snapshots: HashMap<u32, PersistentDialogSnapshot>,
+    pub(crate) dialog_visible_snapshots: FastHashMap<u32, PersistentDialogSnapshot>,
     /// Dialogs for which ModalDialog has completed its first-call setup (drew
     /// controls, snapshotted pixels). On re-entry we skip draw_dialog to
     /// preserve game-drawn custom content (e.g. PICT titles, group boxes).
-    pub(crate) dialog_modal_entered: std::collections::HashSet<u32>,
+    pub(crate) dialog_modal_entered: FastHashSet<u32>,
     /// Dialogs whose application CDEF draw callbacks have just completed and
     /// whose next ModalDialog re-fire must snapshot those pixels without an
     /// intervening HLE standard-item redraw.
-    pub(crate) dialog_cdef_draw_pending_snapshot: HashSet<u32>,
+    pub(crate) dialog_cdef_draw_pending_snapshot: FastHashSet<u32>,
     /// Dialogs whose application CDEF controls have completed at least one
     /// visible whole-control draw pass.
-    pub(crate) dialog_cdefs_initially_drawn: HashSet<u32>,
+    pub(crate) dialog_cdefs_initially_drawn: FastHashSet<u32>,
     /// Editable dialog items whose initial all-selected text state has already
     /// been replaced by typed input. Keyed by (dialog_ptr, 1-based item number)
     /// so ModalDialog re-entry keeps appending instead of replacing again.
@@ -2074,7 +2075,7 @@ pub struct TrapDispatcher {
     /// because one or more in-bounds userItem draw procs had not yet been
     /// installed. If such a dialog is disposed before DrawDialog/ModalDialog
     /// paints it, there are no dialog pixels to erase from the screen.
-    pub(crate) dialog_initial_draw_deferred: HashSet<u32>,
+    pub(crate) dialog_initial_draw_deferred: FastHashSet<u32>,
     /// userItem draw procs queued by modeless/dialog-show paths outside
     /// ModalDialog. Drained through the same runner trampoline as modal
     /// draw procs.
@@ -2103,7 +2104,7 @@ pub struct TrapDispatcher {
     pub(crate) window_stack: Vec<(u32, (i16, i16, i16, i16), i16, String)>,
     /// Saved visRgn for active BeginUpdate/EndUpdate pairs, keyed by window.
     /// Inside Macintosh Volume I, I-292 to I-293
-    pub(crate) saved_vis_regions: HashMap<u32, (i16, i16, i16, i16)>,
+    pub(crate) saved_vis_regions: FastHashMap<u32, (i16, i16, i16, i16)>,
     /// Process-owned List Manager state shared with native execution.
     pub(crate) list_states: SharedProcessListManager,
     pub(crate) collections: SharedProcessCollectionManager,
@@ -3037,7 +3038,7 @@ impl TrapDispatcher {
         self.with_resource_manager_mut(|resource_manager| {
             let resources = resource_manager.resources.get_or_insert_with(|| LoadedResources {
                 files: HashMap::from([(0u16, ResourceFileMap::default())]),
-                names: HashMap::new(),
+                names: HashMap::default(),
                 search_order: vec![0],
                 current_file: 0,
             });
@@ -3483,27 +3484,27 @@ impl TrapDispatcher {
         let mut dispatcher = Box::new(Self {
             adb: crate::adb::AdbManager::new(),
             process_file_system,
-            vm_held_page_counts: HashMap::new(),
-            vm_held_page_history: HashSet::new(),
-            vm_locked_page_counts: HashMap::new(),
+            vm_held_page_counts: HashMap::default(),
+            vm_held_page_history: HashSet::default(),
+            vm_locked_page_counts: HashMap::default(),
             instruction_cache_enabled: true,
             data_cache_enabled: true,
             process_memory_manager: None,
             standalone_memory_manager: SharedProcessMemoryManager::default(),
-            movie_states: HashMap::new(),
-            movie_by_controller: HashMap::new(),
+            movie_states: HashMap::default(),
+            movie_by_controller: HashMap::default(),
             movie_error: 0,
             movie_sticky_error: 0,
-            dialogs_drawn_by_app: std::collections::HashSet::new(),
-            segment_map: HashMap::new(),
+            dialogs_drawn_by_app: std::collections::HashSet::default(),
+            segment_map: HashMap::default(),
             ae_handlers: SharedProcessAppleEventHandlers::default(),
             apple_event_launch_state: SharedProcessAppleEventLaunchState::default(),
             ae_descriptor_state: SharedProcessAppleEventDescriptors::default(),
-            ae_object_accessors: HashMap::new(),
-            ae_private_hash_tables: HashMap::new(),
-            ae_special_handlers: HashMap::new(),
-            ae_coercion_handlers: HashMap::new(),
-            gestalt_registry: HashMap::new(),
+            ae_object_accessors: HashMap::default(),
+            ae_private_hash_tables: HashMap::default(),
+            ae_special_handlers: HashMap::default(),
+            ae_coercion_handlers: HashMap::default(),
+            gestalt_registry: HashMap::default(),
             ae_call_state: None,
             ae_call_state_stack: Vec::new(),
             ae_trampoline_addr: None,
@@ -3520,26 +3521,26 @@ impl TrapDispatcher {
             notification_requests: Vec::new(),
             collection_callback_stack: Vec::new(),
             collection_callback_trampoline: 0,
-            qddone_seen_ports: HashSet::new(),
-            pict_info_ids: HashSet::new(),
+            qddone_seen_ports: HashSet::default(),
+            pict_info_ids: HashSet::default(),
             ppc_initialized: false,
             thread_return_trampoline: 0,
             cooperative_thread_scheduler: 0,
-            synthetic_component_instances: HashSet::new(),
+            synthetic_component_instances: HashSet::default(),
             next_synthetic_component_instance: 0x00C1_0001,
-            saved_draw_old_regions: HashMap::new(),
+            saved_draw_old_regions: HashMap::default(),
             fired_oapp_handler: false,
-            system_str_cache: HashMap::new(),
-            system_intl_cache: HashMap::new(),
-            system_pattern_list_cache: HashMap::new(),
-            system_cursor_cache: HashMap::new(),
-            system_icon_cache: HashMap::new(),
-            system_clut_cache: HashMap::new(),
-            system_wctb_cache: HashMap::new(),
-            system_kchr_cache: HashMap::new(),
-            system_kmap_cache: HashMap::new(),
-            system_wdef_cache: HashMap::new(),
-            system_mdef_cache: HashMap::new(),
+            system_str_cache: HashMap::default(),
+            system_intl_cache: HashMap::default(),
+            system_pattern_list_cache: HashMap::default(),
+            system_cursor_cache: HashMap::default(),
+            system_icon_cache: HashMap::default(),
+            system_clut_cache: HashMap::default(),
+            system_wctb_cache: HashMap::default(),
+            system_kchr_cache: HashMap::default(),
+            system_kmap_cache: HashMap::default(),
+            system_wdef_cache: HashMap::default(),
+            system_mdef_cache: HashMap::default(),
             std_pix_gateway: 0,
             param_text: SharedProcessDialogText::default(),
             ui_theme_id: UiThemeId::ClassicSystem7,
@@ -3550,7 +3551,7 @@ impl TrapDispatcher {
             vfs_volumes,
             working_directories,
             open_files,
-            synthetic_drivers: HashMap::new(),
+            synthetic_drivers: HashMap::default(),
             legacy_sound_driver_channel: None,
             write_refnums,
             file_positions,
@@ -3574,7 +3575,7 @@ impl TrapDispatcher {
             bg_color: (0xFFFF, 0xFFFF, 0xFFFF),
             pm_fg_color: None,
             pm_bg_color: None,
-            makergbpat_colors: HashMap::new(),
+            makergbpat_colors: HashMap::default(),
             char_extra: 0,
             bk_pat: [0x00; 8],
             pn_loc: (0, 0),
@@ -3602,12 +3603,12 @@ impl TrapDispatcher {
             window_title: String::new(),
             window_bounds: (0, 0, 342, 512),
             window_proc_id: 0,
-            window_proc_ids: HashMap::new(),
-            windows_placed_offscreen: std::collections::HashSet::new(),
-            window_aux_records: HashMap::new(),
-            window_original_pixmaps: HashMap::new(),
-            window_saved_under_pixels: HashMap::new(),
-            control_aux_records: HashMap::new(),
+            window_proc_ids: HashMap::default(),
+            windows_placed_offscreen: std::collections::HashSet::default(),
+            window_aux_records: HashMap::default(),
+            window_original_pixmaps: HashMap::default(),
+            window_saved_under_pixels: HashMap::default(),
+            control_aux_records: HashMap::default(),
             control_aux_head: 0,
             go_away_flag: false,
             window_list: Default::default(),
@@ -3706,13 +3707,13 @@ impl TrapDispatcher {
             quickdraw_op_colors: SharedProcessQuickDrawOpColors::default(),
             quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors::default(),
             process_quickdraw_port_state_attached: false,
-            port_draw_states: HashMap::new(),
-            resolved_port_color_fields: HashMap::new(),
-            gworld_devices: HashMap::new(),
-            disposed_gworld_portbits: HashMap::new(),
+            port_draw_states: HashMap::default(),
+            resolved_port_color_fields: HashMap::default(),
+            gworld_devices: HashMap::default(),
+            disposed_gworld_portbits: HashMap::default(),
             gworld_pixel_states: SharedProcessQuickDrawPixelStates::default(),
-            cport_ports: HashSet::new(),
-            cport_original_pixmaps: HashMap::new(),
+            cport_ports: HashSet::default(),
+            cport_original_pixmaps: HashMap::default(),
             manual_cport_presented_port: 0,
             manual_cport_screen_witness: Vec::new(),
             recording_polygon: None,
@@ -3741,16 +3742,16 @@ impl TrapDispatcher {
             seeded_picture_palette: Self::standard_mac_8bpp_clut(),
             screen_palette_fade_active: false,
             recent_resource_ctable_fetch: None,
-            window_palettes: HashMap::new(),
-            palette_updates: HashMap::new(),
-            palette_device_indices: HashMap::new(),
+            window_palettes: HashMap::default(),
+            palette_updates: HashMap::default(),
+            palette_device_indices: HashMap::default(),
             menu_bar_cache: std::cell::RefCell::new(None),
             window_title_cache: std::cell::RefCell::new(Vec::new()),
             menu_mark_indices: std::cell::Cell::new(None),
             color_mirror: std::cell::RefCell::new(Default::default()),
             color_mirror_fresh: std::cell::Cell::new(false),
             theme_chrome_cache: std::cell::RefCell::new(Vec::new()),
-            explicit_palette_ctabs: HashSet::new(),
+            explicit_palette_ctabs: HashSet::default(),
             icon_transform_override: 0,
             printing_error: 0,
             next_ct_seed: 1,
@@ -3759,7 +3760,7 @@ impl TrapDispatcher {
             recording_picture_bitmap: None,
             trap_table_profile: None,
             trap_exception_vector_defaults: None,
-            pending_native_trap_calls: HashMap::new(),
+            pending_native_trap_calls: HashMap::default(),
             bits_proc_reentry: None,
             timer_tasks: Default::default(),
             deferred_tasks: VecDeque::new(),
@@ -3772,37 +3773,37 @@ impl TrapDispatcher {
             standard_file_put_tracking: None,
             standard_file_get_tracking: None,
             external_host_overlay_rects: Vec::new(),
-            dialog_items: HashMap::new(),
-            hidden_dialog_item_rects: HashMap::new(),
-            dialog_item_handles: HashMap::new(),
-            dialog_control_values: HashMap::new(),
-            dialog_control_handles: HashMap::new(),
+            dialog_items: HashMap::default(),
+            hidden_dialog_item_rects: HashMap::default(),
+            dialog_item_handles: HashMap::default(),
+            dialog_control_values: HashMap::default(),
+            dialog_control_handles: HashMap::default(),
             dialog_std_filter_proc: 0,
-            dialog_cancel_items: HashMap::new(),
+            dialog_cancel_items: HashMap::default(),
             dialog_filter_result_addr: 0,
-            dialog_saved_pixels: HashMap::new(),
-            dialog_visible_snapshots: HashMap::new(),
-            dialog_modal_entered: std::collections::HashSet::new(),
-            dialog_cdef_draw_pending_snapshot: HashSet::new(),
-            dialog_cdefs_initially_drawn: HashSet::new(),
-            dialog_edit_text_modified_items: HashSet::new(),
-            dialog_initial_draw_deferred: HashSet::new(),
+            dialog_saved_pixels: HashMap::default(),
+            dialog_visible_snapshots: HashMap::default(),
+            dialog_modal_entered: std::collections::HashSet::default(),
+            dialog_cdef_draw_pending_snapshot: HashSet::default(),
+            dialog_cdefs_initially_drawn: HashSet::default(),
+            dialog_edit_text_modified_items: HashSet::default(),
+            dialog_initial_draw_deferred: HashSet::default(),
             modeless_dialog_draw_proc_queue: VecDeque::new(),
             modeless_dialog_cdef_draw_queue: VecDeque::new(),
             active_modeless_dialog_draw_proc: None,
             retained_modal_dialog_click: None,
             pending_modal_button_dispose_dialog: None,
             window_stack: Vec::new(),
-            saved_vis_regions: HashMap::new(),
+            saved_vis_regions: HashMap::default(),
             list_states: SharedProcessListManager::default(),
             collections: SharedProcessCollectionManager::default(),
             textedit_states: SharedProcessTextEditManager::default(),
             control_manager: SharedProcessControlManager::default(),
             last_inserted_menu_id: None,
             pending_dialog_popup_menu: None,
-            dialog_item_popup_menus: HashMap::new(),
-            dialog_popup_original_rects: HashMap::new(),
-            dialog_popup_candidate_items: HashSet::new(),
+            dialog_item_popup_menus: HashMap::default(),
+            dialog_popup_original_rects: HashMap::default(),
+            dialog_popup_candidate_items: HashSet::default(),
             scrap: SharedProcessScrapState::default(),
             last_init_pack_id: None,
         });
@@ -5733,10 +5734,10 @@ impl TrapDispatcher {
         bus: &mut MacMemoryBus,
     ) -> ResourceFileMap {
         const RES_PRELOAD_ATTR: u8 = 0x04;
-        let mut loaded = HashMap::new();
-        let mut named = HashMap::new();
-        let mut names_by_id = HashMap::new();
-        let mut attrs = HashMap::new();
+        let mut loaded = HashMap::default();
+        let mut named = HashMap::default();
+        let mut names_by_id = HashMap::default();
+        let mut attrs = HashMap::default();
         // Sort resources by (type, id) for deterministic heap layout across runs.
         let mut sorted_resources: Vec<_> = fork.resources().iter().collect();
         sorted_resources.sort_by_key(|((res_type, id), _)| (*res_type, *id));
@@ -6302,8 +6303,8 @@ impl TrapDispatcher {
                 return None;
             }
 
-            let mut file_ptrs: HashSet<u32> = HashSet::new();
-            let mut externally_referenced_ptrs: HashSet<u32> = HashSet::new();
+            let mut file_ptrs: HashSet<u32> = HashSet::default();
+            let mut externally_referenced_ptrs: HashSet<u32> = HashSet::default();
             if let Some(file) = resources.files.get_mut(&refnum) {
                 for attr in file.attrs.values_mut() {
                     *attr &= !(Self::RES_CHANGED_ATTR as u8);
@@ -7059,7 +7060,7 @@ impl TrapDispatcher {
             raw_entries: image.raw_entries,
             raw_exception_vectors: image.exception_vectors,
             default_exception_vectors: image.exception_vectors,
-            pending_native_trap_calls: HashMap::new(),
+            pending_native_trap_calls: HashMap::default(),
             current_trap_caller: None,
         })
     }
@@ -7487,7 +7488,7 @@ impl TrapDispatcher {
         // Behind SYSTEMLESS_TRACE_LOAD so library consumers don't see this
         // ~30-line dump on every game load.
         if crate::runner::trace_load_enabled() {
-            let mut type_counts: HashMap<[u8; 4], usize> = HashMap::new();
+            let mut type_counts: HashMap<[u8; 4], usize> = HashMap::default();
             for (res_type, _) in file.loaded.keys() {
                 *type_counts.entry(*res_type).or_insert(0) += 1;
             }
@@ -7541,7 +7542,7 @@ impl TrapDispatcher {
                 file.named.len()
             );
         }
-        let mut files = HashMap::new();
+        let mut files = HashMap::default();
         files.insert(0, file);
         self.with_resource_manager_mut(|resource_manager| {
             resource_manager.resources = Some(LoadedResources {
@@ -7591,8 +7592,8 @@ impl TrapDispatcher {
     pub(crate) fn register_resource_file(&mut self, refnum: u16, file: ResourceFileMap) {
         self.with_resource_manager_mut(|resource_manager| {
             let resources = resource_manager.resources.get_or_insert_with(|| LoadedResources {
-                files: HashMap::new(),
-                names: HashMap::new(),
+                files: HashMap::default(),
+                names: HashMap::default(),
                 search_order: vec![0],
                 current_file: 0,
             });
@@ -7621,8 +7622,8 @@ impl TrapDispatcher {
         let count = incoming.loaded.len();
         self.with_resource_manager_mut(|resource_manager| {
             let resources = resource_manager.resources.get_or_insert_with(|| LoadedResources {
-                files: HashMap::new(),
-                names: HashMap::new(),
+                files: HashMap::default(),
+                names: HashMap::default(),
                 search_order: vec![refnum],
                 current_file: refnum,
             });
@@ -7671,7 +7672,7 @@ impl TrapDispatcher {
         });
         let count = file.loaded.len();
         if trace_sound_enabled() {
-            let mut type_counts: HashMap<[u8; 4], usize> = HashMap::new();
+            let mut type_counts: HashMap<[u8; 4], usize> = HashMap::default();
             for (res_type, _) in file.loaded.keys() {
                 *type_counts.entry(*res_type).or_default() += 1;
             }

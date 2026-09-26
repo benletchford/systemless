@@ -353,13 +353,33 @@ impl CopyBitsMemory for MacMemoryBus {
             }
             return self.write_copy_row(address, &row);
         }
-        if self.write_plain_copy_pixels(address, pixels, offset, len, palette) {
+        let map = |index: u8| palette.map_or(index, |table| table[index as usize]);
+        if !pixels.has_detail_in(offset..offset + len) {
+            if !self.write_plain_copy_span(address, pixels, offset, len, palette) {
+                for i in 0..len {
+                    self.copy_saved_pixel(address + i as u32, pixels, offset + i, map);
+                }
+            }
             return Some(());
         }
-        for i in 0..len {
-            self.copy_saved_pixel(address + i as u32, pixels, offset + i, |index| {
-                palette.map_or(index, |table| table[index as usize])
-            });
+        // A row with some retained text: bulk-copy each run of bytes without
+        // source detail, and copy only the rest a pixel at a time.
+        let mut i = 0;
+        while i < len {
+            if pixels.has_detail_at(offset + i) {
+                self.copy_saved_pixel(address + i as u32, pixels, offset + i, map);
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < len && !pixels.has_detail_at(offset + i) {
+                i += 1;
+            }
+            if !self.write_plain_copy_span(address + start as u32, pixels, offset + start, i - start, palette) {
+                for j in start..i {
+                    self.copy_saved_pixel(address + j as u32, pixels, offset + j, map);
+                }
+            }
         }
         Some(())
     }
