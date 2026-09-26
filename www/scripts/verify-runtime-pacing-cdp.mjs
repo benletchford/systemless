@@ -40,6 +40,7 @@ const minRuntimeAudioQueueMs = envNumber("SYSTEMLESS_MIN_RUNTIME_AUDIO_QUEUE_MS"
 const minSteadyHostFps = envNumber("SYSTEMLESS_MIN_STEADY_HOST_FPS", 55);
 const minSteadyGuestTicksPerSec = envNumber("SYSTEMLESS_MIN_STEADY_GUEST_TICKS_PER_SEC", 50);
 const minSteadyGuestMips = envOptionalNumber("SYSTEMLESS_MIN_STEADY_GUEST_MIPS");
+const targetGuestTick = envOptionalNumber("SYSTEMLESS_RUNTIME_TARGET_TICK");
 const runtimeWarmupMs = envNumber("SYSTEMLESS_RUNTIME_WARMUP_MS", 1000);
 const expectedArchiveRequests =
   envOptionalNumber("SYSTEMLESS_EXPECT_ARCHIVE_REQUESTS") ?? 1;
@@ -86,7 +87,7 @@ try {
   await page.send("Page.enable");
   await page.send("Runtime.enable");
   await page.send("Page.addScriptToEvaluateOnNewDocument", {
-    source: runtimeTracePrelude(),
+    source: `window.__systemlessProbeAudio = ${process.env.SYSTEMLESS_RUNTIME_AUDIO_DIAGNOSTICS === "1"};` + runtimeTracePrelude(),
   });
   await page.send("Fetch.enable", {
     patterns: [...archiveRequestUrls].map((url) => ({
@@ -98,7 +99,7 @@ try {
 
   const probe = await evaluate(
     page,
-    `(${runtimeProbe.toString()})(${JSON.stringify(sampleMs)}, ${process.env.SYSTEMLESS_RUNTIME_DEBUG !== "0"})`,
+    `(${runtimeProbe.toString()})(${JSON.stringify(sampleMs)}, ${process.env.SYSTEMLESS_RUNTIME_DEBUG !== "0"}, ${JSON.stringify(targetGuestTick ?? null)})`,
     sampleMs + 60_000,
   );
   if (process.env.SYSTEMLESS_RUNTIME_SCREENSHOT_PATH) {
@@ -119,10 +120,16 @@ try {
   report.archive_server_requests = archiveServer.requests();
   report.environment = probe.environment;
   report.browser = version.Browser;
+  report.progress_endpoint = probe.progress_endpoint;
+  report.worker_startup = probe.worker_startup;
+  report.audio_diagnostics = probe.audio_diagnostics;
   if (process.env.SYSTEMLESS_RUNTIME_TRACE_PATH) {
     await writeFile(process.env.SYSTEMLESS_RUNTIME_TRACE_PATH, JSON.stringify(probe));
   }
   console.log(JSON.stringify(report, null, 2));
+  if (targetGuestTick != null && !probe.progress_endpoint.reached) {
+    throw new Error(`Guest did not reach tick ${targetGuestTick} before timeout`);
+  }
   assertRuntimePacing(report);
 } finally {
   await archiveServer.close();
@@ -225,7 +232,7 @@ function isLocalBaseUrl(baseUrl) {
   }
 }
 
-async function runtimeProbe(sampleMs, showDebug) {
+async function runtimeProbe(sampleMs, showDebug, targetGuestTick) {
   const samples = [];
   const console = [];
   const startedAt = performance.now();
@@ -262,11 +269,20 @@ async function runtimeProbe(sampleMs, showDebug) {
       });
       lastFrameTimestamp = frameTimestamp;
 
-      if (t < sampleMs) {
+      const latestFrame = (canvas?.getAttribute("data-runtime-worker") === "true"
+        ? window.__systemlessWorkerTrace : window.__systemlessFrameTrace)?.at(-1);
+      const reached = targetGuestTick !== null && latestFrame?.guestTick >= targetGuestTick;
+      if (t < sampleMs && !reached) {
         requestAnimationFrame(tick);
       } else {
         resolve({
           samples,
+          progress_endpoint: {
+            requested_tick: targetGuestTick,
+            reached,
+            observed_tick: latestFrame?.guestTick ?? null,
+            observed_instructions: latestFrame?.totalInstructions ?? null,
+          },
           environment: {
             debug_overlay: showDebug,
             user_agent: navigator.userAgent,
@@ -284,6 +300,8 @@ async function runtimeProbe(sampleMs, showDebug) {
           long_tasks: window.__systemlessLongTasks || [],
           frame_trace: window.__systemlessFrameTrace || [],
           worker_trace: window.__systemlessWorkerTrace || [],
+          worker_startup: window.__systemlessWorkerStartup || [],
+          audio_diagnostics: window.__systemlessAudioDiagnostics || [],
         });
       }
     }
@@ -304,6 +322,24 @@ function runtimeTracePrelude() {
     window.__systemlessFrameTrace = frameTrace;
     window.__systemlessWorkerTrace = workerTrace;
     window.__systemlessLongTasks = longTasks;
+    const startup = window.__systemlessWorkerStartup = [];
+    const audio = window.__systemlessAudioDiagnostics = [];
+    if (window.__systemlessProbeAudio && window.AudioWorkletNode) {
+      const NativeAudioWorkletNode = window.AudioWorkletNode;
+      window.AudioWorkletNode = new Proxy(NativeAudioWorkletNode, {
+        construct(Target, args) {
+          const node = Reflect.construct(Target, args);
+          node.port.addEventListener("message", event => {
+            if (event.data?.type !== "diagnostics") return;
+            audio.push({ t: performance.now(), ...event.data });
+            if (audio.length > 6000) audio.splice(0, audio.length - 6000);
+          });
+          node.port.start();
+          node.port.postMessage({ type: "diagnostics", enabled: true });
+          return node;
+        },
+      });
+    }
     const NativeWorker = window.Worker;
     window.Worker = new Proxy(NativeWorker, {
       construct(Target, args) {
@@ -314,10 +350,17 @@ function runtimeTracePrelude() {
           if (messageArgs[0]?.type === "frame") {
             frameSentAt = performance.now();
           }
+          if (window.__systemlessProbeAudio && messageArgs[0]?.type === "boot") {
+            startup.push({ t: performance.now(), type: "boot" });
+          }
           return postMessage(...messageArgs);
         };
         worker.addEventListener("message", (event) => {
           const data = event.data;
+          if (window.__systemlessProbeAudio && ["progress", "ready"].includes(data?.type)) {
+            startup.push({ t: performance.now(), type: data.type, progress: data.progress });
+            if (startup.length > 200) startup.shift();
+          }
           if (data?.type !== "frame") return;
           const t = performance.now();
           workerTrace.push({

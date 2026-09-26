@@ -267,6 +267,7 @@ async function saveSmokeProbe(config) {
   });
 
   await waitForRuntime(config.gameId, config.timeoutMs);
+  const runtimeFallback = document.querySelector("canvas.game-canvas").getAttribute("data-runtime-fallback");
   const runtimeWorker = document.querySelector("canvas.game-canvas").getAttribute("data-runtime-worker") === "true";
   await runActions(config.actions, config.timeoutMs);
   const saved = await waitForSave(config.gameId, config.pilotName, config.timeoutMs);
@@ -326,6 +327,7 @@ async function saveSmokeProbe(config) {
   return {
     game_id: config.gameId,
     runtime_worker: runtimeWorker,
+    runtime_fallback: runtimeFallback,
     shutdown_acknowledged: shutdownAcknowledged,
     worker_lifecycle: window.__systemlessWorkerLifecycle,
     worker_boots: window.__systemlessWorkerBoots,
@@ -611,7 +613,7 @@ async function saveSmokeProbe(config) {
 function assertSaveSmokeReport(report, game) {
   const failures = [];
   if (game.requireWorker && !report.runtime_worker) failures.push("worker runtime was required");
-  if (game.workerBootFailure && report.runtime_worker) failures.push("compatibility fallback was required");
+  if ((game.workerBootFailure || game.requireCompatibility) && report.runtime_worker) failures.push("compatibility fallback was required");
   if (report.plugin_server_requests !== (game.pluginAssets ?? []).length * (game.verifyRestart ? 2 : 1)) failures.push("plugin fixture requests did not match");
   if (!report.import_exact) failures.push("import did not preserve both forks");
   for (const asset of game.pluginAssets ?? []) {
