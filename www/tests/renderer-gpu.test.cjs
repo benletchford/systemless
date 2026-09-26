@@ -25,3 +25,12 @@ test('RGBA packets require exact complete dimensions and owned buffers', () => {
   assert.throws(() => context.validate({ ...packet, width: 3.5 }, 8192));
   assert.throws(() => context.validate({ ...packet, pixels: new Uint8Array(new SharedArrayBuffer(24)) }, 8192));
 });
+
+
+test('cursor patches must be complete owned rectangles inside the same screen', () => {
+  const cursor = { x: 1, y: 0, width: 2, height: 1, pixels: new Uint8Array(8) };
+  assert.equal(context.validate({ ...frame(), cursor }, 8192), 4);
+  for (const changes of [{ x: -1 }, { x: 2 }, { y: 2 }, { width: 0 }, { pixels: new Uint8Array(7) }]) {
+    assert.throws(() => context.validate({ ...frame(), cursor: { ...cursor, ...changes } }, 8192));
+  }
+});

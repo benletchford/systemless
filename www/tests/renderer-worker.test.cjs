@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 const read = name => fs.readFileSync(path.join(__dirname, '../src', name), 'utf8');
-const identity = { generation: 7, rendererGeneration: 2, protocolVersion: 1 };
+const identity = { generation: 7, rendererGeneration: 2, protocolVersion: 2 };
 const frame = (sequence, fields = {}) => ({ ...identity, type: 'frame', kind: 'rgba', complete: true,
   sequence, guestTick: 100, displayGeneration: 1, width: 2, height: 1,
   pixels: new Uint8Array([sequence, 2, 3, 255, 4, 5, 6, 255]), ...fields });
@@ -23,7 +23,7 @@ function renderer(options = {}) {
     loadGpu: async url => {
       imports.push(url);
       if (options.loadGpu) return options.loadGpu();
-      return { GPU_PRESENTER_PROTOCOL: 1, GpuFramePresenter: class {
+      return { GPU_PRESENTER_PROTOCOL: 2, GpuFramePresenter: class {
         paint(frame) { paints.push([...frame.pixels]); }
         dispose() { disposed = true; }
       } };
@@ -179,7 +179,7 @@ test('stop during GPU module import cannot initialize or revive a renderer', asy
   let resolve, constructed = 0;
   const w = renderer({ gpu: true, loadGpu: () => new Promise(done => { resolve = done; }) });
   await w.send({ ...identity, type: 'stop' });
-  resolve({ GPU_PRESENTER_PROTOCOL: 1, GpuFramePresenter: class { constructor() { constructed++; } } });
+  resolve({ GPU_PRESENTER_PROTOCOL: 2, GpuFramePresenter: class { constructor() { constructed++; } } });
   await w.initialized;
   assert.equal(constructed, 0); assert.deepEqual(w.messages.map(m => m.type), ['stopped']);
 });
@@ -201,4 +201,14 @@ test('indexed transfer supports disjoint views sharing one owned buffer', () => 
   assert.equal(storage.byteLength, 0); assert.equal(sent.palette.byteLength, 1024);
   t.client.receive({ ...identity, type: 'submitted', sequence: 1, buffer: sent.pixels.buffer, paletteBuffer: sent.palette.buffer });
   assert.equal(t.client.recycled.length, 1); assert.equal(t.failures.length, 0);
+});
+
+
+test('indexed cursor pixels share frame ownership and return with the acknowledgement', async () => {
+  const w = renderer({ gpu: true }); await w.initialized;
+  const cursor = { x: 0, y: 0, width: 1, height: 1, pixels: new Uint8Array([11, 22, 33, 255]) };
+  const packet = frame(1, { kind: 'indexed8', stride: 2, pixels: new Uint8Array(2), palette: new Uint8Array(1024), cursor });
+  await w.send(packet); w.flush();
+  assert.equal(cursor.pixels.byteLength, 0);
+  assert.deepEqual([...new Uint8Array(w.messages[1].cursorBuffer)], [11,22,33,255]);
 });

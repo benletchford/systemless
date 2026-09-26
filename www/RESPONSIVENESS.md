@@ -92,8 +92,12 @@ coalesce incremental QD3D submissions or enable external QD3D GPU capture.
 Adding `&renderer_gpu=1` selects the experimental OffscreenCanvas WebGL
 presenter. Its helper loads with the runtime asset identity and reports supported
 packet kinds before accepting images. The GPU kernel and bounded transport accept
-complete 8-bit indices plus a full palette, but gameplay still exports RGBA until
-cursor and retained-text packet integration is complete. Shader-load failure,
+complete 8-bit indices plus a full palette. Eligible gameplay frames now use
+that representation, including a small cursor patch composed by the existing
+scalar cursor renderer on the owner. Retained-text frames, debug overlays,
+other pixel depths and unsupported layouts retain RGBA export. Backend recovery
+requests fresh RGBA from the same owner and invalidates cached RGBA pixels after
+an indexed snapshot. Shader-load failure,
 context loss and renderer failure use the same presenter-only recovery path.
 
 The logical canvas retains input listeners and focus. A separate display canvas
@@ -107,7 +111,11 @@ the same guest. Snapshot recovery also works after guest execution stops.
 failure. `data-render-sequence` identifies submitted images independently of guest
 TickCount. `data-render-roundtrip-ms` measures submission acknowledgement on the
 host clock; `data-render-submit-ms` measures the renderer's own submission call.
-Neither measures physical display completion. The current path still performs
-owner-side RGBA expansion and a Wasm-to-JavaScript copy before transferring through
-the host to the renderer. Indexed GPU expansion, direct owner-to-renderer transport,
-retained-text packets and full pipeline measurements remain pending.
+Neither measures physical display completion. `data-render-packet-kind` and `data-render-packet-bytes` report the last submitted
+representation and payload size, including palette and cursor data. Indexed
+snapshots copy packed guest pixels into a reusable owned allocation, then copy
+the indices, palette and cursor patch into JavaScript buffers. Those buffers
+transfer through the host to the renderer, where indices, palette and any cursor
+patch are uploaded separately. RGBA fallback still expands on the owner and
+copies into JavaScript. These paths are not zero-copy. Direct owner-to-renderer
+transport, retained-text packets and full pipeline measurements remain pending.

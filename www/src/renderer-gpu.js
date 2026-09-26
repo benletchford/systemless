@@ -1,6 +1,6 @@
 // Pure presentation of complete owned images. Composition, cursor/retained
 // detail preparation and guest-visible writes remain on the execution owner.
-export const GPU_PRESENTER_PROTOCOL = 1;
+export const GPU_PRESENTER_PROTOCOL = 2;
 
 export function validateGpuFrame(frame, maxTextureSize) {
   const { width, height, pixels, kind } = frame;
@@ -9,6 +9,15 @@ export function validateGpuFrame(frame, maxTextureSize) {
       || width * height > 16 * 1024 * 1024
       || !(pixels instanceof Uint8Array) || !(pixels.buffer instanceof ArrayBuffer)) {
     throw new Error('Invalid complete GPU image');
+  }
+  const cursor = frame.cursor;
+  if (cursor && (!Number.isSafeInteger(cursor.x) || !Number.isSafeInteger(cursor.y)
+      || !Number.isSafeInteger(cursor.width) || !Number.isSafeInteger(cursor.height)
+      || cursor.x < 0 || cursor.y < 0 || cursor.width < 1 || cursor.height < 1
+      || cursor.x + cursor.width > width || cursor.y + cursor.height > height
+      || cursor.width * cursor.height > 4096 || !(cursor.pixels instanceof Uint8Array)
+      || !(cursor.pixels.buffer instanceof ArrayBuffer) || cursor.pixels.byteLength !== cursor.width * cursor.height * 4)) {
+    throw new Error('Invalid owned cursor patch');
   }
   if (kind === 'rgba') {
     if (pixels.byteLength !== width * height * 4) throw new Error('Invalid RGBA image length');
@@ -42,12 +51,18 @@ export class GpuFramePresenter {
     let fragment;
     try {
       fragment = compile(gl.FRAGMENT_SHADER, `precision highp float;
-        uniform sampler2D image; uniform sampler2D palette;
+        uniform sampler2D image; uniform sampler2D palette; uniform sampler2D cursor;
+        uniform vec4 cursorRect;
         uniform vec2 imageSize; uniform float indexed;
         void main() {
           vec2 uv = vec2(gl_FragCoord.x / imageSize.x, 1.0 - gl_FragCoord.y / imageSize.y);
           vec4 value = texture2D(image, uv);
-          gl_FragColor = indexed > 0.5 ? texture2D(palette, vec2((value.r * 255.0 + 0.5) / 256.0, 0.5)) : value;
+          vec4 color = indexed > 0.5 ? texture2D(palette, vec2((value.r * 255.0 + 0.5) / 256.0, 0.5)) : value;
+          vec2 position = vec2(gl_FragCoord.x, imageSize.y - gl_FragCoord.y);
+          vec2 local = position - cursorRect.xy;
+          if (local.x >= 0.0 && local.y >= 0.0 && local.x < cursorRect.z && local.y < cursorRect.w)
+            color = texture2D(cursor, local / cursorRect.zw);
+          gl_FragColor = color;
         }`);
       this.program = gl.createProgram();
       gl.attachShader(this.program, vertex); gl.attachShader(this.program, fragment); gl.linkProgram(this.program);
@@ -65,7 +80,8 @@ export class GpuFramePresenter {
     gl.enableVertexAttribArray(position); gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
     this.size = gl.getUniformLocation(this.program, 'imageSize');
     this.indexed = gl.getUniformLocation(this.program, 'indexed');
-    this.textures = [0, 1].map(unit => {
+    this.cursorRect = gl.getUniformLocation(this.program, 'cursorRect');
+    this.textures = [0, 1, 2].map(unit => {
       const texture = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
@@ -75,10 +91,14 @@ export class GpuFramePresenter {
     });
     gl.uniform1i(gl.getUniformLocation(this.program, 'image'), 0);
     gl.uniform1i(gl.getUniformLocation(this.program, 'palette'), 1);
+    gl.uniform1i(gl.getUniformLocation(this.program, 'cursor'), 2);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.disable(gl.DITHER);
     // Both samplers must be complete even when the RGBA branch is selected.
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.textures[1]);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(1024));
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.textures[2]);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));
   }
 
   paint(frame) {
@@ -91,6 +111,12 @@ export class GpuFramePresenter {
     gl.useProgram(this.program);
     gl.uniform2f(this.size, stride, frame.height);
     gl.uniform1f(this.indexed, frame.kind === 'indexed8' ? 1 : 0);
+    if (frame.cursor) {
+      const patch = frame.cursor;
+      gl.uniform4f(this.cursorRect, patch.x, patch.y, patch.width, patch.height);
+      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.textures[2]);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, patch.width, patch.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, patch.pixels);
+    } else gl.uniform4f(this.cursorRect, 0, 0, 0, 0);
     if (frame.kind === 'indexed8') {
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.textures[1]);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, frame.palette);

@@ -116,3 +116,16 @@ test('fractional canvas placement survives parent borders and scroll', () => {
   assert.equal(style.left, '14.375px'); assert.equal(style.top, '37.625px');
   assert.equal(style.width, '639.5px'); assert.equal(style.height, '319.75px');
 });
+
+
+test('format changes advance display generation and retain only the newest complete packet', () => {
+  const f = clientFixture();
+  f.receive({ type: 'ready', backend: 'offscreen-webgl', kinds: ['rgba', 'indexed8'] });
+  f.client.paint(2,1,pixels(1));
+  const indexed = {kind:'indexed8',complete:true,width:2,height:1,stride:3,pixels:new Uint8Array(3),palette:new Uint8Array(1024)};
+  f.client.paintPacket(indexed);
+  assert.equal(f.client.transport.pending.displayGeneration,2);
+  f.client.paint(2,1,pixels(2));
+  assert.equal(f.client.transport.pending.kind,'rgba');
+  assert.equal(f.client.transport.pending.displayGeneration,3);
+});

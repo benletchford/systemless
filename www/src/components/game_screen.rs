@@ -1618,6 +1618,7 @@ mod tests {
             frame: None,
             js_frame: None,
             gpu_frame: None,
+            indexed_frame: None,
             running: true,
             requests: super::WorkerFrameRequests::default(),
         };
@@ -1650,6 +1651,47 @@ mod tests {
     }
 
     #[test]
+    fn indexed_and_rgba_catchup_frames_replace_each_other() {
+        let mut state = super::WorkerFrameState {
+            save_error: None,
+            output_scale: 1,
+            frame: None,
+            js_frame: None,
+            gpu_frame: None,
+            indexed_frame: None,
+            running: true,
+            requests: super::WorkerFrameRequests::default(),
+        };
+        super::replace_worker_visual_frame(
+            &mut state,
+            super::WorkerVisualFrame::Software(1, 1, vec![0; 4]),
+        );
+        super::replace_worker_visual_frame(
+            &mut state,
+            super::WorkerVisualFrame::Indexed(wasm_bindgen::JsValue::NULL),
+        );
+        assert!(state.frame.is_none());
+        assert!(matches!(
+            super::take_worker_visual_frame(&mut state),
+            Some(super::WorkerVisualFrame::Indexed(_))
+        ));
+        super::replace_worker_visual_frame(
+            &mut state,
+            super::WorkerVisualFrame::Indexed(wasm_bindgen::JsValue::NULL),
+        );
+        super::replace_worker_visual_frame(
+            &mut state,
+            super::WorkerVisualFrame::Software(1, 1, vec![255; 4]),
+        );
+        assert!(state.indexed_frame.is_none());
+        assert!(matches!(
+            super::take_worker_visual_frame(&mut state),
+            Some(super::WorkerVisualFrame::Software(_, _, _))
+        ));
+        assert!(super::take_worker_visual_frame(&mut state).is_none());
+    }
+
+    #[test]
     fn worker_visual_frame_uses_software_frame_without_a_second_borrow() {
         let mut state = super::WorkerFrameState {
             save_error: None,
@@ -1657,6 +1699,7 @@ mod tests {
             frame: Some((640, 480, vec![1, 2, 3, 4])),
             js_frame: None,
             gpu_frame: None,
+            indexed_frame: None,
             running: true,
             requests: super::WorkerFrameRequests::default(),
         };
@@ -2005,6 +2048,7 @@ struct WorkerFrameState {
     // without copying through Wasm memory first.
     js_frame: Option<(u32, u32, Uint8Array)>,
     gpu_frame: Option<JsValue>,
+    indexed_frame: Option<JsValue>,
     running: bool,
     requests: WorkerFrameRequests<Object>,
 }
@@ -2051,6 +2095,7 @@ impl<T> WorkerFrameRequests<T> {
 
 enum WorkerVisualFrame {
     Gpu(JsValue),
+    Indexed(JsValue),
     Software(u32, u32, Vec<u8>),
     SoftwareJs(u32, u32, Uint8Array),
 }
@@ -2058,7 +2103,14 @@ enum WorkerVisualFrame {
 fn replace_worker_visual_frame(state: &mut WorkerFrameState, frame: WorkerVisualFrame) {
     // Catch-up completions can arrive before the next paint. Keep only the
     // newest result, including when debug mode changes the rendering backend.
+    state.indexed_frame = None;
     match frame {
+        WorkerVisualFrame::Indexed(frame) => {
+            state.frame = None;
+            state.js_frame = None;
+            state.gpu_frame = None;
+            state.indexed_frame = Some(frame);
+        }
         WorkerVisualFrame::Gpu(frame) => {
             state.frame = None;
             state.js_frame = None;
@@ -2078,7 +2130,9 @@ fn replace_worker_visual_frame(state: &mut WorkerFrameState, frame: WorkerVisual
 }
 
 fn take_worker_visual_frame(state: &mut WorkerFrameState) -> Option<WorkerVisualFrame> {
-    if let Some(frame) = state.gpu_frame.take() {
+    if let Some(frame) = state.indexed_frame.take() {
+        Some(WorkerVisualFrame::Indexed(frame))
+    } else if let Some(frame) = state.gpu_frame.take() {
         Some(WorkerVisualFrame::Gpu(frame))
     } else if let Some((width, height, pixels)) = state.js_frame.take() {
         Some(WorkerVisualFrame::SoftwareJs(width, height, pixels))
@@ -2196,6 +2250,7 @@ fn halt_worker(
     state.requests = WorkerFrameRequests::default();
     state.frame = None;
     state.js_frame = None;
+    state.indexed_frame = None;
     state.gpu_frame = None;
 }
 
@@ -2256,6 +2311,7 @@ impl WorkerRuntime {
         state.requests = WorkerFrameRequests::default();
         state.frame = None;
         state.js_frame = None;
+        state.indexed_frame = None;
         state.gpu_frame = None;
     }
 
@@ -2373,7 +2429,7 @@ async fn boot_catalogue_worker(
         "generation",
         &JsValue::from_f64(generation as f64),
     );
-    set_js_property(&message, "protocolVersion", &JsValue::from_f64(3.0));
+    set_js_property(&message, "protocolVersion", &JsValue::from_f64(4.0));
     set_js_property(&message, "moduleUrl", &JsValue::from_str(&module_url));
     set_js_property(&message, "wasmUrl", &JsValue::from_str(&wasm_url));
     set_js_property(&message, "gameBytes", bytes.buffer().as_ref());
@@ -2439,6 +2495,7 @@ async fn boot_catalogue_worker(
         frame: None,
         js_frame: None,
         gpu_frame: None,
+        indexed_frame: None,
         running: true,
         requests: WorkerFrameRequests::default(),
     }));
@@ -2564,6 +2621,12 @@ async fn boot_catalogue_worker(
         if let Ok(frame) = Reflect::get(&data, &JsValue::from_str("gpuFrame")) {
             if !frame.is_undefined() {
                 replace_worker_visual_frame(&mut state, WorkerVisualFrame::Gpu(frame));
+            }
+        }
+        if let Ok(frame) = Reflect::get(&data, &JsValue::from_str("indexedFrame")) {
+            if !frame.is_undefined() {
+                state.output_scale = 1;
+                replace_worker_visual_frame(&mut state, WorkerVisualFrame::Indexed(frame));
             }
         }
         let running = state.running;
@@ -2692,6 +2755,19 @@ fn start_worker_render_loop(
             take_worker_visual_frame(&mut state)
         };
         match visual_frame {
+            Some(WorkerVisualFrame::Indexed(frame)) => {
+                let width = js_number_property(&frame, "width").unwrap_or(1.0) as u32;
+                let height = js_number_property(&frame, "height").unwrap_or(1.0) as u32;
+                let _ = canvas.set_attribute("data-output-scale", "1");
+                if canvas.width() != width {
+                    canvas.set_width(width);
+                }
+                if canvas.height() != height {
+                    canvas.set_height(height);
+                }
+                sync_canvas_aspect(&canvas, width, height);
+                renderer.paint_indexed(&frame);
+            }
             Some(WorkerVisualFrame::Gpu(frame)) => {
                 let _ = canvas.set_attribute("data-output-scale", "1");
                 let width = js_number_property(&frame, "width").unwrap_or(1.0) as u32;
@@ -2745,6 +2821,7 @@ fn start_worker_render_loop(
                 callback();
             }
         }
+        let indexed_render = renderer.supports_indexed();
         let force_snapshot = renderer.needs_snapshot();
         let presentation_pending = renderer.pending();
         // A stopped guest can still lose its offscreen context. Keep polling
@@ -2760,6 +2837,11 @@ fn start_worker_render_loop(
             let message = Object::new();
             set_js_property(&message, "type", &JsValue::from_str("frame"));
             set_js_property(&message, "forceRender", &JsValue::from_bool(force_snapshot));
+            set_js_property(
+                &message,
+                "indexedRender",
+                &JsValue::from_bool(indexed_render),
+            );
             let scale = canvas_backing_scale(&canvas);
             let logical = (canvas.width() / scale, canvas.height() / scale);
             set_js_property(

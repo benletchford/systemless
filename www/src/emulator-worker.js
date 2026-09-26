@@ -1,4 +1,4 @@
-const PROTOCOL_VERSION = 3;
+const PROTOCOL_VERSION = 4;
 let machine = null;
 let generation = 0;
 let frameSequence = 0;
@@ -89,7 +89,7 @@ self.onmessage = async (event) => {
     }
 
     if (message.type === "frame") {
-      const result = machine.runFrame(message.queuedAudioSamples ?? -1, !!message.debug, message.outputScale ?? 1, !!message.forceRender);
+      const result = machine.runFrame(message.queuedAudioSamples ?? -1, !!message.debug, message.outputScale ?? 1, !!message.forceRender, !!message.indexedRender);
       guestTick = result.guestTick >>> 0;
       uiTracking = !!result.uiTracking;
       if (result.lastSteps > 0 || !result.running) {
@@ -105,6 +105,10 @@ self.onmessage = async (event) => {
       const transfer = [];
       if (result.frame) transfer.push(result.frame.buffer);
       if (result.audio) transfer.push(result.audio.buffer);
+      if (result.indexedFrame) {
+        transfer.push(result.indexedFrame.pixels.buffer, result.indexedFrame.palette.buffer);
+        if (result.indexedFrame.cursor) transfer.push(result.indexedFrame.cursor.pixels.buffer);
+      }
       if (result.gpuFrame) {
         for (const texture of result.gpuFrame.textures) transfer.push(texture.rgba.buffer);
         for (const draw of result.gpuFrame.draws) transfer.push(draw.vertices.buffer);

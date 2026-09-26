@@ -232,6 +232,8 @@ pub struct Machine {
     /// epoch avoids decoding an unchanged guest screen before drawing host
     /// overlays.
     frame_rgba: Vec<u8>,
+    indexed_frame: crate::indexed_frame::IndexedFrame,
+    rendered_indexed: bool,
     overlay_rgba: Vec<u8>,
     cursor_backup: CursorBackup,
     presented_rgba: Vec<u8>,
@@ -449,6 +451,8 @@ impl Machine {
             last_cpu_budget_ms: 0.0,
             last_audio_queue_ms: None,
             frame_rgba: Vec::new(),
+            indexed_frame: crate::indexed_frame::IndexedFrame::default(),
+            rendered_indexed: false,
             overlay_rgba: Vec::new(),
             cursor_backup: CursorBackup::default(),
             presented_rgba: Vec::new(),
@@ -836,10 +840,50 @@ impl Machine {
         Ok(())
     }
 
+    pub fn render_indexed(&mut self) -> Option<&crate::indexed_frame::IndexedFrame> {
+        if self.runner.bus().has_visible_outline_detail() {
+            return None;
+        }
+        let (mode, clut, mouse, cursor) = {
+            let dispatcher = self.runner.dispatcher();
+            (
+                dispatcher.screen_mode,
+                *dispatcher.device_clut,
+                dispatcher.mouse_position(),
+                dispatcher.cursor().cloned(),
+            )
+        };
+        if !self
+            .indexed_frame
+            .capture(self.runner.bus(), mode, &clut, cursor.as_ref(), mouse)
+        {
+            return None;
+        }
+        self.rendered_epoch = self.runner.bus().presentation_visible_epoch();
+        self.rendered_screen_mode = Some(mode);
+        self.rendered_scale = self.output_scale;
+        self.rendered_outline = false;
+        self.rendered_mouse_pos = mouse;
+        self.rendered_cursor = cursor;
+        self.frame_palette_clut = clut;
+        self.frame_palette = display::rgba_palette_from_clut(&clut);
+        self.frame_palette_valid = true;
+        self.rendered_indexed = true;
+        self.presented_size = (u32::from(mode.2), u32::from(mode.3));
+        Some(&self.indexed_frame)
+    }
+
     pub fn render_rgba(
         &mut self,
         debug_stats: Option<DebugOverlayFrameStats>,
     ) -> ((u32, u32), &[u8]) {
+        if self.rendered_indexed {
+            // Indexed snapshots update visual metadata without updating the
+            // retained RGBA bytes. A backend switch must decode a fresh base.
+            self.rendered_epoch = None;
+            self.frame_epoch = None;
+            self.rendered_indexed = false;
+        }
         let (screen_mode, clut, mouse_pos, cursor) = {
             let dispatcher = self.runner.dispatcher();
             (
