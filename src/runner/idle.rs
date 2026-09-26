@@ -149,6 +149,138 @@ pub(crate) struct IdleCycleProbe {
     /// the probe's origin with the write journal -- kept open across the
     /// whole period -- restored, and aborts past `IDLE_CYCLE_MAX_PERIOD`.
     pub(crate) arrivals: u8,
+    /// Tick budget when the probe began, so a closing cycle knows the
+    /// instruction units one pass costs.
+    pub(crate) budget: i32,
+}
+
+/// A same-site pass that returned to its origin CPU state having changed
+/// only a few words of RAM, awaiting a verification pass with those words
+/// watched (see `verified_idle_counter`).
+pub(crate) struct IdleCounterCandidate {
+    pub(crate) trap_pc: u32,
+    pub(crate) tick: u32,
+    pub(crate) changes: Vec<(u32, u32, u32)>,
+    pub(crate) units: i32,
+}
+
+/// A loop counter proven to be touched only by one add- or
+/// subtract-immediate instruction per pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct IdleCounter {
+    pub(crate) address: u32,
+    pub(crate) width: u32,
+    pub(crate) step: u32,
+}
+
+/// Whether two passes changed the same words by the same amounts.
+pub(crate) fn same_idle_steps(a: &[(u32, u32, u32)], b: &[(u32, u32, u32)]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(&(wa, oa, na), &(wb, ob, nb))| {
+            wa == wb && na.wrapping_sub(oa) == nb.wrapping_sub(ob)
+        })
+}
+
+/// Operand width of an ADDQ, SUBQ, ADDI or SUBI whose destination is a
+/// memory operand, the only instructions admitted to update an idle
+/// counter: each reads its destination, writes the sum back and sets flags,
+/// and touches nothing else. M68000 Programmer's Reference Manual (1992),
+/// pp. 4-4, 4-9, 4-174, 4-179.
+pub(crate) fn add_immediate_to_memory_width(opcode: u16) -> Option<u32> {
+    let size = (opcode >> 6) & 3;
+    let mode = (opcode >> 3) & 7;
+    let reg = opcode & 7;
+    let add_quick = opcode & 0xF000 == 0x5000;
+    let add_immediate = matches!(opcode & 0xFF00, 0x0400 | 0x0600);
+    let memory = matches!(mode, 2..=6) || (mode == 7 && reg <= 1);
+    ((add_quick || add_immediate) && size != 3 && memory).then(|| [1, 2, 4][size as usize])
+}
+
+/// Decide from a verification pass's watched accesses whether the words a
+/// pass changes form one counter that nothing but its own update reads:
+/// every access comes from the same add/subtract-immediate instruction,
+/// which first reads its whole operand and then writes within it (the bus
+/// may store only the bytes that changed), and the operand covers every
+/// changed byte. `old_and_new_byte` gives each byte's value before and
+/// after the pass (from the journal) so the per-pass step can be recovered.
+pub(crate) fn verified_idle_counter(
+    hits: &[crate::memory::AccessHit],
+    changes: &[(u32, u32, u32)],
+    opcode_at: impl Fn(u32) -> u16,
+    old_and_new_byte: impl Fn(u32) -> (u8, u8),
+) -> Option<IdleCounter> {
+    use crate::memory::AccessSource;
+    let [read, writes @ ..] = hits else {
+        return None;
+    };
+    let AccessSource::Instruction(pc) = read.source else {
+        return None;
+    };
+    if read.write || add_immediate_to_memory_width(opcode_at(pc)) != Some(read.len) {
+        return None;
+    }
+    let (address, width) = (read.address, read.len);
+    let inside = |hit: &crate::memory::AccessHit| {
+        hit.write
+            && hit.source == read.source
+            && hit.address >= address
+            && u64::from(hit.address) + u64::from(hit.len) <= u64::from(address) + u64::from(width)
+    };
+    if writes.is_empty() || !writes.iter().all(inside) {
+        return None;
+    }
+    let covered = changes.iter().all(|&(word, old, new)| {
+        (0..4).all(|i| {
+            let shift = 24 - 8 * i;
+            (old >> shift) & 0xFF == (new >> shift) & 0xFF
+                || (address..address + width).contains(&(word + i))
+        })
+    });
+    if !covered {
+        return None;
+    }
+    let (mut old, mut new) = (0u32, 0u32);
+    for i in 0..width {
+        let (o, n) = old_and_new_byte(address + i);
+        old = (old << 8) | u32::from(o);
+        new = (new << 8) | u32::from(n);
+    }
+    let mask = if width == 4 { u32::MAX } else { (1 << (8 * width)) - 1 };
+    let step = new.wrapping_sub(old) & mask;
+    (step != 0).then_some(IdleCounter { address, width, step })
+}
+
+/// How many more passes may add `step` to a counter now holding `value`
+/// while every one of them sets the same condition codes as the pass just
+/// observed: the results stay nonzero, on the same side of the sign bit,
+/// and never carry or borrow out of `width` bytes.
+pub(crate) fn passes_with_unchanged_flags(value: u32, step: u32, width: u32) -> u32 {
+    let mask = if width == 4 { u32::MAX } else { (1u32 << (8 * width)) - 1 };
+    let sign = 1u32 << (8 * width - 1);
+    let (value, step) = (value & mask, step & mask);
+    if step & sign == 0 {
+        // Adding: the observed pass computed value from value - step.
+        let Some(previous) = value.checked_sub(step) else {
+            return 0;
+        };
+        if value == 0 || previous & sign != value & sign {
+            return 0;
+        }
+        let limit = if value & sign == 0 { sign - 1 } else { mask };
+        (limit - value) / step
+    } else {
+        // Subtracting `magnitude` each pass.
+        let magnitude = (mask - step) + 1;
+        let previous = u64::from(value) + u64::from(magnitude);
+        if previous > u64::from(mask) || (previous as u32) & sign != value & sign {
+            return 0;
+        }
+        let floor = if value & sign == 0 { 1 } else { sign };
+        if value < floor {
+            return 0;
+        }
+        (value - floor) / magnitude
+    }
 }
 
 /// Longest wait-cycle period the exact-state prover will chase. Period-2

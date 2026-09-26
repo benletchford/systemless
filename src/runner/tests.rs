@@ -15647,6 +15647,112 @@
     }
 
     #[test]
+    fn counted_idle_passes_stop_before_the_update_would_set_different_flags() {
+        // ADDQ.W #1 from 0x001C: results up to 0x7FFF keep N, Z, V and C clear.
+        assert_eq!(passes_with_unchanged_flags(0x001C, 1, 2), 0x7FFF - 0x001C);
+        // Upper half: stop before the carry out at 0xFFFF -> 0x0000.
+        assert_eq!(passes_with_unchanged_flags(0x8005, 1, 2), 0xFFFF - 0x8005);
+        // The observed pass itself crossed the sign bit or produced zero.
+        assert_eq!(passes_with_unchanged_flags(0x8000, 1, 2), 0);
+        assert_eq!(passes_with_unchanged_flags(0x0000, 1, 2), 0);
+        // Byte and long counters, and a step of four.
+        assert_eq!(passes_with_unchanged_flags(0x10, 4, 1), (0x7F - 0x10) / 4);
+        assert_eq!(passes_with_unchanged_flags(0x0001_0000, 1, 4), 0x7FFF_FFFF - 0x0001_0000);
+        // SUBQ.W #1 (step 0xFFFF): stop before zero, or before crossing back
+        // below the sign bit.
+        assert_eq!(passes_with_unchanged_flags(0x0010, 0xFFFF, 2), 0x0F);
+        assert_eq!(passes_with_unchanged_flags(0x8010, 0xFFFF, 2), 0x10);
+        assert_eq!(passes_with_unchanged_flags(0x7FFF, 0xFFFF, 2), 0);
+    }
+
+    #[test]
+    fn only_add_or_subtract_immediate_to_memory_may_update_an_idle_counter() {
+        assert_eq!(add_immediate_to_memory_width(0x526D), Some(2)); // ADDQ.W #1,d16(A5)
+        assert_eq!(add_immediate_to_memory_width(0x52B9), Some(4)); // ADDQ.L #1,abs.L
+        assert_eq!(add_immediate_to_memory_width(0x5310), Some(1)); // SUBQ.B #1,(A0)
+        assert_eq!(add_immediate_to_memory_width(0x066D), Some(2)); // ADDI.W #imm,d16(A5)
+        assert_eq!(add_immediate_to_memory_width(0x04B8), Some(4)); // SUBI.L #imm,abs.W
+        assert_eq!(add_immediate_to_memory_width(0x5241), None); // ADDQ.W #1,D1
+        assert_eq!(add_immediate_to_memory_width(0x5249), None); // ADDQ.W #1,A1
+        assert_eq!(add_immediate_to_memory_width(0x51C8), None); // DBF D0 (size 3)
+        assert_eq!(add_immediate_to_memory_width(0x527A), None); // PC-relative destination
+        assert_eq!(add_immediate_to_memory_width(0x302D), None); // MOVE.W d16(A5),D0
+    }
+
+    #[test]
+    fn an_idle_counter_is_verified_only_when_its_update_is_its_sole_reader() {
+        use crate::memory::{AccessHit, AccessSource};
+        let pc = 0x0061_7CAC;
+        let hit = |write, address, len, source| AccessHit { write, address, len, source };
+        let rmw = AccessSource::Instruction(pc);
+        let changes = [(0x0060_7724u32, 0x001C_0000u32, 0x001D_0000u32)];
+        let opcode = |at: u32| if at == pc { 0x526D } else { 0x302D };
+        let bytes = |address: u32| match address {
+            0x0060_7724 => (0x00, 0x00),
+            0x0060_7725 => (0x1C, 0x1D),
+            _ => (0, 0),
+        };
+        let counter = IdleCounter { address: 0x0060_7724, width: 2, step: 1 };
+        let pair = [hit(false, 0x0060_7724, 2, rmw), hit(true, 0x0060_7724, 2, rmw)];
+        assert_eq!(verified_idle_counter(&pair, &changes, opcode, bytes), Some(counter));
+
+        // Another instruction also reads it: its value can steer the loop.
+        let other = AccessSource::Instruction(pc + 8);
+        let read_elsewhere = [pair[0], pair[1], hit(false, 0x0060_7724, 2, other)];
+        assert_eq!(verified_idle_counter(&read_elsewhere, &changes, opcode, bytes), None);
+        // Host code (a trap) touched it.
+        let host = [hit(false, 0x0060_7724, 2, AccessSource::Host), pair[1]];
+        assert_eq!(verified_idle_counter(&host, &changes, opcode, bytes), None);
+        // A load and a store by different instructions, or by a MOVE.
+        let split = [pair[0], hit(true, 0x0060_7724, 2, other)];
+        assert_eq!(verified_idle_counter(&split, &changes, opcode, bytes), None);
+        let moved = [hit(false, 0x0060_7724, 2, other), hit(true, 0x0060_7724, 2, other)];
+        assert_eq!(verified_idle_counter(&moved, &changes, opcode, bytes), None);
+        // Bad Mojo's ADDQ.L #1 on a long at $00607722: the bus stores only
+        // the two low bytes that changed.
+        let long_changes = [(0x0060_7720u32, 0x0000_0000u32, 0x0000_0000u32), (0x0060_7724, 0x0863_0000, 0x0864_0000)];
+        let long_changes = &long_changes[1..];
+        let long_opcode = |at: u32| if at == pc { 0x52AD } else { 0x302D }; // ADDQ.L #1,d16(A5)
+        let long_bytes = |address: u32| match address {
+            0x0060_7724 => (0x08, 0x08),
+            0x0060_7725 => (0x63, 0x64),
+            _ => (0, 0),
+        };
+        let long_hits = [
+            hit(false, 0x0060_7722, 4, rmw),
+            hit(true, 0x0060_7724, 1, rmw),
+            hit(true, 0x0060_7725, 1, rmw),
+        ];
+        assert_eq!(
+            verified_idle_counter(&long_hits, long_changes, long_opcode, long_bytes),
+            Some(IdleCounter { address: 0x0060_7722, width: 4, step: 1 })
+        );
+        // A write outside the operand the instruction read.
+        let stray = [long_hits[0], hit(true, 0x0060_7726, 1, rmw)];
+        assert_eq!(verified_idle_counter(&stray, long_changes, long_opcode, long_bytes), None);
+        // A changed byte the counter does not cover.
+        let wider = [(0x0060_7724u32, 0x001C_0000u32, 0x001D_0001u32)];
+        assert_eq!(verified_idle_counter(&pair, &wider, opcode, bytes), None);
+    }
+
+    #[test]
+    fn failed_counter_verifications_back_a_site_off_exponentially() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let site = 0x0002_0000u32;
+        let resume = |runner: &FixtureRunner| {
+            runner.idle_cycle_sites.iter().find(|rec| rec.site == site).unwrap().counter_resume_tick
+        };
+        for (failure, wait) in [4u32, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 2048].iter().enumerate() {
+            runner.note_idle_counter_verification(site, 1000, false);
+            assert_eq!(resume(&runner), 1000 + wait, "failure {}", failure + 1);
+        }
+        runner.note_idle_counter_verification(site, 5000, true);
+        assert_eq!(resume(&runner), 5000);
+        runner.note_idle_counter_verification(site, 5000, false);
+        assert_eq!(resume(&runner), 5004, "success resets the streak");
+    }
+
+    #[test]
     fn idle_cycle_backoff_expires_across_tick_wrap() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.idle_cycle_sites[0] = IdleCycleSiteRecord {
@@ -15655,6 +15761,7 @@
             probes: 0,
             cancel_streak: 2,
             resume_tick: (u32::MAX - 1).wrapping_add(4),
+            ..IdleCycleSiteRecord::default()
         };
         assert!(runner.idle_cycle_site_is_busy(0x20000, u32::MAX));
         assert!(runner.idle_cycle_site_is_busy(0x20000, 0));

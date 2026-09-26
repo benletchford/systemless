@@ -234,6 +234,7 @@ pub(super) fn run(
     saves.sync_save_files_now(&mut runner);
     save_screenshot(&runner, 9999);
     runner.print_pc_histogram(24);
+    systemless::runner::dump_wait_stats();
     runner.print_opcode_histogram(24);
 }
 

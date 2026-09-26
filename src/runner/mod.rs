@@ -22,7 +22,7 @@ use crate::loader::{
 };
 use crate::managers::resource::ResourceFork;
 use crate::memory::GuestAddressSpace as PpcSectionMem;
-use crate::memory::{MacMemoryBus, MemoryBus};
+use crate::memory::{AccessSource, MacMemoryBus, MemoryBus};
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{ProcessContext, ProcessMemoryManager, SharedProcessFileSystem};
 pub use crate::text_edit::{TextEditManagerSnapshot, TextEditSnapshot};
@@ -1015,7 +1015,9 @@ fn per_instruction_diagnostics_active() -> bool {
         || trace_hot_pc_enabled()
         || trace_pc_range_active()
         || crate::memory::bus::fb_write_trace_active()
-        || crate::memory::bus::mem_read_trace_active()
+        // Also true while an idle-counter access watch is armed, which
+        // attributes each watched access to a single-instruction batch.
+        || crate::memory::bus::read_hooks_active()
         || crate::memory::bus::mem_write_trace_active()
 }
 #[cfg(not(target_arch = "wasm32"))]
@@ -1054,6 +1056,12 @@ static WS_FAIL_MEM: AtomicU64 = AtomicU64::new(0);
 static WS_CANCEL_TRAP: AtomicU64 = AtomicU64::new(0);
 static WS_PARKED: AtomicU64 = AtomicU64::new(0);
 static WS_PERIOD_STEPS: AtomicU64 = AtomicU64::new(0);
+static WS_COUNTED_SKIPS: AtomicU64 = AtomicU64::new(0);
+static WS_COUNTED_PASSES: AtomicU64 = AtomicU64::new(0);
+static WS_COUNTER_ARMED: AtomicU64 = AtomicU64::new(0);
+static WS_COUNTER_TIMER_DUE: AtomicU64 = AtomicU64::new(0);
+static WS_COUNTER_STEP_MISMATCH: AtomicU64 = AtomicU64::new(0);
+static WS_COUNTER_REJECTED: AtomicU64 = AtomicU64::new(0);
 static WS_PROBE_OVERFLOWS: AtomicU64 = AtomicU64::new(0);
 static WS_RESUMED: AtomicU64 = AtomicU64::new(0);
 static WS_RESUME_FAIL_MEM: AtomicU64 = AtomicU64::new(0);
@@ -1123,6 +1131,15 @@ pub fn dump_wait_stats() {
         "[WAIT-STATS] cancel_backoffs={} backoff_skips={}",
         WS_CANCEL_BACKOFFS.load(AtomicOrdering::Relaxed),
         WS_BACKOFF_SKIPS.load(AtomicOrdering::Relaxed),
+    );
+    eprintln!(
+        "[WAIT-STATS] counted_skips={} counted_passes={} counter_armed={} counter_timer_due={} counter_step_mismatch={} counter_rejected={}",
+        WS_COUNTED_SKIPS.load(AtomicOrdering::Relaxed),
+        WS_COUNTED_PASSES.load(AtomicOrdering::Relaxed),
+        WS_COUNTER_ARMED.load(AtomicOrdering::Relaxed),
+        WS_COUNTER_TIMER_DUE.load(AtomicOrdering::Relaxed),
+        WS_COUNTER_STEP_MISMATCH.load(AtomicOrdering::Relaxed),
+        WS_COUNTER_REJECTED.load(AtomicOrdering::Relaxed),
     );
     if let Ok(guard) = WS_CANCEL_TRAP_WORDS.lock() {
         if let Some(map) = guard.as_ref() {
@@ -1402,6 +1419,11 @@ const IDLE_CYCLE_CANCEL_BACKOFF_CAP_TICKS: u32 = 120;
 /// Per-site probe accounting slots. The busiest poll loop measured so
 /// far interleaves about six distinct anchor sites per pass.
 const IDLE_CYCLE_SITE_SLOTS: usize = 8;
+/// A failed counter verification backs its site off for 4 ticks, doubling
+/// with each consecutive failure up to this cap (about 34 seconds), so a
+/// loop that never verifies soon stops paying for instruction-by-instruction
+/// passes, while one that later starts counting is still found.
+const IDLE_COUNTER_BACKOFF_CAP_TICKS: u32 = 2048;
 
 /// Probe accounting for one exact-idle-cycle anchor site.
 #[derive(Clone, Copy, Default)]
@@ -1418,6 +1440,11 @@ struct IdleCycleSiteRecord {
     /// No probing at this site before this tick (see
     /// [`IDLE_CYCLE_CANCEL_BACKOFF_CAP_TICKS`]).
     resume_tick: u32,
+    /// Consecutive counter verifications here that failed.
+    counter_streak: u8,
+    /// No counter verification at this site before this tick (see
+    /// [`IDLE_COUNTER_BACKOFF_CAP_TICKS`]).
+    counter_resume_tick: u32,
 }
 
 // Layout for dialog callback scratch region.
@@ -1731,6 +1758,9 @@ pub struct FixtureRunner {
     /// direct fast-memory stores until this call site repeats or the proof is
     /// canceled by a non-quiescent trap.
     idle_cycle_probe: Option<IdleCycleProbe>,
+    /// A counting pass awaiting its verification pass; see
+    /// `try_skip_counted_idle_passes`.
+    idle_counter: Option<IdleCounterCandidate>,
     /// Per-site probe budgets and trap-cancel backoff. A fixed table
     /// rather than a single slot: a play-mode poll loop can interleave
     /// probes from several anchor sites, and a single slot forgets each
@@ -1987,6 +2017,7 @@ impl FixtureRunner {
                 .scripted_instructions_per_tick as i32,
             idle_cycle_last_seen: None,
             idle_cycle_probe: None,
+            idle_counter: None,
             idle_cycle_sites: [IdleCycleSiteRecord::default(); IDLE_CYCLE_SITE_SLOTS],
             idle_cycle_sleep: None,
             frozen_ticks: None,
@@ -5013,6 +5044,7 @@ impl FixtureRunner {
 
     fn cancel_idle_cycle_detector(&mut self) {
         self.bus.cancel_write_probe();
+        self.idle_counter = None;
         self.idle_cycle_probe = None;
         self.idle_cycle_last_seen = None;
         self.idle_cycle_sleep = None;
@@ -5046,13 +5078,28 @@ impl FixtureRunner {
             .idle_cycle_sites
             .iter()
             .enumerate()
-            .min_by_key(|(_, rec)| rec.tick.max(rec.resume_tick))
+            .min_by_key(|(_, rec)| rec.tick.max(rec.resume_tick).max(rec.counter_resume_tick))
             .map_or(0, |(i, _)| i);
         self.idle_cycle_sites[i] = IdleCycleSiteRecord {
             site: trap_pc,
             ..IdleCycleSiteRecord::default()
         };
         i
+    }
+
+    /// A failed counter verification backs the site off exponentially: not
+    /// a counting loop, or not one this proof can see. Success resets it.
+    fn note_idle_counter_verification(&mut self, trap_pc: u32, tick: u32, verified: bool) {
+        let i = self.idle_cycle_site_slot(trap_pc);
+        let rec = &mut self.idle_cycle_sites[i];
+        if verified {
+            rec.counter_streak = 0;
+            rec.counter_resume_tick = tick;
+            return;
+        }
+        rec.counter_streak = rec.counter_streak.saturating_add(1);
+        let ticks = (4u32 << (rec.counter_streak - 1).min(11)).min(IDLE_COUNTER_BACKOFF_CAP_TICKS);
+        rec.counter_resume_tick = tick.wrapping_add(ticks);
     }
 
     /// Mark (site, tick) busy for the rest of the tick: it works between polls.
@@ -5134,8 +5181,115 @@ impl FixtureRunner {
             tick,
             cpu,
             arrivals: 0,
+            budget: self.tick_budget,
         });
         self.idle_cycle_last_seen = Some((trap_pc, tick));
+    }
+
+    /// Whether an M68k Time Manager task falls due within the next `units`
+    /// instruction units. Tasks fire at batch boundaries, which a counter
+    /// verification pass narrows to single instructions, so a pass may be
+    /// verified only when no task can fall due before it ends.
+    fn m68k_timer_due_within(&self, units: i32) -> bool {
+        let per_tick = u64::from(self.instructions_per_tick.max(1));
+        let remaining = u64::try_from(self.tick_budget.max(0)).unwrap_or(0).min(per_tick);
+        let after = (per_tick - remaining + u64::try_from(units).unwrap_or(0)).min(per_tick);
+        let subtick = u64::from(self.guest_tick()) * 1_000_000 + after * 1_000_000 / per_tick;
+        self.next_m68k_timer_subtick().is_some_and(|due| due <= subtick)
+    }
+
+    fn next_m68k_timer_subtick(&self) -> Option<u64> {
+        self.dispatcher.timer_tasks.with_ref(|tasks| {
+            tasks
+                .iter()
+                .filter(|task| task.architecture == CallbackTaskArchitecture::M68k && task.active)
+                .map(|task| task.fire_at_subtick)
+                .min()
+        })
+    }
+
+    /// Skip whole passes of a proven counting idle loop.
+    ///
+    /// Two consecutive passes returned to the same CPU state and changed the
+    /// same words by the same amounts; the second ran instruction by
+    /// instruction with those words watched. If the watch shows one
+    /// add/subtract-immediate instruction as their only reader and writer,
+    /// every further pass is identical except for the counter, so `n` passes
+    /// are replaced by adding `n` steps to it and charging their instruction
+    /// units. `n` stops short of the tick boundary and of the next Time
+    /// Manager task, so interrupts land where they would have, and of any
+    /// value at which the update's condition codes would differ.
+    fn try_skip_counted_idle_passes(
+        &mut self,
+        hits: &[crate::memory::AccessHit],
+        changes: &[(u32, u32, u32)],
+        units: i32,
+    ) -> bool {
+        let byte_of = |value: u32, word: u32, address: u32| (value >> (24 - 8 * (address - word))) as u8;
+        let bus = &self.bus;
+        let Some(counter) = verified_idle_counter(
+            hits,
+            changes,
+            |pc| bus.read_word(pc),
+            |address| {
+                let word = address & !3;
+                match changes.iter().find(|change| change.0 == word) {
+                    Some(&(_, old, new)) => (byte_of(old, word, address), byte_of(new, word, address)),
+                    None => {
+                        let byte = bus.read_byte(address);
+                        (byte, byte)
+                    }
+                }
+            },
+        ) else {
+            if wait_stats_enabled() {
+                let n = WS_COUNTER_REJECTED.fetch_add(1, AtomicOrdering::Relaxed);
+                if n < 8 {
+                    eprintln!("[WAIT-STATS] counter rejected: changes {changes:08X?} hits {hits:08X?}");
+                }
+            }
+            return false;
+        };
+        if self.bus.range_translates_contiguously(counter.address, counter.width as usize)
+            != Some(counter.address)
+        {
+            return false;
+        }
+        let value = match counter.width {
+            1 => u32::from(self.bus.read_byte(counter.address)),
+            2 => u32::from(self.bus.read_word(counter.address)),
+            _ => self.bus.read_long(counter.address),
+        };
+        let units_i64 = i64::from(units);
+        let budget = i64::from(self.tick_budget);
+        let mut passes = i64::from(passes_with_unchanged_flags(value, counter.step, counter.width));
+        passes = passes.min((budget - 1).max(0) / units_i64);
+        if let Some(due) = self.next_m68k_timer_subtick() {
+            // Stay strictly before the task's subtick at every batch boundary
+            // the skipped passes would have crossed.
+            let per_tick = i128::from(self.instructions_per_tick.max(1));
+            let tick_base = u64::from(self.guest_tick()) * 1_000_000;
+            let room = i128::from(due.saturating_sub(tick_base)) * per_tick - 1;
+            let elapsed = per_tick - i128::from(budget);
+            let allowed = (room - elapsed * 1_000_000).div_euclid(i128::from(units) * 1_000_000);
+            passes = passes.min(allowed.clamp(0, i128::from(i64::MAX)) as i64);
+        }
+        if passes <= 0 {
+            return true;
+        }
+        let mask = if counter.width == 4 { u32::MAX } else { (1u32 << (8 * counter.width)) - 1 };
+        let advanced = value.wrapping_add(counter.step.wrapping_mul(passes as u32)) & mask;
+        match counter.width {
+            1 => self.bus.write_byte(counter.address, advanced as u8),
+            2 => self.bus.write_word(counter.address, advanced as u16),
+            _ => self.bus.write_long(counter.address, advanced),
+        }
+        self.tick_budget -= (passes * units_i64) as i32;
+        if wait_stats_enabled() {
+            WS_COUNTED_SKIPS.fetch_add(1, AtomicOrdering::Relaxed);
+            WS_COUNTED_PASSES.fetch_add(passes as u64, AtomicOrdering::Relaxed);
+        }
+        true
     }
 
     fn park_proven_idle_cycle(&mut self, trap_pc: u32, wake_tick: u32) {
@@ -5292,6 +5446,11 @@ impl FixtureRunner {
         let cpu = CpuArchitecturalSnapshot::capture(&self.m68k.cpu.core);
 
         if let Some(probe) = self.idle_cycle_probe.take() {
+            // A counter verification lives exactly as long as the probe that
+            // armed it; only a closing pass below may use its evidence.
+            self.bus.attribute_access_hits(AccessSource::Host);
+            let counter_hits = self.bus.take_access_watch();
+            let counter_candidate = self.idle_counter.take();
             if self.bus.take_write_probe_overflow() {
                 // The journal blew past its cap since the probe began, so
                 // this cycle did real work. The bus already dropped the
@@ -5313,7 +5472,8 @@ impl FixtureRunner {
                 // A cycle of whatever small period closed on its origin
                 // state; the journal -- held open across every arrival
                 // since the probe began -- decides whether it was a wait.
-                let memory_unchanged = self.bus.finish_write_probe_unchanged();
+                let changes = self.bus.finish_write_probe_changes();
+                let memory_unchanged = changes.as_ref().is_some_and(Vec::is_empty);
                 if wait_stats_enabled() {
                     if memory_unchanged {
                         WS_EXACT_REPEATS.fetch_add(1, AtomicOrdering::Relaxed);
@@ -5342,9 +5502,61 @@ impl FixtureRunner {
                         }
                     }
                 }
-                // Writes did not restore: real progress, not a wait.
-                // Re-prove from the current state.
+                // Writes did not restore: real progress -- or a pass that only
+                // counts itself. Re-prove from the current state, and when the
+                // pass changed just a counter-sized handful of words, watch
+                // them through the next pass to find out who reads them.
+                let units = probe.budget - self.tick_budget;
                 self.begin_idle_cycle_probe(trap_pc, tick, cpu);
+                let Some(changes) = changes else {
+                    return false;
+                };
+                if let Some(candidate) =
+                    counter_candidate.filter(|c| c.trap_pc == trap_pc && c.tick == tick)
+                {
+                    let verified = if candidate.units == units
+                        && same_idle_steps(&candidate.changes, &changes)
+                    {
+                        self.try_skip_counted_idle_passes(
+                            counter_hits.as_deref().unwrap_or_default(),
+                            &changes,
+                            units,
+                        )
+                    } else {
+                        if wait_stats_enabled() {
+                            WS_COUNTER_STEP_MISMATCH.fetch_add(1, AtomicOrdering::Relaxed);
+                        }
+                        false
+                    };
+                    self.note_idle_counter_verification(trap_pc, tick, verified);
+                    return false;
+                }
+                let timer_due = self.m68k_timer_due_within(units);
+                if timer_due && wait_stats_enabled() {
+                    WS_COUNTER_TIMER_DUE.fetch_add(1, AtomicOrdering::Relaxed);
+                }
+                let backed_off = self.idle_cycle_sites.iter().any(|rec| {
+                    rec.site == trap_pc && (rec.counter_resume_tick.wrapping_sub(tick) as i32) > 0
+                });
+                if self.idle_cycle_probe.is_some()
+                    && units > 0
+                    && (1..=2).contains(&changes.len())
+                    && !timer_due
+                    && !backed_off
+                {
+                    if wait_stats_enabled() {
+                        WS_COUNTER_ARMED.fetch_add(1, AtomicOrdering::Relaxed);
+                    }
+                    let start = changes[0].0;
+                    let end = changes[changes.len() - 1].0 + 4;
+                    self.bus.arm_access_watch(start, end);
+                    self.idle_counter = Some(IdleCounterCandidate {
+                        trap_pc,
+                        tick,
+                        changes,
+                        units,
+                    });
+                }
                 return false;
             }
 
@@ -6463,7 +6675,10 @@ impl FixtureRunner {
                 }
                 precharged = true;
             }
-            let batch_max = if per_instruction_diagnostics_active() {
+            // Includes an armed counter verification, which attributes each
+            // watched access to the one instruction its batch executed.
+            let per_instruction = per_instruction_diagnostics_active();
+            let batch_max = if per_instruction {
                 1
             } else {
                 let mut n = (max_steps - count).min(BATCH_CHUNK);
@@ -6500,10 +6715,20 @@ impl FixtureRunner {
                 .append_pending_native_trap_return_pcs(&mut watch_buf);
             watch_buf.extend(self.debug_m68k_breakpoint_addresses());
             let previous_mouse = self.bus.read_long(crate::memory::globals::addr::MOUSE_LOC2);
+            if per_instruction {
+                self.bus.attribute_access_hits(AccessSource::Host);
+            }
             let batch = self
                 .m68k
                 .cpu
                 .run_batch(&mut self.bus, batch_max, &watch_buf);
+            if per_instruction {
+                self.bus.attribute_access_hits(if batch.instructions > 0 {
+                    AccessSource::Instruction(entry_pc)
+                } else {
+                    AccessSource::Host
+                });
+            }
             // Publish guest-written Mouse before dispatching an event/input
             // trap, even when the cursor task was called inside this batch.
             self.sync_guest_mouse_position(previous_mouse);
