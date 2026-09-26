@@ -7,6 +7,9 @@ use std::ops::Range;
 
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus, SavedPixels};
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod benchmarks;
+
 const INDEXED_8_GUARD_BYTES: usize = 4;
 const INDEXED_8_MAP_ENTRIES: usize = 256;
 
