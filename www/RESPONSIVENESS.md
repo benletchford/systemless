@@ -384,3 +384,44 @@ time improved without a material throughput regression. Compact packets remain
 larger than RGBA at this scale. Main/direct audio queue medians were approximately
 483.5/483.6 ms; those observations are not underrun measurements or evidence of
 reduced audible latency. Background host load was not isolated.
+
+## PowerPC spaceflight
+
+Eight release Escape Velocity Nova runs used PowerPC execution at 25 MHz,
+device scale 1, an 800×600 backing image at natural CSS size, fresh saves and
+fixed initial Macintosh time. A script created a pilot, skipped the introduction,
+applied thrust from ticks 5400–6000 and turning from 5600–5900, and reached tick
+6800 on both presenters. Each path had one calibration warm-up and three
+measured repeats, with measured pair order alternating. Common ticks 5500–6700
+contained 243–254 changed images per measured run.
+
+| Median of three run-level measurements | Main WebGL | Direct compact |
+| --- | ---: | ---: |
+| Milliseconds per guest tick | 16.6207 | 16.6213 |
+| Retired instructions per guest tick | 415,630.87 | 415,628.00 |
+| Host callback p99 | 0.5 ms | 0.2 ms |
+| Host frame-interval p99 | 18.5 ms | 18.5 ms |
+| Owner request/reply median / p99 | 7.7 / 17.1 ms | 7.5 / 17.5 ms |
+| Complete-image payload median | 1,920,000 bytes | 2,118,144 bytes |
+
+Time and retired work per tick differ by less than 0.01%. This supports no
+material steady-gameplay throughput regression on this host; it does not show a
+gameplay speedup. Compact packets remain larger at 1×. Final images show flight
+and turning but are not identical under real-time execution. Audio queue medians
+of approximately 416.4/415.9 ms do not measure underruns or audible latency.
+
+All eight full-run pacing probes **failed** the existing 50 ms runtime-frame
+gate: their largest frames were 111.2–120.2 ms at guest tick 1071, before pilot
+creation, on both presenters. Those failures remain recorded separately from
+the steady-gameplay interval; no threshold was relaxed. Host callbacks stayed
+short while the owner did this work, which does not make the guest itself
+responsive during that operation.
+
+Further clipped-layout isolation finds exact output from the same GPU presenter
+on an ordinary DOM canvas, but reproduces the mismatch after transferring that
+canvas to OffscreenCanvas even when its context is used on the main thread.
+Changing sibling placement or keeping only one visible canvas did not resolve
+it. A detached OffscreenCanvas → ImageBitmap → DOM WebGL prototype matches the
+four tested integer/fractional layouts, but has not been integrated or qualified
+for transport bounds, recovery or performance. The production renderer remains
+experimental and full fractional-layout parity is still unachieved.
