@@ -170,6 +170,19 @@ Worker protocol and lifecycle tests run without browser fixtures:
 node --test www/tests/*.test.cjs
 ```
 
+The experimental indexed GPU presenter also has a fixture-free differential
+probe. It runs in a real OffscreenCanvas worker and compares GPU readback with
+scalar RGBA for padded indexed rows, all palette indices, palette-only changes,
+odd dimensions, typed-array offsets and RGBA/indexed transitions:
+
+```sh
+node www/scripts/verify-renderer-gpu-cdp.mjs
+```
+
+Set `CHROME_BIN` if Chrome/Chromium is not in a standard installation location.
+This validates the presenter kernel, not the unfinished indexed gameplay export
+or full-pipeline performance.
+
 Worker commands carry a runtime generation and monotonic command sequence. The
 bridge allows eight commands in flight and 256 pending commands (plus one reserved shutdown); consecutive
 pending mouse moves can coalesce, but key/button/save boundaries stay ordered.
