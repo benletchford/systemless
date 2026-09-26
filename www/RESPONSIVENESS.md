@@ -277,3 +277,81 @@ sampling differences, while the corresponding unclipped probe matches. Changing
 layer promotion, paint containment or WebGL context attributes did not resolve
 it. The experimental backend remains opt-in, and this result is not counted as
 full fractional-scale image parity.
+
+
+## Animated gameplay and visible response
+
+A separate eight-run release comparison held the camera-turn key during Marathon
+world rendering: one warm-up and three measured repeats each for the main WebGL
+presenter and direct compact renderer, alternating order. The same owner-worker
+runtime, fresh saves, fixed startup date, 25 MHz setting and device scale 1 were
+used. Keydown and keyup followed guest-tick milestones 3500 and 4500. All eight
+pacing checks passed. Common ticks 3600–4100 contained hundreds of changed images,
+so this exercises continuous drawing rather than the earlier stationary view.
+
+| Median of three run-level measurements | Main WebGL | Direct compact |
+| --- | ---: | ---: |
+| Milliseconds per guest tick | 16.763 | 16.672 |
+| Retired instructions per guest tick | 215,095 | 214,679 |
+| Host callback p99 | 0.6 ms | 0.2 ms |
+| Host frame-interval p99 | 18.4 ms | 18.4 ms |
+| Owner request/reply median | 9.7 ms | 8.6 ms |
+| Owner request/reply p99 | 18.1 ms | 16.6 ms |
+
+This case shows no material guest-throughput regression, with less host callback
+work. It does not establish a substantial gameplay speedup or reduced physical
+input latency. The compact HUD still carries more bytes than RGBA at 1×.
+Actual instruction and input endpoints are retained; real-time runs are not
+instruction-identical replay. These probes did not overlap other browser probes
+or builds launched for this comparison, but background host load was not isolated.
+
+Repeating that comparison at device scale 3 (2400×1800 backing images displayed
+at 800×600 CSS pixels) also passed all eight pacing checks. Each presenter had
+one warm-up and three measured repeats, again alternating order and using the
+common guest interval with continuous camera rotation.
+
+| Median of three run-level measurements, scale 3 | Main WebGL | Direct compact |
+| --- | ---: | ---: |
+| Milliseconds per guest tick | 16.714 | 16.667 |
+| Retired instructions per guest tick | 216,030 | 214,679 |
+| Host callback p95 / p99 | 6.2 / 6.9 ms | 0.1 / 0.2 ms |
+| Host frame-interval p99 | 18.4 ms | 18.5 ms |
+| Owner request/reply median / p99 | 15.3 / 24.3 ms | 8.6 / 17.8 ms |
+| Complete-image payload | 17,280,000 bytes | 2,065,792 bytes |
+
+This high-resolution case reduces host callback work and owner roundtrip time,
+with guest time per tick differing by less than 0.3% and retired work per tick
+within 0.7%. It demonstrates a benefit for this capability class without a
+material throughput regression. Frame-interval p99 remains similar. Audio queue
+observations do not replace instrumented underrun checks, and the unresolved
+clipped fractional-layout difference still prevents a general default rollout.
+
+A separate settled-scene input diagnostic sampled composited screenshots of a
+world-view region, with 42 main-presenter and 41 direct-renderer captures unchanged
+before a camera-turn input. Both showed actual camera movement afterward. Owner
+application completed 0.7/0.5 ms after host dispatch, normalized using each clock's
+time origin and checked against host acknowledgement. This measures the runner's
+input enqueue, not the guest's eventual event consumption. The first changed
+capture started/completed 46.3/112.9 ms after dispatch for main WebGL and
+61.6/109.2 ms for direct compact rendering. Capture overhead is substantial:
+these are single-event conservative visible-response upper bounds, not physical
+monitor latency, latency percentiles or evidence of a speedup. Inputs were sent
+at completed-frame boundaries, not worst-case random phases. An earlier attempt
+whose scene changed before input was retained as inconclusive and excluded.
+
+Separate 3× display-scale diagnostics sampled 261/267 changed images over the
+same common guest interval. Main RGBA versus direct compact export took a median
+6.9/0.5 ms on the owner, with Wasm-to-JavaScript packet construction at 1.5/0.2 ms.
+Payloads were 17,280,000/2,065,792 bytes. Compact renderer submission took a median
+2.8 ms (p99 3.0 ms), and host request-to-submission acknowledgement was 11.6 ms
+(p99 21.4 ms). These are separate phase measurements on local clocks, not summed
+cross-thread timestamps or GPU-completion measurements. This diagnostic pair
+demonstrates reduced owner conversion/copy work; it is not a repeated primary
+timing comparison.
+
+The initial direct diagnostic report exceeded 4 MiB and lost its CDP connection.
+A fixture-free large-response check reproduced the failure. Retrieving the
+complete report in bounded chunks succeeded, preserving all samples and the
+existing pacing gates; the runtime probe now uses that transport and rejects
+closed or timed-out connections explicitly. The failed attempts remain excluded
+from timing evidence.
