@@ -262,15 +262,13 @@ impl PpcImportBindingPolicy for PpcConnectedCfmBindingPolicy<'_> {
         import_data_address_for(library, symbol)
     }
 
-    fn resolved_import_address(&self, library: &str, symbol: &str, class: u8) -> Option<u32> {
+    fn resolved_import_address(&self, library: &str, symbol: &str, _class: u8) -> Option<u32> {
         self.connections
             .iter()
             .find(|connection| connection.library_name.eq_ignore_ascii_case(library))
-            .and_then(|connection| {
-                connection.exports.iter().find(|export| {
-                    export.name == symbol && export.class == class
-                })
-            })
+            // PEF symbol classes annotate imports and exports; CFM binding
+            // resolves the symbol by name within the selected library.
+            .and_then(|connection| connection.exports.iter().find(|export| export.name == symbol))
             .map(|export| export.address)
             .or_else(|| self.fixed_data_address(library, symbol))
     }
@@ -444,6 +442,7 @@ pub const PPC_INPUT_OUT_OF_BOUNDS_ERR: i16 = -190;
 pub const PPC_ADD_RES_FAILED: i16 = -194;
 pub const PPC_RMV_RES_FAILED: i16 = -196;
 pub const PPC_RES_ATTR_ERR: i16 = -198;
+pub const PPC_MAP_READ_ERR: i16 = -199;
 
 pub(super) const BLR: u32 = 0x4e80_0020;
 pub(super) const PPC_FIRST_FILE_REF_NUM: i16 = 128;
@@ -728,7 +727,6 @@ struct PpcTeStyleRun {
 const PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET: u32 = 156;
 const PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET: u32 = 160;
 const PPC_GRAF_PORT_SIZE: u32 = 108;
-#[cfg(test)]
 const PPC_GDEVICE_SIZE: u32 = 62;
 const PPC_PIXMAP_SIZE: u32 = 50;
 const PPC_CGRAF_PORT_SIZE: u32 = 170;
@@ -1139,6 +1137,7 @@ pub enum PpcLegacyControlOperation {
     DrawOneControl,
     FindControl,
     GetControlMaximum,
+    GetControlReference,
     GetControlMinimum,
     GetControlTitle,
     GetControlValue,
@@ -1148,6 +1147,7 @@ pub enum PpcLegacyControlOperation {
     MoveControl,
     NewControl,
     SetControlMaximum,
+    SetControlReference,
     SetControlMinimum,
     ShowControl,
     SizeControl,
@@ -1693,6 +1693,7 @@ pub enum PpcImportDispatcherTarget {
     FSpCreateResFile,
     HCreateResFile,
     FSpOpenDF,
+    FSpOpenRF,
     PBOpen,
     PBHOpenDF,
     HOpen,
@@ -1723,8 +1724,10 @@ pub enum PpcImportDispatcherTarget {
     DSpGetFirstContext,
     DSpGetNextContext,
     DSpFindBestContext,
+    DSpFindBestContextOnDisplayID,
     DSpUserSelectContext,
     DSpStartup,
+    DSpGetVersion,
     DSpShutdown,
     DSpProcessEvent,
     DSpCanUserSelectContext,
@@ -1754,11 +1757,13 @@ pub enum PpcImportDispatcherTarget {
     DSpContextInvalBackBufferRect,
     DSpContextSetUnderlayAltBuffer,
     DMGetDisplayIDByGDevice,
+    DMGetNameByAVID,
     DMGetGDeviceByDisplayID,
     GetNewDialog,
     NewDialog,
     NewFeaturesDialog,
     GetDialogItem,
+    GetDialogItemAsControl,
     SetDialogItem,
     GetDialogItemText,
     SetDialogItemText,
@@ -1968,6 +1973,7 @@ pub enum PpcImportDispatcherTarget {
     GetProcessInformation,
     ParamText,
     AlertReturnDefault,
+    StandardAlert,
     ExitToShell,
     MathCeil,
     MathSqrt,
@@ -8044,7 +8050,7 @@ impl PpcLoadedApp {
         let mut scrap = std::mem::take(&mut self.scrap);
         let list_manager = std::mem::take(&mut self.list_manager);
         let collections = self.collections.shared_handle();
-        let mut draw_sprocket = self.draw_sprocket;
+        let mut draw_sprocket = std::mem::take(&mut self.draw_sprocket);
         let mut handled_import_count = 0u32;
         let mut last_import_index = None;
         let mut unsupported_import_index = None;
@@ -9072,7 +9078,7 @@ impl PpcLoadedApp {
                         // from the import, at the next interrupt-work boundary.
                         let action = if binding.library_name == "InterfaceLib"
                             && binding.symbol_name == "PBReadAsync"
-                            && matches!(action, PpcImportAction::Return(0))
+                            && matches!(action, PpcImportAction::Return(_))
                         {
                             let parameter_block = cpu.gpr[3];
                             let completion = memory.read_u32_be(parameter_block + 12).unwrap_or(0);
@@ -9625,7 +9631,11 @@ impl PpcLoadedApp {
             for file in file_system
                 .vfs_files
                 .iter_mut()
-                .filter(|file| file.dirty && !file.path.is_empty())
+                .filter(|file| {
+                    file.dirty
+                        && !file.path.is_empty()
+                        && !file.path.starts_with(PPC_OPEN_RESOURCE_FORK_PREFIX)
+                })
             {
                 exports.push(PpcVfsFileExport {
                     path: file.path.clone(),
@@ -12131,6 +12141,18 @@ fn dispatcher_target_for_import(
         // directly. The supported callers import __setjmp without longjmp,
         // so they do not require restoration of the saved environment.
         ("StdCLib", "__setjmp") => PpcImportDispatcherTarget::ReturnNoErr,
+        // Classic Text Services Manager startup registers the application.
+        // The emulated process has no external input method to initialize.
+        ("InterfaceLib", "InitTSMAwareApplication")
+        | ("InterfaceLib", "CloseTSMAwareApplication") => PpcImportDispatcherTarget::ReturnNoErr,
+        ("InterfaceLib", "SetScriptManagerVariable") => PpcImportDispatcherTarget::ReturnNoErr,
+        // No input method is active in the emulated process, so Text Services
+        // Manager leaves each EventRecord for the application to handle.
+        ("InterfaceLib", "TSMEvent") | ("InterfaceLib", "TSMMenuSelect") => {
+            PpcImportDispatcherTarget::ReturnNoErr
+        }
+        // The default virtual keyboard uses the Roman script (script 0).
+        ("InterfaceLib", "KeyScript") => PpcImportDispatcherTarget::NoOpPreserve,
         // ISO C atexit registers process-termination cleanup. Classic games
         // remain resident until the emulated process is torn down, at which
         // point Systemless releases all guest state together.
@@ -12236,6 +12258,7 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::AEInstallEventHandler
         }
         ("DrawSprocketLib", "DSpStartup") => PpcImportDispatcherTarget::DSpStartup,
+        ("DrawSprocketLib", "DSpGetVersion") => PpcImportDispatcherTarget::DSpGetVersion,
         ("DrawSprocketLib", "DSpShutdown") => PpcImportDispatcherTarget::DSpShutdown,
         ("DrawSprocketLib", "DSpGetFirstContext") => PpcImportDispatcherTarget::DSpGetFirstContext,
         ("DrawSprocketLib", "DSpGetNextContext") => PpcImportDispatcherTarget::DSpGetNextContext,
@@ -12254,6 +12277,9 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::DSpContextLocalToGlobal
         }
         ("DrawSprocketLib", "DSpFindBestContext") => PpcImportDispatcherTarget::DSpFindBestContext,
+        ("DrawSprocketLib", "DSpFindBestContextOnDisplayID") => {
+            PpcImportDispatcherTarget::DSpFindBestContextOnDisplayID
+        }
         ("DrawSprocketLib", "DSpUserSelectContext") => {
             PpcImportDispatcherTarget::DSpUserSelectContext
         }
@@ -12724,6 +12750,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "DMGetDisplayIDByGDevice") => {
             PpcImportDispatcherTarget::DMGetDisplayIDByGDevice
         }
+        ("DisplayLib", "DMGetNameByAVID") => PpcImportDispatcherTarget::DMGetNameByAVID,
         ("InterfaceLib", "DMGetGDeviceByDisplayID") => {
             PpcImportDispatcherTarget::DMGetGDeviceByDisplayID
         }
@@ -12877,6 +12904,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "ZeroScrap") => PpcImportDispatcherTarget::ZeroScrap,
         ("InterfaceLib", "LoadScrap") => PpcImportDispatcherTarget::LoadScrap,
         ("InterfaceLib", "FSpOpenDF") => PpcImportDispatcherTarget::FSpOpenDF,
+        ("InterfaceLib", "FSpOpenRF") => PpcImportDispatcherTarget::FSpOpenRF,
         ("InterfaceLib", "HOpen") | ("InterfaceLib", "HOpenDF") => PpcImportDispatcherTarget::HOpen,
         ("InterfaceLib", "FSOpen") => PpcImportDispatcherTarget::FSOpen,
         ("InterfaceLib", "PBOpen")
@@ -12959,6 +12987,9 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::NewFeaturesDialog
         }
         ("InterfaceLib", "GetDialogItem") => PpcImportDispatcherTarget::GetDialogItem,
+        ("AppearanceLib", "GetDialogItemAsControl") => {
+            PpcImportDispatcherTarget::GetDialogItemAsControl
+        }
         ("InterfaceLib", "SetDialogItem") | ("InterfaceLib", "SetDItem") => {
             PpcImportDispatcherTarget::SetDialogItem
         }
@@ -13284,6 +13315,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "Alert" | "StopAlert" | "NoteAlert" | "CautionAlert") => {
             PpcImportDispatcherTarget::AlertReturnDefault
         }
+        ("AppearanceLib", "StandardAlert") => PpcImportDispatcherTarget::StandardAlert,
         ("InterfaceLib", "PurgeMem") => PpcImportDispatcherTarget::PurgeMem,
         ("InterfaceLib", "PurgeMemSys") => PpcImportDispatcherTarget::PurgeMemSys,
         ("InterfaceLib", "ReleaseResource") => PpcImportDispatcherTarget::ReleaseResource,
@@ -13376,6 +13408,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetControlMaximum") => PpcImportDispatcherTarget::LegacyControl(
             PpcLegacyControlOperation::GetControlMaximum,
         ),
+        ("InterfaceLib", "GetControlReference") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::GetControlReference,
+        ),
         ("InterfaceLib", "GetControlMinimum") => PpcImportDispatcherTarget::LegacyControl(
             PpcLegacyControlOperation::GetControlMinimum,
         ),
@@ -13402,6 +13437,9 @@ fn dispatcher_target_for_import(
         ),
         ("InterfaceLib", "SetControlMaximum") => PpcImportDispatcherTarget::LegacyControl(
             PpcLegacyControlOperation::SetControlMaximum,
+        ),
+        ("InterfaceLib", "SetControlReference") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::SetControlReference,
         ),
         ("InterfaceLib", "SetControlMinimum") => PpcImportDispatcherTarget::LegacyControl(
             PpcLegacyControlOperation::SetControlMinimum,
@@ -15359,6 +15397,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             unreachable!("textedit imports return through dispatch_textedit_import")
         }
         PpcImportDispatcherTarget::DSpStartup
+        | PpcImportDispatcherTarget::DSpGetVersion
         | PpcImportDispatcherTarget::DSpShutdown
         | PpcImportDispatcherTarget::DSpGetFirstContext
         | PpcImportDispatcherTarget::DSpGetNextContext
@@ -15369,6 +15408,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::DSpContextGlobalToLocal
         | PpcImportDispatcherTarget::DSpContextLocalToGlobal
         | PpcImportDispatcherTarget::DSpFindBestContext
+        | PpcImportDispatcherTarget::DSpFindBestContextOnDisplayID
         | PpcImportDispatcherTarget::DSpUserSelectContext
         | PpcImportDispatcherTarget::DSpSetBlankingColor
         | PpcImportDispatcherTarget::DSpAltBufferNew
@@ -15504,6 +15544,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::HCreateResFile
         | PpcImportDispatcherTarget::FSpOpenResFile
         | PpcImportDispatcherTarget::FSpOpenDF
+        | PpcImportDispatcherTarget::FSpOpenRF
         | PpcImportDispatcherTarget::HOpen
         | PpcImportDispatcherTarget::PBOpen
         | PpcImportDispatcherTarget::PBHOpenDF
@@ -15829,6 +15870,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             unreachable!("Font Manager imports return through dispatch_font_import")
         }
         PpcImportDispatcherTarget::DMGetDisplayIDByGDevice
+        | PpcImportDispatcherTarget::DMGetNameByAVID
         | PpcImportDispatcherTarget::DMGetGDeviceByDisplayID => {
             unreachable!("display manager imports return through dispatch_display_import")
         }
@@ -15894,6 +15936,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::NewDialog
         | PpcImportDispatcherTarget::NewFeaturesDialog
         | PpcImportDispatcherTarget::GetDialogItem
+        | PpcImportDispatcherTarget::GetDialogItemAsControl
         | PpcImportDispatcherTarget::SetDialogItem
         | PpcImportDispatcherTarget::GetDialogItemText
         | PpcImportDispatcherTarget::SetDialogItemText
@@ -16052,7 +16095,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             unreachable!("Process Manager imports return through dispatch_process_import")
         }
         PpcImportDispatcherTarget::ParamText
-        | PpcImportDispatcherTarget::AlertReturnDefault => {
+        | PpcImportDispatcherTarget::AlertReturnDefault
+        | PpcImportDispatcherTarget::StandardAlert => {
             unreachable!("dialog imports return through dispatch_dialog_import")
         }
         PpcImportDispatcherTarget::Q3Initialize
@@ -19009,6 +19053,8 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
         b"qd  " => Some((0x0230, PPC_NO_ERR)),
         b"qdrw" => Some((0x000F, PPC_NO_ERR)),
         b"ram " => Some((REFERENCE_MACHINE_PROFILE.ram_size_bytes, PPC_NO_ERR)),
+        // With virtual memory disabled, logical and physical RAM are equal.
+        b"lram" => Some((REFERENCE_MACHINE_PROFILE.ram_size_bytes, PPC_NO_ERR)),
         b"fpu " => Some((
             REFERENCE_POWERPC_EXECUTION_CAPABILITIES.fpu_type,
             PPC_NO_ERR,
@@ -32077,10 +32123,13 @@ fn ppc_te_get_height(
             .read_u16_be(te_ptr + PPC_TE_N_LINES_OFFSET)
             .unwrap_or(0),
     );
-    if start_line < 1 || end_line < start_line || line_count == 0 {
+    // Classic applications commonly pass 0 for the first line when asking
+    // for the full text height (for example TEGetHeight(32767, 0, hTE)).
+    // Line 0 is the first line in that convention.
+    if start_line < 0 || end_line < start_line || line_count == 0 {
         return 0;
     }
-    let start = (start_line - 1).min(line_count) as usize;
+    let start = (start_line.max(1) - 1).min(line_count) as usize;
     let end = end_line.min(line_count) as usize;
     let (_, _, fallback_height, _) = ppc_te_metrics(memory, te_ptr);
     let height = (start..end).fold(0i32, |height, line| {
@@ -42922,6 +42971,68 @@ fn ppc_fsp_open_df(
     PPC_NO_ERR
 }
 
+#[allow(clippy::too_many_arguments)]
+fn ppc_fsp_open_rf(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &mut ProcessVfsFileRecords,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    vfs_resources: &[PpcVfsResourceRecord],
+    files: &mut Vec<PpcFileRecord>,
+    writable_refnums: &mut HashSet<u16>,
+    next_file_ref_num: &mut i16,
+) -> i16 {
+    let spec_ptr = cpu.gpr[3];
+    let permission = cpu.gpr[4] as u8;
+    let ref_num_out_ptr = cpu.gpr[5];
+    if ref_num_out_ptr == 0 || !ppc_memory_can_write_bytes(memory, ref_num_out_ptr, 2) {
+        return PPC_PARAM_ERR;
+    }
+    let path = match ppc_path_for_fsspec(memory, vfs_directories, spec_ptr) {
+        Ok(path) => path,
+        Err(err) => return err,
+    };
+    let Some(resource_index) = ppc_vfs_resource_file_index(vfs_resource_files, &path) else {
+        return PPC_FNF_ERR;
+    };
+    let path = vfs_resource_files[resource_index].path.clone();
+    let open_path = format!("{PPC_OPEN_RESOURCE_FORK_PREFIX}{path}");
+    if ppc_vfs_file_index(vfs_files, &open_path).is_none() {
+        let bytes = vfs_resource_files
+            .fork(&path)
+            .cloned()
+            .or_else(|| ppc_serialized_resource_fork(&vfs_resource_files[resource_index], vfs_resources))
+            .unwrap_or_default();
+        vfs_files.push(PpcVfsFileRecord {
+            path: open_path.clone(),
+            data: bytes.into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+    }
+    let ref_num = *next_file_ref_num;
+    let Some(next_ref_num) = next_file_ref_num.checked_add(1) else {
+        return PPC_PARAM_ERR;
+    };
+    let _ = memory.write_u16_be(ref_num_out_ptr, ref_num as u16);
+    files.push(PpcFileRecord {
+        ref_num,
+        path: open_path,
+        position: 0,
+    });
+    if ppc_file_permission_allows_writing(permission) {
+        writable_refnums.insert(ref_num as u16);
+    }
+    *next_file_ref_num = next_ref_num;
+    if ppc_hle_trace_enabled() {
+        eprintln!("[PPC-TRACE] FSpOpenRF path=\"{}\" permission={} -> ref={}", path, permission, ref_num);
+    }
+    PPC_NO_ERR
+}
+
 fn ppc_h_open(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
@@ -43168,15 +43279,61 @@ fn ppc_pb_open(
     ppc_complete_pb(memory, pb, result)
 }
 
+const PPC_OPEN_RESOURCE_FORK_PREFIX: &str = "\0resource-fork:";
+
+fn ppc_sync_open_resource_fork(
+    ref_num: i16,
+    files: &[PpcFileRecord],
+    vfs_files: &mut ProcessVfsFileRecords,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    vfs_resources: &mut Vec<PpcVfsResourceRecord>,
+) {
+    let Some(open_path) = files
+        .iter()
+        .find(|file| file.ref_num == ref_num)
+        .map(|file| file.path.clone())
+    else {
+        return;
+    };
+    let Some(path) = open_path.strip_prefix(PPC_OPEN_RESOURCE_FORK_PREFIX) else {
+        return;
+    };
+    if files
+        .iter()
+        .any(|file| file.ref_num != ref_num && file.path == open_path)
+    {
+        return;
+    }
+    let Some(index) = ppc_vfs_file_index(vfs_files, &open_path) else {
+        return;
+    };
+    if vfs_files[index].dirty {
+        let data = vfs_files[index].data.to_vec();
+        vfs_resource_files.update_fork(path, &data);
+        if let Some(resource_index) = ppc_vfs_resource_file_index(vfs_resource_files, path) {
+            let resource_file = &mut vfs_resource_files[resource_index];
+            resource_file.raw_data = Some(data.clone().into());
+            resource_file.resource_len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+            resource_file.dirty = true;
+        }
+        vfs_resources.retain(|resource| !resource.path.eq_ignore_ascii_case(path));
+    }
+    vfs_files.retain(|record| !record.path.eq_ignore_ascii_case(&open_path));
+}
+
 fn ppc_fs_close(
     cpu: &mut PpcCpu,
     files: &mut Vec<PpcFileRecord>,
     writable_refnums: &mut HashSet<u16>,
+    vfs_files: &mut ProcessVfsFileRecords,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    vfs_resources: &mut Vec<PpcVfsResourceRecord>,
 ) -> i16 {
     let ref_num = ppc_ref_num_from_gpr(cpu.gpr[3]);
     if std::env::var_os("SYSTEMLESS_PPC_FILE_TRACE").is_some() {
         eprintln!("[PPC-FILE-TRACE] FSClose ref={} path={:?}", ref_num, files.iter().find(|file| file.ref_num == ref_num).map(|file| &file.path));
     }
+    ppc_sync_open_resource_fork(ref_num, files, vfs_files, vfs_resource_files, vfs_resources);
     files.retain(|file| file.ref_num != ref_num);
     writable_refnums.remove(&(ref_num as u16));
     PPC_NO_ERR
@@ -43187,6 +43344,9 @@ fn ppc_pb_close(
     memory: &mut PpcSectionMem,
     files: &mut Vec<PpcFileRecord>,
     writable_refnums: &mut HashSet<u16>,
+    vfs_files: &mut ProcessVfsFileRecords,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    vfs_resources: &mut Vec<PpcVfsResourceRecord>,
 ) -> i16 {
     let pb = cpu.gpr[3];
     let Some(ref_num) = memory.read_u16_be(pb + 24).map(|value| value as i16) else {
@@ -43198,6 +43358,7 @@ fn ppc_pb_close(
     if std::env::var_os("SYSTEMLESS_PPC_FILE_TRACE").is_some() {
         eprintln!("[PPC-FILE-TRACE] PBClose ref={} path={:?}", ref_num, files.iter().find(|file| file.ref_num == ref_num).map(|file| &file.path));
     }
+    ppc_sync_open_resource_fork(ref_num, files, vfs_files, vfs_resource_files, vfs_resources);
     files.retain(|file| file.ref_num != ref_num);
     writable_refnums.remove(&(ref_num as u16));
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
@@ -43663,6 +43824,19 @@ fn ppc_fsp_open_res_file(
             );
         }
         return existing.ref_num;
+    }
+    // Inside Macintosh: More Macintosh Toolbox, FSpOpenResFile: opening a
+    // malformed resource map fails with mapReadErr. Raw File Manager writes
+    // may replace a previously valid map with arbitrary bytes.
+    if let Some(index) = ppc_vfs_resource_file_index(vfs_resource_files, &path) {
+        if vfs_resource_files[index]
+            .raw_data
+            .as_ref()
+            .is_some_and(|bytes| ResourceFork::parse(bytes).is_none())
+        {
+            *last_resource_error = PPC_MAP_READ_ERR;
+            return -1;
+        }
     }
     ppc_materialize_resource_records_for_path(vfs_resource_files, vfs_resources, &path);
     ppc_materialize_quilt_resources_for_existing_path(

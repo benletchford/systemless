@@ -933,3 +933,124 @@ fn te_scroll_erases_the_previous_text_position() {
         "only the scrolled text may remain inside the view"
     );
 }
+
+#[test]
+fn te_get_height_accepts_zero_for_the_first_line() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TENew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 100, 200).unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 8, 0, 0, 100, 200).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = scratch + 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TENew);
+    let te_handle = loaded.cpu.gpr[3];
+    let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+    loaded.memory.write_u16_be(te_ptr + PPC_TE_N_LINES_OFFSET, 3).unwrap();
+    loaded.memory.write_u16_be(te_ptr + PPC_TE_LINE_HEIGHT_OFFSET, 12).unwrap();
+
+    assert_eq!(ppc_te_get_height(&mut loaded.memory, te_handle, 0, 32767), 36);
+    assert_eq!(ppc_te_get_height(&mut loaded.memory, te_handle, 1, 32767), 36);
+    assert_eq!(ppc_te_get_height(&mut loaded.memory, te_handle, 2, 3), 24);
+}
+
+
+#[test]
+fn te_update_skips_text_lines_below_the_view_rectangle() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TEUpdate")).unwrap();
+    let rects = PPC_DATA_BASE + 0x1800;
+    loaded.memory.add_region(rects, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, rects, 60, 10, 100, 100).unwrap();
+    ppc_write_rect(&mut loaded.memory, rects + 8, 10, 10, 40, 100).unwrap();
+    let mut last_mem_error = PPC_NO_ERR;
+    let te_handle = ppc_te_initialize_record(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        rects,
+        rects + 8,
+        PPC_MAIN_GWORLD,
+        0,
+        PPC_QD_TEXT_MODE_SRC_OR,
+        12,
+        loaded.quickdraw_fore_color,
+        false,
+    );
+    assert_eq!(
+        ppc_te_set_text(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            te_handle,
+            b"OUTSIDE VIEW",
+        ),
+        PPC_NO_ERR
+    );
+    loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 103);
+    loaded.cpu.gpr[4] = te_handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert!((60..100).all(|y| (10..100).all(|x| {
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)) != Some(103)
+    })));
+}
+
+
+#[test]
+fn te_update_clips_partial_glyphs_at_the_view_bottom() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TEUpdate")).unwrap();
+    let rects = PPC_DATA_BASE + 0x1800;
+    loaded.memory.add_region(rects, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, rects, 20, 10, 100, 100).unwrap();
+    ppc_write_rect(&mut loaded.memory, rects + 8, 20, 10, 26, 100).unwrap();
+    let mut last_mem_error = PPC_NO_ERR;
+    let te_handle = ppc_te_initialize_record(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        rects,
+        rects + 8,
+        PPC_MAIN_GWORLD,
+        0,
+        PPC_QD_TEXT_MODE_SRC_OR,
+        12,
+        loaded.quickdraw_fore_color,
+        false,
+    );
+    assert_eq!(
+        ppc_te_set_text(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            te_handle,
+            b"M",
+        ),
+        PPC_NO_ERR
+    );
+    loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 103);
+    loaded.cpu.gpr[4] = te_handle;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert!((20..26).any(|y| (10..100).any(|x| {
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)) == Some(103)
+    })));
+    assert!((26..40).all(|y| (10..100).all(|x| {
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)) != Some(103)
+    })));
+}

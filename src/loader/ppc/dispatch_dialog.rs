@@ -14,6 +14,8 @@ pub(super) const PPC_DIALOG_RESOURCE_ID_OFFSET: u32 = 170;
 // System 7 cancel-item API has no canonical public record field.
 pub(super) const PPC_DIALOG_CANCEL_ITEM_HLE_OFFSET: u32 = 172;
 pub(super) const PPC_DIALOG_ALERT_HIT_HLE_OFFSET: u32 = 174;
+const PPC_DIALOG_STANDARD_ALERT_OUTPUT_HLE_OFFSET: u32 = 176;
+const PPC_DIALOG_STANDARD_ALERT_STACK_HLE_OFFSET: u32 = 180;
 pub(super) const PPC_DIALOG_ITEM_DISABLED: u8 = 0x80;
 pub(super) const PPC_DIALOG_ITEM_USER_ITEM: u8 = 0;
 pub(super) const PPC_DIALOG_ITEM_BUTTON: u8 = 4;
@@ -313,6 +315,37 @@ pub(super) fn dispatch_dialog_import(
             ppc_get_dialog_item(cpu, memory, handles);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::GetDialogItemAsControl => {
+            let dialog = cpu.gpr[3];
+            let item_number = cpu.gpr[4] as u16 as usize;
+            let control_out = cpu.gpr[5];
+            if control_out == 0 || !ppc_memory_can_write_bytes(memory, control_out, 4) {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let control = ppc_dialog_items_for_dialog(memory, handles, dialog)
+                .and_then(|items| {
+                    item_number
+                        .checked_sub(1)
+                        .and_then(|index| items.get(index).cloned())
+                })
+                .filter(|item| {
+                    matches!(
+                        item.item_type & !PPC_DIALOG_ITEM_DISABLED,
+                        PPC_DIALOG_ITEM_BUTTON
+                            | PPC_DIALOG_ITEM_CHECKBOX
+                            | PPC_DIALOG_ITEM_RADIO
+                            | PPC_DIALOG_ITEM_RESOURCE_CONTROL
+                    )
+                })
+                .map(|item| item.handle)
+                .unwrap_or(0);
+            let _ = memory.write_u32_be(control_out, control);
+            Some(PpcImportAction::Return(ppc_i16_result(if control != 0 {
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            })))
+        }
         PpcImportDispatcherTarget::SetDialogItem => {
             ppc_set_dialog_item(cpu, memory, handles);
             Some(PpcImportAction::ReturnPreserve)
@@ -493,7 +526,18 @@ pub(super) fn dispatch_dialog_import(
             param_text.with_mut(|slots| ppc_param_text(cpu, memory, slots));
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::AlertReturnDefault => {
+        PpcImportDispatcherTarget::StandardAlert
+        | PpcImportDispatcherTarget::AlertReturnDefault => {
+            // StandardAlert displays a modal alert and returns the chosen button
+            // through outItemHit, with an OSErr in r3.
+            // OSErr StandardAlert(AlertType, ConstStr255Param, ConstStr255Param,
+            //                     const AlertStdAlertParamRec *, SInt16 *);
+            // Apple Dialog Manager Reference, pp. 65, 75–76, 82–83.
+            let standard = binding.dispatcher_target == PpcImportDispatcherTarget::StandardAlert;
+            let output = if standard { cpu.gpr[7] } else { 0 };
+            if standard && (output == 0 || !ppc_memory_can_write_bytes(memory, output, 2)) {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
             let alert_id = cpu.gpr[3] as u16 as i16;
             if ppc_hle_trace_enabled() {
                 eprintln!(
@@ -506,11 +550,24 @@ pub(super) fn dispatch_dialog_import(
                 );
             }
             let mut dialog = gworlds.iter().rev().find_map(|record| {
+                let matches_call = if standard {
+                    memory.read_u32_be(record.port + PPC_DIALOG_STANDARD_ALERT_OUTPUT_HLE_OFFSET)
+                        == Some(output)
+                        && memory
+                            .read_u32_be(record.port + PPC_DIALOG_STANDARD_ALERT_STACK_HLE_OFFSET)
+                            == Some(cpu.gpr[1])
+                } else {
+                    memory
+                        .read_u32_be(record.port + PPC_DIALOG_STANDARD_ALERT_OUTPUT_HLE_OFFSET)
+                        .unwrap_or(0)
+                        == 0
+                        && memory.read_u16_be(record.port + PPC_DIALOG_RESOURCE_ID_OFFSET)
+                            == Some(alert_id as u16)
+                };
                 (memory.read_u16_be(record.port + PPC_CWINDOW_WINDOW_KIND_OFFSET) == Some(2)
                     && ppc_window_is_visible(memory, record.port)
-                    && memory.read_u16_be(record.port + PPC_DIALOG_RESOURCE_ID_OFFSET)
-                        == Some(alert_id as u16))
-                .then_some(record.port)
+                    && matches_call)
+                    .then_some(record.port)
             });
             if dialog.is_none() {
                 let created = ppc_new_alert_dialog(
@@ -529,10 +586,15 @@ pub(super) fn dispatch_dialog_import(
                     current_resource_refnum,
                     last_resource_error,
                     alert_id,
+                    standard,
                     param_text,
                 );
                 if created == 0 {
-                    return Some(PpcImportAction::Return(ppc_i16_result(-1)));
+                    return Some(PpcImportAction::Return(ppc_i16_result(if standard {
+                        *last_resource_error
+                    } else {
+                        -1
+                    })));
                 }
                 *current_gworld = created;
                 *current_gdevice = ppc_gworld_device(gworlds, created).unwrap_or(*current_gdevice);
@@ -552,6 +614,13 @@ pub(super) fn dispatch_dialog_import(
             *current_gworld = dialog;
             *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
             let mut modal_cpu = cpu.clone();
+            if standard {
+                modal_cpu.gpr[3] = if cpu.gpr[6] == 0 {
+                    0
+                } else {
+                    memory.read_u32_be(cpu.gpr[6] + 2).unwrap_or(0)
+                };
+            }
             modal_cpu.gpr[4] = dialog + PPC_DIALOG_ALERT_HIT_HLE_OFFSET;
             let action = ppc_modal_dialog(
                 &mut modal_cpu,
@@ -578,11 +647,35 @@ pub(super) fn dispatch_dialog_import(
                 let hit = memory
                     .read_u16_be(dialog + PPC_DIALOG_ALERT_HIT_HLE_OFFSET)
                     .unwrap_or(1);
-                let mut allocator = PpcProcessAllocatorView {
-                    memory_manager: process_memory_manager,
-                };
-                ppc_dispose_window(
-                    &mut allocator,
+                let items_handle = memory
+                    .read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET)
+                    .unwrap_or(0);
+                let items =
+                    ppc_dialog_items_for_dialog(memory, handles, dialog).unwrap_or_default();
+                ppc_close_window(
+                    dialog,
+                    memory,
+                    process_memory_manager,
+                    window_list,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    gworlds,
+                    current_gworld,
+                    current_gdevice,
+                    screen_clut,
+                    color_manager_clut,
+                    toolbox_startup,
+                    event_queue,
+                    tick_count,
+                    input,
+                    quickdraw_fore_color,
+                    quickdraw_back_color,
+                    quickdraw_fore_indices,
+                );
+                ppc_release_dialog_storage(
+                    process_memory_manager,
                     memory,
                     heap_cursor,
                     heap_limit,
@@ -594,16 +687,16 @@ pub(super) fn dispatch_dialog_import(
                     current_gworld,
                     current_gdevice,
                     dialog,
+                    items_handle,
+                    &items,
+                    true,
                 );
-                if *current_gworld != PPC_MAIN_GWORLD {
-                    ppc_enqueue_window_update_event(
-                        event_queue,
-                        *current_gworld,
-                        tick_count,
-                        input,
-                    );
+                if standard {
+                    let _ = memory.write_u16_be(output, hit);
+                    Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+                } else {
+                    Some(PpcImportAction::Return(u32::from(hit)))
                 }
-                Some(PpcImportAction::Return(u32::from(hit)))
             } else {
                 Some(action)
             }
@@ -949,6 +1042,25 @@ fn ppc_dispatch_dialog_compatibility(
                             event.modifiers & 0x0200 != 0,
                             event.when,
                         );
+                    } else if let Some(item) = items.get(usize::from(hit).saturating_sub(1)) {
+                        if item.item_type & !PPC_DIALOG_ITEM_DISABLED
+                            == PPC_DIALOG_ITEM_RESOURCE_CONTROL
+                        {
+                            // DialogSelect tracks controls before reporting the item hit.
+                            // In particular, a scroll bar's live value must change before
+                            // the caller reads it to scroll the associated text.
+                            let _ = ppc_track_scroll_control_value(
+                                memory,
+                                handles,
+                                controls,
+                                gworlds,
+                                vfs_resources,
+                                current_resource_refnum,
+                                item.handle,
+                                event.where_v.saturating_sub(bounds.0),
+                                event.where_h.saturating_sub(bounds.1),
+                            );
+                        }
                     }
                     PpcImportAction::Return(1)
                 }
@@ -1013,10 +1125,10 @@ fn ppc_dispatch_dialog_compatibility(
                     items.iter().enumerate().find_map(|(index, item)| {
                         let rect = item.rect;
                         (v >= rect.0 && v < rect.2 && h >= rect.1 && h < rect.3)
-                            .then(|| u32::try_from(index + 1).unwrap_or(u32::MAX))
+                            .then(|| u32::try_from(index).unwrap_or(u32::MAX))
                     })
                 })
-                .unwrap_or(0);
+                .unwrap_or(u32::MAX);
             PpcImportAction::Return(found)
         }
         PpcDialogCompatibilityOperation::HideDialogItem
@@ -1279,6 +1391,155 @@ fn ppc_position_dialog_bounds(
     )
 }
 
+type PpcAlertTemplate = ((i16, i16, i16, i16), Vec<u8>, u16, u16, u16, u32);
+
+fn ppc_standard_alert_template(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+) -> Result<PpcAlertTemplate, i16> {
+    // AlertStdAlertParamRec uses classic two-byte structure alignment.
+    // Apple Dialog Manager Reference, pp. 75–76, 82–85.
+    let params = cpu.gpr[6];
+    if cpu.gpr[3] > 3 || (params != 0 && memory.read_u16_be(params + 22).is_none()) {
+        return Err(PPC_PARAM_ERR);
+    }
+    let read_text = |memory: &mut PpcSectionMem, ptr| {
+        if ptr == 0 {
+            Ok(Vec::new())
+        } else {
+            ppc_read_pstring_bytes(memory, ptr).ok_or(PPC_PARAM_ERR)
+        }
+    };
+    let primary = read_text(memory, cpu.gpr[4])?;
+    let secondary = read_text(memory, cpu.gpr[5])?;
+    let mut labels = Vec::new();
+    for (index, fallback) in [
+        b"OK".as_slice(),
+        b"Cancel".as_slice(),
+        b"Don\xD5t Save".as_slice(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let ptr = if params == 0 {
+            if index == 0 {
+                u32::MAX
+            } else {
+                0
+            }
+        } else {
+            memory
+                .read_u32_be(params + 6 + index as u32 * 4)
+                .ok_or(PPC_PARAM_ERR)?
+        };
+        labels.push(if ptr == u32::MAX {
+            fallback.to_vec()
+        } else {
+            read_text(memory, ptr)?
+        });
+    }
+    let help = params != 0 && memory.read_u8(params + 1).unwrap_or(0) != 0;
+    labels.push(if help { b"?".to_vec() } else { Vec::new() });
+    let default_item = if params == 0 {
+        1
+    } else {
+        memory.read_u16_be(params + 18).ok_or(PPC_PARAM_ERR)?
+    };
+    let cancel_item = if params == 0 {
+        0
+    } else {
+        memory.read_u16_be(params + 20).ok_or(PPC_PARAM_ERR)?
+    };
+    for item in [default_item, cancel_item] {
+        if item > 4 || (item != 0 && labels[usize::from(item - 1)].is_empty()) {
+            return Err(PPC_PARAM_ERR);
+        }
+    }
+    let movable = params != 0 && memory.read_u8(params).unwrap_or(0) != 0;
+    let position = if params == 0 {
+        0
+    } else {
+        memory.read_u16_be(params + 22).ok_or(PPC_PARAM_ERR)?
+    };
+    let width = 440i16;
+    let text_left = if cpu.gpr[3] == 3 { 20 } else { 64 };
+    let text_width = width - text_left - 20;
+    let primary_height = (ppc_dialog_text_lines(&primary, text_width).len() as i16 * 16).max(16);
+    let secondary_height = if secondary.is_empty() {
+        0
+    } else {
+        ppc_dialog_text_lines(&secondary, text_width).len() as i16 * 16 + 8
+    };
+    let text_bottom = 20 + primary_height + secondary_height;
+    let button_top = text_bottom.max(60) + 20;
+    let height = button_top + 40;
+    let mut items = vec![0, 0];
+    let mut count = 0u16;
+    let mut append = |kind: u8, rect: (i16, i16, i16, i16), bytes: &[u8]| {
+        items.extend_from_slice(&0u32.to_be_bytes());
+        for value in [rect.0, rect.1, rect.2, rect.3] {
+            items.extend_from_slice(&value.to_be_bytes());
+        }
+        items.push(kind);
+        items.push(bytes.len() as u8);
+        items.extend_from_slice(bytes);
+        if items.len() % 2 != 0 {
+            items.push(0);
+        }
+        count += 1;
+    };
+    let mut right = width - 20;
+    for label in &labels {
+        if label.is_empty() {
+            // Keep standard button IDs stable when optional buttons are absent.
+            append(
+                PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_DISABLED,
+                (0, 0, 0, 0),
+                &[],
+            );
+        } else {
+            let button_width =
+                ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, label)
+                    .saturating_add(24)
+                    .max(60);
+            append(
+                PPC_DIALOG_ITEM_BUTTON,
+                (button_top, right - button_width, button_top + 20, right),
+                label,
+            );
+            right -= button_width + 12;
+        }
+    }
+    append(
+        PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_DISABLED,
+        (20, text_left, 20 + primary_height, width - 20),
+        &primary,
+    );
+    append(
+        PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_DISABLED,
+        (28 + primary_height, text_left, text_bottom, width - 20),
+        &secondary,
+    );
+    if cpu.gpr[3] < 3 {
+        append(
+            PPC_DIALOG_ITEM_ICON | PPC_DIALOG_ITEM_DISABLED,
+            (20, 20, 52, 52),
+            &(cpu.gpr[3] as u16).to_be_bytes(),
+        );
+    }
+    items[..2].copy_from_slice(&(count - 1).to_be_bytes());
+    let left = (ppc_main_screen_width() as i16 - width).max(0) / 2;
+    let top = (ppc_main_screen_height() as i16 - height).max(0) / 3;
+    Ok((
+        (top, left, top + height, left + width),
+        items,
+        default_item,
+        cancel_item,
+        position,
+        if movable { 5 } else { 1 },
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ppc_new_alert_dialog(
     cpu: &PpcCpu,
@@ -1296,46 +1557,65 @@ fn ppc_new_alert_dialog(
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
     alert_id: i16,
+    standard: bool,
     param_text: &SharedProcessDialogText,
 ) -> u32 {
-    let Some(alert_index) = ppc_vfs_resource_index(
-        vfs_resources,
-        current_resource_refnum,
-        u32::from_be_bytes(*b"ALRT"),
-        alert_id,
-        false,
-    ) else {
-        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-        return 0;
+    let (bounds, ditl_bytes, default_item, cancel_item, position, proc_id) = if standard {
+        match ppc_standard_alert_template(cpu, memory) {
+            Ok(template) => template,
+            Err(error) => {
+                *last_resource_error = error;
+                return 0;
+            }
+        }
+    } else {
+        let Some(alert_index) = ppc_vfs_resource_index(
+            vfs_resources,
+            current_resource_refnum,
+            u32::from_be_bytes(*b"ALRT"),
+            alert_id,
+            false,
+        ) else {
+            *last_resource_error = PPC_RES_NOT_FOUND_ERR;
+            return 0;
+        };
+        let alert = &vfs_resources[alert_index].data;
+        if alert.len() < 12 {
+            *last_resource_error = PPC_PARAM_ERR;
+            return 0;
+        }
+        let bounds = (
+            i16::from_be_bytes([alert[0], alert[1]]),
+            i16::from_be_bytes([alert[2], alert[3]]),
+            i16::from_be_bytes([alert[4], alert[5]]),
+            i16::from_be_bytes([alert[6], alert[7]]),
+        );
+        let items_id = i16::from_be_bytes([alert[8], alert[9]]);
+        let stages = u16::from_be_bytes([alert[10], alert[11]]);
+        let position = alert
+            .get(12..14)
+            .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
+            .unwrap_or(0);
+        let Some(ditl_index) = ppc_vfs_resource_index(
+            vfs_resources,
+            current_resource_refnum,
+            u32::from_be_bytes(*b"DITL"),
+            items_id,
+            false,
+        ) else {
+            *last_resource_error = PPC_RES_NOT_FOUND_ERR;
+            return 0;
+        };
+        let ditl_bytes = vfs_resources[ditl_index].data.clone();
+        (
+            bounds,
+            ditl_bytes,
+            if stages & 8 == 0 { 1 } else { 2 },
+            0,
+            position,
+            1,
+        )
     };
-    let alert = &vfs_resources[alert_index].data;
-    if alert.len() < 12 {
-        *last_resource_error = PPC_PARAM_ERR;
-        return 0;
-    }
-    let bounds = (
-        i16::from_be_bytes([alert[0], alert[1]]),
-        i16::from_be_bytes([alert[2], alert[3]]),
-        i16::from_be_bytes([alert[4], alert[5]]),
-        i16::from_be_bytes([alert[6], alert[7]]),
-    );
-    let items_id = i16::from_be_bytes([alert[8], alert[9]]);
-    let stages = u16::from_be_bytes([alert[10], alert[11]]);
-    let position = alert
-        .get(12..14)
-        .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
-        .unwrap_or(0);
-    let Some(ditl_index) = ppc_vfs_resource_index(
-        vfs_resources,
-        current_resource_refnum,
-        u32::from_be_bytes(*b"DITL"),
-        items_id,
-        false,
-    ) else {
-        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-        return 0;
-    };
-    let ditl_bytes = vfs_resources[ditl_index].data.clone();
     if ppc_parse_dialog_items(&ditl_bytes).is_none() {
         *last_resource_error = PPC_PARAM_ERR;
         return 0;
@@ -1376,7 +1656,7 @@ fn ppc_new_alert_dialog(
     dialog_cpu.gpr[4] = scratch;
     dialog_cpu.gpr[5] = scratch + 8;
     dialog_cpu.gpr[6] = 1;
-    dialog_cpu.gpr[7] = 1;
+    dialog_cpu.gpr[7] = proc_id;
     dialog_cpu.gpr[8] = u32::MAX;
     dialog_cpu.gpr[9] = 0;
     dialog_cpu.gpr[10] = alert_id as u16 as u32;
@@ -1413,11 +1693,20 @@ fn ppc_new_alert_dialog(
         dialog
     };
     if dialog != 0 {
-        let first_stage = stages & 0x000f;
-        let default_item = if first_stage & 0x0008 == 0 { 1 } else { 2 };
         let _ = memory.write_u16_be(dialog + PPC_DIALOG_RESOURCE_ID_OFFSET, alert_id as u16);
         let _ = memory.write_u16_be(dialog + PPC_DIALOG_DEFAULT_ITEM_OFFSET, default_item);
         let _ = memory.write_u16_be(dialog + PPC_DIALOG_ALERT_HIT_HLE_OFFSET, 0);
+        let _ = memory.write_u16_be(dialog + PPC_DIALOG_CANCEL_ITEM_HLE_OFFSET, cancel_item);
+        if standard {
+            let _ = memory.write_u32_be(
+                dialog + PPC_DIALOG_STANDARD_ALERT_OUTPUT_HLE_OFFSET,
+                cpu.gpr[7],
+            );
+            let _ = memory.write_u32_be(
+                dialog + PPC_DIALOG_STANDARD_ALERT_STACK_HLE_OFFSET,
+                cpu.gpr[1],
+            );
+        }
         *last_resource_error = PPC_NO_ERR;
     }
     dialog

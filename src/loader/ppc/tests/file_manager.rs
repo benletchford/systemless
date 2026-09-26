@@ -1,5 +1,46 @@
 use super::*;
 
+#[test]
+fn pb_read_async_queues_completion_on_eof() {
+    let pef = synthetic_pef_with_import(b"PBReadAsync");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    let completion = 0x0123_4567;
+    loaded.memory.add_region(pb, vec![0; 0x100]);
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Save/hero.map".to_string(),
+        data: Vec::new().into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.push_test_open_file(PpcFileRecord {
+        ref_num: PPC_FIRST_FILE_REF_NUM,
+        path: "Save/hero.map".to_string(),
+        position: 0,
+    });
+    loaded.memory.write_u32_be(pb + 12, completion).unwrap();
+    loaded
+        .memory
+        .write_u16_be(pb + 24, PPC_FIRST_FILE_REF_NUM as u16)
+        .unwrap();
+    loaded.memory.write_u32_be(pb + 32, pb + 0x80).unwrap();
+    loaded.memory.write_u32_be(pb + 36, 24).unwrap();
+    loaded.memory.write_u16_be(pb + 44, 0).unwrap();
+    loaded.memory.write_u32_be(pb + 46, 0).unwrap();
+    loaded.cpu.gpr[3] = pb;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(PPC_EOF_ERR as u16));
+    assert_eq!(loaded.memory.read_u32_be(pb + 40), Some(0));
+    assert_eq!(loaded.pending_file_completions.pop_front(), Some((pb, completion)));
+    assert!(loaded.pending_file_completions.is_empty());
+}
+
     #[test]
     fn hrename_moves_both_forks_and_open_paths_without_changing_directory() {
         let pef = synthetic_pef_with_import(b"HRename");
@@ -8286,6 +8327,10 @@ fn hle_import_runner_gets_and_sets_sf_save_disk_low_memory_global() {
 #[test]
 fn import_bindings_classify_file_manager_imports() {
     assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "FSpOpenRF"),
+        PpcImportDispatcherTarget::FSpOpenRF
+    );
+    assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "FSpOpenDF"),
         PpcImportDispatcherTarget::FSpOpenDF
     );
@@ -8481,6 +8526,106 @@ fn import_bindings_classify_file_manager_imports() {
             "{symbol}"
         );
     }
+}
+
+#[test]
+fn fsp_open_rf_writes_raw_resource_fork_without_changing_data_fork() {
+    let pef = synthetic_pef_with_import(b"FSpOpenRF");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let path = "Test Fork";
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let spec_ptr = scratch;
+    let ref_num_out_ptr = scratch + 0x80;
+    let count_ptr = scratch + 0x84;
+    let buffer_ptr = scratch + 0x88;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    write_ppc_fsspec(
+        &mut loaded.memory,
+        spec_ptr,
+        PPC_BOOT_VOLUME_REF_NUM,
+        PPC_ROOT_DIR_ID,
+        path.as_bytes(),
+    );
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: path.to_string(),
+        data: b"data".to_vec().into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.push_vfs_resource_file(PpcVfsResourceFileRecord {
+        path: path.to_string(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        resource_len: 4,
+        raw_data: Some(b"fork".to_vec().into()),
+        map_attrs: 0,
+        dirty: false,
+    });
+    loaded.cpu.gpr[3] = spec_ptr;
+    loaded.cpu.gpr[4] = 3;
+    loaded.cpu.gpr[5] = ref_num_out_ptr;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let ref_num = loaded.memory.read_u16_be(ref_num_out_ptr).unwrap();
+    assert_eq!(loaded.vfs_files.len(), 2);
+
+    loaded.memory.write_u32_be(count_ptr, 2).unwrap();
+    loaded.memory.write_u8(buffer_ptr, b'X').unwrap();
+    loaded.memory.write_u8(buffer_ptr + 1, b'Y').unwrap();
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::FSWrite;
+    loaded.cpu.gpr[3] = u32::from(ref_num);
+    loaded.cpu.gpr[4] = count_ptr;
+    loaded.cpu.gpr[5] = buffer_ptr;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::FSClose;
+    loaded.cpu.gpr[3] = u32::from(ref_num);
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.vfs_files.len(), 1);
+    assert_eq!(loaded.vfs_files[0].data, b"data");
+    assert_eq!(loaded.vfs_resource_files[0].raw_data.as_ref().unwrap(), b"XYrk");
+}
+
+#[test]
+fn fsp_open_res_file_rejects_malformed_resource_map() {
+    let pef = synthetic_pef_with_import(b"FSpOpenResFile");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let spec_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(spec_ptr, vec![0; 0x80]);
+    write_ppc_fsspec(
+        &mut loaded.memory,
+        spec_ptr,
+        PPC_BOOT_VOLUME_REF_NUM,
+        PPC_ROOT_DIR_ID,
+        b"Broken Fork",
+    );
+    loaded.push_vfs_resource_file(PpcVfsResourceFileRecord {
+        path: "Broken Fork".to_string(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        resource_len: 4,
+        raw_data: Some(b"junk".to_vec().into()),
+        map_attrs: 0,
+        dirty: false,
+    });
+    loaded.cpu.gpr[3] = spec_ptr;
+    loaded.cpu.gpr[4] = 1;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-1));
+    assert_eq!(loaded.test_resource_error(), PPC_MAP_READ_ERR);
+    assert!(loaded.resource_files.is_empty());
 }
 
 #[test]

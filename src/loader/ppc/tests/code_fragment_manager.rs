@@ -1459,6 +1459,36 @@ fn dynamic_fragment_imports_resolve_existing_guest_library_exports() {
 }
 
 #[test]
+fn bundled_imports_bind_by_name_when_symbol_classes_differ() {
+    let connection = PpcCfmConnection {
+        id: 7,
+        library_name: "Storm".into(),
+        main_addr: 0,
+        init_addr: 0,
+        term_addr: 0,
+        exports: vec![PpcCfmExport {
+            name: "__register_fragment".into(),
+            class: 2,
+            address: 0x0400_1000,
+        }],
+    };
+    let policy = PpcConnectedCfmBindingPolicy {
+        connections: &[connection],
+    };
+    let import = PefResolvedImport {
+        library_index: 0,
+        symbol_index: 0,
+        library_name: "Storm".into(),
+        symbol_name: "__register_fragment".into(),
+        class: 1,
+        weak: false,
+    };
+    let plan = PpcImportBindingPlan::prepare(vec![import], 1, 0, ppc_import_layout(), &policy)
+        .unwrap();
+    assert_eq!(plan.relocation_addresses(), &[0x0400_1000]);
+}
+
+#[test]
 fn hle_import_runner_loads_and_runs_a_memory_fragment_with_dynamic_imports() {
     let pef = synthetic_pef_with_import(b"GetMemFragment");
     let mut loaded = load_pef_application(&pef).unwrap();

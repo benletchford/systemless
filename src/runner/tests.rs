@@ -11675,6 +11675,7 @@
         clut[7] = [0x1234, 0x5678, 0x9abc];
 
         assert!(runner.sync_ppc_host_indexed_color_table(4, &clut));
+        assert_eq!(runner.dispatcher.device_clut, clut);
 
         let color_table = runner.bus.read_long(color_table_handle);
         assert_ne!(color_table, old_color_table);

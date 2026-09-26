@@ -1,8 +1,200 @@
 use super::*;
 
 #[test]
+fn text_services_leave_events_for_the_application_without_an_input_method() {
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"TSMEvent");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let event_ptr = PPC_DATA_BASE + 0x1000;
+    let event = [0x00, 0x01, 0x00, 0x00, 0x12, 0x34, 0x56, 0x78];
+    loaded.memory.add_region(event_ptr, event.to_vec());
+    loaded.cpu.gpr[3] = event_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(event_ptr), Some(0x0001_0000));
+    assert_eq!(loaded.memory.read_u32_be(event_ptr + 4), Some(0x1234_5678));
+}
+
+#[test]
+fn standard_alert_waits_for_input_then_disposes_the_dialog() {
+    let pef = synthetic_pef_with_library_import(b"AppearanceLib", b"StandardAlert");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let base = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(base, vec![0; 256]);
+    loaded.memory.write_u16_be(base, 0x7fff).unwrap();
+    loaded
+        .memory
+        .write_bytes(base + 32, b"\x0cVideo setup?")
+        .unwrap();
+    loaded.cpu.gpr[3] = 3;
+    loaded.cpu.gpr[4] = base + 32;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = base;
+
+    let probe = loaded.run_with_hle_imports(128);
+    assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+    assert_eq!(loaded.memory.read_u16_be(base), Some(0x7fff));
+    let dialog = *loaded.current_gworld;
+    assert!(ppc_window_is_visible(&mut loaded.memory, dialog));
+    let items_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET)
+        .unwrap();
+    let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    let point = (i32::from(bounds.1), i32::from(bounds.0));
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let border_pixel = ppc_quickdraw_read_pixel(&mut loaded.memory, front, point);
+    let handles = loaded.handles();
+    let items = ppc_dialog_items_for_dialog(&mut loaded.memory, &handles, dialog).unwrap();
+    assert!(items.iter().any(
+        |item| ppc_handle_bytes(&mut loaded.memory, &handles, item.handle).as_deref()
+            == Some(b"Video setup?")
+    ));
+    let window_count = loaded.window_list.len();
+    loaded.run_with_hle_imports(128);
+    assert_eq!(
+        loaded.window_list.len(),
+        window_count,
+        "waiting must reuse the alert"
+    );
+
+    loaded.set_event_queue([PpcQueuedEvent {
+        what: 3,
+        message: (u32::from(PPC_KEY_RETURN) << 8) | 13,
+        when: 0,
+        where_v: 0,
+        where_h: 0,
+        modifiers: 0,
+    }]);
+    let probe = loaded.run_with_hle_imports(128);
+    assert!(matches!(
+        probe.result,
+        PpcRunResult::Halted {
+            pc: PPC_HALT_PC,
+            ..
+        }
+    ));
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u16_be(base), Some(1));
+    assert!(!loaded.window_list.contains(&dialog));
+    assert!(!loaded
+        .handles()
+        .iter()
+        .any(|record| record.handle == items_handle));
+    let desktop_pixel = ppc_physical_screen_color_pixel(
+        front,
+        ppc_standard_desktop_color(&loaded.gworlds, point.0, point.1),
+        &loaded.screen_clut,
+    );
+    assert_ne!(border_pixel, desktop_pixel);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, point),
+        desktop_pixel
+    );
+}
+
+#[test]
+fn standard_alert_preserves_optional_button_ids_for_keyboard_and_mouse() {
+    for (key, character, expected) in [(PPC_KEY_RETURN, 13, 2), (PPC_KEY_ESCAPE, 27, 3), (0, 0, 3)]
+    {
+        let pef = synthetic_pef_with_library_import(b"AppearanceLib", b"StandardAlert");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let base = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(base, vec![0; 256]);
+        let params = base + 32;
+        // No OK button. The second and third buttons retain IDs 2 and 3.
+        loaded.memory.write_u32_be(params + 10, u32::MAX).unwrap();
+        loaded.memory.write_u32_be(params + 14, base + 100).unwrap();
+        loaded.memory.write_bytes(base + 100, b"\x04Quit").unwrap();
+        loaded.memory.write_u16_be(params + 18, 2).unwrap();
+        loaded.memory.write_u16_be(params + 20, 3).unwrap();
+        loaded.cpu.gpr[3] = 3;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = params;
+        loaded.cpu.gpr[7] = base;
+        loaded.run_with_hle_imports(128);
+        let dialog = *loaded.current_gworld;
+        assert!(ppc_window_is_visible(&mut loaded.memory, dialog));
+        let point = if key == 0 {
+            let handles = loaded.handles();
+            let items = ppc_dialog_items_for_dialog(&mut loaded.memory, &handles, dialog).unwrap();
+            let bounds =
+                ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+            (
+                bounds.0 + items[2].rect.0 + 5,
+                bounds.1 + items[2].rect.1 + 5,
+            )
+        } else {
+            (0, 0)
+        };
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: if key == 0 { 1 } else { 3 },
+            message: (u32::from(key) << 8) | character,
+            when: 0,
+            where_v: point.0,
+            where_h: point.1,
+            modifiers: 0,
+        }]);
+        loaded.run_with_hle_imports(128);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u16_be(base), Some(expected));
+        assert!(!loaded.window_list.contains(&dialog));
+    }
+}
+
+#[test]
+fn standard_alert_rejects_an_invalid_output_pointer_without_creating_a_window() {
+    let pef = synthetic_pef_with_library_import(b"AppearanceLib", b"StandardAlert");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 3;
+    loaded.cpu.gpr[7] = 0;
+    let count = loaded.window_list.len();
+    loaded.run_with_hle_imports(128);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(loaded.window_list.len(), count);
+}
+
+#[test]
+fn get_dialog_item_as_control_returns_control_handle() {
+    let pef = synthetic_pef_with_library_import(b"AppearanceLib", b"GetDialogItemAsControl");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let output = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(output, vec![0; 4]);
+    let mut ditl = vec![0; 18];
+    ditl[2..6].copy_from_slice(&0x1234u32.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_BUTTON;
+    ditl[15] = 2;
+    ditl[16..18].copy_from_slice(b"OK");
+    let items = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &ditl,
+    );
+    loaded
+        .memory
+        .write_u32_be(PPC_MAIN_GWORLD + PPC_DIALOG_ITEMS_OFFSET, items)
+        .unwrap();
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = output;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(output), Some(0x1234));
+}
+
+#[test]
 fn dialog_static_text_preserves_resource_line_breaks_before_wrapping() {
-    let text = b"Toolbox Showcase 2.0\rClassic Macintosh Fat-App Fixture\rRunning 68K and PowerPC slices";
+    let text =
+        b"Toolbox Showcase 2.0\rClassic Macintosh Fat-App Fixture\rRunning 68K and PowerPC slices";
 
     assert_eq!(
         ppc_dialog_text_lines(text, 260),
@@ -104,7 +296,43 @@ fn dialog_select_reports_enabled_item_hit_in_front_dialog() {
         Some(PPC_MAIN_GWORLD)
     );
     assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(1));
+}
 
+#[test]
+fn find_dialog_item_returns_zero_based_index_and_minus_one_for_miss() {
+    let pef = synthetic_pef_with_import(b"FindDialogItem");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut ditl = vec![0; 18];
+    ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&40i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&90i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_BUTTON;
+    ditl[15] = 2;
+    ditl[16..18].copy_from_slice(b"OK");
+    let items = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &ditl,
+    );
+    loaded
+        .memory
+        .write_u32_be(PPC_MAIN_GWORLD + PPC_DIALOG_ITEMS_OFFSET, items)
+        .unwrap();
+
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = (20 << 16) | 30;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = (50 << 16) | 30;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], u32::MAX);
 }
 
 #[test]
@@ -124,18 +352,20 @@ fn draw_dialog_calls_native_user_item_procedure_with_dialog_and_item_number() {
     ditl[14] = PPC_DIALOG_ITEM_USER_ITEM;
     for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
         let current_resource_refnum = *loaded.process_file_system.current_resource_file;
-        loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
-            ref_num: current_resource_refnum,
-            path: String::new(),
-            res_type: u32::from_be_bytes(res_type),
-            res_id: 128,
-            name: Vec::new(),
-            data,
-            raw_data: None,
-            raw_attrs: None,
-            attrs: 0,
-            handle: 0,
-        });
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
     }
     loaded.cpu.gpr[3] = 128;
     loaded.run_with_hle_imports(64);
@@ -201,18 +431,20 @@ fn hle_import_runner_handles_get_new_dialog_allocation() {
     ditl[16..21].copy_from_slice(b"Hello");
     for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
         let current_resource_refnum = *loaded.process_file_system.current_resource_file;
-        loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
-            ref_num: current_resource_refnum,
-            path: String::new(),
-            res_type: u32::from_be_bytes(res_type),
-            res_id: 128,
-            name: Vec::new(),
-            data,
-            raw_data: None,
-            raw_attrs: None,
-            attrs: 0,
-            handle: 0,
-        });
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
     }
     loaded.cpu.gpr[3] = 128;
     loaded.cpu.gpr[4] = 0;
@@ -385,18 +617,20 @@ fn get_new_dialog_installs_owned_control_records_in_the_live_ditl() {
     ditl[16..18].copy_from_slice(b"OK");
     for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
         let current_resource_refnum = *loaded.process_file_system.current_resource_file;
-        loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
-            ref_num: current_resource_refnum,
-            path: String::new(),
-            res_type: u32::from_be_bytes(res_type),
-            res_id: 128,
-            name: Vec::new(),
-            data,
-            raw_data: None,
-            raw_attrs: None,
-            attrs: 0,
-            handle: 0,
-        });
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
     }
     loaded.cpu.gpr[3] = 128;
 
@@ -466,25 +700,26 @@ fn selecting_active_dialog_preserves_its_contents() {
     ditl[16..29].copy_from_slice(b"Sound Effects");
     for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
         let current_resource_refnum = *loaded.process_file_system.current_resource_file;
-        loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
-            ref_num: current_resource_refnum,
-            path: String::new(),
-            res_type: u32::from_be_bytes(res_type),
-            res_id: 128,
-            name: Vec::new(),
-            data,
-            raw_data: None,
-            raw_attrs: None,
-            attrs: 0,
-            handle: 0,
-        });
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
     }
     loaded.cpu.gpr[3] = 128;
     loaded.run_with_hle_imports(128);
     let dialog = loaded.cpu.gpr[3];
     run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
-    let surface =
-        ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
     let marker =
         ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
     assert!(ppc_quickdraw_write_raw_pixel(
@@ -523,18 +758,20 @@ fn draw_dialog_uses_live_checkbox_control_instead_of_button_fallback() {
     ditl[16..29].copy_from_slice(b"Sound Effects");
     for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
         let current_resource_refnum = *loaded.process_file_system.current_resource_file;
-        loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
-            ref_num: current_resource_refnum,
-            path: String::new(),
-            res_type: u32::from_be_bytes(res_type),
-            res_id: 128,
-            name: Vec::new(),
-            data,
-            raw_data: None,
-            raw_attrs: None,
-            attrs: 0,
-            handle: 0,
-        });
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
     }
     loaded.cpu.gpr[3] = 128;
     loaded.run_with_hle_imports(128);
@@ -561,8 +798,7 @@ fn draw_dialog_uses_live_checkbox_control_instead_of_button_fallback() {
         PPC_RGB_WHITE,
     ));
     // Application drawing outside standard items survives DrawDialog.
-    let surface =
-        ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
     let marker =
         ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
     assert!(ppc_quickdraw_write_raw_pixel(
@@ -583,8 +819,7 @@ fn draw_dialog_uses_live_checkbox_control_instead_of_button_fallback() {
         dialog,
     ));
 
-    let surface =
-        ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
     assert_eq!(
         ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (200, 110)),
         Some(marker),
@@ -655,18 +890,20 @@ fn dialog_popup_controls_use_ditl_bounds_and_menu_resource_items() {
         (*b"MENU", 300, menu),
     ] {
         let current_resource_refnum = *loaded.process_file_system.current_resource_file;
-        loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
-            ref_num: current_resource_refnum,
-            path: String::new(),
-            res_type: u32::from_be_bytes(res_type),
-            res_id,
-            name: Vec::new(),
-            data,
-            raw_data: None,
-            raw_attrs: None,
-            attrs: 0,
-            handle: 0,
-        });
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
     }
     loaded.cpu.gpr[3] = 128;
 
@@ -686,9 +923,20 @@ fn dialog_popup_controls_use_ditl_bounds_and_menu_resource_items() {
         Some((38, 226, 58, 326))
     );
     assert_eq!(loaded.controls.records()[0].popup_menu_id, 300);
-    assert_eq!(loaded.memory.read_u16_be(control + PPC_CONTROL_VALUE_OFFSET), Some(1));
-    assert_eq!(loaded.memory.read_u16_be(control + PPC_CONTROL_MIN_OFFSET), Some(1));
-    assert_eq!(loaded.memory.read_u16_be(control + PPC_CONTROL_MAX_OFFSET), Some(2));
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET),
+        Some(1)
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(control + PPC_CONTROL_MIN_OFFSET),
+        Some(1)
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(control + PPC_CONTROL_MAX_OFFSET),
+        Some(2)
+    );
     assert_eq!(loaded.controls.records()[0].popup_title_width, Some(0));
     assert_eq!(
         ppc_popup_control_selected_text(
@@ -733,11 +981,15 @@ fn dialog_popup_controls_use_ditl_bounds_and_menu_resource_items() {
     ppc_write_rect(
         &mut loaded.memory,
         control + PPC_CONTROL_RECT_OFFSET,
-        top, 10, top + 20, 120,
-    ).unwrap();
-    let front =
-        ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
-            .unwrap().front_buffer;
+        top,
+        10,
+        top + 20,
+        120,
+    )
+    .unwrap();
+    let front = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+        .unwrap()
+        .front_buffer;
     let length = front.row_bytes * front.height;
     let before = ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, length).unwrap();
     let handles = loaded.handles();
@@ -752,8 +1004,10 @@ fn dialog_popup_controls_use_ditl_bounds_and_menu_resource_items() {
         true,
     );
     let after = ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, length).unwrap();
-    assert!(before == after, "off-dialog popups must be clipped by their owning port");
-
+    assert!(
+        before == after,
+        "off-dialog popups must be clipped by their owning port"
+    );
 }
 
 #[test]
@@ -1052,7 +1306,9 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
         Some(1)
     );
     assert_eq!(
-        loaded.memory.read_u32_be(second_te_ptr + PPC_TE_HTEXT_OFFSET),
+        loaded
+            .memory
+            .read_u32_be(second_te_ptr + PPC_TE_HTEXT_OFFSET),
         Some(second_item_text_handle)
     );
     loaded.set_event_queue([PpcQueuedEvent {
@@ -1163,7 +1419,10 @@ fn import_bindings_classify_dialog_imports() {
     for (symbol, operation) in [
         ("AppendDITL", PpcDialogCompatibilityOperation::AppendDitl),
         ("CountDITL", PpcDialogCompatibilityOperation::CountDitl),
-        ("DialogSelect", PpcDialogCompatibilityOperation::DialogSelect),
+        (
+            "DialogSelect",
+            PpcDialogCompatibilityOperation::DialogSelect,
+        ),
         (
             "FindDialogItem",
             PpcDialogCompatibilityOperation::FindDialogItem,
@@ -1181,7 +1440,10 @@ fn import_bindings_classify_dialog_imports() {
             "ShowDialogItem",
             PpcDialogCompatibilityOperation::ShowDialogItem,
         ),
-        ("UpdateDialog", PpcDialogCompatibilityOperation::UpdateDialog),
+        (
+            "UpdateDialog",
+            PpcDialogCompatibilityOperation::UpdateDialog,
+        ),
     ] {
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", symbol),

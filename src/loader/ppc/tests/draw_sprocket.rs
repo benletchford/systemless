@@ -1,5 +1,226 @@
 use super::*;
 
+#[test]
+fn draw_sprocket_temporary_context_restores_desktop_mode_and_pixels() {
+    let pef = synthetic_pef_with_import(b"SetPort");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let desktop = loaded.presented_front_buffer().unwrap();
+    assert_eq!(desktop.depth, 8);
+    loaded.memory.write_u8(PPC_MAIN_SCREEN_BASE + 100, 0x5a).unwrap();
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = 0;
+
+    assert_eq!(
+        ppc_dsp_context_reserve(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+            &mut loaded.gworlds,
+        ),
+        PPC_NO_ERR
+    );
+    assert_eq!(loaded.presented_front_buffer().unwrap(), desktop);
+    assert_eq!(loaded.memory.read_u8(PPC_MAIN_SCREEN_BASE + 100), Some(0x5a));
+
+    let mut clut = loaded.screen_clut.with_ref(|clut| *clut);
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_ACTIVE;
+    assert_eq!(
+        ppc_dsp_context_set_state(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.gworlds,
+            &mut clut,
+            &mut loaded.draw_sprocket,
+        ),
+        PPC_NO_ERR
+    );
+    assert_eq!(loaded.presented_front_buffer().unwrap().depth, 16);
+    assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_SCREEN_BASE + 100), Some(0));
+    loaded.memory.write_u8(PPC_MAIN_SCREEN_BASE + 100, 0).unwrap();
+
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_INACTIVE;
+    assert_eq!(
+        ppc_dsp_context_set_state(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.gworlds,
+            &mut clut,
+            &mut loaded.draw_sprocket,
+        ),
+        PPC_NO_ERR
+    );
+    assert_eq!(loaded.presented_front_buffer().unwrap(), desktop);
+    assert_eq!(loaded.memory.read_u8(PPC_MAIN_SCREEN_BASE + 100), Some(0x5a));
+    assert!(loaded.draw_sprocket.desktop_snapshot.is_none());
+}
+
+#[test]
+fn draw_sprocket_eight_bit_activation_uses_black_blanking_index() {
+    let pef = synthetic_pef_with_import(b"SetPort");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let attributes_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(
+        attributes_ptr,
+        vec![0; PPC_DSP_CONTEXT_ATTRIBUTES_SIZE as usize],
+    );
+    write_test_dsp_context_attributes(
+        &mut loaded.memory,
+        attributes_ptr,
+        PpcDspContextAttributes {
+            display_best_depth_mask: 1 << 3,
+            back_buffer_best_depth_mask: 1 << 3,
+            display_depth: 8,
+            back_buffer_depth: 8,
+            page_count: 1,
+            ..PpcDspContextAttributes::default()
+        },
+    );
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = attributes_ptr;
+    assert_eq!(
+        ppc_dsp_context_reserve(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+            &mut loaded.gworlds,
+        ),
+        PPC_NO_ERR
+    );
+    let mut clut = loaded.screen_clut.with_ref(|clut| *clut);
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_ACTIVE;
+    assert_eq!(
+        ppc_dsp_context_set_state(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.gworlds,
+            &mut clut,
+            &mut loaded.draw_sprocket,
+        ),
+        PPC_NO_ERR
+    );
+    let pixel = loaded.memory.read_u8(PPC_MAIN_SCREEN_BASE).unwrap();
+    assert_eq!(clut[pixel as usize], [0, 0, 0]);
+}
+
+#[test]
+fn draw_sprocket_eight_bit_800x600_context_updates_the_front_buffer() {
+    let pef = synthetic_pef_with_import(b"SetPort");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let attributes_ptr = PPC_DATA_BASE + 0x1000;
+    let context_out_ptr = PPC_DATA_BASE + 0x1100;
+    loaded.memory.add_region(
+        attributes_ptr,
+        vec![0; PPC_DSP_CONTEXT_ATTRIBUTES_SIZE as usize],
+    );
+    loaded.memory.add_region(context_out_ptr, vec![0; 4]);
+    let requested = PpcDspContextAttributes {
+        width: PPC_DSP_LARGE_SCREEN_WIDTH,
+        height: PPC_DSP_LARGE_SCREEN_HEIGHT,
+        display_best_depth_mask: PPC_DSP_DEPTH_MASK_8,
+        back_buffer_best_depth_mask: PPC_DSP_DEPTH_MASK_8,
+        display_depth: 8,
+        back_buffer_depth: 8,
+        page_count: 1,
+        ..PpcDspContextAttributes::default()
+    };
+    write_test_dsp_context_attributes(&mut loaded.memory, attributes_ptr, requested);
+    assert_eq!(
+        ppc_dsp_find_best_context(
+            &mut loaded.memory,
+            attributes_ptr,
+            context_out_ptr,
+            &mut loaded.draw_sprocket,
+        ),
+        PPC_NO_ERR
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(context_out_ptr),
+        Some(PPC_DSP_CONTEXT)
+    );
+    assert_eq!(
+        (
+            loaded.draw_sprocket.context_attributes.width,
+            loaded.draw_sprocket.context_attributes.height,
+        ),
+        (800, 600)
+    );
+
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = attributes_ptr;
+    assert_eq!(
+        ppc_dsp_context_reserve(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+            &mut loaded.gworlds,
+        ),
+        PPC_NO_ERR
+    );
+    let mut clut = loaded.screen_clut.with_ref(|clut| *clut);
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_ACTIVE;
+    assert_eq!(
+        ppc_dsp_context_set_state(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.gworlds,
+            &mut clut,
+            &mut loaded.draw_sprocket,
+        ),
+        PPC_NO_ERR
+    );
+    let front = loaded.presented_front_buffer().unwrap();
+    assert_eq!(
+        (front.width, front.height, front.depth, front.row_bytes),
+        (800, 600, 8, 816)
+    );
+    assert_eq!(
+        loaded.draw_sprocket.front_buffer_gworld,
+        loaded.draw_sprocket.back_buffer_gworld
+    );
+}
+
+#[test]
+fn draw_sprocket_get_version_writes_num_version() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpGetVersion");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let version_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(version_ptr, vec![0; 4]);
+    loaded.cpu.gpr[3] = version_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.memory.read_u32_be(version_ptr), Some(0x0175_8000));
+}
+
+#[test]
+fn find_best_context_on_display_id_selects_main_display_only() {
+    let pef = synthetic_pef_with_library_import(
+        b"DrawSprocketLib",
+        b"DSpFindBestContextOnDisplayID",
+    );
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let context_out_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(context_out_ptr, vec![0; 4]);
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = context_out_ptr;
+    loaded.cpu.gpr[5] = PPC_DSP_DISPLAY_ID;
+
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(context_out_ptr), Some(PPC_DSP_CONTEXT));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = context_out_ptr;
+    loaded.cpu.gpr[5] = PPC_DSP_DISPLAY_ID + 1;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_DSP_CONTEXT_NOT_FOUND_ERR));
+}
+
     #[test]
     fn hle_import_runner_handles_draw_sprocket_find_best_context() {
         let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpFindBestContext");
@@ -97,7 +318,7 @@ use super::*;
                 ..PpcDspContextAttributes::default()
             },
         );
-        let initial_draw_sprocket = loaded.draw_sprocket;
+        let initial_draw_sprocket = loaded.draw_sprocket.clone();
         loaded.cpu.gpr[3] = attributes_ptr;
         loaded.cpu.gpr[4] = context_out_ptr;
 
@@ -138,7 +359,7 @@ use super::*;
         );
         loaded.memory.add_region(context_out_ptr, vec![0xaa; 4]);
         write_test_dsp_context_attributes(&mut loaded.memory, attributes_ptr, requested);
-        let initial_draw_sprocket = loaded.draw_sprocket;
+        let initial_draw_sprocket = loaded.draw_sprocket.clone();
         loaded.cpu.gpr[3] = attributes_ptr;
         loaded.cpu.gpr[4] = context_out_ptr;
 
@@ -238,7 +459,7 @@ use super::*;
             );
             loaded.memory.add_region(context_out_ptr, vec![0xcc; 4]);
             write_test_dsp_context_attributes(&mut loaded.memory, attributes_ptr, attributes);
-            let initial_draw_sprocket = loaded.draw_sprocket;
+            let initial_draw_sprocket = loaded.draw_sprocket.clone();
             loaded.cpu.gpr[3] = attributes_ptr;
             loaded.cpu.gpr[4] = context_out_ptr;
 
@@ -321,7 +542,7 @@ use super::*;
                 ..PpcDspContextAttributes::default()
             },
         );
-        let initial_draw_sprocket = loaded.draw_sprocket;
+        let initial_draw_sprocket = loaded.draw_sprocket.clone();
         loaded.cpu.gpr[3] = attributes_ptr;
         loaded.cpu.gpr[4] = context_out_ptr;
 

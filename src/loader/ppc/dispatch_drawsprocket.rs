@@ -40,11 +40,22 @@ pub(super) fn dispatch_drawsprocket_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::DSpGetVersion => {
+            // Classic DrawSprocket 1.7.5 final, returned as a four-byte NumVersion.
+            // PowerPC passes the structure-result address in r3.
+            if cpu.gpr[3] != 0 && ppc_memory_can_write_bytes(memory, cpu.gpr[3], 4) {
+                let _ = memory.write_u32_be(cpu.gpr[3], 0x0175_8000);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::DSpStartup => {
             draw_sprocket.started = true;
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
         PpcImportDispatcherTarget::DSpShutdown => {
+            if !ppc_dsp_restore_desktop(memory, gworlds, screen_clut, draw_sprocket) {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
             *draw_sprocket = PpcDrawSprocketState::default();
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
@@ -77,6 +88,14 @@ pub(super) fn dispatch_drawsprocket_import(
                 ppc_dsp_find_best_context(memory, cpu.gpr[3], cpu.gpr[4], draw_sprocket),
             )))
         }
+        PpcImportDispatcherTarget::DSpFindBestContextOnDisplayID => {
+            let result = if cpu.gpr[5] == PPC_DSP_DISPLAY_ID {
+                ppc_dsp_find_best_context(memory, cpu.gpr[3], cpu.gpr[4], draw_sprocket)
+            } else {
+                PPC_DSP_CONTEXT_NOT_FOUND_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::DSpUserSelectContext => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_user_select_context(cpu, memory, draw_sprocket)),
         )),
@@ -104,12 +123,16 @@ pub(super) fn dispatch_drawsprocket_import(
         PpcImportDispatcherTarget::DSpContextReserve => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_context_reserve(cpu, memory, draw_sprocket, gworlds)),
         )),
-        PpcImportDispatcherTarget::DSpContextRelease => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_context_release(cpu, draw_sprocket)),
-        )),
-        PpcImportDispatcherTarget::DSpContextSetState => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_context_set_state(cpu, draw_sprocket)),
-        )),
+        PpcImportDispatcherTarget::DSpContextRelease => {
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_dsp_context_release(cpu, memory, gworlds, screen_clut, draw_sprocket),
+            )))
+        }
+        PpcImportDispatcherTarget::DSpContextSetState => {
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_dsp_context_set_state(cpu, memory, gworlds, screen_clut, draw_sprocket),
+            )))
+        }
         PpcImportDispatcherTarget::DSpContextGetState => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_context_get_state(cpu, memory, draw_sprocket)),
         )),

@@ -60,12 +60,27 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
     } = context;
 
     match binding.dispatcher_target {
-        PpcImportDispatcherTarget::FSClose => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fs_close(cpu, files, writable_refnums),
-        ))),
-        PpcImportDispatcherTarget::PBClose => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_close(cpu, memory, files, writable_refnums),
-        ))),
+        PpcImportDispatcherTarget::FSClose => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_fs_close(
+                cpu,
+                files,
+                writable_refnums,
+                vfs_files,
+                vfs_resource_files,
+                vfs_resources,
+            ))))
+        }
+        PpcImportDispatcherTarget::PBClose => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_close(
+                cpu,
+                memory,
+                files,
+                writable_refnums,
+                vfs_files,
+                vfs_resource_files,
+                vfs_resources,
+            ))))
+        }
         PpcImportDispatcherTarget::PBFlushFile => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_flush_file(cpu, memory, files),
         ))),
@@ -137,8 +152,8 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
         PpcImportDispatcherTarget::HCreate => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_h_create(cpu, memory, vfs_directories, vfs_files, default_dir_id),
         ))),
-        PpcImportDispatcherTarget::HRename => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_h_rename(
+        PpcImportDispatcherTarget::HRename => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_h_rename(
                 cpu,
                 memory,
                 vfs_directories,
@@ -149,8 +164,8 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 resource_files,
                 vfs_resources,
                 default_dir_id,
-            ),
-        ))),
+            ))))
+        }
         PpcImportDispatcherTarget::Create => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_create(cpu, memory, vfs_directories, vfs_files, default_dir_id),
         ))),
@@ -238,6 +253,19 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 memory,
                 vfs_directories,
                 vfs_files,
+                files,
+                writable_refnums,
+                next_file_ref_num,
+            ))))
+        }
+        PpcImportDispatcherTarget::FSpOpenRF => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_fsp_open_rf(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                vfs_resources,
                 files,
                 writable_refnums,
                 next_file_ref_num,
@@ -380,9 +408,9 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
         PpcImportDispatcherTarget::PBDTGetPath => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_dt_get_path(cpu, memory, vfs_volumes),
         ))),
-        PpcImportDispatcherTarget::PBDTGetCommentSync => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_dt_get_comment(cpu, memory, vfs_volumes),
-        ))),
+        PpcImportDispatcherTarget::PBDTGetCommentSync => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_pb_dt_get_comment(cpu, memory, vfs_volumes)),
+        )),
         PpcImportDispatcherTarget::PBGetFInfo => {
             Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_get_finfo(
                 cpu,
@@ -620,17 +648,24 @@ fn ppc_pb_dt_get_path(
         Some(name)
     };
     let boot_name = crate::trap::TrapDispatcher::boot_volume_name();
-    let volume_index = if let Some(name) = requested_name.as_deref().filter(|name| !name.is_empty()) {
+    let volume_index = if let Some(name) = requested_name.as_deref().filter(|name| !name.is_empty())
+    {
         let volume_name = name.split(':').next().unwrap_or(name);
         if volume_name.eq_ignore_ascii_case(boot_name) {
             Some(0usize)
         } else {
-            vfs_volumes.iter().position(|volume| volume.name.eq_ignore_ascii_case(volume_name)).map(|index| index + 1)
+            vfs_volumes
+                .iter()
+                .position(|volume| volume.name.eq_ignore_ascii_case(volume_name))
+                .map(|index| index + 1)
         }
     } else if matches!(vref, 0 | PPC_BOOT_VOLUME_REF_NUM) {
         Some(0)
     } else {
-        vfs_volumes.iter().position(|volume| volume.ref_num == vref).map(|index| index + 1)
+        vfs_volumes
+            .iter()
+            .position(|volume| volume.ref_num == vref)
+            .map(|index| index + 1)
     };
     let Some(volume_index) = volume_index else {
         let _ = memory.write_u16_be(pb + 24, 0);
@@ -654,10 +689,17 @@ fn ppc_pb_dt_get_comment(
         return PPC_PARAM_ERR;
     }
     let desktop_ref = memory.read_u16_be(pb + 24).unwrap_or(0);
-    let valid_ref = desktop_ref >= 0x7f00
-        && usize::from(desktop_ref - 0x7f00) <= vfs_volumes.len();
+    let valid_ref = desktop_ref >= 0x7f00 && usize::from(desktop_ref - 0x7f00) <= vfs_volumes.len();
     let _ = memory.write_u32_be(pb + 40, 0);
-    ppc_complete_pb(memory, pb, if valid_ref { AFP_ITEM_NOT_FOUND } else { PPC_RF_NUM_ERR })
+    ppc_complete_pb(
+        memory,
+        pb,
+        if valid_ref {
+            AFP_ITEM_NOT_FOUND
+        } else {
+            PPC_RF_NUM_ERR
+        },
+    )
 }
 
 pub(super) fn ppc_dispatch_file_compatibility(
