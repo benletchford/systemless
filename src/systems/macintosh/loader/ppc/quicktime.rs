@@ -3757,7 +3757,7 @@ fn ppc_qt_decode_ima4_movie_audio_samples(
     Some(samples)
 }
 
-fn ppc_qt_decode_ima4_channel_packet(packet: &[u8]) -> Option<[i16; 64]> {
+pub(super) fn ppc_qt_decode_ima4_channel_packet(packet: &[u8]) -> Option<[i16; 64]> {
     const STEP_TABLE: [i32; 89] = [
         7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60,
         66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371,

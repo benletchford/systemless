@@ -1575,6 +1575,7 @@ pub enum PpcImportDispatcherTarget {
     SndSoundManagerVersion,
     UnsignedFixedMulDiv,
     GetSoundOutputInfo,
+    GetCompressionInfo,
     GetSoundVol,
     SetSoundVol,
     GetDefaultOutputVolume,
@@ -13066,6 +13067,7 @@ fn dispatcher_target_for_import(
         ("SoundLib" | "InterfaceLib", "GetSoundOutputInfo") => {
             PpcImportDispatcherTarget::GetSoundOutputInfo
         }
+        ("SoundLib", "GetCompressionInfo") => PpcImportDispatcherTarget::GetCompressionInfo,
         ("InterfaceLib", "GetSoundVol") => PpcImportDispatcherTarget::GetSoundVol,
         ("InterfaceLib", "SetSoundVol") => PpcImportDispatcherTarget::SetSoundVol,
         ("InterfaceLib", "GetDefaultOutputVolume") => {
@@ -16290,6 +16292,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::SndSoundManagerVersion
         | PpcImportDispatcherTarget::UnsignedFixedMulDiv
         | PpcImportDispatcherTarget::GetSoundOutputInfo
+        | PpcImportDispatcherTarget::GetCompressionInfo
         | PpcImportDispatcherTarget::GetSoundVol
         | PpcImportDispatcherTarget::SetSoundVol
         | PpcImportDispatcherTarget::GetDefaultOutputVolume

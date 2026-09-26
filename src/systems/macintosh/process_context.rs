@@ -13389,6 +13389,7 @@ mod tests {
                 num_channels: 1,
                 sample_size: 8,
                 compression_id: 0,
+                format: 0,
                 packet_size: 0,
                 current_buffer_index: 0,
                 callback_pending_mask: 1,
