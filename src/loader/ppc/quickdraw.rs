@@ -3701,3 +3701,37 @@ pub(crate) fn ppc_write_pixmap(
     memory.write_u32_be(pixmap + 46, 0)?;
     Some(())
 }
+
+pub(crate) fn ppc_read_packed_bitmap_index(
+    memory: &mut PpcSectionMem,
+    base_addr: u32,
+    row_bytes: u32,
+    pixel_size: u16,
+    bounds: (i16, i16, i16, i16),
+    v: i16,
+    h: i16,
+) -> Option<u8> {
+    let (top, left, bottom, right) = bounds;
+    if base_addr == 0 || v < top || v >= bottom || h < left || h >= right {
+        return None;
+    }
+    let y = u32::try_from(i32::from(v) - i32::from(top)).ok()?;
+    let x = u32::try_from(i32::from(h) - i32::from(left)).ok()?;
+    let row = base_addr.checked_add(y.checked_mul(row_bytes)?)?;
+    match pixel_size {
+        1 => {
+            let byte = memory.read_u8(row.checked_add(x / 8)?)?;
+            Some((byte >> (7 - (x & 7))) & 1)
+        }
+        2 => {
+            let byte = memory.read_u8(row.checked_add(x / 4)?)?;
+            Some((byte >> (6 - 2 * (x & 3))) & 3)
+        }
+        4 => {
+            let byte = memory.read_u8(row.checked_add(x / 2)?)?;
+            Some(if x & 1 == 0 { byte >> 4 } else { byte & 15 })
+        }
+        8 => memory.read_u8(row.checked_add(x)?),
+        _ => None,
+    }
+}
