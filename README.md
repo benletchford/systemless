@@ -102,6 +102,13 @@ Windows uses D3D11 presentation by default, with automatic software fallback if
 GPU initialization or presentation fails. Set `SYSTEMLESS_D3D11=0` before launching
 to force software presentation.
 
+The experimental desktop execution owner can be selected with
+`SYSTEMLESS_DESKTOP_RUNTIME=thread`. It constructs and runs the guest on a
+separate thread while the window consumes complete owned snapshots. Closing the
+window requests an asynchronous save flush and runtime shutdown. The default
+remains the same-thread compatibility path until windowed responsiveness and
+platform qualification are complete; leave the variable unset to use it.
+
 For intermittent desktop stalls, set `SYSTEMLESS_PROFILE_FRAMES=1` when launching.
 The terminal reports CPU, compositing, outline rendering and Metal drawable-wait
 phases that take at least 50 ms. During normal gameplay, drawable waits on the

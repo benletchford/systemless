@@ -130,6 +130,7 @@ impl RuntimeMailbox {
     }
 
     /// Sleep only on the execution owner, waking promptly for input or shutdown.
+    #[cfg(test)]
     pub fn wait_until(&self, deadline: Instant) {
         self.wait_until_accepting(deadline, true);
     }

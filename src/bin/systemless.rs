@@ -852,7 +852,13 @@ struct PendingGpuFrame {
 }
 
 struct App {
-    driver: GuiDriver,
+    driver: Option<GuiDriver>,
+    owner: Option<runtime_owner::RuntimeOwner>,
+    closing: bool,
+    runtime_error: Option<String>,
+    force_next_render: bool,
+    last_presented_guest_tick: Option<u32>,
+    render_headroom: std::time::Duration,
     guest_state: runtime_protocol::GuiState,
     frame: frame_snapshot::GuiFrame,
     retained_frame_cache: frame_snapshot::RetainedFrameCache,
@@ -971,6 +977,7 @@ impl App {
             Some(1),
             UiThemeId::ClassicSystem7,
             false,
+            false,
         )
     }
 
@@ -983,6 +990,7 @@ impl App {
         display_scale: Option<u32>,
         ui_theme: UiThemeId,
         start_fullscreen: bool,
+        threaded: bool,
     ) -> Self {
         #[cfg(not(target_os = "macos"))]
         let _ = native_integrations;
@@ -1012,14 +1020,22 @@ impl App {
             );
         }
         Self {
-            driver: GuiDriver::new(
-                game_path.clone(),
-                arrows_as_numpad,
-                native_integrations,
-                addressing_24_bit,
-                screen_depth,
-                ui_theme,
-            ),
+            driver: (!threaded).then(|| {
+                GuiDriver::new(
+                    game_path.clone(),
+                    arrows_as_numpad,
+                    native_integrations,
+                    addressing_24_bit,
+                    screen_depth,
+                    ui_theme,
+                )
+            }),
+            owner: None,
+            closing: false,
+            runtime_error: None,
+            force_next_render: true,
+            last_presented_guest_tick: None,
+            render_headroom: MIN_RENDER_HEADROOM,
             guest_state: Default::default(),
             frame: Default::default(),
             retained_frame_cache: Default::default(),
@@ -1101,9 +1117,162 @@ impl App {
         }
     }
 
+    fn show_runtime_error(&self) {
+        if let (Some(window), Some(error)) = (self.window.as_ref(), self.runtime_error.as_ref()) {
+            window.set_title(&format!("Systemless runtime stopped: {error}"));
+        }
+    }
+
+    fn send_command(&mut self, command: runtime_protocol::GuiCommand) {
+        if self.closing {
+            return;
+        }
+        if let Some(owner) = self.owner.as_ref() {
+            if let Err(error) = owner.mailbox.send(command) {
+                if matches!(error, runtime_mailbox::CommandError::Full(_)) {
+                    self.runtime_error = Some("Input queue is full; the runtime is stopping to preserve accepted input and saves.".into());
+                    owner.mailbox.request_shutdown();
+                    eprintln!("[SYSTEMLESS] {}", self.runtime_error.as_ref().unwrap());
+                    self.show_runtime_error();
+                }
+            }
+        } else if let Some(driver) = self.driver.as_mut() {
+            driver.apply_command(command);
+        }
+    }
+
+    fn sync_native_state(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        self.sync_host_cursor(event_loop);
+
+        #[cfg(target_os = "macos")]
+        self.sync_native_application_identity();
+
+        #[cfg(target_os = "macos")]
+        if let (Some(native_menu), Some(snapshot)) =
+            (self.native_menu.as_mut(), self.guest_state.menus.as_ref())
+        {
+            native_menu.sync((**snapshot).clone());
+        }
+
+        // Check if screen mode changed
+        if self.guest_state.generation != 0 {
+            let (_, _, sw, sh, _) = self.guest_state.screen_mode;
+            let sw = sw as u32;
+            let sh = sh as u32;
+            if sw != self.current_screen_width || sh != self.current_screen_height {
+                self.current_screen_width = sw;
+                self.current_screen_height = sh;
+                if let Some(window) = &self.window {
+                    // Automatic sizing owns only the initial geometry. Keep
+                    // the user's window through guest mode changes and fit
+                    // the new framebuffer into it during presentation.
+                    if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
+                        let _ =
+                            window.request_inner_size(guest_scaled_physical_size(sw, sh, scale));
+                    }
+                }
+                self.force_next_render = true;
+            }
+        }
+    }
+
+    fn poll_owner(&mut self, event_loop: &ActiveEventLoop) {
+        use runtime_mailbox::RuntimeStatus;
+        let update = self
+            .owner
+            .as_ref()
+            .expect("threaded runtime")
+            .mailbox
+            .poll();
+        if let Some(state) = update.state {
+            self.guest_state = state;
+        }
+        let has_frame = update.frame.is_some();
+        if let Some(mut frame) = update.frame {
+            std::mem::swap(&mut self.frame, &mut frame);
+            self.owner.as_ref().unwrap().mailbox.recycle(frame);
+        }
+        self.sync_guest_cursor_warp();
+        self.sync_native_state(event_loop);
+        if has_frame && !self.closing {
+            let now = std::time::Instant::now();
+            self.update_debug_frame_stats(now);
+            self.present_frame(now);
+        }
+        if let RuntimeStatus::Stopped {
+            error,
+            instructions,
+        } = update.status
+        {
+            if self.runtime_error.is_none() {
+                if let Some(error) = error.as_ref() {
+                    eprintln!("[SYSTEMLESS] Runtime failed: {error}");
+                }
+                self.runtime_error = error;
+            }
+            let joined = match self.owner.as_mut().unwrap().join_finished() {
+                Ok(joined) => joined,
+                Err(error) => {
+                    self.runtime_error = Some(error);
+                    true
+                }
+            };
+            if !joined {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    std::time::Instant::now() + std::time::Duration::from_millis(2),
+                ));
+                return;
+            }
+            if self.closing || self.runtime_error.is_none() {
+                eprintln!("[SYSTEMLESS] Runtime stopped. Total instructions: {instructions}");
+                event_loop.exit();
+            } else if let Some(window) = self.window.as_ref() {
+                window.set_title(&format!(
+                    "Systemless runtime stopped: {}",
+                    self.runtime_error.as_ref().unwrap()
+                ));
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
+            return;
+        }
+        let force = std::mem::take(&mut self.force_next_render);
+        #[cfg(target_os = "macos")]
+        let (capture_crop, learning_crop) = (
+            should_learn_content_rect(self.debug_overlay_visible, self.native_integrations),
+            self.content_rect.is_none() || self.content_rect_relearn_after_full,
+        );
+        #[cfg(not(target_os = "macos"))]
+        let (capture_crop, learning_crop) = (false, false);
+        self.owner.as_ref().unwrap().mailbox.request_presentation(
+            runtime_mailbox::PresentationOptions {
+                debug: self
+                    .debug_overlay_visible
+                    .then_some(DebugOverlayFrameStats {
+                        host_fps: self.debug_host_fps,
+                        frame_ms: self.debug_frame_ms,
+                        ..Default::default()
+                    }),
+                capture_crop,
+                learning_crop,
+                render_headroom: Some(self.render_headroom),
+                force,
+            },
+        );
+        #[cfg(target_os = "windows")]
+        if let Some(at) = self.gpu.as_ref().and_then(|gpu| gpu.retry_at()) {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(at));
+            return;
+        }
+        event_loop.set_control_flow(ControlFlow::Wait);
+    }
+
     fn init_game(&mut self) {
-        self.driver.init_game();
-        self.driver.capture_state(&mut self.guest_state, true);
+        self.driver.as_mut().expect("serial runtime").init_game();
+        self.driver
+            .as_mut()
+            .expect("serial runtime")
+            .capture_state(&mut self.guest_state, true);
         #[cfg(target_os = "macos")]
         self.sync_native_application_identity();
     }
@@ -1214,11 +1383,10 @@ impl App {
                 self.physical_to_mac(self.mouse_physical.0, self.mouse_physical.1);
             self.mouse_guest_offset = (v.saturating_sub(host_v), h.saturating_sub(host_h));
         }
-        self.driver
-            .apply_command(runtime_protocol::GuiCommand::AcknowledgeWarp {
-                generation: self.guest_state.generation,
-                serial: warp.serial,
-            });
+        self.send_command(runtime_protocol::GuiCommand::AcknowledgeWarp {
+            generation: self.guest_state.generation,
+            serial: warp.serial,
+        });
         self.guest_state.warp = None;
     }
 
@@ -1284,14 +1452,14 @@ impl App {
             // The resize event prepares the new geometry. Never submit an
             // old-size pending image into the replacement drawable.
             gpu.cancel_retry();
-            self.driver.force_next_render = true;
+            self.force_next_render = true;
             return;
         }
         let _timing = FramePhaseTimer::new("GPU readiness retry work");
         match gpu.present(&self.gpu_frame, pending.size, pending.rect) {
             Ok(true) => {
                 self.gpu_pending = None;
-                self.driver.last_presented_guest_tick = Some(pending.guest_tick);
+                self.last_presented_guest_tick = Some(pending.guest_tick);
             }
             Ok(false) => {}
             Err(message) => {
@@ -1305,7 +1473,7 @@ impl App {
                     Surface::new(&context, window).expect("Failed to create software surface"),
                 );
                 self.surface_size = None;
-                self.driver.force_next_render = true;
+                self.force_next_render = true;
                 self.present_frame(std::time::Instant::now());
             }
         }
@@ -1333,7 +1501,7 @@ impl App {
         let learning_crop = self.content_rect.is_none() || self.content_rect_relearn_after_full;
         #[cfg(not(target_os = "macos"))]
         let learning_crop = false;
-        if !self.driver.capture_frame(
+        if !self.driver.as_mut().expect("serial runtime").capture_frame(
             &mut self.frame,
             self.debug_overlay_visible
                 .then_some(DebugOverlayFrameStats {
@@ -1654,7 +1822,7 @@ impl App {
                     // Retain the last complete drawable. Presenting the live
                     // guest framebuffer here would expose the dialog through
                     // the old crop for one or two display frames.
-                    self.driver.force_next_render = true;
+                    self.force_next_render = true;
                     return;
                 }
             }
@@ -1756,7 +1924,7 @@ impl App {
                         target_size,
                         required_resize_event: self.window_resize_events.saturating_add(1),
                     });
-                    self.driver.force_next_render = true;
+                    self.force_next_render = true;
                     return;
                 }
             }
@@ -1780,11 +1948,10 @@ impl App {
                     surface.set_transactional_presentation(false);
                 }
                 if presented_directly {
-                    self.driver.last_presented_guest_tick = Some(presented_tick);
-                    self.driver.force_next_render = false;
+                    self.last_presented_guest_tick = Some(presented_tick);
+                    self.force_next_render = false;
                     self.force_gpu_present = false;
-                    self.driver.render_headroom =
-                        GuiDriver::next_render_headroom(render_start.elapsed());
+                    self.render_headroom = GuiDriver::next_render_headroom(render_start.elapsed());
                     return;
                 }
             }
@@ -1863,14 +2030,13 @@ impl App {
                     self.frame_argb = frame_argb;
                     if submitted {
                         self.gpu_pending = None;
-                        self.driver.last_presented_guest_tick = Some(presented_tick);
+                        self.last_presented_guest_tick = Some(presented_tick);
                     }
                     // The prepared image satisfies this redraw request. A
                     // readiness wake submits it without recompositing. Later
                     // input/expose requests must survive that submission.
-                    self.driver.force_next_render = false;
-                    self.driver.render_headroom =
-                        GuiDriver::next_render_headroom(render_start.elapsed());
+                    self.force_next_render = false;
+                    self.render_headroom = GuiDriver::next_render_headroom(render_start.elapsed());
                     return;
                 }
                 Err(message) => {
@@ -2047,9 +2213,9 @@ impl App {
         }
         self.presentation_argb = presented;
         self.frame_argb = frame_argb;
-        self.driver.last_presented_guest_tick = Some(presented_tick);
-        self.driver.force_next_render = false;
-        self.driver.render_headroom = GuiDriver::next_render_headroom(render_start.elapsed());
+        self.last_presented_guest_tick = Some(presented_tick);
+        self.force_next_render = false;
+        self.render_headroom = GuiDriver::next_render_headroom(render_start.elapsed());
     }
 }
 
@@ -2717,10 +2883,29 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
-                self.driver.sync_save_files(true);
+                if self.owner.is_none() && self.driver.is_none() {
+                    event_loop.exit();
+                    return;
+                }
+                if let Some(owner) = self.owner.as_ref() {
+                    self.closing = true;
+                    owner.mailbox.request_shutdown();
+                    if let Some(window) = self.window.as_ref() {
+                        window.set_visible(false);
+                    }
+                    self.poll_owner(event_loop);
+                    return;
+                }
+                self.driver
+                    .as_mut()
+                    .expect("serial runtime")
+                    .sync_save_files(true);
                 eprintln!(
                     "[SYSTEMLESS] Window closed. Total instructions: {}",
-                    self.driver.total_instructions
+                    self.driver
+                        .as_mut()
+                        .expect("serial runtime")
+                        .total_instructions
                 );
                 systemless::runner::dump_wait_stats();
                 event_loop.exit();
@@ -2744,12 +2929,13 @@ impl ApplicationHandler for App {
                     self.host_cursor.set_pointer_inside(true);
                     self.host_cursor.reassert();
                 }
-                self.driver.force_next_render = true;
+                self.force_next_render = true;
                 self.mouse_physical = (position.x, position.y);
                 let (v, h) = self.host_mouse_to_mac(position.x, position.y);
-                self.driver
-                    .apply_command(runtime_protocol::GuiCommand::MouseMove { v, h });
-                self.driver.capture_state(&mut self.guest_state, false);
+                self.send_command(runtime_protocol::GuiCommand::MouseMove { v, h });
+                if let Some(driver) = self.driver.as_mut() {
+                    driver.capture_state(&mut self.guest_state, false);
+                }
                 #[cfg(any(target_os = "macos", target_os = "windows"))]
                 self.sync_host_cursor(event_loop);
             }
@@ -2759,16 +2945,16 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.driver.force_next_render = true;
+                self.force_next_render = true;
                 let (v, h) = self.host_mouse_to_mac(self.mouse_physical.0, self.mouse_physical.1);
-                self.driver.apply_command(match state {
+                self.send_command(match state {
                     ElementState::Pressed => runtime_protocol::GuiCommand::MouseDown { v, h },
                     ElementState::Released => runtime_protocol::GuiCommand::MouseUp { v, h },
                 });
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
-                self.driver.force_next_render = true;
+                self.force_next_render = true;
                 let translated = host_keyboard_event_to_mac(
                     &event.logical_key,
                     &event.physical_key,
@@ -2794,7 +2980,7 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
-                self.driver.apply_command(match event.state {
+                self.send_command(match event.state {
                     ElementState::Pressed => runtime_protocol::GuiCommand::KeyDown {
                         key: mac_key,
                         character: char_code,
@@ -2807,7 +2993,7 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::Resized(size) => {
-                self.driver.force_next_render = true;
+                self.force_next_render = true;
                 #[cfg(target_os = "macos")]
                 {
                     self.force_gpu_present = true;
@@ -2822,7 +3008,7 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::RedrawRequested => {
-                self.driver.force_next_render = true;
+                self.force_next_render = true;
                 #[cfg(target_os = "macos")]
                 {
                     self.force_gpu_present = true;
@@ -2833,9 +3019,49 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        self.driver.pump_debugger();
+        if self.owner.is_none() && self.driver.is_none() {
+            self.show_runtime_error();
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        }
+        if self.owner.is_some() {
+            #[cfg(target_os = "windows")]
+            if self
+                .gpu
+                .as_ref()
+                .and_then(|gpu| gpu.retry_at())
+                .is_some_and(|at| std::time::Instant::now() >= at)
+            {
+                self.retry_gpu_present();
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(native_menu) = self.native_menu.as_mut() {
+                let commands = native_menu.drain_commands();
+                for (menu, item) in commands {
+                    self.send_command(runtime_protocol::GuiCommand::Menu { menu, item });
+                }
+            }
+            self.poll_owner(event_loop);
+            return;
+        }
+        {
+            let driver = self.driver.as_mut().expect("serial runtime");
+            driver.force_next_render |= self.force_next_render;
+            driver.last_presented_guest_tick = self.last_presented_guest_tick;
+            driver.render_headroom = self.render_headroom;
+        }
+
+        self.driver
+            .as_mut()
+            .expect("serial runtime")
+            .pump_debugger();
         let now = std::time::Instant::now();
-        let next = self.driver.next_frame_time.unwrap_or(now);
+        let next = self
+            .driver
+            .as_mut()
+            .expect("serial runtime")
+            .next_frame_time
+            .unwrap_or(now);
 
         #[cfg(target_os = "windows")]
         if self
@@ -2863,76 +3089,99 @@ impl ApplicationHandler for App {
         // miss a full presentation interval, drop the missed host frame instead
         // of running immediate catch-up frames that bunch audio and graphics.
         let (next_target, _) = GuiDriver::next_frame_target(now, next);
-        self.driver.next_frame_time = Some(next_target);
+        self.driver
+            .as_mut()
+            .expect("serial runtime")
+            .next_frame_time = Some(next_target);
         event_loop.set_control_flow(ControlFlow::WaitUntil(next_target));
 
         #[cfg(target_os = "macos")]
         if let Some(native_menu) = self.native_menu.as_mut() {
-            for (menu, item) in native_menu.drain_commands() {
-                self.driver
-                    .apply_command(runtime_protocol::GuiCommand::Menu { menu, item });
+            let commands = native_menu.drain_commands();
+            for (menu, item) in commands {
+                self.send_command(runtime_protocol::GuiCommand::Menu { menu, item });
             }
         }
 
         // Step emulation, then render
-        self.driver.step_frame();
-        self.driver.capture_state(&mut self.guest_state, true);
+        self.driver.as_mut().expect("serial runtime").step_frame();
+        self.driver
+            .as_mut()
+            .expect("serial runtime")
+            .capture_state(&mut self.guest_state, true);
         self.sync_guest_cursor_warp();
-        self.driver.flush_ready_mouse_release();
-        if self.driver.guest_requested_exit() {
-            if !self.driver.guest_exit_reported {
-                self.driver.sync_save_files(true);
+        self.driver
+            .as_mut()
+            .expect("serial runtime")
+            .flush_ready_mouse_release();
+        if self
+            .driver
+            .as_mut()
+            .expect("serial runtime")
+            .guest_requested_exit()
+        {
+            if !self
+                .driver
+                .as_mut()
+                .expect("serial runtime")
+                .guest_exit_reported
+            {
+                self.driver
+                    .as_mut()
+                    .expect("serial runtime")
+                    .sync_save_files(true);
                 eprintln!(
                     "[SYSTEMLESS] Guest exited. Total instructions: {}",
-                    self.driver.total_instructions
+                    self.driver
+                        .as_mut()
+                        .expect("serial runtime")
+                        .total_instructions
                 );
-                self.driver.guest_exit_reported = true;
+                self.driver
+                    .as_mut()
+                    .expect("serial runtime")
+                    .guest_exit_reported = true;
             }
-            if self.driver.debug_server.is_none() {
+            if self
+                .driver
+                .as_mut()
+                .expect("serial runtime")
+                .debug_server
+                .is_none()
+            {
                 event_loop.exit();
                 return;
             }
         }
-        self.driver.sync_save_files(false);
+        self.driver
+            .as_mut()
+            .expect("serial runtime")
+            .sync_save_files(false);
 
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        self.sync_host_cursor(event_loop);
+        self.sync_native_state(event_loop);
 
-        #[cfg(target_os = "macos")]
-        self.sync_native_application_identity();
-
-        #[cfg(target_os = "macos")]
-        if let (Some(native_menu), Some(snapshot)) =
-            (self.native_menu.as_mut(), self.guest_state.menus.as_ref())
+        self.force_next_render |= self
+            .driver
+            .as_ref()
+            .expect("serial runtime")
+            .force_next_render;
+        self.driver
+            .as_mut()
+            .expect("serial runtime")
+            .force_next_render = self.force_next_render;
+        if self
+            .driver
+            .as_mut()
+            .expect("serial runtime")
+            .should_render_frame(self.debug_overlay_visible)
         {
-            native_menu.sync((**snapshot).clone());
-        }
-
-        // Check if screen mode changed
-        if self.guest_state.generation != 0 {
-            let (_, _, sw, sh, _) = self.guest_state.screen_mode;
-            let sw = sw as u32;
-            let sh = sh as u32;
-            if sw != self.current_screen_width || sh != self.current_screen_height {
-                self.current_screen_width = sw;
-                self.current_screen_height = sh;
-                if let Some(window) = &self.window {
-                    // Automatic sizing owns only the initial geometry. Keep
-                    // the user's window through guest mode changes and fit
-                    // the new framebuffer into it during presentation.
-                    if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
-                        let _ =
-                            window.request_inner_size(guest_scaled_physical_size(sw, sh, scale));
-                    }
-                }
-                self.driver.force_next_render = true;
-            }
-        }
-
-        if self.driver.should_render_frame(self.debug_overlay_visible) {
             self.render_frame();
         }
-        self.driver.finish_frame();
+        self.driver
+            .as_mut()
+            .expect("serial runtime")
+            .force_next_render = self.force_next_render;
+        self.driver.as_mut().expect("serial runtime").finish_frame();
         #[cfg(target_os = "windows")]
         if let Some(at) = self.gpu.as_ref().and_then(|gpu| gpu.retry_at()) {
             event_loop.set_control_flow(ControlFlow::WaitUntil(next_target.min(at)));
@@ -2961,6 +3210,16 @@ fn run_gui(
         }
     );
 
+    let threaded = std::env::var("SYSTEMLESS_DESKTOP_RUNTIME").as_deref() == Ok("thread");
+    let config = runtime_owner::RuntimeConfig {
+        game_path: game_path.clone(),
+        arrows_as_numpad,
+        native_integrations,
+        addressing_24_bit,
+        screen_depth,
+        ui_theme,
+        debug_socket: debug_socket.clone(),
+    };
     let mut app = App::new_with_display_scale(
         game_path,
         arrows_as_numpad,
@@ -2970,27 +3229,44 @@ fn run_gui(
         display_scale,
         ui_theme,
         fullscreen,
+        threaded,
     );
     #[cfg(target_os = "windows")]
     {
         app.gpu_wake = Some(event_loop.create_proxy());
     }
-    if let Some(path) = debug_socket {
-        match debug_server::DebugServer::bind(&path) {
-            Ok(server) => app.driver.debug_server = Some(server),
+    if threaded {
+        let proxy = event_loop.create_proxy();
+        match runtime_owner::RuntimeOwner::spawn(config, move || {
+            let _ = proxy.send_event(());
+        }) {
+            Ok(owner) => app.owner = Some(owner),
             Err(error) => {
-                eprintln!(
-                    "Error: cannot bind debug socket {}: {error}",
-                    path.display()
-                );
-                std::process::exit(1);
+                let message = format!("Failed to start runtime owner thread: {error}");
+                eprintln!("[SYSTEMLESS] {message}");
+                app.runtime_error = Some(message);
             }
         }
+    } else {
+        if let Some(path) = debug_socket {
+            match debug_server::DebugServer::bind(&path) {
+                Ok(server) => {
+                    app.driver.as_mut().expect("serial runtime").debug_server = Some(server)
+                }
+                Err(error) => {
+                    eprintln!(
+                        "Error: cannot bind debug socket {}: {error}",
+                        path.display()
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+        // `run_app` is the first point at which `resumed` can create a native
+        // window. Finish archive decompression and guest initialization before
+        // entering the event loop so startup never exposes an empty host window.
+        app.init_game();
     }
-    // `run_app` is the first point at which `resumed` can create a native
-    // window. Finish archive decompression and guest initialization before
-    // entering the event loop so startup never exposes an empty host window.
-    app.init_game();
     event_loop.run_app(&mut app).expect("Event loop failed");
     frame_metrics::flush();
 }
@@ -3764,6 +4040,28 @@ mod tests {
     }
 
     #[test]
+    fn threaded_window_state_does_not_construct_a_guest_driver() {
+        let app = App::new_with_display_scale(
+            PathBuf::from("missing-archive"),
+            false,
+            false,
+            false,
+            Some(8),
+            Some(1),
+            UiThemeId::ClassicSystem7,
+            false,
+            true,
+        );
+        assert!(app.driver.is_none());
+        assert!(
+            app.owner.is_none(),
+            "owner startup is separate from window state construction"
+        );
+        assert_eq!(app.frame.sequence, 0);
+        assert_eq!(app.guest_state.generation, 0);
+    }
+
+    #[test]
     fn cli_parses_typed_runner_options() {
         let cli = Cli::try_parse_from([
             "systemless",
@@ -4001,6 +4299,7 @@ mod tests {
         use systemless::memory::MemoryBus;
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
+        let mut driver = app.driver.take().unwrap();
         let mut runner = FixtureRunner::new(
             8 * 1024 * 1024,
             systemless::runner::FixtureRunnerConfig::default(),
@@ -4009,13 +4308,13 @@ mod tests {
         runner.bus_mut().write_word(base, 0xA9F4); // _ExitToShell
         runner.cpu_mut().write_reg(Register::PC, base);
         runner.cpu_mut().write_reg(Register::A7, 0x0010_0000);
-        app.driver.runner = Some(runner);
+        driver.runner = Some(runner);
 
-        assert!(!app.driver.guest_requested_exit());
-        let (_steps, running) = app.driver.runner.as_mut().unwrap().run_steps(1, None);
+        assert!(!driver.guest_requested_exit());
+        let (_steps, running) = driver.runner.as_mut().unwrap().run_steps(1, None);
 
         assert!(!running);
-        assert!(app.driver.guest_requested_exit());
+        assert!(driver.guest_requested_exit());
     }
 
     #[test]
@@ -4389,11 +4688,12 @@ mod tests {
         let now = std::time::Instant::now();
         let (runner, queued) = gui_runner_with_counting_audio();
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
-        app.driver.runner = Some(runner);
-        app.driver.start_time = Some(now);
-        app.driver.next_frame_time = Some(now);
+        let mut driver = app.driver.take().unwrap();
+        driver.runner = Some(runner);
+        driver.start_time = Some(now);
+        driver.next_frame_time = Some(now);
 
-        app.driver.step_frame();
+        driver.step_frame();
 
         assert!(
             (732..=734).contains(&*queued.borrow()),
@@ -4443,19 +4743,20 @@ mod tests {
         runner.bus_mut().fill_bytes(screen, 800 * 20, 0xAA);
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
-        app.driver.runner = Some(runner);
-        app.driver.start_time = Some(now - FRAME_DURATION);
-        app.driver.next_frame_time = Some(now + FRAME_DURATION * 4);
-        app.driver.last_presented_guest_tick = Some(0);
-        app.driver.force_next_render = false;
+        let mut driver = app.driver.take().unwrap();
+        driver.runner = Some(runner);
+        driver.start_time = Some(now - FRAME_DURATION);
+        driver.next_frame_time = Some(now + FRAME_DURATION * 4);
+        driver.last_presented_guest_tick = Some(0);
+        driver.force_next_render = false;
 
         // Keep the frame budget independent of emulator setup time and host
         // scheduling. The instruction cap still bounds foreground execution.
-        app.driver.step_frame_with_clock(|| now);
+        driver.step_frame_with_clock(|| now);
 
-        let runner = app.driver.runner.as_ref().unwrap();
+        let runner = driver.runner.as_ref().unwrap();
         assert!(
-            app.driver.total_instructions > 0,
+            driver.total_instructions > 0,
             "test setup should execute foreground startup work"
         );
         assert_eq!(
@@ -4470,12 +4771,12 @@ mod tests {
             "test setup should stay within the same VBL tick"
         );
         assert!(
-            app.driver.should_render_frame(app.debug_overlay_visible),
+            driver.should_render_frame(app.debug_overlay_visible),
             "same-tick foreground drawing progress should force a present"
         );
-        app.driver.runner.as_mut().unwrap().composite_frame();
+        driver.runner.as_mut().unwrap().composite_frame();
         assert_ne!(
-            app.driver
+            driver
                 .runner
                 .as_ref()
                 .unwrap()
@@ -4511,31 +4812,32 @@ mod tests {
         runner.push_mouse_down(350, 580);
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
-        app.driver.runner = Some(runner);
-        app.driver.start_time = Some(now + FRAME_DURATION * 240);
-        app.driver.next_frame_time = Some(now + FRAME_DURATION * 120);
-        app.driver.mouse_release_latch.press();
-        assert_eq!(app.driver.mouse_release_latch.release((350, 580)), None);
-        assert!(app.driver.mouse_release_latch.requires_guest_progress());
+        let mut driver = app.driver.take().unwrap();
+        driver.runner = Some(runner);
+        driver.start_time = Some(now + FRAME_DURATION * 240);
+        driver.next_frame_time = Some(now + FRAME_DURATION * 120);
+        driver.mouse_release_latch.press();
+        assert_eq!(driver.mouse_release_latch.release((350, 580)), None);
+        assert!(driver.mouse_release_latch.requires_guest_progress());
 
-        app.driver.step_frame();
+        driver.step_frame();
 
-        let runner = app.driver.runner.as_ref().unwrap();
-        assert!(app.driver.total_instructions > 0);
+        let runner = driver.runner.as_ref().unwrap();
+        assert!(driver.total_instructions > 0);
         assert_eq!(runner.guest_tick(), input_tick);
         assert_eq!(runner.bus().read_byte(0x0172), 0x00);
 
-        app.driver.flush_ready_mouse_release();
+        driver.flush_ready_mouse_release();
 
-        let runner = app.driver.runner.as_ref().unwrap();
+        let runner = driver.runner.as_ref().unwrap();
         assert_eq!(runner.bus().read_byte(0x0172), 0x80);
-        assert!(app.driver.mouse_release_latch.requires_guest_progress());
+        assert!(driver.mouse_release_latch.requires_guest_progress());
 
-        let instructions_after_press = app.driver.total_instructions;
-        app.driver.step_frame();
+        let instructions_after_press = driver.total_instructions;
+        driver.step_frame();
 
-        assert!(app.driver.total_instructions > instructions_after_press);
-        assert!(!app.driver.mouse_release_latch.requires_guest_progress());
+        assert!(driver.total_instructions > instructions_after_press);
+        assert!(!driver.mouse_release_latch.requires_guest_progress());
     }
 
     #[test]
@@ -4619,14 +4921,15 @@ mod tests {
             });
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
-        app.driver.runner = Some(runner);
-        app.driver.start_time = Some(scheduled_frame_end);
-        app.driver.next_frame_time = Some(scheduled_frame_end);
+        let mut driver = app.driver.take().unwrap();
+        driver.runner = Some(runner);
+        driver.start_time = Some(scheduled_frame_end);
+        driver.next_frame_time = Some(scheduled_frame_end);
 
         if headless {
-            headless_time::frame(app.driver.runner.as_mut().unwrap(), 366);
+            headless_time::frame(driver.runner.as_mut().unwrap(), 366);
         } else {
-            app.driver.step_frame();
+            driver.step_frame();
         }
 
         let queued = queued.borrow();
@@ -4640,7 +4943,7 @@ mod tests {
             "pending doubleback must refill before same-tick audio is mixed"
         );
         assert!(
-            !app.driver.runner.as_ref().unwrap().has_pending_sound_work(),
+            !driver.runner.as_ref().unwrap().has_pending_sound_work(),
             "sound callback should complete during the GUI sound-work slice"
         );
     }
@@ -4736,14 +5039,15 @@ mod tests {
         runner.dispatcher_mut().add_sound_channel(chan);
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
-        app.driver.runner = Some(runner);
-        app.driver.start_time = Some(now);
-        app.driver.next_frame_time = Some(now);
+        let mut driver = app.driver.take().unwrap();
+        driver.runner = Some(runner);
+        driver.start_time = Some(now);
+        driver.next_frame_time = Some(now);
 
         if headless {
-            headless_time::frame(app.driver.runner.as_mut().unwrap(), 366);
+            headless_time::frame(driver.runner.as_mut().unwrap(), 366);
         } else {
-            app.driver.step_frame();
+            driver.step_frame();
         }
 
         let queued = queued.borrow();
@@ -4768,13 +5072,14 @@ mod tests {
         let now = std::time::Instant::now();
         let (runner, queued) = gui_runner_with_counting_audio();
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
-        app.driver.runner = Some(runner);
-        app.driver.start_time = Some(now);
-        app.driver.next_frame_time = Some(now);
-        app.driver.last_audio_mix_time =
+        let mut driver = app.driver.take().unwrap();
+        driver.runner = Some(runner);
+        driver.start_time = Some(now);
+        driver.next_frame_time = Some(now);
+        driver.last_audio_mix_time =
             Some(std::time::Instant::now() - std::time::Duration::from_millis(100));
 
-        app.driver.step_frame();
+        driver.step_frame();
 
         assert!(
             (4_400..=4_600).contains(&*queued.borrow()),
@@ -4798,11 +5103,12 @@ mod tests {
         runner.set_instructions_per_tick(1);
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
-        app.driver.runner = Some(runner);
-        app.driver.start_time = Some(now - FRAME_DURATION * 2);
-        app.driver.next_frame_time = Some(now + FRAME_DURATION);
+        let mut driver = app.driver.take().unwrap();
+        driver.runner = Some(runner);
+        driver.start_time = Some(now - FRAME_DURATION * 2);
+        driver.next_frame_time = Some(now + FRAME_DURATION);
 
-        app.driver.step_frame();
+        driver.step_frame();
 
         assert!(
             (732..=734).contains(&*queued.borrow()),
@@ -4891,38 +5197,35 @@ mod tests {
     #[test]
     fn render_gate_waits_for_guest_tick_unless_forced() {
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
-        app.driver.runner = Some(FixtureRunner::new(
+        let mut driver = app.driver.take().unwrap();
+        driver.runner = Some(FixtureRunner::new(
             8 * 1024 * 1024,
             systemless::runner::FixtureRunnerConfig::default(),
         ));
 
         assert!(
-            app.driver.should_render_frame(app.debug_overlay_visible),
+            driver.should_render_frame(app.debug_overlay_visible),
             "initial forced render should present the first frame"
         );
 
-        let tick = app.driver.runner.as_ref().unwrap().guest_tick();
-        app.driver.last_presented_guest_tick = Some(tick);
-        app.driver.force_next_render = false;
+        let tick = driver.runner.as_ref().unwrap().guest_tick();
+        driver.last_presented_guest_tick = Some(tick);
+        driver.force_next_render = false;
         assert!(
-            !app.driver.should_render_frame(app.debug_overlay_visible),
+            !driver.should_render_frame(app.debug_overlay_visible),
             "same guest tick should not present another partial frame"
         );
 
-        app.driver.force_next_render = true;
+        driver.force_next_render = true;
         assert!(
-            app.driver.should_render_frame(app.debug_overlay_visible),
+            driver.should_render_frame(app.debug_overlay_visible),
             "host input can force a present"
         );
-        app.driver.force_next_render = false;
+        driver.force_next_render = false;
 
-        app.driver
-            .runner
-            .as_mut()
-            .unwrap()
-            .force_advance_guest_tick();
+        driver.runner.as_mut().unwrap().force_advance_guest_tick();
         assert!(
-            app.driver.should_render_frame(app.debug_overlay_visible),
+            driver.should_render_frame(app.debug_overlay_visible),
             "a new guest tick is a fresh VBL presentation point"
         );
     }
@@ -5269,34 +5572,30 @@ mod tests {
         use systemless::memory::{globals::addr::MBAR_HEIGHT, MemoryBus};
         for enabled in [false, true] {
             let mut app = App::new(PathBuf::from("dummy"), false, enabled, false, 8);
-            app.driver.runner = Some(FixtureRunner::new(8 * 1024 * 1024, Default::default()));
-            app.driver
+            let mut driver = app.driver.take().unwrap();
+            driver.runner = Some(FixtureRunner::new(8 * 1024 * 1024, Default::default()));
+            driver
                 .runner
                 .as_mut()
                 .unwrap()
                 .bus_mut()
                 .write_word(MBAR_HEIGHT, 24);
-            app.driver.capture_state(&mut app.guest_state, false);
+            driver.capture_state(&mut app.guest_state, false);
             assert_eq!(
                 app.guest_state.hidden_menu_height,
                 if enabled { 24 } else { 0 }
             );
             assert_eq!(
-                app.driver
-                    .runner
-                    .as_ref()
-                    .unwrap()
-                    .bus()
-                    .read_word(MBAR_HEIGHT),
+                driver.runner.as_ref().unwrap().bus().read_word(MBAR_HEIGHT),
                 24
             );
-            app.driver
+            driver
                 .runner
                 .as_mut()
                 .unwrap()
                 .bus_mut()
                 .write_word(MBAR_HEIGHT, 0);
-            app.driver.capture_state(&mut app.guest_state, false);
+            driver.capture_state(&mut app.guest_state, false);
             assert_eq!(app.guest_state.hidden_menu_height, 0);
         }
     }
