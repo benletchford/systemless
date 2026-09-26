@@ -15410,7 +15410,7 @@
     }
 
     #[test]
-    fn pack8_aeprocessappleevent_accepts_empty_delivered_open_application_without_callback() {
+    fn pack8_aeprocessappleevent_dispatches_empty_delivered_open_application() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
         let event_record_ptr = 0x0032_0000u32;
@@ -15449,11 +15449,15 @@
             .unwrap()
             .unwrap();
 
-        assert_eq!(cpu.read_reg(Register::PC), 0x00F0_1234);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
-        assert_eq!(bus.read_word(sp + 4), 0);
-        assert!(!disp.fired_oapp_handler);
-        assert!(disp.ae_call_state.is_none());
+        assert_eq!(cpu.read_reg(Register::PC), handler_ptr);
+        assert_eq!(cpu.read_reg(Register::A7), sp - 12);
+        assert!(disp.fired_oapp_handler);
+        assert!(disp.ae_call_state.is_some());
+        assert!(!disp.apple_event_launch_state.accept_open_application_event());
+        assert_eq!(bus.read_long(sp - 8), 0x29);
+        let event_desc = bus.read_long(sp);
+        assert_eq!(bus.read_long(event_desc), u32::from_be_bytes(*b"aevt"));
+        assert_ne!(bus.read_long(event_desc + 4), 0);
     }
 
     #[test]
