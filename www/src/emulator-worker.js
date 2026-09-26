@@ -1,4 +1,4 @@
-const PROTOCOL_VERSION = 5;
+const PROTOCOL_VERSION = 6;
 let machine = null;
 let generation = 0;
 let frameSequence = 0;
@@ -89,7 +89,7 @@ self.onmessage = async (event) => {
     }
 
     if (message.type === "frame") {
-      const result = machine.runFrame(message.queuedAudioSamples ?? -1, !!message.debug, message.outputScale ?? 1, !!message.forceRender, !!message.indexedRender, !!message.compactRender);
+      const result = machine.runFrame(message.queuedAudioSamples ?? -1, !!message.debug, message.outputScale ?? 1, !!message.forceRender, !!message.indexedRender, !!message.compactRender, !!message.measurePresentation);
       guestTick = result.guestTick >>> 0;
       uiTracking = !!result.uiTracking;
       if (result.lastSteps > 0 || !result.running) {

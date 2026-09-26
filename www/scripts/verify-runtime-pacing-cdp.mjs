@@ -87,7 +87,7 @@ try {
   await page.send("Page.enable");
   await page.send("Runtime.enable");
   await page.send("Page.addScriptToEvaluateOnNewDocument", {
-    source: `window.__systemlessProbeAudio = ${process.env.SYSTEMLESS_RUNTIME_AUDIO_DIAGNOSTICS === "1"};` + runtimeTracePrelude(),
+    source: `window.__systemlessProbePresentation = ${process.env.SYSTEMLESS_RUNTIME_PRESENTATION_DIAGNOSTICS === "1"};window.__systemlessProbeAudio = ${process.env.SYSTEMLESS_RUNTIME_AUDIO_DIAGNOSTICS === "1"};` + runtimeTracePrelude(),
   });
   await page.send("Fetch.enable", {
     patterns: [...archiveRequestUrls].map((url) => ({
@@ -123,6 +123,26 @@ try {
   report.progress_endpoint = probe.progress_endpoint;
   report.worker_startup = probe.worker_startup;
   report.audio_diagnostics = probe.audio_diagnostics;
+  if (process.env.SYSTEMLESS_RUNTIME_PRESENTATION_DIAGNOSTICS === "1") {
+    const cutoff = probe.started_at + (report.first_runtime_ms ?? Infinity) + runtimeWarmupMs;
+    const images = probe.worker_trace.filter(entry => entry.t >= cutoff && entry.presentationMetrics?.completeImage);
+    const submitted = probe.presentation_trace.filter(entry => entry.ownerReceivedAt >= cutoff);
+    report.presentation_diagnostics = {
+      complete_images: images.length,
+      packet_bytes: percentiles(images.map(entry => entry.packetBytes)),
+      packet_kinds: [...new Set(images.map(entry => entry.packetKind))],
+      owner_guest_ms: percentiles(images.map(entry => entry.presentationMetrics.guestMs)),
+      owner_snapshot_ms: percentiles(images.map(entry => entry.presentationMetrics.snapshotMs)),
+      wasm_to_js_packet_ms: percentiles(images.map(entry => entry.presentationMetrics.jsCopyMs)),
+      host_receive_to_renderer_send_ms: percentiles(submitted.map(entry => entry.hostWaitMs)),
+      renderer_roundtrip_ms: percentiles(submitted.map(entry => entry.rendererRoundtripMs)),
+      renderer_submit_ms: percentiles(submitted.map(entry => entry.renderSubmitMs)),
+      host_request_to_submit_ack_ms: percentiles(submitted.map(entry => entry.requestToSubmitAckMs)),
+      submitted_packets: submitted.length,
+      max_renderer_in_flight: probe.max_renderer_in_flight,
+      note: "Owner phases use its local clock; all transport intervals use the host clock. Submission acknowledgements do not measure GPU completion or physical display. Diagnostics are separate from primary timing runs.",
+    };
+  }
   if (process.env.SYSTEMLESS_RUNTIME_TRACE_PATH) {
     await writeFile(process.env.SYSTEMLESS_RUNTIME_TRACE_PATH, JSON.stringify(probe));
   }
@@ -302,6 +322,8 @@ async function runtimeProbe(sampleMs, showDebug, targetGuestTick) {
           worker_trace: window.__systemlessWorkerTrace || [],
           worker_startup: window.__systemlessWorkerStartup || [],
           audio_diagnostics: window.__systemlessAudioDiagnostics || [],
+          presentation_trace: window.__systemlessPresentationTrace || [],
+          max_renderer_in_flight: window.__systemlessRendererInFlightMax || 0,
         });
       }
     }
@@ -322,6 +344,9 @@ function runtimeTracePrelude() {
     window.__systemlessFrameTrace = frameTrace;
     window.__systemlessWorkerTrace = workerTrace;
     window.__systemlessLongTasks = longTasks;
+    const presentation = window.__systemlessPresentationTrace = [];
+    const ownedPackets = new WeakMap();
+    window.__systemlessRendererInFlightMax = 0;
     const startup = window.__systemlessWorkerStartup = [];
     const audio = window.__systemlessAudioDiagnostics = [];
     if (window.__systemlessProbeAudio && window.AudioWorkletNode) {
@@ -346,9 +371,24 @@ function runtimeTracePrelude() {
         const worker = Reflect.construct(Target, args);
         const postMessage = worker.postMessage.bind(worker);
         let frameSentAt = null;
+        const isRenderer = String(args[0]).includes("renderer-worker");
+        const submissions = new Map();
         worker.postMessage = (...messageArgs) => {
           if (messageArgs[0]?.type === "frame") {
             frameSentAt = performance.now();
+            if (window.__systemlessProbePresentation) {
+              const message = messageArgs[0];
+              if (isRenderer) {
+                const buffer = message.compact?.cells?.buffer ?? message.pixels?.buffer;
+                const owner = buffer && ownedPackets.get(buffer);
+                if (owner) {
+                  const views = [message.pixels, message.palette, message.cursor?.pixels, message.compact?.cells, message.compact?.detail].filter(Boolean);
+                  submissions.set(message.sequence, { ...owner, sentAt: frameSentAt, kind: message.kind,
+                    bytes: views.reduce((total, view) => total + view.byteLength, 0) });
+                  window.__systemlessRendererInFlightMax = Math.max(window.__systemlessRendererInFlightMax, submissions.size);
+                }
+              } else message.measurePresentation = true;
+            }
           }
           if (window.__systemlessProbeAudio && messageArgs[0]?.type === "boot") {
             startup.push({ t: performance.now(), type: "boot" });
@@ -361,8 +401,24 @@ function runtimeTracePrelude() {
             startup.push({ t: performance.now(), type: data.type, progress: data.progress });
             if (startup.length > 200) startup.shift();
           }
+          if (window.__systemlessProbePresentation && isRenderer && ["submitted", "dropped"].includes(data?.type)) {
+            const sent = submissions.get(data.sequence);
+            submissions.delete(data.sequence);
+            if (sent && data.type === "submitted") {
+              const now = performance.now();
+              presentation.push({ ...sent, t: now, sequence: data.sequence,
+                hostWaitMs: sent.sentAt - sent.ownerReceivedAt,
+                rendererRoundtripMs: now - sent.sentAt, renderSubmitMs: data.renderMs,
+                requestToSubmitAckMs: now - sent.requestedAt });
+              if (presentation.length > 6000) presentation.splice(0, presentation.length - 6000);
+            }
+          }
           if (data?.type !== "frame") return;
           const t = performance.now();
+          if (window.__systemlessProbePresentation) {
+            const buffer = data.compactFrame?.compact.cells.buffer ?? data.indexedFrame?.pixels.buffer ?? data.frame?.buffer;
+            if (buffer) ownedPackets.set(buffer, { requestedAt: frameSentAt, ownerReceivedAt: t, guestTick: data.guestTick });
+          }
           workerTrace.push({
             t,
             // Includes worker execution, message transfer, and scheduling.
@@ -373,6 +429,11 @@ function runtimeTracePrelude() {
             lastSteps: data.lastSteps,
             cpuBudgetMs: data.cpuBudgetMs,
             audioQueueMs: data.audioQueueMs,
+            presentationMetrics: data.presentationMetrics,
+            packetKind: data.compactFrame ? "compact" : data.indexedFrame ? "indexed8" : data.frame ? "rgba" : null,
+            packetBytes: [data.frame, data.indexedFrame?.pixels, data.indexedFrame?.palette,
+              data.indexedFrame?.cursor?.pixels, data.compactFrame?.compact.cells,
+              data.compactFrame?.compact.detail].filter(Boolean).reduce((bytes, view) => bytes + view.byteLength, 0),
             visualWork: data.visualWork,
             painted: !!(data.frame || data.gpuFrame || data.indexedFrame || data.compactFrame),
           });

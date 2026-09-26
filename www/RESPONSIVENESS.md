@@ -139,3 +139,18 @@ the compact run passed with a 35.5 ms maximum. No threshold was relaxed, and
 these samples do not establish a sustained performance gain. GPU differential
 checks also compare all 16 combinations of native detail/output scales 1–4,
 including integer area rounding, against native scalar output.
+
+
+Set `SYSTEMLESS_RUNTIME_PRESENTATION_DIAGNOSTICS=1` when running the runtime
+probe to collect separate owner execution, snapshot/conversion and Wasm-to-JS
+packet costs. This mode is opt-in and should be run separately from primary
+timing comparisons. Owner snapshot time includes presentation bookkeeping;
+packet-copy time includes JavaScript packet construction. Audio, saves and
+incremental QD3D packet construction are outside these phase measurements.
+
+For renderer-worker packets, the probe correlates transferred buffer identities
+with submissions. Host receipt-to-send, renderer round-trip and request-to-ack
+intervals all use the same host clock. The worker reports only its local upload
+and submission duration. These measurements expose host scheduling/queue waits
+but do not establish GPU completion or physical display latency. Raw traces are
+bounded and include packet kind, payload bytes and matched guest progress.

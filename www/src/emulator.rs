@@ -1448,7 +1448,7 @@ fn current_mac_epoch_seconds() -> u32 {
         .min(u32::MAX as u64) as u32
 }
 
-fn performance_now() -> f64 {
+pub(crate) fn performance_now() -> f64 {
     js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("performance"))
         .ok()
         .and_then(|value| value.dyn_into::<web_sys::Performance>().ok())

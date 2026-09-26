@@ -79,7 +79,7 @@ pub struct WorkerMachine {
 impl WorkerMachine {
     #[wasm_bindgen(js_name = runtimeProtocolVersion)]
     pub fn runtime_protocol_version() -> u32 {
-        5
+        6
     }
 
     #[wasm_bindgen(js_name = create)]
@@ -158,7 +158,9 @@ impl WorkerMachine {
         force_render: bool,
         indexed_render: bool,
         compact_render: bool,
+        measure_presentation: bool,
     ) -> Object {
+        let started = measured_now(measure_presentation);
         self.machine.set_output_scale(output_scale);
         self.machine
             .set_external_q3_renderer_enabled(self.gpu_renderer_enabled && !debug);
@@ -166,6 +168,8 @@ impl WorkerMachine {
             (queued_audio_samples >= 0).then_some(queued_audio_samples as usize),
         );
         let frame_result = self.machine.run_frame();
+        let executed = measured_now(measure_presentation);
+        let mut js_copy_ms = 0.0;
         let gpu_frame = self.machine.take_q3_gpu_frame();
         let counters = self.machine.perf_counters();
         let logical_size = self.machine.screen_size();
@@ -173,15 +177,23 @@ impl WorkerMachine {
             && (frame_result.visual_work || !self.painted_once || debug || force_render);
         let output_scale = output_scale.clamp(1, 4);
         let compact_frame = if should_render && compact_render && !debug {
-            self.machine
-                .render_compact()
-                .map(|frame| compact_frame_object(frame, output_scale))
+            self.machine.render_compact().map(|frame| {
+                let before_copy = measured_now(measure_presentation);
+                let packet = compact_frame_object(frame, output_scale);
+                js_copy_ms += measured_now(measure_presentation) - before_copy;
+                packet
+            })
         } else {
             None
         };
         let indexed_frame = if should_render && compact_frame.is_none() && indexed_render && !debug
         {
-            self.machine.render_indexed().map(indexed_frame_object)
+            self.machine.render_indexed().map(|frame| {
+                let before_copy = measured_now(measure_presentation);
+                let packet = indexed_frame_object(frame);
+                js_copy_ms += measured_now(measure_presentation) - before_copy;
+                packet
+            })
         } else {
             None
         };
@@ -198,8 +210,13 @@ impl WorkerMachine {
                     cpu_budget_ms: Some(counters.cpu_budget_ms),
                     audio_queue_ms: counters.audio_queue_ms,
                 });
-                Uint8Array::from(self.machine.render_rgba(stats).1)
+                let pixels = self.machine.render_rgba(stats).1;
+                let before_copy = measured_now(measure_presentation);
+                let packet = Uint8Array::from(pixels);
+                js_copy_ms += measured_now(measure_presentation) - before_copy;
+                packet
             });
+        let prepared = measured_now(measure_presentation);
         if indexed_frame.is_some() || compact_frame.is_some() {
             self.painted_once = true;
         }
@@ -212,6 +229,25 @@ impl WorkerMachine {
         let audio = Uint8Array::from(self.machine.take_worker_audio().as_slice());
 
         let result = Object::new();
+        // Diagnostics use only this owner's clock. Snapshot includes presentation
+        // bookkeeping and native export/conversion; copy includes JS packet
+        // construction. Audio, saves and incremental QD3D are outside this scope.
+        if measure_presentation {
+            let metrics = Object::new();
+            set_number(&metrics, "guestMs", (executed - started).max(0.0));
+            set_number(
+                &metrics,
+                "snapshotMs",
+                (prepared - executed - js_copy_ms).max(0.0),
+            );
+            set_number(&metrics, "jsCopyMs", js_copy_ms.max(0.0));
+            set_bool(
+                &metrics,
+                "completeImage",
+                frame.is_some() || indexed_frame.is_some() || compact_frame.is_some(),
+            );
+            let _ = Reflect::set(&result, &JsValue::from_str("presentationMetrics"), &metrics);
+        }
         if let Some(error) = self.machine.take_save_error() {
             set_string(&result, "saveError", &error);
         }
@@ -545,4 +581,12 @@ fn compact_frame_object(
     );
     let _ = Reflect::set(&packet, &JsValue::from_str("compact"), &compact);
     packet
+}
+
+fn measured_now(enabled: bool) -> f64 {
+    if enabled {
+        crate::emulator::performance_now()
+    } else {
+        0.0
+    }
 }
