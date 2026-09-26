@@ -458,3 +458,16 @@ and the complete release comparison rerun with the original assertion intact.
 
 Sustained bitmap lifecycle and comparative performance qualification remain
 pending. The added host GPU submission is not assumed free or zero-copy.
+
+
+A bitmap-specific lifecycle run completed 50 restart cycles plus startup
+cancellation and a controlled runtime crash. All 52 received ImageBitmaps were
+closed, with at most one outstanding; all 52 owner workers, 51 renderer workers
+and 52 audio contexts were cleaned up. No JavaScript errors were observed.
+The first/last ten teardown samples had median main JavaScript heap usage of
+7.775/7.875 MB. Summed Chrome process-tree RSS ranged from approximately
+663 to 2,325 MiB and ended at 686 MiB. Shared pages can be counted more than once,
+and GPU allocations are not isolated; these observations do not prove the
+absence of every GPU or process-memory leak. No competing build or browser probe
+from this task ran during the lifecycle check. Comparative bitmap performance
+qualification remains pending.
