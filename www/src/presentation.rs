@@ -21,12 +21,13 @@ impl CanvasFrame {
         width: u32,
         height: u32,
         generation: u32,
+        owner: &web_sys::Worker,
     ) -> Option<Self> {
         let user_agent = web_sys::window()
             .and_then(|window| window.navigator().user_agent().ok())
             .unwrap_or_default();
         if !requires_canvas_2d_presenter(&user_agent) {
-            if let Ok(handle) = crate::renderer_bridge::create_renderer(canvas, generation) {
+            if let Ok(handle) = crate::renderer_bridge::create_renderer(canvas, generation, owner) {
                 if !handle.is_null() {
                     return Some(Self::Offscreen(OffscreenFrame {
                         canvas: canvas.clone(),
@@ -51,7 +52,11 @@ impl CanvasFrame {
     }
 
     pub(crate) fn needs_snapshot(&self) -> bool {
-        matches!(self, Self::Offscreen(frame) if frame.needs_snapshot)
+        matches!(self, Self::Offscreen(frame) if frame.needs_snapshot || frame.status_flag("needsSnapshot"))
+    }
+
+    pub(crate) fn direct(&self) -> bool {
+        matches!(self, Self::Offscreen(frame) if frame.fallback.is_none() && frame.status_flag("direct"))
     }
 
     pub(crate) fn pending(&self) -> bool {
@@ -179,6 +184,14 @@ pub(crate) struct OffscreenFrame {
 }
 
 impl OffscreenFrame {
+    fn status_flag(&self, key: &str) -> bool {
+        let status = crate::renderer_bridge::renderer_status(&self.handle);
+        Reflect::get(&status, &JsValue::from_str(key))
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
     fn poll_recovery(&mut self) -> Result<(), String> {
         if let Some(error) = self.fatal.as_ref() {
             return Err(error.clone());

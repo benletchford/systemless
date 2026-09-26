@@ -6,9 +6,26 @@ let nextRendererGeneration = 0;
 // display canvas is transferred, so presenter replacement cannot lose a held
 // key, pointer capture, focus, Leptos node reference or touch-release callback.
 export class RendererClient {
-  constructor(logicalCanvas, workerUrl, generation, { backend = "canvas2d" } = {}) {
+  constructor(logicalCanvas, workerUrl, generation, { backend = "canvas2d", owner = null, direct = false } = {}) {
     this.logicalCanvas = logicalCanvas;
-    this.identity = { generation, rendererGeneration: ++nextRendererGeneration, protocolVersion: 3 };
+    this.owner = owner;
+    this.directWanted = direct && !!owner;
+    this.direct = false;
+    this.directNeedsSnapshot = false;
+    this.directInFlight = null;
+    this.lastSubmittedSequence = 0;
+    this.onOwnerStatus = ({ data }) => {
+      if (!this.direct || this.phase !== "ready" || data?.type !== "rendererStatus"
+          || data.generation !== this.identity.generation
+          || data.rendererGeneration !== this.identity.rendererGeneration) return;
+      if (data.event === "error") this.fail(new Error(data.message));
+      else if (data.event === "queued" && data.sequence > this.lastSubmittedSequence) this.directInFlight = data.sequence;
+      else if (data.event === "submitted") {
+        if (this.directInFlight === data.sequence) this.directInFlight = null;
+        this.logicalCanvas.setAttribute("data-render-credit-return-ms", String(data.elapsedMs));
+      }
+    };
+    this.identity = { generation, rendererGeneration: ++nextRendererGeneration, protocolVersion: 4 };
     this.phase = "booting";
     this.backend = null;
     this.kinds = ["rgba"];
@@ -59,15 +76,7 @@ export class RendererClient {
       this.worker = new Worker(workerUrl);
       this.transport = new RendererTransport(this.worker, this.identity, {
         onFailure: (error, pending) => this.fail(error, pending),
-        onSubmitted: metrics => {
-          this.submitted = true;
-          this.canvas.style.visibility = "visible";
-          logicalCanvas.setAttribute("data-render-sequence", String(metrics.sequence));
-          logicalCanvas.setAttribute("data-render-packet-kind", metrics.kind);
-          logicalCanvas.setAttribute("data-render-packet-bytes", String(metrics.bytes));
-          logicalCanvas.setAttribute("data-render-roundtrip-ms", String(metrics.elapsedMs));
-          logicalCanvas.setAttribute("data-render-submit-ms", String(metrics.renderMs));
-        },
+        onSubmitted: metrics => this.markSubmitted(metrics),
       });
       this.worker.onmessage = ({ data }) => this.receive(data);
       this.worker.onerror = event => { event.preventDefault(); this.fail(new Error(event.message || "Renderer worker crashed")); };
@@ -83,7 +92,7 @@ export class RendererClient {
     if (this.phase === "failed" || this.phase === "disposed"
         || message?.generation !== this.identity.generation
         || message.rendererGeneration !== this.identity.rendererGeneration) return;
-    if (message.protocolVersion !== 3) return this.fail(new Error("Renderer protocol mismatch"));
+    if (message.protocolVersion !== 4) return this.fail(new Error("Renderer protocol mismatch"));
     if (message.type === "ready") {
       if (this.phase !== "booting" || !message.kinds?.includes("rgba")) {
         return this.fail(new Error("Invalid renderer capability reply"));
@@ -94,8 +103,62 @@ export class RendererClient {
       this.waitingMs = 0;
       const first = this.bootFrame;
       this.bootFrame = null;
-      if (first) this.transport.submit(first);
+      if (this.directWanted && typeof MessageChannel === "function") {
+        try { this.startDirect(); } catch (error) { this.fail(error); }
+      } else if (first) this.transport.submit(first);
+    } else if (message.type === "directSubmitted" && this.direct && this.phase === "ready") {
+      if (message.sequence <= this.lastSubmittedSequence) return;
+      if (this.directInFlight !== null && this.directInFlight <= message.sequence) this.directInFlight = null;
+      this.directNeedsSnapshot = false;
+      // Layout/input geometry follows the submitted image, not newer owner
+      // metadata which may be replaced while the renderer is still busy.
+      const { width, height, outputScale } = message;
+      if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)
+          || width < 1 || height < 1 || !Number.isSafeInteger(outputScale) || outputScale < 1 || outputScale > 4) {
+        this.fail(new Error("Invalid direct display metadata")); return;
+      }
+      const canvas = this.logicalCanvas;
+      if (canvas.width !== width) canvas.width = width;
+      if (canvas.height !== height) canvas.height = height;
+      canvas.setAttribute("data-output-scale", String(outputScale));
+      for (const element of [canvas, canvas.parentElement]) {
+        element.style.setProperty("--game-aspect-ratio", `${width} / ${height}`);
+        element.style.setProperty("--game-aspect-width", String(width));
+        element.style.setProperty("--game-aspect-height", String(height));
+      }
+      this.syncGeometry();
+      this.markSubmitted(message);
     } else this.transport.receive(message);
+  }
+
+  markSubmitted(metrics) {
+    this.submitted = true;
+    this.lastSubmittedSequence = metrics.sequence;
+    this.canvas.style.visibility = "visible";
+    const canvas = this.logicalCanvas;
+    canvas.setAttribute("data-render-sequence", String(metrics.sequence));
+    canvas.setAttribute("data-render-packet-kind", metrics.kind);
+    canvas.setAttribute("data-render-packet-bytes", String(metrics.bytes));
+    if (Number.isFinite(metrics.elapsedMs)) canvas.setAttribute("data-render-roundtrip-ms", String(metrics.elapsedMs));
+    canvas.setAttribute("data-render-submit-ms", String(metrics.renderMs));
+  }
+
+  startDirect() {
+    const channel = new MessageChannel();
+    this.direct = true;
+    this.directNeedsSnapshot = true;
+    this.owner.addEventListener("message", this.onOwnerStatus);
+    try {
+      this.worker.postMessage({ ...this.identity, type: "connectOwner", port: channel.port1 }, [channel.port1]);
+      this.owner.postMessage({ type: "connectRenderer", generation: this.identity.generation,
+        rendererGeneration: this.identity.rendererGeneration, rendererProtocol: 4,
+        sequence: this.sequence, displayGeneration: this.displayGeneration,
+        port: channel.port2 }, [channel.port2]);
+      this.logicalCanvas.setAttribute("data-render-transport", "direct");
+    } catch (error) {
+      channel.port1.close(); channel.port2.close();
+      throw error;
+    }
   }
 
   paint(width, height, pixels) {
@@ -103,6 +166,9 @@ export class RendererClient {
   }
 
   paintPacket(frame) {
+    // Pre-handoff host replies can arrive after the port is installed. A forced
+    // fresh owner snapshot replaces them; never race two presentation senders.
+    if (this.direct) return this.phase === "ready";
     const { width, height } = frame;
     if (!this.kinds.includes(frame.kind)) { this.fail(new Error("Unsupported renderer packet kind")); return false; }
     if (this.phase === "failed" || this.phase === "disposed") return false;
@@ -123,7 +189,9 @@ export class RendererClient {
     const elapsed = Math.max(0, now - this.lastCheck);
     this.lastCheck = now;
     if (document.visibilityState === "hidden") return;
-    const sequence = this.phase === "booting" ? "boot" : this.transport?.inFlight?.sequence;
+    const sequence = this.phase === "booting" ? "boot"
+      : this.direct ? (this.directInFlight ?? (this.directNeedsSnapshot ? "handoff" : null))
+      : this.transport?.inFlight?.sequence;
     if (sequence === undefined || sequence === null) {
       this.waitingSequence = null;
       this.waitingMs = 0;
@@ -139,7 +207,9 @@ export class RendererClient {
 
   status() {
     return { phase: this.phase, backend: this.backend, kinds: this.kinds, error: this.error, submitted: this.submitted,
-      pending: !!(this.bootFrame || this.transport?.inFlight || this.transport?.pending) };
+      direct: this.direct, needsSnapshot: this.directNeedsSnapshot,
+      pending: !!(this.bootFrame || this.transport?.inFlight || this.transport?.pending
+        || this.directInFlight || this.directNeedsSnapshot) };
   }
 
   takeRecoveryFrame() {
@@ -161,6 +231,14 @@ export class RendererClient {
   }
 
   release() {
+    if (this.owner && this.direct) {
+      this.owner.removeEventListener("message", this.onOwnerStatus);
+      try { this.owner.postMessage({ type: "disconnectRenderer", generation: this.identity.generation,
+        rendererGeneration: this.identity.rendererGeneration }); } catch (_) { /* owner already stopped */ }
+    }
+    this.owner = null;
+    this.direct = this.directNeedsSnapshot = false;
+    this.directInFlight = null;
     if (this.timer !== null) clearInterval(this.timer);
     this.timer = null;
     this.observer?.disconnect();

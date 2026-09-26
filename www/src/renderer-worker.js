@@ -1,8 +1,9 @@
 // Complete-frame presenter protocol. Guest execution, composition and display
 // demand stay on the execution owner/host. This worker has no Wasm or DOM state.
-const RENDER_PROTOCOL = 3;
+const RENDER_PROTOCOL = 4;
 const MAX_PIXELS = 16 * 1024 * 1024;
 let identity = null;
+let ownerPort = null;
 let canvas = null;
 let context = null;
 let gpu = null;
@@ -15,7 +16,12 @@ let displayGeneration = -1;
 let dimensions = null;
 
 function reply(message, transfer = []) {
-  self.postMessage({ ...message, ...identity, protocolVersion: RENDER_PROTOCOL }, transfer);
+  const packet = { ...message, ...identity, protocolVersion: RENDER_PROTOCOL };
+  if (ownerPort && ["submitted", "dropped"].includes(message.type)) ownerPort.postMessage(packet, transfer);
+  else {
+    self.postMessage(packet, transfer);
+    if (ownerPort && message.type === "error") ownerPort.postMessage(packet);
+  }
 }
 
 function fail(error) {
@@ -75,6 +81,14 @@ function returnBuffers(type, frame, metrics = {}) {
   const paletteBuffer = frame.kind === "indexed8" ? frame.palette.buffer : undefined;
   const cursorBuffer = frame.cursor?.pixels?.buffer;
   const transfer = [...new Set([buffer, paletteBuffer, cursorBuffer, detailBuffer].filter(Boolean))];
+  if (ownerPort && type === "submitted") {
+    const bytes = [frame.pixels, frame.palette, frame.cursor?.pixels, frame.compact?.cells, frame.compact?.detail]
+      .filter(Boolean).reduce((total, view) => total + view.byteLength, 0);
+    // UI submission acknowledgement must not wait for the owner to finish its
+    // next guest batch. Only the separate credit reply returns image buffers.
+    reply({ type: "directSubmitted", sequence: frame.sequence, kind: frame.kind, bytes,
+      width: frame.width, height: frame.height, outputScale: frame.outputScale, ...metrics });
+  }
   reply({ type, sequence: frame.sequence, displayGeneration: frame.displayGeneration,
     ...metrics, buffer, paletteBuffer, cursorBuffer, detailBuffer }, transfer);
 }
@@ -131,7 +145,20 @@ self.onmessage = async ({ data }) => {
       return;
     }
     if (!sameIdentity(data) || data.protocolVersion !== RENDER_PROTOCOL) return;
-    if (data.type === "frame") acceptFrame(data);
+    if (data.type === "connectOwner") {
+      if (!ready || ownerPort || pending) throw new Error("Renderer owner handoff is not idle");
+      ownerPort = data.port;
+      ownerPort.onmessage = ({ data: frame }) => {
+        if (failed || !sameIdentity(frame) || frame.protocolVersion !== RENDER_PROTOCOL) return;
+        try { if (frame.type === "frame") acceptFrame(frame); }
+        catch (error) { fail(error); }
+      };
+      ownerPort.onmessageerror = () => fail("Unreadable owner presentation packet");
+      ownerPort.start();
+    } else if (data.type === "frame") {
+      if (ownerPort) throw new Error("Host images after direct owner handoff");
+      acceptFrame(data);
+    }
     else if (data.type === "stop") {
       if (scheduled !== null) clearTimeout(scheduled);
       pending = null;
@@ -141,6 +168,8 @@ self.onmessage = async ({ data }) => {
       canvas.width = canvas.height = 1;
       reply({ type: "stopped" });
       failed = true;
+      ownerPort?.close();
+      ownerPort = null;
       self.close();
     }
   } catch (error) {

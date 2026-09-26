@@ -79,7 +79,7 @@ pub struct WorkerMachine {
 impl WorkerMachine {
     #[wasm_bindgen(js_name = runtimeProtocolVersion)]
     pub fn runtime_protocol_version() -> u32 {
-        6
+        7
     }
 
     #[wasm_bindgen(js_name = create)]

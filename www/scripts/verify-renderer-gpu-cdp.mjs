@@ -111,7 +111,7 @@ async function exercise(){
   presenter.dispose();
   const { RendererTransport } = await import(base + '/renderer-transport.js');
   const endpoint = new Worker(base + '/renderer-worker.js');
-  const identity = { generation: 9, rendererGeneration: 3, protocolVersion: 3 };
+  const identity = { generation: 9, rendererGeneration: 3, protocolVersion: 4 };
   try {
    const ready = new Promise((resolve,reject) => {
     endpoint.onmessage = ({data}) => data.type==='ready'?resolve(data):reject(new Error(JSON.stringify(data)));

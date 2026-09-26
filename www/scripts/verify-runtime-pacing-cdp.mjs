@@ -126,6 +126,16 @@ try {
   if (process.env.SYSTEMLESS_RUNTIME_PRESENTATION_DIAGNOSTICS === "1") {
     const cutoff = probe.started_at + (report.first_runtime_ms ?? Infinity) + runtimeWarmupMs;
     const images = probe.worker_trace.filter(entry => entry.t >= cutoff && entry.presentationMetrics?.completeImage);
+    // Renderer and owner replies use separate channels. Correlate after capture
+    // so a fast submission notice can precede the owner's metadata reply.
+    for (const entry of probe.presentation_trace.filter(entry => entry.direct)) {
+      const owner = probe.worker_trace.findLast(frame => frame.directSequence === entry.sequence
+        && frame.rendererGeneration === entry.rendererGeneration);
+      if (owner) {
+        entry.ownerReceivedAt = owner.t;
+        entry.requestToSubmitAckMs = entry.t - owner.requestedAt;
+      }
+    }
     const submitted = probe.presentation_trace.filter(entry => entry.ownerReceivedAt >= cutoff);
     report.presentation_diagnostics = {
       complete_images: images.length,
@@ -139,8 +149,8 @@ try {
       renderer_submit_ms: percentiles(submitted.map(entry => entry.renderSubmitMs)),
       host_request_to_submit_ack_ms: percentiles(submitted.map(entry => entry.requestToSubmitAckMs)),
       submitted_packets: submitted.length,
-      max_renderer_in_flight: probe.max_renderer_in_flight,
-      note: "Owner phases use its local clock; all transport intervals use the host clock. Submission acknowledgements do not measure GPU completion or physical display. Diagnostics are separate from primary timing runs.",
+      max_renderer_in_flight: submitted.some(entry => entry.direct) ? null : probe.max_renderer_in_flight,
+      note: "Owner phases use its local clock; request/ack and host waits use the host clock, direct submissions are acknowledged directly by the renderer, without waiting for owner credit processing. Submission acknowledgements do not measure GPU completion or physical display. Diagnostics are separate from primary timing runs.",
     };
   }
   if (process.env.SYSTEMLESS_RUNTIME_TRACE_PATH) {
@@ -309,6 +319,7 @@ async function runtimeProbe(sampleMs, showDebug, targetGuestTick) {
             device_pixel_ratio: devicePixelRatio,
             visibility: document.visibilityState,
             renderer: document.querySelector("canvas.game-canvas")?.getAttribute("data-render-backend"),
+            transport: document.querySelector("canvas.game-canvas")?.getAttribute("data-render-transport"),
             canvas_width: document.querySelector("canvas.game-canvas")?.width,
             canvas_height: document.querySelector("canvas.game-canvas")?.height,
             cpu_mhz: document.querySelector("canvas.game-canvas")?.getAttribute("data-runtime-cpu-mhz"),
@@ -413,6 +424,11 @@ function runtimeTracePrelude() {
               if (presentation.length > 6000) presentation.splice(0, presentation.length - 6000);
             }
           }
+          if (window.__systemlessProbePresentation && isRenderer && data?.type === "directSubmitted") {
+            presentation.push({ t: performance.now(), sequence: data.sequence, rendererGeneration: data.rendererGeneration,
+              kind: data.kind, bytes: data.bytes, direct: true, renderSubmitMs: data.renderMs });
+            if (presentation.length > 6000) presentation.splice(0, presentation.length - 6000);
+          }
           if (data?.type !== "frame") return;
           const t = performance.now();
           if (window.__systemlessProbePresentation) {
@@ -430,12 +446,13 @@ function runtimeTracePrelude() {
             cpuBudgetMs: data.cpuBudgetMs,
             audioQueueMs: data.audioQueueMs,
             presentationMetrics: data.presentationMetrics,
-            packetKind: data.compactFrame ? "compact" : data.indexedFrame ? "indexed8" : data.frame ? "rgba" : null,
-            packetBytes: [data.frame, data.indexedFrame?.pixels, data.indexedFrame?.palette,
+            ...(data.directFrame ? { directSequence: data.directFrame.sequence, rendererGeneration: data.directFrame.rendererGeneration, requestedAt: frameSentAt } : {}),
+            packetKind: data.directFrame?.kind ?? (data.compactFrame ? "compact" : data.indexedFrame ? "indexed8" : data.frame ? "rgba" : null),
+            packetBytes: data.directFrame?.bytes ?? [data.frame, data.indexedFrame?.pixels, data.indexedFrame?.palette,
               data.indexedFrame?.cursor?.pixels, data.compactFrame?.compact.cells,
               data.compactFrame?.compact.detail].filter(Boolean).reduce((bytes, view) => bytes + view.byteLength, 0),
             visualWork: data.visualWork,
-            painted: !!(data.frame || data.gpuFrame || data.indexedFrame || data.compactFrame),
+            painted: !!(data.frame || data.gpuFrame || data.indexedFrame || data.compactFrame || data.directFrame),
           });
           if (workerTrace.length > 6000) workerTrace.splice(0, workerTrace.length - 6000);
         });

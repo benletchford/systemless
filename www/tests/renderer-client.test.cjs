@@ -5,12 +5,13 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = name => fs.readFileSync(path.join(__dirname, '../src', name), 'utf8');
 
-function clientFixture({ unavailable = false, transferFails = false } = {}) {
+function clientFixture({ unavailable = false, transferFails = false, direct = false } = {}) {
   let now = 0;
   const workers = [], observers = [], intervals = new Map(), listeners = new Map();
   let timerId = 0;
-  const parent = { clientLeft: 1, clientTop: 1, scrollLeft: 0, scrollTop: 0, getBoundingClientRect() { return { left: 10, top: 20 }; }, children: [], insertBefore(node) { this.children.push(node); node.parentElement = this; } };
-  const logical = { width: 2, height: 1, offsetLeft: 12, offsetTop: 34, offsetWidth: 640, offsetHeight: 320,
+  const style = () => ({values:{},setProperty(name,value){this.values[name]=value;}});
+  const parent = { style:style(), clientLeft: 1, clientTop: 1, scrollLeft: 0, scrollTop: 0, getBoundingClientRect() { return { left: 10, top: 20 }; }, children: [], insertBefore(node) { this.children.push(node); node.parentElement = this; } };
+  const logical = { style:style(), width: 2, height: 1, offsetLeft: 12, offsetTop: 34, offsetWidth: 640, offsetHeight: 320,
     parentElement: parent, nextSibling: null, attributes: {},
     getBoundingClientRect() { return { left: 11 + this.offsetLeft, top: 21 + this.offsetTop, width: this.offsetWidth, height: this.offsetHeight }; },
     setAttribute(name, value) { this.attributes[name] = value; },
@@ -24,7 +25,14 @@ function clientFixture({ unavailable = false, transferFails = false } = {}) {
       transferControlToOffscreen() { if (transferFails) throw new Error('cannot transfer'); this.transferred = true; return { offscreen: true }; },
       remove() { parent.children = parent.children.filter(node => node !== this); } };
   } };
+  const owner = { messages: [], callback: null,
+    postMessage(message) { this.messages.push(message); },
+    addEventListener(name, callback) { this.callback = callback; },
+    removeEventListener() { this.callback = null; } };
   const context = vm.createContext({ Uint8Array, Uint32Array, ArrayBuffer, document,
+    MessageChannel: class { constructor() {
+      this.port1 = {close(){this.closed=true;}}; this.port2 = {close(){this.closed=true;}};
+    } },
     performance: { now: () => now },
     window: { addEventListener: (name, cb) => listeners.set(name, cb), removeEventListener: name => listeners.delete(name) },
     setInterval: callback => { intervals.set(++timerId, callback); return timerId; }, clearInterval: id => intervals.delete(id),
@@ -37,9 +45,9 @@ function clientFixture({ unavailable = false, transferFails = false } = {}) {
   vm.runInContext(source('renderer-transport.js').replace('export class', 'class') + '\n'
     + source('renderer-client.js').replace(/^import .*;\n/m, '').replace('export class', 'class')
     + '\nthis.Client = RendererClient;', context);
-  const client = new context.Client(logical, '/renderer-worker.js?runtime=test', 7);
+  const client = new context.Client(logical, '/renderer-worker.js?runtime=test', 7, {direct,owner});
   const receive = fields => workers[0].onmessage?.({ data: { ...client.identity, ...fields } });
-  return { client, logical, parent, workers, observers, intervals, listeners, document, receive,
+  return { client, logical, parent, workers, observers, intervals, listeners, document, receive, owner,
     ready: () => receive({ type: 'ready', kinds: ['rgba'] }),
     tick: ms => { now += ms; [...intervals.values()].forEach(callback => callback()); } };
 }
@@ -128,4 +136,43 @@ test('format changes advance display generation and retain only the newest compl
   f.client.paint(2,1,pixels(2));
   assert.equal(f.client.transport.pending.kind,'rgba');
   assert.equal(f.client.transport.pending.displayGeneration,3);
+});
+
+
+test('direct handoff discards queued host images and keeps newer credit across acknowledgements', () => {
+  const f = clientFixture({direct:true});
+  f.client.paint(2,1,pixels(1)); f.ready();
+  assert.equal(f.workers[0].messages.at(-1).type,'connectOwner');
+  assert.equal(f.owner.messages[0].type,'connectRenderer');
+  assert.equal(f.client.status().needsSnapshot,true);
+  const count = f.workers[0].messages.length;
+  f.client.paint(2,1,pixels(2));
+  assert.equal(f.workers[0].messages.length,count);
+  const status = fields => f.owner.callback({data:{...f.client.identity,type:'rendererStatus',...fields}});
+  status({event:'queued',sequence:2});
+  status({event:'queued',sequence:3});
+  f.receive({type:'directSubmitted',width:4,height:2,outputScale:2,sequence:2,kind:'rgba',bytes:8,renderMs:1});
+  status({event:'submitted',sequence:2,kind:'rgba',bytes:8,elapsedMs:4,renderMs:1});
+  assert.equal(f.logical.width,4);assert.equal(f.logical.attributes['data-output-scale'],'2');
+  assert.equal(f.parent.style.values['--game-aspect-ratio'],'4 / 2');
+  assert.equal(f.client.directInFlight,3);
+  assert.equal(f.client.status().needsSnapshot,false);
+  assert.equal(f.client.status().pending,true);
+  assert.equal(f.parent.children[0].style.visibility,'visible');
+  f.receive({type:'directSubmitted',width:2,height:1,outputScale:1,sequence:3,kind:'rgba',bytes:8,renderMs:1});
+  status({event:'queued',sequence:3}); // delayed owner notice must not reopen a completed UI wait
+  status({event:'submitted',sequence:3,kind:'rgba',bytes:8,elapsedMs:4,renderMs:1});
+  assert.equal(f.client.status().pending,false);
+  assert.equal(f.logical.width,2);assert.equal(f.logical.attributes['data-output-scale'],'1');
+  status({event:'error',message:'context lost'});
+  assert.equal(f.client.status().phase,'failed');
+  assert.equal(f.owner.messages.at(-1).type,'disconnectRenderer');
+  assert.equal(f.owner.callback,null);
+  assert.equal(f.parent.children.length,0);
+});
+
+test('direct handshake timeout releases the port route and requests ordinary fallback', () => {
+  const f=clientFixture({direct:true});f.ready();f.tick(1);f.tick(10000);
+  assert.equal(f.client.status().phase,'failed');
+  assert.equal(f.owner.messages.at(-1).type,'disconnectRenderer');
 });
