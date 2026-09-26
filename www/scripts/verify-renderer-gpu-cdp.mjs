@@ -111,7 +111,7 @@ async function exercise(){
   presenter.dispose();
   const { RendererTransport } = await import(base + '/renderer-transport.js');
   const endpoint = new Worker(base + '/renderer-worker.js');
-  const identity = { generation: 9, rendererGeneration: 3, protocolVersion: 2 };
+  const identity = { generation: 9, rendererGeneration: 3, protocolVersion: 3 };
   try {
    const ready = new Promise((resolve,reject) => {
     endpoint.onmessage = ({data}) => data.type==='ready'?resolve(data):reject(new Error(JSON.stringify(data)));
@@ -120,7 +120,7 @@ async function exercise(){
    const screen = new OffscreenCanvas(4,4);
    endpoint.postMessage({...identity,type:'init',backend:'webgl',canvas:screen},[screen]);
    const capability = await ready;
-   if(capability.backend!=='offscreen-webgl'||!capability.kinds.includes('indexed8'))throw new Error('GPU capability missing');
+   if(capability.backend!=='offscreen-webgl'||!capability.kinds.includes('indexed8')||!capability.kinds.includes('compact'))throw new Error('GPU capability missing');
    let submitted=0;
    let transport;
    await new Promise((resolve,reject) => {
@@ -137,6 +137,15 @@ async function exercise(){
    });
    if(submitted!==2||transport.inFlight||transport.pending||transport.recycled.length>2)throw new Error('GPU transport is not bounded');
    result.workerTransport={submitted,lastSequence:100,recycled:transport.recycled.length};
+   let compactMetrics;
+   await new Promise((resolve,reject)=>{
+    transport.onFailure=reject;
+    transport.onSubmitted=metrics=>{compactMetrics=metrics;resolve();};
+    transport.submit({kind:'compact',complete:true,sequence:101,displayGeneration:2,width:2,height:2,
+     compact:{width:1,height:1,scale:2,cells:new Uint32Array([0x80000000]),detail:new Uint32Array([0x123456,0xabcdef,0,0xffffff])}});
+   });
+   if(compactMetrics.kind!=='compact'||compactMetrics.bytes!==20||transport.inFlight||transport.pending||transport.recycled.length>2)throw new Error('Compact transport failed');
+   result.workerTransport.compactSubmitted=1;
    transport.dispose();
    const stopped=new Promise((resolve,reject)=>{endpoint.onmessage=({data})=>data.type==='stopped'?resolve():reject(new Error(JSON.stringify(data)));});
    endpoint.postMessage({...identity,type:'stop'});await stopped;

@@ -1,6 +1,6 @@
 // Complete-frame presenter protocol. Guest execution, composition and display
 // demand stay on the execution owner/host. This worker has no Wasm or DOM state.
-const RENDER_PROTOCOL = 2;
+const RENDER_PROTOCOL = 3;
 const MAX_PIXELS = 16 * 1024 * 1024;
 let identity = null;
 let canvas = null;
@@ -38,7 +38,11 @@ function acceptFrame(message) {
   if (!Number.isSafeInteger(message.sequence) || message.sequence <= sequence) return;
   const { width, height, displayGeneration: mode, pixels } = message;
   const indexed = message.kind === "indexed8" && gpu;
-  const validPixels = indexed
+  const compact = message.kind === "compact" && gpu;
+  const validPixels = compact
+    ? message.compact?.cells instanceof Uint32Array && message.compact.cells.buffer instanceof ArrayBuffer
+      && message.compact.detail instanceof Uint32Array && message.compact.detail.buffer instanceof ArrayBuffer
+    : indexed
     ? Number.isSafeInteger(message.stride) && message.stride >= width && message.stride <= 8192
       && message.stride * height <= MAX_PIXELS && pixels?.byteLength === message.stride * height
       && message.palette instanceof Uint8Array && message.palette.byteLength === 1024
@@ -47,11 +51,10 @@ function acceptFrame(message) {
   if (!ready || !validPixels || message.complete !== true || !Number.isSafeInteger(width) || !Number.isSafeInteger(height)
       || width < 1 || height < 1 || width > 8192 || height > 8192
       || width * height > MAX_PIXELS || !Number.isSafeInteger(mode) || mode < displayGeneration
-      || !(pixels instanceof Uint8Array)
-      || !(pixels.buffer instanceof ArrayBuffer)) {
+      || (!compact && (!(pixels instanceof Uint8Array) || !(pixels.buffer instanceof ArrayBuffer)))) {
     throw new Error("Invalid complete presentation packet");
   }
-  const layout = `${message.kind}:${message.kind === "indexed8" ? message.stride : width * 4}`;
+  const layout = message.kind === "compact" ? `compact:${message.compact.width}:${message.compact.height}:${message.compact.scale}` : `${message.kind}:${message.kind === "indexed8" ? message.stride : width * 4}`;
   if (dimensions && mode === displayGeneration
       && (width !== dimensions[0] || height !== dimensions[1] || layout !== dimensions[2])) {
     throw new Error("Display dimensions changed without a new display generation");
@@ -67,12 +70,13 @@ function acceptFrame(message) {
 }
 
 function returnBuffers(type, frame, metrics = {}) {
-  const buffer = frame.pixels.buffer;
+  const buffer = frame.kind === "compact" ? frame.compact.cells.buffer : frame.pixels.buffer;
+  const detailBuffer = frame.compact?.detail?.buffer;
   const paletteBuffer = frame.kind === "indexed8" ? frame.palette.buffer : undefined;
   const cursorBuffer = frame.cursor?.pixels?.buffer;
-  const transfer = [...new Set([buffer, paletteBuffer, cursorBuffer].filter(Boolean))];
+  const transfer = [...new Set([buffer, paletteBuffer, cursorBuffer, detailBuffer].filter(Boolean))];
   reply({ type, sequence: frame.sequence, displayGeneration: frame.displayGeneration,
-    ...metrics, buffer, paletteBuffer, cursorBuffer }, transfer);
+    ...metrics, buffer, paletteBuffer, cursorBuffer, detailBuffer }, transfer);
 }
 
 function paint() {
@@ -113,7 +117,7 @@ self.onmessage = async ({ data }) => {
         const bindings = await import(moduleUrl.href);
         // Stop, duplicate init or message failure may have arrived during import.
         if (failed) return;
-        if (bindings.GPU_PRESENTER_PROTOCOL !== 2) throw new Error("GPU presenter protocol mismatch");
+        if (bindings.GPU_PRESENTER_PROTOCOL !== 3) throw new Error("GPU presenter protocol mismatch");
         gpu = new bindings.GpuFramePresenter(canvas);
         canvas.addEventListener("webglcontextlost", event => { event.preventDefault(); fail("Renderer WebGL context lost"); });
       } else {
@@ -123,7 +127,7 @@ self.onmessage = async ({ data }) => {
       }
       ready = true;
       reply({ type: "ready", backend: gpu ? "offscreen-webgl" : "offscreen-canvas2d",
-        kinds: gpu ? ["rgba", "indexed8"] : ["rgba"] });
+        kinds: gpu ? ["rgba", "indexed8", "compact"] : ["rgba"] });
       return;
     }
     if (!sameIdentity(data) || data.protocolVersion !== RENDER_PROTOCOL) return;

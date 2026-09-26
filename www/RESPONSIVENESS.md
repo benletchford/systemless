@@ -94,10 +94,13 @@ presenter. Its helper loads with the runtime asset identity and reports supporte
 packet kinds before accepting images. The GPU kernel and bounded transport accept
 complete 8-bit indices plus a full palette. Eligible gameplay frames now use
 that representation, including a small cursor patch composed by the existing
-scalar cursor renderer on the owner. Retained-text frames, debug overlays,
-other pixel depths and unsupported layouts retain RGBA export. Backend recovery
+scalar cursor renderer on the owner. Retained-text frames reuse the native
+`CompactPresentation` cells/detail format at integer output scales 1–4. Cursor
+composition remains on the owner and replaces only logical pixels changed by
+the existing cursor renderer, preserving detail beneath unchanged cursor pixels.
+Debug overlays and unsupported layouts retain RGBA export. Backend recovery
 requests fresh RGBA from the same owner and invalidates cached RGBA pixels after
-an indexed snapshot. Shader-load failure,
+an indexed or compact snapshot. Shader-load failure,
 context loss and renderer failure use the same presenter-only recovery path.
 
 The logical canvas retains input listeners and focus. A separate display canvas
@@ -118,4 +121,21 @@ the indices, palette and cursor patch into JavaScript buffers. Those buffers
 transfer through the host to the renderer, where indices, palette and any cursor
 patch are uploaded separately. RGBA fallback still expands on the owner and
 copies into JavaScript. These paths are not zero-copy. Direct owner-to-renderer
-transport, retained-text packets and full pipeline measurements remain pending.
+transport, producer reuse of returned buffers and full pipeline measurements
+remain pending. Compact export currently decodes and clones logical ARGB pixels
+when composing a cursor, then copies the native cells and detail into JavaScript
+buffers. The renderer uploads those two arrays and resolves high-resolution
+pixels on the GPU. This avoids owner-side high-resolution expansion but does not
+eliminate owner-side snapshot work.
+
+Release browser checks of a retained-text menu produced identical full-page
+images at 1×, 2× and 3× device scale, with the same logical 800×600 display and
+matched guest progress. The compact payload stayed at 1,962,112 bytes, compared
+with expanded RGBA sizes of 1,920,000, 7,680,000 and 17,280,000 bytes respectively.
+It is slightly larger at 1×; the reduction applies to higher display scales.
+These are single startup/menu pairs, not repeated gameplay qualification. The
+3× compatibility run exceeded the existing 50 ms frame gate (75.6 ms maximum);
+the compact run passed with a 35.5 ms maximum. No threshold was relaxed, and
+these samples do not establish a sustained performance gain. GPU differential
+checks also compare all 16 combinations of native detail/output scales 1–4,
+including integer area rounding, against native scalar output.
