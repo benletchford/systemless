@@ -110,9 +110,15 @@ native Quit also defers termination until that owner has flushed saves and
 destroyed the guest; its completion runs in AppKit’s termination modal loop.
 Native application identity inspection also runs on the owner while a loading
 window remains available; the host relaunches only after that owner finishes.
-These integrations still require interactive qualification. The default
-remains the same-thread compatibility path until windowed responsiveness and
-platform qualification are complete; leave the variable unset to use it.
+The desktop suite passes 128 tests, including owner-thread lifetime, stalled
+initialization, ordered input, shutdown and save persistence, with debugger
+support enabled. An offscreen Metal text/dialog capture also passes. Available
+macOS interactive checks cover launch, gameplay, application-menu tracking,
+window zoom/resizing and a successful AppKit Quit. Native host responsiveness
+under an owner stall, interactive save/restart parity and broader platform
+coverage remain unverified and are deferred. The default remains the same-thread
+compatibility path; leave the variable unset to use it. See
+[review qualification](HOST_RESPONSIVENESS_REVIEW.md) for the scope and limits.
 
 For intermittent desktop stalls, set `SYSTEMLESS_PROFILE_FRAMES=1` when launching.
 The terminal reports CPU, compositing, outline rendering and Metal drawable-wait
