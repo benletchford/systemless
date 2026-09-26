@@ -30,7 +30,11 @@ pub struct WorkerMachine {
 #[wasm_bindgen]
 impl WorkerMachine {
     #[wasm_bindgen(js_name = create)]
-    pub async fn create(game_bytes: Uint8Array, config: &str) -> Result<WorkerMachine, JsValue> {
+    pub async fn create(
+        game_bytes: Uint8Array,
+        config: &str,
+        on_progress: js_sys::Function,
+    ) -> Result<WorkerMachine, JsValue> {
         let config: BootConfig =
             serde_json::from_str(config).map_err(|e| JsValue::from_str(&e.to_string()))?;
         let architecture = match config.architecture.as_str() {
@@ -57,7 +61,12 @@ impl WorkerMachine {
             &paths,
             &mappings,
             config.runtime_pacing,
-            |_| {},
+            &std::cell::RefCell::new(None),
+            |progress| {
+                if let Ok(progress) = serde_json::to_string(&progress) {
+                    let _ = on_progress.call1(&JsValue::UNDEFINED, &JsValue::from_str(&progress));
+                }
+            },
         )
         .await
         .map_err(|error| JsValue::from_str(&error))?;

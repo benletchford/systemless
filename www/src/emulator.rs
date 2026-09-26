@@ -191,8 +191,12 @@ pub fn begin_audio_from_user_gesture() {
     begin_audio_bootstrap(true);
 }
 
-pub fn prepare_audio_for_boot() {
-    begin_audio_bootstrap(false);
+pub(crate) fn prepare_audio_for_boot() -> Rc<RefCell<Option<AudioBootstrap>>> {
+    // A runtime owns its bootstrap from creation, so cancellation cannot leave
+    // an unlocked context in the global handoff slot or steal the next launch's.
+    Rc::new(RefCell::new(
+        take_pending_audio_bootstrap().or_else(|| AudioBootstrap::new(false)),
+    ))
 }
 
 fn begin_audio_bootstrap(resume_from_gesture: bool) {
@@ -302,7 +306,7 @@ impl From<&VfsFileSnapshot> for SaveFingerprint {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum BootProgress {
     MountingArchive {
         loaded_bytes: usize,
@@ -332,6 +336,7 @@ impl Machine {
         remove_paths: &[&str],
         file_mappings: &[(&str, &str)],
         runtime_pacing: RuntimePacing,
+        audio_bootstrap: &RefCell<Option<AudioBootstrap>>,
         mut on_progress: F,
     ) -> Result<Self, String>
     where
@@ -420,14 +425,7 @@ impl Machine {
                 .saturating_add(LAUNCH_MODIFIER_HOLD_TICKS)
         });
         on_progress(BootProgress::PreparingAudio);
-        let audio = if let Some(bootstrap) = take_pending_audio_bootstrap() {
-            match bootstrap.finish().await {
-                Some(audio) => Some(audio),
-                None => WebAudioBackend::new().await,
-            }
-        } else {
-            WebAudioBackend::new().await
-        };
+        let audio = WebAudioBackend::from_bootstrap(audio_bootstrap).await;
         let audio_started_at_ms = performance_now();
         let started_at_ms =
             wall_clock_origin_for_guest_tick(audio_started_at_ms, runner.guest_tick());
@@ -2317,7 +2315,7 @@ pub(crate) struct ScriptProcessorAudioBackend {
     dropped_while_suspended: bool,
 }
 
-struct AudioBootstrap {
+pub(crate) struct AudioBootstrap {
     ctx: Option<AudioContext>,
     resume: Option<js_sys::Promise>,
     worklet_module: Option<js_sys::Promise>,
@@ -2373,6 +2371,16 @@ impl Drop for AudioBootstrap {
 }
 
 impl WebAudioBackend {
+    pub(crate) async fn from_bootstrap(slot: &RefCell<Option<AudioBootstrap>>) -> Option<Self> {
+        let bootstrap = slot.borrow_mut().take();
+        if let Some(bootstrap) = bootstrap {
+            if let Some(audio) = bootstrap.finish().await {
+                return Some(audio);
+            }
+        }
+        Self::new().await
+    }
+
     pub(crate) async fn new() -> Option<Self> {
         let ctx = create_audio_context()?;
         // Context starts suspended outside a user-gesture microtask; kick
