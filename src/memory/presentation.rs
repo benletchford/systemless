@@ -1409,11 +1409,23 @@ impl Presentation {
         {
             return false;
         }
-        if self.detail_cache.borrow()[(y * self.width + x) as usize]
-            .as_ref()
-            .is_some_and(|cached| Arc::ptr_eq(cached, cell))
-        {
-            return true;
+        // A cached cell is exactly this cell's current state (`detail`
+        // returns it as such), so comparing with it settles the question
+        // either way. Snapshots taken each frame hold equal cells with new
+        // identities, which would otherwise miss the pointer check and
+        // compare every sample against the shared ink map.
+        let cached = match self.detail_cache.borrow()[(y * self.width + x) as usize].as_ref() {
+            Some(cached) if Arc::ptr_eq(cached, cell) => return true,
+            Some(cached) => Some(**cached == **cell),
+            None => None,
+        };
+        match cached {
+            Some(false) => return false,
+            Some(true) => {
+                self.detail_cache.borrow_mut()[(y * self.width + x) as usize] = Some(cell.clone());
+                return true;
+            }
+            None => {}
         }
         let index = (y * self.width + x) as usize;
         let samples = self.samples.get(index);
