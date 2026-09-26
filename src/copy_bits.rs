@@ -10,6 +10,9 @@ use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus, SavedPixels};
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod benchmarks;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod parallel;
+
 const INDEXED_8_GUARD_BYTES: usize = 4;
 const INDEXED_8_MAP_ENTRIES: usize = 256;
 
@@ -734,7 +737,11 @@ impl RowCopy<'_> {
             }
         }
 
-        let Some(output) = plan.reduce_rows(&snapshots, row_count) else {
+        #[cfg(not(target_arch = "wasm32"))]
+        let output = parallel::reduce(plan, snapshots, row_count);
+        #[cfg(target_arch = "wasm32")]
+        let output = plan.reduce_rows(&snapshots, row_count);
+        let Some(output) = output else {
             return RowCopyOutcome::ReadOrGeometryFailure;
         };
         for (rows_written, ((_, destination), row)) in addresses
