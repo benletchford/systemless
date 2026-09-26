@@ -5,6 +5,7 @@ mod catalogue;
 mod components;
 mod emulator;
 mod paths;
+mod presentation;
 mod save_store;
 mod worker_runtime;
 
