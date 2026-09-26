@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { percentiles } from "./runtime-metrics.mjs";
+import { connect, evaluateJson } from "./runtime-cdp.mjs";
 import { spawn } from "node:child_process";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
@@ -97,7 +98,7 @@ try {
   });
   await page.send("Page.navigate", { url: `${baseUrl}${route}` });
 
-  const probe = await evaluate(
+  const probe = await evaluateJson(
     page,
     `(${runtimeProbe.toString()})(${JSON.stringify(sampleMs)}, ${process.env.SYSTEMLESS_RUNTIME_DEBUG !== "0"}, ${JSON.stringify(targetGuestTick ?? null)})`,
     sampleMs + 60_000,
@@ -162,8 +163,8 @@ try {
   }
   assertRuntimePacing(report);
 } finally {
-  await archiveServer.close();
   chrome.kill("SIGTERM");
+  await archiveServer.close();
   await sleep(250);
   await rmWithRetry(userDataDir);
 }
@@ -223,6 +224,7 @@ async function serveArchive(path) {
       return requests;
     },
     close() {
+      server.closeAllConnections();
       return new Promise((resolve) => server.close(resolve));
     },
   };
@@ -819,19 +821,6 @@ function envOptionalNumber(name) {
   return parsed;
 }
 
-async function evaluate(page, expression, timeout) {
-  const result = await page.send("Runtime.evaluate", {
-    expression,
-    returnByValue: true,
-    awaitPromise: true,
-    timeout,
-  });
-  if (result.exceptionDetails) {
-    throw new Error(JSON.stringify(result.exceptionDetails));
-  }
-  return result.result.value;
-}
-
 async function waitForChrome(port) {
   const deadline = Date.now() + 15_000;
   let lastError = null;
@@ -844,54 +833,6 @@ async function waitForChrome(port) {
     }
   }
   throw lastError ?? new Error("Chrome did not start");
-}
-
-function connect(webSocketUrl) {
-  const ws = new WebSocket(webSocketUrl);
-  let nextId = 1;
-  const pending = new Map();
-  const handlers = new Map();
-  const ready = new Promise((resolve, reject) => {
-    ws.addEventListener("open", resolve, { once: true });
-    ws.addEventListener("error", reject, { once: true });
-  });
-
-  ws.addEventListener("message", (event) => {
-    const message = JSON.parse(event.data);
-    if (message.id && pending.has(message.id)) {
-      const { resolve, reject } = pending.get(message.id);
-      pending.delete(message.id);
-      if (message.error) {
-        reject(new Error(JSON.stringify(message.error)));
-      } else {
-        resolve(message.result ?? {});
-      }
-      return;
-    }
-
-    const methodHandlers = handlers.get(message.method);
-    if (methodHandlers) {
-      for (const handler of methodHandlers) {
-        handler(message.params ?? {});
-      }
-    }
-  });
-
-  return {
-    ready,
-    close: () => ws.close(),
-    on(method, handler) {
-      if (!handlers.has(method)) {
-        handlers.set(method, []);
-      }
-      handlers.get(method).push(handler);
-    },
-    send(method, params = {}) {
-      const id = nextId++;
-      ws.send(JSON.stringify({ id, method, params }));
-      return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
-    },
-  };
 }
 
 async function fetchJson(url) {

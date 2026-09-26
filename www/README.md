@@ -154,6 +154,9 @@ write raw bounded samples and the final browser screenshot to tester-chosen
 local paths. Reports include the actual renderer, display scale, CPU setting
 and guest instruction/tick endpoints; wall-time samples alone are insufficient
 to establish equal guest progress.
+Large diagnostic reports are retrieved in bounded CDP chunks after sampling,
+without dropping samples. Connection failures and unresponsive CDP commands fail
+the probe explicitly instead of leaving an unresolved report request.
 
 The save probe verifies gameplay-created saves, download, removal from IndexedDB,
 and re-import with identical data and resource forks. Cases can set `requireWorker`
