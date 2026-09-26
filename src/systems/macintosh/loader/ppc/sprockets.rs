@@ -231,6 +231,8 @@ pub struct PpcInputSprocketState {
     pub last_virtual_need_count: u32,
     pub last_virtual_needs_ptr: u32,
     pub last_virtual_elements_out_ptr: u32,
+    pub keyboard_defaults: PpcInputSprocketKeyboardDefaults,
+    pub keyboard_default_cursor: u32,
 }
 
 impl Default for PpcInputSprocketState {
@@ -245,8 +247,60 @@ impl Default for PpcInputSprocketState {
             last_virtual_need_count: 0,
             last_virtual_needs_ptr: 0,
             last_virtual_elements_out_ptr: 0,
+            keyboard_defaults: PpcInputSprocketKeyboardDefaults::default(),
+            keyboard_default_cursor: 0,
         }
     }
+}
+
+/// Default keyboard binding recovered from an InputSprocket 'setl'/'tset'.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpcInputSprocketKeyboardDefaults {
+    pub keycodes: [u8; PPC_ISP_MAX_TSET_KEYCODES],
+    pub keycode_count: u8,
+    pub set_list_id: i16,
+    pub tset_id: i16,
+}
+
+impl Default for PpcInputSprocketKeyboardDefaults {
+    fn default() -> Self {
+        Self {
+            keycodes: [0; PPC_ISP_MAX_TSET_KEYCODES],
+            keycode_count: 0,
+            set_list_id: 0,
+            tset_id: 0,
+        }
+    }
+}
+
+/// Per-element keyboard binding (one key for buttons, two for axes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpcInputSprocketKeyboardBinding {
+    pub keycodes: [u8; 2],
+    pub len: u8,
+}
+
+impl PpcInputSprocketKeyboardBinding {
+    pub(crate) fn axis(low: u8, high: u8) -> Self {
+        Self {
+            keycodes: [low, high],
+            len: 2,
+        }
+    }
+
+    pub(crate) fn button(key: u8) -> Self {
+        Self {
+            keycodes: [key, 0],
+            len: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PpcIspSetListEntry {
+    pub(crate) device_class: u32,
+    pub(crate) device_creator: u32,
+    pub(crate) tset_id: i16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,6 +311,7 @@ pub struct PpcInputSprocketVirtualElementRecord {
     pub kind: u32,
     pub default_state: u32,
     pub action_binding: PpcInputSprocketActionBinding,
+    pub keyboard_binding: Option<PpcInputSprocketKeyboardBinding>,
     pub need_name: String,
     pub need_record: Vec<u8>,
 }
@@ -268,6 +323,7 @@ pub(crate) struct PpcInputSprocketVirtualElementDraft {
     pub(crate) kind: u32,
     pub(crate) default_state: u32,
     pub(crate) action_binding: PpcInputSprocketActionBinding,
+    pub(crate) keyboard_binding: Option<PpcInputSprocketKeyboardBinding>,
     pub(crate) need_name: String,
     pub(crate) need_record: Vec<u8>,
 }
@@ -348,6 +404,17 @@ pub const PPC_ISP_DPAD_UP: u32 = 1 << 0;
 pub const PPC_ISP_DPAD_RIGHT: u32 = 1 << 1;
 pub const PPC_ISP_DPAD_DOWN: u32 = 1 << 2;
 pub const PPC_ISP_DPAD_LEFT: u32 = 1 << 3;
+/// 'setl' resource header: version and set count; entries begin at 8.
+pub const PPC_ISP_SETL_HEADER_SIZE: u32 = 8;
+/// One 'setl' entry is an `ISpDeviceDefinition` plus a trailing tset ResID.
+pub const PPC_ISP_SETL_ENTRY_SIZE: u32 = PPC_ISP_DEVICE_DEFINITION_SIZE + 4;
+pub const PPC_ISP_SETL_ENTRY_DEVICE_CLASS_OFFSET: u32 = 68;
+pub const PPC_ISP_SETL_ENTRY_DEVICE_CREATOR_OFFSET: u32 = 72;
+pub const PPC_ISP_SETL_ENTRY_TSET_ID_OFFSET: u32 = PPC_ISP_DEVICE_DEFINITION_SIZE;
+/// 'tset' resource header: version and key count; entries begin at 8.
+pub const PPC_ISP_TSET_HEADER_SIZE: u32 = 8;
+pub const PPC_ISP_TSET_ENTRY_SIZE: u32 = 4;
+pub const PPC_ISP_MAX_TSET_KEYCODES: usize = 32;
 
 static SPROCKET_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
 pub(crate) fn sprocket_trace_enabled() -> bool {
@@ -459,15 +526,29 @@ pub(crate) fn format_isp_last_virtual_bindings(
         .iter()
         .map(|record| {
             format!(
-                "#{} {} '{}'={}",
+                "#{} {} '{}'={}{}",
                 record.need_index,
                 isp_element_kind_name(record.kind),
                 format_isp_trace_name(&record.need_name),
-                isp_action_binding_name(record.action_binding)
+                isp_action_binding_name(record.action_binding),
+                format_isp_keyboard_binding(record.keyboard_binding)
             )
         })
         .collect();
     format!("[{}]", entries.join(","))
+}
+
+pub(crate) fn format_isp_keyboard_binding(
+    binding: Option<PpcInputSprocketKeyboardBinding>,
+) -> String {
+    match binding {
+        Some(binding) if binding.len >= 2 => format!(
+            " keys=${:02X}/{:02X}",
+            binding.keycodes[0], binding.keycodes[1]
+        ),
+        Some(binding) if binding.len == 1 => format!(" keys=${:02X}", binding.keycodes[0]),
+        _ => String::new(),
+    }
 }
 
 pub(crate) fn format_sprocket_action(action: &PpcImportAction) -> String {
@@ -503,7 +584,7 @@ pub(crate) fn format_sprocket_trace(
         )
     } else if entry.symbol_name == "ISpElement_NewVirtualFromNeeds" {
         format!(
-            "isp initialized={} suspended={} keyboard={} mouse={} virtuals={} last_need_count={} last_needs={} last_elements={} configure_count={} last_bindings={}",
+            "isp initialized={} suspended={} keyboard={} mouse={} virtuals={} last_need_count={} last_needs={} last_elements={} configure_count={} setl={} tset={} keys={} last_bindings={}",
             input_sprocket.initialized,
             input_sprocket.suspended,
             input_sprocket.keyboard_active,
@@ -513,11 +594,14 @@ pub(crate) fn format_sprocket_trace(
             format_hex_opt(Some(input_sprocket.last_virtual_needs_ptr)),
             format_hex_opt(Some(input_sprocket.last_virtual_elements_out_ptr)),
             input_sprocket.configure_count,
+            input_sprocket.keyboard_defaults.set_list_id,
+            input_sprocket.keyboard_defaults.tset_id,
+            input_sprocket.keyboard_defaults.keycode_count,
             format_isp_last_virtual_bindings(input_sprocket, input_sprocket_virtual_elements)
         )
     } else {
         format!(
-            "isp initialized={} suspended={} keyboard={} mouse={} virtuals={} last_need_count={} last_needs={} last_elements={} configure_count={}",
+            "isp initialized={} suspended={} keyboard={} mouse={} virtuals={} last_need_count={} last_needs={} last_elements={} configure_count={} setl={} tset={} keys={}",
             input_sprocket.initialized,
             input_sprocket.suspended,
             input_sprocket.keyboard_active,
@@ -526,7 +610,10 @@ pub(crate) fn format_sprocket_trace(
             input_sprocket.last_virtual_need_count,
             format_hex_opt(Some(input_sprocket.last_virtual_needs_ptr)),
             format_hex_opt(Some(input_sprocket.last_virtual_elements_out_ptr)),
-            input_sprocket.configure_count
+            input_sprocket.configure_count,
+            input_sprocket.keyboard_defaults.set_list_id,
+            input_sprocket.keyboard_defaults.tset_id,
+            input_sprocket.keyboard_defaults.keycode_count,
         )
     };
     format!(
@@ -1744,12 +1831,14 @@ pub(crate) fn ppc_isp_element_new_virtual_from_needs(
         let state = ppc_isp_default_simple_state(kind);
         let need_name = ppc_isp_need_record_name(&need_record);
         let action_binding = ppc_isp_action_binding(kind, Some(&need_name));
+        let keyboard_binding = ppc_isp_take_keyboard_binding(input_sprocket, kind);
         drafts.push(PpcInputSprocketVirtualElementDraft {
             need_index: index,
             need_source: need_ptr,
             kind,
             default_state: state,
             action_binding,
+            keyboard_binding,
             need_name,
             need_record,
         });
@@ -1811,6 +1900,7 @@ pub(crate) fn ppc_isp_element_new_virtual_from_needs(
             kind: draft.kind,
             default_state: draft.default_state,
             action_binding: draft.action_binding,
+            keyboard_binding: draft.keyboard_binding,
             need_name: draft.need_name,
             need_record: draft.need_record,
         });
@@ -2114,12 +2204,13 @@ pub(crate) fn ppc_isp_virtual_element_simple_state(
     let record = virtual_elements
         .iter()
         .find(|record| record.element == element)?;
-    Some(ppc_isp_input_simple_state(
+    Some(ppc_isp_input_simple_state_with_binding(
         record.kind,
         record.default_state,
         input,
         input_sprocket,
         record.action_binding,
+        record.keyboard_binding,
     ))
 }
 
@@ -2261,12 +2352,31 @@ pub(crate) fn ppc_isp_action_binding(kind: u32, need_name: Option<&str>) -> PpcI
     }
 }
 
+#[cfg(test)]
 pub(crate) fn ppc_isp_input_simple_state(
     kind: u32,
     fallback_state: u32,
     input: PpcInputSnapshot,
     input_sprocket: PpcInputSprocketState,
     action_binding: PpcInputSprocketActionBinding,
+) -> u32 {
+    ppc_isp_input_simple_state_with_binding(
+        kind,
+        fallback_state,
+        input,
+        input_sprocket,
+        action_binding,
+        None,
+    )
+}
+
+pub(crate) fn ppc_isp_input_simple_state_with_binding(
+    kind: u32,
+    fallback_state: u32,
+    input: PpcInputSnapshot,
+    input_sprocket: PpcInputSprocketState,
+    action_binding: PpcInputSprocketActionBinding,
+    keyboard_binding: Option<PpcInputSprocketKeyboardBinding>,
 ) -> u32 {
     if input_sprocket.suspended {
         return fallback_state;
@@ -2276,42 +2386,54 @@ pub(crate) fn ppc_isp_input_simple_state(
             if !input_sprocket.keyboard_active {
                 return fallback_state;
             }
-            let (low_keys, high_keys): (&[u8], &[u8]) = if matches!(
-                action_binding,
-                PpcInputSprocketActionBinding::AxisYaw
-                    | PpcInputSprocketActionBinding::AxisHorizontal
-            ) {
+            // A loaded keyboard default maps the first tset slot to the
+            // axis minimum and the second to the maximum; otherwise keep
+            // the game-shaped name heuristic.
+            let (low, high) = if let Some(binding) = keyboard_binding.filter(|b| b.len >= 2) {
                 (
-                    &[PPC_KEY_LEFT, PPC_KEY_NUMPAD_LEFT],
-                    &[PPC_KEY_RIGHT, PPC_KEY_NUMPAD_RIGHT],
-                )
-            } else if matches!(
-                action_binding,
-                PpcInputSprocketActionBinding::AxisPitch
-                    | PpcInputSprocketActionBinding::AxisVertical
-            ) {
-                (
-                    &[PPC_KEY_UP, PPC_KEY_NUMPAD_UP],
-                    &[PPC_KEY_DOWN, PPC_KEY_NUMPAD_DOWN],
+                    input.any_key_down(&binding.keycodes[0..1]),
+                    input.any_key_down(&binding.keycodes[1..2]),
                 )
             } else {
+                let (low_keys, high_keys): (&[u8], &[u8]) = if matches!(
+                    action_binding,
+                    PpcInputSprocketActionBinding::AxisYaw
+                        | PpcInputSprocketActionBinding::AxisHorizontal
+                ) {
+                    (
+                        &[PPC_KEY_LEFT, PPC_KEY_NUMPAD_LEFT],
+                        &[PPC_KEY_RIGHT, PPC_KEY_NUMPAD_RIGHT],
+                    )
+                } else if matches!(
+                    action_binding,
+                    PpcInputSprocketActionBinding::AxisPitch
+                        | PpcInputSprocketActionBinding::AxisVertical
+                ) {
+                    (
+                        &[PPC_KEY_UP, PPC_KEY_NUMPAD_UP],
+                        &[PPC_KEY_DOWN, PPC_KEY_NUMPAD_DOWN],
+                    )
+                } else {
+                    (
+                        &[
+                            PPC_KEY_LEFT,
+                            PPC_KEY_NUMPAD_LEFT,
+                            PPC_KEY_UP,
+                            PPC_KEY_NUMPAD_UP,
+                        ],
+                        &[
+                            PPC_KEY_RIGHT,
+                            PPC_KEY_NUMPAD_RIGHT,
+                            PPC_KEY_DOWN,
+                            PPC_KEY_NUMPAD_DOWN,
+                        ],
+                    )
+                };
                 (
-                    &[
-                        PPC_KEY_LEFT,
-                        PPC_KEY_NUMPAD_LEFT,
-                        PPC_KEY_UP,
-                        PPC_KEY_NUMPAD_UP,
-                    ],
-                    &[
-                        PPC_KEY_RIGHT,
-                        PPC_KEY_NUMPAD_RIGHT,
-                        PPC_KEY_DOWN,
-                        PPC_KEY_NUMPAD_DOWN,
-                    ],
+                    input.any_key_down(low_keys),
+                    input.any_key_down(high_keys),
                 )
             };
-            let low = input.any_key_down(low_keys);
-            let high = input.any_key_down(high_keys);
             match (low, high) {
                 (true, false) => PPC_ISP_AXIS_LOW,
                 (false, true) => PPC_ISP_AXIS_HIGH,
@@ -2320,7 +2442,8 @@ pub(crate) fn ppc_isp_input_simple_state(
             }
         }
         PPC_ISP_ELEMENT_KIND_BUTTON => {
-            let pressed = ppc_isp_button_pressed(input, input_sprocket, action_binding);
+            let pressed =
+                ppc_isp_button_pressed(input, input_sprocket, action_binding, keyboard_binding);
             if pressed {
                 PPC_ISP_BUTTON_PRESSED
             } else {
@@ -2378,7 +2501,22 @@ pub(crate) fn ppc_isp_button_pressed(
     input: PpcInputSnapshot,
     input_sprocket: PpcInputSprocketState,
     action_binding: PpcInputSprocketActionBinding,
+    keyboard_binding: Option<PpcInputSprocketKeyboardBinding>,
 ) -> bool {
+    // A loaded keyboard default replaces the name heuristic for the key
+    // code; the mouse still drives the primary/fire needs.
+    if let Some(binding) = keyboard_binding.filter(|b| b.len >= 1) {
+        if input_sprocket.keyboard_active && input.key_down(binding.keycodes[0]) {
+            return true;
+        }
+        return input_sprocket.mouse_active
+            && input.mouse_button
+            && matches!(
+                action_binding,
+                PpcInputSprocketActionBinding::ButtonFire
+                    | PpcInputSprocketActionBinding::ButtonPrimary
+            );
+    }
     match action_binding {
         PpcInputSprocketActionBinding::ButtonLeft => {
             input_sprocket.keyboard_active
@@ -2486,11 +2624,151 @@ pub(crate) fn ppc_isp_need_name_matches_all(need_name: Option<&str>, patterns: &
     patterns.iter().all(|pattern| name.contains(pattern))
 }
 
-pub(crate) fn ppc_isp_init(input_sprocket: &mut PpcInputSprocketState) -> i16 {
+/// Parse the `'setl'` set-list resource into its device entries.
+///
+/// InputSprocket 1.7 `ISpSetList`: `UInt32 version`, `UInt32 count`, then
+/// `count` entries. Each entry is an `ISpDeviceDefinition` (a `Str63` name
+/// followed by seven `UInt32` fields) plus a trailing `'tset'` ResID.
+pub(crate) fn ppc_isp_parse_setl_entries(data: &[u8]) -> Option<Vec<PpcIspSetListEntry>> {
+    let count = u32::from_be_bytes(data.get(4..8)?.try_into().ok()?);
+    let count = usize::try_from(count).ok()?;
+    let entry_size = usize::try_from(PPC_ISP_SETL_ENTRY_SIZE).ok()?;
+    let class_offset = usize::try_from(PPC_ISP_SETL_ENTRY_DEVICE_CLASS_OFFSET).ok()?;
+    let creator_offset = usize::try_from(PPC_ISP_SETL_ENTRY_DEVICE_CREATOR_OFFSET).ok()?;
+    let tset_offset = usize::try_from(PPC_ISP_SETL_ENTRY_TSET_ID_OFFSET).ok()?;
+    let mut entries = Vec::with_capacity(count);
+    for index in 0..count {
+        let base = usize::try_from(PPC_ISP_SETL_HEADER_SIZE).ok()? + index.checked_mul(entry_size)?;
+        let entry = data.get(base..base.checked_add(entry_size)?)?;
+        let device_class =
+            u32::from_be_bytes(entry.get(class_offset..class_offset + 4)?.try_into().ok()?);
+        let device_creator =
+            u32::from_be_bytes(entry.get(creator_offset..creator_offset + 4)?.try_into().ok()?);
+        let tset_id =
+            i16::from_be_bytes(entry.get(tset_offset..tset_offset + 2)?.try_into().ok()?);
+        entries.push(PpcIspSetListEntry {
+            device_class,
+            device_creator,
+            tset_id,
+        });
+    }
+    Some(entries)
+}
+
+/// Parse the `'tset'` keyboard default map into key codes in slot order.
+///
+/// InputSprocket 1.7 `TSet`: `UInt32 version`, `UInt32 count`, then `count`
+/// four-byte slots whose high 16 bits hold the Mac key code.
+pub(crate) fn ppc_isp_parse_tset_keycodes(data: &[u8]) -> Option<Vec<u8>> {
+    let count = u32::from_be_bytes(data.get(4..8)?.try_into().ok()?);
+    let count = usize::try_from(count).ok()?;
+    let header = usize::try_from(PPC_ISP_TSET_HEADER_SIZE).ok()?;
+    let entry_size = usize::try_from(PPC_ISP_TSET_ENTRY_SIZE).ok()?;
+    let mut keycodes = Vec::with_capacity(count);
+    for index in 0..count {
+        let base = header + index.checked_mul(entry_size)?;
+        let key = u16::from_be_bytes(data.get(base..base + 2)?.try_into().ok()?);
+        keycodes.push(u8::try_from(key).ok()?);
+    }
+    Some(keycodes)
+}
+
+/// Resolve `setListResourceId` through the current resource chain and load
+/// the keyboard `'tset'` it references. Missing, malformed or short data
+/// yields `None`, leaving the name heuristic in place.
+pub(crate) fn ppc_isp_load_default_keycodes(
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    set_list_resource_id: i16,
+) -> Option<PpcInputSprocketKeyboardDefaults> {
+    if set_list_resource_id == 0 {
+        return None;
+    }
+    let setl_index = ppc_vfs_resource_index(
+        vfs_resources,
+        current_resource_refnum,
+        u32::from_be_bytes(*b"setl"),
+        set_list_resource_id,
+        false,
+    )?;
+    let setl = vfs_resources.get(setl_index)?;
+    let entries = ppc_isp_parse_setl_entries(&setl.data)?;
+    let entry = entries.iter().find(|entry| {
+        entry.device_class == PPC_ISP_DEVICE_CLASS_KEYBOARD
+            || entry.device_creator == u32::from_be_bytes(*b"appl")
+    })?;
+    let tset_index = ppc_vfs_resource_index(
+        vfs_resources,
+        current_resource_refnum,
+        u32::from_be_bytes(*b"tset"),
+        entry.tset_id,
+        false,
+    )?;
+    let tset = vfs_resources.get(tset_index)?;
+    let keycodes = ppc_isp_parse_tset_keycodes(&tset.data)?;
+    if keycodes.is_empty() {
+        return None;
+    }
+    let mut defaults = PpcInputSprocketKeyboardDefaults {
+        set_list_id: set_list_resource_id,
+        tset_id: entry.tset_id,
+        ..PpcInputSprocketKeyboardDefaults::default()
+    };
+    let count = keycodes.len().min(PPC_ISP_MAX_TSET_KEYCODES);
+    defaults.keycodes[..count].copy_from_slice(&keycodes[..count]);
+    defaults.keycode_count = count as u8;
+    Some(defaults)
+}
+
+/// Consume the next default key codes for a need, in `'tset'` slot order:
+/// two for an axis, one for a button, none for other kinds.
+/// Assign default key codes to existing virtual elements in need order.
+/// Some games, Deimos Rising included, create their virtual elements before
+/// calling `ISpInit`, so the defaults must be applied retroactively.
+pub(crate) fn ppc_isp_assign_keyboard_defaults(
+    input_sprocket: &mut PpcInputSprocketState,
+    virtual_elements: &mut [PpcInputSprocketVirtualElementRecord],
+) {
+    input_sprocket.keyboard_default_cursor = 0;
+    for record in virtual_elements.iter_mut() {
+        record.keyboard_binding = ppc_isp_take_keyboard_binding(input_sprocket, record.kind);
+    }
+}
+
+fn ppc_isp_take_keyboard_binding(
+    input_sprocket: &mut PpcInputSprocketState,
+    kind: u32,
+) -> Option<PpcInputSprocketKeyboardBinding> {
+    let needed = match kind {
+        PPC_ISP_ELEMENT_KIND_AXIS => 2usize,
+        PPC_ISP_ELEMENT_KIND_BUTTON => 1usize,
+        _ => return None,
+    };
+    let start = input_sprocket.keyboard_default_cursor as usize;
+    let available = input_sprocket.keyboard_defaults.keycode_count as usize;
+    if start.checked_add(needed)? > available {
+        return None;
+    }
+    let first = input_sprocket.keyboard_defaults.keycodes[start];
+    let binding = if needed == 2 {
+        PpcInputSprocketKeyboardBinding::axis(first, input_sprocket.keyboard_defaults.keycodes[start + 1])
+    } else {
+        PpcInputSprocketKeyboardBinding::button(first)
+    };
+    input_sprocket.keyboard_default_cursor = (start + needed) as u32;
+    Some(binding)
+}
+
+pub(crate) fn ppc_isp_init(
+    input_sprocket: &mut PpcInputSprocketState,
+    defaults: PpcInputSprocketKeyboardDefaults,
+) -> i16 {
     input_sprocket.initialized = true;
     input_sprocket.suspended = false;
     input_sprocket.keyboard_active = true;
     input_sprocket.mouse_active = true;
+    input_sprocket.keyboard_defaults = defaults;
+    input_sprocket.keyboard_default_cursor = 0;
     PPC_NO_ERR
 }
 
@@ -2868,8 +3146,15 @@ pub(crate) fn ppc_isp_element_get_simple_state(
     let need_name = ppc_isp_element_need_name(memory, element);
     let action_binding = ppc_isp_element_action_binding(virtual_elements, element, kind)
         .unwrap_or_else(|| ppc_isp_action_binding(kind, need_name.as_deref()));
-    let state =
-        ppc_isp_input_simple_state(kind, fallback_state, input, input_sprocket, action_binding);
+    let keyboard_binding = ppc_isp_element_keyboard_binding(virtual_elements, element, kind);
+    let state = ppc_isp_input_simple_state_with_binding(
+        kind,
+        fallback_state,
+        input,
+        input_sprocket,
+        action_binding,
+        keyboard_binding,
+    );
     if memory.write_u32_be(state_ptr, state).is_none() {
         return PPC_PARAM_ERR;
     }
@@ -2920,6 +3205,18 @@ pub(crate) fn ppc_isp_element_action_binding(
         .rev()
         .find(|record| record.element == element && record.kind == kind)
         .map(|record| record.action_binding)
+}
+
+pub(crate) fn ppc_isp_element_keyboard_binding(
+    virtual_elements: &[PpcInputSprocketVirtualElementRecord],
+    element: u32,
+    kind: u32,
+) -> Option<PpcInputSprocketKeyboardBinding> {
+    virtual_elements
+        .iter()
+        .rev()
+        .find(|record| record.element == element && record.kind == kind)
+        .and_then(|record| record.keyboard_binding)
 }
 
 pub(crate) fn ppc_isp_element_need_name(memory: &mut PpcSectionMem, element: u32) -> Option<String> {
