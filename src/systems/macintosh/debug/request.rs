@@ -175,7 +175,9 @@ pub enum DebugRequest {
         registers: Option<Vec<u32>>,
     },
     /// Observational bytes from a named space; inspect the reply truncation flag.
-    /// 68K reads cover mapped RAM and are limited to 16 MiB per request.
+    /// 68K reads cover mapped RAM and PPC reads cover mapped guest sections;
+    /// both are limited to 16 MiB per request and truncate at an unmapped byte
+    /// or the end of the 32-bit address space.
     ReadMemory {
         space: AddressSpaceId,
         /// Byte offset within `space`.
@@ -183,17 +185,19 @@ pub enum DebugRequest {
         /// Requested byte count.
         length: u64,
     },
-    /// Decode from an explicit executable address space (68K output is approximate).
+    /// Decode from an explicit executable address space. 68K output and PPC's
+    /// decoder debug representation are approximate; PPC addresses must be
+    /// four-byte aligned.
     Disassemble {
         context: ContextSelector,
         address: DebugAddress,
-        /// Maximum instruction lines, at most 4096 for 68K.
+        /// Maximum instruction lines, at most 4096.
         count: u32,
     },
-    /// Raw stack bytes, not an unwound call stack.
+    /// Raw stack bytes, not an unwound call stack. PPC starts at r1; 68K starts at A7.
     StackPreview {
         context: ContextSelector,
-        /// Number of four-byte entries for 68K, at most 16384 (64 KiB).
+        /// Number of four-byte entries, at most 16384 (64 KiB).
         words: u32,
     },
     ListBreakpoints,

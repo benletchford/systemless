@@ -8,10 +8,13 @@
 //! traps or host callbacks already in progress.
 //!
 //! The 68K adapter supports registers, bounded RAM reads, approximate disassembly,
-//! raw stack previews, stepping, and PC breakpoints. PowerPC currently supports
-//! register inspection. Query [`DebugRequest::GetCapabilities`] before relying
-//! on an operation. [`ArchitectureAdapter`] and [`InspectionProvider`] describe
-//! the extension contracts; providers currently cover graphics, windows, and events.
+//! raw stack previews, stepping, and PC breakpoints. PowerPC native application
+//! and companion contexts support registers, bounded mapped-memory reads, raw
+//! stack previews from `r1`, and bounded four-byte disassembly. PPC disassembly
+//! uses the emulator decoder's debug representation and is marked approximate.
+//! Query [`DebugRequest::GetCapabilities`] before relying on an operation.
+//! [`ArchitectureAdapter`] and [`InspectionProvider`] describe the extension
+//! contracts; providers currently cover graphics, windows, and events.
 //!
 //! # Socket usage
 //!
@@ -135,8 +138,9 @@ pub use model::{
     DebugExecutionState, DebugNotification, DecodedArtifact, DisassemblyLine,
     DisplayOutputDescriptor, ExecutionContextDescriptor, ExecutionLocation, GraphicsSnapshot,
     GraphicsSurfaceDescriptor, InspectionProviderDescriptor, MemoryReadResult, NotificationPayload,
-    OperationOutcome, OperationState, OperationStatus, PixelFormat, ProviderObjectDescriptor,
-    ProviderSnapshotKind, RegisterCategory, RegisterDescriptor, RegisterFlag, RegisterRole,
+    OperationOutcome, OperationState, OperationStatus, PpcFaultImport, PpcGuestFault,
+    PpcGuestFaultKind, PixelFormat, ProviderObjectDescriptor, ProviderSnapshotKind, RegisterCategory,
+    RegisterDescriptor, RegisterFlag, RegisterRole,
     RegisterSnapshot, RegisterValue, RegisterWidth, StackPreview, StopInfo, StopReason,
     SurfaceKind,
 };

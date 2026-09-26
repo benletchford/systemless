@@ -1,5 +1,112 @@
 use super::*;
 
+#[cfg(feature = "debug")]
+fn ppc_fault_call_site(app: &PpcLoadedApp, lr: u32) -> Option<u32> {
+    let call_site = lr.checked_sub(4)?;
+    if call_site & 3 != 0 {
+        return None;
+    }
+    let memory = app.memory.shared_view();
+    let bytes = [
+        memory.read_routed_u8(call_site, None)?,
+        memory.read_routed_u8(call_site + 1, None)?,
+        memory.read_routed_u8(call_site + 2, None)?,
+        memory.read_routed_u8(call_site + 3, None)?,
+    ];
+    match ppc::decode(u32::from_be_bytes(bytes)) {
+        Ok(ppc::PpcInstr::B { lk: true, .. })
+        | Ok(ppc::PpcInstr::Bclr { lk: true, .. })
+        | Ok(ppc::PpcInstr::Bcctr { lk: true, .. }) => Some(call_site),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "debug")]
+fn ppc_guest_fault(
+    app: &PpcLoadedApp,
+    result: PpcRunResult,
+    unsupported_import_index: Option<u32>,
+) -> Option<crate::debug::PpcGuestFault> {
+    use crate::debug::{PpcFaultImport, PpcGuestFault, PpcGuestFaultKind};
+
+    let (kind, pc, detail, import) = if let Some(index) = unsupported_import_index {
+        let binding = app
+            .imports
+            .iter()
+            .find(|binding| binding.symbol_index == index);
+        let import = binding.map(|binding| PpcFaultImport {
+            index,
+            library: binding.library_name.clone(),
+            symbol: binding.symbol_name.clone(),
+            weak: binding.weak,
+        });
+        let detail = import.as_ref().map_or_else(
+            || format!("unsupported PPC import #{index}"),
+            |import| format!("unsupported PPC import {}:{}", import.library, import.symbol),
+        );
+        (PpcGuestFaultKind::UnsupportedImport, result_pc(result), detail, import)
+    } else {
+        let (kind, pc, detail) = match result {
+            PpcRunResult::Halted { pc, .. } if pc == 0 && app.cpu.lr != 0 => (
+                PpcGuestFaultKind::NullExecutionTarget,
+                pc,
+                "PPC branched to address zero with a nonzero link register".to_string(),
+            ),
+            PpcRunResult::Unimplemented { pc, error, .. } => (
+                PpcGuestFaultKind::UnimplementedInstruction,
+                pc,
+                format!("unimplemented instruction: {error:?}"),
+            ),
+            PpcRunResult::Exception { pc, exception, .. } => (
+                PpcGuestFaultKind::ProcessorException,
+                pc,
+                format!("PPC exception: {exception:?}"),
+            ),
+            PpcRunResult::MemoryFault {
+                pc,
+                addr,
+                was_write,
+                ..
+            } => (
+                PpcGuestFaultKind::MemoryFault,
+                pc,
+                format!("{} at unmapped address ${addr:08X}", if was_write { "store" } else { "load" }),
+            ),
+            PpcRunResult::FetchFault { pc, .. } => (
+                PpcGuestFaultKind::FetchFault,
+                pc,
+                "instruction fetch from unmapped address".to_string(),
+            ),
+            _ => return None,
+        };
+        (kind, pc, detail, None)
+    };
+
+    Some(PpcGuestFault {
+        kind,
+        pc,
+        lr: app.cpu.lr,
+        sp: app.cpu.gpr[1],
+        rtoc: app.cpu.gpr[2],
+        r3_r6: app.cpu.gpr[3..=6].try_into().expect("four PPC argument registers"),
+        call_site: ppc_fault_call_site(app, app.cpu.lr),
+        import,
+        detail,
+    })
+}
+
+#[cfg(feature = "debug")]
+fn result_pc(result: PpcRunResult) -> u32 {
+    match result {
+        PpcRunResult::Halted { pc, .. }
+        | PpcRunResult::Unimplemented { pc, .. }
+        | PpcRunResult::MemoryFault { pc, .. }
+        | PpcRunResult::Exception { pc, .. }
+        | PpcRunResult::FetchFault { pc, .. } => pc,
+        PpcRunResult::CycleLimit { .. } => 0,
+    }
+}
+
 impl FixtureRunner {
     pub(super) fn debug_finish_step_if_ready(&mut self) -> bool {
         if self.debug_step_units_remaining() != Some(0) {
@@ -50,6 +157,28 @@ impl FixtureRunner {
             Some(guest_tick),
             Some(execution_units),
         );
+    }
+
+    pub(super) fn debug_note_ppc_terminal_fault(
+        &mut self,
+        app: &PpcLoadedApp,
+        result: PpcRunResult,
+        unsupported_import_index: Option<u32>,
+    ) {
+        if let Some(fault) = ppc_guest_fault(app, result, unsupported_import_index) {
+            eprintln!(
+                "[DEBUG] PPC guest fault {:?} pc=${:08X} lr=${:08X} sp=${:08X} rTOC=${:08X} r3-r6={:08X?}{}: {}",
+                fault.kind,
+                fault.pc,
+                fault.lr,
+                fault.sp,
+                fault.rtoc,
+                fault.r3_r6,
+                fault.call_site.map_or_else(String::new, |pc| format!(" callsite=${pc:08X}")),
+                fault.detail,
+            );
+            self.debug.note_terminal_ppc_fault(fault);
+        }
     }
 
     pub(super) fn debug_note_active_context(&mut self) {
@@ -209,6 +338,14 @@ impl FixtureRunner {
 
     pub fn debug_ppc_cpu(&self) -> Option<&ppc::PpcCpu> {
         self.native.application().map(|app| &app.cpu)
+    }
+
+    pub(crate) fn debug_ppc_memory(&self) -> Option<&crate::memory::GuestAddressSpace> {
+        self.native.application().map(|app| &app.memory)
+    }
+
+    pub(crate) fn debug_ppc_companion_memory(&self) -> Option<&crate::memory::GuestAddressSpace> {
+        self.native.companion().map(|app| &app.memory)
     }
 
     #[doc(hidden)]

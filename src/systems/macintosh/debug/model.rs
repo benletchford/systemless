@@ -109,7 +109,46 @@ pub enum StopReason {
     CaptureBoundary { id: CaptureId },
     UnsupportedTransition,
     Watchpoint { id: super::ids::WatchpointId },
+    /// The PPC engine stopped after reporting an execution fault. This is a
+    /// terminal stop, not a resumable exception breakpoint.
+    GuestFault { fault: PpcGuestFault },
     TerminalHalt,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PpcGuestFaultKind {
+    NullExecutionTarget,
+    UnsupportedImport,
+    UnimplementedInstruction,
+    ProcessorException,
+    MemoryFault,
+    FetchFault,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PpcFaultImport {
+    pub index: u32,
+    pub library: String,
+    pub symbol: String,
+    pub weak: bool,
+}
+
+/// PPC state captured when the engine reports a terminal execution fault.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PpcGuestFault {
+    pub kind: PpcGuestFaultKind,
+    pub pc: u32,
+    pub lr: u32,
+    pub sp: u32,
+    pub rtoc: u32,
+    /// ABI argument registers useful for diagnosing import calls.
+    pub r3_r6: [u32; 4],
+    /// Set only when `lr - 4` decodes as a branch-with-link instruction.
+    pub call_site: Option<u32>,
+    /// Present only when the engine identified an exact unsupported import.
+    pub import: Option<PpcFaultImport>,
+    pub detail: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
