@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const path = require('node:path');
 const context = vm.createContext({ Uint8Array, ArrayBuffer });
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/renderer-gpu.js'), 'utf8')
-  .replace('export function', 'function').replace('export class', 'class')
+  .replace('export const', 'const').replace('export function', 'function').replace('export class', 'class')
   + '\nthis.validate = validateGpuFrame;', context);
 const frame = () => ({ kind: 'indexed8', complete: true, width: 3, height: 2, stride: 4,
   pixels: new Uint8Array(8), palette: new Uint8Array(1024) });

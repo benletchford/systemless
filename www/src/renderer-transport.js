@@ -16,15 +16,19 @@ export class RendererTransport {
 
   submit(packet) {
     if (this.closed) return false;
-    if (packet?.kind !== "rgba" || packet.complete !== true
+    const indexed = packet?.kind === "indexed8";
+    if ((!indexed && packet?.kind !== "rgba") || packet.complete !== true
+        || (indexed && (!(packet.palette instanceof Uint8Array)
+          || !(packet.palette.buffer instanceof ArrayBuffer) || packet.palette.byteLength !== 1024))
         || !(packet.pixels instanceof Uint8Array) || !(packet.pixels.buffer instanceof ArrayBuffer)
         || !packet.pixels.byteLength || !Number.isSafeInteger(packet.sequence) || packet.sequence <= this.sequence) {
-      this.fail(new Error("Renderer transport requires ordered complete RGBA frames"));
+      this.fail(new Error("Renderer transport requires ordered complete image packets"));
       return false;
     }
     this.sequence = packet.sequence;
     if (this.inFlight) {
       this.recycle(this.pending?.pixels.buffer);
+      this.recycle(this.pending?.palette?.buffer);
       this.pending = packet;
     } else this.send(packet);
     return !this.closed;
@@ -34,7 +38,7 @@ export class RendererTransport {
     this.inFlight = { sequence: packet.sequence, sentAt: this.now() };
     try {
       this.endpoint.postMessage({ ...packet, ...this.identity, type: "frame", protocolVersion: 1 },
-        [packet.pixels.buffer]);
+        [...new Set([packet.pixels.buffer, packet.palette?.buffer].filter(Boolean))]);
     } catch (error) {
       // A failed structured clone normally retains ownership. Return the newest
       // available complete frame to fallback; never reboot the execution owner.
@@ -59,6 +63,7 @@ export class RendererTransport {
     const elapsedMs = this.now() - this.inFlight.sentAt;
     this.inFlight = null;
     this.recycle(message.buffer);
+    this.recycle(message.paletteBuffer);
     const next = this.pending;
     this.pending = null;
     if (next && !this.closed) this.send(next);
@@ -68,7 +73,7 @@ export class RendererTransport {
   }
 
   recycle(buffer) {
-    if (buffer instanceof ArrayBuffer && buffer.byteLength && this.recycled.length < 2) this.recycled.push(buffer);
+    if (buffer instanceof ArrayBuffer && buffer.byteLength && this.recycled.length < 2 && !this.recycled.includes(buffer)) this.recycled.push(buffer);
   }
 
   takeBuffer(byteLength) {

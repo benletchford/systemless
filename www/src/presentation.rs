@@ -122,7 +122,19 @@ impl CanvasFrame {
             Self::WebGl(_) => "webgl",
             Self::Canvas2d(_) => "canvas2d",
             Self::Offscreen(frame) if frame.fallback.is_some() => "canvas2d-renderer-fallback",
-            Self::Offscreen(_) => "offscreen-canvas2d",
+            Self::Offscreen(frame) => {
+                let status = crate::renderer_bridge::renderer_status(&frame.handle);
+                if Reflect::get(&status, &JsValue::from_str("backend"))
+                    .ok()
+                    .and_then(|value| value.as_string())
+                    .as_deref()
+                    == Some("offscreen-webgl")
+                {
+                    "offscreen-webgl"
+                } else {
+                    "offscreen-canvas2d"
+                }
+            }
         }
     }
 }

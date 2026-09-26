@@ -39,7 +39,7 @@ function serviceWorker({ online = true, cached = 'stale' } = {}) {
   };
 }
 
-for (const asset of ['/emulator-worker.js', '/renderer-worker.js', '/renderer-transport.js', '/renderer-client.js', '/snippets/systemless-org-hash/inline0.js']) {
+for (const asset of ['/emulator-worker.js', '/renderer-worker.js', '/renderer-transport.js', '/renderer-client.js', '/renderer-gpu.js', '/snippets/systemless-org-hash/inline0.js']) {
   test(`${asset} checks the network before using stale cached code`, async () => {
     const sw = serviceWorker();
     assert.equal(await sw.fetch(asset), 'current');

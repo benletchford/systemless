@@ -1,5 +1,7 @@
 // Pure presentation of complete owned images. Composition, cursor/retained
 // detail preparation and guest-visible writes remain on the execution owner.
+export const GPU_PRESENTER_PROTOCOL = 1;
+
 export function validateGpuFrame(frame, maxTextureSize) {
   const { width, height, pixels, kind } = frame;
   if (frame.complete !== true || !Number.isSafeInteger(width) || !Number.isSafeInteger(height)

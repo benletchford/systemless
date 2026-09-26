@@ -10,6 +10,8 @@ const frame = (sequence, fields = {}) => ({ ...identity, type: 'frame', kind: 'r
   pixels: new Uint8Array([sequence, 2, 3, 255, 4, 5, 6, 255]), ...fields });
 
 function renderer(options = {}) {
+  const imports = [];
+  let disposed = false;
   const messages = [], paints = [], timers = new Map(), listeners = {};
   let next = 0, closed = false;
   const canvas = { width: 1, height: 1,
@@ -17,17 +19,25 @@ function renderer(options = {}) {
       if (options.paintError) throw new Error('paint failed');
       paints.push([...image.data]);
     } }, addEventListener: (name, callback) => { listeners[name] = callback; } };
-  const context = vm.createContext({ Uint8Array, Uint8ClampedArray, ArrayBuffer,
+  const context = vm.createContext({ Uint8Array, Uint8ClampedArray, ArrayBuffer, URL,
+    loadGpu: async url => {
+      imports.push(url);
+      if (options.loadGpu) return options.loadGpu();
+      return { GPU_PRESENTER_PROTOCOL: 1, GpuFramePresenter: class {
+        paint(frame) { paints.push([...frame.pixels]); }
+        dispose() { disposed = true; }
+      } };
+    },
     performance: { now: () => 42 },
     ImageData: class { constructor(data, width, height) { this.data = data; this.width = width; this.height = height; } },
     setTimeout: callback => { timers.set(++next, callback); return next; },
     clearTimeout: id => timers.delete(id),
-    self: { postMessage: (message, transfer = []) => messages.push(structuredClone(message, { transfer })), close: () => { closed = true; } },
+    self: { location: { href: "https://example.test/renderer-worker.js?runtime=version" }, postMessage: (message, transfer = []) => messages.push(structuredClone(message, { transfer })), close: () => { closed = true; } },
   });
-  vm.runInContext(read('renderer-worker.js'), context);
+  vm.runInContext(read('renderer-worker.js').replace('await import(moduleUrl.href)', 'await loadGpu(moduleUrl.href)'), context);
   const send = data => context.self.onmessage({ data });
-  send({ ...identity, type: 'init', canvas });
-  return { send, messages, paints, timers, listeners, canvas, closed: () => closed,
+  const initialized = send({ ...identity, type: 'init', canvas, backend: options.gpu ? 'webgl' : 'canvas2d' });
+  return { send, messages, paints, timers, listeners, canvas, initialized, imports, disposed: () => disposed, closed: () => closed,
     flush: () => { const jobs = [...timers.values()]; timers.clear(); jobs.forEach(job => job()); } };
 }
 
@@ -148,4 +158,47 @@ test('malformed transport pixels fail through the recovery callback', () => {
   assert.equal(client.submit(frame(1, { pixels: null })), false);
   assert.equal(failures.length, 1);
   assert.equal(client.closed, true);
+});
+
+
+test('GPU boot reports capabilities and transfers complete padded indices with palette', async () => {
+  const w = renderer({ gpu: true }); await w.initialized;
+  assert.equal(w.messages[0].backend, 'offscreen-webgl');
+  assert.deepEqual(w.messages[0].kinds, ['rgba', 'indexed8']);
+  assert.equal(w.imports[0], 'https://example.test/renderer-gpu.js?runtime=version');
+  const indexed = frame(1, { kind: 'indexed8', stride: 3, pixels: new Uint8Array([1, 2, 99]), palette: new Uint8Array(1024) });
+  await w.send(indexed); w.flush();
+  assert.deepEqual(w.paints, [[1, 2, 99]]);
+  assert.equal(indexed.pixels.byteLength, 0); assert.equal(indexed.palette.byteLength, 0);
+  assert.equal(w.messages[1].paletteBuffer.byteLength, 1024);
+  w.listeners.webglcontextlost({ preventDefault() {} });
+  assert.equal(w.messages.at(-1).type, 'error'); assert.equal(w.disposed(), true);
+});
+
+test('stop during GPU module import cannot initialize or revive a renderer', async () => {
+  let resolve, constructed = 0;
+  const w = renderer({ gpu: true, loadGpu: () => new Promise(done => { resolve = done; }) });
+  await w.send({ ...identity, type: 'stop' });
+  resolve({ GPU_PRESENTER_PROTOCOL: 1, GpuFramePresenter: class { constructor() { constructed++; } } });
+  await w.initialized;
+  assert.equal(constructed, 0); assert.deepEqual(w.messages.map(m => m.type), ['stopped']);
+});
+
+test('GPU load and stale helper failures are observed once', async () => {
+  for (const loadGpu of [() => Promise.reject(new Error('load failed')), () => ({ GPU_PRESENTER_PROTOCOL: 0 })]) {
+    const w = renderer({ gpu: true, loadGpu }); await w.initialized;
+    assert.deepEqual(w.messages.map(m => m.type), ['error']);
+    await w.send(frame(1)); assert.equal(w.timers.size, 0);
+  }
+});
+
+test('indexed transfer supports disjoint views sharing one owned buffer', () => {
+  let sent;
+  const t = transport({ postMessage(message, transfer) { sent = structuredClone(message, { transfer }); } });
+  const storage = new ArrayBuffer(1026);
+  const packet = frame(1, { kind: 'indexed8', stride: 2, pixels: new Uint8Array(storage, 0, 2), palette: new Uint8Array(storage, 2, 1024) });
+  t.client.submit(packet);
+  assert.equal(storage.byteLength, 0); assert.equal(sent.palette.byteLength, 1024);
+  t.client.receive({ ...identity, type: 'submitted', sequence: 1, buffer: sent.pixels.buffer, paletteBuffer: sent.palette.buffer });
+  assert.equal(t.client.recycled.length, 1); assert.equal(t.failures.length, 0);
 });
