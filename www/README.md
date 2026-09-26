@@ -173,7 +173,9 @@ node --test www/tests/*.test.cjs
 The experimental indexed GPU presenter also has a fixture-free differential
 probe. It runs in a real OffscreenCanvas worker and compares GPU readback with
 scalar RGBA for padded indexed rows, all palette indices, palette-only changes,
-odd dimensions, typed-array offsets and RGBA/indexed transitions:
+odd dimensions, typed-array offsets and RGBA/indexed transitions. It also checks
+compact retained-image expansion at scales 1–4 against reference vectors verified
+by the Rust `CompactPresentation` resolver, plus detail-texture row boundaries:
 
 ```sh
 node www/scripts/verify-renderer-gpu-cdp.mjs
