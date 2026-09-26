@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
+import { percentiles } from "./runtime-metrics.mjs";
 import { spawn } from "node:child_process";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +29,7 @@ if (!route || !archiveUrl || !archivePath) {
   throw new Error("Set SYSTEMLESS_RUNTIME_ROUTE, SYSTEMLESS_RUNTIME_ARCHIVE_URL and SYSTEMLESS_RUNTIME_ARCHIVE_PATH from the catalogue entry under test");
 }
 const archiveRequestUrls = expectedArchiveRequestUrls(baseUrl, archiveUrl);
+const gpuEnabled = process.env.SYSTEMLESS_RUNTIME_GPU === "1";
 const sampleMs = envNumber("SYSTEMLESS_RUNTIME_SAMPLE_MS", 20_000);
 const maxRuntimeRafGapMs = envNumber("SYSTEMLESS_MAX_RUNTIME_RAF_GAP_MS", 250);
 const maxLoadingRafGapMs = envNumber("SYSTEMLESS_MAX_LOADING_RAF_GAP_MS", 500);
@@ -56,7 +58,7 @@ const chrome = spawn(
     "--headless=new",
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${userDataDir}`,
-    "--disable-gpu",
+    ...(gpuEnabled ? [] : ["--disable-gpu"]),
     "--autoplay-policy=no-user-gesture-required",
     "--no-first-run",
     "--no-default-browser-check",
@@ -96,9 +98,13 @@ try {
 
   const probe = await evaluate(
     page,
-    `(${runtimeProbe.toString()})(${JSON.stringify(sampleMs)})`,
+    `(${runtimeProbe.toString()})(${JSON.stringify(sampleMs)}, ${process.env.SYSTEMLESS_RUNTIME_DEBUG !== "0"})`,
     sampleMs + 60_000,
   );
+  if (process.env.SYSTEMLESS_RUNTIME_SCREENSHOT_PATH) {
+    const screenshot = await page.send("Page.captureScreenshot", { format: "png" });
+    await writeFile(process.env.SYSTEMLESS_RUNTIME_SCREENSHOT_PATH, Buffer.from(screenshot.data, "base64"));
+  }
   page.close();
 
   const report = buildReport(
@@ -111,6 +117,11 @@ try {
     probe.started_at,
   );
   report.archive_server_requests = archiveServer.requests();
+  report.environment = probe.environment;
+  report.browser = version.Browser;
+  if (process.env.SYSTEMLESS_RUNTIME_TRACE_PATH) {
+    await writeFile(process.env.SYSTEMLESS_RUNTIME_TRACE_PATH, JSON.stringify(probe));
+  }
   console.log(JSON.stringify(report, null, 2));
   assertRuntimePacing(report);
 } finally {
@@ -214,7 +225,7 @@ function isLocalBaseUrl(baseUrl) {
   }
 }
 
-async function runtimeProbe(sampleMs) {
+async function runtimeProbe(sampleMs, showDebug) {
   const samples = [];
   const console = [];
   const startedAt = performance.now();
@@ -234,7 +245,7 @@ async function runtimeProbe(sampleMs) {
       const canvas = document.querySelector("canvas.game-canvas");
       const status = document.querySelector(".game-status");
 
-      if (canvas && !debugEnabled) {
+      if (canvas && showDebug && !debugEnabled) {
         canvas.focus();
         canvas.dispatchEvent(
           new KeyboardEvent("keydown", { key: "F3", code: "F3", bubbles: true }),
@@ -256,6 +267,17 @@ async function runtimeProbe(sampleMs) {
       } else {
         resolve({
           samples,
+          environment: {
+            debug_overlay: showDebug,
+            user_agent: navigator.userAgent,
+            device_pixel_ratio: devicePixelRatio,
+            visibility: document.visibilityState,
+            renderer: document.querySelector("canvas.game-canvas")?.getAttribute("data-render-backend"),
+            canvas_width: document.querySelector("canvas.game-canvas")?.width,
+            canvas_height: document.querySelector("canvas.game-canvas")?.height,
+            cpu_mhz: document.querySelector("canvas.game-canvas")?.getAttribute("data-runtime-cpu-mhz"),
+            output_scale: document.querySelector("canvas.game-canvas")?.getAttribute("data-output-scale"),
+          },
           console,
           started_at: startedAt,
           raf_trace: window.__systemlessRafTrace || [],
@@ -303,6 +325,7 @@ function runtimeTracePrelude() {
             // Includes worker execution, message transfer, and scheduling.
             totalMs: frameSentAt === null ? null : t - frameSentAt,
             guestTick: data.guestTick,
+            totalInstructions: data.totalInstructions,
             ticksBehind: data.ticksBehind,
             lastSteps: data.lastSteps,
             cpuBudgetMs: data.cpuBudgetMs,
@@ -409,6 +432,19 @@ function buildReport(samples, console, rafTrace, longTasks, frameTrace, workerTr
 
   return {
     route,
+    gpu_requested: gpuEnabled,
+    runtime_raf_gap_ms: percentiles(samples.filter((sample) => sample.runtime && sample.t >= measuredRuntimeStart).map((sample) => sample.dt)),
+    runtime_raf_callback_ms: percentiles(runtimeTrace.map((entry) => entry.duration)),
+    runtime_frame_total_ms: percentiles(runtimeFrames.map((entry) => entry.totalMs)),
+    runtime_frame_run_ms: percentiles(runtimeFrames.map((entry) => entry.runMs)),
+    runtime_frame_render_ms: percentiles(runtimeFrames.map((entry) => entry.renderMs)),
+    runtime_frame_paint_ms: percentiles(runtimeFrames.map((entry) => entry.paintMs)),
+    guest_progress: {
+      first_tick: runtimeFrames[0]?.guestTick ?? null,
+      last_tick: runtimeFrames.at(-1)?.guestTick ?? null,
+      first_instructions: runtimeFrames[0]?.totalInstructions ?? null,
+      last_instructions: runtimeFrames.at(-1)?.totalInstructions ?? null,
+    },
     runtime_mode: worker ? "worker" : "main-thread",
     archive_url: archiveUrl,
     archive_path: archivePath,

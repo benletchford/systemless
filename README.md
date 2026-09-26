@@ -107,6 +107,13 @@ The terminal reports CPU, compositing, outline rendering and Metal drawable-wait
 phases that take at least 50 ms. During normal gameplay, drawable waits on the
 presentation worker do not block the guest CPU or input handling.
 
+For distributions below the stall threshold, set `SYSTEMLESS_MEASURE_FRAMES=1`.
+This opt-in measurement reports p50/p95/p99 and maximum milliseconds for each
+host phase in non-overlapping batches of 600 samples, with bounded storage.
+Short runs may not fill a batch. Measurement adds clock and reporting overhead;
+use the same setting for both sides of a comparison and record guest progress
+separately. These host phase timings do not measure visible input latency.
+
 ### Headless replays
 
 `systemless --headless --max-ticks 600 game.sit` runs 600 simulated frontend

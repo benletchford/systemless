@@ -142,3 +142,15 @@ measures their frame replies as well as main-thread runtime frames.
 The catalogue tooling retains its MIT license and notice under
 `tools/catalogue/`. The runtime and browser frontend use the repository's root
 license.
+
+The runtime pacing probe reports p50/p95/p99 distributions as well as maxima.
+It keeps GPU-disabled fallback coverage by default; set `SYSTEMLESS_RUNTIME_GPU=1`
+to allow GPU rendering for a separate comparable run. This enables the browser
+GPU but does not assert which renderer the runtime selected. Keep warm-up,
+archive, inputs, initial saves and guest progress equal when comparing results.
+Set `SYSTEMLESS_RUNTIME_DEBUG=0` to measure without the probe's debug overlay.
+Optional `SYSTEMLESS_RUNTIME_TRACE_PATH` and `SYSTEMLESS_RUNTIME_SCREENSHOT_PATH`
+write raw bounded samples and the final browser screenshot to tester-chosen
+local paths. Reports include the actual renderer, display scale, CPU setting
+and guest instruction/tick endpoints; wall-time samples alone are insufficient
+to establish equal guest progress.

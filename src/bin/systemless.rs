@@ -20,6 +20,8 @@ mod d3d_present;
 
 #[path = "desktop/desktop_save_store.rs"]
 mod desktop_save_store;
+#[path = "desktop/frame_metrics.rs"]
+mod frame_metrics;
 #[path = "desktop/headless_time.rs"]
 mod headless_time;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -99,6 +101,7 @@ use winit::window::WindowId;
 struct FramePhaseTimer {
     phase: &'static str,
     start: Option<std::time::Instant>,
+    log_stalls: bool,
 }
 
 impl FramePhaseTimer {
@@ -108,7 +111,8 @@ impl FramePhaseTimer {
             *ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_PROFILE_FRAMES").is_some());
         Self {
             phase,
-            start: enabled.then(std::time::Instant::now),
+            start: (enabled || frame_metrics::enabled()).then(std::time::Instant::now),
+            log_stalls: enabled,
         }
     }
 }
@@ -117,7 +121,10 @@ impl Drop for FramePhaseTimer {
     fn drop(&mut self) {
         if let Some(start) = self.start {
             let elapsed = start.elapsed();
-            if elapsed >= std::time::Duration::from_millis(50) {
+            if frame_metrics::enabled() {
+                frame_metrics::record(self.phase, elapsed);
+            }
+            if self.log_stalls && elapsed >= std::time::Duration::from_millis(50) {
                 eprintln!(
                     "[SLOW-FRAME] {}: {:.1} ms",
                     self.phase,
@@ -1237,6 +1244,7 @@ impl App {
     }
 
     fn init_game(&mut self) {
+        let _timing = FramePhaseTimer::new("guest initialization");
         if self.initialized {
             return;
         }
@@ -3338,6 +3346,7 @@ impl ApplicationHandler for App {
             return;
         }
 
+        let _timing = FramePhaseTimer::new("host frame work");
         // Schedule the next host frame. If startup/resource loading makes us
         // miss a full presentation interval, drop the missed host frame instead
         // of running immediate catch-up frames that bunch audio and graphics.
@@ -3474,6 +3483,7 @@ fn run_gui(
     // entering the event loop so startup never exposes an empty host window.
     app.init_game();
     event_loop.run_app(&mut app).expect("Event loop failed");
+    frame_metrics::flush();
 }
 
 #[cfg(target_os = "macos")]
