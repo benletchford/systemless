@@ -186,6 +186,14 @@ impl GuiDriver {
             return;
         };
         self.force_next_render = true;
+        Self::apply_guest_command(runner, &mut self.mouse_release_latch, command);
+    }
+
+    pub(super) fn apply_guest_command(
+        runner: &mut FixtureRunner,
+        mouse_release_latch: &mut HostMouseReleaseLatch,
+        command: GuiCommand,
+    ) {
         match command {
             GuiCommand::MouseMove { v, h } => {
                 runner.set_mouse_position(v, h);
@@ -193,10 +201,10 @@ impl GuiDriver {
             }
             GuiCommand::MouseDown { v, h } => {
                 runner.push_mouse_down(v, h);
-                self.mouse_release_latch.press();
+                mouse_release_latch.press();
             }
             GuiCommand::MouseUp { v, h } => {
-                if let Some((v, h)) = self.mouse_release_latch.release((v, h)) {
+                if let Some((v, h)) = mouse_release_latch.release((v, h)) {
                     runner.push_mouse_up(v, h);
                 }
             }
@@ -462,9 +470,16 @@ impl GuiDriver {
         self.step_frame_with_clock(std::time::Instant::now);
     }
 
-    pub(super) fn step_frame_with_clock(
+    pub(super) fn step_frame_with_clock(&mut self, host_now: impl FnMut() -> std::time::Instant) {
+        self.step_frame_with_safe_points(host_now, |_, _| true);
+    }
+
+    /// The callback runs only between complete guest CPU/audio batches. A
+    /// false result requests shutdown; it cannot preempt a long Toolbox call.
+    pub(super) fn step_frame_with_safe_points(
         &mut self,
         mut host_now: impl FnMut() -> std::time::Instant,
+        mut safe_point: impl FnMut(&mut FixtureRunner, &mut HostMouseReleaseLatch) -> bool,
     ) {
         let _timing = FramePhaseTimer::new("CPU and audio frame");
         let Some(runner) = self.runner.as_ref() else {
@@ -566,7 +581,12 @@ impl GuiDriver {
         let mut foreground_steps = 0usize;
         let mut reserved_sound_steps = 0usize;
 
+        let mut cancelled = false;
         loop {
+            if !safe_point(runner, &mut self.mouse_release_latch) {
+                cancelled = true;
+                break;
+            }
             if runner.guest_tick() >= effective_target || runner.is_halted() {
                 break;
             }
@@ -613,7 +633,7 @@ impl GuiDriver {
             }
         }
 
-        if audio_mixed < audio_samples {
+        if !cancelled && audio_mixed < audio_samples {
             if let Some(steps) = service_pending_sound_work(
                 runner,
                 cpu_deadline,
@@ -625,9 +645,13 @@ impl GuiDriver {
             }
         }
 
-        if audio_mixed < audio_samples {
+        if !cancelled && audio_mixed < audio_samples {
             let mut remaining_audio = audio_samples - audio_mixed;
             while remaining_audio > 0 && !runner.is_halted() {
+                if !safe_point(runner, &mut self.mouse_release_latch) {
+                    cancelled = true;
+                    break;
+                }
                 let chunk_audio = remaining_audio.min(AUDIO_CALLBACK_CHUNK_SAMPLES);
                 runner.mix_gui_audio_slice(chunk_audio);
                 remaining_audio -= chunk_audio;
@@ -643,14 +667,16 @@ impl GuiDriver {
             }
         }
 
-        if let Some(steps) = service_pending_sound_work(
-            runner,
-            cpu_deadline,
-            slice_budget,
-            total_steps,
-            &mut reserved_sound_steps,
-        ) {
-            total_steps += steps;
+        if !cancelled {
+            if let Some(steps) = service_pending_sound_work(
+                runner,
+                cpu_deadline,
+                slice_budget,
+                total_steps,
+                &mut reserved_sound_steps,
+            ) {
+                total_steps += steps;
+            }
         }
 
         self.total_instructions += total_steps as u64;

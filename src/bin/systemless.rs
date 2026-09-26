@@ -43,6 +43,10 @@ mod native_bundle;
 mod native_menu;
 #[path = "desktop/runtime_driver.rs"]
 mod runtime_driver;
+#[path = "desktop/runtime_mailbox.rs"]
+mod runtime_mailbox;
+#[path = "desktop/runtime_owner.rs"]
+mod runtime_owner;
 #[path = "desktop/runtime_protocol.rs"]
 mod runtime_protocol;
 
