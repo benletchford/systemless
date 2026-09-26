@@ -106,6 +106,32 @@ impl CanvasFrame {
         }
     }
 
+    pub(crate) fn supports_indexed(&self) -> bool {
+        if let Self::Offscreen(frame) = self {
+            if frame.fallback.is_none() && frame.fatal.is_none() {
+                let status = crate::renderer_bridge::renderer_status(&frame.handle);
+                return Reflect::get(&status, &JsValue::from_str("kinds"))
+                    .ok()
+                    .filter(Array::is_array)
+                    .map(|value| Array::from(&value).includes(&JsValue::from_str("indexed8"), 0))
+                    .unwrap_or(false);
+            }
+        }
+        false
+    }
+
+    pub(crate) fn paint_indexed(&mut self, packet: &JsValue) {
+        if self.supports_indexed() {
+            if let Self::Offscreen(frame) = self {
+                crate::renderer_bridge::paint_indexed(&frame.handle, packet);
+            }
+        } else if let Self::Offscreen(frame) = self {
+            // This packet can race renderer failure. Request fresh RGBA from the
+            // same owner now that indexed capability is no longer advertised.
+            frame.needs_snapshot = true;
+        }
+    }
+
     pub(crate) fn supports_q3_gpu(&self) -> bool {
         matches!(self, Self::WebGl(_))
     }
@@ -190,7 +216,12 @@ impl OffscreenFrame {
             return Err(message);
         }
         self.needs_snapshot = true;
-        if !recovery.is_null() {
+        let indexed_recovery = Reflect::get(&recovery, &JsValue::from_str("kind"))
+            .ok()
+            .and_then(|value| value.as_string())
+            .as_deref()
+            == Some("indexed8");
+        if !recovery.is_null() && !indexed_recovery {
             if let (Some(width), Some(height), Ok(pixels)) = (
                 js_number_property(&recovery, "width"),
                 js_number_property(&recovery, "height"),

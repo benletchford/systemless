@@ -4,6 +4,7 @@ mod browser_bridge;
 mod catalogue;
 mod components;
 mod emulator;
+mod indexed_frame;
 mod paths;
 mod presentation;
 mod renderer_bridge;

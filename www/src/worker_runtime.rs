@@ -79,7 +79,7 @@ pub struct WorkerMachine {
 impl WorkerMachine {
     #[wasm_bindgen(js_name = runtimeProtocolVersion)]
     pub fn runtime_protocol_version() -> u32 {
-        3
+        4
     }
 
     #[wasm_bindgen(js_name = create)]
@@ -156,6 +156,7 @@ impl WorkerMachine {
         debug: bool,
         output_scale: u32,
         force_render: bool,
+        indexed_render: bool,
     ) -> Object {
         self.machine.set_output_scale(output_scale);
         self.machine
@@ -169,7 +170,12 @@ impl WorkerMachine {
         let logical_size = self.machine.screen_size();
         let should_render = gpu_frame.is_none()
             && (frame_result.visual_work || !self.painted_once || debug || force_render);
-        let frame = should_render.then(|| {
+        let indexed_frame = if should_render && indexed_render && !debug {
+            self.machine.render_indexed().map(indexed_frame_object)
+        } else {
+            None
+        };
+        let frame = (should_render && indexed_frame.is_none()).then(|| {
             self.painted_once = true;
             let stats = debug.then_some(DebugOverlayFrameStats {
                 host_fps: None,
@@ -183,7 +189,10 @@ impl WorkerMachine {
             });
             Uint8Array::from(self.machine.render_rgba(stats).1)
         });
-        let (width, height) = if frame.is_some() {
+        if indexed_frame.is_some() {
+            self.painted_once = true;
+        }
+        let (width, height) = if frame.is_some() || indexed_frame.is_some() {
             self.machine.presented_size()
         } else {
             logical_size
@@ -219,6 +228,13 @@ impl WorkerMachine {
         let _ = Reflect::set(result.as_ref(), &JsValue::from_str("audio"), audio.as_ref());
         if let Some(frame) = frame {
             let _ = Reflect::set(result.as_ref(), &JsValue::from_str("frame"), frame.as_ref());
+        }
+        if let Some(frame) = indexed_frame {
+            let _ = Reflect::set(
+                result.as_ref(),
+                &JsValue::from_str("indexedFrame"),
+                frame.as_ref(),
+            );
         }
         if let Some(frame) = gpu_frame {
             self.painted_once = true;
@@ -446,4 +462,41 @@ mod plugin_tests {
         assert_eq!(received.file.created_date, plugin.file.created_date);
         assert_eq!(received.file.modified_date, plugin.file.modified_date);
     }
+}
+
+fn indexed_frame_object(frame: &crate::indexed_frame::IndexedFrame) -> Object {
+    let result = Object::new();
+    set_string(&result, "kind", "indexed8");
+    set_bool(&result, "complete", true);
+    set_number(&result, "width", f64::from(frame.screen.screen_mode.2));
+    set_number(&result, "height", f64::from(frame.screen.screen_mode.3));
+    set_number(&result, "stride", f64::from(frame.screen.screen_mode.1));
+    let _ = Reflect::set(
+        &result,
+        &JsValue::from_str("pixels"),
+        &Uint8Array::from(frame.screen.pixels.as_slice()),
+    );
+    let _ = Reflect::set(
+        &result,
+        &JsValue::from_str("palette"),
+        &Uint8Array::from(frame.palette.as_slice()),
+    );
+    if let Some(cursor) = &frame.cursor {
+        let patch = Object::new();
+        for (name, value) in [
+            ("x", cursor.x),
+            ("y", cursor.y),
+            ("width", cursor.width),
+            ("height", cursor.height),
+        ] {
+            set_number(&patch, name, f64::from(value));
+        }
+        let _ = Reflect::set(
+            &patch,
+            &JsValue::from_str("pixels"),
+            &Uint8Array::from(cursor.pixels.as_slice()),
+        );
+        let _ = Reflect::set(&result, &JsValue::from_str("cursor"), &patch);
+    }
+    result
 }

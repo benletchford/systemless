@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 
-function worker(steps = () => 1, frameTicks = 6) {
+function worker(steps = () => 1, frameTicks = 6, cloneTransfers = false) {
   const keys = new Set();
   const frames = [];
   const messages = [];
@@ -29,7 +29,7 @@ function worker(steps = () => 1, frameTicks = 6) {
     },
   };
   const context = vm.createContext({
-    self: { postMessage(message) { messages.push(message); } },
+    self: { postMessage(message, transfer = []) { messages.push(cloneTransfers ? structuredClone(message, { transfer }) : message); } },
     stub,
     performance: { now: () => now },
   });
@@ -297,6 +297,19 @@ test('presenter recovery requests a fresh image without recreating the guest', a
   const calls = [];
   w.override({ runFrame: (...args) => { calls.push(args); return { running: false, guestTick: 100, lastSteps: 0 }; } });
   await w.send('frame', { forceRender: true, outputScale: 2 });
-  assert.deepEqual(calls, [[-1, false, 2, true]]);
+  assert.deepEqual(calls, [[-1, false, 2, true, false]]);
   assert.equal(w.messages.filter(message => message.type === 'frame').length, 1);
+});
+
+
+test('indexed owner packets transfer indices, palette and cursor together', async () => {
+  const w = worker(() => 1, 6, true);
+  const packet = { pixels: new Uint8Array(6), palette: new Uint8Array(1024), cursor: { pixels: new Uint8Array(4) } };
+  const calls = [];
+  w.override({ runFrame: (...args) => { calls.push(args); return { running: true, guestTick: 100, lastSteps: 0, indexedFrame: packet }; } });
+  await w.send('frame', { indexedRender: true });
+  assert.deepEqual(calls, [[-1, false, 1, false, true]]);
+  assert.equal(w.messages.find(message => message.type === 'frame').indexedFrame.palette.byteLength, 1024);
+  assert.equal(packet.pixels.byteLength, 0); assert.equal(packet.palette.byteLength, 0);
+  assert.equal(packet.cursor.pixels.byteLength, 0);
 });

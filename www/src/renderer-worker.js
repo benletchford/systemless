@@ -1,6 +1,6 @@
 // Complete-frame presenter protocol. Guest execution, composition and display
 // demand stay on the execution owner/host. This worker has no Wasm or DOM state.
-const RENDER_PROTOCOL = 1;
+const RENDER_PROTOCOL = 2;
 const MAX_PIXELS = 16 * 1024 * 1024;
 let identity = null;
 let canvas = null;
@@ -51,13 +51,14 @@ function acceptFrame(message) {
       || !(pixels.buffer instanceof ArrayBuffer)) {
     throw new Error("Invalid complete presentation packet");
   }
+  const layout = `${message.kind}:${message.kind === "indexed8" ? message.stride : width * 4}`;
   if (dimensions && mode === displayGeneration
-      && (width !== dimensions[0] || height !== dimensions[1])) {
+      && (width !== dimensions[0] || height !== dimensions[1] || layout !== dimensions[2])) {
     throw new Error("Display dimensions changed without a new display generation");
   }
   sequence = message.sequence;
   displayGeneration = mode;
-  dimensions = [width, height];
+  dimensions = [width, height, layout];
   if (pending) {
     returnBuffers("dropped", pending);
   }
@@ -68,9 +69,10 @@ function acceptFrame(message) {
 function returnBuffers(type, frame, metrics = {}) {
   const buffer = frame.pixels.buffer;
   const paletteBuffer = frame.kind === "indexed8" ? frame.palette.buffer : undefined;
-  const transfer = [...new Set([buffer, paletteBuffer].filter(Boolean))];
+  const cursorBuffer = frame.cursor?.pixels?.buffer;
+  const transfer = [...new Set([buffer, paletteBuffer, cursorBuffer].filter(Boolean))];
   reply({ type, sequence: frame.sequence, displayGeneration: frame.displayGeneration,
-    ...metrics, buffer, paletteBuffer }, transfer);
+    ...metrics, buffer, paletteBuffer, cursorBuffer }, transfer);
 }
 
 function paint() {
@@ -111,7 +113,7 @@ self.onmessage = async ({ data }) => {
         const bindings = await import(moduleUrl.href);
         // Stop, duplicate init or message failure may have arrived during import.
         if (failed) return;
-        if (bindings.GPU_PRESENTER_PROTOCOL !== 1) throw new Error("GPU presenter protocol mismatch");
+        if (bindings.GPU_PRESENTER_PROTOCOL !== 2) throw new Error("GPU presenter protocol mismatch");
         gpu = new bindings.GpuFramePresenter(canvas);
         canvas.addEventListener("webglcontextlost", event => { event.preventDefault(); fail("Renderer WebGL context lost"); });
       } else {

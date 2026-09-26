@@ -29,16 +29,18 @@ export class RendererTransport {
     if (this.inFlight) {
       this.recycle(this.pending?.pixels.buffer);
       this.recycle(this.pending?.palette?.buffer);
+      this.recycle(this.pending?.cursor?.pixels?.buffer);
       this.pending = packet;
     } else this.send(packet);
     return !this.closed;
   }
 
   send(packet) {
-    this.inFlight = { sequence: packet.sequence, sentAt: this.now() };
+    this.inFlight = { sequence: packet.sequence, sentAt: this.now(), kind: packet.kind,
+      bytes: packet.pixels.byteLength + (packet.palette?.byteLength || 0) + (packet.cursor?.pixels?.byteLength || 0) };
     try {
-      this.endpoint.postMessage({ ...packet, ...this.identity, type: "frame", protocolVersion: 1 },
-        [...new Set([packet.pixels.buffer, packet.palette?.buffer].filter(Boolean))]);
+      this.endpoint.postMessage({ ...packet, ...this.identity, type: "frame", protocolVersion: 2 },
+        [...new Set([packet.pixels.buffer, packet.palette?.buffer, packet.cursor?.pixels?.buffer].filter(Boolean))]);
     } catch (error) {
       // A failed structured clone normally retains ownership. Return the newest
       // available complete frame to fallback; never reboot the execution owner.
@@ -50,7 +52,7 @@ export class RendererTransport {
   receive(message) {
     if (this.closed || message?.generation !== this.identity.generation
         || message.rendererGeneration !== this.identity.rendererGeneration) return;
-    if (message.protocolVersion !== 1) {
+    if (message.protocolVersion !== 2) {
       this.fail(new Error("Renderer protocol mismatch"));
       return;
     }
@@ -61,15 +63,17 @@ export class RendererTransport {
     if (!this.inFlight || message.sequence !== this.inFlight.sequence
         || (message.type !== "submitted" && message.type !== "dropped")) return;
     const elapsedMs = this.now() - this.inFlight.sentAt;
+    const { kind, bytes } = this.inFlight;
     this.inFlight = null;
     this.recycle(message.buffer);
     this.recycle(message.paletteBuffer);
+    this.recycle(message.cursorBuffer);
     const next = this.pending;
     this.pending = null;
     if (next && !this.closed) this.send(next);
     // Settle the next credit before notifying the host: a callback can submit
     // another frame synchronously and must not create a second in-flight send.
-    if (message.type === "submitted" && !this.closed) this.onSubmitted?.({ sequence: message.sequence, elapsedMs, renderMs: message.renderMs });
+    if (message.type === "submitted" && !this.closed) this.onSubmitted?.({ sequence: message.sequence, elapsedMs, renderMs: message.renderMs, kind, bytes });
   }
 
   recycle(buffer) {

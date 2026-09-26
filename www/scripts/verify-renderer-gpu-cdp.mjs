@@ -50,11 +50,15 @@ async function exercise(){
     for(let i=0;i<256;i++) palette[i*4]=(i+shift)&255;
     const expected=new Uint8Array(new ArrayBuffer(width*height*4+9),9,width*height*4);
     for(let y=0;y<height;y++) for(let x=0;x<width;x++) expected.set(palette.subarray(indices[y*stride+x]*4,indices[y*stride+x]*4+4),(y*width+x)*4);
-    for(const kind of ['indexed8','rgba']) {
-     presenter.paint({kind,complete:true,width,height,stride,pixels:kind==='rgba'?expected:indices,palette});
+    for(const kind of ['indexed8','rgba']) for(const cursor of [undefined,
+      {x:width-1,y:height-1,width:1,height:1,pixels:new Uint8Array([17,203,91,255])},
+      {x:0,y:0,width:Math.min(3,width),height:Math.min(2,height),pixels:new Uint8Array(Math.min(3,width)*Math.min(2,height)*4).fill(255)}]) {
+     const comparison=expected.slice();
+     if(cursor)for(let y=0;y<cursor.height;y++)comparison.set(cursor.pixels.subarray(y*cursor.width*4,(y+1)*cursor.width*4),((cursor.y+y)*width+cursor.x)*4);
+     presenter.paint({kind,complete:true,width,height,stride,pixels:kind==='rgba'?expected:indices,palette,cursor});
      const actual=new Uint8Array(expected.length);gl.readPixels(0,0,width,height,gl.RGBA,gl.UNSIGNED_BYTE,actual);
      for(let y=0;y<height;y++)for(let x=0;x<width*4;x++) {
-      const a=actual[(height-1-y)*width*4+x],e=expected[y*width*4+x];
+      const a=actual[(height-1-y)*width*4+x],e=comparison[y*width*4+x];
       if(a!==e)throw new Error(JSON.stringify({width,height,padding,shift,kind,y,x,actual:a,expected:e}));
      }
      const error=gl.getError();if(error!==gl.NO_ERROR)throw new Error('GL error '+error);
@@ -68,7 +72,7 @@ async function exercise(){
   presenter.dispose();
   const { RendererTransport } = await import(base + '/renderer-transport.js');
   const endpoint = new Worker(base + '/renderer-worker.js');
-  const identity = { generation: 9, rendererGeneration: 3, protocolVersion: 1 };
+  const identity = { generation: 9, rendererGeneration: 3, protocolVersion: 2 };
   try {
    const ready = new Promise((resolve,reject) => {
     endpoint.onmessage = ({data}) => data.type==='ready'?resolve(data):reject(new Error(JSON.stringify(data)));
