@@ -5,8 +5,9 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = name => fs.readFileSync(path.join(__dirname, '../src', name), 'utf8');
 
-function clientFixture({ unavailable = false, transferFails = false, direct = false } = {}) {
+function clientFixture({ unavailable = false, transferFails = false, direct = false, bitmap = false, bitmapError = false } = {}) {
   let now = 0;
+  const bitmapPaints = [], bitmapListeners = new Map();
   const workers = [], observers = [], intervals = new Map(), listeners = new Map();
   let timerId = 0;
   const style = () => ({values:{},setProperty(name,value){this.values[name]=value;}});
@@ -22,6 +23,8 @@ function clientFixture({ unavailable = false, transferFails = false, direct = fa
     assert.equal(type, 'canvas');
     return { width: 0, height: 0, style: {}, attributes: {},
       setAttribute(name, value) { this.attributes[name] = value; },
+      addEventListener(name, callback) { bitmapListeners.set(name, callback); },
+      removeEventListener(name) { bitmapListeners.delete(name); },
       transferControlToOffscreen() { if (transferFails) throw new Error('cannot transfer'); this.transferred = true; return { offscreen: true }; },
       remove() { parent.children = parent.children.filter(node => node !== this); } };
   } };
@@ -30,6 +33,12 @@ function clientFixture({ unavailable = false, transferFails = false, direct = fa
     addEventListener(name, callback) { this.callback = callback; },
     removeEventListener() { this.callback = null; } };
   const context = vm.createContext({ Uint8Array, Uint32Array, ArrayBuffer, document,
+    OffscreenCanvas: class { constructor(width, height) { this.width = width; this.height = height; } },
+    GpuFramePresenter: class {
+      constructor(canvas) { this.canvas = canvas; }
+      paintBitmap(image, width, height) { if (bitmapError) throw new Error('bitmap upload failed'); bitmapPaints.push({ image, width, height }); }
+      dispose() { this.disposed = true; }
+    },
     MessageChannel: class { constructor() {
       this.port1 = {close(){this.closed=true;}}; this.port2 = {close(){this.closed=true;}};
     } },
@@ -43,12 +52,12 @@ function clientFixture({ unavailable = false, transferFails = false, direct = fa
       terminate() { this.terminated = true; } },
   });
   vm.runInContext(source('renderer-transport.js').replace('export class', 'class') + '\n'
-    + source('renderer-client.js').replace(/^import .*;\n/m, '').replace('export class', 'class')
+    + source('renderer-client.js').replace(/^import .*;\n/gm, '').replace('export class', 'class')
     + '\nthis.Client = RendererClient;', context);
-  const client = new context.Client(logical, '/renderer-worker.js?runtime=test', 7, {direct,owner});
+  const client = new context.Client(logical, '/renderer-worker.js?runtime=test', 7, {direct,owner,bitmap,backend:bitmap?"webgl":"canvas2d"});
   const receive = fields => workers[0].onmessage?.({ data: { ...client.identity, ...fields } });
-  return { client, logical, parent, workers, observers, intervals, listeners, document, receive, owner,
-    ready: () => receive({ type: 'ready', kinds: ['rgba'] }),
+  return { client, logical, parent, workers, observers, intervals, listeners, document, receive, owner, bitmapPaints, bitmapListeners,
+    ready: () => receive({ type: 'ready', kinds: ['rgba'], ...(bitmap ? {bitmap:true,backend:'bitmap-webgl'} : {}) }),
     tick: ms => { now += ms; [...intervals.values()].forEach(callback => callback()); } };
 }
 const pixels = value => new Uint8Array([value, 2, 3, 255, 4, 5, 6, 255]);
@@ -175,4 +184,46 @@ test('direct handshake timeout releases the port route and requests ordinary fal
   const f=clientFixture({direct:true});f.ready();f.tick(1);f.tick(10000);
   assert.equal(f.client.status().phase,'failed');
   assert.equal(f.owner.messages.at(-1).type,'disconnectRenderer');
+});
+
+
+test('bitmap host submission closes images and acknowledges only after drawing', () => {
+  const f = clientFixture({bitmap:true}); const display=f.client.canvas;
+  assert.equal(display.transferred, undefined);
+  assert.equal(f.workers[0].messages[0].bitmap,true);
+  f.ready(); f.client.paint(2,1,pixels(1));
+  let closes=0;const bitmap={width:2,height:1,close(){closes++;}};
+  f.receive({type:'bitmap',sequence:1,displayGeneration:1,width:2,height:1,bitmap});
+  assert.equal(f.bitmapPaints.length,1);assert.equal(closes,1);
+  assert.equal(f.workers[0].messages.at(-1).type,'bitmapSubmitted');
+  assert.equal(f.client.submitted,false); // final credit reply has not arrived
+  f.receive({type:'submitted',sequence:1});assert.equal(f.client.submitted,true);
+  f.receive({type:'bitmap',sequence:1,displayGeneration:1,width:2,height:1,bitmap});
+  assert.equal(closes,2);assert.equal(f.bitmapPaints.length,1);
+});
+
+test('stale, failed and disposed bitmap deliveries release their GPU images', () => {
+  for(const mode of ['stale','failed','disposed']) {
+    const f=clientFixture({bitmap:true,bitmapError:mode==='failed'});f.ready();f.client.paint(2,1,pixels(1));
+    const callback=f.workers[0].onmessage;let closes=0;
+    if(mode==='disposed')f.client.dispose();
+    callback({data:{...f.client.identity,type:'bitmap',sequence:1,displayGeneration:1,width:2,height:1,
+      ...(mode==='stale'?{generation:-1}:{}),bitmap:{width:2,height:1,close(){closes++;}}}});
+    assert.equal(closes,1);assert.equal(f.bitmapPaints.length,0);
+    assert.equal(f.workers[0].messages.some(m=>m.type==='bitmapSubmitted'),false);
+    if(mode==='failed')assert.equal(f.client.phase,'failed');
+  }
+});
+
+test('bitmap context loss disconnects the direct owner and preserves input ownership', () => {
+  const f=clientFixture({bitmap:true,direct:true});f.ready();const token=f.logical.focusToken;
+  f.bitmapListeners.get('webglcontextlost')({preventDefault(){}});
+  assert.equal(f.client.phase,'failed');assert.equal(f.logical.focusToken,token);
+  assert.equal(f.owner.messages.at(-1).type,'disconnectRenderer');
+  assert.equal(f.bitmapListeners.size,0);assert.equal(f.parent.children.length,0);
+});
+
+test('old renderer capabilities cannot silently accept bitmap output', () => {
+  const f=clientFixture({bitmap:true});f.receive({type:'ready',kinds:['rgba'],backend:'offscreen-webgl'});
+  assert.equal(f.client.phase,'failed');assert.match(f.client.error,/capability/);
 });

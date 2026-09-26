@@ -1,13 +1,19 @@
 import { RendererTransport } from "./renderer-transport.js";
+import { GpuFramePresenter } from "./renderer-gpu.js";
 
 let nextRendererGeneration = 0;
 
-// Keep the logical input canvas and its listeners in place. Only this sibling
-// display canvas is transferred, so presenter replacement cannot lose a held
-// key, pointer capture, focus, Leptos node reference or touch-release callback.
+// Keep the logical input canvas and its listeners in place. A sibling display
+// canvas is transferred or receives GPU bitmaps. Replacing either presenter
+// preserves held keys, pointer capture, focus and touch-release callbacks.
 export class RendererClient {
-  constructor(logicalCanvas, workerUrl, generation, { backend = "canvas2d", owner = null, direct = false } = {}) {
+  constructor(logicalCanvas, workerUrl, generation, { backend = "canvas2d", owner = null, direct = false, bitmap = false } = {}) {
     this.logicalCanvas = logicalCanvas;
+    this.bitmapWanted = bitmap && backend === "webgl";
+    this.bitmapPresenter = null;
+    this.bitmapSequence = 0;
+    this.bitmapDisplayGeneration = -1;
+    this.onBitmapContextLost = event => { event.preventDefault(); this.fail(new Error("Host bitmap WebGL context lost")); };
     this.owner = owner;
     this.directWanted = direct && !!owner;
     this.direct = false;
@@ -72,7 +78,13 @@ export class RendererClient {
       this.observer.observe(logicalCanvas.parentElement);
       window.addEventListener("resize", this.syncGeometry);
       // No context may have been created on this new canvas before transfer.
-      const offscreen = canvas.transferControlToOffscreen();
+      const offscreen = this.bitmapWanted
+        ? new OffscreenCanvas(canvas.width, canvas.height) : canvas.transferControlToOffscreen();
+      if (this.bitmapWanted) {
+        this.bitmapPresenter = new GpuFramePresenter(canvas);
+        if (typeof this.bitmapPresenter.paintBitmap !== "function") throw new Error("Stale bitmap presenter module");
+        canvas.addEventListener("webglcontextlost", this.onBitmapContextLost);
+      }
       this.worker = new Worker(workerUrl);
       this.transport = new RendererTransport(this.worker, this.identity, {
         onFailure: (error, pending) => this.fail(error, pending),
@@ -81,7 +93,7 @@ export class RendererClient {
       this.worker.onmessage = ({ data }) => this.receive(data);
       this.worker.onerror = event => { event.preventDefault(); this.fail(new Error(event.message || "Renderer worker crashed")); };
       this.worker.onmessageerror = () => this.fail(new Error("Unreadable renderer reply"));
-      this.worker.postMessage({ ...this.identity, type: "init", canvas: offscreen, backend }, [offscreen]);
+      this.worker.postMessage({ ...this.identity, type: "init", canvas: offscreen, backend, bitmap: this.bitmapWanted }, [offscreen]);
       this.timer = setInterval(() => this.checkTimeout(), 500);
     } catch (error) {
       this.fail(error);
@@ -89,12 +101,14 @@ export class RendererClient {
   }
 
   receive(message) {
+    if (message?.type === "bitmap") return this.receiveBitmap(message);
     if (this.phase === "failed" || this.phase === "disposed"
         || message?.generation !== this.identity.generation
         || message.rendererGeneration !== this.identity.rendererGeneration) return;
     if (message.protocolVersion !== 4) return this.fail(new Error("Renderer protocol mismatch"));
     if (message.type === "ready") {
-      if (this.phase !== "booting" || !message.kinds?.includes("rgba")) {
+      if (this.phase !== "booting" || !message.kinds?.includes("rgba")
+          || (this.bitmapWanted && (message.bitmap !== true || message.backend !== "bitmap-webgl"))) {
         return this.fail(new Error("Invalid renderer capability reply"));
       }
       this.backend = message.backend;
@@ -129,6 +143,36 @@ export class RendererClient {
       this.syncGeometry();
       this.markSubmitted(message);
     } else this.transport.receive(message);
+  }
+
+  receiveBitmap(message) {
+    try {
+      if (this.phase === "failed" || this.phase === "disposed"
+          || message.generation !== this.identity.generation
+          || message.rendererGeneration !== this.identity.rendererGeneration) return;
+      if (!this.bitmapWanted || this.phase !== "ready" || message.protocolVersion !== 4) {
+        throw new Error("Unexpected presentation bitmap");
+      }
+      if (!Number.isSafeInteger(message.sequence) || message.sequence < 1
+          || !Number.isSafeInteger(message.displayGeneration) || message.displayGeneration < 0) {
+        throw new Error("Invalid bitmap identity");
+      }
+      if (message.sequence <= this.bitmapSequence || message.displayGeneration < this.bitmapDisplayGeneration) return;
+      if (!this.direct && message.sequence !== this.transport.inFlight?.sequence) {
+        throw new Error("Unexpected bitmap sequence");
+      }
+      const started = performance.now();
+      this.bitmapPresenter.paintBitmap(message.bitmap, message.width, message.height);
+      this.logicalCanvas.setAttribute("data-render-host-submit-ms", String(performance.now() - started));
+      this.bitmapSequence = message.sequence;
+      this.bitmapDisplayGeneration = message.displayGeneration;
+      this.worker.postMessage({ ...this.identity, type: "bitmapSubmitted",
+        sequence: message.sequence, displayGeneration: message.displayGeneration });
+    } catch (error) {
+      this.fail(error);
+    } finally {
+      message.bitmap?.close?.();
+    }
   }
 
   markSubmitted(metrics) {
@@ -245,13 +289,19 @@ export class RendererClient {
     this.observer = null;
     window.removeEventListener("resize", this.syncGeometry);
     if (this.worker) {
-      this.worker.onmessage = this.worker.onerror = this.worker.onmessageerror = null;
+      // A transferred bitmap already queued before termination still needs
+      // releasing if the browser delivers its message after disposal.
+      this.worker.onmessage = ({ data }) => data?.bitmap?.close?.();
+      this.worker.onerror = this.worker.onmessageerror = null;
       this.worker.terminate();
     }
     this.worker = null;
     this.transport?.dispose();
     this.transport = null;
     this.bootFrame = null;
+    this.canvas?.removeEventListener?.("webglcontextlost", this.onBitmapContextLost);
+    this.bitmapPresenter?.dispose();
+    this.bitmapPresenter = null;
     this.canvas?.remove();
     this.canvas = null;
   }

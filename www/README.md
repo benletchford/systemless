@@ -181,7 +181,11 @@ compact retained-image expansion at scales 1–4 against reference vectors verif
 by the Rust `CompactPresentation` resolver, plus detail-texture row boundaries.
 A direct MessagePort check sends 1,000 packets through the production owner and
 renderer with an injected 80 ms paint delay. It verifies exact submitted pixels,
-mode/palette changes, newest-pending coalescing and bounded returned buffers:
+mode/palette changes, newest-pending coalescing and bounded returned buffers.
+The bitmap path adds two 500-frame bursts with delayed host acknowledgements,
+exact readback and at most one outstanding ImageBitmap. Composited screenshot
+comparisons cover four clipped integer/fractional layouts against an ordinary
+DOM WebGL canvas:
 
 ```sh
 node www/scripts/verify-renderer-gpu-cdp.mjs
@@ -221,3 +225,12 @@ instruction counts or establish image correctness by itself.
 
 See [browser responsiveness measurements](RESPONSIVENESS.md) for the qualified
 workloads, cold-start tradeoff, lifecycle checks and coverage limits.
+
+
+The GPU renderer also has an experimental bitmap presentation path:
+`?renderer=worker&renderer_gpu=1&renderer_direct=1&renderer_bitmap=1`.
+The renderer expands owned packets on a detached OffscreenCanvas and transfers
+an ImageBitmap to a DOM WebGL canvas for host submission. Frame credit waits for
+that submission; stale, failed and submitted bitmaps are closed. This avoids the
+transferred-display-canvas sampling difference in the tested clipped layouts.
+It remains opt-in pending sustained lifecycle and performance qualification.

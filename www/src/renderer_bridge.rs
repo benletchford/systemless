@@ -30,7 +30,8 @@ export function createSystemlessRenderer(canvas, generation, owner) {
     if (handle.disposed || handle.error) return;
     handle.client = new RendererClient(canvas, workerUrl.href, generation, {
       backend: new URLSearchParams(location.search).get("renderer_gpu") === "1" ? "webgl" : "canvas2d",
-      owner, direct: new URLSearchParams(location.search).get("renderer_direct") === "1"
+      owner, direct: new URLSearchParams(location.search).get("renderer_direct") === "1",
+      bitmap: new URLSearchParams(location.search).get("renderer_bitmap") === "1"
     });
     const frame = handle.pending;
     handle.pending = null;

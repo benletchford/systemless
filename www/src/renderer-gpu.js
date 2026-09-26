@@ -210,6 +210,29 @@ export class GpuFramePresenter {
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
+  // The caller retains ownership and closes the ImageBitmap after submission.
+  paintBitmap(bitmap, width, height) {
+    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)
+        || width < 1 || height < 1 || width > Math.min(8192, this.maxTextureSize)
+        || height > Math.min(8192, this.maxTextureSize) || width * height > 16 * 1024 * 1024
+        || bitmap?.width !== width || bitmap?.height !== height) {
+      throw new Error('Invalid complete presentation bitmap');
+    }
+    const gl = this.gl;
+    if (gl.isContextLost()) throw new Error('Renderer WebGL context lost');
+    if (this.canvas.width !== width) this.canvas.width = width;
+    if (this.canvas.height !== height) this.canvas.height = height;
+    gl.viewport(0, 0, width, height);
+    gl.useProgram(this.program);
+    gl.uniform2f(this.size, width, height);
+    gl.uniform1f(this.indexed, 0);
+    gl.uniform1f(this.compact, 0);
+    gl.uniform4f(this.cursorRect, 0, 0, 0, 0);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.textures[0]);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+
   paintCompact(frame) {
     const gl = this.gl, source = frame.compact;
     const side = 2 ** Math.floor(Math.log2(this.maxTextureSize));

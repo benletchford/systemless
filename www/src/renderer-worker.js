@@ -7,6 +7,8 @@ let ownerPort = null;
 let canvas = null;
 let context = null;
 let gpu = null;
+let bitmapOutput = false;
+let awaitingBitmap = null;
 let ready = false;
 let pending = null;
 let scheduled = null;
@@ -30,6 +32,7 @@ function fail(error) {
   if (scheduled !== null) clearTimeout(scheduled);
   scheduled = null;
   pending = null;
+  awaitingBitmap = null;
   context = null;
   gpu?.dispose(); gpu = null;
   reply({ type: "error", message: String(error?.message || error) });
@@ -72,7 +75,7 @@ function acceptFrame(message) {
     returnBuffers("dropped", pending);
   }
   pending = message;
-  if (scheduled === null) scheduled = setTimeout(paint, 0);
+  if (scheduled === null && !awaitingBitmap) scheduled = setTimeout(paint, 0);
 }
 
 function returnBuffers(type, frame, metrics = {}) {
@@ -95,6 +98,7 @@ function returnBuffers(type, frame, metrics = {}) {
 
 function paint() {
   scheduled = null;
+  if (awaitingBitmap) return;
   const frame = pending;
   pending = null;
   if (failed || !frame) return;
@@ -106,6 +110,20 @@ function paint() {
     else {
       const rgba = new Uint8ClampedArray(frame.pixels.buffer, frame.pixels.byteOffset, frame.pixels.byteLength);
       context.putImageData(new ImageData(rgba, frame.width, frame.height), 0, 0);
+    }
+    if (bitmapOutput) {
+      const bitmap = canvas.transferToImageBitmap();
+      awaitingBitmap = { frame, renderMs: performance.now() - start };
+      try {
+        reply({ type: "bitmap", sequence: frame.sequence, displayGeneration: frame.displayGeneration,
+          width: frame.width, height: frame.height, bitmap }, [bitmap]);
+      } catch (error) {
+        bitmap.close();
+        throw error;
+      }
+      // Keep frame credit until the host has submitted the bitmap. A stalled
+      // host cannot accumulate a queue of transferred GPU images.
+      return;
     }
     // This acknowledges submission, not physical display or GPU completion.
     // Duration uses one worker clock; the sender measures transport round trips.
@@ -125,6 +143,10 @@ self.onmessage = async ({ data }) => {
           || data.rendererGeneration < 0) throw new Error("Renderer protocol mismatch");
       identity = { generation: data.generation, rendererGeneration: data.rendererGeneration };
       canvas = data.canvas;
+      bitmapOutput = data.bitmap === true;
+      if (bitmapOutput && (data.backend !== "webgl" || typeof canvas?.transferToImageBitmap !== "function")) {
+        throw new Error("Bitmap presentation unavailable");
+      }
       if (data.backend === "webgl") {
         const moduleUrl = new URL("./renderer-gpu.js", self.location.href);
         moduleUrl.search = new URL(self.location.href).search;
@@ -140,13 +162,20 @@ self.onmessage = async ({ data }) => {
         canvas.addEventListener("contextlost", event => { event.preventDefault(); fail("Renderer context lost"); });
       }
       ready = true;
-      reply({ type: "ready", backend: gpu ? "offscreen-webgl" : "offscreen-canvas2d",
+      reply({ type: "ready", backend: bitmapOutput ? "bitmap-webgl" : gpu ? "offscreen-webgl" : "offscreen-canvas2d", bitmap: bitmapOutput,
         kinds: gpu ? ["rgba", "indexed8", "compact"] : ["rgba"] });
       return;
     }
     if (!sameIdentity(data) || data.protocolVersion !== RENDER_PROTOCOL) return;
-    if (data.type === "connectOwner") {
-      if (!ready || ownerPort || pending) throw new Error("Renderer owner handoff is not idle");
+    if (data.type === "bitmapSubmitted") {
+      const active = awaitingBitmap;
+      if (!active || data.sequence !== active.frame.sequence
+          || data.displayGeneration !== active.frame.displayGeneration) return;
+      awaitingBitmap = null;
+      returnBuffers("submitted", active.frame, { renderMs: active.renderMs });
+      if (pending && scheduled === null) scheduled = setTimeout(paint, 0);
+    } else if (data.type === "connectOwner") {
+      if (!ready || ownerPort || pending || awaitingBitmap) throw new Error("Renderer owner handoff is not idle");
       ownerPort = data.port;
       ownerPort.onmessage = ({ data: frame }) => {
         if (failed || !sameIdentity(frame) || frame.protocolVersion !== RENDER_PROTOCOL) return;
@@ -162,6 +191,7 @@ self.onmessage = async ({ data }) => {
     else if (data.type === "stop") {
       if (scheduled !== null) clearTimeout(scheduled);
       pending = null;
+      awaitingBitmap = null;
       scheduled = null;
       context = null;
       gpu?.dispose(); gpu = null;

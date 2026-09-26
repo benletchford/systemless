@@ -6,7 +6,7 @@ const path = require('node:path');
 const context = vm.createContext({ Uint8Array, Uint32Array, ArrayBuffer });
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/renderer-gpu.js'), 'utf8')
   .replace('export const', 'const').replaceAll('export function', 'function').replace('export class', 'class')
-  + '\nthis.validate = validateGpuFrame; this.bytes = compactBytes;', context);
+  + '\nthis.validate = validateGpuFrame; this.bytes = compactBytes; this.paintBitmap = GpuFramePresenter.prototype.paintBitmap;', context);
 const frame = () => ({ kind: 'indexed8', complete: true, width: 3, height: 2, stride: 4,
   pixels: new Uint8Array(8), palette: new Uint8Array(1024) });
 
@@ -51,4 +51,14 @@ test('compact packets validate native cell/detail references and integer output 
 test('compact words upload in explicit little-endian order including typed-array offsets', () => {
   const words=new Uint32Array([0xdeadbeef,0x80123456,0x00abcdef,0xdeadbeef]);
   assert.deepEqual([...context.bytes(words.subarray(1,3))],[0x56,0x34,0x12,0x80,0xef,0xcd,0xab,0]);
+});
+
+
+test('bitmap dimensions are checked before any GPU allocation or upload', () => {
+  const presenter={maxTextureSize:4096,gl:{isContextLost(){throw new Error('GPU reached');}}};
+  for(const [image,w,h] of [[{width:2,height:1},3,1],[{width:0,height:1},0,1],
+    [{width:5000,height:1},5000,1],[{width:2,height:1},2.5,1],[null,2,1]]) {
+    assert.throws(()=>context.paintBitmap.call(presenter,image,w,h),/Invalid complete presentation bitmap/);
+  }
+  assert.throws(()=>context.paintBitmap.call({...presenter,gl:{isContextLost:()=>true}},{width:2,height:1},2,1),/context lost/);
 });

@@ -11,10 +11,12 @@ const frame = (sequence, fields = {}) => ({ ...identity, type: 'frame', kind: 'r
 
 function renderer(options = {}) {
   const imports = [];
+  const bitmaps = [];
   let disposed = false;
   const messages = [], paints = [], timers = new Map(), listeners = {};
   let next = 0, closed = false;
   const canvas = { width: 1, height: 1,
+    transferToImageBitmap() { const bitmap={width:this.width,height:this.height,closes:0,close(){this.closes++;}};bitmaps.push(bitmap);return bitmap; },
     getContext: () => options.unsupported ? null : { putImageData: image => {
       if (options.paintError) throw new Error('paint failed');
       paints.push([...image.data]);
@@ -32,12 +34,17 @@ function renderer(options = {}) {
     ImageData: class { constructor(data, width, height) { this.data = data; this.width = width; this.height = height; } },
     setTimeout: callback => { timers.set(++next, callback); return next; },
     clearTimeout: id => timers.delete(id),
-    self: { location: { href: "https://example.test/renderer-worker.js?runtime=version" }, postMessage: (message, transfer = []) => messages.push(structuredClone(message, { transfer })), close: () => { closed = true; } },
+    self: { location: { href: "https://example.test/renderer-worker.js?runtime=version" }, postMessage: (message, transfer = []) => {
+      if(message.type==='bitmap') {
+        if(options.bitmapPostError)throw new Error('bitmap transfer failed');
+        assert.equal(transfer.length,1);assert.equal(transfer[0],message.bitmap);messages.push({...message});
+      } else messages.push(structuredClone(message, { transfer }));
+    }, close: () => { closed = true; } },
   });
   vm.runInContext(read('renderer-worker.js').replace('await import(moduleUrl.href)', 'await loadGpu(moduleUrl.href)'), context);
   const send = data => context.self.onmessage({ data });
-  const initialized = send({ ...identity, type: 'init', canvas, backend: options.gpu ? 'webgl' : 'canvas2d' });
-  return { send, messages, paints, timers, listeners, canvas, initialized, imports, disposed: () => disposed, closed: () => closed,
+  const initialized = send({ ...identity, type: 'init', canvas, bitmap:options.bitmap===true, backend: options.gpu ? 'webgl' : 'canvas2d' });
+  return { send, messages, paints, bitmaps, timers, listeners, canvas, initialized, imports, disposed: () => disposed, closed: () => closed,
     flush: () => { const jobs = [...timers.values()]; timers.clear(); jobs.forEach(job => job()); } };
 }
 
@@ -245,4 +252,37 @@ test('direct owner port returns image ownership without sending pixels through t
   w.send(frame(2));
   assert.equal(w.messages.at(-1).type,'error');
   assert.equal(packets.at(-1).type,'error');
+});
+
+
+test('bitmap credit waits for host submission and bounds newer images during a host stall', async () => {
+  const w=renderer({gpu:true,bitmap:true});await w.initialized;
+  assert.equal(w.messages[0].backend,'bitmap-webgl');assert.equal(w.messages[0].bitmap,true);
+  const first=frame(1);await w.send(first);w.flush();
+  assert.equal(first.pixels.byteLength,8);assert.equal(w.bitmaps.length,1);
+  assert.equal(w.messages.at(-1).type,'bitmap');
+  await w.send(frame(2));await w.send(frame(3));w.flush();
+  assert.equal(w.bitmaps.length,1);assert.equal(w.timers.size,0);
+  await w.send({...identity,type:'bitmapSubmitted',sequence:1,displayGeneration:1,generation:0});
+  assert.equal(first.pixels.byteLength,8);
+  await w.send({...identity,type:'bitmapSubmitted',sequence:1,displayGeneration:1});
+  assert.equal(first.pixels.byteLength,0);w.flush();assert.equal(w.bitmaps.length,2);
+  assert.equal(w.messages.at(-1).sequence,3);
+  await w.send({...identity,type:'bitmapSubmitted',sequence:1,displayGeneration:1});
+  assert.equal(w.messages.at(-1).type,'bitmap');
+  await w.send({...identity,type:'bitmapSubmitted',sequence:3,displayGeneration:1});
+  assert.equal(w.messages.at(-1).type,'submitted');assert.equal(w.timers.size,0);
+});
+
+test('failed bitmap transfer closes the local bitmap and releases renderer resources', async () => {
+  const w=renderer({gpu:true,bitmap:true,bitmapPostError:true});await w.initialized;
+  await w.send(frame(1));w.flush();assert.equal(w.bitmaps[0].closes,1);
+  assert.equal(w.messages.at(-1).type,'error');assert.equal(w.disposed(),true);
+});
+
+test('stop during outstanding bitmap prevents late acknowledgement from returning credit', async () => {
+  const w=renderer({gpu:true,bitmap:true});await w.initialized;await w.send(frame(1));w.flush();
+  await w.send({...identity,type:'stop'});const count=w.messages.length;
+  await w.send({...identity,type:'bitmapSubmitted',sequence:1,displayGeneration:1});
+  assert.equal(w.messages.length,count);assert.equal(w.disposed(),true);assert.equal(w.closed(),true);
 });

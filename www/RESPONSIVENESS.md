@@ -422,6 +422,39 @@ on an ordinary DOM canvas, but reproduces the mismatch after transferring that
 canvas to OffscreenCanvas even when its context is used on the main thread.
 Changing sibling placement or keeping only one visible canvas did not resolve
 it. A detached OffscreenCanvas → ImageBitmap → DOM WebGL prototype matches the
-four tested integer/fractional layouts, but has not been integrated or qualified
-for transport bounds, recovery or performance. The production renderer remains
-experimental and full fractional-layout parity is still unachieved.
+four tested integer/fractional layouts. That result led to the opt-in bitmap
+path below; the transferred-display path still has the sampling difference.
+
+
+## Bitmap submission
+
+The bitmap path is available behind `&renderer_bitmap=1` together with
+the experimental GPU renderer flags. The renderer expands owned packets on a
+detached OffscreenCanvas; a lightweight host WebGL submission presents the
+transferred ImageBitmap through an ordinary DOM canvas. The renderer retains
+frame credit until the host acknowledges submission, bounding outstanding
+bitmaps to one while the owner retains only its newest pending packet. Images
+are explicitly closed after submission, stale delivery or failure. The original
+input canvas remains untouched for same-guest compatibility recovery.
+
+Focused protocol tests cover stalled-host credit, stale/duplicate messages,
+transfer failure, shutdown and host context loss. The real-GPU probe submits
+only sequences 1/500/501/1000 during two 500-frame bursts with 80 ms delayed host
+acknowledgements, exact GPU readback and two bounded recycled buffers. Four
+clipped layout screenshot comparisons also match exactly. These are functional
+checks, not comparative performance measurements.
+
+Release Marathon checks at guest tick 1801 compare main WebGL with relay and
+direct bitmap presentation at the previously failing 798×598 clipped CSS size.
+Both full-page comparisons now have zero differing pixels, with matching bounds,
+25 MHz, device scale 1 and an 800×600 backing image. All three pacing probes pass;
+retired instruction counts differ slightly, so this is not instruction-identical
+replay. Separate Glider compact-frame checks inject renderer failure and host
+WebGL context loss while a key is held. Both restore nonblank Canvas2D, preserve
+the original input canvas, terminate the failed renderer and continue the same
+guest (one boot, owner frames 200→205), without browser errors. An initial
+qualification assertion exposed an incorrect backend label; the label was fixed
+and the complete release comparison rerun with the original assertion intact.
+
+Sustained bitmap lifecycle and comparative performance qualification remain
+pending. The added host GPU submission is not assumed free or zero-copy.

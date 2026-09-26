@@ -7,7 +7,7 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-const modules = new Set(['/renderer-gpu.js', '/renderer-worker.js', '/renderer-transport.js', '/renderer-owner.js']);
+const modules = new Set(['/renderer-gpu.js', '/renderer-worker.js', '/renderer-transport.js', '/renderer-owner.js', '/renderer-client.js']);
 const profile=await mkdtemp(join(tmpdir(),'systemless-renderer-gpu-'));
 const server=createServer((req,res)=>{
  if(req.url==='/slow-renderer-worker.js'){
@@ -56,6 +56,7 @@ try {
  await page.send('Page.enable');await page.send('Runtime.enable');
  await page.send('Page.navigate',{url:base});
  const report=await evaluate(page,`(${exercise.toString()})()`,120000);
+ report.bitmapLayout=await compareBitmapLayout(page);
  report.browser=version.Browser; report.host={platform:process.platform,arch:process.arch};
  console.log(JSON.stringify(report,null,2));
 } finally {
@@ -63,6 +64,58 @@ try {
  chrome.kill('SIGTERM');await new Promise(resolve=>server.close(resolve));
  await rm(profile,{recursive:true,force:true,maxRetries:20,retryDelay:250});
 }
+// Screenshot comparison covers browser clipping/compositing as well as GPU
+// readback. A transferred display canvas can differ here despite exact pixels.
+async function compareBitmapLayout(page) {
+ await page.send('Emulation.setDeviceMetricsOverride',{width:1200,height:1000,deviceScaleFactor:1,mobile:false});
+ await evaluate(page,`(${prepareBitmapLayout.toString()})()`,15000);
+ const cases=[];
+ try {
+  for(const [name,width,height,transform] of [['scaled',798,598,'none'],['layer',798,598,'translateZ(0)'],['integer',800,600,'none'],['fraction',623.328125,467.5,'none']]) {
+   const images=[];
+   for(const bitmap of [false,true]) {
+    await evaluate(page,`(async()=>{const {parent,canvas,client}=window.bitmapLayout;
+     parent.style.width=${JSON.stringify(width+'px')};parent.style.height=${JSON.stringify(height+'px')};
+     canvas.style.opacity=${bitmap?'0':'1'};client.syncGeometry();client.canvas.style.visibility=${JSON.stringify(bitmap?'visible':'hidden')};
+     client.canvas.style.transform=${JSON.stringify(transform)};
+     await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));})()`,10000);
+    images.push((await page.send('Page.captureScreenshot',{format:'png'})).data);
+   }
+   const differentPixels=await evaluate(page,`(${compareScreenshots.toString()})(${JSON.stringify(images)})`,15000);
+   cases.push({name,width,height,differentPixels});
+   if(differentPixels!==0)throw new Error('Bitmap clipped-layout mismatch: '+JSON.stringify(cases.at(-1)));
+  }
+ }finally{await evaluate(page,'window.bitmapLayout.client.dispose();window.bitmapLayout.presenter.dispose();window.bitmapLayout.parent.remove();true',10000);}
+ return {exact:true,cases};
+}
+async function prepareBitmapLayout(){
+ const {GpuFramePresenter}=await import('/renderer-gpu.js');
+ const {RendererClient}=await import('/renderer-client.js');
+ const parent=document.createElement('div');
+ parent.style.cssText='position:absolute;left:200px;top:301px;width:798px;height:598px;border:1px solid black;border-radius:5px;overflow:hidden';document.body.append(parent);
+ const canvas=document.createElement('canvas');canvas.width=800;canvas.height=600;
+ canvas.style.cssText='display:block;width:100%;height:100%;image-rendering:pixelated';parent.append(canvas);
+ const pixels=new Uint8Array(800*600*4);
+ for(let y=0;y<600;y++)for(let x=0;x<800;x++)pixels.set([(x*71+y*13)&255,(x*3+y*41)&255,(x+y)&255,255],(y*800+x)*4);
+ const presenter=new GpuFramePresenter(canvas);presenter.paint({kind:'rgba',complete:true,width:800,height:600,pixels:pixels.slice()});
+ const client=new RendererClient(canvas,new URL('/renderer-worker.js',location).href,1,{backend:'webgl',bitmap:true});
+ window.bitmapLayout={parent,canvas,presenter,client};
+ const until=async predicate=>{const deadline=performance.now()+10000;while(!predicate()){if(client.status().phase==='failed'||performance.now()>deadline)throw new Error(JSON.stringify(client.status()));await new Promise(resolve=>setTimeout(resolve,10));}};
+ await until(()=>client.status().phase==='ready');client.paint(800,600,pixels);await until(()=>client.submitted);
+}
+async function compareScreenshots(images){
+ const values=[];
+ for(const encoded of images){
+  const bytes=Uint8Array.from(atob(encoded),value=>value.charCodeAt(0));
+  const bitmap=await createImageBitmap(new Blob([bytes],{type:'image/png'}));
+  try{const canvas=new OffscreenCanvas(bitmap.width,bitmap.height),context=canvas.getContext('2d');context.drawImage(bitmap,0,0);values.push(context.getImageData(0,0,canvas.width,canvas.height).data);}
+  finally{bitmap.close();}
+ }
+ if(values[0].length!==values[1].length)throw new Error('Screenshot dimensions differ');
+ let changed=0;for(let i=0;i<values[0].length;i+=4){if(values[0][i]!==values[1][i]||values[0][i+1]!==values[1][i+1]||values[0][i+2]!==values[1][i+2]||values[0][i+3]!==values[1][i+3])changed++;}
+ return changed;
+}
+
 async function exercise(){
  const task = async base => {
   const { GpuFramePresenter } = await import(base + '/renderer-gpu.js');
@@ -244,6 +297,70 @@ async function exercise(){
    if(notices.join(',')!=='1,500,501,1000'||credits.join(',')!==notices.join(','))throw new Error('Stale image survived coalescing');
    result.directSlowConsumer={packets:1000,submitted:notices,paintDelayMs:80,burstElapsedMs,exact:true,recycled:owner.transport.recycled.length};
   } finally {owner?.dispose();slowEndpoint.terminate();}
+  // A host stall must retain one transferred bitmap, not release frame credit
+  // early and let GPU image handles accumulate in the host message queue.
+  const bitmapEndpoint=new Worker(base+'/renderer-worker.js');
+  const bitmapPresenter=new GpuFramePresenter(new OffscreenCanvas(1,1));
+  let bitmapOwner,activeBitmap=null,ackTimer=null;
+  try {
+   const ready=new Promise((resolve,reject)=>{
+    bitmapEndpoint.onmessage=({data})=>data.type==='ready'?resolve(data):reject(new Error(JSON.stringify(data)));
+    bitmapEndpoint.onerror=event=>reject(new Error(event.message));
+   });
+   const screen=new OffscreenCanvas(1,1);
+   bitmapEndpoint.postMessage({...identity,type:'init',backend:'webgl',bitmap:true,canvas:screen},[screen]);
+   const capabilities=await ready;
+   if(capabilities.bitmap!==true||capabilities.backend!=='bitmap-webgl')throw new Error('Bitmap capability missing');
+   const channel=new MessageChannel(),notices=[],credits=[],images=[],expected=new Map();
+   let resolveBurst,rejectBurst,targetSequence;
+   const finished=()=>{if(notices.at(-1)===targetSequence&&credits.at(-1)===targetSequence)resolveBurst();};
+   bitmapOwner=new RendererOwner(channel.port2,identity,{notify:message=>{
+    if(message.event==='error')rejectBurst(new Error(message.message));
+    if(message.event==='submitted'){credits.push(message.sequence);finished();}
+   }});
+   bitmapEndpoint.onmessage=({data})=>{
+    if(data.type==='error'){rejectBurst(new Error(data.message));return;}
+    if(data.type==='directSubmitted'){notices.push(data.sequence);finished();return;}
+    if(data.type!=='bitmap')return;
+    if(activeBitmap){data.bitmap.close();rejectBurst(new Error('More than one unacknowledged bitmap'));return;}
+    activeBitmap=data.bitmap;images.push(data.sequence);
+    ackTimer=setTimeout(()=>{
+     ackTimer=null;
+     try {
+      bitmapPresenter.paintBitmap(data.bitmap,data.width,data.height);
+      const gl=bitmapPresenter.gl,actual=new Uint8Array(data.width*data.height*4),reference=expected.get(data.sequence);
+      gl.readPixels(0,0,data.width,data.height,gl.RGBA,gl.UNSIGNED_BYTE,actual);
+      if(!reference)throw new Error('Stale bitmap survived coalescing');
+      for(let y=0;y<data.height;y++)for(let x=0;x<data.width*4;x++){
+       if(actual[(data.height-1-y)*data.width*4+x]!==reference[y*data.width*4+x])throw new Error('Bitmap image mismatch');
+      }
+      bitmapEndpoint.postMessage({...identity,type:'bitmapSubmitted',sequence:data.sequence,displayGeneration:data.displayGeneration});
+     }catch(error){rejectBurst(error);}
+     finally{data.bitmap.close();activeBitmap=null;}
+    },80);
+   };
+   bitmapEndpoint.onerror=event=>rejectBurst(new Error(event.message));
+   bitmapEndpoint.postMessage({...identity,type:'connectOwner',port:channel.port1},[channel.port1]);
+   const elapsedMs=[];
+   for(const [first,last] of [[1,500],[501,1000]]){
+    targetSequence=last;const started=performance.now();
+    const done=new Promise((resolve,reject)=>{resolveBurst=resolve;rejectBurst=reject;});
+    for(let sequence=first;sequence<=last;sequence++){
+     const width=sequence%17+1,height=sequence%5+1,rgba=new Uint8Array(width*height*4),cells=new Uint32Array(width*height);
+     for(let y=0;y<height;y++)for(let x=0;x<width;x++){
+      const r=(sequence+x*11)&255,g=(y*31)&255,b=(x+y*7)&255;rgba.set([r,g,b,255],(y*width+x)*4);cells[y*width+x]=(r<<16)|(g<<8)|b;
+     }
+     if(sequence===first||sequence===last)expected.set(sequence,rgba.slice());
+     const packet=sequence%2?{width,height,outputScale:1,frame:rgba}:{width,height,outputScale:1,
+      compactFrame:{kind:'compact',complete:true,width,height,compact:{width,height,scale:2,cells,detail:new Uint32Array(0)}}};
+     if(!bitmapOwner.submit(packet))throw new Error('Bitmap owner rejected frame');
+    }
+    await done;const elapsed=performance.now()-started;elapsedMs.push(elapsed);
+    if(elapsed<150||activeBitmap||bitmapOwner.transport.inFlight||bitmapOwner.transport.pending||bitmapOwner.transport.recycled.length>2)throw new Error('Bitmap queue or acknowledgement bound failed');
+   }
+   if(images.join(',')!=='1,500,501,1000'||credits.join(',')!==images.join(',')||notices.join(',')!==images.join(','))throw new Error('Bitmap credit order mismatch');
+   result.bitmapSlowHost={packets:1000,submitted:images,hostDelayMs:80,elapsedMs,exact:true,recycled:bitmapOwner.transport.recycled.length};
+  }finally{if(ackTimer!==null)clearTimeout(ackTimer);activeBitmap?.close();bitmapOwner?.dispose();bitmapEndpoint.terminate();bitmapPresenter.dispose();}
   return result;
  };
  const blob=new Blob([`(${task.toString()})(${JSON.stringify(location.origin)}).then(result=>postMessage({result})).catch(error=>postMessage({error:String(error.stack)}));`],{type:'text/javascript'});
