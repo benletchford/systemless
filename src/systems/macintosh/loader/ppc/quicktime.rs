@@ -1,16 +1,26 @@
 //! QuickTime and Movie Media state and tracking records.
 
+use std::collections::HashMap;
+
 use super::{
     format_ppc_fourcc, ppc_decoded_sound_data, ppc_draw_pict_bytes_to_16bpp,
-    ppc_existing_path_for_fsspec, ppc_i16_result, ppc_live_front_buffer_for_gworld,
-    ppc_memory_can_write_bytes, ppc_q3_write_software_pixel, ppc_read_be_u32_from_slice,
+    ppc_existing_path_for_fsspec, ppc_i16_result,
+    ppc_live_front_buffer_for_gworld, ppc_live_quickdraw_surface,
+    ppc_memory_can_write_bytes,
+    ppc_process_alloc_handle_with_bytes, ppc_q3_write_software_pixel,
+    ppc_quickdraw_surface_color_pixel,
+    ppc_quickdraw_write_raw_pixel,
+    ppc_read_be_u32_from_slice,
     ppc_read_rect, ppc_write_rect, qt_trace_enabled, PpcCpu, PpcDecodedAiffData,
     PpcDecodedAiffPlaybackRecord, PpcFrontBuffer, PpcGWorldRecord, PpcImportAction,
-    PpcSectionMem, PpcSoundFilePlaybackRecord, PpcSoundState, PpcVfsDirectory, PpcVfsFileRecord,
+    PpcHandleRecord, PpcQuickDrawSurface, PpcRgbColor, PpcSectionMem,
+    PpcSoundFilePlaybackRecord, PpcSoundState,
+    PpcVfsDirectory, PpcVfsFileRecord,
     PpcVfsResourceFileRecord, PpcVfsResourceRecord, PPC_FIRST_FILE_REF_NUM,
     PPC_INVALID_COMPONENT_ID, PPC_PARAM_ERR, PPC_QT_GRAPHICS_IMPORTER, PPC_QT_MOVIE,
-    PPC_QT_MOVIE_TASKS_PER_SECOND, PPC_RES_NOT_FOUND_ERR,
+    PPC_QT_MOVIE_TASKS_PER_SECOND, PPC_RES_NOT_FOUND_ERR, PPC_MEM_FULL_ERR,
 };
+use crate::process_context::ProcessNativeMemoryManager;
 use crate::managers::resource::ResourceFork;
 use crate::trap::TrapDispatcher;
 use ppc::PpcMemory;
@@ -105,6 +115,14 @@ pub struct PpcQuickTimeVideoDecodeCacheRecord {
     pub(crate) cinepak_strips: Vec<PpcQuickTimeCinepakStripState>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PpcQtGraphicsImage {
+    pub width: u32,
+    pub height: u32,
+    /// Non-premultiplied RGBA8 pixels, row-major, `width * height * 4` bytes.
+    pub rgba: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PpcQuickTimeAudioTrackRecord {
     pub media_time_scale: u32,
@@ -151,8 +169,11 @@ pub struct PpcQuickTimeState {
     pub graphics_import_draw_count: u32,
     pub graphics_import_source_draw_count: u32,
     pub graphics_importer_path: String,
+    pub graphics_importer_subtype: u32,
+    pub graphics_importer_depth: u16,
     pub graphics_importer_data: Vec<u8>,
     pub graphics_importer_bounds: Option<(i16, i16, i16, i16)>,
+    pub graphics_importer_image: Option<PpcQtGraphicsImage>,
     pub movie_gworld: u32,
     pub movie_gdevice: u32,
     pub movie_box: (i16, i16, i16, i16),
@@ -198,8 +219,11 @@ impl Default for PpcQuickTimeState {
             graphics_import_draw_count: 0,
             graphics_import_source_draw_count: 0,
             graphics_importer_path: String::new(),
+            graphics_importer_subtype: 0,
+            graphics_importer_depth: 0,
             graphics_importer_data: Vec::new(),
             graphics_importer_bounds: None,
+            graphics_importer_image: None,
             movie_gworld: 0,
             movie_gdevice: 0,
             movie_box: (
@@ -358,8 +382,329 @@ fn ppc_qt_clear_graphics_importer(quicktime: &mut PpcQuickTimeState) {
     quicktime.graphics_importer_gworld = 0;
     quicktime.graphics_importer_gdevice = 0;
     quicktime.graphics_importer_path.clear();
+    quicktime.graphics_importer_subtype = 0;
+    quicktime.graphics_importer_depth = 0;
     quicktime.graphics_importer_data.clear();
     quicktime.graphics_importer_bounds = None;
+    quicktime.graphics_importer_image = None;
+}
+
+pub(crate) fn ppc_qt_open_default_component(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    quicktime: &mut PpcQuickTimeState,
+) -> i16 {
+    const GRAPHICS_IMPORTER: u32 = u32::from_be_bytes(*b"grip");
+    const TGA_SUBTYPE: u32 = u32::from_be_bytes(*b"TGA ");
+    const GIF_SUBTYPE: u32 = u32::from_be_bytes(*b"GIF ");
+    let out = cpu.gpr[5];
+    // Component Manager dispatch: only the 'grip' graphics importer types are
+    // synthesized. Other component types remain unsupported instead of being
+    // silently mapped onto the graphics importer.
+    match (cpu.gpr[3], cpu.gpr[4]) {
+        (GRAPHICS_IMPORTER, TGA_SUBTYPE) | (GRAPHICS_IMPORTER, GIF_SUBTYPE) => {}
+        (component_type, component_subtype) => {
+            eprintln!(
+                "[PPC-QT] OpenADefaultComponent unsupported type={} subtype={}",
+                format_ppc_fourcc(component_type),
+                format_ppc_fourcc(component_subtype),
+            );
+            return PPC_INVALID_COMPONENT_ID;
+        }
+    }
+    if out == 0 || !ppc_memory_can_write_bytes(memory, out, 4) {
+        return PPC_PARAM_ERR;
+    }
+    if memory.write_u32_be(out, PPC_QT_GRAPHICS_IMPORTER).is_none() {
+        return PPC_PARAM_ERR;
+    }
+    ppc_qt_clear_graphics_importer(quicktime);
+    quicktime.graphics_importer_open = true;
+    quicktime.graphics_importer_subtype = cpu.gpr[4];
+    quicktime.graphics_importer_path = format!(
+        "<synthetic {} importer>",
+        format_ppc_fourcc(cpu.gpr[4])
+    );
+    PPC_NO_ERR
+}
+
+/// Upper bound on the guest bytes copied from the importer data handle.
+/// Startup GIF/TGA assets are small; this only prevents reading an unbounded
+/// guest allocation into host memory.
+const PPC_QT_GRAPHICS_IMPORTER_MAX_DATA: u32 = 16 * 1024 * 1024;
+const PPC_QT_GRAPHICS_IMPORTER_MAX_DIMENSION: u32 = 8192;
+const PPC_QT_GRAPHICS_IMPORTER_MAX_PIXELS: u32 = 16 * 1024 * 1024;
+
+fn ppc_qt_decode_graphics_image(
+    subtype: u32,
+    data: &[u8],
+) -> Option<PpcQtGraphicsImage> {
+    let format = if subtype == u32::from_be_bytes(*b"GIF ") {
+        image::ImageFormat::Gif
+    } else if subtype == u32::from_be_bytes(*b"TGA ") {
+        image::ImageFormat::Tga
+    } else {
+        return None;
+    };
+    // The `image` crate's TGA decoder rejects 16-bit truecolor, which is the
+    // depth Deimos Rising's startup art actually ships. Decode that case here
+    // and keep the crate for GIF and the TGA depths it supports.
+    if format == image::ImageFormat::Tga && ppc_qt_tga_is_truecolor_16(data) {
+        return ppc_qt_decode_tga_truecolor_16(data);
+    }
+    // `load_from_memory_with_format` decodes the first GIF frame (composited
+    // onto the logical screen with alpha) or the whole TGA.
+    let decoded = image::load_from_memory_with_format(data, format).ok()?;
+    let width = decoded.width();
+    let height = decoded.height();
+    if width == 0
+        || height == 0
+        || width > PPC_QT_GRAPHICS_IMPORTER_MAX_DIMENSION
+        || height > PPC_QT_GRAPHICS_IMPORTER_MAX_DIMENSION
+        || width.checked_mul(height)? > PPC_QT_GRAPHICS_IMPORTER_MAX_PIXELS
+    {
+        return None;
+    }
+    Some(PpcQtGraphicsImage {
+        width,
+        height,
+        rgba: decoded.to_rgba8().into_raw(),
+    })
+}
+
+fn ppc_qt_tga_is_truecolor_16(data: &[u8]) -> bool {
+    let Some(header) = data.get(..18) else {
+        return false;
+    };
+    matches!(header[2], 2 | 10) && header[16] == 16
+}
+
+/// Decode an uncompressed (type 2) or RLE (type 10) 16-bit truecolor TGA.
+///
+/// QuickTime's default copy mode is opaque, and the shipped startup art has
+/// the 1-bit attribute (bit 15) clear on every pixel, so the attribute bit is
+/// ignored and every decoded pixel is fully opaque. Bit 5 of the image
+/// descriptor selects top-left versus the default bottom-left row order.
+/// Truevision TGA File Format Specification, version 2.0, fields 4 and 5.
+fn ppc_qt_decode_tga_truecolor_16(data: &[u8]) -> Option<PpcQtGraphicsImage> {
+    let header = data.get(..18)?;
+    let id_length = usize::from(header[0]);
+    if header[1] != 0 {
+        return None;
+    }
+    let image_type = header[2];
+    if !matches!(image_type, 2 | 10) || header[16] != 16 {
+        return None;
+    }
+    let width = u32::from(u16::from_le_bytes([header[12], header[13]]));
+    let height = u32::from(u16::from_le_bytes([header[14], header[15]]));
+    if width == 0
+        || height == 0
+        || width > PPC_QT_GRAPHICS_IMPORTER_MAX_DIMENSION
+        || height > PPC_QT_GRAPHICS_IMPORTER_MAX_DIMENSION
+        || width.checked_mul(height)? > PPC_QT_GRAPHICS_IMPORTER_MAX_PIXELS
+    {
+        return None;
+    }
+    let top_left = header[17] & 0x20 != 0;
+    let pixel_count = (width as usize).checked_mul(height as usize)?;
+    let payload = data.get(18 + id_length..)?;
+    let pixels = if image_type == 2 {
+        let payload = payload.get(..pixel_count.checked_mul(2)?)?;
+        payload
+            .chunks_exact(2)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+            .collect::<Vec<_>>()
+    } else {
+        let mut pixels = Vec::with_capacity(pixel_count);
+        let mut offset = 0usize;
+        while pixels.len() < pixel_count {
+            let control = *payload.get(offset)?;
+            offset += 1;
+            let count = usize::from(control & 0x7f) + 1;
+            if control & 0x80 != 0 {
+                let bytes = payload.get(offset..offset.checked_add(2)?)?;
+                offset += 2;
+                let value = u16::from_le_bytes([bytes[0], bytes[1]]);
+                if pixels.len().checked_add(count)? > pixel_count {
+                    return None;
+                }
+                pixels.extend(std::iter::repeat_n(value, count));
+            } else {
+                let bytes = payload.get(offset..offset.checked_add(count.checked_mul(2)?)?)?;
+                offset += count.checked_mul(2)?;
+                if pixels.len().checked_add(count)? > pixel_count {
+                    return None;
+                }
+                pixels.extend(
+                    bytes
+                        .chunks_exact(2)
+                        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]])),
+                );
+            }
+        }
+        pixels
+    };
+    debug_assert_eq!(pixels.len(), pixel_count);
+    let mut rgba = vec![0u8; pixel_count.checked_mul(4)?];
+    for source_row in 0..height as usize {
+        let destination_row = if top_left {
+            source_row
+        } else {
+            height as usize - 1 - source_row
+        };
+        for x in 0..width as usize {
+            let value = pixels[source_row * width as usize + x];
+            let red = ((value >> 10) & 0x1f) as u8;
+            let green = ((value >> 5) & 0x1f) as u8;
+            let blue = (value & 0x1f) as u8;
+            let destination = (destination_row * width as usize + x) * 4;
+            rgba[destination] = (red << 3) | (red >> 2);
+            rgba[destination + 1] = (green << 3) | (green >> 2);
+            rgba[destination + 2] = (blue << 3) | (blue >> 2);
+            rgba[destination + 3] = 0xff;
+        }
+    }
+    Some(PpcQtGraphicsImage {
+        width,
+        height,
+        rgba,
+    })
+}
+
+pub(crate) fn ppc_qt_graphics_import_set_data_handle(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    quicktime: &mut PpcQuickTimeState,
+) -> i16 {
+    if cpu.gpr[3] != PPC_QT_GRAPHICS_IMPORTER || !quicktime.graphics_importer_open {
+        return PPC_PARAM_ERR;
+    }
+    const TGA_SUBTYPE: u32 = u32::from_be_bytes(*b"TGA ");
+    const GIF_SUBTYPE: u32 = u32::from_be_bytes(*b"GIF ");
+    let subtype = quicktime.graphics_importer_subtype;
+    if subtype != TGA_SUBTYPE && subtype != GIF_SUBTYPE {
+        return PPC_PARAM_ERR;
+    }
+    let Some(source) = handles.iter().find(|record| record.handle == cpu.gpr[4]) else {
+        return PPC_PARAM_ERR;
+    };
+    if source.size == 0 || source.size > PPC_QT_GRAPHICS_IMPORTER_MAX_DATA {
+        return PPC_PARAM_ERR;
+    }
+    let mut data = vec![0u8; source.size as usize];
+    if memory.read_bytes_into(source.ptr, &mut data).is_none() {
+        return PPC_PARAM_ERR;
+    }
+    // The reported source depth follows the container: GIF is always indexed
+    // 8-bit; TGA declares its pixel depth in the 18-byte header.
+    let declared_depth = if subtype == TGA_SUBTYPE {
+        let Some(header) = data.get(..18) else {
+            return PPC_PARAM_ERR;
+        };
+        if !matches!(header[2], 1 | 2 | 3 | 9 | 10 | 11) {
+            return PPC_PARAM_ERR;
+        }
+        header[16]
+    } else {
+        8
+    };
+    if !matches!(declared_depth, 8 | 15 | 16 | 24 | 32) {
+        return PPC_PARAM_ERR;
+    }
+    let Some(image) = ppc_qt_decode_graphics_image(subtype, &data) else {
+        return PPC_PARAM_ERR;
+    };
+    if image.width > i16::MAX as u32 || image.height > i16::MAX as u32 {
+        return PPC_PARAM_ERR;
+    }
+    quicktime.graphics_importer_depth = declared_depth as u16;
+    quicktime.graphics_importer_data = data;
+    quicktime.graphics_importer_bounds = Some((0, 0, image.height as i16, image.width as i16));
+    quicktime.graphics_importer_image = Some(image);
+    PPC_NO_ERR
+}
+
+/// Build the packed 86-byte QuickTime `ImageDescription` the graphics
+/// importer hands back from `GraphicsImportGetImageDescription`.
+fn ppc_qt_image_description_bytes(
+    subtype: u32,
+    width: i16,
+    height: i16,
+    source_depth: u16,
+) -> [u8; 86] {
+    // ImageDescription follows the packed QuickTime layout, including its
+    // two-byte alignment gap before the 32-bit vendor field on PPC.
+    let mut description = [0u8; 86];
+    description[..4].copy_from_slice(&86u32.to_be_bytes());
+    description[4..8].copy_from_slice(&subtype.to_be_bytes());
+    description[32..34].copy_from_slice(&width.to_be_bytes());
+    description[34..36].copy_from_slice(&height.to_be_bytes());
+    description[36..40].copy_from_slice(&(72i32 << 16).to_be_bytes());
+    description[40..44].copy_from_slice(&(72i32 << 16).to_be_bytes());
+    let depth = match source_depth {
+        8 => 8i16,
+        15 | 16 => 16,
+        24 | 32 => 32,
+        _ => 32,
+    };
+    let data_size = i32::from(width)
+        .saturating_mul(i32::from(height))
+        .saturating_mul(i32::from(depth / 8));
+    description[44..48].copy_from_slice(&data_size.to_be_bytes());
+    description[48..50].copy_from_slice(&1i16.to_be_bytes());
+    description[50] = 3;
+    description[51..54].copy_from_slice(if subtype == u32::from_be_bytes(*b"GIF ") {
+        b"GIF"
+    } else {
+        b"TGA"
+    });
+    description[82..84].copy_from_slice(&depth.to_be_bytes());
+    description[84..86].copy_from_slice(&(-1i16).to_be_bytes());
+    description
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ppc_qt_graphics_import_get_image_description(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    quicktime: &mut PpcQuickTimeState,
+) -> i16 {
+    let out = cpu.gpr[4];
+    if cpu.gpr[3] != PPC_QT_GRAPHICS_IMPORTER
+        || !quicktime.graphics_importer_open
+        || (quicktime.graphics_importer_subtype != u32::from_be_bytes(*b"TGA ")
+            && quicktime.graphics_importer_subtype != u32::from_be_bytes(*b"GIF "))
+        || out == 0
+        || !ppc_memory_can_write_bytes(memory, out, 4)
+    {
+        return PPC_PARAM_ERR;
+    }
+    let (top, left, bottom, right) = quicktime.graphics_importer_bounds.unwrap_or((0, 0, 1, 1));
+    let description = ppc_qt_image_description_bytes(
+        quicktime.graphics_importer_subtype,
+        right - left,
+        bottom - top,
+        quicktime.graphics_importer_depth,
+    );
+    let handle = ppc_process_alloc_handle_with_bytes(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        handles,
+        &description,
+    );
+    if handle == 0 || memory.write_u32_be(out, handle).is_none() {
+        *last_mem_error = PPC_MEM_FULL_ERR;
+        return PPC_MEM_FULL_ERR;
+    }
+    PPC_NO_ERR
 }
 
 pub(crate) fn ppc_close_component(cpu: &mut PpcCpu, quicktime: &mut PpcQuickTimeState) -> i16 {
@@ -478,7 +823,7 @@ pub(crate) fn ppc_qt_graphics_import_draw(
     } else {
         current_gworld
     };
-    let Some(front_buffer) = ppc_live_front_buffer_for_gworld(memory, gworlds, gworld) else {
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, gworld) else {
         if qt_trace_enabled() {
             eprintln!(
                 "[QT-TRACE] GraphicsImportDraw path='{}' gworld=${:08X} result=paramErr no-front-buffer",
@@ -487,9 +832,17 @@ pub(crate) fn ppc_qt_graphics_import_draw(
         }
         return PPC_PARAM_ERR;
     };
+    let front_buffer = surface.front_buffer;
     quicktime.graphics_import_draw_count = quicktime.graphics_import_draw_count.saturating_add(1);
-    let source_drawn =
-        ppc_qt_draw_pict_source_to_16bpp(memory, front_buffer, &quicktime.graphics_importer_data);
+    let source_drawn = if quicktime.graphics_importer_subtype == 0 {
+        ppc_qt_draw_pict_source_to_16bpp(
+            memory,
+            front_buffer,
+            &quicktime.graphics_importer_data,
+        )
+    } else {
+        ppc_qt_draw_graphics_image(memory, surface, quicktime)
+    };
     if source_drawn {
         quicktime.graphics_import_source_draw_count = quicktime
             .graphics_import_source_draw_count
@@ -506,11 +859,15 @@ pub(crate) fn ppc_qt_graphics_import_draw(
         }
         return PPC_NO_ERR;
     }
-    let fallback_drawn = ppc_qt_draw_visible_16bpp_frame(
-        memory,
-        front_buffer,
-        0x10u32.saturating_add(quicktime.graphics_import_draw_count),
-    );
+    // Only the PICT fallback paints synthesized pixels. A decoded GIF/TGA that
+    // produced nothing must not be replaced with an invented image.
+    let fallback_drawn = quicktime.graphics_importer_subtype == 0
+        && ppc_qt_draw_placeholder_frame(
+            memory,
+            front_buffer,
+            quicktime.graphics_importer_bounds,
+            0x10u32.saturating_add(quicktime.graphics_import_draw_count),
+        );
     if qt_trace_enabled() {
         eprintln!(
             "[QT-TRACE] GraphicsImportDraw path='{}' gworld=${:08X} data_len={} source=false fallback={} draw_count={} source_count={}",
@@ -527,6 +884,132 @@ pub(crate) fn ppc_qt_graphics_import_draw(
     } else {
         PPC_PARAM_ERR
     }
+}
+
+fn ppc_qt_graphics_pixel_value(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    color: PpcRgbColor,
+) -> Option<u32> {
+    match surface.front_buffer.depth {
+        32 => {
+            // Imaging With QuickDraw (1994), pp. 4-13--4-16: 32-bit direct
+            // pixels store the high byte of each RGBColor component in
+            // 0x00RRGGBB.
+            Some(
+                (u32::from(color.red >> 8) << 16)
+                    | (u32::from(color.green >> 8) << 8)
+                    | u32::from(color.blue >> 8),
+            )
+        }
+        _ => {
+            // Indexed destinations colour-map through the destination
+            // PixMap's ColorTable; 16-bit targets use 5:5:5 direct colour.
+            ppc_quickdraw_surface_color_pixel(memory, surface, color).map(u32::from)
+        }
+    }
+}
+
+fn ppc_qt_write_graphics_pixel(
+    memory: &mut PpcSectionMem,
+    front_buffer: PpcFrontBuffer,
+    point: (i32, i32),
+    value: u32,
+) -> bool {
+    match front_buffer.depth {
+        32 => {
+            let (x, y) = point;
+            let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
+                return false;
+            };
+            let Some(row_offset) = y.checked_mul(front_buffer.row_bytes) else {
+                return false;
+            };
+            let Some(pixel_offset) = x.checked_mul(4) else {
+                return false;
+            };
+            if x >= front_buffer.width
+                || y >= front_buffer.height
+                || pixel_offset.checked_add(4).map_or(true, |end| end > front_buffer.row_bytes)
+            {
+                return false;
+            }
+            let Some(addr) = front_buffer
+                .base_addr
+                .checked_add(row_offset)
+                .and_then(|row| row.checked_add(pixel_offset))
+            else {
+                return false;
+            };
+            memory.write_u32_be(addr, value).is_some()
+        }
+        _ => ppc_quickdraw_write_raw_pixel(memory, front_buffer, point, value as u16),
+    }
+}
+
+fn ppc_qt_draw_graphics_image(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    quicktime: &PpcQuickTimeState,
+) -> bool {
+    let Some(image) = quicktime.graphics_importer_image.as_ref() else {
+        return false;
+    };
+    let front_buffer = surface.front_buffer;
+    if front_buffer.base_addr == 0 || front_buffer.width == 0 || front_buffer.height == 0 {
+        return false;
+    }
+    let width = image.width.min(front_buffer.width);
+    let height = image.height.min(front_buffer.height);
+    if width == 0 || height == 0 {
+        return false;
+    }
+    let mut wrote_any = false;
+    // The destination depth and ColorTable are fixed for this draw, so the
+    // RGB -> pixel mapping only depends on the source color. Cache it per
+    // distinct RGB instead of re-running the guest ColorTable search for
+    // every pixel of a sprite sheet.
+    let mut color_cache: HashMap<[u8; 3], Option<u32>> = HashMap::new();
+    for y in 0..height {
+        for x in 0..width {
+            let Some(offset) = (y as usize)
+                .checked_mul(image.width as usize)
+                .and_then(|base| base.checked_add(x as usize))
+                .and_then(|pixel| pixel.checked_mul(4))
+            else {
+                continue;
+            };
+            let Some(rgba) = image.rgba.get(offset..offset.saturating_add(4)) else {
+                continue;
+            };
+            // GIF/TGA transparency leaves the destination pixel untouched,
+            // matching a QuickDraw transparent-mode draw.
+            if rgba[3] == 0 {
+                continue;
+            }
+            let key = [rgba[0], rgba[1], rgba[2]];
+            let value = match color_cache.get(&key) {
+                Some(value) => *value,
+                None => {
+                    let color = PpcRgbColor {
+                        red: u16::from(rgba[0]) * 0x0101,
+                        green: u16::from(rgba[1]) * 0x0101,
+                        blue: u16::from(rgba[2]) * 0x0101,
+                    };
+                    let value = ppc_qt_graphics_pixel_value(memory, surface, color);
+                    color_cache.insert(key, value);
+                    value
+                }
+            };
+            let Some(value) = value else {
+                continue;
+            };
+            if ppc_qt_write_graphics_pixel(memory, front_buffer, (x as i32, y as i32), value) {
+                wrote_any = true;
+            }
+        }
+    }
+    wrote_any
 }
 
 pub(crate) fn ppc_qt_pict_record_offset_and_bounds(data: &[u8]) -> Option<(usize, (i16, i16, i16, i16))> {
@@ -3773,9 +4256,13 @@ pub(crate) fn ppc_qt_draw_movie_frame(
     if ppc_qt_draw_decoded_movie_frame(memory, front_buffer, quicktime) {
         return true;
     }
-    ppc_qt_draw_visible_16bpp_frame(
+    if front_buffer.depth != 16 {
+        return false;
+    }
+    ppc_qt_draw_placeholder_frame(
         memory,
         front_buffer,
+        None,
         ppc_qt_movie_frame_salt(quicktime, salt),
     )
 }
@@ -3927,30 +4414,61 @@ pub(crate) fn ppc_qt_movie_timed_sample_index(
         .or_else(|| samples.samples.len().checked_sub(1))
 }
 
-fn ppc_qt_draw_visible_16bpp_frame(
+fn ppc_qt_draw_placeholder_frame(
     memory: &mut PpcSectionMem,
     front_buffer: PpcFrontBuffer,
+    bounds: Option<(i16, i16, i16, i16)>,
     salt: u32,
 ) -> bool {
-    if front_buffer.depth != 16
-        || front_buffer.base_addr == 0
+    let minimum_row_bytes = match front_buffer.depth {
+        8 => front_buffer.width,
+        16 => front_buffer.width.saturating_mul(2),
+        _ => return false,
+    };
+    if front_buffer.base_addr == 0
         || front_buffer.width == 0
         || front_buffer.height == 0
-        || front_buffer.row_bytes < front_buffer.width.saturating_mul(2)
+        || front_buffer.row_bytes < minimum_row_bytes
     {
         return false;
     }
 
-    let x_denom = front_buffer.width.saturating_sub(1).max(1);
-    let y_denom = front_buffer.height.saturating_sub(1).max(1);
+    // Restrict the placeholder to the imported image's rectangle. The real
+    // QuickTime decoder will paint pixels here; this mock only makes the
+    // startup path succeed without repainting the whole screen or GWorld.
+    let (top, left, bottom, right) = bounds.unwrap_or((
+        0,
+        0,
+        i16::try_from(front_buffer.height).unwrap_or(i16::MAX),
+        i16::try_from(front_buffer.width).unwrap_or(i16::MAX),
+    ));
+    let left = i32::from(left).max(0).min(front_buffer.width as i32);
+    let top = i32::from(top).max(0).min(front_buffer.height as i32);
+    let right = i32::from(right).max(left).min(front_buffer.width as i32);
+    let bottom = i32::from(bottom).max(top).min(front_buffer.height as i32);
+    let width = (right - left) as u32;
+    let height = (bottom - top) as u32;
+    if width == 0 || height == 0 {
+        return false;
+    }
+    let x_denom = width.saturating_sub(1).max(1);
+    let y_denom = height.saturating_sub(1).max(1);
     let mut wrote_any = false;
-    for y in 0..front_buffer.height {
-        for x in 0..front_buffer.width {
-            let red = ((x.saturating_mul(31)) / x_denom) as u16;
-            let green = ((y.saturating_mul(31)) / y_denom) as u16;
-            let blue = ((x ^ y ^ salt) & 0x1f) as u16;
-            let pixel = (red << 10) | (green << 5) | blue;
-            if ppc_q3_write_software_pixel(memory, front_buffer, (x as i32, y as i32), pixel) {
+    for y in 0..height {
+        for x in 0..width {
+            let px = left + x as i32;
+            let py = top + y as i32;
+            let pixel = if front_buffer.depth == 8 {
+                // Index zero is valid even for a short/custom ColorTable.
+                // This metadata-only mock does not decode or map GIF colors.
+                0
+            } else {
+                let red = ((x.saturating_mul(31)) / x_denom) as u16;
+                let green = ((y.saturating_mul(31)) / y_denom) as u16;
+                let blue = ((x ^ y ^ salt) & 0x1f) as u16;
+                (red << 10) | (green << 5) | blue
+            };
+            if ppc_quickdraw_write_raw_pixel(memory, front_buffer, (px, py), pixel) {
                 wrote_any = true;
             }
         }

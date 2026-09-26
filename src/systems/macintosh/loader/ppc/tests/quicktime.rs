@@ -95,6 +95,101 @@ fn ppc_test_rgb_at(frame: &PpcQuickTimeDecodedVideoFrame, x: usize, y: usize) ->
     ]
 }
 
+fn test_quicktime_gif_bytes(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+    use image::codecs::gif::GifEncoder;
+    let mut bytes = Vec::new();
+    let mut encoder = GifEncoder::new(&mut bytes);
+    encoder
+        .encode(rgba, width, height, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    drop(encoder);
+    bytes
+}
+
+fn test_quicktime_tga_bytes(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+    use image::codecs::tga::TgaEncoder;
+    let mut bytes = Vec::new();
+    TgaEncoder::new(&mut bytes)
+        .encode(rgba, width, height, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    bytes
+}
+
+fn test_quicktime_tga_header_depth(bytes: &[u8]) -> u16 {
+    u16::from(bytes[16])
+}
+
+/// Build a 16-bit truecolor TGA with the real Deimos Rising header shape:
+/// 18-byte header, pixel depth 16, `image_desc` selecting the row order.
+/// Pixel values are written in file order (bottom-left first by default).
+fn test_quicktime_tga_16_bytes(image_type: u8, image_desc: u8, pixels: &[u16]) -> Vec<u8> {
+    let width = 2u16;
+    let height = 2u16;
+    let mut bytes = vec![0u8; 18];
+    bytes[2] = image_type;
+    bytes[12..14].copy_from_slice(&width.to_le_bytes());
+    bytes[14..16].copy_from_slice(&height.to_le_bytes());
+    bytes[16] = 16;
+    bytes[17] = image_desc;
+    match image_type {
+        2 => {
+            for pixel in pixels {
+                bytes.extend_from_slice(&pixel.to_le_bytes());
+            }
+        }
+        10 => {
+            bytes.push(((pixels.len() as u8).saturating_sub(1)) & 0x7f);
+            for pixel in pixels {
+                bytes.extend_from_slice(&pixel.to_le_bytes());
+            }
+        }
+        _ => unreachable!(),
+    }
+    bytes
+}
+
+fn test_quicktime_tga_16_color(red: u16, green: u16, blue: u16) -> u16 {
+    ((red & 0x1f) << 10) | ((green & 0x1f) << 5) | (blue & 0x1f)
+}
+
+fn test_quicktime_importer_decode_image_bytes(
+    subtype: &[u8; 4],
+    data: &[u8],
+    expected_status: i16,
+) -> Option<PpcQtGraphicsImage> {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"GraphicsImportSetDataHandle");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let handle = PPC_DATA_BASE + 0x1800;
+    let data_ptr = PPC_DATA_BASE + 0x2000;
+    test_quicktime_push_importer_data_handle(&mut loaded, handle, data_ptr, data);
+    loaded.quicktime.graphics_importer_open = true;
+    loaded.quicktime.graphics_importer_subtype = u32::from_be_bytes(*subtype);
+    loaded.cpu.gpr[3] = PPC_QT_GRAPHICS_IMPORTER;
+    loaded.cpu.gpr[4] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected_status));
+    loaded.quicktime.graphics_importer_image
+}
+
+fn test_quicktime_push_importer_data_handle(
+    loaded: &mut PpcLoadedApp,
+    handle: u32,
+    data_ptr: u32,
+    data: &[u8],
+) {
+    loaded.memory.add_region(data_ptr, data.to_vec());
+    test_handles!(loaded).push(PpcHandleRecord {
+        handle,
+        ptr: data_ptr,
+        size: u32::try_from(data.len()).unwrap(),
+        capacity: u32::try_from(data.len()).unwrap(),
+    });
+}
+
 fn test_quicktime_tkhd_movie(width: u16, height: u16) -> Vec<u8> {
     fn push_u16(bytes: &mut Vec<u8>, value: u16) {
         bytes.extend_from_slice(&value.to_be_bytes());
@@ -2748,4 +2843,468 @@ fn import_bindings_classify_quicktime_compatibility_imports() {
             PpcImportDispatcherTarget::QuickTimeCompatibility(operation),
         );
     }
+}
+
+#[test]
+fn hle_import_runner_quicktime_open_default_component_routes_by_type() {
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"OpenADefaultComponent");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let instance_out = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(instance_out, vec![0; 4]);
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"grip");
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"GIF ");
+    loaded.cpu.gpr[5] = instance_out;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(instance_out),
+        Some(PPC_QT_GRAPHICS_IMPORTER)
+    );
+    assert!(loaded.quicktime.graphics_importer_open);
+    assert_eq!(
+        loaded.quicktime.graphics_importer_subtype,
+        u32::from_be_bytes(*b"GIF ")
+    );
+
+    // A different component type must not be silently mapped onto the
+    // graphics importer.
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.quicktime.graphics_importer_open = false;
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"snd ");
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"????");
+    loaded.cpu.gpr[5] = instance_out;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_INVALID_COMPONENT_ID));
+    assert!(!loaded.quicktime.graphics_importer_open);
+}
+
+#[test]
+fn hle_import_runner_quicktime_graphics_importer_decodes_gif() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"GraphicsImportSetDataHandle");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let gif_rgba = [
+        255, 0, 0, 255, //
+        0, 255, 0, 255, //
+        0, 0, 255, 255, //
+        255, 255, 255, 255,
+    ];
+    let gif = test_quicktime_gif_bytes(2, 2, &gif_rgba);
+    let handle = PPC_DATA_BASE + 0x1800;
+    let data_ptr = PPC_DATA_BASE + 0x2000;
+    test_quicktime_push_importer_data_handle(&mut loaded, handle, data_ptr, &gif);
+    loaded.quicktime.graphics_importer_open = true;
+    loaded.quicktime.graphics_importer_subtype = u32::from_be_bytes(*b"GIF ");
+    loaded.cpu.gpr[3] = PPC_QT_GRAPHICS_IMPORTER;
+    loaded.cpu.gpr[4] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.quicktime.graphics_importer_depth, 8);
+    assert_eq!(
+        loaded.quicktime.graphics_importer_bounds,
+        Some((0, 0, 2, 2))
+    );
+    assert_eq!(loaded.quicktime.graphics_importer_data, gif);
+    let image = loaded
+        .quicktime
+        .graphics_importer_image
+        .as_ref()
+        .expect("GIF decoded");
+    assert_eq!((image.width, image.height), (2, 2));
+    assert_eq!(image.rgba, gif_rgba);
+
+    // GetImageDescription reports the decoded dimensions and depth.
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.imports[0].dispatcher_target =
+        PpcImportDispatcherTarget::QtGraphicsImportGetImageDescription;
+    let description_out = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(description_out, vec![0; 4]);
+    loaded.cpu.gpr[3] = PPC_QT_GRAPHICS_IMPORTER;
+    loaded.cpu.gpr[4] = description_out;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let description_handle = loaded.memory.read_u32_be(description_out).unwrap();
+    let description_ptr = loaded.memory.read_u32_be(description_handle).unwrap();
+    let mut description = [0u8; 86];
+    loaded
+        .memory
+        .read_bytes_into(description_ptr, &mut description)
+        .unwrap();
+    assert_eq!(
+        u32::from_be_bytes(description[..4].try_into().unwrap()),
+        86
+    );
+    assert_eq!(&description[4..8], b"GIF ");
+    assert_eq!(
+        i16::from_be_bytes(description[32..34].try_into().unwrap()),
+        2
+    );
+    assert_eq!(
+        i16::from_be_bytes(description[34..36].try_into().unwrap()),
+        2
+    );
+    assert_eq!(&description[51..54], b"GIF");
+    assert_eq!(
+        i16::from_be_bytes(description[82..84].try_into().unwrap()),
+        8
+    );
+
+    // Draw converts the decoded pixels into the 16-bit destination.
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtGraphicsImportDraw;
+    let gworld = 0x0600_1000;
+    let base = PPC_HEAP_BASE + 0x6000;
+    loaded.memory.add_region(base, vec![0; 2 * 2 * 2]);
+    loaded.gworlds = vec![PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: gworld,
+        pixmap_handle: 0,
+        pixmap: 0,
+        base_addr: base,
+        gdevice: 0x0600_2000,
+        width: 2,
+        height: 2,
+        depth: 16,
+        row_bytes: 4,
+        pixels_locked: false,
+        pixels_no_purge: false,
+    }];
+    loaded.quicktime.graphics_importer_gworld = gworld;
+    loaded.cpu.gpr[3] = PPC_QT_GRAPHICS_IMPORTER;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.quicktime.graphics_import_source_draw_count, 1);
+    let pixels: Vec<u16> = (0..4)
+        .map(|index| loaded.memory.read_u16_be(base + index * 2).unwrap())
+        .collect();
+    assert_eq!(
+        pixels,
+        vec![
+            ppc_qt_rgb555_from_u8(255, 0, 0),
+            ppc_qt_rgb555_from_u8(0, 255, 0),
+            ppc_qt_rgb555_from_u8(0, 0, 255),
+            ppc_qt_rgb555_from_u8(255, 255, 255),
+        ]
+    );
+}
+
+#[test]
+fn hle_import_runner_quicktime_graphics_importer_decodes_16_bit_tga_uncompressed() {
+    // Real Interface.pak shape: image type 2, pixel depth 16, image_desc 0x01
+    // (one attribute bit, bottom-left origin). File order is the bottom row
+    // first, so the decoder must flip the rows.
+    let blue = test_quicktime_tga_16_color(0, 0, 31);
+    let white = test_quicktime_tga_16_color(31, 31, 31);
+    let red = test_quicktime_tga_16_color(31, 0, 0);
+    let green = test_quicktime_tga_16_color(0, 31, 0);
+    let tga = test_quicktime_tga_16_bytes(2, 0x01, &[blue, white, red, green]);
+
+    let image = test_quicktime_importer_decode_image_bytes(b"TGA ", &tga, PPC_NO_ERR)
+        .expect("16-bit TGA decoded");
+    assert_eq!((image.width, image.height), (2, 2));
+    assert_eq!(
+        image.rgba,
+        [
+            255, 0, 0, 255, // red
+            0, 255, 0, 255, // green
+            0, 0, 255, 255, // blue
+            255, 255, 255, 255, // white
+        ]
+    );
+}
+
+#[test]
+fn hle_import_runner_quicktime_graphics_importer_decodes_16_bit_tga_rle() {
+    // One RLE run packet (blue x2) followed by one raw packet (red, green),
+    // in bottom-left file order.
+    let blue = test_quicktime_tga_16_color(0, 0, 31);
+    let red = test_quicktime_tga_16_color(31, 0, 0);
+    let green = test_quicktime_tga_16_color(0, 31, 0);
+    let mut tga = test_quicktime_tga_16_bytes(10, 0x01, &[blue, blue, red, green]);
+    // Rewrite the payload as: run packet 0x81 + blue, raw packet 0x01 + red + green.
+    tga.truncate(18);
+    tga.push(0x81);
+    tga.extend_from_slice(&blue.to_le_bytes());
+    tga.push(0x01);
+    tga.extend_from_slice(&red.to_le_bytes());
+    tga.extend_from_slice(&green.to_le_bytes());
+
+    let image = test_quicktime_importer_decode_image_bytes(b"TGA ", &tga, PPC_NO_ERR)
+        .expect("RLE 16-bit TGA decoded");
+    assert_eq!(image.rgba[..8], [255, 0, 0, 255, 0, 255, 0, 255]);
+    assert_eq!(
+        image.rgba[8..],
+        [0, 0, 255, 255, 0, 0, 255, 255]
+    );
+}
+
+#[test]
+fn hle_import_runner_quicktime_graphics_importer_16_bit_tga_honors_origin_bit() {
+    // Top-left origin: image_desc bit 5 set, so the first file row is the top
+    // row and the decoded bytes keep file order.
+    let red = test_quicktime_tga_16_color(31, 0, 0);
+    let green = test_quicktime_tga_16_color(0, 31, 0);
+    let blue = test_quicktime_tga_16_color(0, 0, 31);
+    let white = test_quicktime_tga_16_color(31, 31, 31);
+    let tga = test_quicktime_tga_16_bytes(2, 0x20, &[red, green, blue, white]);
+
+    let image = test_quicktime_importer_decode_image_bytes(b"TGA ", &tga, PPC_NO_ERR)
+        .expect("top-left TGA decoded");
+    assert_eq!(
+        image.rgba,
+        [
+            255, 0, 0, 255, // red
+            0, 255, 0, 255, // green
+            0, 0, 255, 255, // blue
+            255, 255, 255, 255, // white
+        ]
+    );
+}
+
+#[test]
+fn hle_import_runner_quicktime_graphics_importer_rejects_truncated_16_bit_tga() {
+    let blue = test_quicktime_tga_16_color(0, 0, 31);
+    let mut tga = test_quicktime_tga_16_bytes(2, 0x01, &[blue, blue, blue, blue]);
+    tga.truncate(20);
+
+    let image = test_quicktime_importer_decode_image_bytes(b"TGA ", &tga, PPC_PARAM_ERR);
+    assert!(image.is_none());
+}
+
+#[test]
+fn hle_import_runner_quicktime_graphics_importer_decodes_tga() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"GraphicsImportSetDataHandle");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let tga_rgba = [
+        10, 20, 30, 255, //
+        40, 50, 60, 255, //
+        70, 80, 90, 255, //
+        100, 110, 120, 255,
+    ];
+    let tga = test_quicktime_tga_bytes(2, 2, &tga_rgba);
+    let handle = PPC_DATA_BASE + 0x1800;
+    let data_ptr = PPC_DATA_BASE + 0x2000;
+    test_quicktime_push_importer_data_handle(&mut loaded, handle, data_ptr, &tga);
+    loaded.quicktime.graphics_importer_open = true;
+    loaded.quicktime.graphics_importer_subtype = u32::from_be_bytes(*b"TGA ");
+    loaded.cpu.gpr[3] = PPC_QT_GRAPHICS_IMPORTER;
+    loaded.cpu.gpr[4] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.quicktime.graphics_importer_depth,
+        test_quicktime_tga_header_depth(&tga)
+    );
+    assert_eq!(
+        loaded.quicktime.graphics_importer_bounds,
+        Some((0, 0, 2, 2))
+    );
+    let image = loaded
+        .quicktime
+        .graphics_importer_image
+        .as_ref()
+        .expect("TGA decoded");
+    assert_eq!((image.width, image.height), (2, 2));
+    assert_eq!(image.rgba, tga_rgba);
+}
+
+#[test]
+fn hle_import_runner_quicktime_graphics_importer_rejects_undecodable_data() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"GraphicsImportSetDataHandle");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let handle = PPC_DATA_BASE + 0x1800;
+    let data_ptr = PPC_DATA_BASE + 0x2000;
+    test_quicktime_push_importer_data_handle(&mut loaded, handle, data_ptr, b"not a gif");
+    loaded.quicktime.graphics_importer_open = true;
+    loaded.quicktime.graphics_importer_subtype = u32::from_be_bytes(*b"GIF ");
+    loaded.cpu.gpr[3] = PPC_QT_GRAPHICS_IMPORTER;
+    loaded.cpu.gpr[4] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert!(loaded.quicktime.graphics_importer_image.is_none());
+    assert_eq!(loaded.quicktime.graphics_importer_bounds, None);
+}
+
+#[test]
+fn hle_import_runner_quicktime_graphics_importer_maps_gif_through_destination_clut() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"GraphicsImportSetDataHandle");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let gif_rgba = [
+        255, 0, 0, 255, //
+        0, 255, 0, 255, //
+        0, 0, 255, 255, //
+        255, 255, 255, 255,
+    ];
+    let gif = test_quicktime_gif_bytes(2, 2, &gif_rgba);
+    let handle = PPC_DATA_BASE + 0x1800;
+    let data_ptr = PPC_DATA_BASE + 0x2000;
+    test_quicktime_push_importer_data_handle(&mut loaded, handle, data_ptr, &gif);
+    loaded.quicktime.graphics_importer_open = true;
+    loaded.quicktime.graphics_importer_subtype = u32::from_be_bytes(*b"GIF ");
+    loaded.cpu.gpr[3] = PPC_QT_GRAPHICS_IMPORTER;
+    loaded.cpu.gpr[4] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtGraphicsImportDraw;
+    let gworld = 0x0600_1000;
+    let base = PPC_HEAP_BASE + 0x6000;
+    loaded.memory.add_region(base, vec![0; 2 * 2]);
+    loaded.gworlds = vec![PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: gworld,
+        pixmap_handle: 0,
+        pixmap: 0,
+        base_addr: base,
+        gdevice: 0x0600_2000,
+        width: 2,
+        height: 2,
+        depth: 8,
+        row_bytes: 2,
+        pixels_locked: false,
+        pixels_no_purge: false,
+    }];
+    loaded.quicktime.graphics_importer_gworld = gworld;
+    loaded.cpu.gpr[3] = PPC_QT_GRAPHICS_IMPORTER;
+
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    let surface = PpcQuickDrawSurface {
+        front_buffer: PpcFrontBuffer {
+            base_addr: base,
+            row_bytes: 2,
+            width: 2,
+            height: 2,
+            depth: 8,
+        },
+        top: 0,
+        left: 0,
+        ctable_handle: None,
+    };
+    let colors = [
+        PpcRgbColor {
+            red: 0xffff,
+            green: 0,
+            blue: 0,
+        },
+        PpcRgbColor {
+            red: 0,
+            green: 0xffff,
+            blue: 0,
+        },
+        PpcRgbColor {
+            red: 0,
+            green: 0,
+            blue: 0xffff,
+        },
+        PPC_RGB_WHITE,
+    ];
+    let expected: Vec<u8> = colors
+        .iter()
+        .map(|color| {
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, *color).unwrap() as u8
+        })
+        .collect();
+    let drawn: Vec<u8> = (0..4)
+        .map(|index| loaded.memory.read_u8(base + index).unwrap())
+        .collect();
+    assert_eq!(drawn, expected);
+    // The three sprite colours must remain distinguishable from the cleared
+    // background index once mapped through the destination ColorTable.
+    assert_ne!(expected[0], 0);
+    assert_ne!(expected[1], 0);
+    assert_ne!(expected[2], 0);
+    assert_ne!(expected[0], expected[1]);
+    assert_ne!(expected[1], expected[2]);
+}
+
+#[test]
+fn hle_import_runner_quicktime_graphics_importer_draws_gif_into_32_bit_gworld() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"GraphicsImportSetDataHandle");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let gif_rgba = [
+        255, 0, 0, 255, //
+        0, 255, 0, 255, //
+        0, 0, 255, 255, //
+        255, 255, 255, 255,
+    ];
+    let gif = test_quicktime_gif_bytes(2, 2, &gif_rgba);
+    let handle = PPC_DATA_BASE + 0x1800;
+    let data_ptr = PPC_DATA_BASE + 0x2000;
+    test_quicktime_push_importer_data_handle(&mut loaded, handle, data_ptr, &gif);
+    loaded.quicktime.graphics_importer_open = true;
+    loaded.quicktime.graphics_importer_subtype = u32::from_be_bytes(*b"GIF ");
+    loaded.cpu.gpr[3] = PPC_QT_GRAPHICS_IMPORTER;
+    loaded.cpu.gpr[4] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtGraphicsImportDraw;
+    let gworld = 0x0600_1000;
+    let base = PPC_HEAP_BASE + 0x6000;
+    loaded.memory.add_region(base, vec![0; 2 * 2 * 4]);
+    loaded.gworlds = vec![PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: gworld,
+        pixmap_handle: 0,
+        pixmap: 0,
+        base_addr: base,
+        gdevice: 0x0600_2000,
+        width: 2,
+        height: 2,
+        depth: 32,
+        row_bytes: 8,
+        pixels_locked: false,
+        pixels_no_purge: false,
+    }];
+    loaded.quicktime.graphics_importer_gworld = gworld;
+    loaded.cpu.gpr[3] = PPC_QT_GRAPHICS_IMPORTER;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.quicktime.graphics_import_source_draw_count, 1);
+    let pixels: Vec<u32> = (0..4)
+        .map(|index| loaded.memory.read_u32_be(base + index * 4).unwrap())
+        .collect();
+    assert_eq!(
+        pixels,
+        vec![0x00ff_0000, 0x0000_ff00, 0x0000_00ff, 0x00ff_ffff]
+    );
 }
