@@ -6,6 +6,7 @@ mod components;
 mod emulator;
 mod paths;
 mod presentation;
+mod renderer_bridge;
 mod save_store;
 mod worker_runtime;
 

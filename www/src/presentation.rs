@@ -12,9 +12,60 @@ use web_sys::{
 pub(crate) enum CanvasFrame {
     WebGl(WebGlFrame),
     Canvas2d(Canvas2dFrame),
+    Offscreen(OffscreenFrame),
 }
 
 impl CanvasFrame {
+    pub(crate) fn new_worker(
+        canvas: &HtmlCanvasElement,
+        width: u32,
+        height: u32,
+        generation: u32,
+    ) -> Option<Self> {
+        let user_agent = web_sys::window()
+            .and_then(|window| window.navigator().user_agent().ok())
+            .unwrap_or_default();
+        if !requires_canvas_2d_presenter(&user_agent) {
+            if let Ok(handle) = crate::renderer_bridge::create_renderer(canvas, generation) {
+                if !handle.is_null() {
+                    return Some(Self::Offscreen(OffscreenFrame {
+                        canvas: canvas.clone(),
+                        handle,
+                        fallback: None,
+                        needs_snapshot: false,
+                        painted: false,
+                        fatal: None,
+                    }));
+                }
+            }
+        }
+        Self::new(canvas, width, height)
+    }
+
+    pub(crate) fn poll_recovery(&mut self) -> Result<(), String> {
+        if let Self::Offscreen(frame) = self {
+            frame.poll_recovery()
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn needs_snapshot(&self) -> bool {
+        matches!(self, Self::Offscreen(frame) if frame.needs_snapshot)
+    }
+
+    pub(crate) fn pending(&self) -> bool {
+        matches!(self, Self::Offscreen(frame) if frame.pending())
+    }
+
+    pub(crate) fn asynchronous(&self) -> bool {
+        matches!(self, Self::Offscreen(frame) if frame.fallback.is_none() && frame.fatal.is_none())
+    }
+
+    pub(crate) fn submitted(&self) -> bool {
+        matches!(self, Self::Offscreen(frame) if frame.submitted())
+    }
+
     pub(crate) fn new(canvas: &HtmlCanvasElement, width: u32, height: u32) -> Option<Self> {
         let user_agent = web_sys::window()
             .and_then(|window| window.navigator().user_agent().ok())
@@ -43,6 +94,7 @@ impl CanvasFrame {
         match self {
             Self::WebGl(frame) => frame.paint(width, height, rgba),
             Self::Canvas2d(frame) => frame.paint(width, height, rgba),
+            Self::Offscreen(frame) => frame.paint_js(width, height, &Uint8Array::from(rgba)),
         }
     }
 
@@ -50,6 +102,7 @@ impl CanvasFrame {
         match self {
             Self::WebGl(frame) => frame.paint_js(width, height, rgba),
             Self::Canvas2d(frame) => frame.paint_js(width, height, rgba),
+            Self::Offscreen(frame) => frame.paint_js(width, height, rgba),
         }
     }
 
@@ -60,7 +113,7 @@ impl CanvasFrame {
     pub(crate) fn paint_q3(&mut self, packet: &JsValue) -> Option<(u32, u32)> {
         match self {
             Self::WebGl(frame) => frame.paint_q3(packet),
-            Self::Canvas2d(_) => None,
+            Self::Canvas2d(_) | Self::Offscreen(_) => None,
         }
     }
 
@@ -68,7 +121,115 @@ impl CanvasFrame {
         match self {
             Self::WebGl(_) => "webgl",
             Self::Canvas2d(_) => "canvas2d",
+            Self::Offscreen(frame) if frame.fallback.is_some() => "canvas2d-renderer-fallback",
+            Self::Offscreen(_) => "offscreen-canvas2d",
         }
+    }
+}
+
+pub(crate) struct OffscreenFrame {
+    canvas: HtmlCanvasElement,
+    handle: JsValue,
+    fallback: Option<Canvas2dFrame>,
+    needs_snapshot: bool,
+    painted: bool,
+    fatal: Option<String>,
+}
+
+impl OffscreenFrame {
+    fn poll_recovery(&mut self) -> Result<(), String> {
+        if let Some(error) = self.fatal.as_ref() {
+            return Err(error.clone());
+        }
+        if self.fallback.is_some() {
+            return Ok(());
+        }
+        let status = crate::renderer_bridge::renderer_status(&self.handle);
+        if Reflect::get(&status, &JsValue::from_str("phase"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .as_deref()
+            != Some("failed")
+        {
+            return Ok(());
+        }
+        let error = Reflect::get(&status, &JsValue::from_str("error"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| "Renderer failed".into());
+        let _ = self.canvas.set_attribute("data-render-fallback", &error);
+        let recovery = crate::renderer_bridge::take_recovery(&self.handle);
+        crate::renderer_bridge::dispose_renderer(&self.handle);
+        // The failed worker owned a separate canvas. The original input canvas
+        // has never acquired a context, so Canvas2D can take over without losing
+        // listeners, focus, pointer capture or the running guest.
+        self.fallback = self
+            .canvas
+            .get_context("2d")
+            .ok()
+            .flatten()
+            .and_then(|context| context.dyn_into::<CanvasRenderingContext2d>().ok())
+            .and_then(|context| {
+                Canvas2dFrame::new(context, self.canvas.width(), self.canvas.height())
+            });
+        if self.fallback.is_none() {
+            let message = format!("{error}; unable to initialize fallback display");
+            self.fatal = Some(message.clone());
+            return Err(message);
+        }
+        self.needs_snapshot = true;
+        if !recovery.is_null() {
+            if let (Some(width), Some(height), Ok(pixels)) = (
+                js_number_property(&recovery, "width"),
+                js_number_property(&recovery, "height"),
+                Reflect::get(&recovery, &JsValue::from_str("pixels")),
+            ) {
+                if let Ok(pixels) = pixels.dyn_into::<Uint8Array>() {
+                    self.paint_js(width as u32, height as u32, &pixels);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn paint_js(&mut self, width: u32, height: u32, pixels: &Uint8Array) {
+        if self.fatal.is_some() {
+            return;
+        }
+        if let Some(fallback) = self.fallback.as_mut() {
+            fallback.paint_js(width, height, pixels);
+            self.needs_snapshot = false;
+            self.painted = true;
+        } else {
+            crate::renderer_bridge::paint_renderer(&self.handle, width, height, pixels);
+        }
+    }
+
+    fn submitted(&self) -> bool {
+        self.painted
+            || (self.fallback.is_none()
+                && self.fatal.is_none()
+                && js_bool_property(
+                    &crate::renderer_bridge::renderer_status(&self.handle),
+                    "submitted",
+                )
+                .unwrap_or(false))
+    }
+
+    fn pending(&self) -> bool {
+        self.fallback.is_none()
+            && self.fatal.is_none()
+            && js_bool_property(
+                &crate::renderer_bridge::renderer_status(&self.handle),
+                "pending",
+            )
+            .unwrap_or(false)
+    }
+}
+
+impl Drop for OffscreenFrame {
+    fn drop(&mut self) {
+        crate::renderer_bridge::dispose_renderer(&self.handle);
     }
 }
 

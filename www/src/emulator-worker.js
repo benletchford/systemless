@@ -1,4 +1,4 @@
-const PROTOCOL_VERSION = 2;
+const PROTOCOL_VERSION = 3;
 let machine = null;
 let generation = 0;
 let frameSequence = 0;
@@ -64,6 +64,10 @@ self.onmessage = async (event) => {
       reply({ type: "progress", progress: JSON.stringify("LoadingExecutable") });
       const bindings = await import(message.moduleUrl);
       await bindings.default(message.wasmUrl);
+      if (typeof bindings.WorkerMachine.runtimeProtocolVersion !== "function"
+          || bindings.WorkerMachine.runtimeProtocolVersion() !== PROTOCOL_VERSION) {
+        throw new Error("Runtime Wasm assets use an incompatible protocol");
+      }
       machine = await bindings.WorkerMachine.create(
         new Uint8Array(message.gameBytes),
         message.config,
@@ -85,7 +89,7 @@ self.onmessage = async (event) => {
     }
 
     if (message.type === "frame") {
-      const result = machine.runFrame(message.queuedAudioSamples ?? -1, !!message.debug, message.outputScale ?? 1);
+      const result = machine.runFrame(message.queuedAudioSamples ?? -1, !!message.debug, message.outputScale ?? 1, !!message.forceRender);
       guestTick = result.guestTick >>> 0;
       uiTracking = !!result.uiTracking;
       if (result.lastSteps > 0 || !result.running) {

@@ -21,8 +21,16 @@ export class RendererClient {
     this.syncGeometry = () => {
       if (!this.canvas) return;
       const source = this.logicalCanvas;
-      Object.assign(this.canvas.style, { left: `${source.offsetLeft}px`, top: `${source.offsetTop}px`,
-        width: `${source.offsetWidth}px`, height: `${source.offsetHeight}px` });
+      const parent = source.parentElement;
+      const bounds = source.getBoundingClientRect();
+      const container = parent.getBoundingClientRect();
+      // offsetWidth/offsetLeft round fractional CSS pixels. That changes pixel
+      // sampling at fractional display scales even when the packet is exact.
+      Object.assign(this.canvas.style, {
+        left: `${bounds.left - container.left - parent.clientLeft + parent.scrollLeft}px`,
+        top: `${bounds.top - container.top - parent.clientTop + parent.scrollTop}px`,
+        width: `${bounds.width}px`, height: `${bounds.height}px`,
+      });
     };
     this.lastCheck = performance.now();
     this.waitingSequence = null;

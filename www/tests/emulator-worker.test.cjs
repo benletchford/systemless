@@ -290,3 +290,13 @@ test('shutdown reports a save failure without claiming a completed flush', async
   assert.match(w.messages[0].message, /write aborted/);
   assert.equal(w.messages.some(m => m.type === 'stopped'), false);
 });
+
+
+test('presenter recovery requests a fresh image without recreating the guest', async () => {
+  const w = worker();
+  const calls = [];
+  w.override({ runFrame: (...args) => { calls.push(args); return { running: false, guestTick: 100, lastSteps: 0 }; } });
+  await w.send('frame', { forceRender: true, outputScale: 2 });
+  assert.deepEqual(calls, [[-1, false, 2, true]]);
+  assert.equal(w.messages.filter(message => message.type === 'frame').length, 1);
+});

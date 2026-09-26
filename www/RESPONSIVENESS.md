@@ -80,3 +80,27 @@ A stale worker protocol also passes that round trip through visible fallback.
 
 Safari and Windows/Linux browser execution have not been qualified on this host.
 Compatibility mode remains available through explicit `runtime.worker: false`.
+
+## Experimental renderer worker
+
+On supported browsers, `?renderer=worker` selects an experimental OffscreenCanvas
+2D presenter alongside the existing emulation worker. It is opt-in and has not
+passed the full presentation qualification gate. Safari retains its existing
+Canvas2D path. This capability class accepts complete RGBA images; it does not
+coalesce incremental QD3D submissions or enable external QD3D GPU capture.
+
+The logical canvas retains input listeners and focus. A separate display canvas
+transfers to the renderer before context creation. One submitted image and one
+newest pending image bound the sender queue; at most two returned buffers are
+retained. Renderer failure removes the display canvas and initializes Canvas2D
+on the logical canvas, using retained pixels or requesting a fresh snapshot from
+the same guest. Snapshot recovery also works after guest execution stops.
+
+`data-render-backend` and `data-render-fallback` expose backend selection and
+failure. `data-render-sequence` identifies submitted images independently of guest
+TickCount. `data-render-roundtrip-ms` measures submission acknowledgement on the
+host clock; `data-render-submit-ms` measures the renderer's own submission call.
+Neither measures physical display completion. The current path still performs
+owner-side RGBA expansion and a Wasm-to-JavaScript copy before transferring through
+the host to the renderer. Indexed GPU expansion, direct owner-to-renderer transport,
+retained-text packets and full pipeline measurements remain pending.
