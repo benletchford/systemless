@@ -160,4 +160,18 @@ pub fn ppc_write_rgb_color(
     Some(())
 }
 
-
+pub fn ppc_physical_screen_color_pixel(
+    front: PpcFrontBuffer,
+    color: PpcRgbColor,
+    screen_clut: &[[u16; 3]; 256],
+) -> Option<u16> {
+    match front.depth {
+        depth @ (1 | 2 | 4 | 8) => Some(u16::from(super::ppc_rgb_color_to_index_in_clut(
+            color,
+            screen_clut,
+            super::ppc_indexed_depth_entry_count(depth)?,
+        ))),
+        16 => Some(super::ppc_rgb_color_to_rgb555(color)),
+        _ => None,
+    }
+}
