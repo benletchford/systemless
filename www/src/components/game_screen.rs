@@ -69,7 +69,12 @@ pub fn GameScreen(game: &'static Game) -> impl IntoView {
                                 aria-pressed=move || bool_attr(
                                     selected_architecture.get() == architecture,
                                 )
-                                on:click=move |_| selected_architecture.set(architecture)
+                                on:click=move |_| {
+                                    if selected_architecture.get_untracked() != architecture {
+                                        crate::emulator::begin_audio_from_user_gesture();
+                                        selected_architecture.set(architecture);
+                                    }
+                                }
                             >
                                 {architecture.label()}
                             </button>
@@ -184,7 +189,11 @@ fn set_plugin_selected(
         } else {
             requested.retain(|id| *id != plugin_id);
         }
-        *ids = normalize_plugin_selection(game, &requested);
+        let next = normalize_plugin_selection(game, &requested);
+        if game.approved && *ids != next {
+            crate::emulator::begin_audio_from_user_gesture();
+        }
+        *ids = next;
     });
 }
 
@@ -431,7 +440,7 @@ fn GameRuntime(
             if !alive.load(Ordering::Relaxed) {
                 return;
             }
-            if game.settings.worker && plugin_files.is_empty() {
+            if game.settings.worker {
                 set_status(status, "Starting runtime worker\u{2026}".into());
                 match boot_catalogue_worker(
                     &bytes,
@@ -835,7 +844,14 @@ fn PluginPanel(
                     class="plugin-clear"
                     class:hidden=move || selected_count == 0
                     type="button"
-                    on:click=move |_| selected_plugins_signal.set(Vec::new())
+                    on:click=move |_| {
+                        if !selected_plugins_signal.get_untracked().is_empty() {
+                            if game.approved {
+                                crate::emulator::begin_audio_from_user_gesture();
+                            }
+                            selected_plugins_signal.set(Vec::new());
+                        }
+                    }
                 >
                     "Disable all"
                 </button>

@@ -189,3 +189,16 @@ fn disabled_games_are_not_advertised_in_the_public_library_or_sitemap() {
     let page = &pages[&format!("{}/index.html", disabled.path.trim_matches('/'))];
     assert!(page.contains("noindex,nofollow"));
 }
+
+#[test]
+fn generated_browser_settings_preserve_worker_default_and_explicit_opt_out() {
+    let mut source = common::catalogue();
+    source.documents.truncate(1);
+    source.documents[0].entry.runtime = Default::default();
+    let generated = site::rust_games(&catalogue::build(&source).unwrap()).unwrap();
+    assert!(generated.contains("worker: true"));
+    source.documents[0].entry.runtime.worker = false;
+    let generated = site::rust_games(&catalogue::build(&source).unwrap()).unwrap();
+    assert!(generated.contains("worker: false"));
+    assert!(!generated.contains("worker: true"));
+}
