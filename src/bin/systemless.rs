@@ -43,6 +43,8 @@ mod native_bundle;
 mod native_menu;
 #[path = "desktop/runtime_driver.rs"]
 mod runtime_driver;
+#[path = "desktop/runtime_protocol.rs"]
+mod runtime_protocol;
 
 #[cfg(all(feature = "debug-server", unix))]
 #[path = "desktop/debug_server.rs"]
@@ -847,6 +849,7 @@ struct PendingGpuFrame {
 
 struct App {
     driver: GuiDriver,
+    guest_state: runtime_protocol::GuiState,
     frame: frame_snapshot::GuiFrame,
     retained_frame_cache: frame_snapshot::RetainedFrameCache,
     #[cfg(target_os = "windows")]
@@ -928,7 +931,8 @@ struct App {
     debug_last_frame_at: Option<std::time::Instant>,
     debug_host_fps: Option<f64>,
     debug_frame_ms: Option<f64>,
-    /// Remap arrow keys to numpad equivalents (for keyboards without a numpad)
+    /// Constructor configuration assertion; the runtime owns key remapping.
+    #[cfg(test)]
     arrows_as_numpad: bool,
     /// None chooses a comfortable monitor-aware size; Some preserves an
     /// explicit physical guest-to-host pixel ratio.
@@ -1012,6 +1016,7 @@ impl App {
                 screen_depth,
                 ui_theme,
             ),
+            guest_state: Default::default(),
             frame: Default::default(),
             retained_frame_cache: Default::default(),
             window: None,
@@ -1075,6 +1080,7 @@ impl App {
             debug_last_frame_at: None,
             debug_host_fps: None,
             debug_frame_ms: None,
+            #[cfg(test)]
             arrows_as_numpad,
             display_scale,
             #[cfg(target_os = "macos")]
@@ -1093,6 +1099,7 @@ impl App {
 
     fn init_game(&mut self) {
         self.driver.init_game();
+        self.driver.capture_state(&mut self.guest_state, true);
         #[cfg(target_os = "macos")]
         self.sync_native_application_identity();
     }
@@ -1123,14 +1130,10 @@ impl App {
                     width: sw,
                     height: sh,
                 }),
-                self.driver.runner.as_ref().and_then(|runner| {
-                    runner
-                        .dispatcher()
-                        .visible_dialog_structure_bounds(runner.bus())
-                }),
+                self.guest_state.dialog_bounds,
                 sw,
                 sh,
-                native_menu_bar_height(self.driver.runner.as_ref(), self.native_integrations),
+                self.guest_state.hidden_menu_height,
             )
         };
         #[cfg(not(target_os = "macos"))]
@@ -1153,14 +1156,10 @@ impl App {
     }
 
     fn sync_guest_cursor_warp(&mut self) {
-        let Some((v, h)) = self
-            .driver
-            .runner
-            .as_mut()
-            .and_then(FixtureRunner::take_guest_cursor_warp)
-        else {
+        let Some(warp) = self.guest_state.warp else {
             return;
         };
+        let (v, h) = warp.position;
         let Some(window) = self.window.as_ref() else {
             return;
         };
@@ -1183,14 +1182,10 @@ impl App {
                     width: sw,
                     height: sh,
                 }),
-                self.driver.runner.as_ref().and_then(|runner| {
-                    runner
-                        .dispatcher()
-                        .visible_dialog_structure_bounds(runner.bus())
-                }),
+                self.guest_state.dialog_bounds,
                 sw,
                 sh,
-                native_menu_bar_height(self.driver.runner.as_ref(), self.native_integrations),
+                self.guest_state.hidden_menu_height,
             )
         };
         #[cfg(not(target_os = "macos"))]
@@ -1215,6 +1210,12 @@ impl App {
                 self.physical_to_mac(self.mouse_physical.0, self.mouse_physical.1);
             self.mouse_guest_offset = (v.saturating_sub(host_v), h.saturating_sub(host_h));
         }
+        self.driver
+            .apply_command(runtime_protocol::GuiCommand::AcknowledgeWarp {
+                generation: self.guest_state.generation,
+                serial: warp.serial,
+            });
+        self.guest_state.warp = None;
     }
 
     #[cfg(target_os = "macos")]
@@ -1223,30 +1224,12 @@ impl App {
             return;
         }
 
-        // Icon discovery parses the application's resource fork and decodes
-        // its BNDL/FREF/ICN# family. The launched path is the cache key and is
-        // available without doing that work, so reject the normal unchanged-
-        // application case before rebuilding the full identity every frame.
-        // A foreground application switch changes `launched_app_path` and
-        // therefore still refreshes the native name, icon, and window title.
-        let application_unchanged = self
-            .driver
-            .runner
-            .as_ref()
-            .and_then(|runner| runner.dispatcher().launched_app_path())
-            .is_some_and(|path| self.native_app_path.as_deref() == Some(path));
-        if application_unchanged {
-            return;
-        }
-
-        let Some(identity) = self
-            .driver
-            .runner
-            .as_ref()
-            .and_then(game::loaded_application_identity)
-        else {
+        let Some(identity) = self.guest_state.identity.as_ref() else {
             return;
         };
+        if self.native_app_path.as_deref() == Some(identity.path.as_str()) {
+            return;
+        }
 
         if let Some(native_menu) = self.native_menu.as_mut() {
             native_menu.set_app_name(identity.name.clone());
@@ -1255,9 +1238,9 @@ impl App {
         if let Some(window) = &self.window {
             window.set_title(&identity.name);
         }
-        self.native_app_path = Some(identity.path);
-        self.native_app_name = identity.name;
-        self.native_app_icon = identity.icon;
+        self.native_app_path = Some(identity.path.clone());
+        self.native_app_name = identity.name.clone();
+        self.native_app_icon = identity.icon.clone();
     }
 
     fn update_debug_frame_stats(&mut self, now: std::time::Instant) {
@@ -2178,21 +2161,6 @@ fn presentation_layout(content: ContentRect, frame_width: u32) -> metal_present:
 }
 
 #[cfg(target_os = "macos")]
-fn native_menu_bar_height(runner: Option<&FixtureRunner>, native_integrations: bool) -> u32 {
-    use systemless::memory::MemoryBus;
-    if !native_integrations {
-        return 0;
-    }
-    runner.map_or(0, |runner| {
-        u32::from(
-            runner
-                .bus()
-                .read_word(systemless::memory::globals::addr::MBAR_HEIGHT),
-        )
-    })
-}
-
-#[cfg(target_os = "macos")]
 fn presentation_content_rect(
     base: ContentRect,
     transient_bounds: Option<(i16, i16, i16, i16)>,
@@ -2553,15 +2521,14 @@ impl App {
     /// Keep the host pointer in step with the guest cursor image, visibility,
     /// and the window's guest-to-screen scale.
     fn sync_host_cursor(&mut self, _event_loop: &ActiveEventLoop) {
-        let (Some(window), Some(runner)) = (self.window.as_ref(), self.driver.runner.as_ref())
-        else {
+        let Some(window) = self.window.as_ref() else {
             return;
         };
         // The cursor's guest-pixel scale must match the presentation viewport
         // (content rectangle + binding axis), not the raw window/guest ratio:
         // height-constrained windows, learned gameplay crops, and transient
         // dialog expansion all change it (issue #1049).
-        let (_, _, sw, sh, _) = runner.dispatcher().screen_mode;
+        let (_, _, sw, sh, _) = self.guest_state.screen_mode;
         let (sw, sh) = (u32::from(sw), u32::from(sh));
         #[cfg(target_os = "macos")]
         let content = if self.debug_overlay_visible {
@@ -2579,12 +2546,10 @@ impl App {
                     width: sw,
                     height: sh,
                 }),
-                runner
-                    .dispatcher()
-                    .visible_dialog_structure_bounds(runner.bus()),
+                self.guest_state.dialog_bounds,
                 sw,
                 sh,
-                native_menu_bar_height(Some(runner), self.native_integrations),
+                self.guest_state.hidden_menu_height,
             )
         };
         #[cfg(target_os = "windows")]
@@ -2599,10 +2564,10 @@ impl App {
             host_cursor::presentation_scale(content.width, content.height, size.width, size.height);
         #[cfg(target_os = "macos")]
         self.host_cursor
-            .sync(window, runner.dispatcher().cursor(), scale);
+            .sync(window, self.guest_state.cursor.as_ref(), scale);
         #[cfg(target_os = "windows")]
         self.host_cursor
-            .sync(_event_loop, window, runner.dispatcher().cursor(), scale);
+            .sync(_event_loop, window, self.guest_state.cursor.as_ref(), scale);
     }
 }
 
@@ -2632,7 +2597,7 @@ impl ApplicationHandler for App {
                     None,
                     initial_screen_width(),
                     initial_screen_height(),
-                    native_menu_bar_height(self.driver.runner.as_ref(), self.native_integrations),
+                    self.guest_state.hidden_menu_height,
                 );
                 (content.width, content.height)
             };
@@ -2778,10 +2743,9 @@ impl ApplicationHandler for App {
                 self.driver.force_next_render = true;
                 self.mouse_physical = (position.x, position.y);
                 let (v, h) = self.host_mouse_to_mac(position.x, position.y);
-                if let Some(runner) = self.driver.runner.as_mut() {
-                    runner.set_mouse_position(v, h);
-                    runner.dispatcher_mut().show_cursor();
-                }
+                self.driver
+                    .apply_command(runtime_protocol::GuiCommand::MouseMove { v, h });
+                self.driver.capture_state(&mut self.guest_state, false);
                 #[cfg(any(target_os = "macos", target_os = "windows"))]
                 self.sync_host_cursor(event_loop);
             }
@@ -2793,21 +2757,10 @@ impl ApplicationHandler for App {
             } => {
                 self.driver.force_next_render = true;
                 let (v, h) = self.host_mouse_to_mac(self.mouse_physical.0, self.mouse_physical.1);
-                if let Some(runner) = self.driver.runner.as_mut() {
-                    match state {
-                        ElementState::Pressed => {
-                            runner.push_mouse_down(v, h);
-                            self.driver.mouse_release_latch.press();
-                        }
-                        ElementState::Released => {
-                            if let Some((release_v, release_h)) =
-                                self.driver.mouse_release_latch.release((v, h))
-                            {
-                                runner.push_mouse_up(release_v, release_h);
-                            }
-                        }
-                    }
-                }
+                self.driver.apply_command(match state {
+                    ElementState::Pressed => runtime_protocol::GuiCommand::MouseDown { v, h },
+                    ElementState::Released => runtime_protocol::GuiCommand::MouseUp { v, h },
+                });
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
@@ -2837,16 +2790,16 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
-                if let Some(runner) = self.driver.runner.as_mut() {
-                    match event.state {
-                        ElementState::Pressed => {
-                            runner.push_key_down(mac_key, char_code);
-                        }
-                        ElementState::Released => {
-                            runner.push_key_up(mac_key, char_code);
-                        }
-                    }
-                }
+                self.driver.apply_command(match event.state {
+                    ElementState::Pressed => runtime_protocol::GuiCommand::KeyDown {
+                        key: mac_key,
+                        character: char_code,
+                    },
+                    ElementState::Released => runtime_protocol::GuiCommand::KeyUp {
+                        key: mac_key,
+                        character: char_code,
+                    },
+                });
             }
 
             WindowEvent::Resized(size) => {
@@ -2876,12 +2829,7 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let (Some(server), Some(runner)) = (
-            self.driver.debug_server.as_mut(),
-            self.driver.runner.as_mut(),
-        ) {
-            server.pump(runner);
-        }
+        self.driver.pump_debugger();
         let now = std::time::Instant::now();
         let next = self.driver.next_frame_time.unwrap_or(now);
 
@@ -2916,15 +2864,15 @@ impl ApplicationHandler for App {
 
         #[cfg(target_os = "macos")]
         if let Some(native_menu) = self.native_menu.as_mut() {
-            if let Some(runner) = self.driver.runner.as_mut() {
-                for (menu_id, item_number) in native_menu.drain_commands() {
-                    runner.select_guest_menu_item(menu_id, item_number);
-                }
+            for (menu, item) in native_menu.drain_commands() {
+                self.driver
+                    .apply_command(runtime_protocol::GuiCommand::Menu { menu, item });
             }
         }
 
         // Step emulation, then render
         self.driver.step_frame();
+        self.driver.capture_state(&mut self.guest_state, true);
         self.sync_guest_cursor_warp();
         self.driver.flush_ready_mouse_release();
         if self.driver.guest_requested_exit() {
@@ -2950,20 +2898,15 @@ impl ApplicationHandler for App {
         self.sync_native_application_identity();
 
         #[cfg(target_os = "macos")]
-        if let Some(native_menu) = self.native_menu.as_mut() {
-            if let Some(snapshot) = self
-                .driver
-                .runner
-                .as_mut()
-                .map(FixtureRunner::guest_menu_snapshot)
-            {
-                native_menu.sync(snapshot);
-            }
+        if let (Some(native_menu), Some(snapshot)) =
+            (self.native_menu.as_mut(), self.guest_state.menus.as_ref())
+        {
+            native_menu.sync((**snapshot).clone());
         }
 
         // Check if screen mode changed
-        if let Some(runner) = &self.driver.runner {
-            let (_, _, sw, sh, _) = runner.dispatcher().screen_mode;
+        if self.guest_state.generation != 0 {
+            let (_, _, sw, sh, _) = self.guest_state.screen_mode;
             let sw = sw as u32;
             let sh = sh as u32;
             if sw != self.current_screen_width || sh != self.current_screen_height {
@@ -2985,10 +2928,7 @@ impl ApplicationHandler for App {
         if self.driver.should_render_frame(self.debug_overlay_visible) {
             self.render_frame();
         }
-        if let Some(runner) = self.driver.runner.as_mut() {
-            runner.finish_gui_frame();
-        }
-        self.driver.frame_count += 1;
+        self.driver.finish_frame();
         #[cfg(target_os = "windows")]
         if let Some(at) = self.gpu.as_ref().and_then(|gpu| gpu.retry_at()) {
             event_loop.set_control_flow(ControlFlow::WaitUntil(next_target.min(at)));
@@ -5323,13 +5263,38 @@ mod tests {
     #[test]
     fn native_menu_viewport_reads_guest_height_without_mutating_it() {
         use systemless::memory::{globals::addr::MBAR_HEIGHT, MemoryBus};
-        let mut runner = FixtureRunner::new(8 * 1024 * 1024, Default::default());
-        runner.bus_mut().write_word(MBAR_HEIGHT, 24);
-        assert_eq!(native_menu_bar_height(Some(&runner), true), 24);
-        assert_eq!(native_menu_bar_height(Some(&runner), false), 0);
-        assert_eq!(runner.bus().read_word(MBAR_HEIGHT), 24);
-        runner.bus_mut().write_word(MBAR_HEIGHT, 0);
-        assert_eq!(native_menu_bar_height(Some(&runner), true), 0);
+        for enabled in [false, true] {
+            let mut app = App::new(PathBuf::from("dummy"), false, enabled, false, 8);
+            app.driver.runner = Some(FixtureRunner::new(8 * 1024 * 1024, Default::default()));
+            app.driver
+                .runner
+                .as_mut()
+                .unwrap()
+                .bus_mut()
+                .write_word(MBAR_HEIGHT, 24);
+            app.driver.capture_state(&mut app.guest_state, false);
+            assert_eq!(
+                app.guest_state.hidden_menu_height,
+                if enabled { 24 } else { 0 }
+            );
+            assert_eq!(
+                app.driver
+                    .runner
+                    .as_ref()
+                    .unwrap()
+                    .bus()
+                    .read_word(MBAR_HEIGHT),
+                24
+            );
+            app.driver
+                .runner
+                .as_mut()
+                .unwrap()
+                .bus_mut()
+                .write_word(MBAR_HEIGHT, 0);
+            app.driver.capture_state(&mut app.guest_state, false);
+            assert_eq!(app.guest_state.hidden_menu_height, 0);
+        }
     }
 
     #[cfg(target_os = "macos")]
