@@ -203,6 +203,12 @@ impl RuntimeMailbox {
         }
     }
 
+    /// Observe terminal status without consuming frames or the host wake flag.
+    #[cfg(target_os = "macos")]
+    pub fn status(&self) -> RuntimeStatus {
+        self.shared.lock().unwrap().status.clone()
+    }
+
     pub fn poll(&self) -> HostUpdate {
         let mut shared = self.shared.lock().unwrap();
         shared.wake_pending = false;

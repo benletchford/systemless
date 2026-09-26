@@ -41,6 +41,9 @@ mod native_bundle;
 #[cfg(target_os = "macos")]
 #[path = "desktop/native_menu.rs"]
 mod native_menu;
+#[cfg(target_os = "macos")]
+#[path = "desktop/native_termination.rs"]
+mod native_termination;
 #[path = "desktop/runtime_driver.rs"]
 mod runtime_driver;
 #[path = "desktop/runtime_mailbox.rs"]
@@ -1179,6 +1182,13 @@ impl App {
 
     fn poll_owner(&mut self, event_loop: &ActiveEventLoop) {
         use runtime_mailbox::RuntimeStatus;
+        #[cfg(target_os = "macos")]
+        if native_termination::pending() {
+            // AppKit's modal termination loop owns completion. Its timer waits
+            // for owner teardown without relying on winit callbacks or joining.
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        }
         let update = self
             .owner
             .as_ref()
@@ -3211,6 +3221,18 @@ fn run_gui(
     );
 
     let threaded = std::env::var("SYSTEMLESS_DESKTOP_RUNTIME").as_deref() == Ok("thread");
+    #[cfg(target_os = "macos")]
+    let native_termination = if threaded {
+        match native_termination::NativeTermination::install() {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                eprintln!("[SYSTEMLESS] Cannot protect native Quit/save handling: {error}");
+                return;
+            }
+        }
+    } else {
+        None
+    };
     let config = runtime_owner::RuntimeConfig {
         game_path: game_path.clone(),
         arrows_as_numpad,
@@ -3240,7 +3262,14 @@ fn run_gui(
         match runtime_owner::RuntimeOwner::spawn(config, move || {
             let _ = proxy.send_event(());
         }) {
-            Ok(owner) => app.owner = Some(owner),
+            Ok(owner) => {
+                #[cfg(target_os = "macos")]
+                native_termination
+                    .as_ref()
+                    .unwrap()
+                    .activate(owner.mailbox.clone());
+                app.owner = Some(owner);
+            }
             Err(error) => {
                 let message = format!("Failed to start runtime owner thread: {error}");
                 eprintln!("[SYSTEMLESS] {message}");
