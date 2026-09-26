@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -77,6 +77,7 @@ async function runGameSmoke(game) {
     { stdio: "ignore" },
   );
 
+  let page;
   try {
     const version = await waitForChrome(port);
     const browser = connect(version.webSocketDebuggerUrl);
@@ -90,7 +91,7 @@ async function runGameSmoke(game) {
       throw new Error("Chrome target was not listed after creation");
     }
 
-    const page = connect(target.webSocketDebuggerUrl);
+    page = connect(target.webSocketDebuggerUrl);
     await page.ready;
     page.on("Fetch.requestPaused", (params) =>
       handleArchiveRequest(page, params, archiveServer, game),
@@ -101,7 +102,7 @@ async function runGameSmoke(game) {
       source: downloadCapturePrelude(),
     });
     await page.send("Fetch.enable", {
-      patterns: [{ urlPattern: "https://assets.systemless.org/games/*", requestStage: "Request" }],
+      patterns: [{ urlPattern: game.archiveUrl, requestStage: "Request" }],
     });
     await page.send("Page.navigate", { url: `${baseUrl}${game.route}` });
 
@@ -118,13 +119,24 @@ async function runGameSmoke(game) {
     report.route = game.route;
     report.archive_server_requests = archiveServer.requests();
     assertSaveSmokeReport(report, game);
-    page.close();
     return report;
   } finally {
+    if (page && process.env.SYSTEMLESS_SAVE_SMOKE_SCREENSHOT_DIR) {
+      try {
+        const screenshot = await page.send("Page.captureScreenshot", { format: "png" });
+        await writeFile(
+          join(process.env.SYSTEMLESS_SAVE_SMOKE_SCREENSHOT_DIR, `${game.id}.png`),
+          Buffer.from(screenshot.data, "base64"),
+        );
+      } catch (error) {
+        process.stderr.write(`Could not capture save probe: ${error.message}\n`);
+      }
+    }
+    page?.close();
     await archiveServer.close();
     chrome.kill("SIGTERM");
     await sleep(250);
-    await rm(userDataDir, { recursive: true, force: true });
+    await rm(userDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
   }
 }
 
@@ -312,7 +324,9 @@ async function saveSmokeProbe(config) {
       }
       latest = { records, shelfText, record };
       return true;
-    }, timeoutMs, `save ${pilotName} was not persisted and shown in the shelf`);
+    }, timeoutMs, `save ${pilotName} was not persisted and shown in the shelf`).catch((error) => {
+      throw new Error(`${error.message}; observed paths=${JSON.stringify(latest?.records.map(record => record.path))}; shelf=${JSON.stringify(latest?.shelfText)}`);
+    });
     const record = latest.record;
     return {
       path: record.path,
@@ -429,7 +443,7 @@ async function saveSmokeProbe(config) {
   }
 
   function saveShelfText() {
-    return document.querySelector(".save-shelf")?.textContent ?? "";
+    return document.querySelector(".save-panel")?.textContent ?? "";
   }
 
   async function readSaveRecords(gameId) {
