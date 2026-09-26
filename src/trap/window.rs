@@ -2954,18 +2954,21 @@ impl super::TrapDispatcher {
         &mut self,
         bus: &mut MacMemoryBus,
         window_ptr: u32,
-        _visible: bool,
+        visible: bool,
         behind: u32,
         old_front: u32,
     ) {
         if behind == 0xFFFF_FFFF {
-            // A frontmost NewWindow/GetNewWindow activates even when created
-            // invisible. In that case its frame is not seen until ShowWindow,
-            // but its activation still replaces the Window Manager's pending
-            // CurActivate/CurDeactive pair.
-            // Inside Macintosh: Macintosh Toolbox Essentials (1992),
-            // pp. 4-76, 4-78, 4-81, and 4-84.
-            self.activate_created_front_window(bus, window_ptr, old_front);
+            // Native Mac OS 8.1 leaves activation unchanged for invisible
+            // creations, despite the broader wording in Macintosh Toolbox
+            // Essentials (1992), pp. 4-81 and 4-84. ShowWindow activates a
+            // hidden frontmost window when it becomes visible (IM:I, I-285).
+            if visible {
+                self.activate_created_front_window(bus, window_ptr, old_front);
+            } else {
+                self.front_window = old_front;
+                self.sync_cached_front_window_render_state(bus);
+            }
         }
     }
 
@@ -7790,7 +7793,7 @@ mod tests {
             bus.write_byte(sp + i, 0);
         }
         bus.write_long(sp + 18, bounds_rect_ptr);
-        bus.write_word(sp + 12, 1); // visible = TRUE
+        bus.write_byte(sp + 12, 1); // Pascal Boolean occupies the high byte.
         bus.write_long(sp + 6, behind);
 
         let result = dispatch(&mut disp, 0x113, &mut cpu, &mut bus);
@@ -9164,41 +9167,54 @@ mod tests {
     }
 
     #[test]
-    fn invisible_frontmost_new_window_replaces_pending_activation_pair() {
-        // A window created at the front is active even when initially
-        // invisible; ShowWindow controls only when it becomes visible.
-        // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 4-84.
-        let (mut disp, _cpu, mut bus) = setup();
-        let old_front = 0x200040u32;
-        let new_front = 0x200140u32;
-        disp.window_list.replace(vec![new_front, old_front]);
-        disp.front_window = old_front;
-        bus.write_byte(old_front + 110, 0xFF);
-        bus.write_byte(old_front + 111, 0xFF);
-        bus.write_byte(new_front + 110, 0x00);
-        bus.write_byte(new_front + 111, 0x00);
+    fn invisible_frontmost_window_creation_preserves_active_window() {
+        // The native Window Manager leaves pending activation unchanged when
+        // NewWindow/NewCWindow creates an invisible window at the front.
+        for trap in [0x113, 0x245] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let bounds = bus.alloc(8);
+            bus.write_word(bounds, 40);
+            bus.write_word(bounds + 2, 50);
+            bus.write_word(bounds + 4, 180);
+            bus.write_word(bounds + 6, 250);
+            let mut old_front = 0;
 
-        disp.activate_frontmost_created_window_if_needed(
-            &mut bus,
-            new_front,
-            false,
-            0xFFFF_FFFF,
-            old_front,
-        );
+            for visible in [true, false] {
+                let sp = TEST_SP - 30;
+                cpu.write_reg(Register::A7, sp);
+                bus.write_bytes(sp, &[0; 30]);
+                bus.write_long(sp + 6, u32::MAX);
+                bus.write_byte(sp + 12, u8::from(visible));
+                bus.write_long(sp + 18, bounds);
+                dispatch(&mut disp, trap, &mut cpu, &mut bus)
+                    .unwrap()
+                    .unwrap();
+                let window = bus.read_long(cpu.read_reg(Register::A7));
+                assert_ne!(window, 0);
+                if visible {
+                    old_front = window;
+                    assert_eq!(disp.front_window, window);
+                    disp.event_queue.clear();
+                    bus.write_long(super::super::TrapDispatcher::LOWMEM_CUR_ACTIVATE, 0);
+                    bus.write_long(super::super::TrapDispatcher::LOWMEM_CUR_DEACTIVATE, 0);
+                    continue;
+                }
 
-        assert_eq!(disp.front_window, new_front);
-        assert_eq!(bus.read_byte(old_front + 111), 0x00);
-        assert_eq!(bus.read_byte(new_front + 111), 0xFF);
-        let events: Vec<_> = disp
-            .event_queue
-            .iter()
-            .filter(|event| event.what == 8)
-            .collect();
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].message, old_front);
-        assert_eq!(events[0].modifiers & 1, 0);
-        assert_eq!(events[1].message, new_front);
-        assert_eq!(events[1].modifiers & 1, 1);
+                assert_eq!(disp.window_list.first(), Some(window));
+                assert_eq!(disp.front_window, old_front);
+                assert_ne!(bus.read_byte(old_front + 111), 0);
+                assert_eq!(bus.read_byte(window + 111), 0);
+                assert!(!disp.event_queue.iter().any(|event| event.what == 8));
+                assert_eq!(
+                    bus.read_long(super::super::TrapDispatcher::LOWMEM_CUR_ACTIVATE),
+                    0
+                );
+                assert_eq!(
+                    bus.read_long(super::super::TrapDispatcher::LOWMEM_CUR_DEACTIVATE),
+                    0
+                );
+            }
+        }
     }
 
     #[test]
