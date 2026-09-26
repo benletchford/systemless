@@ -211,3 +211,69 @@ sending a direct image, before its host metadata reply. The renderer acknowledge
 that exact packet and a host control painted while the owner was still busy.
 The guest resumed without restarting, and worker/audio teardown completed.
 This tests independent delivery during a stall, not normal frame-time performance.
+
+
+## Repeated gameplay and delayed presentation
+
+Twelve additional release runs exercised Marathon's playable world and HUD on
+Chrome 151 / Apple M1: the existing main-thread WebGL presenter, the renderer
+relay and direct transport, each with one warm-up and three measured repeats in
+alternating order. All three kept guest execution on the same worker backend,
+with 25 MHz emulation, an 800×600 display at device scale 1, fresh saves and the
+same archive and scripted inputs. Initial Macintosh time was fixed at
+3,871,497,600 seconds; the monotonic performance clock and pacing stayed live.
+All twelve existing pacing checks passed.
+
+The comparison uses common guest ticks 3600–4100, after level loading and before
+a held movement key. Median milliseconds per guest tick were 17.641, 17.609 and
+17.607 respectively, a difference below 0.2%. Retired instructions per guest tick
+differed by less than 0.6%. Median run-level host frame-interval p99 was 18.5,
+18.3 and 18.5 ms; callback p99 was 0.1 ms for all three. This case establishes
+no material throughput regression and does not show a substantial speedup over
+the already worker-backed runtime.
+
+Real-time execution and input receipt can cross a guest-tick boundary. Raw
+traces retain actual tick/instruction endpoints. The later key release is
+scheduled after completed host frames, so final player positions can differ;
+these gameplay screenshots are not claimed as instruction-identical replay or
+pixel-parity evidence. Independent scalar/GPU and owned-packet tests establish
+conversion correctness. Audio queue observations are separate from the earlier
+instrumented underrun checks.
+
+This HUD uses compact retained presentation: its packet is 2,065,792 bytes versus
+1,920,000 bytes for RGBA at 1×. Compact transport is therefore not a bandwidth
+improvement for this scale. Higher-resolution text benefits and renderer
+submission costs must be assessed separately.
+
+The fixture-free GPU probe also exercises the production direct owner/renderer
+protocol under an injected 80 ms paint-scheduling delay. Two bursts of 500 packets
+cover RGBA/indexed/compact mode changes and palette-only changes. Only sequences
+1, 500, 501 and 1000 are submitted; GPU readback matches the corresponding scalar
+images exactly. Both bursts drain with no pending image and at most two returned
+buffers. This is a queue/correctness test, not a normal-performance measurement.
+
+
+Separate phase diagnostics in that same pre-movement interval observed only eight
+complete images per path; the world view was mostly stationary. Median owner
+snapshot/export time was 1.9 ms for RGBA and 0.5 ms for compact presentation.
+JavaScript packet construction took 0.2 and 0.3 ms respectively. The direct
+renderer submitted compact images in a median 2.8 ms. These small samples show
+work moving off the owner; they do not demonstrate lower total presentation
+cost or sustained animated-frame performance at 1×.
+
+Returned JavaScript buffers remain bounded but producer reuse is deferred.
+Reusing them could remove allocation, not the required Wasm-to-JavaScript copy.
+Packet construction was not the dominant measured phase in these cases, and the
+sustained teardown check did not show continuing main-heap growth. Animated
+workloads and allocation-specific profiling remain necessary before broadening
+that API. Native snapshot storage already reuses its owned allocations.
+
+
+Clipped CSS scaling remains unqualified. On the current Chrome build, an 800×600
+image displayed at 798×598 differs from the existing presenter at 155 pixels on
+two rows. Canvas bounds and owned RGBA/expanded-indexed bytes agree; integer-size
+images agree exactly. A clipped-container synthetic probe reproduces boundary
+sampling differences, while the corresponding unclipped probe matches. Changing
+layer promotion, paint containment or WebGL context attributes did not resolve
+it. The experimental backend remains opt-in, and this result is not counted as
+full fractional-scale image parity.

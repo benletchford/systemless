@@ -2,15 +2,39 @@
 // Exact indexed/RGBA GPU differential test in a real OffscreenCanvas worker.
 // Set CHROME_BIN for a non-macOS Chrome/Chromium installation.
 import {spawn} from 'node:child_process';
-import {createReadStream,existsSync} from 'node:fs';
+import {createReadStream,existsSync,readFileSync} from 'node:fs';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-const modules = new Set(['/renderer-gpu.js', '/renderer-worker.js', '/renderer-transport.js']);
+const modules = new Set(['/renderer-gpu.js', '/renderer-worker.js', '/renderer-transport.js', '/renderer-owner.js']);
 const profile=await mkdtemp(join(tmpdir(),'systemless-renderer-gpu-'));
 const server=createServer((req,res)=>{
- if(req.url==='/compact-native.json'){
+ if(req.url==='/slow-renderer-worker.js'){
+  // Probe-only instrumentation: delay paint scheduling and read back the exact
+  // submitted GPU image. Production assets and guest pacing are untouched.
+  res.writeHead(200,{'content-type':'text/javascript'});
+  res.end(`
+   let probeGl;
+   const probeGetContext=OffscreenCanvas.prototype.getContext;
+   OffscreenCanvas.prototype.getContext=function(...args){
+    const result=probeGetContext.apply(this,args);
+    if(args[0]==='webgl')probeGl=result;
+    return result;
+   };
+   const probeTimeout=self.setTimeout.bind(self);
+   self.setTimeout=(callback,delay,...args)=>probeTimeout(callback,Math.max(delay,80),...args);
+   const probePost=self.postMessage.bind(self);
+   self.postMessage=(message,...args)=>{
+    if(message.type==='directSubmitted'){
+     const pixels=new Uint8Array(message.width*message.height*4);
+     probeGl.readPixels(0,0,message.width,message.height,probeGl.RGBA,probeGl.UNSIGNED_BYTE,pixels);
+     message.probePixels=pixels;
+    }
+    return probePost(message,...args);
+   };
+  ` + readFileSync(new URL('../src/renderer-worker.js',import.meta.url),'utf8'));
+ }else if(req.url==='/compact-native.json'){
   res.writeHead(200,{'content-type':'application/json'});createReadStream(new URL('../tests/fixtures/compact-native.json',import.meta.url)).pipe(res);
  }else if(modules.has(req.url)){
   res.writeHead(200,{'content-type':'text/javascript'});createReadStream(new URL('../src' + req.url, import.meta.url)).pipe(res);
@@ -150,6 +174,76 @@ async function exercise(){
    const stopped=new Promise((resolve,reject)=>{endpoint.onmessage=({data})=>data.type==='stopped'?resolve():reject(new Error(JSON.stringify(data)));});
    endpoint.postMessage({...identity,type:'stop'});await stopped;
   } finally { endpoint.terminate(); }
+  const { RendererOwner } = await import(base + '/renderer-owner.js');
+  const slowEndpoint = new Worker(base + '/slow-renderer-worker.js');
+  let owner;
+  try {
+   const ready = new Promise((resolve,reject)=>{
+    slowEndpoint.onmessage=({data})=>data.type==='ready'?resolve():reject(new Error(JSON.stringify(data)));
+    slowEndpoint.onerror=event=>reject(new Error(event.message));
+   });
+   const screen=new OffscreenCanvas(1,1);
+   slowEndpoint.postMessage({...identity,type:'init',backend:'webgl',canvas:screen},[screen]);
+   await ready;
+   const channel=new MessageChannel();
+   const expected=new Map(), notices=[], credits=[], burstElapsedMs=[];
+   let resolveBurst,rejectBurst,targetSequence;
+   function finished(){
+    if(notices.at(-1)===targetSequence&&credits.at(-1)===targetSequence)resolveBurst();
+   }
+   owner=new RendererOwner(channel.port2,identity,{notify:message=>{
+    if(message.event==='error')rejectBurst(new Error(message.message));
+    if(message.event==='submitted'){credits.push(message.sequence);finished();}
+   }});
+   slowEndpoint.onmessage=({data})=>{
+    if(data.type==='error'){rejectBurst(new Error(data.message));return;}
+    if(data.type!=='directSubmitted')return;
+    const reference=expected.get(data.sequence);
+    if(!reference){rejectBurst(new Error('Unexpected stale frame '+data.sequence));return;}
+    for(let y=0;y<data.height;y++)for(let x=0;x<data.width*4;x++){
+     if(data.probePixels[((data.height-1-y)*data.width*4)+x]!==reference[y*data.width*4+x]){
+      rejectBurst(new Error('Direct slow-consumer pixel mismatch at '+data.sequence));return;
+     }
+    }
+    notices.push(data.sequence);finished();
+   };
+   slowEndpoint.onerror=event=>rejectBurst(new Error(event.message));
+   slowEndpoint.postMessage({...identity,type:'connectOwner',port:channel.port1},[channel.port1]);
+   function packet(sequence,paletteOnly){
+    const kind=paletteOnly?'indexed8':['rgba','indexed8','compact'][sequence%3];
+    const width=paletteOnly?17:(sequence%19+1),height=paletteOnly?3:(sequence%7+1);
+    const rgb=[sequence&255,(sequence*37)&255,255-(sequence&255)];
+    const rgba=new Uint8Array(width*height*4);
+    for(let i=0;i<rgba.length;i+=4)rgba.set([...rgb,255],i);
+    if(sequence===1||sequence===500||sequence===501||sequence===1000)expected.set(sequence,rgba.slice());
+    const result={width,height,outputScale:1};
+    if(kind==='rgba')result.frame=rgba;
+    if(kind==='indexed8'){
+     const palette=new Uint8Array(1024);palette.set([...rgb,255],28);
+     result.indexedFrame={kind,complete:true,width,height,stride:width+3,pixels:new Uint8Array((width+3)*height).fill(7),palette};
+    }
+    if(kind==='compact')result.compactFrame={kind,complete:true,width,height,
+     compact:{width,height,scale:2,cells:new Uint32Array(width*height).fill((rgb[0]<<16)|(rgb[1]<<8)|rgb[2]),detail:new Uint32Array(0)}};
+    return result;
+   }
+   for(const [first,last,paletteOnly] of [[1,500,false],[501,1000,true]]){
+    targetSequence=last;
+    const started=performance.now();
+    const done=new Promise((resolve,reject)=>{resolveBurst=resolve;rejectBurst=reject;});
+    for(let sequence=first;sequence<=last;sequence++){
+     const frame=packet(sequence,paletteOnly);
+     if(!owner.submit(frame)||frame.frame||frame.indexedFrame||frame.compactFrame)throw new Error('Direct ownership not transferred');
+     if(owner.transport.recycled.length>2)throw new Error('Unbounded direct recycling');
+    }
+    if(!owner.transport.inFlight||owner.transport.pending.sequence!==last)throw new Error('Slow-consumer queue lost newest frame');
+    await done;
+    const elapsed=performance.now()-started;burstElapsedMs.push(elapsed);
+    if(elapsed<150)throw new Error('Slow-consumer delay was not exercised');
+    if(owner.transport.inFlight||owner.transport.pending||owner.transport.recycled.length>2)throw new Error('Direct queue did not drain');
+   }
+   if(notices.join(',')!=='1,500,501,1000'||credits.join(',')!==notices.join(','))throw new Error('Stale image survived coalescing');
+   result.directSlowConsumer={packets:1000,submitted:notices,paintDelayMs:80,burstElapsedMs,exact:true,recycled:owner.transport.recycled.length};
+  } finally {owner?.dispose();slowEndpoint.terminate();}
   return result;
  };
  const blob=new Blob([`(${task.toString()})(${JSON.stringify(location.origin)}).then(result=>postMessage({result})).catch(error=>postMessage({error:String(error.stack)}));`],{type:'text/javascript'});
