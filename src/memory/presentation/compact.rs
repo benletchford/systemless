@@ -6,13 +6,111 @@ use super::{MacMemoryBus, Presentation};
 /// A cell with bit 31 clear stores RGB in bits 0..23; with bit 31 set, bits
 /// 0..30 index its row-major scale × scale tile in `detail`. This is host
 /// presentation data, never guest memory or a source for guest CopyBits.
-#[derive(Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CompactPresentation {
     pub width: u32,
     pub height: u32,
     pub scale: u32,
     pub cells: Vec<u32>,
     pub detail: Vec<u32>,
+}
+
+impl CompactPresentation {
+    /// Resolve an owned retained image at a host drawable size without guest
+    /// memory. Uses the same coverage footprints and rounding as the live
+    /// retained-image renderer. Invalid packets leave the previous output intact.
+    pub fn render_argb_resized(&self, size: (u32, u32), output: &mut Vec<u32>) -> bool {
+        if self.width == 0
+            || self.height == 0
+            || self.width > u16::MAX.into()
+            || self.height > u16::MAX.into()
+            || !(1..=4).contains(&self.scale)
+            || size.0 == 0
+            || size.1 == 0
+        {
+            return false;
+        }
+        let Some(count) = (self.width as usize).checked_mul(self.height as usize) else {
+            return false;
+        };
+        let tile = (self.scale * self.scale) as usize;
+        if self.cells.len() != count
+            || self.cells.iter().any(|&cell| {
+                cell >> 31 != 0
+                    && ((cell & 0x7fffffff) as usize)
+                        .checked_add(tile)
+                        .is_none_or(|end| end > self.detail.len())
+            })
+        {
+            return false;
+        }
+        let Some(count) = (size.0 as usize).checked_mul(size.1 as usize) else {
+            return false;
+        };
+        if output
+            .try_reserve(count.saturating_sub(output.len()))
+            .is_err()
+        {
+            return false;
+        }
+        let horizontal = super::resample::axis(self.width, self.scale, size.0);
+        let vertical = super::resample::axis(self.height, self.scale, size.1);
+        let source_width = self.width * self.scale;
+        let source_height = self.height * self.scale;
+        let total = u64::from(if source_width > size.0 {
+            source_width
+        } else {
+            1
+        }) * u64::from(if source_height > size.1 {
+            source_height
+        } else {
+            1
+        });
+        let reciprocal = u64::MAX / total;
+        output.clear();
+        for rows in &vertical {
+            for columns in &horizontal {
+                let mut sum = [0u64; 3];
+                let mut accumulate = |rgb: u32, weight: u64| {
+                    for (channel, value) in sum.iter_mut().enumerate() {
+                        *value += u64::from((rgb >> (channel * 8)) & 255) * weight;
+                    }
+                };
+                for row in rows {
+                    for column in columns {
+                        let cell = self.cells[row.cell * self.width as usize + column.cell];
+                        if cell >> 31 == 0 {
+                            accumulate(cell, row.weight * column.weight);
+                        } else {
+                            let offset = (cell & 0x7fffffff) as usize;
+                            for &(sy, wy) in &row.samples {
+                                for &(sx, wx) in &column.samples {
+                                    accumulate(
+                                        self.detail[offset + sy * self.scale as usize + sx],
+                                        wy * wx,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                output.push(
+                    sum.iter()
+                        .enumerate()
+                        .fold(0xff000000, |pixel, (channel, value)| {
+                            pixel
+                                | ((crate::display::coverage_quotient(
+                                    value + total / 2,
+                                    total,
+                                    reciprocal,
+                                ) as u32)
+                                    << (channel * 8))
+                        }),
+                );
+            }
+        }
+        true
+    }
 }
 
 /// Owns a reusable compact image and its visible-surface stamp.
@@ -232,6 +330,75 @@ mod tests {
         assert_eq!(cache.frame().scale, fresh.scale);
         assert_eq!(cache.frame().cells, fresh.cells);
         assert_eq!(cache.frame().detail, fresh.detail);
+    }
+
+    #[test]
+    fn owned_compact_resizing_matches_live_retained_pixels_and_overlays() {
+        for depth in [8u16, 16, 32] {
+            for scale in 2..=4 {
+                let mut bus = super::super::tests::bus();
+                bus.enable_outline_presentation(
+                    (0x1000, u32::from(depth), 8, 8, depth),
+                    std::array::from_fn(|i| [i as u8, (i * 7) as u8, (255 - i) as u8]),
+                    scale,
+                );
+                super::super::tests::paint_detail(&mut bus, 0x1000);
+                let guest = vec![0xff123456; 64];
+                for overlay in [false, true] {
+                    let mut overlays = guest.clone();
+                    if overlay {
+                        overlays[0] = 0xffa71d6b;
+                        overlays[27] = 0xff234567;
+                    }
+                    let mut compact = CompactPresentation::default();
+                    assert!(bus.compact_presentation(&guest, &overlays, &mut compact));
+                    for size in [
+                        (8, 8),
+                        (16, 16),
+                        (24, 24),
+                        (32, 32),
+                        (3, 5),
+                        (11, 13),
+                        (41, 37),
+                    ] {
+                        let mut expected = Vec::new();
+                        assert_eq!(
+                            bus.presented_argb_resized(&guest, &overlays, size, &mut expected),
+                            Some(size)
+                        );
+                        let mut actual = Vec::new();
+                        assert!(compact.render_argb_resized(size, &mut actual));
+                        assert_eq!(
+                            actual, expected,
+                            "depth={depth} scale={scale} overlay={overlay} size={size:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_compact_packets_do_not_partially_replace_output() {
+        let mut frame = CompactPresentation {
+            width: 2,
+            height: 1,
+            scale: 2,
+            cells: vec![0xabcdef, 0x80000000],
+            detail: vec![0; 3],
+        };
+        let mut output = vec![0xff123456];
+        assert!(!frame.render_argb_resized((4, 2), &mut output));
+        assert_eq!(output, [0xff123456]);
+        frame.detail.push(0);
+        assert!(frame.render_argb_resized((4, 2), &mut output));
+        assert_eq!(
+            output,
+            [
+                0xffabcdef, 0xffabcdef, 0xff000000, 0xff000000, 0xffabcdef, 0xffabcdef, 0xff000000,
+                0xff000000
+            ]
+        );
     }
 
     #[test]
