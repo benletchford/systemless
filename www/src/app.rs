@@ -372,7 +372,9 @@ fn LibraryGameCard(
             on:touchstart=move |_| prefetch_game_archive(game)
             on:click=move |ev| {
                 ev.prevent_default();
-                crate::emulator::begin_audio_from_user_gesture();
+                if game.approved {
+                    crate::emulator::begin_audio_from_user_gesture();
+                }
                 set_active_game.set(game);
                 set_view.set("playing");
                 push_route(&game_path);
@@ -535,7 +537,9 @@ fn RelatedGameCard(
             on:focus=move |_| prefetch_game_archive(game)
             on:click=move |ev| {
                 ev.prevent_default();
-                crate::emulator::begin_audio_from_user_gesture();
+                if game.approved {
+                    crate::emulator::begin_audio_from_user_gesture();
+                }
                 set_active_game.set(game);
                 set_view.set("playing");
                 push_route(&game_path);

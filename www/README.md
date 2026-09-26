@@ -181,3 +181,21 @@ Shutdown failures appear in a dismissible notice even after leaving the game.
 `verifyRestart: true` also immediately reopens the same game and checks that its
 new owner starts after the previous save flush completes. Other games can start
 independently while an earlier game finishes saving.
+
+Catalogue `runtime.worker` defaults to `true`; set it explicitly to `false` to
+use compatibility execution. This applies to installed-plugin launches too.
+Startup worker failures retain the downloaded archive and plugin forks for
+compatibility fallback, reported on the canvas's `data-runtime-fallback`
+attribute. A failure after startup stops the game visibly without restarting it.
+The service worker fetches runtime worker scripts and binding snippets from the
+network first; offline stale code is checked by the runtime protocol handshake.
+
+For comparisons over matching guest-time intervals, set
+`SYSTEMLESS_RUNTIME_TARGET_TICK` on the runtime pacing probe. The sample duration
+then acts as a timeout. Reports include the requested and observed tick and
+instruction endpoint; a frame can pass the requested tick, so inspect the raw
+traces and compare their common interval. This does not force matching retired
+instruction counts or establish image correctness by itself.
+
+See [browser responsiveness measurements](RESPONSIVENESS.md) for the qualified
+workloads, cold-start tradeoff, lifecycle checks and coverage limits.
