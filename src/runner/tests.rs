@@ -15602,6 +15602,51 @@
     }
 
     #[test]
+    fn handle_locks_and_rejected_sound_commands_do_not_cancel_an_idle_probe() {
+        // Bad Mojo's demo loop polls GetNextEvent, FindWindow, HLock and a
+        // no-wait SndDoCommand that the full channel queue rejects until
+        // frame-boundary audio servicing drains it. Lock calls and rejected
+        // commands leave the proof intact; an accepted command, which
+        // changes channel state, and MoveHHi, which may write resource
+        // backing, cancel.
+        let probe = |runner: &mut FixtureRunner| {
+            let trap_pc = 0x0002_0000u32;
+            runner.idle_cycle_probe = None;
+            runner.idle_cycle_sites = [IdleCycleSiteRecord::default(); IDLE_CYCLE_SITE_SLOTS];
+            runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+            runner.set_guest_tick_for_test(100);
+            assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+            assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+            assert!(runner.idle_cycle_probe.is_some());
+        };
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        probe(&mut runner);
+        for opcode in [0xA029u16, 0xA02A, 0xA229, 0xA42A] {
+            runner.note_idle_cycle_trap_result(opcode);
+            assert!(
+                runner.idle_cycle_probe.is_some(),
+                "handle lock trap {opcode:04X} must not cancel the probe"
+            );
+        }
+        // SndDoCommand pops to its OSErr result.
+        runner.bus.write_word(0x0010_0000, (-203i16) as u16); // queueFull
+        for opcode in [0xA803u16, 0xAC03] {
+            runner.note_idle_cycle_trap_result(opcode);
+            assert!(
+                runner.idle_cycle_probe.is_some(),
+                "rejected SndDoCommand {opcode:04X} must not cancel the probe"
+            );
+        }
+        runner.bus.write_word(0x0010_0000, 0); // noErr: the command was taken
+        runner.note_idle_cycle_trap_result(0xA803);
+        assert!(runner.idle_cycle_probe.is_none(), "an accepted command must cancel");
+
+        probe(&mut runner);
+        runner.note_idle_cycle_trap_result(0xA064); // MoveHHi
+        assert!(runner.idle_cycle_probe.is_none(), "MoveHHi must cancel");
+    }
+
+    #[test]
     fn idle_cycle_backoff_expires_across_tick_wrap() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.idle_cycle_sites[0] = IdleCycleSiteRecord {

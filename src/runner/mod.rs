@@ -1264,22 +1264,41 @@ fn canonical_trap_number(opcode: u16) -> (bool, u16) {
 /// - its only other effects are diagnostics (trace `eprintln!`s).
 ///
 /// Event polls only qualify when they returned a null event; SystemTask
-/// only without periodic host work -- callers pass those runtime facts
-/// in. `selector` carries live D0, consulted only for the
-/// selector-multiplexed QDExtensions trap.
+/// only without periodic host work; SndDoCommand only when it rejected the
+/// command -- callers pass those runtime facts in. `selector` carries live
+/// D0, consulted only for the selector-multiplexed QDExtensions trap.
 /// ONE definition, consulted from both the inline pre-dispatch check
 /// and the post-dispatch quiescence classification (they were once two
 /// hand-synced copies and drifted). The membership test
 /// `journal_complete_traps_do_not_cancel_an_idle_probe` covers both the
 /// plain and the auto-pop encodings.
+/// queueFull: SndDoCommand found the channel's command queue full.
+/// Inside Macintosh: Sound (1994), p. 2-130.
+const SOUND_QUEUE_FULL: i16 = -203;
+
 fn idle_cycle_trap_is_journal_complete(
     opcode: u16,
     null_event: bool,
     system_task_idle: bool,
+    sound_command_rejected: bool,
     selector: u32,
 ) -> bool {
     match canonical_trap_number(opcode) {
         (true, 0x0170) | (true, 0x0171) => null_event,
+        // HLock/HUnlock (memory.rs) set or clear one host-mirrored lock bit
+        // and write MemErr/D0 (journaled). Any sequence of them in a cycle
+        // leaves the bit where its last call put it, so the journaled cycle
+        // starts from that fixed point and skipped cycles would rewrite the
+        // same value. MoveHHi shares their handler but may write resource
+        // backing, so it stays out.
+        (false, 0x0029) | (false, 0x002A) => true, // HLock, HUnlock
+        // SndDoCommand (sound.rs) on a busy channel whose guest command queue
+        // is full returns queueFull having written only its result
+        // (journaled). The queue drains, and channel playback state changes,
+        // only in frame-boundary audio servicing, which a proof never spans
+        // (`IdleCycleHostSnapshot` records channel activity for resumes). Any
+        // accepted command changes channel state and cancels.
+        (true, 0x0003) => sound_command_rejected,
         // Pure transforms of a Point on the stack (quickdraw.rs).
         (true, 0x0070) | (true, 0x0071) => true, // LocalToGlobal, GlobalToLocal
         // PtInRect: reads pt+rect from the stack/RAM, writes a Boolean at
@@ -5230,10 +5249,14 @@ impl FixtureRunner {
         // A7); a non-admitted selector never reaches this classification
         // -- the pre-dispatch check cancelled the probe before the
         // handler ran.
+        // SndDoCommand returns its OSErr on the popped stack.
+        let sound_command_rejected = canonical_trap_number(opcode) == (true, 0x0003)
+            && self.bus.read_word(self.m68k.cpu.core.a(7)) as i16 == SOUND_QUEUE_FULL;
         let quiescent = idle_cycle_trap_is_journal_complete(
             opcode,
             null_event,
             !self.dispatcher.system_task_has_periodic_work(),
+            sound_command_rejected,
             self.m68k.cpu.read_reg(Register::D0),
         );
         if !quiescent {
@@ -6605,6 +6628,7 @@ impl FixtureRunner {
                     if self.idle_cycle_probe.is_some()
                         && !idle_cycle_trap_is_journal_complete(
                             opcode,
+                            true,
                             true,
                             true,
                             self.m68k.cpu.read_reg(Register::D0),

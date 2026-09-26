@@ -97,6 +97,11 @@ fn synth_sys_beep_samples() -> Vec<u8> {
     sound::synth_sys_beep_samples()
 }
 
+/// Whether a channel is playing, so SndDoCommand queues rather than executes.
+fn sound_channel_busy(chan: &SndChannel) -> bool {
+    chan.has_active_playback() || chan.double_buffer.is_some()
+}
+
 impl super::TrapDispatcher {
     /// Dispatch a Device Manager write selected by a signed driver refnum.
     /// Negative refnums identify unit-table drivers; the ROM Sound Driver is
@@ -1126,8 +1131,7 @@ impl super::TrapDispatcher {
                     let channel_busy = self
                         .sound_manager
                         .find_channel(chan_ptr)
-                        .map(|chan| chan.has_active_playback() || chan.double_buffer.is_some())
-                        .unwrap_or(false);
+                        .is_some_and(sound_channel_busy);
                     if channel_busy {
                         if cmd.cmd == sound::cmd::CALLBACK {
                             if self
@@ -1356,6 +1360,16 @@ impl super::TrapDispatcher {
             chan_ptr + GUEST_SND_CHANNEL_CMD_IN_PROGRESS_OFFSET,
             None,
         );
+    }
+
+    /// Each channel's guest pointer and whether it is busy, which decides
+    /// whether SndDoCommand queues a command or executes it.
+    pub(crate) fn sound_channels_busy(&self) -> Vec<(u32, bool)> {
+        self.sound_manager
+            .channels
+            .iter()
+            .map(|chan| (chan.guest_ptr, sound_channel_busy(chan)))
+            .collect()
     }
 
     pub(crate) fn sync_guest_sound_channel_state(&self, bus: &mut MacMemoryBus) {

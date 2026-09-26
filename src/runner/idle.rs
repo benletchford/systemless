@@ -185,6 +185,10 @@ pub(crate) struct IdleCycleHostSnapshot {
     /// with a pending event the resume gate sees; recorded here so the
     /// pairing is not the only thing standing between it and a proof.
     pub(crate) pending_native_menu_selection: Option<(i16, i16)>,
+    /// Each sound channel's activity, which decides whether SndDoCommand
+    /// queues a command or executes it. Playback ends only in frame-boundary
+    /// audio servicing, so a parked cycle must not resume across a change.
+    pub(crate) sound_channels_busy: Vec<(u32, bool)>,
 }
 
 impl IdleCycleHostSnapshot {
@@ -198,6 +202,7 @@ impl IdleCycleHostSnapshot {
                 .caps_lock_physically_pressed(),
             window_list: dispatcher.window_list.to_vec(),
             pending_native_menu_selection: dispatcher.pending_native_menu_selection.snapshot(),
+            sound_channels_busy: dispatcher.sound_channels_busy(),
         }
     }
 }
