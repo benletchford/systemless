@@ -1175,25 +1175,12 @@ impl super::TrapDispatcher {
         6 + self.advance_extra()
     }
 
-    /// Scale a base-face advance total to the port's `tx_size` for the
-    /// measuring traps (StringWidth / TextWidth / CharWidth).
-    ///
-    /// The baked font table has exact faces plus integer 2x/3x
-    /// multiples; `get_font_face_scaled` reports scale 1 for every
-    /// OTHER size, so integer-scaled measurement PLATEAUS across size
-    /// changes. Guest text-fitting loops (`TextSize`; `StringWidth`
-    /// until it fits — a newspaper-headline fit loop in a commercial
-    /// game was the reproducer) never converge on a plateau. Measurement
-    /// therefore scales linearly with the requested size:
-    /// `base_total * tx_size / face_size` — monotone in `tx_size` and
-    /// identical to the integer-scale answer at exact and 2x/3x sizes.
-    /// Rendering keeps the integer-scale glyphs; a drawn string can
-    /// differ slightly from its measured width at in-between sizes,
-    /// which is the standard bitmap-font compromise.
+    /// Scale advances using the same resolved size as text drawing.
+    /// TextSize(0) selects the 12-point system size, not one point.
+    /// Inside Macintosh Volume I, I-171 and I-173.
     pub(super) fn proportional_text_width(&self, base_total: i32) -> i16 {
-        let face = crate::quickdraw::fonts::get_font_face_or_default(self.tx_font, self.tx_size);
-        let denom = i32::from(face.size.max(1));
-        let size = i32::from(self.tx_size.max(1));
+        let (_, size, denom) =
+            crate::quickdraw::fonts::get_font_face_scale_ratio(self.tx_font, self.tx_size);
         ((base_total * size + denom / 2) / denom) as i16
     }
 }
