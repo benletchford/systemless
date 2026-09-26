@@ -607,6 +607,8 @@ pub struct MacMemoryBus {
     /// that are restored before the cycle closes.
     write_probe_original: Option<WriteProbeJournal>,
     pub(crate) presentation: super::presentation::PresentationSlot,
+    /// Mapped text cells for the current CopyBits colour table.
+    pub(crate) copy_map_cache: super::presentation::CopyMapCache,
     /// Inline JIT store filter (`m68k::AddressBus::tracked_store_filter`):
     /// byte 0 global, then one byte per 4 KiB page of RAM and one spare.
     /// Page bytes: 0 proven plain RAM, 1 unknown, 2 proven observed. Allocated
@@ -1423,6 +1425,7 @@ impl MacMemoryBus {
             readonly_code_span: None,
             write_probe_original: None,
             presentation: Default::default(),
+            copy_map_cache: Default::default(),
             store_filter: None,
             store_filter_seen: 0,
             store_filter_presentation: None,
@@ -1516,6 +1519,7 @@ impl MacMemoryBus {
             readonly_code_span: None,
             write_probe_original: None,
             presentation: Default::default(),
+            copy_map_cache: Default::default(),
             store_filter: None,
             store_filter_seen: 0,
             store_filter_presentation: None,
@@ -2301,6 +2305,35 @@ impl MacMemoryBus {
             if let Some(mut p) = self.presentation.as_mut() {
                 p.sync_plain_screen_row(translated, data);
             }
+        }
+        true
+    }
+
+    /// `write_plain_presented_bytes` for a screen-row span that may hold
+    /// text, which the presentation clears cell by cell (see
+    /// `Presentation::sync_screen_row_over_text`). Same gates, so any
+    /// diagnostic, probe or protection keeps the per-byte path.
+    pub(crate) fn write_presented_bytes_over_text(&mut self, address: u32, data: &[u8]) -> bool {
+        if self.presentation.is_none() {
+            return false;
+        }
+        let Some(translated) = self.range_translates_contiguously(address, data.len()) else {
+            return false;
+        };
+        if self.route(address, data.len()) != GuestMemoryRoute::Flat
+            || self.readonly_code_overlaps(translated, data.len() as u32)
+            || mem_read_trace_active()
+            || mem_write_trace_active()
+            || fb_write_trace_range().is_some()
+            || self.write_probe_original.is_some()
+            || watchpoint_armed()
+            || (u64::from(translated) + data.len() as u64) > u64::from(self.ram_size)
+        {
+            return false;
+        }
+        self.ram.write_bytes_in_bounds(translated as usize, data);
+        if let Some(mut p) = self.presentation.as_mut() {
+            p.sync_screen_row_over_text(translated, data);
         }
         true
     }

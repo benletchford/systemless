@@ -367,7 +367,7 @@ impl CopyBitsMemory for MacMemoryBus {
         let mut i = 0;
         while i < len {
             if pixels.has_detail_at(offset + i) {
-                self.copy_saved_pixel(address + i as u32, pixels, offset + i, map);
+                self.copy_saved_pixel_through(address + i as u32, pixels, offset + i, palette);
                 i += 1;
                 continue;
             }
