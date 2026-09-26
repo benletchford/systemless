@@ -12,7 +12,6 @@ use crate::process_context::{
     ProcessHandleHeap, ProcessNewHandleBackend, ProcessNewHandleRequest, ProcessNewHandleResult,
 };
 use crate::{Error, Result};
-use std::collections::HashMap;
 use std::sync::OnceLock;
 
 static TRACE_MEMORY: OnceLock<bool> = OnceLock::new();
@@ -331,7 +330,7 @@ fn vm_range_is_logical_ram(bus: &MacMemoryBus, start: u32, count: u32) -> bool {
 }
 
 fn vm_range_is_fully_tracked(
-    page_counts: &HashMap<u32, u16>,
+    page_counts: &crate::fast_hash::FastHashMap<u32, u16>,
     page_start: u32,
     page_end_exclusive: u32,
 ) -> bool {
@@ -339,7 +338,7 @@ fn vm_range_is_fully_tracked(
 }
 
 fn vm_increment_pages(
-    page_counts: &mut HashMap<u32, u16>,
+    page_counts: &mut crate::fast_hash::FastHashMap<u32, u16>,
     page_start: u32,
     page_end_exclusive: u32,
 ) {
@@ -350,7 +349,7 @@ fn vm_increment_pages(
 }
 
 fn vm_try_decrement_pages(
-    page_counts: &mut HashMap<u32, u16>,
+    page_counts: &mut crate::fast_hash::FastHashMap<u32, u16>,
     page_start: u32,
     page_end_exclusive: u32,
 ) -> bool {
