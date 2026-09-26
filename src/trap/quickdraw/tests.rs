@@ -5031,6 +5031,45 @@
     }
 
     #[test]
+    fn zero_text_size_measures_like_twelve_points() {
+        // TextSize(0) selects the system font size while txSize remains zero.
+        // Inside Macintosh Volume I, I-171 and I-173.
+        for font in [0, 1] {
+            let (mut d, mut cpu, mut bus) = setup();
+            d.tx_font = font;
+            let text = 0x300000;
+            let title = b"Hide Strategy Map Window";
+            bus.write_pstring(text, title);
+            let mut measurements = Vec::new();
+            for size in [0, 12] {
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_word(TEST_SP, size);
+                d.dispatch_quickdraw(true, 0x08A, &mut cpu, &mut bus).unwrap().unwrap();
+                let mut widths = Vec::new();
+                for (trap, args_len) in [(0x08C, 4), (0x086, 8), (0x08D, 2)] {
+                    cpu.write_reg(Register::A7, TEST_SP);
+                    match trap {
+                        0x08C => bus.write_long(TEST_SP, text),
+                        0x086 => {
+                            bus.write_word(TEST_SP, title.len() as u16);
+                            bus.write_word(TEST_SP + 2, 0);
+                            bus.write_long(TEST_SP + 4, text + 1);
+                        }
+                        _ => bus.write_word(TEST_SP, u16::from(b'H')),
+                    }
+                    d.dispatch_quickdraw(true, trap, &mut cpu, &mut bus).unwrap().unwrap();
+                    widths.push(bus.read_word(TEST_SP + args_len));
+                }
+                assert_eq!(d.tx_size, size as i16);
+                assert_eq!(widths[0], widths[1]);
+                measurements.push(widths);
+            }
+            assert_eq!(measurements[0], measurements[1]);
+            assert!(measurements[0][0] > title.len() as u16);
+        }
+    }
+
+    #[test]
     fn stringwidth_scales_monotonically_with_textsize() {
         // A guest text-fitting loop (`TextSize(n); StringWidth(s)` until
         // the string fits a target width) only converges if measured
