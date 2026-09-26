@@ -2165,6 +2165,27 @@ fn display_manager_display_id_lookup_honors_fail_to_main() {
 }
 
 #[test]
+fn display_manager_names_main_avid_as_pascal_string() {
+    let pef = synthetic_pef_with_library_import(b"DisplayLib", b"DMGetNameByAVID");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let name_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(name_ptr, vec![0; 32]);
+    loaded.cpu.gpr[3] = PPC_DSP_DISPLAY_ID;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = name_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let name: Vec<u8> = (0..13)
+        .map(|offset| loaded.memory.read_u8(name_ptr + offset).unwrap())
+        .collect();
+    assert_eq!(name, b"\x0cMain Display");
+}
+
+#[test]
 fn hle_import_runner_handles_get_device_list() {
     let pef = synthetic_pef_with_import(b"GetDeviceList");
     let mut loaded = load_pef_application(&pef).unwrap();

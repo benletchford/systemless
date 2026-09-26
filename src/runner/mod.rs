@@ -8835,6 +8835,9 @@ impl FixtureRunner {
             self.bus.write_word(entry + 4, rgb[1]);
             self.bus.write_word(entry + 6, rgb[2]);
         }
+        // The renderer reads the device palette directly; keep it in step
+        // with the screen PixMap table installed above.
+        self.dispatcher.device_clut.replace(*clut);
         true
     }
 

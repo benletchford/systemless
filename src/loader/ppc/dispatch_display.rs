@@ -104,6 +104,27 @@ pub(super) fn dispatch_display_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::DMGetNameByAVID => {
+            let av_id = cpu.gpr[3];
+            let flags = cpu.gpr[4];
+            let name_ptr = cpu.gpr[5];
+            let name: &[u8] = if flags & 4 != 0 {
+                b"1"
+            } else if flags & 2 != 0 {
+                b"Main Display 1"
+            } else {
+                b"Main Display"
+            };
+            if av_id != PPC_DSP_DISPLAY_ID
+                || !ppc_memory_can_write_bytes(memory, name_ptr, name.len() as u32 + 1)
+            {
+                Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)))
+            } else {
+                let _ = memory.write_u8(name_ptr, name.len() as u8);
+                let _ = memory.write_bytes(name_ptr + 1, name);
+                Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+            }
+        }
         PpcImportDispatcherTarget::DMGetDisplayIDByGDevice => {
             let gdevice = cpu.gpr[3];
             let display_id_out_ptr = cpu.gpr[4];
@@ -246,12 +267,19 @@ pub(super) fn dispatch_display_import(
                     PPC_NO_ERR
                 } else if process_memory_manager.native_ptr_size(list) != 0 {
                     let _ = process_memory_manager.dispose_native_ptr(list);
-                    ppc_apply_process_native_allocator(process_memory_manager, memory, heap_cursor, last_mem_error);
+                    ppc_apply_process_native_allocator(
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        last_mem_error,
+                    );
                     PPC_NO_ERR
                 } else {
                     PPC_PARAM_ERR
                 }
-            } else { PPC_PARAM_ERR };
+            } else {
+                PPC_PARAM_ERR
+            };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::DMBeginConfigureDisplays => {
@@ -483,7 +511,12 @@ pub(super) fn ppc_dm_new_display_mode_list_values(
     }
     let list = pool.allocate(PPC_DM_MODE_LIST_SIZE).unwrap_or_else(|| {
         let list = process_memory_manager.new_native_ptr(memory, PPC_DM_MODE_LIST_SIZE, true);
-        ppc_apply_process_native_allocator(process_memory_manager, memory, heap_cursor, last_mem_error);
+        ppc_apply_process_native_allocator(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+        );
         list
     });
     if list == 0 {

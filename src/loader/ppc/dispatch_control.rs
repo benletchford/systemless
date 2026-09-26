@@ -518,6 +518,14 @@ pub(super) fn ppc_dispatch_legacy_control(
                 .unwrap_or(0) as i16;
             Some(PpcImportAction::Return(ppc_i16_result(value)))
         }
+        PpcLegacyControlOperation::GetControlReference => {
+            let value = ppc_control_ptr(memory, cpu.gpr[3])
+                .and_then(|control| {
+                    memory.read_u32_be(control.wrapping_add(PPC_CONTROL_REF_CON_OFFSET))
+                })
+                .unwrap_or(0);
+            Some(PpcImportAction::Return(value))
+        }
         PpcLegacyControlOperation::GetControlTitle => {
             if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
                 let title =
@@ -549,6 +557,13 @@ pub(super) fn ppc_dispatch_legacy_control(
                     current_resource_refnum,
                     cpu.gpr[3],
                 );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcLegacyControlOperation::SetControlReference => {
+            if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
+                let _ = memory
+                    .write_u32_be(control.wrapping_add(PPC_CONTROL_REF_CON_OFFSET), cpu.gpr[4]);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -677,46 +692,22 @@ pub(super) fn ppc_dispatch_legacy_control(
                     return Some(action);
                 }
             }
+            // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80:
+            // Arrow/page value changes belong to the action procedure.
+            // A nil action only returns the hit part to the caller.
             if part == 129 {
-                if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
-                    if let Some((top, left, bottom, right)) =
-                        ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET)
-                    {
-                        let vertical = bottom.saturating_sub(top) >= right.saturating_sub(left);
-                        let axis_start = if vertical { top } else { left };
-                        let axis_end = if vertical { bottom } else { right };
-                        let arrow = (axis_end - axis_start).clamp(1, 16);
-                        let track_start = axis_start.saturating_add(arrow);
-                        let track_end = axis_end.saturating_sub(arrow);
-                        let track = i32::from(track_end.saturating_sub(track_start)).max(1);
-                        let thumb = 8i32.min(track);
-                        let travel = track.saturating_sub(thumb).max(1);
-                        let min = memory
-                            .read_u16_be(control + PPC_CONTROL_MIN_OFFSET)
-                            .unwrap_or(0) as i16;
-                        let max = memory
-                            .read_u16_be(control + PPC_CONTROL_MAX_OFFSET)
-                            .unwrap_or(0) as i16;
-                        let coord = if vertical { v } else { h };
-                        let rel_coord =
-                            (i32::from(coord) - i32::from(track_start)).clamp(0, travel);
-                        let span = i32::from(max).saturating_sub(i32::from(min));
-                        let new_val =
-                            (i32::from(min) + (rel_coord * span + travel / 2) / travel) as i16;
-                        let _ =
-                            memory.write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, new_val as u16);
-                        let _ = ppc_draw_control(
-                            memory,
-                            handles,
-                            controls,
-                            gworlds,
-                            vfs_resources,
-                            current_resource_refnum,
-                            cpu.gpr[3],
-                        );
-                    }
-                }
-                return Some(PpcImportAction::Return(ppc_i16_result(129)));
+                let _ = ppc_track_scroll_control_value(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    vfs_resources,
+                    current_resource_refnum,
+                    cpu.gpr[3],
+                    v,
+                    h,
+                );
+                return Some(PpcImportAction::Return(ppc_i16_result(part)));
             }
             if part == 0 || action_proc == 0 || action_proc == u32::MAX {
                 return Some(PpcImportAction::Return(ppc_i16_result(part)));
@@ -1083,7 +1074,7 @@ pub(super) fn ppc_clamp_control_value(memory: &mut PpcSectionMem, control: u32) 
     );
 }
 
-fn ppc_control_part_at_point(
+pub(super) fn ppc_control_part_at_point(
     memory: &mut PpcSectionMem,
     controls: &[PpcControlRecord],
     handle: u32,
@@ -1143,6 +1134,71 @@ fn ppc_control_part_at_point(
         }
         _ => Some(10),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_track_scroll_control_value(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    controls: &[PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    handle: u32,
+    v: i16,
+    h: i16,
+) -> Option<i16> {
+    if controls
+        .iter()
+        .find(|record| record.handle == handle)?
+        .proc_id
+        & 0x0fff
+        != 16
+    {
+        return None;
+    }
+    let part = ppc_control_part_at_point(memory, controls, handle, v, h)?;
+    let control = ppc_control_ptr(memory, handle)?;
+    let (top, left, bottom, right) = ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET)?;
+    let vertical = bottom.saturating_sub(top) >= right.saturating_sub(left);
+    let axis_start = if vertical { top } else { left };
+    let axis_end = if vertical { bottom } else { right };
+    let arrow = (axis_end - axis_start).clamp(1, 16);
+    let track_start = axis_start.saturating_add(arrow);
+    let track_end = axis_end.saturating_sub(arrow);
+    let min = memory.read_u16_be(control + PPC_CONTROL_MIN_OFFSET)? as i16;
+    let max = memory.read_u16_be(control + PPC_CONTROL_MAX_OFFSET)? as i16;
+    let value = memory.read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)? as i16;
+    let page = (i32::from(track_end.saturating_sub(track_start)) / 16).max(1);
+    let next = match part {
+        20 => i32::from(value) - 1,
+        21 => i32::from(value) + 1,
+        22 => i32::from(value) - page,
+        23 => i32::from(value) + page,
+        129 => {
+            let track = i32::from(track_end.saturating_sub(track_start)).max(1);
+            let thumb = 8i32.min(track);
+            let travel = track.saturating_sub(thumb).max(1);
+            let coord = if vertical { v } else { h };
+            let rel = (i32::from(coord) - i32::from(track_start)).clamp(0, travel);
+            i32::from(min) + (rel * i32::from(max.saturating_sub(min)) + travel / 2) / travel
+        }
+        _ => return None,
+    };
+    let next = next.clamp(i32::from(min.min(max)), i32::from(min.max(max))) as i16;
+    if next != value {
+        memory.write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, next as u16)?;
+        let _ = ppc_draw_control(
+            memory,
+            handles,
+            controls,
+            gworlds,
+            vfs_resources,
+            current_resource_refnum,
+            handle,
+        );
+    }
+    Some(part)
 }
 
 pub(super) fn ppc_find_control_at_point(

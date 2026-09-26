@@ -1,6 +1,89 @@
 use super::*;
 
 #[test]
+fn scrollbar_tracking_without_action_leaves_arrow_and_page_values_to_the_caller() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TrackControl")).unwrap();
+    let mut last_mem_error = loaded.last_mem_error();
+    let handle = with_test_controls!(loaded, |controls| ppc_new_control_record_values(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        controls,
+        PPC_MAIN_GWORLD,
+        (0, 0, 100, 16),
+        b"",
+        true,
+        12,
+        0,
+        25,
+        16,
+        0,
+    ));
+    assert_ne!(handle, 0);
+    let control = ppc_control_ptr(&mut loaded.memory, handle).unwrap();
+    // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80 and 5-91:
+    // Arrow/page actions belong to the caller; TrackControl only changes
+    // the value itself when tracking the scroll-box indicator.
+    for action in [0, u32::MAX] {
+        for (v, expected_part) in [(5, 20), (95, 21), (25, 22), (75, 23)] {
+            loaded.cpu.gpr[3] = handle;
+            loaded.cpu.gpr[4] = (v << 16) | 8;
+            loaded.cpu.gpr[5] = action;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TrackControl),
+            );
+            assert_eq!(loaded.cpu.gpr[3], expected_part);
+            assert_eq!(
+                loaded
+                    .memory
+                    .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET),
+                Some(12)
+            );
+        }
+    }
+}
+
+
+#[test]
+fn dialog_scrollbar_tracking_changes_the_value_for_arrow_clicks() {
+    let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+    let mut last_mem_error = loaded.last_mem_error();
+    let handle = with_test_controls!(loaded, |controls| ppc_new_control_record_values(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        controls,
+        PPC_MAIN_GWORLD,
+        (0, 0, 100, 16),
+        b"",
+        true,
+        0,
+        0,
+        25,
+        16,
+        0,
+    ));
+    assert_ne!(handle, 0);
+    let control = ppc_control_ptr(&mut loaded.memory, handle).unwrap();
+    let handles = test_handle_records!(loaded);
+    let controls = loaded.controls.records();
+    let resources = &loaded.process_file_system.vfs_resources;
+    let refnum = *loaded.process_file_system.current_resource_file;
+
+    assert_eq!(ppc_track_scroll_control_value(&mut loaded.memory, &handles, &controls, &loaded.gworlds, resources, refnum, handle, 95, 8), Some(21));
+    assert_eq!(loaded.memory.read_u16_be(control + PPC_CONTROL_VALUE_OFFSET), Some(1));
+    assert_eq!(ppc_track_scroll_control_value(&mut loaded.memory, &handles, &controls, &loaded.gworlds, resources, refnum, handle, 5, 8), Some(20));
+    assert_eq!(loaded.memory.read_u16_be(control + PPC_CONTROL_VALUE_OFFSET), Some(0));
+}
+
+#[test]
 fn hle_import_runner_creates_and_links_a_classic_control_record() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
     let scratch = ppc_heap_alloc(
@@ -618,6 +701,7 @@ fn legacy_control_imports_pre_resolve_to_typed_operations() {
         ("Draw1Control", PpcLegacyControlOperation::DrawOneControl),
         ("FindControl", PpcLegacyControlOperation::FindControl),
         ("GetControlMaximum", PpcLegacyControlOperation::GetControlMaximum),
+        ("GetControlReference", PpcLegacyControlOperation::GetControlReference),
         ("GetControlMinimum", PpcLegacyControlOperation::GetControlMinimum),
         ("GetControlTitle", PpcLegacyControlOperation::GetControlTitle),
         ("GetControlValue", PpcLegacyControlOperation::GetControlValue),
@@ -627,6 +711,7 @@ fn legacy_control_imports_pre_resolve_to_typed_operations() {
         ("MoveControl", PpcLegacyControlOperation::MoveControl),
         ("NewControl", PpcLegacyControlOperation::NewControl),
         ("SetControlMaximum", PpcLegacyControlOperation::SetControlMaximum),
+        ("SetControlReference", PpcLegacyControlOperation::SetControlReference),
         ("SetControlMinimum", PpcLegacyControlOperation::SetControlMinimum),
         ("ShowControl", PpcLegacyControlOperation::ShowControl),
         ("SizeControl", PpcLegacyControlOperation::SizeControl),
@@ -638,6 +723,67 @@ fn legacy_control_imports_pre_resolve_to_typed_operations() {
             PpcImportDispatcherTarget::LegacyControl(operation),
         );
     }
+}
+
+#[test]
+fn control_reference_imports_update_and_read_the_classic_control_record() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SetControlReference"))
+        .unwrap();
+    let handle = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        4,
+        true,
+    );
+    let record = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        PPC_CONTROL_RECORD_SIZE,
+        true,
+    );
+    loaded.memory.write_u32_be(handle, record).unwrap();
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = 0x1234_5678;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(record + PPC_CONTROL_REF_CON_OFFSET),
+        Some(0x1234_5678)
+    );
+
+    let mut getter = load_pef_application(&synthetic_pef_with_import(b"GetControlReference"))
+        .unwrap();
+    let getter_handle = ppc_heap_alloc(
+        &mut getter.memory,
+        test_heap_cursor!(getter),
+        test_heap_limit!(getter),
+        4,
+        true,
+    );
+    let getter_record = ppc_heap_alloc(
+        &mut getter.memory,
+        test_heap_cursor!(getter),
+        test_heap_limit!(getter),
+        PPC_CONTROL_RECORD_SIZE,
+        true,
+    );
+    getter.memory.write_u32_be(getter_handle, getter_record).unwrap();
+    getter
+        .memory
+        .write_u32_be(getter_record + PPC_CONTROL_REF_CON_OFFSET, 0x8765_4321)
+        .unwrap();
+    getter.cpu.gpr[3] = getter_handle;
+
+    let getter_probe = getter.run_with_hle_imports(64);
+
+    assert_eq!(getter_probe.unsupported_import_index, None);
+    assert_eq!(getter.cpu.gpr[3], 0x8765_4321);
 }
 
 #[test]

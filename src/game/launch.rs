@@ -3465,9 +3465,14 @@ fn ppc_diagnostic_vfs(
             });
         }
 
-        let seed_all_resources = app_resource_path
-            .as_ref()
-            .is_some_and(|app_path| app_path.eq_ignore_ascii_case(path));
+        // CFM libraries can read tables from their own resource forks while
+        // their native fragments run (for example, Storm's PKWARE tables).
+        // Keep these records available to the native Resource Manager just
+        // like the application's resources.
+        let seed_all_resources = file_type == u32::from_be_bytes(*b"shlb")
+            || app_resource_path
+                .as_ref()
+                .is_some_and(|app_path| app_path.eq_ignore_ascii_case(path));
         if let Some(fork) = parsed_fork.as_ref() {
             let mut sorted_resources: Vec<_> = fork.resources().values().collect();
             sorted_resources.sort_by_key(|resource| (resource.res_type, resource.id));
