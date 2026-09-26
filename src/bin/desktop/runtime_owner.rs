@@ -421,4 +421,145 @@ mod tests {
             assert!(error.unwrap().contains("controlled owner startup"));
         }
     }
+
+    struct FailingRuntimeAudio {
+        owner: std::thread::ThreadId,
+        dropped: mpsc::Sender<std::thread::ThreadId>,
+    }
+
+    impl systemless::audio::AudioBackend for FailingRuntimeAudio {
+        fn queue_samples(&mut self, _: &[u8]) {
+            assert_eq!(std::thread::current().id(), self.owner);
+            panic!("controlled runtime audio failure");
+        }
+        fn stop(&mut self) {}
+    }
+
+    impl Drop for FailingRuntimeAudio {
+        fn drop(&mut self) {
+            let _ = self.dropped.send(std::thread::current().id());
+        }
+    }
+
+    #[test]
+    fn guest_exit_host_close_and_runtime_failure_flush_saves_before_stopped() {
+        use super::super::desktop_save_store::DesktopSaveStore;
+        use systemless::cpu::Register;
+        use systemless::runner::{FixtureRunner, VfsFileSnapshot};
+
+        for (fail_audio, host_close) in [(false, false), (true, false), (false, true)] {
+            let temporary = tempfile::tempdir().unwrap();
+            let game_path = temporary.path().join("Game.sit");
+            let mut config = config();
+            config.game_path = game_path.clone();
+            let original = VfsFileSnapshot {
+                path: "Game/Pilots/Shutdown Test".into(),
+                data_fork: vec![0, 1, 255, 3],
+                resource_fork: vec![4, 0, 6, 255],
+                file_type: u32::from_be_bytes(*b"PIL "),
+                creator: u32::from_be_bytes(*b"TEST"),
+                finder_flags: 0x4000,
+                created_date: 123,
+                modified_date: 456,
+            };
+            let saved = original.clone();
+            let archive = game_path.clone();
+            let (wake, wakes) = mpsc::channel();
+            let (dropped, destruction) = mpsc::channel();
+            let (created, creation) = mpsc::channel();
+            let mut owner = RuntimeOwner::spawn_with(
+                config,
+                move || {
+                    let _ = wake.send(());
+                },
+                move |driver| {
+                    let thread = std::thread::current().id();
+                    let mut runner = FixtureRunner::new(8 * 1024 * 1024, Default::default());
+                    // Actual guest ExitToShell versus an executing guest whose
+                    // host audio callback fails after initialization succeeded.
+                    runner.bus_mut().write_word(
+                        0x10000,
+                        if fail_audio || host_close {
+                            0x60fe
+                        } else {
+                            0xa9f4
+                        },
+                    );
+                    runner.cpu_mut().write_reg(Register::PC, 0x10000);
+                    runner.cpu_mut().write_reg(Register::A7, 0x700000);
+                    let store = DesktopSaveStore::for_loaded_archive(&archive, &mut runner);
+                    runner.import_vfs_file(&saved);
+                    if fail_audio {
+                        runner.set_audio(Box::new(FailingRuntimeAudio {
+                            owner: thread,
+                            dropped,
+                        }));
+                    } else {
+                        // The normal ExitToShell case has no host audio device.
+                        drop(dropped);
+                    }
+                    driver.runner = Some(runner);
+                    driver.save_store = Some(store);
+                    driver.initialized = true;
+                    created.send(thread).unwrap();
+                    Ok(())
+                },
+            )
+            .unwrap();
+            let runtime_thread = creation.recv_timeout(Duration::from_secs(5)).unwrap();
+            if host_close {
+                owner.mailbox.request_shutdown();
+            }
+            let RuntimeStatus::Stopped {
+                error,
+                instructions,
+            } = wait_stopped(&mut owner, &wakes)
+            else {
+                unreachable!()
+            };
+            if fail_audio {
+                assert!(error.unwrap().contains("controlled runtime audio failure"));
+                assert_eq!(
+                    destruction.recv_timeout(Duration::from_secs(1)).unwrap(),
+                    runtime_thread
+                );
+            } else {
+                assert_eq!(error, None);
+                if !host_close {
+                    assert!(instructions > 0);
+                }
+            }
+            // Read from disk only after the public terminal acknowledgement.
+            // No helper is allowed to trigger an extra owner-side flush here.
+            let mut reader = FixtureRunner::new(8 * 1024 * 1024, Default::default());
+            let mut store = DesktopSaveStore::for_loaded_archive(&game_path, &mut reader);
+            let persisted = store.load_saved_files();
+            assert_eq!(persisted.len(), 1);
+            let actual = &persisted[0];
+            assert_eq!(actual.path, original.path);
+            assert_eq!(actual.data_fork, original.data_fork);
+            assert_eq!(actual.resource_fork, original.resource_fork);
+            assert_eq!(actual.file_type, original.file_type);
+            assert_eq!(actual.creator, original.creator);
+            assert_eq!(actual.finder_flags, original.finder_flags);
+            assert_eq!(actual.created_date, original.created_date);
+            assert_eq!(actual.modified_date, original.modified_date);
+        }
+    }
+
+    #[test]
+    fn missing_archive_load_reports_terminal_failure() {
+        let temporary = tempfile::tempdir().unwrap();
+        let mut config = config();
+        config.game_path = temporary.path().join("missing.sit");
+        let (wake, wakes) = mpsc::channel();
+        let mut owner = RuntimeOwner::spawn(config, move || {
+            let _ = wake.send(());
+        })
+        .unwrap();
+        let RuntimeStatus::Stopped { error, .. } = wait_stopped(&mut owner, &wakes) else {
+            unreachable!()
+        };
+        assert!(error.unwrap().contains("Failed to load game"));
+    }
 }
