@@ -35,34 +35,65 @@ the game's content surface, and exclude emulator framing, host UI, and the
 Classic Mac menu bar. Record it as a `screenshot` artifact with
 `content_only: true`, and include it in the entry's Markdown description.
 
-Stage assets that still need promotion under
-`catalogue/incoming/<stable-id>/`; do not commit large software archives. Run
-the preview and production validation commands below, then use
-`trunk serve --port 8080` from this directory to inspect the generated route
-before opening a pull request.
+Stage small assets, such as screenshots, under
+`catalogue/incoming/<stable-id>/` and include them in your PR. Do not commit
+large software archives: use a `type: url` source with an HTTPS `url`,
+`expected_sha256`, and `expected_size` instead. Only submit assets that may be
+redistributed. An incoming source uses `type: incoming` and a website-relative
+`path`, such as `catalogue/incoming/example/screenshot.png`; Markdown in the
+same entry refers to it as `incoming/example/screenshot.png`.
+
+Run preview validation below, then open a pull request with the entry and its
+small incoming assets. **Local R2 credentials and manual uploads are not
+required.** Keep `launch_enabled: false` until browser testing is approved. Use
+`trunk serve --port 8080` from this directory to inspect the generated route;
+asset promotion and browser launch approval are separate steps.
+
+### How assets reach production storage
+
+The [promotion approval workflow](../.github/workflows/promotion-approval.yml)
+starts the trusted [promotion workflow](../.github/workflows/promote-review.yml)
+for eligible PRs targeting the default branch:
+
+- For a branch in this repository, a maintainer with write access approves the
+  current PR revision. Owner-authored PRs also qualify when the repository
+  owner opens, updates, reopens, or marks them ready for review.
+- CI validates and previews the submission before using repository R2 secrets
+  to upload its incoming assets and managed downloads. It checks the PR head
+  and authorization again before uploading.
+- CI commits immutable SHA-256 asset URLs back to the PR branch, updates
+  Markdown references, removes promoted incoming files, and reruns website CI.
+- Fork PRs need a maintainer to run the
+  [manual promotion workflow](../.github/workflows/promote-assets.yml) against
+  the exact PR head and apply the generated catalogue changes from its output
+  artifact. The automatic workflow cannot commit back to fork branches.
+
+A contributor can submit pending assets for review. Production validation is
+required after promotion, before release; it is not a prerequisite for opening
+the contribution PR.
 
 ## Validate the catalogue
 
-From the repository root:
+From the repository root, run preview validation while preparing a PR:
 
 ```sh
 cargo run --locked -p systemless-catalogue-tools -- --root www check
+```
+
+Preview validation accepts incoming assets and integrity-pinned HTTPS sources.
+After CI has promoted the managed assets and committed the generated source
+rewrites, production validation should pass:
+
+```sh
 cargo run --locked -p systemless-catalogue-tools -- --root www check --production
 ```
 
-Preview validation accepts integrity-pinned HTTPS sources while a contribution
-is being reviewed. Before a release, promote every managed URL or incoming
-artifact and commit the generated immutable SHA-256 source rewrites so that
-production validation passes.
+### Maintainer recovery
 
-Pending assets are staged under `www/catalogue/incoming/<entry-id>/`. An entry
-records the website-relative source path, such as
-`catalogue/incoming/example/game.sit`; Markdown in the same entry refers to it
-as `incoming/example/game.sit`. Promotion rewrites both references to the
-immutable asset URL and removes the staged file.
-
-An interrupted promotion records
-`www/catalogue/.promotion/transaction.json`. Recover it with:
+Local asset-promotion commands are optional maintainer tools, not contributor
+setup steps. An interrupted promotion records
+`www/catalogue/.promotion/transaction.json`. A maintainer with the appropriate
+storage access can recover it with:
 
 ```sh
 cargo run --locked -p systemless-catalogue-tools -- --root www assets recover

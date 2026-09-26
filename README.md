@@ -46,10 +46,22 @@ catalogue entries and optional plugin collections live in
 
 ### Add to the catalogue
 
-Add a Markdown entry under `www/catalogue/`; keep optional plugin collections
-as separate YAML chunks under `www/catalogue/plugins/`. The
-[catalogue contribution guide](www/README.md#contribute-a-catalogue-entry)
-documents the entry layout, asset staging, validation, and local preview flow.
+Contribute through a pull request. Add a Markdown entry under `www/catalogue/`
+and stage small assets, such as screenshots, under
+`www/catalogue/incoming/<entry-id>/`. For large software archives, provide an
+HTTPS download URL with its expected SHA-256 and size in the entry instead of
+committing the archive. Keep optional plugin collections under
+`www/catalogue/plugins/`.
+
+**You do not need local R2 credentials or an upload step to submit a PR.**
+After the required approval, CI uses repository secrets to promote incoming
+assets and managed downloads, then commits the immutable asset URLs back to
+eligible PR branches. Maintainers handle promotion for fork PRs. Keep
+`launch_enabled: false` until browser testing has been approved; asset promotion
+does not approve a game for launch.
+
+The [catalogue contribution guide](www/README.md#contribute-a-catalogue-entry)
+covers metadata, preview validation, browser testing, and the approval workflow.
 
 ## Quick Start
 
