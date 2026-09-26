@@ -13,6 +13,12 @@ use systemless::runner::MenuBarPolicy;
 use systemless::{game, runner::FixtureRunner, ui_theme::UiThemeId};
 
 pub(super) struct GuiDriver {
+    generation: u64,
+    snapshot_sequence: u64,
+    display_generation: u64,
+    snapshot_screen_mode: Option<(u32, u32, u16, u16, u16)>,
+    compact_cache: systemless::memory::CompactPresentationCache,
+    compact_snapshot: Option<std::sync::Arc<systemless::memory::CompactPresentation>>,
     pub(super) runner: Option<FixtureRunner>,
     pub(super) debug_server: Option<debug_server::DebugServer>,
     pub(super) save_store: Option<DesktopSaveStore>,
@@ -58,7 +64,21 @@ impl GuiDriver {
     ) -> Self {
         #[cfg(not(target_os = "macos"))]
         let _ = native_integrations;
+        static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let generation = NEXT_GENERATION
+            .fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |value| value.checked_add(1),
+            )
+            .expect("desktop runtime generation exhausted");
         Self {
+            generation,
+            snapshot_sequence: 0,
+            display_generation: 0,
+            snapshot_screen_mode: None,
+            compact_cache: Default::default(),
+            compact_snapshot: None,
             runner: None,
             debug_server: None,
             save_store: None,
@@ -142,6 +162,106 @@ impl GuiDriver {
         self.runner = Some(runner);
         self.save_store = Some(save_store);
         self.initialized = true;
+    }
+
+    pub(super) fn capture_frame(
+        &mut self,
+        output: &mut super::frame_snapshot::GuiFrame,
+        debug: Option<systemless::debug_overlay::DebugOverlayFrameStats>,
+        capture_crop: bool,
+        learning_crop: bool,
+    ) -> bool {
+        let Some(runner) = self.runner.as_mut() else {
+            return false;
+        };
+        {
+            let _timing = FramePhaseTimer::new("outline palette preparation");
+            runner.prepare_text_presentation();
+        }
+        {
+            let _timing = FramePhaseTimer::new("window compositing");
+            runner.composite_frame();
+        }
+        let _timing = FramePhaseTimer::new("owned frame export");
+        let mode = runner.dispatcher().screen_mode;
+        let learning_crop = learning_crop || self.snapshot_screen_mode != Some(mode);
+        if self.snapshot_screen_mode != Some(mode) {
+            self.display_generation = self
+                .display_generation
+                .checked_add(1)
+                .expect("desktop display generation exhausted");
+            self.snapshot_screen_mode = Some(mode);
+        }
+        self.snapshot_sequence = self
+            .snapshot_sequence
+            .checked_add(1)
+            .expect("desktop frame sequence exhausted");
+        output.generation = self.generation;
+        output.sequence = self.snapshot_sequence;
+        output.display_generation = self.display_generation;
+        output.guest_tick = runner.guest_tick();
+        output.screen.capture(
+            runner.bus(),
+            mode,
+            &runner.dispatcher().device_clut,
+            &runner.dispatcher().device_gamma(),
+        );
+        output.cursor = runner.dispatcher().cursor().cloned();
+        output.mouse_position = runner.dispatcher().mouse_position();
+        output.debug_lines = debug
+            .map(|stats| runner.debug_overlay_snapshot(stats).lines())
+            .unwrap_or_default();
+        if runner.bus().has_visible_outline_detail() {
+            match self
+                .compact_cache
+                .prepare_changed(runner.bus(), (mode.2.into(), mode.3.into()))
+            {
+                Some(changed) => {
+                    if changed || self.compact_snapshot.is_none() {
+                        self.compact_snapshot =
+                            Some(std::sync::Arc::new(self.compact_cache.frame().clone()));
+                    }
+                    output.retained = self.compact_snapshot.clone();
+                }
+                None => {
+                    output.retained = None;
+                    self.compact_snapshot = None;
+                }
+            }
+        } else {
+            output.retained = None;
+            self.compact_snapshot = None;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use systemless::memory::MemoryBus;
+            let dispatcher = runner.dispatcher();
+            output.crop = super::frame_snapshot::CropObservations {
+                dialog_bounds: dispatcher.visible_dialog_structure_bounds(runner.bus()),
+                framed_rect: capture_crop
+                    .then(|| dispatcher.framed_manual_cport_presentation_rect(runner.bus()))
+                    .flatten(),
+                manual_rect: (capture_crop && learning_crop)
+                    .then(|| dispatcher.manual_cport_presentation_rect(runner.bus()))
+                    .flatten(),
+                declared_rect: (capture_crop && learning_crop)
+                    .then(|| dispatcher.declared_centered_presentation_rect(runner.bus()))
+                    .flatten(),
+                copybits_count: dispatcher.copybits_screen_count,
+                last_copybits_rect: dispatcher.last_screen_copybits_rect,
+                hidden_menu_height: if self.native_integrations {
+                    runner
+                        .bus()
+                        .read_word(systemless::memory::globals::addr::MBAR_HEIGHT)
+                        .into()
+                } else {
+                    0
+                },
+            };
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (capture_crop, learning_crop);
+        true
     }
 
     pub(super) fn sync_save_files(&mut self, force: bool) {
@@ -476,5 +596,80 @@ impl GuiDriver {
         runner.is_halted()
             || runner.is_ui_tracking_active()
             || self.last_presented_guest_tick != Some(runner.guest_tick())
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use crate::frame_snapshot::GuiFrame;
+    use systemless::memory::MemoryBus;
+
+    fn driver() -> GuiDriver {
+        let mut driver = GuiDriver::new(
+            "snapshot-test".into(),
+            false,
+            false,
+            false,
+            Some(8),
+            UiThemeId::ClassicSystem7,
+        );
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, Default::default());
+        let address = runner.bus_mut().alloc(32 * 32);
+        runner.dispatcher_mut().screen_mode = (address, 32, 32, 32, 8);
+        runner.bus_mut().fill_bytes(address, 32 * 32, 1);
+        driver.runner = Some(runner);
+        driver
+    }
+
+    #[test]
+    fn complete_frames_survive_frozen_ticks_guest_changes_and_owner_destruction() {
+        let mut driver = driver();
+        let mut first = GuiFrame::default();
+        assert!(driver.capture_frame(&mut first, None, false, false));
+        let original_bytes = first.screen.pixels.clone();
+        let original_palette = first.screen.palette;
+        let runner = driver.runner.as_mut().unwrap();
+        let address = runner.dispatcher().screen_mode.0;
+        runner.bus_mut().fill_bytes(address, 32 * 32, 2);
+        runner.dispatcher_mut().set_mouse_position(19, 23);
+        let mut second = GuiFrame::default();
+        assert!(driver.capture_frame(&mut second, None, false, false));
+        assert_eq!(first.guest_tick, second.guest_tick);
+        assert_eq!(first.generation, second.generation);
+        assert_eq!(second.sequence, first.sequence + 1);
+        assert_eq!(first.display_generation, second.display_generation);
+        assert_eq!(second.mouse_position, (19, 23));
+        assert_eq!(first.screen.palette, second.screen.palette);
+        assert_ne!(first.screen.pixels, second.screen.pixels);
+        driver
+            .runner
+            .as_mut()
+            .unwrap()
+            .dispatcher_mut()
+            .screen_mode
+            .2 = 16;
+        let mut third = GuiFrame::default();
+        assert!(driver.capture_frame(&mut third, None, false, false));
+        assert_eq!(third.display_generation, second.display_generation + 1);
+        assert_eq!(third.sequence, second.sequence + 1);
+        drop(driver);
+        assert_eq!(first.screen.pixels, original_bytes);
+        assert_eq!(first.screen.palette, original_palette);
+        let mut pixels = Vec::new();
+        first.screen.render_argb(&mut pixels);
+        assert_eq!(pixels.len(), 32 * 32);
+    }
+
+    #[test]
+    fn runtime_generations_do_not_reuse_frame_identifiers() {
+        let mut first = driver();
+        let mut second = driver();
+        let mut a = GuiFrame::default();
+        let mut b = GuiFrame::default();
+        assert!(first.capture_frame(&mut a, None, false, false));
+        assert!(second.capture_frame(&mut b, None, false, false));
+        assert_eq!(a.sequence, b.sequence);
+        assert_ne!(a.generation, b.generation);
     }
 }

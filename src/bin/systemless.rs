@@ -22,6 +22,8 @@ mod d3d_present;
 mod desktop_save_store;
 #[path = "desktop/frame_metrics.rs"]
 mod frame_metrics;
+#[path = "desktop/frame_snapshot.rs"]
+mod frame_snapshot;
 #[path = "desktop/headless_time.rs"]
 mod headless_time;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -174,6 +176,7 @@ const CONTENT_RECT_CONFIRMATIONS: u16 = 5;
 /// After rejecting a crop, require a longer quiet-margin period before
 /// shrinking again so startup phases cannot make the native window oscillate.
 const CONTENT_RECT_RELEARN_CONFIRMATIONS: u16 = 120;
+
 /// A stable crop only needs the margin histogram refreshed periodically: its
 /// verdict changes only when the guest paints into the excluded margins. At
 /// 60 Hz eight frames bound that staleness to roughly 130 ms, and the per-frame
@@ -844,12 +847,14 @@ struct PendingGpuFrame {
 
 struct App {
     driver: GuiDriver,
+    frame: frame_snapshot::GuiFrame,
+    retained_frame_cache: frame_snapshot::RetainedFrameCache,
     #[cfg(target_os = "windows")]
     gpu: Option<d3d_present::D3dPresenter>,
     #[cfg(target_os = "windows")]
     gpu_wake: Option<winit::event_loop::EventLoopProxy<()>>,
     #[cfg(target_os = "windows")]
-    gpu_frame: systemless::memory::CompactPresentationCache,
+    gpu_frame: std::sync::Arc<systemless::memory::CompactPresentation>,
     #[cfg(target_os = "windows")]
     gpu_pending: Option<PendingGpuFrame>,
     window: Option<Rc<Window>>,
@@ -860,8 +865,6 @@ struct App {
     #[cfg(not(target_os = "macos"))]
     surface_size: Option<(u32, u32)>,
     frame_argb: Vec<u32>,
-    /// Pre-overlay snapshot of `frame_argb` for the outline present path,
-    /// rebuilt in place every frame so the diff does not allocate.
     guest_frame_argb: Vec<u32>,
     presentation_argb: Vec<u32>,
     #[cfg(target_os = "macos")]
@@ -872,9 +875,6 @@ struct App {
     content_rect_copybits_count: u64,
     #[cfg(target_os = "macos")]
     content_rect_active_margin_frames: u16,
-    /// Last margin-histogram verdict for one crop, and how many frames remain
-    /// before it is recomputed from the framebuffer. Cleared whenever the
-    /// screen mode changes, so a same-shaped crop cannot reuse stale pixels.
     #[cfg(target_os = "macos")]
     content_rect_margin_cache: Option<(ContentRect, bool)>,
     #[cfg(target_os = "macos")]
@@ -889,6 +889,8 @@ struct App {
     content_rect_previous_frame: Vec<u8>,
     #[cfg(target_os = "macos")]
     content_rect_screen_mode: Option<(u16, u16, u16)>,
+    #[cfg(target_os = "macos")]
+    content_rect_frame: Option<(u64, u64)>,
     /// Stable presentation rectangle for which the native window was last
     /// sized. Transient dialogs may expand it without replacing the cached
     /// gameplay crop.
@@ -1010,6 +1012,8 @@ impl App {
                 screen_depth,
                 ui_theme,
             ),
+            frame: Default::default(),
+            retained_frame_cache: Default::default(),
             window: None,
             #[cfg(target_os = "windows")]
             gpu: None,
@@ -1041,6 +1045,8 @@ impl App {
             content_rect_relearn_after_full: false,
             #[cfg(target_os = "macos")]
             content_rect_previous_frame: Vec::new(),
+            #[cfg(target_os = "macos")]
+            content_rect_frame: None,
             #[cfg(target_os = "macos")]
             content_rect_screen_mode: cached_content
                 .as_ref()
@@ -1295,7 +1301,7 @@ impl App {
             return;
         }
         let _timing = FramePhaseTimer::new("GPU readiness retry work");
-        match gpu.present(self.gpu_frame.frame(), pending.size, pending.rect) {
+        match gpu.present(&self.gpu_frame, pending.size, pending.rect) {
             Ok(true) => {
                 self.gpu_pending = None;
                 self.driver.last_presented_guest_tick = Some(pending.guest_tick);
@@ -1313,7 +1319,7 @@ impl App {
                 );
                 self.surface_size = None;
                 self.driver.force_next_render = true;
-                self.render_frame();
+                self.present_frame(std::time::Instant::now());
             }
         }
     }
@@ -1321,8 +1327,6 @@ impl App {
     fn render_frame(&mut self) {
         let _timing = FramePhaseTimer::new("render frame (main thread)");
         let render_start = std::time::Instant::now();
-        #[cfg(target_os = "macos")]
-        let force_gpu_present = self.force_gpu_present;
         self.update_debug_frame_stats(render_start);
         let size = {
             let Some(window) = self.window.as_ref() else {
@@ -1333,20 +1337,46 @@ impl App {
         if size.width == 0 || size.height == 0 {
             return;
         }
-        let Some(runner) = self.driver.runner.as_mut() else {
+        #[cfg(target_os = "macos")]
+        let capture_crop =
+            should_learn_content_rect(self.debug_overlay_visible, self.native_integrations);
+        #[cfg(not(target_os = "macos"))]
+        let capture_crop = false;
+        #[cfg(target_os = "macos")]
+        let learning_crop = self.content_rect.is_none() || self.content_rect_relearn_after_full;
+        #[cfg(not(target_os = "macos"))]
+        let learning_crop = false;
+        if !self.driver.capture_frame(
+            &mut self.frame,
+            self.debug_overlay_visible
+                .then_some(DebugOverlayFrameStats {
+                    host_fps: self.debug_host_fps,
+                    frame_ms: self.debug_frame_ms,
+                    ..DebugOverlayFrameStats::default()
+                }),
+            capture_crop,
+            learning_crop,
+        ) {
+            return;
+        }
+        self.present_frame(render_start);
+    }
+
+    /// Present only complete owned data; no guest execution or memory reads.
+    fn present_frame(&mut self, render_start: std::time::Instant) {
+        let _timing = FramePhaseTimer::new("owned frame presentation");
+        #[cfg(target_os = "macos")]
+        let force_gpu_present = self.force_gpu_present;
+        let Some(window) = self.window.as_ref() else {
             return;
         };
-        {
-            let _timing = FramePhaseTimer::new("outline palette preparation");
-            runner.prepare_text_presentation();
+        let size = window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return;
         }
-        {
-            let _timing = FramePhaseTimer::new("window compositing");
-            runner.composite_frame();
-        }
-        let presented_tick = runner.guest_tick();
-
-        let (_, _, scrn_right, scrn_bottom, _) = runner.dispatcher().screen_mode;
+        let frame = &self.frame;
+        let presented_tick = frame.guest_tick;
+        let (_, _, scrn_right, scrn_bottom, _) = frame.screen.screen_mode;
         let game_w = scrn_right as u32;
         let game_h = scrn_bottom as u32;
         let mut buf_w = size.width;
@@ -1366,186 +1396,186 @@ impl App {
             return;
         }
 
-        let screen_mode = runner.dispatcher().screen_mode;
-        let device_clut = *runner.dispatcher().device_clut;
-        let device_gamma = runner.dispatcher().device_gamma();
+        let screen_mode = frame.screen.screen_mode;
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         let cursor = if self.host_cursor.enabled() {
             None
         } else {
-            runner.dispatcher().cursor().cloned()
+            frame.cursor.clone()
         };
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        let cursor = runner.dispatcher().cursor().cloned();
-        let mouse_pos = runner.dispatcher().mouse_position();
+        let cursor = frame.cursor.clone();
+        let mouse_pos = frame.mouse_position;
 
         #[cfg(target_os = "macos")]
         if should_learn_content_rect(self.debug_overlay_visible, self.native_integrations) {
-            let screen_signature = (screen_mode.2, screen_mode.3, screen_mode.4);
-            if self.content_rect_screen_mode != Some(screen_signature) {
-                self.content_rect_screen_mode = Some(screen_signature);
-                self.content_rect = None;
-                self.content_rect_candidate = None;
-                self.content_rect_copybits_count = 0;
-                self.content_rect_active_margin_frames = 0;
-                self.content_rect_margin_cache = None;
-                self.content_rect_margin_refresh = 0;
-                self.content_rect_relearn_after_full = false;
-                self.content_rect_previous_frame.clear();
-            }
+            let framebuffer = frame.screen.pixels.as_slice();
+            // A resize can present this packet repeatedly. Crop confirmation
+            // counts completed owner frames, not host redraw callbacks.
+            let key = (frame.generation, frame.sequence);
+            if self.content_rect_frame != Some(key) {
+                self.content_rect_frame = Some(key);
+                let screen_signature = (screen_mode.2, screen_mode.3, screen_mode.4);
+                if self.content_rect_screen_mode != Some(screen_signature) {
+                    self.content_rect_screen_mode = Some(screen_signature);
+                    self.content_rect = None;
+                    self.content_rect_candidate = None;
+                    self.content_rect_copybits_count = 0;
+                    self.content_rect_active_margin_frames = 0;
+                    self.content_rect_margin_cache = None;
+                    self.content_rect_margin_refresh = 0;
+                    self.content_rect_relearn_after_full = false;
+                    self.content_rect_previous_frame.clear();
+                }
 
-            let framebuffer_len = screen_mode.1.saturating_mul(u32::from(screen_mode.3));
-            let framebuffer = runner.bus().ram_slice(screen_mode.0, framebuffer_len);
-            let full_screen = ContentRect {
-                left: 0,
-                top: 0,
-                width: game_w,
-                height: game_h,
-            };
-            let visible_dialog = runner
-                .dispatcher()
-                .visible_dialog_structure_bounds(runner.bus())
-                .is_some();
-            // The histogram walks every framebuffer byte, so a crop that is
-            // already accepted only needs it refreshed every
-            // CONTENT_RECT_MARGIN_REFRESH_FRAMES frames. A reused verdict can be
-            // that many frames stale, so paint entering the margins is noticed
-            // up to one refresh period late.
-            let mut margin_cache = self.content_rect_margin_cache;
-            let mut margin_refresh = self.content_rect_margin_refresh;
-            let mut has_inactive_margins = |rect: ContentRect| {
-                if let Some((cached_rect, verdict)) = margin_cache {
-                    if cached_rect == rect && margin_refresh > 0 {
-                        margin_refresh -= 1;
-                        return verdict;
+                let full_screen = ContentRect {
+                    left: 0,
+                    top: 0,
+                    width: game_w,
+                    height: game_h,
+                };
+                let visible_dialog = frame.crop.dialog_bounds.is_some();
+                // The histogram walks every framebuffer byte, so a crop that is
+                // already accepted only needs it refreshed every
+                // CONTENT_RECT_MARGIN_REFRESH_FRAMES frames. A reused verdict can be
+                // that many frames stale, so paint entering the margins is noticed
+                // up to one refresh period late.
+                let mut margin_cache = self.content_rect_margin_cache;
+                let mut margin_refresh = self.content_rect_margin_refresh;
+                let mut has_inactive_margins = |rect: ContentRect| {
+                    if let Some((cached_rect, verdict)) = margin_cache {
+                        if cached_rect == rect && margin_refresh > 0 {
+                            margin_refresh -= 1;
+                            return verdict;
+                        }
                     }
-                }
-                let verdict = content_rect_has_inactive_margins_8bpp(
-                    framebuffer,
-                    screen_mode.1 as usize,
-                    usize::from(screen_mode.2),
-                    usize::from(screen_mode.3),
-                    rect,
-                );
-                margin_cache = Some((rect, verdict));
-                margin_refresh = CONTENT_RECT_MARGIN_REFRESH_FRAMES - 1;
-                verdict
-            };
-            let active_margin_crop = self.content_rect.filter(|&rect| {
-                rect != full_screen
-                    && !visible_dialog
-                    && screen_mode.4 == 8
-                    && !has_inactive_margins(rect)
-            });
-            if active_margin_crop.is_some() {
-                self.content_rect_active_margin_frames =
-                    self.content_rect_active_margin_frames.saturating_add(1);
-            } else {
-                self.content_rect_active_margin_frames = 0;
-            }
-            let invalidated_crop = active_margin_crop
-                .filter(|_| self.content_rect_active_margin_frames >= CONTENT_RECT_CONFIRMATIONS);
-            let learning_content_rect =
-                self.content_rect.is_none() || self.content_rect_relearn_after_full;
-
-            // A guest-drawn screen frame is stronger evidence than an
-            // earlier inferred or cached crop. Keep looking for it after a
-            // provisional crop has been accepted: some applications first
-            // blit their unpositioned backing PixMap at (0,0), then draw the
-            // actual presentation frame later in startup.
-            let framed_rect = runner
-                .dispatcher()
-                .framed_manual_cport_presentation_rect(runner.bus())
-                .and_then(|rect| content_rect_from_copybits(rect, game_w, game_h))
-                .filter(|&rect| {
-                    !self.content_rect_relearn_after_full
-                        || screen_mode.4 != 8
-                        || has_inactive_margins(rect)
-                });
-            let authoritative_rect = framed_rect.or_else(|| {
-                learning_content_rect.then(|| {
-                    let dispatcher = runner.dispatcher();
-                    dispatcher
-                        .manual_cport_presentation_rect(runner.bus())
-                        .or_else(|| dispatcher.declared_centered_presentation_rect(runner.bus()))
-                        .and_then(|rect| content_rect_from_copybits(rect, game_w, game_h))
-                        .filter(|&rect| screen_mode.4 != 8 || has_inactive_margins(rect))
-                })?
-            });
-
-            let mut accepted_rect = invalidated_crop.map(|_| full_screen);
-            let allow_detection = !self.content_rect_relearn_after_full || !visible_dialog;
-            let mut detected = None;
-            if accepted_rect.is_none() {
-                if self.content_rect_relearn_after_full {
-                    if allow_detection {
-                        detected = authoritative_rect.map(|rect| (rect, 1));
-                    }
-                } else {
-                    accepted_rect = authoritative_rect;
-                }
-            }
-            if learning_content_rect && accepted_rect.is_none() {
-                let copybits_count = runner.dispatcher().copybits_screen_count;
-                if detected.is_none()
-                    && allow_detection
-                    && copybits_count != self.content_rect_copybits_count
-                {
-                    let delta = copybits_count.saturating_sub(self.content_rect_copybits_count);
-                    let confirmations = if self.content_rect_relearn_after_full {
-                        1
-                    } else {
-                        delta.min(u64::from(u16::MAX)) as u16
-                    };
-                    self.content_rect_copybits_count = copybits_count;
-                    detected = runner
-                        .dispatcher()
-                        .last_screen_copybits_rect
-                        .and_then(|rect| content_rect_from_copybits(rect, game_w, game_h))
-                        .filter(|&rect| screen_mode.4 != 8 || has_inactive_margins(rect))
-                        .map(|rect| (rect, confirmations));
-                }
-                if detected.is_none()
-                    && allow_detection
-                    && screen_mode.4 == 8
-                    && self.content_rect_previous_frame.as_slice() != framebuffer
-                {
-                    detected = detect_centered_content_rect_8bpp(
+                    let verdict = content_rect_has_inactive_margins_8bpp(
                         framebuffer,
                         screen_mode.1 as usize,
                         usize::from(screen_mode.2),
                         usize::from(screen_mode.3),
-                    )
-                    .map(|rect| (rect, 1));
-                    self.content_rect_previous_frame.clear();
-                    self.content_rect_previous_frame
-                        .extend_from_slice(framebuffer);
+                        rect,
+                    );
+                    margin_cache = Some((rect, verdict));
+                    margin_refresh = CONTENT_RECT_MARGIN_REFRESH_FRAMES - 1;
+                    verdict
+                };
+                let active_margin_crop = self.content_rect.filter(|&rect| {
+                    rect != full_screen
+                        && !visible_dialog
+                        && screen_mode.4 == 8
+                        && !has_inactive_margins(rect)
+                });
+                if active_margin_crop.is_some() {
+                    self.content_rect_active_margin_frames =
+                        self.content_rect_active_margin_frames.saturating_add(1);
+                } else {
+                    self.content_rect_active_margin_frames = 0;
                 }
-                if let Some((candidate, confirmations)) = detected {
-                    self.content_rect_candidate = match self.content_rect_candidate {
-                        Some((previous, count)) if previous == candidate => {
-                            Some((candidate, count.saturating_add(confirmations)))
-                        }
-                        _ => Some((candidate, confirmations)),
-                    };
-                    let required_confirmations = if self.content_rect_relearn_after_full {
-                        CONTENT_RECT_RELEARN_CONFIRMATIONS
-                    } else {
-                        CONTENT_RECT_CONFIRMATIONS
-                    };
-                    accepted_rect = self
-                        .content_rect_candidate
-                        .filter(|(_, count)| *count >= required_confirmations)
-                        .map(|(rect, _)| rect);
-                } else if self.content_rect_relearn_after_full {
-                    self.content_rect_candidate = None;
-                }
-            }
+                let invalidated_crop = active_margin_crop.filter(|_| {
+                    self.content_rect_active_margin_frames >= CONTENT_RECT_CONFIRMATIONS
+                });
+                let learning_content_rect =
+                    self.content_rect.is_none() || self.content_rect_relearn_after_full;
 
-            if let Some(rect) = accepted_rect.filter(|rect| self.content_rect != Some(*rect)) {
-                let replacing_provisional_crop = self.content_rect.is_some();
-                if let Some(previous) = invalidated_crop {
-                    eprintln!(
+                // A guest-drawn screen frame is stronger evidence than an
+                // earlier inferred or cached crop. Keep looking for it after a
+                // provisional crop has been accepted: some applications first
+                // blit their unpositioned backing PixMap at (0,0), then draw the
+                // actual presentation frame later in startup.
+                let framed_rect = frame
+                    .crop
+                    .framed_rect
+                    .and_then(|rect| content_rect_from_copybits(rect, game_w, game_h))
+                    .filter(|&rect| {
+                        !self.content_rect_relearn_after_full
+                            || screen_mode.4 != 8
+                            || has_inactive_margins(rect)
+                    });
+                let authoritative_rect = framed_rect.or_else(|| {
+                    learning_content_rect.then(|| {
+                        frame
+                            .crop
+                            .manual_rect
+                            .or(frame.crop.declared_rect)
+                            .and_then(|rect| content_rect_from_copybits(rect, game_w, game_h))
+                            .filter(|&rect| screen_mode.4 != 8 || has_inactive_margins(rect))
+                    })?
+                });
+
+                let mut accepted_rect = invalidated_crop.map(|_| full_screen);
+                let allow_detection = !self.content_rect_relearn_after_full || !visible_dialog;
+                let mut detected = None;
+                if accepted_rect.is_none() {
+                    if self.content_rect_relearn_after_full {
+                        if allow_detection {
+                            detected = authoritative_rect.map(|rect| (rect, 1));
+                        }
+                    } else {
+                        accepted_rect = authoritative_rect;
+                    }
+                }
+                if learning_content_rect && accepted_rect.is_none() {
+                    let copybits_count = frame.crop.copybits_count;
+                    if detected.is_none()
+                        && allow_detection
+                        && copybits_count != self.content_rect_copybits_count
+                    {
+                        let delta = copybits_count.saturating_sub(self.content_rect_copybits_count);
+                        let confirmations = if self.content_rect_relearn_after_full {
+                            1
+                        } else {
+                            delta.min(u64::from(u16::MAX)) as u16
+                        };
+                        self.content_rect_copybits_count = copybits_count;
+                        detected = frame
+                            .crop
+                            .last_copybits_rect
+                            .and_then(|rect| content_rect_from_copybits(rect, game_w, game_h))
+                            .filter(|&rect| screen_mode.4 != 8 || has_inactive_margins(rect))
+                            .map(|rect| (rect, confirmations));
+                    }
+                    if detected.is_none()
+                        && allow_detection
+                        && screen_mode.4 == 8
+                        && self.content_rect_previous_frame.as_slice() != framebuffer
+                    {
+                        detected = detect_centered_content_rect_8bpp(
+                            framebuffer,
+                            screen_mode.1 as usize,
+                            usize::from(screen_mode.2),
+                            usize::from(screen_mode.3),
+                        )
+                        .map(|rect| (rect, 1));
+                        self.content_rect_previous_frame.clear();
+                        self.content_rect_previous_frame
+                            .extend_from_slice(framebuffer);
+                    }
+                    if let Some((candidate, confirmations)) = detected {
+                        self.content_rect_candidate = match self.content_rect_candidate {
+                            Some((previous, count)) if previous == candidate => {
+                                Some((candidate, count.saturating_add(confirmations)))
+                            }
+                            _ => Some((candidate, confirmations)),
+                        };
+                        let required_confirmations = if self.content_rect_relearn_after_full {
+                            CONTENT_RECT_RELEARN_CONFIRMATIONS
+                        } else {
+                            CONTENT_RECT_CONFIRMATIONS
+                        };
+                        accepted_rect = self
+                            .content_rect_candidate
+                            .filter(|(_, count)| *count >= required_confirmations)
+                            .map(|(rect, _)| rect);
+                    } else if self.content_rect_relearn_after_full {
+                        self.content_rect_candidate = None;
+                    }
+                }
+
+                if let Some(rect) = accepted_rect.filter(|rect| self.content_rect != Some(*rect)) {
+                    let replacing_provisional_crop = self.content_rect.is_some();
+                    if let Some(previous) = invalidated_crop {
+                        eprintln!(
                         "[SYSTEMLESS] Guest content expanded from {}x{} at ({},{}) to the full {}x{} screen after persistent margin drawing",
                         previous.width,
                         previous.height,
@@ -1554,43 +1584,44 @@ impl App {
                         game_w,
                         game_h
                     );
-                } else if replacing_provisional_crop {
-                    eprintln!(
+                    } else if replacing_provisional_crop {
+                        eprintln!(
                         "[SYSTEMLESS] Guest content updated from explicit frame: {}x{} at ({},{}) inside {}x{}",
                         rect.width, rect.height, rect.left, rect.top, game_w, game_h
                     );
-                } else {
-                    eprintln!(
-                        "[SYSTEMLESS] Guest content: {}x{} at ({},{}) inside {}x{}",
-                        rect.width, rect.height, rect.left, rect.top, game_w, game_h
-                    );
-                }
-                self.content_rect = Some(rect);
-                self.content_rect_candidate = None;
-                self.content_rect_active_margin_frames = 0;
-                self.content_rect_relearn_after_full = invalidated_crop.is_some();
-                persist_content_rect(&self.game_path, screen_mode, rect);
-                let rect = presentation_content_rect(
-                    rect,
-                    None,
-                    game_w,
-                    game_h,
-                    native_menu_bar_height(Some(runner), self.native_integrations),
-                );
-                if let Some(window) = self.window.as_ref() {
-                    if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
-                        let _ = window.request_inner_size(guest_scaled_physical_size(
-                            rect.width,
-                            rect.height,
-                            scale,
-                        ));
+                    } else {
+                        eprintln!(
+                            "[SYSTEMLESS] Guest content: {}x{} at ({},{}) inside {}x{}",
+                            rect.width, rect.height, rect.left, rect.top, game_w, game_h
+                        );
                     }
+                    self.content_rect = Some(rect);
+                    self.content_rect_candidate = None;
+                    self.content_rect_active_margin_frames = 0;
+                    self.content_rect_relearn_after_full = invalidated_crop.is_some();
+                    persist_content_rect(&self.game_path, screen_mode, rect);
+                    let rect = presentation_content_rect(
+                        rect,
+                        None,
+                        game_w,
+                        game_h,
+                        frame.crop.hidden_menu_height,
+                    );
+                    if let Some(window) = self.window.as_ref() {
+                        if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
+                            let _ = window.request_inner_size(guest_scaled_physical_size(
+                                rect.width,
+                                rect.height,
+                                scale,
+                            ));
+                        }
+                    }
+                    self.window_sized_content_rect = Some(rect);
                 }
-                self.window_sized_content_rect = Some(rect);
+                self.content_rect_margin_cache = margin_cache;
+                self.content_rect_margin_refresh = margin_refresh;
             }
 
-            self.content_rect_margin_cache = margin_cache;
-            self.content_rect_margin_refresh = margin_refresh;
             let stable_content = self.content_rect.unwrap_or(ContentRect {
                 left: 0,
                 top: 0,
@@ -1602,16 +1633,14 @@ impl App {
                 None,
                 game_w,
                 game_h,
-                native_menu_bar_height(Some(runner), self.native_integrations),
+                frame.crop.hidden_menu_height,
             );
             let desired_content = presentation_content_rect(
                 stable_content,
-                runner
-                    .dispatcher()
-                    .visible_dialog_structure_bounds(runner.bus()),
+                frame.crop.dialog_bounds,
                 game_w,
                 game_h,
-                native_menu_bar_height(Some(runner), self.native_integrations),
+                frame.crop.hidden_menu_height,
             );
             let allow_guest_resize = self.window.as_ref().is_some_and(|window| {
                 window_guest_resize_scale(window, self.display_scale).is_some()
@@ -1746,18 +1775,14 @@ impl App {
             }
             let content = self.window_sized_content_rect.unwrap_or(stable_content);
             presentation_rect = content;
-            let palette = display::argb_palette_from_clut_with_gamma(&device_clut, &device_gamma);
-            if let Some(surface) = self
-                .surface
-                .as_mut()
-                .filter(|_| !runner.bus().has_visible_outline_detail())
-            {
+            let palette = &frame.screen.palette;
+            if let Some(surface) = self.surface.as_mut().filter(|_| frame.retained.is_none()) {
                 let presented_directly = surface
                     .present_guest_frame(
                         framebuffer,
                         screen_mode,
                         (content.left, content.top, content.width, content.height),
-                        &palette,
+                        palette,
                         cursor.as_ref().map(|image| (image, mouse_pos)),
                         (buf_w, buf_h),
                         force_gpu_present,
@@ -1778,74 +1803,56 @@ impl App {
             }
         }
 
-        let has_outline_detail = runner.bus().has_visible_outline_detail();
-        let compact_ready = {
-            #[cfg(target_os = "windows")]
-            {
-                self.gpu.is_some()
-                    && has_outline_detail
-                    && cursor.is_none()
-                    && !self.debug_overlay_visible
-                    && {
-                        let _timing = FramePhaseTimer::new("GPU compact preparation");
-                        self.gpu_frame.prepare(runner.bus(), (game_w, game_h))
-                    }
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                false
-            }
-        };
+        let mut retained = frame.retained.clone();
+        #[cfg(target_os = "windows")]
+        let compact_ready = self.gpu.is_some()
+            && retained.is_some()
+            && cursor.is_none()
+            && !self.debug_overlay_visible;
+        #[cfg(not(target_os = "windows"))]
+        let compact_ready = false;
         let mut frame_argb = std::mem::take(&mut self.frame_argb);
-        #[allow(unused_mut)] // Windows may need to rebuild this on GPU failure.
-        let mut guest_frame = if compact_ready {
-            None
-        } else {
-            display::render_screen_argb_with_gamma(
-                runner.bus(),
-                screen_mode,
-                &device_clut,
-                &device_gamma,
-                &mut frame_argb,
-            );
-            has_outline_detail.then(|| refresh_guest_frame(&mut self.guest_frame_argb, &frame_argb))
-        };
-        if let Some(cursor) = cursor.as_ref() {
-            display::render_cursor_argb(&mut frame_argb, game_w, game_h, cursor, mouse_pos);
-        }
-        if self.debug_overlay_visible {
-            let lines = runner
-                .debug_overlay_snapshot(DebugOverlayFrameStats {
-                    host_fps: self.debug_host_fps,
-                    frame_ms: self.debug_frame_ms,
-                    ..DebugOverlayFrameStats::default()
-                })
-                .lines();
-            display::render_debug_overlay_argb(&mut frame_argb, game_w, game_h, &lines);
+        if !compact_ready {
+            frame.screen.render_argb(&mut frame_argb);
+            let guest = retained
+                .as_ref()
+                .filter(|_| cursor.is_some() || self.debug_overlay_visible)
+                .map(|_| refresh_guest_frame(&mut self.guest_frame_argb, &frame_argb));
+            if let Some(cursor) = cursor.as_ref() {
+                display::render_cursor_argb(&mut frame_argb, game_w, game_h, cursor, mouse_pos);
+            }
+            if self.debug_overlay_visible {
+                display::render_debug_overlay_argb(
+                    &mut frame_argb,
+                    game_w,
+                    game_h,
+                    &frame.debug_lines,
+                );
+            }
+            if let (Some(guest), Some(image)) = (guest.as_ref(), retained.as_mut()) {
+                if !std::sync::Arc::make_mut(image).apply_overlay(guest, &frame_argb) {
+                    retained = None;
+                }
+            }
+            if let Some(guest) = guest {
+                self.guest_frame_argb = guest;
+            }
         }
 
         #[cfg(target_os = "windows")]
         if self.gpu.is_some() {
-            let exported = if compact_ready {
+            let exported = if let Some(image) = retained.as_ref() {
+                self.gpu_frame = image.clone();
                 true
             } else {
-                let _timing = FramePhaseTimer::new("GPU compact preparation");
-                if let Some(guest) = guest_frame.as_ref() {
-                    runner.bus().compact_presentation(
-                        guest,
-                        &frame_argb,
-                        self.gpu_frame.frame_mut(),
-                    )
-                } else {
-                    let output = self.gpu_frame.frame_mut();
-                    output.width = game_w;
-                    output.height = game_h;
-                    output.scale = 1;
-                    output.cells.clear();
-                    output.cells.extend(frame_argb.iter().map(|p| p & 0xffffff));
-                    output.detail.clear();
-                    true
-                }
+                let output = std::sync::Arc::make_mut(&mut self.gpu_frame);
+                output.width = game_w;
+                output.height = game_h;
+                output.scale = 1;
+                output.cells.clear();
+                output.cells.extend(frame_argb.iter().map(|p| p & 0xffffff));
+                output.detail.clear();
+                true
             };
             // This is a single latest-image slot. Preparation can overlap
             // display backpressure; a newer guest frame replaces an older
@@ -1857,7 +1864,7 @@ impl App {
             });
             let result = if exported {
                 self.gpu.as_mut().unwrap().present(
-                    self.gpu_frame.frame(),
+                    &self.gpu_frame,
                     (buf_w, buf_h),
                     aspect_fit_dimensions(game_w, game_h, buf_w, buf_h),
                 )
@@ -1895,15 +1902,7 @@ impl App {
                         // them for this same frame before entering software
                         // presentation; self.frame_argb may hold an older size
                         // or screen, including after a resize/device failure.
-                        display::render_screen_argb_with_gamma(
-                            runner.bus(),
-                            screen_mode,
-                            &device_clut,
-                            &device_gamma,
-                            &mut frame_argb,
-                        );
-                        guest_frame =
-                            Some(refresh_guest_frame(&mut self.guest_frame_argb, &frame_argb));
+                        frame.screen.render_argb(&mut frame_argb);
                     }
                 }
             }
@@ -1917,55 +1916,37 @@ impl App {
         #[cfg(target_os = "macos")]
         let output_scale = display::outline_output_scale(logical_size, (buf_w, buf_h));
         #[cfg(target_os = "macos")]
-        // The resolved outline image only needs patching where a host overlay
-        // wrote a pixel, and its crop is only a copy when the content rectangle
-        // is smaller than the screen. Frames with neither can present the
-        // resolved image in place instead of copying it through `presented`.
-        // Only frames that would take the outline path may borrow its image;
-        // frames without visible outline detail keep the raster presenter.
-        let borrowed_outline = if guest_frame.is_some()
-            && cursor.is_none()
+        let borrowed_size = if cursor.is_none()
             && !self.debug_overlay_visible
+            && presentation_rect.left == 0
+            && presentation_rect.top == 0
+            && presentation_rect.width == game_w
+            && presentation_rect.height == game_h
         {
-            runner
-                .bus()
-                .presented_argb_cached(output_scale)
-                .filter(|outline| {
-                    let (width, height) = outline.size();
-                    let scale = width / game_w;
-                    presentation_rect.left * scale == 0
-                        && presentation_rect.top * scale == 0
-                        && presentation_rect.width * scale == width
-                        && presentation_rect.height * scale == height
-                })
+            let target = (game_w * output_scale, game_h * output_scale);
+            retained.as_ref().and_then(|image| {
+                self.retained_frame_cache
+                    .prepare(image, target)
+                    .then_some(target)
+            })
         } else {
             None
         };
-        #[cfg(target_os = "macos")]
-        let borrowed_size = borrowed_outline.as_ref().map(|outline| outline.size());
         #[cfg(not(target_os = "macos"))]
         let borrowed_size: Option<(u32, u32)> = None;
         let mut used_outlines = false;
         #[allow(unused_variables)] // macOS crops by the physical presentation rectangle.
         let (game_w, game_h) = if let Some(size) = borrowed_size {
             size
-        } else if let Some((width, height)) = guest_frame.as_ref().and_then(|guest| {
-            let _timing = FramePhaseTimer::new("outline pixel expansion");
+        } else if let Some((width, height)) = retained.as_ref().and_then(|image| {
+            let _timing = FramePhaseTimer::new("owned outline pixel expansion");
             #[cfg(target_os = "macos")]
-            {
-                runner
-                    .bus()
-                    .presented_argb_scaled(guest, &frame_argb, output_scale, &mut presented)
-            }
+            let target = (game_w * output_scale, game_h * output_scale);
             #[cfg(not(target_os = "macos"))]
-            {
-                runner.bus().presented_argb_resized(
-                    guest,
-                    &frame_argb,
-                    (drawable_rect.2, drawable_rect.3),
-                    &mut presented,
-                )
-            }
+            let target = (drawable_rect.2, drawable_rect.3);
+            self.retained_frame_cache
+                .render(image, target, &mut presented)
+                .then_some(target)
         }) {
             #[cfg(target_os = "macos")]
             {
@@ -1981,9 +1962,6 @@ impl App {
         } else {
             (game_w, game_h)
         };
-        if let Some(snapshot) = guest_frame.take() {
-            self.guest_frame_argb = snapshot;
-        }
 
         #[cfg(target_os = "macos")]
         {
@@ -1996,32 +1974,26 @@ impl App {
                 return;
             };
             let _timing = FramePhaseTimer::new("raster presentation submission");
-            match borrowed_outline.as_ref() {
-                // The resolved image is the whole presentation, so it is
-                // already cropped and patched and can go straight to the GPU.
-                Some(outline) => {
-                    let (width, height) = outline.size();
-                    let pixels = outline.pixels();
-                    surface
-                        .present(&pixels, width, height, buf_w, buf_h)
-                        .expect("Failed to present Metal framebuffer");
-                }
-                None => {
-                    // The presenter worker uploads `layout` out of the whole
-                    // frame buffer, so neither the crop nor the staging copy
-                    // runs on this thread; it returns the buffer to reuse for
-                    // the next frame.
-                    frame_argb = surface
-                        .present_owned(
-                            frame_argb,
-                            presentation_layout(presentation_rect, game_w),
-                            buf_w,
-                            buf_h,
-                        )
-                        .expect("Failed to present Metal framebuffer");
-                }
+            if let Some((width, height)) = borrowed_size {
+                surface
+                    .present(
+                        self.retained_frame_cache.pixels(),
+                        width,
+                        height,
+                        buf_w,
+                        buf_h,
+                    )
+                    .expect("Failed to present Metal framebuffer");
+            } else {
+                frame_argb = surface
+                    .present_owned(
+                        frame_argb,
+                        presentation_layout(presentation_rect, game_w),
+                        buf_w,
+                        buf_h,
+                    )
+                    .expect("Failed to present Metal framebuffer");
             }
-            drop(borrowed_outline);
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -2887,8 +2859,8 @@ impl ApplicationHandler for App {
                 // Live resizing runs independently of the guest VBL. Present
                 // the latest complete guest image at the new drawable size
                 // immediately instead of stretching a stale drawable.
-                if size.width != 0 && size.height != 0 && self.driver.runner.is_some() {
-                    self.render_frame();
+                if size.width != 0 && size.height != 0 && self.frame.sequence != 0 {
+                    self.present_frame(std::time::Instant::now());
                 }
             }
 
