@@ -15,6 +15,8 @@ function worker(steps = () => 1, frameTicks = 6) {
   let running = true;
   let uiTracking = false;
   const stub = {
+    saveFilesVersion: () => "0",
+    saveFiles: () => [],
     keyDown: key => keys.add(key),
     keyUp: key => keys.delete(key),
     mouseDown: () => { mouse = true; },
@@ -32,7 +34,7 @@ function worker(steps = () => 1, frameTicks = 6) {
     performance: { now: () => now },
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/emulator-worker.js'), 'utf8'), context);
-  vm.runInContext('machine = stub', context);
+  vm.runInContext('machine = stub; saveFilesVersion = stub.saveFilesVersion()', context);
   return {
     send: (type, fields = {}) => context.self.onmessage({ data: { type, generation: 0, ...fields } }),
     frames,
@@ -225,4 +227,66 @@ test('a save command failure remains visible without stopping gameplay', async (
   assert.equal(w.messages[0].fatal, false);
   assert.equal(w.messages[0].operation, 'importSave');
   assert.equal(w.messages[1].type, 'frame');
+});
+
+test('normal gameplay publishes saves only when the version changes', async () => {
+  const w = worker();
+  let version = "0";
+  let exports = 0;
+  w.override({ saveFilesVersion: () => version, saveFiles: () => { exports++; return []; } });
+  await w.send('frame');
+  version = "1";
+  await w.send('frame');
+  await w.send('frame');
+  version = "2";
+  await w.send('frame');
+  assert.equal(exports, 2);
+  assert.deepEqual(w.messages.filter(m => m.type === 'saveFiles').map(m => m.saveFilesVersion), ['1', '2']);
+});
+
+test('save commands acknowledge even an unchanged list and recover after errors', async () => {
+  const w = worker();
+  w.override({ deleteSave() {}, importSave() { throw new Error('invalid import'); } });
+  await w.send('deleteSave', { path: 'Pilots/Test', requestId: 1 });
+  await w.send('importSave', { bytes: new Uint8Array(), requestId: 2 });
+  await w.send('deleteSave', { path: 'Pilots/Test', requestId: 3 });
+  assert.deepEqual(w.messages.map(m => [m.type, m.requestId]), [['saveFiles', 1], ['error', 2], ['saveFiles', 3]]);
+  assert.equal(w.messages[1].fatal, false);
+});
+
+test('commands acknowledge after application, including recoverable save errors', async () => {
+  const w = worker();
+  await w.send('keyDown', { macKey: 37, commandSequence: 1 });
+  await w.send('frame', { commandSequence: 2 });
+  await w.send('importSave', { bytes: new Uint8Array(), requestId: 1, commandSequence: 3 });
+  assert.deepEqual(w.messages.map(m => [m.type, m.commandSequence]), [
+    ['commandAck', 1], ['frame', undefined], ['commandAck', 2],
+    ['error', undefined], ['commandAck', 3],
+  ]);
+  assert.deepEqual(w.frames[0].keys, [37]);
+});
+
+test('shutdown finishes saves before releasing the owning machine', async () => {
+  const w = worker();
+  let commit;
+  let freed = false;
+  w.override({ flushSaves: () => new Promise(resolve => { commit = resolve; }), free: () => { freed = true; } });
+  const shutdown = w.send('shutdown', { commandSequence: 1 });
+  await w.send('frame');
+  assert.equal(w.frames.length, 0);
+  assert.equal(freed, false);
+  assert.equal(w.messages.length, 0);
+  commit();
+  await shutdown;
+  assert.equal(freed, true);
+  assert.deepEqual(w.messages.map(m => m.type), ['stopped', 'commandAck']);
+});
+
+test('shutdown reports a save failure without claiming a completed flush', async () => {
+  const w = worker();
+  w.override({ flushSaves: async () => { throw new Error('write aborted'); } });
+  await w.send('shutdown');
+  assert.equal(w.messages[0].type, 'error');
+  assert.match(w.messages[0].message, /write aborted/);
+  assert.equal(w.messages.some(m => m.type === 'stopped'), false);
 });

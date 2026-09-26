@@ -18,6 +18,54 @@ struct BootConfig {
     file_mappings: Vec<(String, String)>,
     runtime_pacing: RuntimePacing,
     arrows_as_numpad: bool,
+    #[serde(default)]
+    plugins: Vec<PluginMetadata>,
+}
+
+// Fork bytes travel separately in transfer lists. Keep every Finder field and
+// the mount path together; the owner uses the same import path as compatibility mode.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct PluginMetadata {
+    mount_path: String,
+    path: String,
+    file_type: u32,
+    creator: u32,
+    finder_flags: u16,
+    created_date: u32,
+    modified_date: u32,
+}
+
+impl From<&PluginFile> for PluginMetadata {
+    fn from(plugin: &PluginFile) -> Self {
+        let file = &plugin.file;
+        Self {
+            mount_path: plugin.mount_path.clone(),
+            path: file.path.clone(),
+            file_type: file.file_type,
+            creator: file.creator,
+            finder_flags: file.finder_flags,
+            created_date: file.created_date,
+            modified_date: file.modified_date,
+        }
+    }
+}
+
+impl PluginMetadata {
+    fn with_forks(self, data_fork: Vec<u8>, resource_fork: Vec<u8>) -> PluginFile {
+        PluginFile {
+            mount_path: self.mount_path,
+            file: systemless::runner::VfsFileSnapshot {
+                path: self.path,
+                data_fork,
+                resource_fork,
+                file_type: self.file_type,
+                creator: self.creator,
+                finder_flags: self.finder_flags,
+                created_date: self.created_date,
+                modified_date: self.modified_date,
+            },
+        }
+    }
 }
 
 #[wasm_bindgen]
@@ -33,6 +81,7 @@ impl WorkerMachine {
     pub async fn create(
         game_bytes: Uint8Array,
         config: &str,
+        plugin_forks: Array,
         on_progress: js_sys::Function,
     ) -> Result<WorkerMachine, JsValue> {
         let config: BootConfig =
@@ -42,6 +91,22 @@ impl WorkerMachine {
             "ppc" => GameArchitecture::PowerPc,
             _ => return Err(JsValue::from_str("Unsupported worker architecture")),
         };
+        if plugin_forks.length() as usize != config.plugins.len() * 2 {
+            return Err(JsValue::from_str(
+                "Worker plugin fork count does not match metadata",
+            ));
+        }
+        let plugins: Vec<PluginFile> = config
+            .plugins
+            .into_iter()
+            .enumerate()
+            .map(|(index, metadata)| {
+                metadata.with_forks(
+                    Uint8Array::new(&plugin_forks.get(index as u32 * 2)).to_vec(),
+                    Uint8Array::new(&plugin_forks.get(index as u32 * 2 + 1)).to_vec(),
+                )
+            })
+            .collect();
         let bytes = game_bytes.to_vec();
         let paths: Vec<&str> = config.remove_paths.iter().map(String::as_str).collect();
         let mappings: Vec<(&str, &str)> = config
@@ -52,7 +117,7 @@ impl WorkerMachine {
         let mut machine = Machine::new_with_progress(
             &config.id,
             &bytes,
-            &[] as &[PluginFile],
+            &plugins,
             architecture,
             &config.launch_modifiers,
             config.show_menu_bar,
@@ -120,6 +185,9 @@ impl WorkerMachine {
         let audio = Uint8Array::from(self.machine.take_worker_audio().as_slice());
 
         let result = Object::new();
+        if let Some(error) = self.machine.take_save_error() {
+            set_string(&result, "saveError", &error);
+        }
         set_bool(&result, "running", frame_result.running);
         set_bool(&result, "uiTracking", self.machine.is_ui_tracking_active());
         set_bool(&result, "visualWork", frame_result.visual_work);
@@ -190,19 +258,32 @@ impl WorkerMachine {
     }
 
     #[wasm_bindgen(js_name = importSave)]
-    pub fn import_save(&mut self, bytes: Uint8Array) -> Result<Array, JsValue> {
+    pub fn import_save(&mut self, bytes: Uint8Array) -> Result<(), JsValue> {
         self.machine
             .import_save_file_bytes(&bytes.to_vec())
             .map_err(|error| JsValue::from_str(&error))?;
-        Ok(self.save_files())
+        Ok(())
     }
 
     #[wasm_bindgen(js_name = deleteSave)]
-    pub fn delete_save(&mut self, path: &str) -> Result<Array, JsValue> {
+    pub fn delete_save(&mut self, path: &str) -> Result<(), JsValue> {
         self.machine
             .delete_save_file(path)
             .map_err(|error| JsValue::from_str(&error))?;
-        Ok(self.save_files())
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = flushSaves)]
+    pub async fn flush_saves(&mut self) -> Result<(), JsValue> {
+        let id = self.machine.flush_save_files();
+        crate::save_store::flush_pending_saves(&id)
+            .await
+            .map_err(|error| JsValue::from_str(&error))
+    }
+
+    #[wasm_bindgen(js_name = saveFilesVersion)]
+    pub fn save_files_version(&self) -> String {
+        self.machine.save_files_version().to_string()
     }
 
     #[wasm_bindgen(js_name = saveFiles)]
@@ -322,4 +403,41 @@ fn set_string(object: &Object, property: &str, value: &str) {
         &JsValue::from_str(property),
         &JsValue::from_str(value),
     );
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+
+    #[test]
+    fn plugin_transport_preserves_both_forks_mount_path_and_finder_metadata() {
+        let plugin = PluginFile {
+            mount_path: "Plug-ins".into(),
+            file: systemless::runner::VfsFileSnapshot {
+                path: "Original Plugin".into(),
+                data_fork: vec![0, 1, 128, 255],
+                resource_fork: vec![255, 0, 2, 127],
+                file_type: u32::from_be_bytes(*b"rsrc"),
+                creator: u32::from_be_bytes(*b"TEST"),
+                finder_flags: 0x8401,
+                created_date: 123456789,
+                modified_date: 234567890,
+            },
+        };
+        let encoded = serde_json::to_string(&PluginMetadata::from(&plugin)).unwrap();
+        let metadata: PluginMetadata = serde_json::from_str(&encoded).unwrap();
+        let received = metadata.with_forks(
+            plugin.file.data_fork.clone(),
+            plugin.file.resource_fork.clone(),
+        );
+        assert_eq!(received.mount_path, plugin.mount_path);
+        assert_eq!(received.file.path, plugin.file.path);
+        assert_eq!(received.file.data_fork, plugin.file.data_fork);
+        assert_eq!(received.file.resource_fork, plugin.file.resource_fork);
+        assert_eq!(received.file.file_type, plugin.file.file_type);
+        assert_eq!(received.file.creator, plugin.file.creator);
+        assert_eq!(received.file.finder_flags, plugin.file.finder_flags);
+        assert_eq!(received.file.created_date, plugin.file.created_date);
+        assert_eq!(received.file.modified_date, plugin.file.modified_date);
+    }
 }

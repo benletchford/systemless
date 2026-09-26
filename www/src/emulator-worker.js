@@ -1,9 +1,19 @@
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 let machine = null;
 let generation = 0;
 let frameSequence = 0;
 let booting = false;
 let failed = false;
+let stopping = false;
+let saveFilesVersion = null;
+
+function publishSaveFiles(type = "saveFiles", requestId) {
+  const version = machine.saveFilesVersion();
+  if (type === "saveFiles" && requestId === undefined && version === saveFilesVersion) return;
+  const files = machine.saveFiles();
+  saveFilesVersion = version;
+  reply({ type, files, saveFilesVersion: version, requestId }, files.map(file => file.macbinary.buffer));
+}
 
 function reply(message, transfer = []) {
   self.postMessage({ ...message, generation, protocolVersion: PROTOCOL_VERSION }, transfer);
@@ -45,7 +55,7 @@ self.onmessage = async (event) => {
   const message = event.data || {};
   try {
     if (message.type === "boot") {
-      if (booting || machine) throw new Error("Runtime worker is already started");
+      if (booting || machine || stopping || failed) throw new Error("Runtime worker is already started");
       generation = message.generation;
       if (message.protocolVersion !== PROTOCOL_VERSION) {
         throw new Error("Runtime worker assets use an incompatible protocol");
@@ -57,13 +67,22 @@ self.onmessage = async (event) => {
       machine = await bindings.WorkerMachine.create(
         new Uint8Array(message.gameBytes),
         message.config,
+        message.pluginForks || [],
         (progress) => reply({ type: "progress", progress }),
       );
       booting = false;
-      reply({ type: "ready", files: machine.saveFiles() });
+      publishSaveFiles("ready");
       return;
     }
-    if (message.generation !== generation || !machine || failed) return;
+    if (message.generation !== generation || !machine || failed || stopping) return;
+    if (message.type === "shutdown") {
+      stopping = true;
+      await machine.flushSaves();
+      machine.free();
+      machine = null;
+      reply({ type: "stopped" });
+      return;
+    }
 
     if (message.type === "frame") {
       const result = machine.runFrame(message.queuedAudioSamples ?? -1, !!message.debug, message.outputScale ?? 1);
@@ -86,6 +105,7 @@ self.onmessage = async (event) => {
         for (const texture of result.gpuFrame.textures) transfer.push(texture.rgba.buffer);
         for (const draw of result.gpuFrame.draws) transfer.push(draw.vertices.buffer);
       }
+      publishSaveFiles();
       reply({ type: "frame", ...result, sequence: ++frameSequence }, transfer);
       return;
     }
@@ -96,10 +116,11 @@ self.onmessage = async (event) => {
     else if (message.type === "keyDown") press(message.macKey, () => machine.keyDown(message.macKey, message.charCode));
     else if (message.type === "keyUp") release(message.macKey, () => machine.keyUp(message.macKey, message.charCode));
     else if (message.type === "importSave") {
-      const files = machine.importSave(new Uint8Array(message.bytes));
-      reply({ type: "saveFiles", files });
+      machine.importSave(new Uint8Array(message.bytes));
+      publishSaveFiles("saveFiles", message.requestId);
     } else if (message.type === "deleteSave") {
-      reply({ type: "saveFiles", files: machine.deleteSave(message.path) });
+      machine.deleteSave(message.path);
+      publishSaveFiles("saveFiles", message.requestId);
     }
   } catch (error) {
     const fatal = !["importSave", "deleteSave"].includes(message.type);
@@ -108,7 +129,13 @@ self.onmessage = async (event) => {
       type: "error",
       fatal,
       operation: message.type,
+      requestId: message.requestId,
       message: error instanceof Error ? error.message : String(error),
     });
+  } finally {
+    if (message.type !== "boot" && message.generation === generation &&
+        Number.isSafeInteger(message.commandSequence)) {
+      reply({ type: "commandAck", commandSequence: message.commandSequence });
+    }
   }
 };
