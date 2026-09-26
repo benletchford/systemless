@@ -151,11 +151,11 @@ impl RuntimeMailbox {
             if now >= deadline {
                 break;
             }
-            let (next, timeout) = self.changed.wait_timeout(shared, deadline - now).unwrap();
+            let (next, _) = self.changed.wait_timeout(shared, deadline - now).unwrap();
             shared = next;
-            if timeout.timed_out() {
-                break;
-            }
+            // Native relative timeouts can expire before the Instant deadline
+            // (observed on Windows). Recheck the absolute clock and predicates,
+            // including after a timeout, rather than starting an early frame.
         }
     }
 
