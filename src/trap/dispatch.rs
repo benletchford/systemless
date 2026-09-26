@@ -5745,7 +5745,7 @@ impl TrapDispatcher {
             // resPreload; ordinary resource data stays on disk until requested.
             // SetResLoad(FALSE) also suppresses preloading.
             // Inside Macintosh Volume I (1985), I-111, I-115, I-118.
-            let ptr = if self.policy.res_load() && res.attrs & RES_PRELOAD_ATTR != 0 {
+            let ptr = if Self::resource_loading_enabled(bus) && res.attrs & RES_PRELOAD_ATTR != 0 {
                 let ptr = bus.alloc(res.data.len() as u32);
                 if ptr != 0 {
                     bus.write_bytes(ptr, &res.data);
@@ -7463,6 +7463,13 @@ impl TrapDispatcher {
     /// Load resources into guest memory for trap access.
     /// Loads ALL resource types from the fork (not just a hardcoded whitelist).
     pub fn load_resources(&mut self, fork: &ResourceFork, bus: &mut MacMemoryBus) {
+        // ResLoad is guest-visible as well as process policy. Applications
+        // save it directly before temporarily disabling automatic loading.
+        // Inside Macintosh Volume I (1985), p. I-118.
+        bus.write_word(
+            crate::memory::globals::addr::RES_LOAD,
+            u16::from(self.policy.res_load()) << 8,
+        );
         if let Some(app_path) = self.launched_app_path().map(str::to_owned) {
             self.vfs
                 .insert(format!("__rsrc__{}", app_path), fork.serialized().to_vec());
@@ -7545,14 +7552,6 @@ impl TrapDispatcher {
             });
         });
         bus.write_word(0x0A5A, 0);
-        // ResLoad is guest-visible as well as process policy. Applications
-        // save it directly before temporarily disabling automatic loading.
-        // Inside Macintosh Volume I (1985), p. I-118.
-        bus.write_word(
-            crate::memory::globals::addr::RES_LOAD,
-            u16::from(self.policy.res_load()) << 8,
-        );
-
         // Some classic runtimes locate relocation resources by walking the
         // Resource Manager's guest-visible map through TopMapHndl. Keep the
         // HLE indexes above, but also expose the serialized application map

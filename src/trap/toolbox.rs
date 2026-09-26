@@ -17625,7 +17625,7 @@ impl super::TrapDispatcher {
         if let Some(candidates) = candidates {
             if index >= 1 && (index as usize) <= candidates.len() {
                 let (res_id, refnum, ptr) = candidates[(index - 1) as usize];
-                let ptr = if ptr == 0 && self.policy.res_load() {
+                let ptr = if ptr == 0 && Self::resource_loading_enabled(bus) {
                     self.reload_resource_data_from_file(bus, refnum, res_type, res_id)
                         .unwrap_or(0)
                 } else {

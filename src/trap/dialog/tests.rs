@@ -2816,6 +2816,7 @@
         disp.install_test_resource(&mut bus, *b"ICON", icon_id, &[0xAA; 128]);
         disp.install_test_resource(&mut bus, *b"PICT", pict_id, &[0x11; 32]);
         disp.policy.set_res_load(false);
+        bus.write_byte(crate::memory::globals::addr::RES_LOAD, 0);
 
         bus.write_word(0x0A60, 0x7FFF);
         bus.write_word(TEST_SP, dlog_id as u16);
@@ -2974,6 +2975,7 @@
         disp.install_test_resource(&mut bus, *b"ICON", icon_id, &[0xAA; 128]);
         disp.install_test_resource(&mut bus, *b"PICT", pict_id, &[0x11; 32]);
         disp.policy.set_res_load(false);
+        bus.write_byte(crate::memory::globals::addr::RES_LOAD, 0);
 
         bus.write_word(0x0A60, 0x7FFF);
         bus.write_word(TEST_SP, alrt_id as u16);

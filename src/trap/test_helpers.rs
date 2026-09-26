@@ -95,6 +95,9 @@ pub fn setup() -> (TrapDispatcher, MockCpu, MacMemoryBus) {
     cpu.write_reg(Register::A5, a5_addr);
     bus.write_long(a5_addr, qd_globals); // A5 → globals_ptr → qd_globals
 
+    // Match automatic resource loading at application startup (IM I-118).
+    bus.write_byte(crate::memory::globals::addr::RES_LOAD, 1);
+
     // Set up TickCount low-memory global
     bus.write_long(0x016A, 100);
     bus.write_word(

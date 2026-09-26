@@ -583,6 +583,7 @@ fn ppc_handle_release_does_not_bypass_classic_resource_manager_ownership() {
         .shared_ram_region(0x0020_0000, 0x2000)
         .expect("classic adapter owns its heap range");
     context.attach_memory(0x0020_0000, classic_heap, &mut native.memory);
+    classic_bus.write_byte(crate::memory::globals::addr::RES_LOAD, 1);
     let ptr = context
         .memory_manager_mut()
         .new_classic_ptr(&mut classic_bus, 16);
@@ -1195,6 +1196,7 @@ fn ppc_set_handle_size_does_not_bypass_classic_resource_ownership() {
     classic.attach_unconverted_process_services(&mut context);
     let mut classic_bus =
         attach_test_classic_heap(&mut native, &mut context, 8 * 1024 * 1024, 0x4000);
+    classic_bus.write_byte(crate::memory::globals::addr::RES_LOAD, 1);
     let ptr = context
         .memory_manager_mut()
         .new_classic_ptr(&mut classic_bus, 16);
