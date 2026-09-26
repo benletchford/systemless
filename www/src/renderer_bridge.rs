@@ -28,7 +28,9 @@ export function createSystemlessRenderer(canvas, generation) {
   // Observe both import/initialization rejection and cancellation after import.
   import(moduleUrl.href).then(({ RendererClient }) => {
     if (handle.disposed || handle.error) return;
-    handle.client = new RendererClient(canvas, workerUrl.href, generation);
+    handle.client = new RendererClient(canvas, workerUrl.href, generation, {
+      backend: new URLSearchParams(location.search).get("renderer_gpu") === "1" ? "webgl" : "canvas2d"
+    });
     const frame = handle.pending;
     handle.pending = null;
     if (frame) handle.client.paint(frame.width, frame.height, frame.pixels);

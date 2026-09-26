@@ -70,3 +70,13 @@ test('module timeout ignores hidden time and rejects a late successful import', 
   assert.equal(f.context.systemlessRendererStatus(f.handle).phase, 'failed');
   f.resolve(); await f.settle(); assert.equal(f.clients.length, 0);
 });
+
+
+test('GPU presentation requires its additional explicit qualification option', async () => {
+  for (const [query, expected] of [['?renderer=worker', 'canvas2d'], ['?renderer=worker&renderer_gpu=1', 'webgl']]) {
+    const f = fixture(query); f.resolve(); await f.settle();
+    assert.equal(f.clients[0].args[3].backend, expected);
+  }
+  const disabled = fixture('?renderer_gpu=1');
+  assert.equal(disabled.handle, null); assert.equal(disabled.imports.length, 0);
+});

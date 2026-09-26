@@ -5,6 +5,8 @@ const MAX_PIXELS = 16 * 1024 * 1024;
 let identity = null;
 let canvas = null;
 let context = null;
+let gpu = null;
+let ready = false;
 let pending = null;
 let scheduled = null;
 let failed = false;
@@ -23,6 +25,7 @@ function fail(error) {
   scheduled = null;
   pending = null;
   context = null;
+  gpu?.dispose(); gpu = null;
   reply({ type: "error", message: String(error?.message || error) });
 }
 
@@ -34,12 +37,19 @@ function sameIdentity(message) {
 function acceptFrame(message) {
   if (!Number.isSafeInteger(message.sequence) || message.sequence <= sequence) return;
   const { width, height, displayGeneration: mode, pixels } = message;
-  if (message.kind !== "rgba" || message.complete !== true || !Number.isSafeInteger(width) || !Number.isSafeInteger(height)
+  const indexed = message.kind === "indexed8" && gpu;
+  const validPixels = indexed
+    ? Number.isSafeInteger(message.stride) && message.stride >= width && message.stride <= 8192
+      && message.stride * height <= MAX_PIXELS && pixels?.byteLength === message.stride * height
+      && message.palette instanceof Uint8Array && message.palette.byteLength === 1024
+      && message.palette.buffer instanceof ArrayBuffer
+    : message.kind === "rgba" && pixels?.byteLength === width * height * 4;
+  if (!ready || !validPixels || message.complete !== true || !Number.isSafeInteger(width) || !Number.isSafeInteger(height)
       || width < 1 || height < 1 || width > 8192 || height > 8192
       || width * height > MAX_PIXELS || !Number.isSafeInteger(mode) || mode < displayGeneration
-      || !(pixels instanceof Uint8Array) || pixels.byteLength !== width * height * 4
+      || !(pixels instanceof Uint8Array)
       || !(pixels.buffer instanceof ArrayBuffer)) {
-    throw new Error("Invalid complete RGBA presentation packet");
+    throw new Error("Invalid complete presentation packet");
   }
   if (dimensions && mode === displayGeneration
       && (width !== dimensions[0] || height !== dimensions[1])) {
@@ -49,11 +59,18 @@ function acceptFrame(message) {
   displayGeneration = mode;
   dimensions = [width, height];
   if (pending) {
-    reply({ type: "dropped", sequence: pending.sequence, buffer: pending.pixels.buffer },
-      [pending.pixels.buffer]);
+    returnBuffers("dropped", pending);
   }
   pending = message;
   if (scheduled === null) scheduled = setTimeout(paint, 0);
+}
+
+function returnBuffers(type, frame, metrics = {}) {
+  const buffer = frame.pixels.buffer;
+  const paletteBuffer = frame.kind === "indexed8" ? frame.palette.buffer : undefined;
+  const transfer = [...new Set([buffer, paletteBuffer].filter(Boolean))];
+  reply({ type, sequence: frame.sequence, displayGeneration: frame.displayGeneration,
+    ...metrics, buffer, paletteBuffer }, transfer);
 }
 
 function paint() {
@@ -65,18 +82,20 @@ function paint() {
     const start = performance.now();
     if (canvas.width !== frame.width) canvas.width = frame.width;
     if (canvas.height !== frame.height) canvas.height = frame.height;
-    const rgba = new Uint8ClampedArray(frame.pixels.buffer, frame.pixels.byteOffset, frame.pixels.byteLength);
-    context.putImageData(new ImageData(rgba, frame.width, frame.height), 0, 0);
+    if (gpu) gpu.paint(frame);
+    else {
+      const rgba = new Uint8ClampedArray(frame.pixels.buffer, frame.pixels.byteOffset, frame.pixels.byteLength);
+      context.putImageData(new ImageData(rgba, frame.width, frame.height), 0, 0);
+    }
     // This acknowledges submission, not physical display or GPU completion.
     // Duration uses one worker clock; the sender measures transport round trips.
-    reply({ type: "submitted", sequence: frame.sequence, displayGeneration: frame.displayGeneration,
-      renderMs: performance.now() - start, buffer: frame.pixels.buffer }, [frame.pixels.buffer]);
+    returnBuffers("submitted", frame, { renderMs: performance.now() - start });
   } catch (error) {
     fail(error);
   }
 }
 
-self.onmessage = ({ data }) => {
+self.onmessage = async ({ data }) => {
   if (failed) return;
   try {
     if (data?.type === "init") {
@@ -86,10 +105,23 @@ self.onmessage = ({ data }) => {
           || data.rendererGeneration < 0) throw new Error("Renderer protocol mismatch");
       identity = { generation: data.generation, rendererGeneration: data.rendererGeneration };
       canvas = data.canvas;
-      context = canvas?.getContext("2d", { alpha: false });
-      if (!context) throw new Error("OffscreenCanvas 2D is unavailable");
-      canvas.addEventListener("contextlost", event => { event.preventDefault(); fail("Renderer context lost"); });
-      reply({ type: "ready", backend: "offscreen-canvas2d", kinds: ["rgba"] });
+      if (data.backend === "webgl") {
+        const moduleUrl = new URL("./renderer-gpu.js", self.location.href);
+        moduleUrl.search = new URL(self.location.href).search;
+        const bindings = await import(moduleUrl.href);
+        // Stop, duplicate init or message failure may have arrived during import.
+        if (failed) return;
+        if (bindings.GPU_PRESENTER_PROTOCOL !== 1) throw new Error("GPU presenter protocol mismatch");
+        gpu = new bindings.GpuFramePresenter(canvas);
+        canvas.addEventListener("webglcontextlost", event => { event.preventDefault(); fail("Renderer WebGL context lost"); });
+      } else {
+        context = canvas?.getContext("2d", { alpha: false });
+        if (!context) throw new Error("OffscreenCanvas 2D is unavailable");
+        canvas.addEventListener("contextlost", event => { event.preventDefault(); fail("Renderer context lost"); });
+      }
+      ready = true;
+      reply({ type: "ready", backend: gpu ? "offscreen-webgl" : "offscreen-canvas2d",
+        kinds: gpu ? ["rgba", "indexed8"] : ["rgba"] });
       return;
     }
     if (!sameIdentity(data) || data.protocolVersion !== RENDER_PROTOCOL) return;
@@ -99,6 +131,7 @@ self.onmessage = ({ data }) => {
       pending = null;
       scheduled = null;
       context = null;
+      gpu?.dispose(); gpu = null;
       canvas.width = canvas.height = 1;
       reply({ type: "stopped" });
       failed = true;

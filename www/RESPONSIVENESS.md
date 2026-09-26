@@ -89,6 +89,13 @@ passed the full presentation qualification gate. Safari retains its existing
 Canvas2D path. This capability class accepts complete RGBA images; it does not
 coalesce incremental QD3D submissions or enable external QD3D GPU capture.
 
+Adding `&renderer_gpu=1` selects the experimental OffscreenCanvas WebGL
+presenter. Its helper loads with the runtime asset identity and reports supported
+packet kinds before accepting images. The GPU kernel and bounded transport accept
+complete 8-bit indices plus a full palette, but gameplay still exports RGBA until
+cursor and retained-text packet integration is complete. Shader-load failure,
+context loss and renderer failure use the same presenter-only recovery path.
+
 The logical canvas retains input listeners and focus. A separate display canvas
 transfers to the renderer before context creation. One submitted image and one
 newest pending image bound the sender queue; at most two returned buffers are

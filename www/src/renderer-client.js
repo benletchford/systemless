@@ -6,10 +6,12 @@ let nextRendererGeneration = 0;
 // display canvas is transferred, so presenter replacement cannot lose a held
 // key, pointer capture, focus, Leptos node reference or touch-release callback.
 export class RendererClient {
-  constructor(logicalCanvas, workerUrl, generation) {
+  constructor(logicalCanvas, workerUrl, generation, { backend = "canvas2d" } = {}) {
     this.logicalCanvas = logicalCanvas;
     this.identity = { generation, rendererGeneration: ++nextRendererGeneration, protocolVersion: 1 };
     this.phase = "booting";
+    this.backend = null;
+    this.kinds = ["rgba"];
     this.error = null;
     this.submitted = false;
     this.sequence = 0;
@@ -68,7 +70,7 @@ export class RendererClient {
       this.worker.onmessage = ({ data }) => this.receive(data);
       this.worker.onerror = event => { event.preventDefault(); this.fail(new Error(event.message || "Renderer worker crashed")); };
       this.worker.onmessageerror = () => this.fail(new Error("Unreadable renderer reply"));
-      this.worker.postMessage({ ...this.identity, type: "init", canvas: offscreen }, [offscreen]);
+      this.worker.postMessage({ ...this.identity, type: "init", canvas: offscreen, backend }, [offscreen]);
       this.timer = setInterval(() => this.checkTimeout(), 500);
     } catch (error) {
       this.fail(error);
@@ -84,6 +86,8 @@ export class RendererClient {
       if (this.phase !== "booting" || !message.kinds?.includes("rgba")) {
         return this.fail(new Error("Invalid renderer capability reply"));
       }
+      this.backend = message.backend;
+      this.kinds = message.kinds;
       this.phase = "ready";
       this.waitingMs = 0;
       const first = this.bootFrame;
@@ -126,7 +130,7 @@ export class RendererClient {
   }
 
   status() {
-    return { phase: this.phase, error: this.error, submitted: this.submitted,
+    return { phase: this.phase, backend: this.backend, kinds: this.kinds, error: this.error, submitted: this.submitted,
       pending: !!(this.bootFrame || this.transport?.inFlight || this.transport?.pending) };
   }
 

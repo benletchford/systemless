@@ -7,11 +7,11 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-const modulePath = new URL('../src/renderer-gpu.js', import.meta.url);
+const modules = new Set(['/renderer-gpu.js', '/renderer-worker.js', '/renderer-transport.js']);
 const profile=await mkdtemp(join(tmpdir(),'systemless-renderer-gpu-'));
 const server=createServer((req,res)=>{
- if(req.url==='/renderer-gpu.js'){
-  res.writeHead(200,{'content-type':'text/javascript'});createReadStream(modulePath).pipe(res);
+ if(modules.has(req.url)){
+  res.writeHead(200,{'content-type':'text/javascript'});createReadStream(new URL('../src' + req.url, import.meta.url)).pipe(res);
  }else{res.writeHead(200,{'content-type':'text/html'});res.end('<!doctype html><title>Renderer differential probe</title>');}
 });
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -30,6 +30,7 @@ try {
  await page.send('Page.enable');await page.send('Runtime.enable');
  await page.send('Page.navigate',{url:base});
  const report=await evaluate(page,`(${exercise.toString()})()`,120000);
+ report.browser=version.Browser; report.host={platform:process.platform,arch:process.arch};
  console.log(JSON.stringify(report,null,2));
 } finally {
  if(page)page.close();
@@ -61,8 +62,43 @@ async function exercise(){
     }
    }
   }
-  const result={cases,pixels,maxTextureSize:presenter.maxTextureSize,renderer:gl.getParameter(gl.RENDERER),exact:true};
-  presenter.dispose();return result;
+  const driver=gl.getExtension('WEBGL_debug_renderer_info');
+  const result={cases,pixels,maxTextureSize:presenter.maxTextureSize,renderer:gl.getParameter(gl.RENDERER),
+   driver:driver?gl.getParameter(driver.UNMASKED_RENDERER_WEBGL):null,exact:true};
+  presenter.dispose();
+  const { RendererTransport } = await import(base + '/renderer-transport.js');
+  const endpoint = new Worker(base + '/renderer-worker.js');
+  const identity = { generation: 9, rendererGeneration: 3, protocolVersion: 1 };
+  try {
+   const ready = new Promise((resolve,reject) => {
+    endpoint.onmessage = ({data}) => data.type==='ready'?resolve(data):reject(new Error(JSON.stringify(data)));
+    endpoint.onerror = event => reject(new Error(event.message));
+   });
+   const screen = new OffscreenCanvas(4,4);
+   endpoint.postMessage({...identity,type:'init',backend:'webgl',canvas:screen},[screen]);
+   const capability = await ready;
+   if(capability.backend!=='offscreen-webgl'||!capability.kinds.includes('indexed8'))throw new Error('GPU capability missing');
+   let submitted=0;
+   let transport;
+   await new Promise((resolve,reject) => {
+    transport = new RendererTransport(endpoint,identity,{onFailure:reject,onSubmitted:metrics=>{
+     submitted++;if(metrics.sequence===100)resolve();
+    }});
+    endpoint.onmessage = ({data}) => transport.receive(data);
+    endpoint.onerror = event => reject(new Error(event.message));
+    for(let sequence=1;sequence<=100;sequence++) {
+     const palette = new Uint8Array(1024);for(let i=0;i<256;i++)palette.set([i,255-i,sequence,255],i*4);
+     transport.submit({kind:'indexed8',complete:true,sequence,displayGeneration:1,width:4,height:4,stride:7,
+      pixels:new Uint8Array(28).fill(sequence),palette});
+    }
+   });
+   if(submitted!==2||transport.inFlight||transport.pending||transport.recycled.length>2)throw new Error('GPU transport is not bounded');
+   result.workerTransport={submitted,lastSequence:100,recycled:transport.recycled.length};
+   transport.dispose();
+   const stopped=new Promise((resolve,reject)=>{endpoint.onmessage=({data})=>data.type==='stopped'?resolve():reject(new Error(JSON.stringify(data)));});
+   endpoint.postMessage({...identity,type:'stop'});await stopped;
+  } finally { endpoint.terminate(); }
+  return result;
  };
  const blob=new Blob([`(${task.toString()})(${JSON.stringify(location.origin)}).then(result=>postMessage({result})).catch(error=>postMessage({error:String(error.stack)}));`],{type:'text/javascript'});
  const url=URL.createObjectURL(blob),worker=new Worker(url,{type:'module'});
