@@ -5102,6 +5102,15 @@ impl FixtureRunner {
         rec.counter_resume_tick = tick.wrapping_add(ticks);
     }
 
+    /// Give (site, tick) a fresh probe budget after a counted skip.
+    fn renew_idle_cycle_probe_budget(&mut self, trap_pc: u32, tick: u32) {
+        let i = self.idle_cycle_site_slot(trap_pc);
+        let rec = &mut self.idle_cycle_sites[i];
+        if rec.tick == tick {
+            rec.probes = 0;
+        }
+    }
+
     /// Mark (site, tick) busy for the rest of the tick: it works between polls.
     fn mark_idle_cycle_site_busy(&mut self, trap_pc: u32, tick: u32) {
         let i = self.idle_cycle_site_slot(trap_pc);
@@ -5219,12 +5228,15 @@ impl FixtureRunner {
     /// units. `n` stops short of the tick boundary and of the next Time
     /// Manager task, so interrupts land where they would have, and of any
     /// value at which the update's condition codes would differ.
+    ///
+    /// `None` when the counter was not verified; otherwise whether any
+    /// passes were skipped.
     fn try_skip_counted_idle_passes(
         &mut self,
         hits: &[crate::memory::AccessHit],
         changes: &[(u32, u32, u32)],
         units: i32,
-    ) -> bool {
+    ) -> Option<bool> {
         let byte_of = |value: u32, word: u32, address: u32| (value >> (24 - 8 * (address - word))) as u8;
         let bus = &self.bus;
         let Some(counter) = verified_idle_counter(
@@ -5248,12 +5260,12 @@ impl FixtureRunner {
                     eprintln!("[WAIT-STATS] counter rejected: changes {changes:08X?} hits {hits:08X?}");
                 }
             }
-            return false;
+            return None;
         };
         if self.bus.range_translates_contiguously(counter.address, counter.width as usize)
             != Some(counter.address)
         {
-            return false;
+            return None;
         }
         let value = match counter.width {
             1 => u32::from(self.bus.read_byte(counter.address)),
@@ -5275,7 +5287,7 @@ impl FixtureRunner {
             passes = passes.min(allowed.clamp(0, i128::from(i64::MAX)) as i64);
         }
         if passes <= 0 {
-            return true;
+            return Some(false);
         }
         let mask = if counter.width == 4 { u32::MAX } else { (1u32 << (8 * counter.width)) - 1 };
         let advanced = value.wrapping_add(counter.step.wrapping_mul(passes as u32)) & mask;
@@ -5289,7 +5301,7 @@ impl FixtureRunner {
             WS_COUNTED_SKIPS.fetch_add(1, AtomicOrdering::Relaxed);
             WS_COUNTED_PASSES.fetch_add(passes as u64, AtomicOrdering::Relaxed);
         }
-        true
+        Some(true)
     }
 
     fn park_proven_idle_cycle(&mut self, trap_pc: u32, wake_tick: u32) {
@@ -5514,7 +5526,7 @@ impl FixtureRunner {
                 if let Some(candidate) =
                     counter_candidate.filter(|c| c.trap_pc == trap_pc && c.tick == tick)
                 {
-                    let verified = if candidate.units == units
+                    let outcome = if candidate.units == units
                         && same_idle_steps(&candidate.changes, &changes)
                     {
                         self.try_skip_counted_idle_passes(
@@ -5526,9 +5538,16 @@ impl FixtureRunner {
                         if wait_stats_enabled() {
                             WS_COUNTER_STEP_MISMATCH.fetch_add(1, AtomicOrdering::Relaxed);
                         }
-                        false
+                        None
                     };
-                    self.note_idle_counter_verification(trap_pc, tick, verified);
+                    self.note_idle_counter_verification(trap_pc, tick, outcome.is_some());
+                    if outcome == Some(true) {
+                        // A skip that stopped short of the tick boundary did
+                        // so for a Time Manager task: once it has run, the
+                        // loop may be proven and skipped again this tick
+                        // instead of polling out the rest of the tick.
+                        self.renew_idle_cycle_probe_budget(trap_pc, tick);
+                    }
                     return false;
                 }
                 let timer_due = self.m68k_timer_due_within(units);
