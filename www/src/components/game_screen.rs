@@ -2381,6 +2381,11 @@ fn record_frame_trace(
     set_trace_number(&entry, "renderMs", timings.render_ms);
     set_trace_number(&entry, "paintMs", timings.paint_ms);
     set_trace_number(&entry, "guestTick", counters.guest_tick as f64);
+    set_trace_number(
+        &entry,
+        "totalInstructions",
+        counters.total_instructions as f64,
+    );
     set_trace_number(&entry, "ticksBehind", counters.ticks_behind as f64);
     set_trace_number(&entry, "lastSteps", counters.last_steps as f64);
     set_trace_number(&entry, "cpuBudgetMs", counters.cpu_budget_ms);
