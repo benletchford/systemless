@@ -355,3 +355,32 @@ complete report in bounded chunks succeeded, preserving all samples and the
 existing pacing gates; the runtime probe now uses that transport and rejects
 closed or timed-out connections explicitly. The failed attempts remain excluded
 from timing evidence.
+
+## Animated sprite workload
+
+Eight release Glider PRO Demo runs exercised the animated Demo House on the same
+Chrome/M1 setup, with 68K execution, 25 MHz, device scale 1, fresh saves and the
+same fixed initial Macintosh time. Each presenter had one warm-up and three
+measured repeats; the successful direct functional calibration supplied its
+warm-up, and measured pair order alternated. The script waited through the demo
+startup and moved the mouse at guest tick 12000. Analysis uses common ticks
+12000–12800, with 394 changed images in each measured run. This is an animated
+sprite workload, not a demonstrated player-control latency test.
+
+| Median of three run-level measurements | Main WebGL | Direct compact |
+| --- | ---: | ---: |
+| Milliseconds per guest tick | 16.640 | 16.642 |
+| Retired instructions per guest tick | 6,998.07 | 6,998.91 |
+| Host callback p99 | 1.2 ms | 0.2 ms |
+| Host frame-interval p99 | 18.6 ms | 18.5 ms |
+| Owner request/reply median / p99 | 2.6 / 10.8 ms | 1.6 / 6.1 ms |
+| Complete-image payload median | 1,920,000 bytes | 1,984,384 bytes |
+
+All eight pacing checks passed and all eight final screenshots were byte-identical
+at observed guest tick 12901. Retired instructions were not identical, so the
+images do not imply instruction-identical replay. Common-interval time and work
+per tick both differed by less than 0.02%. Host callback work and owner roundtrip
+time improved without a material throughput regression. Compact packets remain
+larger than RGBA at this scale. Main/direct audio queue medians were approximately
+483.5/483.6 ms; those observations are not underrun measurements or evidence of
+reduced audible latency. Background host load was not isolated.
