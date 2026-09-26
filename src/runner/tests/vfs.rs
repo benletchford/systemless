@@ -68,7 +68,7 @@ fn import_vfs_file_relative_to_launched_app_mounts_under_app_parent() {
         .set_launched_app_path("EV Override/EV Override");
     let plugin = VfsFileSnapshot {
         path: "Warblade".to_string(),
-        data_fork: Vec::new(),
+        data_fork: vec![0, 128, 255, 4],
         resource_fork: vec![1, 2, 3, 4],
         file_type: u32::from_be_bytes(*b"Op.f"),
         creator: u32::from_be_bytes(*b"Es.O"),
@@ -84,7 +84,10 @@ fn import_vfs_file_relative_to_launched_app_mounts_under_app_parent() {
     let mounted = runner
         .vfs_file_snapshot("EV Override/EV Plug-Ins/Warblade")
         .expect("mounted plugin snapshot");
+    assert_eq!(mounted.data_fork, plugin.data_fork);
     assert_eq!(mounted.resource_fork, plugin.resource_fork);
+    assert_eq!(mounted.created_date, plugin.created_date);
+    assert_eq!(mounted.modified_date, plugin.modified_date);
     assert_eq!(mounted.file_type, plugin.file_type);
     assert_eq!(mounted.creator, plugin.creator);
     assert_eq!(mounted.finder_flags, plugin.finder_flags);

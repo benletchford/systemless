@@ -13,6 +13,66 @@ const DB_NAME: &str = "systemless-save-files";
 const DB_VERSION: u32 = 1;
 const STORE_NAME: &str = "files";
 
+thread_local! {
+    static PENDING_SAVES: std::cell::RefCell<std::collections::BTreeMap<String, usize>> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    static LAST_SAVE_ERRORS: std::cell::RefCell<std::collections::BTreeMap<String, String>> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+struct PendingSave(String);
+
+impl PendingSave {
+    fn new(game_id: &str) -> Self {
+        PENDING_SAVES.with(|pending| *pending.borrow_mut().entry(game_id.into()).or_default() += 1);
+        Self(game_id.into())
+    }
+}
+
+impl Drop for PendingSave {
+    fn drop(&mut self) {
+        PENDING_SAVES.with(|pending| {
+            let mut pending = pending.borrow_mut();
+            if let Some(count) = pending.get_mut(&self.0) {
+                *count -= 1;
+                if *count == 0 {
+                    pending.remove(&self.0);
+                }
+            }
+        });
+    }
+}
+
+pub async fn flush_pending_saves(game_id: &str) -> Result<(), String> {
+    while PENDING_SAVES.with(|pending| pending.borrow().contains_key(game_id)) {
+        let _ = JsFuture::from(crate::browser_bridge::yield_systemless_task()).await;
+    }
+    take_save_error(game_id).map_or(Ok(()), Err)
+}
+
+pub fn report_save_error(game_id: &str, message: String) {
+    LAST_SAVE_ERRORS.with(|errors| {
+        errors.borrow_mut().insert(game_id.into(), message);
+    });
+}
+
+pub fn take_save_error(game_id: &str) -> Option<String> {
+    LAST_SAVE_ERRORS.with(|errors| errors.borrow_mut().remove(game_id))
+}
+
+struct SaveDatabase(IdbDatabase);
+
+impl std::ops::Deref for SaveDatabase {
+    type Target = IdbDatabase;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for SaveDatabase {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DownloadableSaveFile {
     pub path: String,
@@ -70,6 +130,22 @@ impl StoredSaveFile {
 }
 
 pub async fn load_saved_files(game_id: &str) -> Result<Vec<VfsFileSnapshot>, String> {
+    // IndexedDB open requests cannot be aborted. Let this one read complete even
+    // if navigation cancels startup, so its callbacks and database are released.
+    // The result has no effect on guest state until the caller consumes it.
+    let result = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let completion = result.clone();
+    let game_id = game_id.to_owned();
+    let promise = wasm_bindgen_futures::future_to_promise(async move {
+        *completion.borrow_mut() = Some(load_saved_files_inner(&game_id).await);
+        Ok(JsValue::UNDEFINED)
+    });
+    JsFuture::from(promise).await.map_err(js_error_string)?;
+    let loaded = result.borrow_mut().take().expect("save read completed");
+    loaded
+}
+
+async fn load_saved_files_inner(game_id: &str) -> Result<Vec<VfsFileSnapshot>, String> {
     let db = open_db().await?;
     let store = object_store(&db, IdbTransactionMode::Readonly)?;
     let request = store.get_all().map_err(js_error_string)?;
@@ -96,20 +172,32 @@ pub async fn load_saved_files(game_id: &str) -> Result<Vec<VfsFileSnapshot>, Str
 }
 
 pub fn persist_save_file(game_id: String, file: VfsFileSnapshot) {
+    let pending = PendingSave::new(&game_id);
     spawn_local(async move {
-        let _ = persist_save_file_inner(&game_id, &file).await;
+        let _pending = pending;
+        if let Err(error) = persist_save_file_inner(&game_id, &file).await {
+            report_save_error(
+                &game_id,
+                format!("Could not persist {}: {error}", file.path),
+            );
+        }
     });
 }
 
 pub fn delete_save_file(game_id: String, path: String) {
+    let pending = PendingSave::new(&game_id);
     spawn_local(async move {
-        let _ = delete_save_file_inner(&game_id, &path).await;
+        let _pending = pending;
+        if let Err(error) = delete_save_file_inner(&game_id, &path).await {
+            report_save_error(&game_id, format!("Could not delete {path}: {error}"));
+        }
     });
 }
 
 async fn persist_save_file_inner(game_id: &str, file: &VfsFileSnapshot) -> Result<(), String> {
     let db = open_db().await?;
     let store = object_store(&db, IdbTransactionMode::Readwrite)?;
+    let completion = TransactionCompletion::new(store.transaction());
     let record = StoredSaveFile::from_snapshot(game_id, file);
     let json = serde_json::to_string(&record).map_err(|err| err.to_string())?;
     let request = store
@@ -119,24 +207,25 @@ async fn persist_save_file_inner(game_id: &str, file: &VfsFileSnapshot) -> Resul
         )
         .map_err(js_error_string)?;
     await_idb_request(&request).await?;
-    Ok(())
+    completion.wait().await
 }
 
 async fn delete_save_file_inner(game_id: &str, path: &str) -> Result<(), String> {
     let db = open_db().await?;
     let store = object_store(&db, IdbTransactionMode::Readwrite)?;
+    let completion = TransactionCompletion::new(store.transaction());
     let request = store
         .delete(&JsValue::from_str(&record_key(game_id, path)))
         .map_err(js_error_string)?;
     await_idb_request(&request).await?;
-    Ok(())
+    completion.wait().await
 }
 
 fn record_key(game_id: &str, path: &str) -> String {
     format!("{game_id}\u{0}{path}")
 }
 
-async fn open_db() -> Result<IdbDatabase, String> {
+async fn open_db() -> Result<SaveDatabase, String> {
     let factory = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("indexedDB"))
         .map_err(js_error_string)?
         .dyn_into::<web_sys::IdbFactory>()
@@ -163,12 +252,11 @@ async fn open_db() -> Result<IdbDatabase, String> {
         }
     }) as Box<dyn FnMut(IdbVersionChangeEvent)>);
     request.set_onupgradeneeded(Some(on_upgrade.as_ref().unchecked_ref()));
-    on_upgrade.forget();
-
-    let idb_request: IdbRequest = request.unchecked_into();
-    let db_value = await_idb_request(&idb_request).await?;
-    db_value
+    let db_value = await_idb_request(request.unchecked_ref()).await;
+    request.set_onupgradeneeded(None);
+    db_value?
         .dyn_into::<IdbDatabase>()
+        .map(SaveDatabase)
         .map_err(|_| "IndexedDB open did not return a database".to_string())
 }
 
@@ -181,26 +269,81 @@ fn object_store(db: &IdbDatabase, mode: IdbTransactionMode) -> Result<IdbObjectS
         .map_err(js_error_string)
 }
 
+struct TransactionCompletion {
+    transaction: web_sys::IdbTransaction,
+    promise: Promise,
+    _complete: Closure<dyn FnMut(Event)>,
+    _abort: Closure<dyn FnMut(Event)>,
+}
+
+impl TransactionCompletion {
+    fn new(transaction: web_sys::IdbTransaction) -> Self {
+        let mut complete = None;
+        let mut abort = None;
+        let promise = Promise::new(&mut |resolve, reject| {
+            complete = Some(Closure::wrap(Box::new(move |_: Event| {
+                let _ = resolve.call0(&JsValue::UNDEFINED);
+            }) as Box<dyn FnMut(Event)>));
+            abort = Some(Closure::wrap(Box::new(move |_: Event| {
+                let _ = reject.call1(
+                    &JsValue::UNDEFINED,
+                    &JsValue::from_str("IndexedDB transaction was aborted"),
+                );
+            }) as Box<dyn FnMut(Event)>));
+        });
+        let complete = complete.unwrap();
+        let abort = abort.unwrap();
+        transaction.set_oncomplete(Some(complete.as_ref().unchecked_ref()));
+        transaction.set_onabort(Some(abort.as_ref().unchecked_ref()));
+        Self {
+            transaction,
+            promise,
+            _complete: complete,
+            _abort: abort,
+        }
+    }
+
+    async fn wait(self) -> Result<(), String> {
+        JsFuture::from(self.promise.clone())
+            .await
+            .map(|_| ())
+            .map_err(js_error_string)
+    }
+}
+
+impl Drop for TransactionCompletion {
+    fn drop(&mut self) {
+        self.transaction.set_oncomplete(None);
+        self.transaction.set_onabort(None);
+    }
+}
+
 async fn await_idb_request(request: &IdbRequest) -> Result<JsValue, String> {
+    let mut success = None;
+    let mut error = None;
     let promise = Promise::new(&mut |resolve, reject| {
         let success_request = request.clone();
-        let on_success = Closure::once(Box::new(move |_event: Event| {
+        let on_success = Closure::wrap(Box::new(move |_event: Event| {
             let value = success_request.result().unwrap_or(JsValue::UNDEFINED);
             let _ = resolve.call1(&JsValue::NULL, &value);
-        }) as Box<dyn FnOnce(Event)>);
+        }) as Box<dyn FnMut(Event)>);
         request.set_onsuccess(Some(on_success.as_ref().unchecked_ref()));
-        on_success.forget();
+        success = Some(on_success);
 
-        let on_error = Closure::once(Box::new(move |_event: Event| {
+        let on_error = Closure::wrap(Box::new(move |_event: Event| {
             let _ = reject.call1(
                 &JsValue::NULL,
                 &JsValue::from_str("IndexedDB request failed"),
             );
-        }) as Box<dyn FnOnce(Event)>);
+        }) as Box<dyn FnMut(Event)>);
         request.set_onerror(Some(on_error.as_ref().unchecked_ref()));
-        on_error.forget();
+        error = Some(on_error);
     });
-    JsFuture::from(promise).await.map_err(js_error_string)
+    let result = JsFuture::from(promise).await.map_err(js_error_string);
+    request.set_onsuccess(None);
+    request.set_onerror(None);
+    drop((success, error));
+    result
 }
 
 pub fn downloadable_save_file(file: &VfsFileSnapshot) -> DownloadableSaveFile {
@@ -513,6 +656,22 @@ fn encode_mac_roman_lossy(value: &str) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn async_save_error_is_visible_once_only_to_its_game() {
+        super::report_save_error("first", "Could not persist pilot".into());
+        assert_eq!(super::take_save_error("second"), None);
+        super::report_save_error("second", "Could not delete pilot".into());
+        assert_eq!(
+            super::take_save_error("first"),
+            Some("Could not persist pilot".into())
+        );
+        assert_eq!(super::take_save_error("first"), None);
+        assert_eq!(
+            super::take_save_error("second"),
+            Some("Could not delete pilot".into())
+        );
+    }
+
     use super::*;
 
     #[test]

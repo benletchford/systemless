@@ -154,3 +154,30 @@ write raw bounded samples and the final browser screenshot to tester-chosen
 local paths. Reports include the actual renderer, display scale, CPU setting
 and guest instruction/tick endpoints; wall-time samples alone are insufficient
 to establish equal guest progress.
+
+The save probe verifies gameplay-created saves, download, removal from IndexedDB,
+and re-import with identical data and resource forks. Cases can set `requireWorker`
+to require worker execution. For installed-plugin coverage, supply
+`selectedPluginIds` and `pluginAssets` (each with `url` and local `path`). Optional
+`expectedMetadata` and `forkLengths` check the transferred plugin metadata and both
+forks. `workerBootFailure: true` injects a startup failure after transfer to check
+compatibility fallback. `SYSTEMLESS_SAVE_SMOKE_SCREENSHOT_DIR` retains the final
+browser image on success or failure.
+
+Worker protocol and lifecycle tests run without browser fixtures:
+
+```sh
+node --test www/tests/emulator-worker.test.cjs www/tests/worker-lifecycle.test.cjs
+```
+
+Worker commands carry a runtime generation and monotonic command sequence. The
+bridge allows eight commands in flight and 256 pending commands (plus one reserved shutdown); consecutive
+pending mouse moves can coalesce, but key/button/save boundaries stay ordered.
+Queue exhaustion stops the runtime visibly. Normal navigation stops display and
+audio immediately, then asks the owner to flush saves before terminating it.
+Shutdown failures appear in a dismissible notice even after leaving the game.
+
+`verifyShutdown: true` checks navigation cleanup and save-flush acknowledgement.
+`verifyRestart: true` also immediately reopens the same game and checks that its
+new owner starts after the previous save flush completes. Other games can start
+independently while an earlier game finishes saving.

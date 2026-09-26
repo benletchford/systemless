@@ -58,7 +58,7 @@ for (const game of selected) {
 console.log(JSON.stringify({ games: reports }, null, 2));
 
 async function runGameSmoke(game) {
-  const archiveServer = await serveArchive(game.archivePath);
+  const archiveServer = await serveArchive(game.archivePath, game.pluginAssets ?? []);
   const userDataDir = await mkdtemp(join(tmpdir(), "systemless-save-cdp-"));
   const port = 9437 + Math.floor(Math.random() * 1000);
   const chrome = spawn(
@@ -99,10 +99,11 @@ async function runGameSmoke(game) {
     await page.send("Page.enable");
     await page.send("Runtime.enable");
     await page.send("Page.addScriptToEvaluateOnNewDocument", {
-      source: downloadCapturePrelude(),
+      source: `window.__systemlessFailWorkerBoot = ${JSON.stringify(!!game.workerBootFailure)};` + downloadCapturePrelude() + `localStorage.setItem(${JSON.stringify(`systemless.plugin-selection.${game.id}`)}, ${JSON.stringify(JSON.stringify(game.selectedPluginIds ?? []))});`,
     });
     await page.send("Fetch.enable", {
-      patterns: [{ urlPattern: game.archiveUrl, requestStage: "Request" }],
+      patterns: [game.archiveUrl, ...(game.pluginAssets ?? []).map(asset => asset.url)]
+        .map(urlPattern => ({ urlPattern, requestStage: "Request" })),
     });
     await page.send("Page.navigate", { url: `${baseUrl}${game.route}` });
 
@@ -113,11 +114,14 @@ async function runGameSmoke(game) {
         pilotName: game.pilotName,
         actions: game.actions,
         timeoutMs: gameTimeoutMs,
+        verifyShutdown: !!game.verifyShutdown,
+        verifyRestart: !!game.verifyRestart,
       })})`,
       gameTimeoutMs + 30_000,
     );
     report.route = game.route;
     report.archive_server_requests = archiveServer.requests();
+    report.plugin_server_requests = archiveServer.pluginRequests();
     assertSaveSmokeReport(report, game);
     return report;
   } finally {
@@ -140,16 +144,20 @@ async function runGameSmoke(game) {
   }
 }
 
-async function serveArchive(path) {
-  const stat = statSync(path);
+async function serveArchive(path, plugins) {
+  const paths = new Map([["/game.kpk", path], ...plugins.map((asset, i) => [`/plugin-${i}.bin`, asset.path])]);
   let requests = 0;
+  let pluginRequests = 0;
   const server = createServer((req, res) => {
-    if (req.url !== "/game.kpk") {
+    const path = paths.get(req.url);
+    if (!path) {
       res.writeHead(404, { "content-type": "text/plain" });
       res.end("not found");
       return;
     }
-    requests += 1;
+    if (req.url === "/game.kpk") requests++;
+    else pluginRequests++;
+    const stat = statSync(path);
     res.writeHead(200, {
       "access-control-allow-origin": "*",
       "cache-control": "no-store",
@@ -158,50 +166,68 @@ async function serveArchive(path) {
     });
     createReadStream(path).pipe(res);
   });
-
-  const url = await new Promise((resolve, reject) => {
+  await new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", reject);
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        reject(new Error("archive server did not return a TCP address"));
-        return;
-      }
-      resolve(`http://127.0.0.1:${address.port}/game.kpk`);
-    });
+    server.listen(0, "127.0.0.1", resolve);
   });
-
+  const address = server.address();
+  const origin = `http://127.0.0.1:${address.port}`;
   return {
-    url,
-    requests() {
-      return requests;
-    },
-    close() {
-      return new Promise((resolve) => server.close(resolve));
-    },
+    url: `${origin}/game.kpk`,
+    pluginUrls: new Map(plugins.map((asset, i) => [asset.url, `${origin}/plugin-${i}.bin`])),
+    requests: () => requests,
+    pluginRequests: () => pluginRequests,
+    close: () => new Promise(resolve => server.close(resolve)),
   };
 }
 
 async function handleArchiveRequest(page, params, archiveServer, game) {
   const url = params.request?.url ?? "";
-  if (url !== game.archiveUrl) {
-    await page.send("Fetch.failRequest", {
-      requestId: params.requestId,
-      errorReason: "BlockedByClient",
-    });
+  const localUrl = url === game.archiveUrl ? archiveServer.url : archiveServer.pluginUrls.get(url);
+  if (!localUrl) {
+    await page.send("Fetch.failRequest", { requestId: params.requestId, errorReason: "BlockedByClient" });
     return;
   }
-
-  await page.send("Fetch.continueRequest", {
-    requestId: params.requestId,
-    url: archiveServer.url,
-  });
+  await page.send("Fetch.continueRequest", { requestId: params.requestId, url: localUrl });
 }
 
 function downloadCapturePrelude() {
   return `(() => {
     const downloads = [];
+    window.__systemlessDownloadedBlobs = new Map();
+    window.__systemlessWorkerBoots = [];
+    window.__systemlessWorkerLifecycle = [];
+    const NativeWorker = window.Worker;
+    window.Worker = new Proxy(NativeWorker, { construct(Target, args) {
+      const worker = Reflect.construct(Target, args);
+      const lifecycle = { ready: false, stopped: false, terminated: false, storageNotifications: 0, bootAt: null, stoppedAt: null };
+      window.__systemlessWorkerLifecycle.push(lifecycle);
+      worker.addEventListener("message", ({ data }) => {
+        if (data?.type === "ready") lifecycle.ready = true;
+        if (data?.type === "testStorageCommitNotification") lifecycle.storageNotifications++;
+        if (data?.type === "stopped") { lifecycle.stopped = true; lifecycle.stoppedAt = performance.now(); }
+      });
+      const terminate = worker.terminate.bind(worker);
+      worker.terminate = () => { lifecycle.terminated = true; return terminate(); };
+      const post = worker.postMessage.bind(worker);
+      worker.postMessage = (message, ...rest) => {
+        let boot;
+        if (message.type === "boot") {
+          lifecycle.bootAt = performance.now();
+          boot = { config: JSON.parse(message.config), fork_lengths: (message.pluginForks ?? []).map(fork => fork.byteLength) };
+          window.__systemlessWorkerBoots.push(boot);
+        }
+        const result = post(message, ...rest);
+        if (boot) {
+          boot.detached = (message.pluginForks ?? []).every(fork => fork.byteLength === 0);
+          if (window.__systemlessFailWorkerBoot) {
+            setTimeout(() => worker.dispatchEvent(new ErrorEvent("error", { message: "Controlled startup failure" })), 0);
+          }
+        }
+        return result;
+      };
+      return worker;
+    }});
     const objectUrls = new Map();
     const originalCreateObjectURL = URL.createObjectURL.bind(URL);
     const originalRevokeObjectURL = URL.revokeObjectURL.bind(URL);
@@ -210,7 +236,7 @@ function downloadCapturePrelude() {
     URL.createObjectURL = (object) => {
       const url = originalCreateObjectURL(object);
       if (object instanceof Blob) {
-        objectUrls.set(url, { size: object.size, type: object.type });
+        objectUrls.set(url, { size: object.size, type: object.type, blob: object });
       }
       return url;
     };
@@ -222,6 +248,7 @@ function downloadCapturePrelude() {
       const meta = objectUrls.get(this.href);
       if (this.download && meta) {
         downloads.push({ filename: this.download, size: meta.size, type: meta.type });
+        window.__systemlessDownloadedBlobs.set(this.download, meta.blob);
         return;
       }
       return originalClick.apply(this, arguments);
@@ -240,15 +267,69 @@ async function saveSmokeProbe(config) {
   });
 
   await waitForRuntime(config.gameId, config.timeoutMs);
+  const runtimeWorker = document.querySelector("canvas.game-canvas").getAttribute("data-runtime-worker") === "true";
   await runActions(config.actions, config.timeoutMs);
   const saved = await waitForSave(config.gameId, config.pilotName, config.timeoutMs);
   await clickSaveAction("download", saved.path);
   const download = await waitForDownload(config.pilotName, 5_000);
   await clickSaveAction("remove", saved.path);
   const removed = await waitForRemoval(config.gameId, saved.path, 10_000);
+  const blob = window.__systemlessDownloadedBlobs.get(`${config.pilotName}.bin`);
+  const input = document.querySelector(".save-import__input");
+  if (!blob || !input) throw new Error("Missing downloaded save or import control");
+  const transfer = new DataTransfer();
+  transfer.items.add(new File([blob], `${config.pilotName}.bin`, { type: "application/x-macbinary" }));
+  input.files = transfer.files;
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  const imported = await waitForSave(config.gameId, config.pilotName, 10_000);
+  const before = saved.records.find(record => record.path === saved.path);
+  const after = imported.records.find(record => record.path === imported.path);
+  const importExact = before.data_fork_b64 === after.data_fork_b64 && before.resource_fork_b64 === after.resource_fork_b64;
+  if (!importExact) throw new Error("Imported save forks differ from the download");
+  await clickSaveAction("remove", imported.path);
+  await waitForRemoval(config.gameId, imported.path, 10_000);
+  let shutdownAcknowledged = null;
+  if (config.verifyShutdown || config.verifyRestart) {
+    const gamePath = location.pathname;
+    const oldCanvas = document.querySelector("canvas.game-canvas");
+    const oldOwner = window.__systemlessWorkerLifecycle.findLast(worker => worker.ready);
+    const library = [...document.querySelectorAll("a[href]")].find(a => new URL(a.href).pathname === "/");
+    if (!library) throw new Error("Missing library navigation link");
+    library.click();
+    if (config.verifyRestart) {
+      let replay;
+      await waitUntil(() => {
+        replay = [...document.querySelectorAll("a[href]")].find(a => new URL(a.href).pathname === gamePath);
+        return !!replay;
+      }, 10_000, "library did not offer the game again");
+      replay.click();
+      await waitUntil(() => {
+        const canvas = document.querySelector("canvas.game-canvas");
+        return canvas && canvas !== oldCanvas && canvas.getAttribute("data-runtime-game-id") === config.gameId;
+      }, config.timeoutMs, "restarted game did not become ready");
+      const newOwner = window.__systemlessWorkerLifecycle.findLast(worker => worker.ready);
+      if (!oldOwner || newOwner === oldOwner || oldOwner.stoppedAt === null || newOwner.bootAt < oldOwner.stoppedAt) {
+        throw new Error("new owner started before the previous game's saves completed");
+      }
+      const reloaded = await readSaveRecords(config.gameId);
+      if (reloaded.some(record => record.path === imported.path)) throw new Error("deleted save returned after restart");
+      const leave = [...document.querySelectorAll("a[href]")].find(a => new URL(a.href).pathname === "/");
+      leave.click();
+    }
+    await waitUntil(() => window.__systemlessWorkerLifecycle.every(worker => worker.terminated), 20_000, "worker did not stop after navigation");
+    shutdownAcknowledged = window.__systemlessWorkerLifecycle.filter(worker => worker.ready).every(worker => worker.stopped);
+    if (!shutdownAcknowledged) throw new Error("worker terminated without acknowledging save completion");
+    const notice = document.querySelector(".runtime-notice")?.textContent;
+    if (notice) throw new Error(`Shutdown reported: ${notice}`);
+  }
 
   return {
     game_id: config.gameId,
+    runtime_worker: runtimeWorker,
+    shutdown_acknowledged: shutdownAcknowledged,
+    worker_lifecycle: window.__systemlessWorkerLifecycle,
+    worker_boots: window.__systemlessWorkerBoots,
+    import_exact: importExact,
     pilot_name: config.pilotName,
     elapsed_ms: Math.round(performance.now() - startedAt),
     save_path: saved.path,
@@ -529,6 +610,26 @@ async function saveSmokeProbe(config) {
 
 function assertSaveSmokeReport(report, game) {
   const failures = [];
+  if (game.requireWorker && !report.runtime_worker) failures.push("worker runtime was required");
+  if (game.workerBootFailure && report.runtime_worker) failures.push("compatibility fallback was required");
+  if (report.plugin_server_requests !== (game.pluginAssets ?? []).length * (game.verifyRestart ? 2 : 1)) failures.push("plugin fixture requests did not match");
+  if (!report.import_exact) failures.push("import did not preserve both forks");
+  for (const asset of game.pluginAssets ?? []) {
+    if (!asset.expectedMetadata) continue;
+    const boot = report.worker_boots.at(-1);
+    const index = boot?.config.plugins.findIndex(plugin => plugin.path === asset.expectedMetadata.path) ?? -1;
+    if (index < 0 || !boot.detached) {
+      failures.push("plugin was not transferred to the worker");
+      continue;
+    }
+    const received = boot.config.plugins[index];
+    if (Object.entries(asset.expectedMetadata).some(([key, value]) => received[key] !== value)) {
+      failures.push("plugin metadata changed in transport");
+    }
+    if (JSON.stringify(boot.fork_lengths.slice(index * 2, index * 2 + 2)) !== JSON.stringify(asset.forkLengths)) {
+      failures.push("plugin fork lengths changed in transport");
+    }
+  }
   if (report.game_id !== game.id) {
     failures.push(`game id ${report.game_id} did not match ${game.id}`);
   }
@@ -553,8 +654,9 @@ function assertSaveSmokeReport(report, game) {
   if (report.console.length > 0) {
     failures.push(`browser console reported ${report.console.length} error(s)`);
   }
-  if (report.archive_server_requests !== 1) {
-    failures.push(`archive requested ${report.archive_server_requests} time(s), expected 1`);
+  const expectedArchiveRequests = game.verifyRestart ? 2 : 1;
+  if (report.archive_server_requests !== expectedArchiveRequests) {
+    failures.push(`archive requested ${report.archive_server_requests} time(s), expected ${expectedArchiveRequests}`);
   }
   if (failures.length > 0) {
     throw new Error(failures.join("; "));
