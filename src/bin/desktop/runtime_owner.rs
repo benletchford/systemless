@@ -1,0 +1,424 @@
+//! The desktop guest is constructed, executed and destroyed on one owner thread.
+//! Only configuration, commands and owned snapshots cross this boundary.
+
+use super::runtime_driver::GuiDriver;
+use super::runtime_mailbox::{PresentationOptions, RuntimeMailbox, RuntimeStatus};
+use super::runtime_protocol::{GuiCommand, GuiState};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::Instant;
+
+pub(super) struct RuntimeConfig {
+    pub game_path: PathBuf,
+    pub arrows_as_numpad: bool,
+    pub native_integrations: bool,
+    pub addressing_24_bit: bool,
+    pub screen_depth: Option<u16>,
+    pub ui_theme: systemless::ui_theme::UiThemeId,
+    pub debug_socket: Option<PathBuf>,
+}
+
+pub(super) struct RuntimeOwner {
+    pub mailbox: Arc<RuntimeMailbox>,
+    thread: Option<JoinHandle<()>>,
+}
+
+fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
+    panic
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| {
+            panic
+                .downcast_ref::<&str>()
+                .map(|message| (*message).to_owned())
+        })
+        .unwrap_or_else(|| "desktop runtime panicked".to_owned())
+}
+
+impl RuntimeOwner {
+    pub fn spawn(
+        config: RuntimeConfig,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> std::io::Result<Self> {
+        Self::spawn_with(config, wake, |driver| {
+            driver.init_game();
+            Ok(())
+        })
+    }
+
+    fn spawn_with(
+        config: RuntimeConfig,
+        wake: impl Fn() + Send + Sync + 'static,
+        initialize: impl FnOnce(&mut GuiDriver) -> Result<(), String> + Send + 'static,
+    ) -> std::io::Result<Self> {
+        let mailbox = Arc::new(RuntimeMailbox::new(wake));
+        let shared = mailbox.clone();
+        let thread = std::thread::Builder::new()
+            .name("systemless-runtime".into())
+            .spawn(move || {
+                // Never construct a runner, CPAL stream or debugger on the host and
+                // then move it here. GuiDriver itself need not implement Send.
+                let mut driver = GuiDriver::new(
+                    config.game_path,
+                    config.arrows_as_numpad,
+                    config.native_integrations,
+                    config.addressing_24_bit,
+                    config.screen_depth,
+                    config.ui_theme,
+                );
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || -> Result<(), String> {
+                        if let Some(path) = config.debug_socket {
+                            driver.debug_server =
+                                Some(super::debug_server::DebugServer::bind(&path).map_err(
+                                    |error| format!("cannot bind debug socket: {error}"),
+                                )?);
+                        }
+                        initialize(&mut driver)?;
+                        let mut state = GuiState::default();
+                        driver.capture_state(&mut state, true);
+                        shared.publish(None, state);
+                        shared.set_status(RuntimeStatus::Ready);
+                        run(&mut driver, &shared, config.native_integrations);
+                        Ok(())
+                    },
+                ));
+                let mut error = match outcome {
+                    Ok(result) => result.err(),
+                    Err(panic) => Some(panic_message(panic)),
+                };
+                // Final persistence runs on the same owner, including after a
+                // recoverable runtime panic. Report failure rather than abandoning
+                // the window's asynchronous shutdown wait.
+                if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    driver.sync_save_files(true)
+                })) {
+                    let message = format!("final save flush failed: {}", panic_message(panic));
+                    error = Some(error.map_or_else(
+                        || message.clone(),
+                        |previous| format!("{previous}; {message}"),
+                    ));
+                }
+                let instructions = driver.total_instructions;
+                if let Err(panic) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(driver)))
+                {
+                    let message = format!("runtime teardown failed: {}", panic_message(panic));
+                    error = Some(error.map_or_else(
+                        || message.clone(),
+                        |previous| format!("{previous}; {message}"),
+                    ));
+                }
+                shared.set_status(RuntimeStatus::Stopped {
+                    error,
+                    instructions,
+                });
+            })?;
+        Ok(Self {
+            mailbox,
+            thread: Some(thread),
+        })
+    }
+
+    /// A window callback must never join a running worker. A stopped status is
+    /// published just before thread return, so callers can poll this briefly.
+    pub fn join_finished(&mut self) -> Result<bool, String> {
+        if self
+            .thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
+        {
+            return Ok(false);
+        }
+        if let Some(thread) = self.thread.take() {
+            thread.join().map_err(panic_message)?;
+        }
+        Ok(true)
+    }
+}
+
+impl Drop for RuntimeOwner {
+    fn drop(&mut self) {
+        self.mailbox.request_shutdown();
+        // Ordinary close waits asynchronously and calls join_finished first.
+        // An exceptional host unwind must not block on guest execution.
+    }
+}
+
+fn run(driver: &mut GuiDriver, mailbox: &RuntimeMailbox, native_integrations: bool) {
+    let mut options = PresentationOptions {
+        capture_crop: native_integrations,
+        learning_crop: true,
+        ..Default::default()
+    };
+    loop {
+        if let Some(next) = mailbox.take_presentation() {
+            if let Some(headroom) = next.render_headroom {
+                driver.render_headroom = headroom;
+            }
+            driver.force_next_render |= next.force;
+            options = next;
+        }
+        // Do not collapse queued click transitions before the guest observes
+        // each press/release. Preserve the existing driver's observation latch.
+        if mailbox.shutdown_requested() {
+            while let Some(command) = mailbox.next_command() {
+                driver.apply_command(command);
+            }
+            break;
+        }
+        for _ in 0..32 {
+            if driver.mouse_release_latch.requires_guest_progress() {
+                break;
+            }
+            let Some(command) = mailbox.next_command() else {
+                break;
+            };
+            driver.apply_command(command);
+        }
+        driver.pump_debugger();
+        let now = Instant::now();
+        let next = driver.next_frame_time.unwrap_or(now);
+        if now < next {
+            mailbox
+                .wait_until_accepting(next, !driver.mouse_release_latch.requires_guest_progress());
+            continue;
+        }
+        let (target, _) = GuiDriver::next_frame_target(now, next);
+        driver.next_frame_time = Some(target);
+        let mut acknowledgements = Vec::with_capacity(32);
+        let mut input_applied = false;
+        driver.step_frame_with_safe_points(Instant::now, |runner, latch| {
+            if mailbox.shutdown_requested() {
+                return false;
+            }
+            // Work per safe point is bounded even while a producer stays busy.
+            for _ in 0..32 {
+                if latch.requires_guest_progress() || acknowledgements.len() == 32 {
+                    break;
+                }
+                let Some(command) = mailbox.next_command() else {
+                    break;
+                };
+                if matches!(command, GuiCommand::AcknowledgeWarp { .. }) {
+                    acknowledgements.push(command);
+                } else {
+                    GuiDriver::apply_guest_command(runner, latch, command);
+                    input_applied = true;
+                }
+            }
+            true
+        });
+        driver.force_next_render |= input_applied;
+        for command in acknowledgements {
+            driver.apply_command(command);
+        }
+        driver.flush_ready_mouse_release();
+        if driver.guest_requested_exit() {
+            if !driver.guest_exit_reported {
+                driver.sync_save_files(true);
+                driver.guest_exit_reported = true;
+            }
+            if driver.debug_server.is_none() {
+                break;
+            }
+        }
+        if mailbox.shutdown_requested() {
+            continue;
+        }
+        driver.sync_save_files(false);
+        let frame = if driver.should_render_frame(options.debug.is_some()) {
+            let mut frame = mailbox.frame_buffer();
+            if driver.capture_frame(
+                &mut frame,
+                options.debug,
+                options.capture_crop,
+                options.learning_crop,
+            ) {
+                // The mailbox now owns a complete image; its newest replacement
+                // is safe to drop independently of presentation acknowledgements.
+                driver.last_presented_guest_tick = Some(frame.guest_tick);
+                driver.force_next_render = false;
+                Some(frame)
+            } else {
+                mailbox.recycle(frame);
+                None
+            }
+        } else {
+            None
+        };
+        let mut state = GuiState::default();
+        driver.capture_state(&mut state, true);
+        mailbox.publish(frame, state);
+        driver.finish_frame();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use systemless::memory::MemoryBus;
+
+    fn config() -> RuntimeConfig {
+        RuntimeConfig {
+            game_path: "owner-test".into(),
+            arrows_as_numpad: false,
+            native_integrations: false,
+            addressing_24_bit: false,
+            screen_depth: Some(8),
+            ui_theme: systemless::ui_theme::UiThemeId::ClassicSystem7,
+            debug_socket: None,
+        }
+    }
+
+    fn wait_stopped(owner: &mut RuntimeOwner, wakes: &mpsc::Receiver<()>) -> RuntimeStatus {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = owner.mailbox.poll().status;
+            if matches!(status, RuntimeStatus::Stopped { .. }) {
+                while !owner.join_finished().unwrap() {
+                    assert!(Instant::now() < deadline);
+                    std::thread::yield_now();
+                }
+                return status;
+            }
+            wakes
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+        }
+    }
+
+    struct ThreadCheckedAudio {
+        owner: std::thread::ThreadId,
+        dropped: mpsc::Sender<std::thread::ThreadId>,
+    }
+    impl systemless::audio::AudioBackend for ThreadCheckedAudio {
+        fn queue_samples(&mut self, _: &[u8]) {
+            assert_eq!(std::thread::current().id(), self.owner);
+        }
+        fn stop(&mut self) {
+            assert_eq!(std::thread::current().id(), self.owner);
+        }
+    }
+    impl Drop for ThreadCheckedAudio {
+        fn drop(&mut self) {
+            self.dropped.send(std::thread::current().id()).unwrap();
+        }
+    }
+
+    #[test]
+    fn runner_and_audio_are_created_used_and_destroyed_on_the_owner() {
+        let host = std::thread::current().id();
+        let (wake, wakes) = mpsc::channel();
+        let (created, creation) = mpsc::channel();
+        let (dropped, destruction) = mpsc::channel();
+        let mut owner = RuntimeOwner::spawn_with(
+            config(),
+            move || {
+                let _ = wake.send(());
+            },
+            move |driver| {
+                use systemless::cpu::Register;
+                let thread = std::thread::current().id();
+                let mut runner =
+                    systemless::runner::FixtureRunner::new(8 * 1024 * 1024, Default::default());
+                runner.bus_mut().write_word(0x10000, 0x60fe); // BRA.S self
+                runner.cpu_mut().write_reg(Register::PC, 0x10000);
+                runner.set_audio(Box::new(ThreadCheckedAudio {
+                    owner: thread,
+                    dropped,
+                }));
+                driver.runner = Some(runner);
+                driver.initialized = true;
+                created.send(thread).unwrap();
+                Ok(())
+            },
+        )
+        .unwrap();
+        let runtime = creation.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_ne!(runtime, host);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let update = owner.mailbox.poll();
+            if let Some(frame) = update.frame {
+                assert!(frame.sequence > 0);
+                assert!(frame.generation > 0);
+                owner.mailbox.recycle(frame);
+                break;
+            }
+            wakes
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+        }
+        owner.mailbox.request_shutdown();
+        assert!(matches!(
+            wait_stopped(&mut owner, &wakes),
+            RuntimeStatus::Stopped { error: None, .. }
+        ));
+        assert_eq!(
+            destruction.recv_timeout(Duration::from_secs(1)).unwrap(),
+            runtime
+        );
+    }
+
+    #[test]
+    fn stalled_initialization_never_blocks_host_commands_or_join_polling() {
+        let (wake, wakes) = mpsc::channel();
+        let (entered, entry) = mpsc::channel();
+        let (resume, paused) = mpsc::channel();
+        let mut owner = RuntimeOwner::spawn_with(
+            config(),
+            move || {
+                let _ = wake.send(());
+            },
+            move |_| {
+                entered.send(()).unwrap();
+                paused.recv_timeout(Duration::from_secs(5)).unwrap();
+                Ok(())
+            },
+        )
+        .unwrap();
+        entry.recv_timeout(Duration::from_secs(5)).unwrap();
+        let start = Instant::now();
+        owner
+            .mailbox
+            .send(GuiCommand::MouseDown { v: 11, h: 13 })
+            .unwrap();
+        owner.mailbox.request_shutdown();
+        assert!(!owner.join_finished().unwrap());
+        assert_eq!(owner.mailbox.poll().status, RuntimeStatus::Starting);
+        assert!(start.elapsed() < Duration::from_millis(100));
+        resume.send(()).unwrap();
+        assert!(matches!(
+            wait_stopped(&mut owner, &wakes),
+            RuntimeStatus::Stopped { error: None, .. }
+        ));
+    }
+
+    #[test]
+    fn startup_failure_and_panic_reach_terminal_status() {
+        for panic in [false, true] {
+            let (wake, wakes) = mpsc::channel();
+            let mut owner = RuntimeOwner::spawn_with(
+                config(),
+                move || {
+                    let _ = wake.send(());
+                },
+                move |_| {
+                    if panic {
+                        panic!("controlled owner startup panic");
+                    }
+                    Err("controlled owner startup failure".into())
+                },
+            )
+            .unwrap();
+            let RuntimeStatus::Stopped { error, .. } = wait_stopped(&mut owner, &wakes) else {
+                unreachable!()
+            };
+            assert!(error.unwrap().contains("controlled owner startup"));
+        }
+    }
+}
