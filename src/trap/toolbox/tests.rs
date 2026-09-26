@@ -6572,6 +6572,7 @@
         // Boolean FALSE is $00 in the high byte. The low byte is padding and
         // must not turn the parameter true.
         disp.policy.set_res_load(true);
+        bus.write_byte(crate::memory::globals::addr::RES_LOAD, 1);
         bus.write_word(sp, 0x00FF);
         bus.write_word(0x0A60, 0xBEEF);
 
@@ -6665,6 +6666,7 @@
         let data_ptr = bus.alloc(8);
         bus.write_bytes(data_ptr, &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80]);
         disp.policy.set_res_load(false);
+        bus.write_byte(crate::memory::globals::addr::RES_LOAD, 0);
         disp.set_loaded_resources_for_test(LoadedResources {
             files: HashMap::from([(
                 0,
@@ -6714,6 +6716,7 @@
         let handle = disp.get_or_create_resource_handle_in_file(&mut bus, *b"CODE", 1, 0, 0);
         assert_eq!(bus.read_long(handle), 0);
         disp.policy.set_res_load(true);
+        bus.write_byte(crate::memory::globals::addr::RES_LOAD, 1);
         bus.write_word(TEST_SP, 1);
         bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"CODE"));
         bus.write_long(TEST_SP + 6, 0);
@@ -6787,6 +6790,7 @@
 
         for res_load in [true, false] {
             disp.policy.set_res_load(res_load);
+            bus.write_byte(crate::memory::globals::addr::RES_LOAD, u8::from(res_load));
             cpu.write_reg(Register::A7, TEST_SP);
             bus.write_word(TEST_SP, 1);
             bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"seg!"));
