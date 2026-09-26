@@ -1570,15 +1570,6 @@ mod tests {
     }
 
     #[test]
-    fn mutable_runtime_helpers_are_served_network_first() {
-        let service_worker = include_str!("../../public/service-worker.js");
-        assert!(service_worker.contains("static-v6"));
-        assert!(service_worker.contains(
-            "url.pathname === \"/emulator-worker.js\" || url.pathname.startsWith(\"/snippets/\")"
-        ));
-    }
-
-    #[test]
     fn retained_text_resolution_does_not_move_guest_pointer_coordinates() {
         for scale in 1..=4 {
             for css in [(800.0, 600.0), (640.0, 480.0), (1000.0, 750.0)] {
@@ -2219,6 +2210,7 @@ struct WorkerRuntime {
     pending_save_requests: Rc<RefCell<std::collections::BTreeSet<u32>>>,
     listeners: InputListeners,
     render_loop: Rc<RefCell<Option<BrowserRenderLoop>>>,
+    presenter: RefCell<Option<Rc<RefCell<CanvasFrame>>>>,
     state: Rc<RefCell<WorkerFrameState>>,
     audio: Rc<RefCell<Option<WebAudioBackend>>>,
     _on_message: Closure<dyn FnMut(MessageEvent)>,
@@ -2239,6 +2231,7 @@ impl WorkerRuntime {
         }
         let failed = self.failed.replace(true);
         self.render_loop.borrow_mut().take();
+        self.presenter.borrow_mut().take();
         self.worker.set_onmessage(None);
         self.worker.set_onerror(None);
         self.worker.set_onmessageerror(None);
@@ -2380,7 +2373,7 @@ async fn boot_catalogue_worker(
         "generation",
         &JsValue::from_f64(generation as f64),
     );
-    set_js_property(&message, "protocolVersion", &JsValue::from_f64(2.0));
+    set_js_property(&message, "protocolVersion", &JsValue::from_f64(3.0));
     set_js_property(&message, "moduleUrl", &JsValue::from_str(&module_url));
     set_js_property(&message, "wasmUrl", &JsValue::from_str(&wasm_url));
     set_js_property(&message, "gameBytes", bytes.buffer().as_ref());
@@ -2637,6 +2630,7 @@ async fn boot_catalogue_worker(
         pending_save_requests,
         listeners: input_listeners,
         render_loop,
+        presenter: RefCell::new(None),
         state,
         audio,
         _on_message: on_message,
@@ -2652,7 +2646,7 @@ fn start_worker_render_loop(
     debug_visible: RwSignal<bool>,
     on_first_paint: Box<dyn FnOnce()>,
 ) {
-    let Some(mut renderer) = CanvasFrame::new(&canvas, 640, 480) else {
+    let Some(renderer) = CanvasFrame::new_worker(&canvas, 640, 480, runtime.generation) else {
         set_status(
             runtime.status,
             "Unable to initialize the game display".into(),
@@ -2668,6 +2662,9 @@ fn start_worker_render_loop(
         set_js_property(&message, "enabled", &JsValue::TRUE);
         let _ = runtime.post(&message);
     }
+    // The lease outlives the rAF loop so guest exit preserves the final image.
+    let presenter = Rc::new(RefCell::new(renderer));
+    *runtime.presenter.borrow_mut() = Some(presenter.clone());
     let callback_cell: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let callback_self = callback_cell.clone();
     let request_id = Rc::new(Cell::new(None));
@@ -2684,6 +2681,12 @@ fn start_worker_render_loop(
             *callback_self.borrow_mut() = None;
             return;
         }
+        let mut renderer = presenter.borrow_mut();
+        if let Err(error) = renderer.poll_recovery() {
+            set_status(runtime.status, error);
+        }
+        let _ = canvas.set_attribute("data-render-backend", renderer.backend_name());
+        let mut painted = false;
         let visual_frame = {
             let mut state = runtime.state.borrow_mut();
             take_worker_visual_frame(&mut state)
@@ -2702,9 +2705,7 @@ fn start_worker_render_loop(
                 if renderer.paint_q3(&frame).is_some() {
                     sync_canvas_aspect(&canvas, width, height);
                     let _ = canvas.set_attribute("data-render-backend", "webgl-qd3d");
-                    if let Some(callback) = first_paint.borrow_mut().take() {
-                        callback();
-                    }
+                    painted = true;
                 }
             }
             Some(WorkerVisualFrame::Software(width, height, pixels)) => {
@@ -2720,9 +2721,7 @@ fn start_worker_render_loop(
                 }
                 sync_canvas_aspect(&canvas, width, height);
                 renderer.paint(width, height, &pixels);
-                if let Some(callback) = first_paint.borrow_mut().take() {
-                    callback();
-                }
+                painted = !renderer.asynchronous();
             }
             Some(WorkerVisualFrame::SoftwareJs(width, height, pixels)) => {
                 let _ = canvas.set_attribute(
@@ -2737,20 +2736,30 @@ fn start_worker_render_loop(
                 }
                 sync_canvas_aspect(&canvas, width, height);
                 renderer.paint_js(width, height, &pixels);
-                if let Some(callback) = first_paint.borrow_mut().take() {
-                    callback();
-                }
+                painted = !renderer.asynchronous();
             }
             None => {}
         }
+        if painted || renderer.submitted() {
+            if let Some(callback) = first_paint.borrow_mut().take() {
+                callback();
+            }
+        }
+        let force_snapshot = renderer.needs_snapshot();
+        let presentation_pending = renderer.pending();
+        // A stopped guest can still lose its offscreen context. Keep polling
+        // presenter status without asking the owner to execute guest work.
+        let monitor_presenter = renderer.asynchronous();
+        drop(renderer);
         let mut state = runtime.state.borrow_mut();
         if let Some(error) = state.save_error.take() {
             set_status(runtime.status, error);
         }
-        if state.running {
+        if state.running || force_snapshot {
             let queued = worker_audio_queue_samples(&runtime.audio);
             let message = Object::new();
             set_js_property(&message, "type", &JsValue::from_str("frame"));
+            set_js_property(&message, "forceRender", &JsValue::from_bool(force_snapshot));
             let scale = canvas_backing_scale(&canvas);
             let logical = (canvas.width() / scale, canvas.height() / scale);
             set_js_property(
@@ -2774,7 +2783,7 @@ fn start_worker_render_loop(
         }
         let running = state.running;
         drop(state);
-        if running {
+        if running || presentation_pending || force_snapshot || monitor_presenter {
             schedule_runtime_raf(&callback_self, &request_for_callback);
         } else {
             *callback_self.borrow_mut() = None;

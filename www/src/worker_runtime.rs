@@ -77,6 +77,11 @@ pub struct WorkerMachine {
 
 #[wasm_bindgen]
 impl WorkerMachine {
+    #[wasm_bindgen(js_name = runtimeProtocolVersion)]
+    pub fn runtime_protocol_version() -> u32 {
+        3
+    }
+
     #[wasm_bindgen(js_name = create)]
     pub async fn create(
         game_bytes: Uint8Array,
@@ -150,6 +155,7 @@ impl WorkerMachine {
         queued_audio_samples: i32,
         debug: bool,
         output_scale: u32,
+        force_render: bool,
     ) -> Object {
         self.machine.set_output_scale(output_scale);
         self.machine
@@ -161,8 +167,8 @@ impl WorkerMachine {
         let gpu_frame = self.machine.take_q3_gpu_frame();
         let counters = self.machine.perf_counters();
         let logical_size = self.machine.screen_size();
-        let should_render =
-            gpu_frame.is_none() && (frame_result.visual_work || !self.painted_once || debug);
+        let should_render = gpu_frame.is_none()
+            && (frame_result.visual_work || !self.painted_once || debug || force_render);
         let frame = should_render.then(|| {
             self.painted_once = true;
             let stats = debug.then_some(DebugOverlayFrameStats {

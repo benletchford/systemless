@@ -9,9 +9,10 @@ function clientFixture({ unavailable = false, transferFails = false } = {}) {
   let now = 0;
   const workers = [], observers = [], intervals = new Map(), listeners = new Map();
   let timerId = 0;
-  const parent = { children: [], insertBefore(node) { this.children.push(node); node.parentElement = this; } };
+  const parent = { clientLeft: 1, clientTop: 1, scrollLeft: 0, scrollTop: 0, getBoundingClientRect() { return { left: 10, top: 20 }; }, children: [], insertBefore(node) { this.children.push(node); node.parentElement = this; } };
   const logical = { width: 2, height: 1, offsetLeft: 12, offsetTop: 34, offsetWidth: 640, offsetHeight: 320,
     parentElement: parent, nextSibling: null, attributes: {},
+    getBoundingClientRect() { return { left: 11 + this.offsetLeft, top: 21 + this.offsetTop, width: this.offsetWidth, height: this.offsetHeight }; },
     setAttribute(name, value) { this.attributes[name] = value; },
     transferControlToOffscreen() { throw new Error('input canvas must never transfer'); },
     focusToken: {}, listenersToken: {}, getContext() { throw new Error('input context must not be claimed'); } };
@@ -102,4 +103,16 @@ test('stale callbacks cannot revive a disposed client or overwrite a replacement
   assert.equal(f.client.status().phase, 'booting');
   f.client.dispose(); callback({ data: { ...f.client.identity, type: 'ready', kinds: ['rgba'] } });
   assert.equal(f.client.status().phase, 'disposed'); assert.equal(f.parent.children.length, 0);
+});
+
+
+test('fractional canvas placement survives parent borders and scroll', () => {
+  const f = clientFixture();
+  f.logical.offsetLeft = 12.375; f.logical.offsetTop = 34.625;
+  f.logical.offsetWidth = 639.5; f.logical.offsetHeight = 319.75;
+  f.parent.scrollLeft = 2; f.parent.scrollTop = 3;
+  f.observers[0].callback();
+  const style = f.parent.children[0].style;
+  assert.equal(style.left, '14.375px'); assert.equal(style.top, '37.625px');
+  assert.equal(style.width, '639.5px'); assert.equal(style.height, '319.75px');
 });
