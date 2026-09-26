@@ -857,6 +857,13 @@ struct PendingGpuFrame {
 struct App {
     driver: Option<GuiDriver>,
     owner: Option<runtime_owner::RuntimeOwner>,
+    #[cfg(target_os = "macos")]
+    pending_native_bundle: Option<native_bundle::NativeBundle>,
+    #[cfg(target_os = "macos")]
+    native_startup_fallback: Option<(
+        runtime_owner::RuntimeConfig,
+        winit::event_loop::EventLoopProxy<()>,
+    )>,
     closing: bool,
     runtime_error: Option<String>,
     force_next_render: bool,
@@ -1034,6 +1041,10 @@ impl App {
                 )
             }),
             owner: None,
+            #[cfg(target_os = "macos")]
+            pending_native_bundle: None,
+            #[cfg(target_os = "macos")]
+            native_startup_fallback: None,
             closing: false,
             runtime_error: None,
             force_next_render: true,
@@ -1195,6 +1206,10 @@ impl App {
             .expect("threaded runtime")
             .mailbox
             .poll();
+        #[cfg(target_os = "macos")]
+        if let Some(bundle) = update.native_bundle {
+            self.pending_native_bundle = Some(bundle);
+        }
         if let Some(state) = update.state {
             self.guest_state = state;
         }
@@ -1233,6 +1248,37 @@ impl App {
                     std::time::Instant::now() + std::time::Duration::from_millis(2),
                 ));
                 return;
+            }
+            #[cfg(target_os = "macos")]
+            if !self.closing && self.runtime_error.is_none() && !native_termination::pending() {
+                if let Some(bundle) = self.pending_native_bundle.take() {
+                    // The inspection owner has finished and was joined above.
+                    // Exec starts a fresh process through its native bundle;
+                    // never move a live runner or AppKit object between threads.
+                    let error = native_bundle::exec_bundle(&bundle);
+                    eprintln!(
+                        "[SYSTEMLESS] Could not enter native bundle: {error}; continuing unbundled"
+                    );
+                    let (mut config, proxy) = self
+                        .native_startup_fallback
+                        .take()
+                        .expect("native bootstrap fallback");
+                    config.native_preflight = false;
+                    match runtime_owner::RuntimeOwner::spawn(config, move || {
+                        let _ = proxy.send_event(());
+                    }) {
+                        Ok(owner) => {
+                            native_termination::activate(owner.mailbox.clone());
+                            self.owner = Some(owner);
+                            event_loop.set_control_flow(ControlFlow::Wait);
+                            return;
+                        }
+                        Err(error) => {
+                            self.runtime_error =
+                                Some(format!("Failed to start runtime owner: {error}"))
+                        }
+                    }
+                }
             }
             if self.closing || self.runtime_error.is_none() {
                 eprintln!("[SYSTEMLESS] Runtime stopped. Total instructions: {instructions}");
@@ -2784,7 +2830,9 @@ impl ApplicationHandler for App {
             #[cfg(not(target_os = "macos"))]
             let initial_size = (initial_screen_width(), initial_screen_height());
             #[cfg(target_os = "macos")]
-            let window_title = if self.native_integrations {
+            let window_title = if self.native_startup_fallback.is_some() {
+                "Systemless — Loading application…"
+            } else if self.native_integrations {
                 self.native_app_name.as_str()
             } else {
                 "Systemless - Macintosh Emulator"
@@ -3234,6 +3282,8 @@ fn run_gui(
         None
     };
     let config = runtime_owner::RuntimeConfig {
+        #[cfg(target_os = "macos")]
+        native_preflight: native_integrations && !native_bundle::already_relaunched(),
         game_path: game_path.clone(),
         arrows_as_numpad,
         native_integrations,
@@ -3259,6 +3309,10 @@ fn run_gui(
     }
     if threaded {
         let proxy = event_loop.create_proxy();
+        #[cfg(target_os = "macos")]
+        if config.native_preflight {
+            app.native_startup_fallback = Some((config.clone(), proxy.clone()));
+        }
         match runtime_owner::RuntimeOwner::spawn(config, move || {
             let _ = proxy.send_event(());
         }) {
@@ -3302,60 +3356,13 @@ fn run_gui(
 
 #[cfg(target_os = "macos")]
 fn relaunch_with_native_guest_identity(game_path: &std::path::Path) {
-    if native_bundle::already_relaunched() {
-        return;
-    }
-
-    match native_bundle::cached_bundle(game_path) {
+    match native_bundle::prepare_for_game(game_path) {
         Ok(Some(bundle)) => {
             let error = native_bundle::exec_bundle(&bundle);
-            eprintln!(
-                "[SYSTEMLESS] Could not enter cached native app bundle {}: {}",
-                bundle.bundle_path.display(),
-                error
-            );
-            return;
+            eprintln!("[SYSTEMLESS] Could not enter native bundle: {error}");
         }
         Ok(None) => {}
-        Err(error) => eprintln!(
-            "[SYSTEMLESS] Could not inspect the native app bundle cache: {}",
-            error
-        ),
-    }
-
-    let mut runner = game::new_runner();
-    if let Err(error) = game::load_game_from_path(&mut runner, game_path) {
-        eprintln!(
-            "[SYSTEMLESS] Could not inspect the guest application before native startup: {}",
-            error
-        );
-        return;
-    }
-    let Some(app_path) = runner.dispatcher().launched_app_path() else {
-        return;
-    };
-    let app_name = app_path
-        .rsplit('/')
-        .next()
-        .filter(|name| !name.is_empty())
-        .unwrap_or(app_path)
-        .to_owned();
-    drop(runner);
-
-    match native_bundle::prepare_bundle(game_path, &app_name) {
-        Ok(bundle) => {
-            eprintln!("[SYSTEMLESS] Native app identity: {}", app_name);
-            let error = native_bundle::exec_bundle(&bundle);
-            eprintln!(
-                "[SYSTEMLESS] Could not enter native app bundle {}: {}",
-                bundle.bundle_path.display(),
-                error
-            );
-        }
-        Err(error) => eprintln!(
-            "[SYSTEMLESS] Could not prepare native app identity for {}: {}",
-            app_name, error
-        ),
+        Err(error) => eprintln!("[SYSTEMLESS] Native startup fallback: {error}"),
     }
 }
 
@@ -3564,7 +3571,10 @@ fn main() {
     }
 
     #[cfg(target_os = "macos")]
-    if !cli.headless && native_integrations {
+    if !cli.headless
+        && native_integrations
+        && std::env::var("SYSTEMLESS_DESKTOP_RUNTIME").as_deref() != Ok("thread")
+    {
         relaunch_with_native_guest_identity(&game_path);
     }
 

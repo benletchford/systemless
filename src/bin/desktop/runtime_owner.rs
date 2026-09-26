@@ -9,7 +9,10 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Instant;
 
+#[derive(Clone)]
 pub(super) struct RuntimeConfig {
+    #[cfg(target_os = "macos")]
+    pub native_preflight: bool,
     pub game_path: PathBuf,
     pub arrows_as_numpad: bool,
     pub native_integrations: bool,
@@ -57,6 +60,10 @@ impl RuntimeOwner {
         let thread = std::thread::Builder::new()
             .name("systemless-runtime".into())
             .spawn(move || {
+                #[cfg(target_os = "macos")]
+                let mut native_bundle = None;
+                #[cfg(target_os = "macos")]
+                let preflight_path = config.game_path.clone();
                 // Never construct a runner, CPAL stream or debugger on the host and
                 // then move it here. GuiDriver itself need not implement Send.
                 let mut driver = GuiDriver::new(
@@ -69,6 +76,22 @@ impl RuntimeOwner {
                 );
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                     || -> Result<(), String> {
+                        #[cfg(target_os = "macos")]
+                        if config.native_preflight && !shared.shutdown_requested() {
+                            match super::native_bundle::prepare_for_game(&preflight_path) {
+                                Ok(Some(bundle)) => {
+                                    native_bundle = Some(bundle);
+                                    return Ok(());
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    eprintln!("[SYSTEMLESS] Native startup fallback: {error}")
+                                }
+                            }
+                        }
+                        if shared.shutdown_requested() {
+                            return Ok(());
+                        }
                         if let Some(path) = config.debug_socket {
                             driver.debug_server =
                                 Some(super::debug_server::DebugServer::bind(&path).map_err(
@@ -109,6 +132,13 @@ impl RuntimeOwner {
                         || message.clone(),
                         |previous| format!("{previous}; {message}"),
                     ));
+                }
+                #[cfg(target_os = "macos")]
+                if error.is_none() && !shared.shutdown_requested() {
+                    if let Some(bundle) = native_bundle {
+                        shared.finish_native_bootstrap(bundle);
+                        return;
+                    }
                 }
                 shared.set_status(RuntimeStatus::Stopped {
                     error,
@@ -264,6 +294,8 @@ mod tests {
 
     fn config() -> RuntimeConfig {
         RuntimeConfig {
+            #[cfg(target_os = "macos")]
+            native_preflight: false,
             game_path: "owner-test".into(),
             arrows_as_numpad: false,
             native_integrations: false,
@@ -561,5 +593,50 @@ mod tests {
             unreachable!()
         };
         assert!(error.unwrap().contains("Failed to load game"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cached_native_bootstrap_finishes_without_starting_the_guest() {
+        let temporary = tempfile::tempdir().unwrap();
+        let game_path = temporary.path().join("game.sit");
+        // Deliberately not a valid archive: a cached bundle must not decode it.
+        std::fs::write(&game_path, b"cached bootstrap archive").unwrap();
+        let expected =
+            super::super::native_bundle::prepare_bundle(&game_path, "Bootstrap Test").unwrap();
+        let mut config = config();
+        config.game_path = game_path;
+        config.native_preflight = true;
+        let (wake, wakes) = mpsc::channel();
+        let mut owner = RuntimeOwner::spawn_with(
+            config,
+            move || {
+                let _ = wake.send(());
+            },
+            |_| panic!("bootstrap must not initialize or execute a guest before relaunch"),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let received = loop {
+            let update = owner.mailbox.poll();
+            if let RuntimeStatus::Stopped {
+                error,
+                instructions,
+            } = update.status
+            {
+                assert_eq!(error, None);
+                assert_eq!(instructions, 0);
+                break update.native_bundle;
+            }
+            wakes
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+        };
+        while !owner.join_finished().unwrap() {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(received, Some(expected.clone()));
+        std::fs::remove_dir_all(expected.bundle_path.parent().unwrap()).unwrap();
     }
 }

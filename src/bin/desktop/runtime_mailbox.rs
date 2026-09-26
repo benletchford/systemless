@@ -31,12 +31,16 @@ pub(super) struct PresentationOptions {
 }
 
 pub(super) struct HostUpdate {
+    #[cfg(target_os = "macos")]
+    pub native_bundle: Option<super::native_bundle::NativeBundle>,
     pub frame: Option<Box<GuiFrame>>,
     pub state: Option<GuiState>,
     pub status: RuntimeStatus,
 }
 
 struct Shared {
+    #[cfg(target_os = "macos")]
+    native_bundle: Option<super::native_bundle::NativeBundle>,
     commands: VecDeque<GuiCommand>,
     shutdown: bool,
     presentation: Option<PresentationOptions>,
@@ -63,6 +67,8 @@ impl RuntimeMailbox {
     pub fn new(wake_host: impl Fn() + Send + Sync + 'static) -> Self {
         Self {
             shared: Mutex::new(Shared {
+                #[cfg(target_os = "macos")]
+                native_bundle: None,
                 commands: VecDeque::with_capacity(COMMAND_CAPACITY),
                 shutdown: false,
                 presentation: None,
@@ -191,6 +197,24 @@ impl RuntimeMailbox {
         }
     }
 
+    /// Publish the bootstrap result and terminal state atomically. The host
+    /// must join the finished inspection owner before replacing the process.
+    #[cfg(target_os = "macos")]
+    pub fn finish_native_bootstrap(&self, bundle: super::native_bundle::NativeBundle) {
+        let wake = {
+            let mut shared = self.shared.lock().unwrap();
+            shared.native_bundle = Some(bundle);
+            shared.status = RuntimeStatus::Stopped {
+                error: None,
+                instructions: 0,
+            };
+            Self::arm_wake(&mut shared)
+        };
+        if wake {
+            (self.wake_host)();
+        }
+    }
+
     pub fn set_status(&self, status: RuntimeStatus) {
         let (old, wake) = {
             let mut shared = self.shared.lock().unwrap();
@@ -213,6 +237,8 @@ impl RuntimeMailbox {
         let mut shared = self.shared.lock().unwrap();
         shared.wake_pending = false;
         HostUpdate {
+            #[cfg(target_os = "macos")]
+            native_bundle: shared.native_bundle.take(),
             frame: shared.frame.take(),
             state: shared.state.take(),
             status: shared.status.clone(),
@@ -399,5 +425,36 @@ mod tests {
         mailbox.request_shutdown();
         assert!(wait_done.recv_timeout(Duration::from_secs(2)).unwrap());
         thread.join().unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_bootstrap_result_is_delivered_once_with_terminal_status() {
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let count = wakes.clone();
+        let mailbox = RuntimeMailbox::new(move || {
+            count.fetch_add(1, Ordering::Relaxed);
+        });
+        let bundle = super::super::native_bundle::NativeBundle {
+            bundle_path: "Game.app".into(),
+            executable_path: "Game.app/Contents/MacOS/systemless".into(),
+        };
+        mailbox.finish_native_bootstrap(bundle.clone());
+        assert_eq!(wakes.load(Ordering::Relaxed), 1);
+        assert!(matches!(
+            mailbox.status(),
+            RuntimeStatus::Stopped {
+                error: None,
+                instructions: 0
+            }
+        ));
+        let update = mailbox.poll();
+        assert_eq!(update.native_bundle, Some(bundle));
+        assert_eq!(update.status, mailbox.status());
+        assert!(mailbox.poll().native_bundle.is_none());
+        assert!(matches!(
+            mailbox.send(GuiCommand::MouseMove { v: 0, h: 0 }),
+            Err(CommandError::Closed(_))
+        ));
     }
 }
