@@ -692,7 +692,10 @@ pub(super) fn ppc_dispatch_legacy_control(
                     return Some(action);
                 }
             }
-            if part == 129 || (action_proc == 0 && matches!(part, 20..=23)) {
+            // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80:
+            // Arrow/page value changes belong to the action procedure.
+            // A nil action only returns the hit part to the caller.
+            if part == 129 {
                 let _ = ppc_track_scroll_control_value(
                     memory,
                     handles,

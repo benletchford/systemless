@@ -1,7 +1,55 @@
 use super::*;
 
 #[test]
-fn scrollbar_tracking_changes_the_value_for_arrow_clicks() {
+fn scrollbar_tracking_without_action_leaves_arrow_and_page_values_to_the_caller() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TrackControl")).unwrap();
+    let mut last_mem_error = loaded.last_mem_error();
+    let handle = with_test_controls!(loaded, |controls| ppc_new_control_record_values(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        controls,
+        PPC_MAIN_GWORLD,
+        (0, 0, 100, 16),
+        b"",
+        true,
+        12,
+        0,
+        25,
+        16,
+        0,
+    ));
+    assert_ne!(handle, 0);
+    let control = ppc_control_ptr(&mut loaded.memory, handle).unwrap();
+    // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80 and 5-91:
+    // Arrow/page actions belong to the caller; TrackControl only changes
+    // the value itself when tracking the scroll-box indicator.
+    for action in [0, u32::MAX] {
+        for (v, expected_part) in [(5, 20), (95, 21), (25, 22), (75, 23)] {
+            loaded.cpu.gpr[3] = handle;
+            loaded.cpu.gpr[4] = (v << 16) | 8;
+            loaded.cpu.gpr[5] = action;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TrackControl),
+            );
+            assert_eq!(loaded.cpu.gpr[3], expected_part);
+            assert_eq!(
+                loaded
+                    .memory
+                    .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET),
+                Some(12)
+            );
+        }
+    }
+}
+
+
+#[test]
+fn dialog_scrollbar_tracking_changes_the_value_for_arrow_clicks() {
     let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
     let mut last_mem_error = loaded.last_mem_error();
     let handle = with_test_controls!(loaded, |controls| ppc_new_control_record_values(
