@@ -79,7 +79,7 @@ pub struct WorkerMachine {
 impl WorkerMachine {
     #[wasm_bindgen(js_name = runtimeProtocolVersion)]
     pub fn runtime_protocol_version() -> u32 {
-        4
+        5
     }
 
     #[wasm_bindgen(js_name = create)]
@@ -157,6 +157,7 @@ impl WorkerMachine {
         output_scale: u32,
         force_render: bool,
         indexed_render: bool,
+        compact_render: bool,
     ) -> Object {
         self.machine.set_output_scale(output_scale);
         self.machine
@@ -170,33 +171,44 @@ impl WorkerMachine {
         let logical_size = self.machine.screen_size();
         let should_render = gpu_frame.is_none()
             && (frame_result.visual_work || !self.painted_once || debug || force_render);
-        let indexed_frame = if should_render && indexed_render && !debug {
+        let output_scale = output_scale.clamp(1, 4);
+        let compact_frame = if should_render && compact_render && !debug {
+            self.machine
+                .render_compact()
+                .map(|frame| compact_frame_object(frame, output_scale))
+        } else {
+            None
+        };
+        let indexed_frame = if should_render && compact_frame.is_none() && indexed_render && !debug
+        {
             self.machine.render_indexed().map(indexed_frame_object)
         } else {
             None
         };
-        let frame = (should_render && indexed_frame.is_none()).then(|| {
-            self.painted_once = true;
-            let stats = debug.then_some(DebugOverlayFrameStats {
-                host_fps: None,
-                frame_ms: None,
-                guest_mips: None,
-                guest_ticks_per_sec: None,
-                ticks_behind: Some(counters.ticks_behind),
-                last_steps: Some(counters.last_steps),
-                cpu_budget_ms: Some(counters.cpu_budget_ms),
-                audio_queue_ms: counters.audio_queue_ms,
+        let frame =
+            (should_render && indexed_frame.is_none() && compact_frame.is_none()).then(|| {
+                self.painted_once = true;
+                let stats = debug.then_some(DebugOverlayFrameStats {
+                    host_fps: None,
+                    frame_ms: None,
+                    guest_mips: None,
+                    guest_ticks_per_sec: None,
+                    ticks_behind: Some(counters.ticks_behind),
+                    last_steps: Some(counters.last_steps),
+                    cpu_budget_ms: Some(counters.cpu_budget_ms),
+                    audio_queue_ms: counters.audio_queue_ms,
+                });
+                Uint8Array::from(self.machine.render_rgba(stats).1)
             });
-            Uint8Array::from(self.machine.render_rgba(stats).1)
-        });
-        if indexed_frame.is_some() {
+        if indexed_frame.is_some() || compact_frame.is_some() {
             self.painted_once = true;
         }
-        let (width, height) = if frame.is_some() || indexed_frame.is_some() {
-            self.machine.presented_size()
-        } else {
-            logical_size
-        };
+        let (width, height) =
+            if frame.is_some() || indexed_frame.is_some() || compact_frame.is_some() {
+                self.machine.presented_size()
+            } else {
+                logical_size
+            };
         let audio = Uint8Array::from(self.machine.take_worker_audio().as_slice());
 
         let result = Object::new();
@@ -228,6 +240,13 @@ impl WorkerMachine {
         let _ = Reflect::set(result.as_ref(), &JsValue::from_str("audio"), audio.as_ref());
         if let Some(frame) = frame {
             let _ = Reflect::set(result.as_ref(), &JsValue::from_str("frame"), frame.as_ref());
+        }
+        if let Some(frame) = compact_frame {
+            let _ = Reflect::set(
+                result.as_ref(),
+                &JsValue::from_str("compactFrame"),
+                frame.as_ref(),
+            );
         }
         if let Some(frame) = indexed_frame {
             let _ = Reflect::set(
@@ -499,4 +518,31 @@ fn indexed_frame_object(frame: &crate::indexed_frame::IndexedFrame) -> Object {
         let _ = Reflect::set(&result, &JsValue::from_str("cursor"), &patch);
     }
     result
+}
+
+fn compact_frame_object(
+    frame: &systemless::memory::CompactPresentation,
+    output_scale: u32,
+) -> Object {
+    let packet = Object::new();
+    set_string(&packet, "kind", "compact");
+    set_bool(&packet, "complete", true);
+    set_number(&packet, "width", f64::from(frame.width * output_scale));
+    set_number(&packet, "height", f64::from(frame.height * output_scale));
+    let compact = Object::new();
+    set_number(&compact, "width", f64::from(frame.width));
+    set_number(&compact, "height", f64::from(frame.height));
+    set_number(&compact, "scale", f64::from(frame.scale));
+    let _ = Reflect::set(
+        &compact,
+        &JsValue::from_str("cells"),
+        &js_sys::Uint32Array::from(frame.cells.as_slice()),
+    );
+    let _ = Reflect::set(
+        &compact,
+        &JsValue::from_str("detail"),
+        &js_sys::Uint32Array::from(frame.detail.as_slice()),
+    );
+    let _ = Reflect::set(&packet, &JsValue::from_str("compact"), &compact);
+    packet
 }

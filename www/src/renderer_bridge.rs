@@ -45,7 +45,7 @@ export function paintSystemlessRenderer(handle, width, height, pixels) {
   else handle.pending = { width, height, pixels };
 }
 
-export function paintSystemlessIndexed(handle, frame) {
+export function paintSystemlessPacket(handle, frame) {
   handle.client?.paintPacket(frame);
 }
 
@@ -75,8 +75,8 @@ extern "C" {
         -> Result<JsValue, JsValue>;
     #[wasm_bindgen(js_name = paintSystemlessRenderer)]
     pub fn paint_renderer(handle: &JsValue, width: u32, height: u32, pixels: &Uint8Array);
-    #[wasm_bindgen(js_name = paintSystemlessIndexed)]
-    pub fn paint_indexed(handle: &JsValue, frame: &JsValue);
+    #[wasm_bindgen(js_name = paintSystemlessPacket)]
+    pub fn paint_packet(handle: &JsValue, frame: &JsValue);
     #[wasm_bindgen(js_name = systemlessRendererStatus)]
     pub fn renderer_status(handle: &JsValue) -> JsValue;
     #[wasm_bindgen(js_name = takeSystemlessRendererRecovery)]

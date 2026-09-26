@@ -24,7 +24,7 @@ function clientFixture({ unavailable = false, transferFails = false } = {}) {
       transferControlToOffscreen() { if (transferFails) throw new Error('cannot transfer'); this.transferred = true; return { offscreen: true }; },
       remove() { parent.children = parent.children.filter(node => node !== this); } };
   } };
-  const context = vm.createContext({ Uint8Array, ArrayBuffer, document,
+  const context = vm.createContext({ Uint8Array, Uint32Array, ArrayBuffer, document,
     performance: { now: () => now },
     window: { addEventListener: (name, cb) => listeners.set(name, cb), removeEventListener: name => listeners.delete(name) },
     setInterval: callback => { intervals.set(++timerId, callback); return timerId; }, clearInterval: id => intervals.delete(id),

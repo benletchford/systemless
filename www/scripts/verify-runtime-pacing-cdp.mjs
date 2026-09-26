@@ -374,7 +374,7 @@ function runtimeTracePrelude() {
             cpuBudgetMs: data.cpuBudgetMs,
             audioQueueMs: data.audioQueueMs,
             visualWork: data.visualWork,
-            painted: !!(data.frame || data.gpuFrame || data.indexedFrame),
+            painted: !!(data.frame || data.gpuFrame || data.indexedFrame || data.compactFrame),
           });
           if (workerTrace.length > 6000) workerTrace.splice(0, workerTrace.length - 6000);
         });

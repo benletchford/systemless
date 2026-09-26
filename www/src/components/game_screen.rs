@@ -1618,7 +1618,7 @@ mod tests {
             frame: None,
             js_frame: None,
             gpu_frame: None,
-            indexed_frame: None,
+            owned_frame: None,
             running: true,
             requests: super::WorkerFrameRequests::default(),
         };
@@ -1658,7 +1658,7 @@ mod tests {
             frame: None,
             js_frame: None,
             gpu_frame: None,
-            indexed_frame: None,
+            owned_frame: None,
             running: true,
             requests: super::WorkerFrameRequests::default(),
         };
@@ -1668,22 +1668,22 @@ mod tests {
         );
         super::replace_worker_visual_frame(
             &mut state,
-            super::WorkerVisualFrame::Indexed(wasm_bindgen::JsValue::NULL),
+            super::WorkerVisualFrame::Owned(wasm_bindgen::JsValue::NULL),
         );
         assert!(state.frame.is_none());
         assert!(matches!(
             super::take_worker_visual_frame(&mut state),
-            Some(super::WorkerVisualFrame::Indexed(_))
+            Some(super::WorkerVisualFrame::Owned(_))
         ));
         super::replace_worker_visual_frame(
             &mut state,
-            super::WorkerVisualFrame::Indexed(wasm_bindgen::JsValue::NULL),
+            super::WorkerVisualFrame::Owned(wasm_bindgen::JsValue::NULL),
         );
         super::replace_worker_visual_frame(
             &mut state,
             super::WorkerVisualFrame::Software(1, 1, vec![255; 4]),
         );
-        assert!(state.indexed_frame.is_none());
+        assert!(state.owned_frame.is_none());
         assert!(matches!(
             super::take_worker_visual_frame(&mut state),
             Some(super::WorkerVisualFrame::Software(_, _, _))
@@ -1699,7 +1699,7 @@ mod tests {
             frame: Some((640, 480, vec![1, 2, 3, 4])),
             js_frame: None,
             gpu_frame: None,
-            indexed_frame: None,
+            owned_frame: None,
             running: true,
             requests: super::WorkerFrameRequests::default(),
         };
@@ -2048,7 +2048,7 @@ struct WorkerFrameState {
     // without copying through Wasm memory first.
     js_frame: Option<(u32, u32, Uint8Array)>,
     gpu_frame: Option<JsValue>,
-    indexed_frame: Option<JsValue>,
+    owned_frame: Option<JsValue>,
     running: bool,
     requests: WorkerFrameRequests<Object>,
 }
@@ -2095,7 +2095,7 @@ impl<T> WorkerFrameRequests<T> {
 
 enum WorkerVisualFrame {
     Gpu(JsValue),
-    Indexed(JsValue),
+    Owned(JsValue),
     Software(u32, u32, Vec<u8>),
     SoftwareJs(u32, u32, Uint8Array),
 }
@@ -2103,13 +2103,13 @@ enum WorkerVisualFrame {
 fn replace_worker_visual_frame(state: &mut WorkerFrameState, frame: WorkerVisualFrame) {
     // Catch-up completions can arrive before the next paint. Keep only the
     // newest result, including when debug mode changes the rendering backend.
-    state.indexed_frame = None;
+    state.owned_frame = None;
     match frame {
-        WorkerVisualFrame::Indexed(frame) => {
+        WorkerVisualFrame::Owned(frame) => {
             state.frame = None;
             state.js_frame = None;
             state.gpu_frame = None;
-            state.indexed_frame = Some(frame);
+            state.owned_frame = Some(frame);
         }
         WorkerVisualFrame::Gpu(frame) => {
             state.frame = None;
@@ -2130,8 +2130,8 @@ fn replace_worker_visual_frame(state: &mut WorkerFrameState, frame: WorkerVisual
 }
 
 fn take_worker_visual_frame(state: &mut WorkerFrameState) -> Option<WorkerVisualFrame> {
-    if let Some(frame) = state.indexed_frame.take() {
-        Some(WorkerVisualFrame::Indexed(frame))
+    if let Some(frame) = state.owned_frame.take() {
+        Some(WorkerVisualFrame::Owned(frame))
     } else if let Some(frame) = state.gpu_frame.take() {
         Some(WorkerVisualFrame::Gpu(frame))
     } else if let Some((width, height, pixels)) = state.js_frame.take() {
@@ -2250,7 +2250,7 @@ fn halt_worker(
     state.requests = WorkerFrameRequests::default();
     state.frame = None;
     state.js_frame = None;
-    state.indexed_frame = None;
+    state.owned_frame = None;
     state.gpu_frame = None;
 }
 
@@ -2311,7 +2311,7 @@ impl WorkerRuntime {
         state.requests = WorkerFrameRequests::default();
         state.frame = None;
         state.js_frame = None;
-        state.indexed_frame = None;
+        state.owned_frame = None;
         state.gpu_frame = None;
     }
 
@@ -2429,7 +2429,7 @@ async fn boot_catalogue_worker(
         "generation",
         &JsValue::from_f64(generation as f64),
     );
-    set_js_property(&message, "protocolVersion", &JsValue::from_f64(4.0));
+    set_js_property(&message, "protocolVersion", &JsValue::from_f64(5.0));
     set_js_property(&message, "moduleUrl", &JsValue::from_str(&module_url));
     set_js_property(&message, "wasmUrl", &JsValue::from_str(&wasm_url));
     set_js_property(&message, "gameBytes", bytes.buffer().as_ref());
@@ -2495,7 +2495,7 @@ async fn boot_catalogue_worker(
         frame: None,
         js_frame: None,
         gpu_frame: None,
-        indexed_frame: None,
+        owned_frame: None,
         running: true,
         requests: WorkerFrameRequests::default(),
     }));
@@ -2626,7 +2626,13 @@ async fn boot_catalogue_worker(
         if let Ok(frame) = Reflect::get(&data, &JsValue::from_str("indexedFrame")) {
             if !frame.is_undefined() {
                 state.output_scale = 1;
-                replace_worker_visual_frame(&mut state, WorkerVisualFrame::Indexed(frame));
+                replace_worker_visual_frame(&mut state, WorkerVisualFrame::Owned(frame));
+            }
+        }
+        if let Ok(frame) = Reflect::get(&data, &JsValue::from_str("compactFrame")) {
+            if !frame.is_undefined() {
+                state.output_scale = js_number_property(&data, "outputScale").unwrap_or(1.0) as u32;
+                replace_worker_visual_frame(&mut state, WorkerVisualFrame::Owned(frame));
             }
         }
         let running = state.running;
@@ -2755,10 +2761,13 @@ fn start_worker_render_loop(
             take_worker_visual_frame(&mut state)
         };
         match visual_frame {
-            Some(WorkerVisualFrame::Indexed(frame)) => {
+            Some(WorkerVisualFrame::Owned(frame)) => {
                 let width = js_number_property(&frame, "width").unwrap_or(1.0) as u32;
                 let height = js_number_property(&frame, "height").unwrap_or(1.0) as u32;
-                let _ = canvas.set_attribute("data-output-scale", "1");
+                let _ = canvas.set_attribute(
+                    "data-output-scale",
+                    &runtime.state.borrow().output_scale.to_string(),
+                );
                 if canvas.width() != width {
                     canvas.set_width(width);
                 }
@@ -2766,7 +2775,7 @@ fn start_worker_render_loop(
                     canvas.set_height(height);
                 }
                 sync_canvas_aspect(&canvas, width, height);
-                renderer.paint_indexed(&frame);
+                renderer.paint_owned(&frame);
             }
             Some(WorkerVisualFrame::Gpu(frame)) => {
                 let _ = canvas.set_attribute("data-output-scale", "1");
@@ -2821,7 +2830,8 @@ fn start_worker_render_loop(
                 callback();
             }
         }
-        let indexed_render = renderer.supports_indexed();
+        let indexed_render = renderer.supports_packet("indexed8");
+        let compact_render = renderer.supports_packet("compact");
         let force_snapshot = renderer.needs_snapshot();
         let presentation_pending = renderer.pending();
         // A stopped guest can still lose its offscreen context. Keep polling
@@ -2841,6 +2851,11 @@ fn start_worker_render_loop(
                 &message,
                 "indexedRender",
                 &JsValue::from_bool(indexed_render),
+            );
+            set_js_property(
+                &message,
+                "compactRender",
+                &JsValue::from_bool(compact_render),
             );
             let scale = canvas_backing_scale(&canvas);
             let logical = (canvas.width() / scale, canvas.height() / scale);

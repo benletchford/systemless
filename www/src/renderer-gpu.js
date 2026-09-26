@@ -1,6 +1,6 @@
 // Pure presentation of complete owned images. Composition, cursor/retained
 // detail preparation and guest-visible writes remain on the execution owner.
-export const GPU_PRESENTER_PROTOCOL = 2;
+export const GPU_PRESENTER_PROTOCOL = 3;
 
 // CompactPresentation cells/detail are semantic u32 values. Upload little-endian
 // bytes explicitly on uncommon big-endian hosts; normal hosts can use a view.

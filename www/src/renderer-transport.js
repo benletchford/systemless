@@ -1,3 +1,7 @@
+function packetViews(packet) {
+  return [packet?.pixels, packet?.palette, packet?.cursor?.pixels, packet?.compact?.cells, packet?.compact?.detail].filter(Boolean);
+}
+
 // One renderer submission in the browser's message queue and one newest owned
 // pending complete frame. This transport never coalesces incremental packets.
 export class RendererTransport {
@@ -17,34 +21,38 @@ export class RendererTransport {
   submit(packet) {
     if (this.closed) return false;
     const indexed = packet?.kind === "indexed8";
-    if ((!indexed && packet?.kind !== "rgba") || packet.complete !== true
+    const compact = packet?.kind === "compact";
+    const validPixels = compact
+      ? packet.compact?.cells instanceof Uint32Array && packet.compact.cells.length > 0
+        && packet.compact.cells.buffer instanceof ArrayBuffer
+        && packet.compact.detail instanceof Uint32Array && packet.compact.detail.buffer instanceof ArrayBuffer
+      : packet?.pixels instanceof Uint8Array && packet.pixels.buffer instanceof ArrayBuffer && packet.pixels.byteLength > 0;
+    if ((!indexed && !compact && packet?.kind !== "rgba") || packet.complete !== true
         || (indexed && (!(packet.palette instanceof Uint8Array)
           || !(packet.palette.buffer instanceof ArrayBuffer) || packet.palette.byteLength !== 1024))
-        || !(packet.pixels instanceof Uint8Array) || !(packet.pixels.buffer instanceof ArrayBuffer)
-        || !packet.pixels.byteLength || !Number.isSafeInteger(packet.sequence) || packet.sequence <= this.sequence) {
+        || !validPixels || !Number.isSafeInteger(packet.sequence) || packet.sequence <= this.sequence) {
       this.fail(new Error("Renderer transport requires ordered complete image packets"));
       return false;
     }
     this.sequence = packet.sequence;
     if (this.inFlight) {
-      this.recycle(this.pending?.pixels.buffer);
-      this.recycle(this.pending?.palette?.buffer);
-      this.recycle(this.pending?.cursor?.pixels?.buffer);
+      for (const view of packetViews(this.pending)) this.recycle(view.buffer);
       this.pending = packet;
     } else this.send(packet);
     return !this.closed;
   }
 
   send(packet) {
+    const views = packetViews(packet);
     this.inFlight = { sequence: packet.sequence, sentAt: this.now(), kind: packet.kind,
-      bytes: packet.pixels.byteLength + (packet.palette?.byteLength || 0) + (packet.cursor?.pixels?.byteLength || 0) };
+      bytes: views.reduce((bytes, view) => bytes + view.byteLength, 0) };
     try {
-      this.endpoint.postMessage({ ...packet, ...this.identity, type: "frame", protocolVersion: 2 },
-        [...new Set([packet.pixels.buffer, packet.palette?.buffer, packet.cursor?.pixels?.buffer].filter(Boolean))]);
+      this.endpoint.postMessage({ ...packet, ...this.identity, type: "frame", protocolVersion: 3 },
+        [...new Set(views.map(view => view.buffer))]);
     } catch (error) {
       // A failed structured clone normally retains ownership. Return the newest
       // available complete frame to fallback; never reboot the execution owner.
-      if (packet.pixels.byteLength) this.pending = packet;
+      if (views.some(view => view.byteLength)) this.pending = packet;
       this.fail(error);
     }
   }
@@ -52,7 +60,7 @@ export class RendererTransport {
   receive(message) {
     if (this.closed || message?.generation !== this.identity.generation
         || message.rendererGeneration !== this.identity.rendererGeneration) return;
-    if (message.protocolVersion !== 2) {
+    if (message.protocolVersion !== 3) {
       this.fail(new Error("Renderer protocol mismatch"));
       return;
     }
@@ -68,6 +76,7 @@ export class RendererTransport {
     this.recycle(message.buffer);
     this.recycle(message.paletteBuffer);
     this.recycle(message.cursorBuffer);
+    this.recycle(message.detailBuffer);
     const next = this.pending;
     this.pending = null;
     if (next && !this.closed) this.send(next);

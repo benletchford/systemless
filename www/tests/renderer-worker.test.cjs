@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 const read = name => fs.readFileSync(path.join(__dirname, '../src', name), 'utf8');
-const identity = { generation: 7, rendererGeneration: 2, protocolVersion: 2 };
+const identity = { generation: 7, rendererGeneration: 2, protocolVersion: 3 };
 const frame = (sequence, fields = {}) => ({ ...identity, type: 'frame', kind: 'rgba', complete: true,
   sequence, guestTick: 100, displayGeneration: 1, width: 2, height: 1,
   pixels: new Uint8Array([sequence, 2, 3, 255, 4, 5, 6, 255]), ...fields });
@@ -19,12 +19,12 @@ function renderer(options = {}) {
       if (options.paintError) throw new Error('paint failed');
       paints.push([...image.data]);
     } }, addEventListener: (name, callback) => { listeners[name] = callback; } };
-  const context = vm.createContext({ Uint8Array, Uint8ClampedArray, ArrayBuffer, URL,
+  const context = vm.createContext({ Uint8Array, Uint8ClampedArray, Uint32Array, ArrayBuffer, URL,
     loadGpu: async url => {
       imports.push(url);
       if (options.loadGpu) return options.loadGpu();
-      return { GPU_PRESENTER_PROTOCOL: 2, GpuFramePresenter: class {
-        paint(frame) { paints.push([...frame.pixels]); }
+      return { GPU_PRESENTER_PROTOCOL: 3, GpuFramePresenter: class {
+        paint(frame) { paints.push([...(frame.pixels || frame.compact.cells)]); }
         dispose() { disposed = true; }
       } };
     },
@@ -43,7 +43,7 @@ function renderer(options = {}) {
 
 function transport(endpoint = { postMessage() {} }) {
   const failures = [], submitted = [];
-  const context = vm.createContext({ ArrayBuffer, Uint8Array, performance: { now: () => 50 } });
+  const context = vm.createContext({ ArrayBuffer, Uint8Array, Uint32Array, performance: { now: () => 50 } });
   vm.runInContext(read('renderer-transport.js').replace('export class', 'class') + '\nthis.Transport = RendererTransport;', context);
   const client = new context.Transport(endpoint, identity, {
     onFailure: (error, pending) => failures.push({ error: error.message, pending }),
@@ -164,7 +164,7 @@ test('malformed transport pixels fail through the recovery callback', () => {
 test('GPU boot reports capabilities and transfers complete padded indices with palette', async () => {
   const w = renderer({ gpu: true }); await w.initialized;
   assert.equal(w.messages[0].backend, 'offscreen-webgl');
-  assert.deepEqual(w.messages[0].kinds, ['rgba', 'indexed8']);
+  assert.deepEqual(w.messages[0].kinds, ['rgba', 'indexed8', 'compact']);
   assert.equal(w.imports[0], 'https://example.test/renderer-gpu.js?runtime=version');
   const indexed = frame(1, { kind: 'indexed8', stride: 3, pixels: new Uint8Array([1, 2, 99]), palette: new Uint8Array(1024) });
   await w.send(indexed); w.flush();
@@ -179,7 +179,7 @@ test('stop during GPU module import cannot initialize or revive a renderer', asy
   let resolve, constructed = 0;
   const w = renderer({ gpu: true, loadGpu: () => new Promise(done => { resolve = done; }) });
   await w.send({ ...identity, type: 'stop' });
-  resolve({ GPU_PRESENTER_PROTOCOL: 2, GpuFramePresenter: class { constructor() { constructed++; } } });
+  resolve({ GPU_PRESENTER_PROTOCOL: 3, GpuFramePresenter: class { constructor() { constructed++; } } });
   await w.initialized;
   assert.equal(constructed, 0); assert.deepEqual(w.messages.map(m => m.type), ['stopped']);
 });
@@ -211,4 +211,22 @@ test('indexed cursor pixels share frame ownership and return with the acknowledg
   await w.send(packet); w.flush();
   assert.equal(cursor.pixels.byteLength, 0);
   assert.deepEqual([...new Uint8Array(w.messages[1].cursorBuffer)], [11,22,33,255]);
+});
+
+
+test('compact frames preserve native words and return bounded cells/detail ownership', async () => {
+  const w = renderer({gpu:true}); await w.initialized;
+  const compact = {width:1,height:1,scale:2,cells:new Uint32Array([0x80000000]),detail:new Uint32Array([0x123456,0,0xffffff,0xabcdef])};
+  await w.send(frame(1,{kind:'compact',width:2,height:2,pixels:undefined,compact}));w.flush();
+  assert.deepEqual(w.paints,[[0x80000000]]);
+  assert.equal(compact.cells.byteLength,0);assert.equal(compact.detail.byteLength,0);
+  assert.equal(w.messages[1].detailBuffer.byteLength,16);
+  let sent;
+  const t=transport({postMessage(message,transfer){sent=structuredClone(message,{transfer});}});
+  const cells=new Uint32Array([0x123456]);
+  t.client.submit(frame(1,{kind:'compact',width:1,height:1,pixels:undefined,compact:{width:1,height:1,scale:1,cells,detail:new Uint32Array(0)}}));
+  assert.equal(cells.byteLength,0);assert.equal(sent.compact.cells[0],0x123456);
+  assert.equal(t.failures.length,0);
+  t.client.receive({...identity,type:'submitted',sequence:1,buffer:sent.compact.cells.buffer,detailBuffer:sent.compact.detail.buffer});
+  assert.equal(t.submitted[0].kind,'compact');assert.equal(t.submitted[0].bytes,4);assert.equal(t.client.recycled.length,1);
 });

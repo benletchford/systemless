@@ -8,7 +8,7 @@ let nextRendererGeneration = 0;
 export class RendererClient {
   constructor(logicalCanvas, workerUrl, generation, { backend = "canvas2d" } = {}) {
     this.logicalCanvas = logicalCanvas;
-    this.identity = { generation, rendererGeneration: ++nextRendererGeneration, protocolVersion: 2 };
+    this.identity = { generation, rendererGeneration: ++nextRendererGeneration, protocolVersion: 3 };
     this.phase = "booting";
     this.backend = null;
     this.kinds = ["rgba"];
@@ -83,7 +83,7 @@ export class RendererClient {
     if (this.phase === "failed" || this.phase === "disposed"
         || message?.generation !== this.identity.generation
         || message.rendererGeneration !== this.identity.rendererGeneration) return;
-    if (message.protocolVersion !== 2) return this.fail(new Error("Renderer protocol mismatch"));
+    if (message.protocolVersion !== 3) return this.fail(new Error("Renderer protocol mismatch"));
     if (message.type === "ready") {
       if (this.phase !== "booting" || !message.kinds?.includes("rgba")) {
         return this.fail(new Error("Invalid renderer capability reply"));
@@ -106,7 +106,7 @@ export class RendererClient {
     const { width, height } = frame;
     if (!this.kinds.includes(frame.kind)) { this.fail(new Error("Unsupported renderer packet kind")); return false; }
     if (this.phase === "failed" || this.phase === "disposed") return false;
-    const layout = `${frame.kind}:${frame.kind === "indexed8" ? frame.stride : width * 4}`;
+    const layout = frame.kind === "compact" ? `compact:${frame.compact.width}:${frame.compact.height}:${frame.compact.scale}` : `${frame.kind}:${frame.kind === "indexed8" ? frame.stride : width * 4}`;
     if (!this.dimensions || width !== this.dimensions[0] || height !== this.dimensions[1] || layout !== this.dimensions[2]) {
       this.displayGeneration++;
       this.dimensions = [width, height, layout];
