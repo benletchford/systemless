@@ -1441,6 +1441,19 @@ pub(super) fn ppc_draw_control_inner(
     let owner = memory
         .read_u32_be(control + PPC_CONTROL_OWNER_OFFSET)
         .unwrap_or(0);
+    // The screen ports are not windows and have no visibility flag.
+    if owner != 0
+        && !matches!(owner, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
+        && !ppc_window_is_visible(memory, owner)
+    {
+        // Controls in an invisible window draw nothing onscreen; ShowWindow
+        // then generates an update event so the application draws the
+        // content region, controls included. Inside Macintosh: Macintosh
+        // Toolbox Essentials (1992), pp. 4-88 and 5-25. PPC drawing targets
+        // the shared front buffer, so Control Manager calls made before
+        // ShowWindow would otherwise paint onto the desktop.
+        return true;
+    }
     let Some((top, left, bottom, right)) = ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET)
     else {
         return false;
