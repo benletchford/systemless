@@ -7,6 +7,7 @@ const path = require('node:path');
 function worker(steps = () => 1, frameTicks = 6) {
   const keys = new Set();
   const frames = [];
+  const messages = [];
   let mouse = false;
   let releasedAt;
   let now = 0;
@@ -26,15 +27,17 @@ function worker(steps = () => 1, frameTicks = 6) {
     },
   };
   const context = vm.createContext({
-    self: { postMessage(message) { if (message.type === 'error') throw new Error(message.message); } },
+    self: { postMessage(message) { messages.push(message); } },
     stub,
     performance: { now: () => now },
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/emulator-worker.js'), 'utf8'), context);
   vm.runInContext('machine = stub', context);
   return {
-    send: (type, fields = {}) => context.self.onmessage({ data: { type, ...fields } }),
+    send: (type, fields = {}) => context.self.onmessage({ data: { type, generation: 0, ...fields } }),
     frames,
+    messages,
+    override: fields => Object.assign(stub, fields),
     advance: ms => { now += ms; },
     setTick: tick => { guestTick = tick; },
     halt: () => { running = false; },
@@ -183,4 +186,43 @@ test('tracking still gives new input a guest slice before releasing it', async (
   await w.send('frame');
   await w.send('frame');
   assert.deepEqual(w.frames.map(f => f.keys), [[], [53], [53], []]);
+});
+
+
+test('stale generation commands cannot affect the current runtime', async () => {
+  const w = worker();
+  await w.send('keyDown', { generation: 99, macKey: 37 });
+  await w.send('frame', { generation: 99 });
+  await w.send('frame');
+  assert.deepEqual(w.frames.map(f => f.keys), [[]]);
+  assert.equal(w.messages.length, 1);
+  assert.equal(w.messages[0].generation, 0);
+});
+
+test('completed frames have monotonic sequence IDs even with frozen guest ticks', async () => {
+  const w = worker(() => 1, 0);
+  await w.send('frame');
+  await w.send('frame');
+  assert.deepEqual(w.messages.map(m => m.sequence), [1, 2]);
+  assert.deepEqual(w.messages.map(m => m.guestTick), [0, 0]);
+});
+
+test('a failed runtime frame stops execution without retrying guest work', async () => {
+  const w = worker(() => { throw new Error('guest failure'); });
+  await w.send('frame');
+  await w.send('frame');
+  assert.equal(w.frames.length, 1);
+  assert.equal(w.messages[0].type, 'error');
+  assert.equal(w.messages[0].fatal, true);
+  assert.match(w.messages[0].message, /guest failure/);
+});
+
+test('a save command failure remains visible without stopping gameplay', async () => {
+  const w = worker();
+  w.override({ importSave() { throw new Error('invalid save'); } });
+  await w.send('importSave', { bytes: new Uint8Array() });
+  await w.send('frame');
+  assert.equal(w.messages[0].fatal, false);
+  assert.equal(w.messages[0].operation, 'importSave');
+  assert.equal(w.messages[1].type, 'frame');
 });

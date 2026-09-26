@@ -94,31 +94,49 @@ export function systemlessRuntimeAssets() {
   return moduleUrl && wasmUrl ? [moduleUrl, wasmUrl] : [];
 }
 
-export function bootSystemlessWorker(worker, message, transfer, timeoutMs) {
+const workerBootCancellation = new WeakMap();
+
+export function cancelSystemlessWorker(worker) {
+  workerBootCancellation.get(worker)?.();
+  worker.terminate();
+}
+
+export function bootSystemlessWorker(worker, message, transfer, timeoutMs, onProgress) {
   return new Promise((resolve, reject) => {
+    let settled = false;
     const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      workerBootCancellation.delete(worker);
       worker.onmessage = null;
       worker.onerror = null;
       worker.onmessageerror = null;
       callback(value);
     };
     const timer = setTimeout(
-      () => finish(reject, new Error("PowerPC worker startup timed out")),
+      () => finish(reject, new Error("Runtime worker startup timed out")),
       timeoutMs,
     );
+    workerBootCancellation.set(worker, () => finish(reject, new Error("Runtime worker startup cancelled")));
     worker.onmessage = (event) => {
       const data = event.data || {};
-      if (data.type === "ready") finish(resolve, data);
-      else if (data.type === "error") {
-        finish(reject, new Error(data.message || "PowerPC worker startup failed"));
+      if (data.generation !== message.generation) return;
+      if (data.protocolVersion !== message.protocolVersion) {
+        finish(reject, new Error("Runtime worker assets use an incompatible protocol"));
+      } else if (data.type === "ready") {
+        finish(resolve, data);
+      } else if (data.type === "progress") {
+        onProgress(data.progress);
+      } else if (data.type === "error") {
+        finish(reject, new Error(data.message || "Runtime worker startup failed"));
       }
     };
     worker.onerror = (event) => {
-      finish(reject, new Error(event.message || "PowerPC worker failed to load"));
+      finish(reject, new Error(event.message || "Runtime worker failed to load"));
     };
     worker.onmessageerror = () => {
-      finish(reject, new Error("PowerPC worker returned an unreadable message"));
+      finish(reject, new Error("Runtime worker returned an unreadable message"));
     };
     try {
       worker.postMessage(message, transfer);
@@ -127,6 +145,7 @@ export function bootSystemlessWorker(worker, message, transfer, timeoutMs) {
     }
   });
 }
+
 "#)]
 extern "C" {
     #[wasm_bindgen(js_name = prefetchArchive)]
@@ -137,11 +156,14 @@ extern "C" {
     pub fn fetch_archive_in_worker(url: &str) -> Result<js_sys::Promise, JsValue>;
     #[wasm_bindgen(js_name = systemlessRuntimeAssets)]
     pub fn systemless_runtime_assets() -> Array;
+    #[wasm_bindgen(js_name = cancelSystemlessWorker)]
+    pub fn cancel_systemless_worker(worker: &Worker);
     #[wasm_bindgen(js_name = bootSystemlessWorker)]
     pub fn boot_systemless_worker(
         worker: &Worker,
         message: &Object,
         transfer: &Array,
         timeout_ms: u32,
+        on_progress: &js_sys::Function,
     ) -> js_sys::Promise;
 }

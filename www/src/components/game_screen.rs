@@ -18,12 +18,13 @@ use web_sys::{
 };
 
 use crate::browser_bridge::{
-    boot_systemless_worker, fetch_archive_in_worker, prefetch_archive, prefetched_archive,
-    systemless_runtime_assets,
+    boot_systemless_worker, cancel_systemless_worker, fetch_archive_in_worker, prefetch_archive,
+    prefetched_archive, systemless_runtime_assets,
 };
 use crate::catalogue::{Game, GameArchitecture, GamePlugin, MobileControlButton, MobileControls};
 use crate::emulator::{
-    BootProgress, FrameRunResult, Machine, PerfCounters, PluginFile, WebAudioBackend,
+    AudioBootstrap, BootProgress, FrameRunResult, Machine, PerfCounters, PluginFile,
+    WebAudioBackend,
 };
 use crate::paths::asset_path;
 use crate::save_store::{self, DownloadableSaveFile};
@@ -225,7 +226,7 @@ impl RuntimeHandle {
                 );
                 set_js_property(&message, "macKey", &JsValue::from_f64(mac_key as f64));
                 set_js_property(&message, "charCode", &JsValue::from_f64(char_code as f64));
-                let _ = runtime.worker.post_message(message.as_ref());
+                let _ = runtime.post(&message);
             }
         }
     }
@@ -261,8 +262,23 @@ fn GameRuntime(
     // requires Send + Sync even in CSR mode.
     let alive: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
     let alive_for_cleanup = alive.clone();
+    let pending_worker = StoredValue::new_local(Rc::new(RefCell::new(None::<Worker>)));
+    let runtime_cleanup = StoredValue::new_local(machine_handle.clone());
+    let audio_bootstrap = crate::emulator::prepare_audio_for_boot();
+    let audio_cleanup = StoredValue::new_local(audio_bootstrap.clone());
     on_cleanup(move || {
         alive_for_cleanup.store(false, Ordering::Relaxed);
+        audio_cleanup.try_with_value(|bootstrap| bootstrap.borrow_mut().take());
+        pending_worker.try_with_value(|slot| {
+            if let Some(worker) = slot.borrow_mut().take() {
+                cancel_systemless_worker(&worker);
+            }
+        });
+        runtime_cleanup.try_with_value(|handle| {
+            if let Some(RuntimeHandle::Worker(runtime)) = handle.borrow_mut().take() {
+                runtime.stop();
+            }
+        });
     });
 
     let machine_handle_for_effect = machine_handle.clone();
@@ -285,29 +301,30 @@ fn GameRuntime(
         let runtime_pacing = game.settings.runtime_pacing;
         let selected_plugin_ids = selected_plugin_ids_for_effect.clone();
         let alive = alive.clone();
+        let audio_bootstrap = audio_bootstrap.clone();
         machine_ready.set(false);
         *machine_handle_for_effect.borrow_mut() = None;
         let machine_handle_for_task = machine_handle_for_effect.clone();
         attach_debug_toggle(&canvas, alive.clone(), debug_visible);
         spawn_local(async move {
-            status.set("Fetching game\u{2026}".into());
+            set_status(status, "Fetching game\u{2026}".into());
             let bytes = match fetch_bytes(&primary_url, |received, total| {
-                status.set(fetch_status(received, total));
+                set_status(status, fetch_status(received, total));
             })
             .await
             {
                 Ok(b) => b,
                 Err(primary_error) => match fallback_url.as_deref() {
                     Some(url) => {
-                        status.set("Fetching game\u{2026}".into());
+                        set_status(status, "Fetching game\u{2026}".into());
                         match fetch_bytes(url, |received, total| {
-                            status.set(fetch_status(received, total));
+                            set_status(status, fetch_status(received, total));
                         })
                         .await
                         {
                             Ok(b) => b,
                             Err(fallback_error) => {
-                                status.set(format!(
+                                set_status(status, format!(
                                     "Fetch failed: {primary_error}; fallback failed: {fallback_error}"
                                 ));
                                 return;
@@ -315,7 +332,7 @@ fn GameRuntime(
                         }
                     }
                     None => {
-                        status.set(format!("Fetch failed: {primary_error}"));
+                        set_status(status, format!("Fetch failed: {primary_error}"));
                         return;
                     }
                 },
@@ -331,7 +348,7 @@ fn GameRuntime(
             let plugin_files = match fetch_selected_plugins(&selected_plugins, status).await {
                 Ok(files) => files,
                 Err(error) => {
-                    status.set(format!("Plugin failed: {error}"));
+                    set_status(status, format!("Plugin failed: {error}"));
                     return;
                 }
             };
@@ -339,9 +356,24 @@ fn GameRuntime(
                 return;
             }
             if game.settings.worker && plugin_files.is_empty() {
-                status.set("Starting runtime worker\u{2026}".into());
-                match boot_catalogue_worker(&bytes, game, architecture, save_files).await {
+                set_status(status, "Starting runtime worker\u{2026}".into());
+                match boot_catalogue_worker(
+                    &bytes,
+                    game,
+                    architecture,
+                    save_files,
+                    status,
+                    pending_worker,
+                    alive.clone(),
+                    audio_bootstrap.clone(),
+                )
+                .await
+                {
                     Ok(runtime) => {
+                        if !alive.load(Ordering::Relaxed) {
+                            runtime.stop();
+                            return;
+                        }
                         let ready_canvas = canvas.clone();
                         let mark_runtime_ready = Box::new(move || {
                             let _ = ready_canvas.set_attribute("data-runtime-game-id", game.id);
@@ -350,7 +382,7 @@ fn GameRuntime(
                                 "data-runtime-cpu-mhz",
                                 &runtime_pacing.cpu_mhz.to_string(),
                             );
-                            status.set(String::new());
+                            set_status(status, String::new());
                         });
                         *machine_handle_for_task.borrow_mut() =
                             Some(RuntimeHandle::Worker(runtime.clone()));
@@ -383,16 +415,21 @@ fn GameRuntime(
                         );
                         return;
                     }
-                    Err(error) => status.set(format!(
-                        "PowerPC worker unavailable ({error}); starting compatible runtime\u{2026}"
-                    )),
+                    Err(error) => {
+                        if !alive.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let _ = canvas.set_attribute("data-runtime-fallback", &error);
+                        set_status(status, format!(
+                            "Runtime worker unavailable ({error}); starting compatible runtime\u{2026}"
+                        ));
+                    }
                 }
             }
-            crate::emulator::prepare_audio_for_boot();
-            status.set(format!(
-                "Preparing game data ({} KB)\u{2026}",
-                bytes.len() / 1024
-            ));
+            set_status(
+                status,
+                format!("Preparing game data ({} KB)\u{2026}", bytes.len() / 1024),
+            );
             yield_to_browser_frame().await;
             if !alive.load(Ordering::Relaxed) {
                 return;
@@ -409,13 +446,14 @@ fn GameRuntime(
                 remove_paths,
                 file_mappings,
                 runtime_pacing,
-                |progress| status.set(boot_progress_status(progress)),
+                &audio_bootstrap,
+                |progress| set_status(status, boot_progress_status(progress)),
             )
             .await
             {
                 Ok(m) => m,
                 Err(e) => {
-                    status.set(format!("Boot failed: {e}"));
+                    set_status(status, format!("Boot failed: {e}"));
                     return;
                 }
             };
@@ -446,7 +484,7 @@ fn GameRuntime(
                     "data-runtime-max-ticks-per-paint",
                     &runtime_max_ticks_per_paint,
                 );
-                status.set(String::new());
+                set_status(status, String::new());
             });
             let machine = Rc::new(RefCell::new(machine));
             *machine_handle_for_task.borrow_mut() = Some(RuntimeHandle::Local(machine.clone()));
@@ -1082,16 +1120,19 @@ async fn fetch_selected_plugins(
         }
         for (asset_index, install_asset) in plugin.install_assets.iter().enumerate() {
             let url = asset_path(install_asset.asset_path);
-            status.set(format!(
-                "Fetching plugin {}/{}: {} ({}/{})\u{2026}",
-                index + 1,
-                plugins.len(),
-                plugin.label,
-                asset_index + 1,
-                plugin.install_assets.len()
-            ));
+            set_status(
+                status,
+                format!(
+                    "Fetching plugin {}/{}: {} ({}/{})\u{2026}",
+                    index + 1,
+                    plugins.len(),
+                    plugin.label,
+                    asset_index + 1,
+                    plugin.install_assets.len()
+                ),
+            );
             let bytes = fetch_bytes(&url, |received, total| {
-                status.set(plugin_fetch_status(plugin.label, received, total));
+                set_status(status, plugin_fetch_status(plugin.label, received, total));
             })
             .await?;
             let file = save_store::decode_macbinary_save_file("", &bytes).map_err(|error| {
@@ -1118,6 +1159,11 @@ fn plugin_fetch_status(label: &str, received: usize, total: Option<usize>) -> St
         }
         None => format!("Fetching plugin: {label}\u{2026}"),
     }
+}
+
+fn set_status(status: RwSignal<String>, value: String) {
+    // Fetch/boot futures may finish after their component has been disposed.
+    let _ = status.try_set(value);
 }
 
 fn boot_progress_status(progress: BootProgress) -> String {
@@ -1927,20 +1973,129 @@ fn take_worker_visual_frame(state: &mut WorkerFrameState) -> Option<WorkerVisual
     }
 }
 
+thread_local! {
+    static WORKER_GENERATION: Cell<u32> = const { Cell::new(0) };
+}
+
+type PendingWorker = StoredValue<Rc<RefCell<Option<Worker>>>, LocalStorage>;
+
+struct WorkerRenderLoop {
+    callback: Rc<RefCell<Option<Closure<dyn FnMut()>>>>,
+    request: Rc<Cell<Option<i32>>>,
+}
+
+impl Drop for WorkerRenderLoop {
+    fn drop(&mut self) {
+        if let (Some(window), Some(request)) = (web_sys::window(), self.request.take()) {
+            let _ = window.cancel_animation_frame(request);
+        }
+        self.callback.borrow_mut().take();
+    }
+}
+
+fn schedule_worker_raf(
+    callback: &Rc<RefCell<Option<Closure<dyn FnMut()>>>>,
+    request: &Cell<Option<i32>>,
+) {
+    if let (Some(window), Some(callback)) = (web_sys::window(), callback.borrow().as_ref()) {
+        request.set(
+            window
+                .request_animation_frame(callback.as_ref().unchecked_ref())
+                .ok(),
+        );
+    }
+}
+
+struct WorkerInputListener {
+    target: web_sys::EventTarget,
+    event_name: &'static str,
+    callback: Closure<dyn FnMut(Event)>,
+}
+
+impl Drop for WorkerInputListener {
+    fn drop(&mut self) {
+        let _ = self.target.remove_event_listener_with_callback(
+            self.event_name,
+            self.callback.as_ref().unchecked_ref(),
+        );
+    }
+}
+
+fn halt_worker(
+    worker: &Worker,
+    state: &RefCell<WorkerFrameState>,
+    audio: &RefCell<Option<WebAudioBackend>>,
+    failed: &Cell<bool>,
+) {
+    failed.set(true);
+    worker.set_onmessage(None);
+    worker.terminate();
+    audio.borrow_mut().take();
+    let mut state = state.borrow_mut();
+    state.running = false;
+    state.requests = WorkerFrameRequests::default();
+    state.frame = None;
+    state.js_frame = None;
+    state.gpu_frame = None;
+}
+
 struct WorkerRuntime {
     worker: Worker,
+    generation: u32,
+    failed: Rc<Cell<bool>>,
+    status: RwSignal<String>,
+    listeners: RefCell<Vec<WorkerInputListener>>,
+    render_loop: RefCell<Option<WorkerRenderLoop>>,
     state: Rc<RefCell<WorkerFrameState>>,
     audio: Rc<RefCell<Option<WebAudioBackend>>>,
     _on_message: Closure<dyn FnMut(MessageEvent)>,
+    _on_error: Closure<dyn FnMut(Event)>,
+    _on_message_error: Closure<dyn FnMut(Event)>,
 }
 
 impl Drop for WorkerRuntime {
     fn drop(&mut self) {
-        self.worker.terminate();
+        self.stop();
     }
 }
 
 impl WorkerRuntime {
+    fn stop(&self) {
+        self.failed.set(true);
+        self.render_loop.borrow_mut().take();
+        self.worker.set_onmessage(None);
+        self.worker.set_onerror(None);
+        self.worker.set_onmessageerror(None);
+        self.worker.terminate();
+        self.listeners.borrow_mut().clear();
+        self.audio.borrow_mut().take();
+        let mut state = self.state.borrow_mut();
+        state.running = false;
+        state.requests = WorkerFrameRequests::default();
+        state.frame = None;
+        state.js_frame = None;
+        state.gpu_frame = None;
+    }
+
+    fn post(&self, message: &Object) -> Result<(), String> {
+        if self.failed.get() {
+            return Err("Runtime worker has stopped".into());
+        }
+        set_js_property(
+            message,
+            "generation",
+            &JsValue::from_f64(self.generation as f64),
+        );
+        self.worker.post_message(message.as_ref()).map_err(|error| {
+            self.failed.set(true);
+            let error = js_value_string(error);
+            let _ = self
+                .status
+                .try_set(format!("Runtime worker stopped: {error}"));
+            error
+        })
+    }
+
     fn import_save(&self, bytes: &[u8]) -> Result<(), String> {
         let bytes = Uint8Array::from(bytes);
         let message = Object::new();
@@ -1948,6 +2103,11 @@ impl WorkerRuntime {
         set_js_property(&message, "bytes", bytes.buffer().as_ref());
         let transfer = Array::new();
         transfer.push(bytes.buffer().as_ref());
+        set_js_property(
+            &message,
+            "generation",
+            &JsValue::from_f64(self.generation as f64),
+        );
         self.worker
             .post_message_with_transfer(message.as_ref(), &transfer)
             .map_err(js_value_string)
@@ -1957,9 +2117,7 @@ impl WorkerRuntime {
         let message = Object::new();
         set_js_property(&message, "type", &JsValue::from_str("deleteSave"));
         set_js_property(&message, "path", &JsValue::from_str(path));
-        self.worker
-            .post_message(message.as_ref())
-            .map_err(js_value_string)
+        self.post(&message)
     }
 }
 
@@ -1968,6 +2126,10 @@ async fn boot_catalogue_worker(
     game: &Game,
     architecture: GameArchitecture,
     save_files: RwSignal<Vec<DownloadableSaveFile>>,
+    status: RwSignal<String>,
+    pending_worker: PendingWorker,
+    alive: Arc<AtomicBool>,
+    audio_bootstrap: Rc<RefCell<Option<AudioBootstrap>>>,
 ) -> Result<Rc<WorkerRuntime>, String> {
     let assets = systemless_runtime_assets();
     if assets.length() != 2 {
@@ -1981,9 +2143,25 @@ async fn boot_catalogue_worker(
     let runtime_id = module_url.rsplit('/').next().unwrap_or("current");
     let worker_url = format!("/emulator-worker.js?runtime={runtime_id}");
     let worker = Worker::new(&worker_url).map_err(js_value_string)?;
+    pending_worker.try_with_value(|slot| *slot.borrow_mut() = Some(worker.clone()));
+    let generation = WORKER_GENERATION.with(|counter| {
+        let next = counter
+            .get()
+            .checked_add(1)
+            .expect("runtime generation exhausted");
+        counter.set(next);
+        next
+    });
+    // Transfer a JS copy, retaining the Rust archive for startup fallback.
     let bytes = Uint8Array::from(game_bytes);
     let message = Object::new();
     set_js_property(&message, "type", &JsValue::from_str("boot"));
+    set_js_property(
+        &message,
+        "generation",
+        &JsValue::from_f64(generation as f64),
+    );
+    set_js_property(&message, "protocolVersion", &JsValue::from_f64(1.0));
     set_js_property(&message, "moduleUrl", &JsValue::from_str(&module_url));
     set_js_property(&message, "wasmUrl", &JsValue::from_str(&wasm_url));
     set_js_property(&message, "gameBytes", bytes.buffer().as_ref());
@@ -2001,14 +2179,34 @@ async fn boot_catalogue_worker(
     set_js_property(&message, "config", &JsValue::from_str(&config.to_string()));
     let transfer = Array::new();
     transfer.push(bytes.buffer().as_ref());
-    let ready =
-        match JsFuture::from(boot_systemless_worker(&worker, &message, &transfer, 15_000)).await {
-            Ok(ready) => ready,
-            Err(error) => {
-                worker.terminate();
-                return Err(js_value_string(error));
-            }
-        };
+    let on_progress = Closure::wrap(Box::new(move |value: JsValue| {
+        if let Some(progress) = value
+            .as_string()
+            .and_then(|value| serde_json::from_str(&value).ok())
+        {
+            let _ = status.try_set(boot_progress_status(progress));
+        }
+    }) as Box<dyn FnMut(JsValue)>);
+    let ready = match JsFuture::from(boot_systemless_worker(
+        &worker,
+        &message,
+        &transfer,
+        15_000,
+        on_progress.as_ref().unchecked_ref(),
+    ))
+    .await
+    {
+        Ok(ready) => ready,
+        Err(error) => {
+            cancel_systemless_worker(&worker);
+            pending_worker.try_with_value(|slot| slot.borrow_mut().take());
+            return Err(js_value_string(error));
+        }
+    };
+    if !alive.load(Ordering::Relaxed) {
+        cancel_systemless_worker(&worker);
+        return Err("Runtime startup cancelled".into());
+    }
     if let Some(files) = downloadable_save_files_from_js(&ready) {
         save_files.set(files);
     }
@@ -2021,12 +2219,39 @@ async fn boot_catalogue_worker(
         running: true,
         requests: WorkerFrameRequests::default(),
     }));
-    let audio = Rc::new(RefCell::new(WebAudioBackend::new().await));
+    let audio = Rc::new(RefCell::new(
+        WebAudioBackend::from_bootstrap(&audio_bootstrap).await,
+    ));
+    if !alive.load(Ordering::Relaxed) {
+        cancel_systemless_worker(&worker);
+        return Err("Runtime startup cancelled".into());
+    }
+    pending_worker.try_with_value(|slot| slot.borrow_mut().take());
+    let failed = Rc::new(Cell::new(false));
+    let failed_for_message = failed.clone();
     let state_for_message = state.clone();
     let audio_for_message = audio.clone();
     let worker_for_message = worker.clone();
+    let last_sequence = Cell::new(0.0);
     let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
         let data = event.data();
+        if js_number_property(&data, "generation") != Some(generation as f64) {
+            return;
+        }
+        if js_string_property(&data, "type").as_deref() == Some("error") {
+            let message = js_string_property(&data, "message")
+                .unwrap_or_else(|| "Unknown worker error".into());
+            let _ = status.try_set(format!("Runtime worker: {message}"));
+            if js_bool_property(&data, "fatal").unwrap_or(true) {
+                halt_worker(
+                    &worker_for_message,
+                    &state_for_message,
+                    &audio_for_message,
+                    &failed_for_message,
+                );
+            }
+            return;
+        }
         if js_string_property(&data, "type").as_deref() == Some("saveFiles") {
             if let Some(files) = downloadable_save_files_from_js(&data) {
                 save_files.set(files);
@@ -2036,6 +2261,13 @@ async fn boot_catalogue_worker(
         if js_string_property(&data, "type").as_deref() != Some("frame") {
             return;
         }
+        let Some(sequence) = js_number_property(&data, "sequence") else {
+            return;
+        };
+        if sequence <= last_sequence.get() {
+            return;
+        }
+        last_sequence.set(sequence);
         let mut state = state_for_message.borrow_mut();
         state.running = js_bool_property(&data, "running").unwrap_or(false);
         if let Ok(audio_bytes) = Reflect::get(&data, &JsValue::from_str("audio")) {
@@ -2075,15 +2307,54 @@ async fn boot_catalogue_worker(
                 "queuedAudioSamples",
                 &JsValue::from_f64(worker_audio_queue_samples(&audio_for_message) as f64),
             );
-            let _ = worker_for_message.post_message(message.as_ref());
+            set_js_property(
+                &message,
+                "generation",
+                &JsValue::from_f64(generation as f64),
+            );
+            if let Err(error) = worker_for_message.post_message(message.as_ref()) {
+                let _ = status.try_set(format!(
+                    "Runtime worker stopped: {}",
+                    js_value_string(error)
+                ));
+                halt_worker(
+                    &worker_for_message,
+                    &state_for_message,
+                    &audio_for_message,
+                    &failed_for_message,
+                );
+            }
         }
     }) as Box<dyn FnMut(MessageEvent)>);
     worker.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+    let make_error_handler = |fallback: &'static str| {
+        let worker = worker.clone();
+        let state = state.clone();
+        let audio = audio.clone();
+        let failed = failed.clone();
+        Closure::wrap(Box::new(move |event: Event| {
+            let message =
+                js_string_property(event.as_ref(), "message").unwrap_or_else(|| fallback.into());
+            let _ = status.try_set(format!("Runtime worker stopped: {message}"));
+            halt_worker(&worker, &state, &audio, &failed);
+        }) as Box<dyn FnMut(Event)>)
+    };
+    let on_error = make_error_handler("Worker crashed");
+    let on_message_error = make_error_handler("Unreadable worker reply");
+    worker.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+    worker.set_onmessageerror(Some(on_message_error.as_ref().unchecked_ref()));
     Ok(Rc::new(WorkerRuntime {
         worker,
+        generation,
+        failed,
+        status,
+        listeners: RefCell::new(Vec::new()),
+        render_loop: RefCell::new(None),
         state,
         audio,
         _on_message: on_message,
+        _on_error: on_error,
+        _on_message_error: on_message_error,
     }))
 }
 
@@ -2095,6 +2366,11 @@ fn start_worker_render_loop(
     on_first_paint: Box<dyn FnOnce()>,
 ) {
     let Some(mut renderer) = CanvasFrame::new(&canvas, 640, 480) else {
+        set_status(
+            runtime.status,
+            "Unable to initialize the game display".into(),
+        );
+        runtime.stop();
         return;
     };
     let _ = canvas.set_attribute("data-render-backend", renderer.backend_name());
@@ -2103,13 +2379,21 @@ fn start_worker_render_loop(
         let message = Object::new();
         set_js_property(&message, "type", &JsValue::from_str("enableGpu"));
         set_js_property(&message, "enabled", &JsValue::TRUE);
-        let _ = runtime.worker.post_message(message.as_ref());
+        let _ = runtime.post(&message);
     }
     let callback_cell: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let callback_self = callback_cell.clone();
+    let request_id = Rc::new(Cell::new(None));
+    let request_for_callback = request_id.clone();
+    *runtime.render_loop.borrow_mut() = Some(WorkerRenderLoop {
+        callback: callback_cell.clone(),
+        request: request_id.clone(),
+    });
     let first_paint = Rc::new(RefCell::new(Some(on_first_paint)));
     *callback_cell.borrow_mut() = Some(Closure::wrap(Box::new(move || {
-        if !alive.load(Ordering::Relaxed) {
+        request_for_callback.set(None);
+        if !alive.load(Ordering::Relaxed) || runtime.failed.get() {
+            runtime.stop();
             *callback_self.borrow_mut() = None;
             return;
         }
@@ -2195,18 +2479,18 @@ fn start_worker_render_loop(
                 &JsValue::from_bool(debug_visible.get_untracked()),
             );
             if let Some(message) = state.requests.request(message) {
-                let _ = runtime.worker.post_message(message.as_ref());
+                let _ = runtime.post(&message);
             }
         }
         let running = state.running;
         drop(state);
         if running {
-            schedule_raf(&callback_self);
+            schedule_worker_raf(&callback_self, &request_for_callback);
         } else {
             *callback_self.borrow_mut() = None;
         }
     }) as Box<dyn FnMut()>));
-    schedule_raf(&callback_cell);
+    schedule_worker_raf(&callback_cell, &request_id);
 }
 
 fn worker_audio_queue_samples(audio: &RefCell<Option<WebAudioBackend>>) -> i32 {
@@ -2264,77 +2548,69 @@ fn attach_worker_input(
     mappings: &'static [(&'static str, &'static str)],
 ) {
     focus_canvas(canvas);
-    for (event_name, message_type) in [("mousedown", "mouseDown"), ("mouseup", "mouseUp")] {
+    for (event_name, message_type) in [
+        ("mousedown", "mouseDown"),
+        ("mouseup", "mouseUp"),
+        ("mousemove", "mouseMove"),
+        ("keydown", "keyDown"),
+        ("keyup", "keyUp"),
+    ] {
         let canvas_for_event = canvas.clone();
-        let runtime_for_event = runtime.clone();
+        let weak_runtime = Rc::downgrade(&runtime);
         let alive_for_event = alive.clone();
-        let callback = Closure::wrap(Box::new(move |event: MouseEvent| {
+        let callback = Closure::wrap(Box::new(move |event: Event| {
             if !alive_for_event.load(Ordering::Relaxed) {
                 return;
             }
-            if let Some((v, h)) = canvas_coords(&canvas_for_event, &event) {
+            let Some(runtime) = weak_runtime.upgrade() else {
+                return;
+            };
+            if runtime.failed.get() {
+                return;
+            }
+            let message = Object::new();
+            set_js_property(&message, "type", &JsValue::from_str(message_type));
+            if let Some(key) = event.dyn_ref::<KeyboardEvent>() {
+                let Some((mac_key, char_code)) = mapped_key(&key.key(), &key.code(), mappings)
+                else {
+                    return;
+                };
+                event.prevent_default();
+                set_js_property(&message, "macKey", &JsValue::from_f64(mac_key as f64));
+                set_js_property(&message, "charCode", &JsValue::from_f64(char_code as f64));
+            } else if let Some(mouse) = event.dyn_ref::<MouseEvent>() {
+                let Some((v, h)) = canvas_coords(&canvas_for_event, mouse) else {
+                    return;
+                };
                 if message_type == "mouseDown" {
                     focus_canvas(&canvas_for_event);
                 }
                 event.prevent_default();
-                runtime_for_event
-                    .audio
-                    .borrow_mut()
-                    .as_mut()
-                    .map(WebAudioBackend::resume);
-                let message = Object::new();
-                set_js_property(&message, "type", &JsValue::from_str(message_type));
                 set_js_property(&message, "v", &JsValue::from_f64(v as f64));
                 set_js_property(&message, "h", &JsValue::from_f64(h as f64));
-                let _ = runtime_for_event.worker.post_message(message.as_ref());
-            }
-        }) as Box<dyn FnMut(MouseEvent)>);
-        let _ =
-            canvas.add_event_listener_with_callback(event_name, callback.as_ref().unchecked_ref());
-        callback.forget();
-    }
-    let runtime_for_move = runtime.clone();
-    let canvas_for_move = canvas.clone();
-    let alive_for_move = alive.clone();
-    let mouse_move = Closure::wrap(Box::new(move |event: MouseEvent| {
-        if alive_for_move.load(Ordering::Relaxed) {
-            if let Some((v, h)) = canvas_coords(&canvas_for_move, &event) {
-                let message = Object::new();
-                set_js_property(&message, "type", &JsValue::from_str("mouseMove"));
-                set_js_property(&message, "v", &JsValue::from_f64(v as f64));
-                set_js_property(&message, "h", &JsValue::from_f64(h as f64));
-                let _ = runtime_for_move.worker.post_message(message.as_ref());
-            }
-        }
-    }) as Box<dyn FnMut(MouseEvent)>);
-    let _ =
-        canvas.add_event_listener_with_callback("mousemove", mouse_move.as_ref().unchecked_ref());
-    mouse_move.forget();
-
-    for (event_name, message_type) in [("keydown", "keyDown"), ("keyup", "keyUp")] {
-        let runtime_for_event = runtime.clone();
-        let alive_for_event = alive.clone();
-        let callback = Closure::wrap(Box::new(move |event: KeyboardEvent| {
-            if !alive_for_event.load(Ordering::Relaxed) {
+            } else {
                 return;
             }
-            if let Some((mac_key, char_code)) = mapped_key(&event.key(), &event.code(), mappings) {
-                event.prevent_default();
-                runtime_for_event
+            if message_type != "mouseMove" {
+                runtime
                     .audio
                     .borrow_mut()
                     .as_mut()
                     .map(WebAudioBackend::resume);
-                let message = Object::new();
-                set_js_property(&message, "type", &JsValue::from_str(message_type));
-                set_js_property(&message, "macKey", &JsValue::from_f64(mac_key as f64));
-                set_js_property(&message, "charCode", &JsValue::from_f64(char_code as f64));
-                let _ = runtime_for_event.worker.post_message(message.as_ref());
             }
-        }) as Box<dyn FnMut(KeyboardEvent)>);
-        let _ =
-            canvas.add_event_listener_with_callback(event_name, callback.as_ref().unchecked_ref());
-        callback.forget();
+            let _ = runtime.post(&message);
+        }) as Box<dyn FnMut(Event)>);
+        let target: web_sys::EventTarget = canvas.clone().unchecked_into();
+        if target
+            .add_event_listener_with_callback(event_name, callback.as_ref().unchecked_ref())
+            .is_ok()
+        {
+            runtime.listeners.borrow_mut().push(WorkerInputListener {
+                target,
+                event_name,
+                callback,
+            });
+        }
     }
 }
 
