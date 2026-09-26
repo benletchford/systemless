@@ -10,7 +10,9 @@ import {join} from 'node:path';
 const modules = new Set(['/renderer-gpu.js', '/renderer-worker.js', '/renderer-transport.js']);
 const profile=await mkdtemp(join(tmpdir(),'systemless-renderer-gpu-'));
 const server=createServer((req,res)=>{
- if(modules.has(req.url)){
+ if(req.url==='/compact-native.json'){
+  res.writeHead(200,{'content-type':'application/json'});createReadStream(new URL('../tests/fixtures/compact-native.json',import.meta.url)).pipe(res);
+ }else if(modules.has(req.url)){
   res.writeHead(200,{'content-type':'text/javascript'});createReadStream(new URL('../src' + req.url, import.meta.url)).pipe(res);
  }else{res.writeHead(200,{'content-type':'text/html'});res.end('<!doctype html><title>Renderer differential probe</title>');}
 });
@@ -66,8 +68,45 @@ async function exercise(){
     }
    }
   }
+  let compactCases=0;
+  const vectors = await (await fetch(base + '/compact-native.json')).json();
+  for(const source of vectors) for(const output of source.outputs) {
+   const width=source.width*output.scale,height=source.height*output.scale;
+   presenter.paint({kind:'compact',complete:true,width,height,compact:{...source,cells:new Uint32Array(source.cells),detail:new Uint32Array(source.detail)}});
+   const actual=new Uint8Array(width*height*4);gl.readPixels(0,0,width,height,gl.RGBA,gl.UNSIGNED_BYTE,actual);
+   for(let y=0;y<height;y++)for(let x=0;x<width;x++) {
+    const expected=output.argb[y*width+x],index=((height-1-y)*width+x)*4;
+    for(const [channel,value] of [expected>>>16&255,expected>>>8&255,expected&255,255].entries()) {
+     if(actual[index+channel]!==value)throw new Error(JSON.stringify({compact:true,scale:source.scale,output:output.scale,x,y,channel,expected:value,actual:actual[index+channel]}));
+    }
+   }
+   if(gl.getError()!==gl.NO_ERROR)throw new Error('Compact GL error');
+   compactCases++;
+  }
+  // Exercise references crossing a detail-texture row without padding copies.
+  const offset=65535, detail=new Uint32Array(offset+16);
+  for(let i=0;i<16;i++)detail[offset+i]=(i*17<<16)|(255-i*17<<8)|i;
+  presenter.paint({kind:'compact',complete:true,width:4,height:4,
+    compact:{width:1,height:1,scale:4,cells:new Uint32Array([0x80000000|offset]),detail}});
+  const edgePixels=new Uint8Array(64);gl.readPixels(0,0,4,4,gl.RGBA,gl.UNSIGNED_BYTE,edgePixels);
+  for(let y=0;y<4;y++)for(let x=0;x<4;x++) {
+    const value=detail[offset+y*4+x],actual=((3-y)*4+x)*4;
+    if(edgePixels[actual]!==((value>>>16)&255)||edgePixels[actual+1]!==((value>>>8)&255)||edgePixels[actual+2]!== (value&255))throw new Error('Compact detail row boundary mismatch');
+  }
+  compactCases++;
+  // Switching back must restore the ordinary image path and clear compact mode.
+  const reset=new Uint8Array([3,5,7,255]);
+  presenter.paint({kind:'rgba',complete:true,width:1,height:1,pixels:reset});
+  const resetActual=new Uint8Array(4);gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,resetActual);
+  if(resetActual.some((value,index)=>value!==reset[index]))throw new Error('Compact to RGBA transition failed');
+  presenter.paint({kind:'compact',complete:true,width:1,height:1,
+    compact:{width:1,height:1,scale:4,cells:new Uint32Array([0x030507]),detail:new Uint32Array(0)}});
+  gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,resetActual);
+  if(resetActual.some((value,index)=>value!==reset[index]))throw new Error('Empty compact detail image failed');
+  if(gl.getError()!==gl.NO_ERROR)throw new Error('Compact transition GL error');
+  compactCases++;
   const driver=gl.getExtension('WEBGL_debug_renderer_info');
-  const result={cases,pixels,maxTextureSize:presenter.maxTextureSize,renderer:gl.getParameter(gl.RENDERER),
+  const result={cases,pixels,compactCases,maxTextureSize:presenter.maxTextureSize,renderer:gl.getParameter(gl.RENDERER),
    driver:driver?gl.getParameter(driver.UNMASKED_RENDERER_WEBGL):null,exact:true};
   presenter.dispose();
   const { RendererTransport } = await import(base + '/renderer-transport.js');

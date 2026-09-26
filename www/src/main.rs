@@ -3,6 +3,8 @@ mod bench;
 mod browser_bridge;
 mod catalogue;
 mod components;
+#[cfg(test)]
+mod compact_vectors;
 mod emulator;
 mod indexed_frame;
 mod paths;
