@@ -1032,7 +1032,7 @@ fn find_exported_resource_sidecar(
         let sidecar = root.join(format!("__rsrc__{}", rel.to_string_lossy()));
         if let Ok(bytes) = std::fs::read(&sidecar) {
             if !bytes.is_empty() {
-                return Some((root.to_path_buf(), rel.to_string_lossy().to_string(), bytes));
+                return Some((root.to_path_buf(), host_relative_guest_path(rel), bytes));
             }
         }
     }
@@ -1136,6 +1136,16 @@ fn payload_from_host_directory(root: &std::path::Path) -> Result<Payload, String
     Ok(payload)
 }
 
+// Host paths use platform separators; payload paths always use `/`. Convert
+// components rather than replacing backslashes, which are valid filename
+// characters on Unix. Callers supply paths already stripped of their host root.
+fn host_relative_guest_path(path: &std::path::Path) -> String {
+    path.iter()
+        .map(|component| component.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 fn collect_host_directory(
     root: &std::path::Path,
     dir: &std::path::Path,
@@ -1151,7 +1161,7 @@ fn collect_host_directory(
             Ok(rel) => rel,
             Err(_) => continue,
         };
-        let rel_name = rel.to_string_lossy().to_string();
+        let rel_name = host_relative_guest_path(rel);
         if rel_name.is_empty() || host_directory_entry_is_ignored(rel, &rel_name) {
             if crate::runner::trace_load_enabled() && !rel_name.is_empty() {
                 eprintln!("[DIR] {}: skipped (metadata/sidecar)", rel_name);
@@ -1178,7 +1188,7 @@ fn collect_host_directory(
         if looks_like_macbinary(&data) {
             let parent = rel
                 .parent()
-                .map(|parent| parent.to_string_lossy().to_string())
+                .map(host_relative_guest_path)
                 .unwrap_or_default();
             let decoded = parse_macbinary_payload(&data, &parent, 1)?;
             if crate::runner::trace_load_enabled() {
@@ -4988,8 +4998,23 @@ mod tests {
         fs::write(dir.path().join("Nova Files/Nova Data 1"), []).unwrap();
         fs::write(dir.path().join("Nova Files/.rsrc/Nova Data 1"), &data_rsrc).unwrap();
 
+        fs::create_dir_all(dir.path().join("Extras/Nested")).unwrap();
+        fs::write(
+            dir.path().join("Extras/Nested/Companion.bin"),
+            make_macbinary_application("Companion", b"nested", &data_rsrc),
+        )
+        .unwrap();
+
         let mut runner = new_runner();
         load_game_directory(&mut runner, dir.path()).expect("directory should load");
+        assert_eq!(
+            runner.dispatcher().vfs.get("Extras/Nested/Companion"),
+            Some(&b"nested".to_vec())
+        );
+        assert_eq!(
+            runner.dispatcher().vfs_rsrc.get("Extras/Nested/Companion"),
+            Some(&data_rsrc)
+        );
 
         assert_eq!(
             runner.dispatcher().vfs.get("Game App"),
