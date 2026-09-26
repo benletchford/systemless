@@ -75,9 +75,34 @@ fn fb_write_trace_range() -> Option<(u32, u32)> {
     None
 }
 
+/// 0 = not yet read from the environment, 1 = unset, 2 = set. Checked on
+/// every scalar guest write, so the common unset case is one relaxed load.
 #[cfg(not(target_arch = "wasm32"))]
-#[inline]
+static FB_WRITE_TRACE_RANGE_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+#[cfg(not(target_arch = "wasm32"))]
+#[inline(always)]
 fn fb_write_trace_range() -> Option<(u32, u32)> {
+    if FB_WRITE_TRACE_RANGE_STATE.load(std::sync::atomic::Ordering::Relaxed) == 1 {
+        return None;
+    }
+    fb_write_trace_range_slow()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[cold]
+#[inline(never)]
+fn fb_write_trace_range_slow() -> Option<(u32, u32)> {
+    let range = fb_write_trace_range_env();
+    FB_WRITE_TRACE_RANGE_STATE.store(
+        if range.is_some() { 2 } else { 1 },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    range
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn fb_write_trace_range_env() -> Option<(u32, u32)> {
     *FB_WRITE_TRACE_RANGE.get_or_init(|| {
         std::env::var("SYSTEMLESS_TRACE_FB_WRITE_RANGE")
             .ok()
@@ -234,9 +259,34 @@ fn mem_read_trace_range() -> Option<(u32, u32)> {
     })
 }
 
+/// 0 = not yet read from the environment, 1 = unset, 2 = set. Checked on
+/// every scalar guest write, so the common unset case is one relaxed load.
 #[cfg(not(target_arch = "wasm32"))]
-#[inline]
+static MEM_WRITE_TRACE_RANGE_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+#[cfg(not(target_arch = "wasm32"))]
+#[inline(always)]
 fn mem_write_trace_range() -> Option<(u32, u32)> {
+    if MEM_WRITE_TRACE_RANGE_STATE.load(std::sync::atomic::Ordering::Relaxed) == 1 {
+        return None;
+    }
+    mem_write_trace_range_slow()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[cold]
+#[inline(never)]
+fn mem_write_trace_range_slow() -> Option<(u32, u32)> {
+    let range = mem_write_trace_range_env();
+    MEM_WRITE_TRACE_RANGE_STATE.store(
+        if range.is_some() { 2 } else { 1 },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    range
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn mem_write_trace_range_env() -> Option<(u32, u32)> {
     *MEM_WRITE_TRACE_RANGE.get_or_init(|| {
         std::env::var("SYSTEMLESS_TRACE_MEM_WRITE_RANGE")
             .ok()
@@ -2497,6 +2547,114 @@ impl MacMemoryBus {
         }
     }
 
+    /// Everything the FB-write tracer does for one byte; only reached when
+    /// `SYSTEMLESS_TRACE_FB_WRITE_RANGE` is set.
+    #[cold]
+    #[inline(never)]
+    fn trace_fb_write(&self, address: u32, value: u8, fb_range: (u32, u32)) {
+        let fb_trace = Some(fb_range);
+        if fb_trace.is_some() {
+            maybe_log_fb_write(address, value);
+        }
+        // Companion disassembly window: when both FB_WRITE_RANGE and
+        // FB_WRITE_DISASM are set, dump the 8 instruction bytes at PC
+        // alongside an m68k-disassembled mnemonic for each write that
+        // falls in the watched range. Lets release-build pixel-
+        // divergence investigations identify the 68k blit loop
+        // responsible without a debug build.
+        if let Some((start, end)) = fb_trace {
+            if address >= start && address <= end && fb_write_disasm_enabled() {
+                let pc = CURRENT_PC.with(|p| *p.borrow());
+                if pc != 0 && (pc as u64 + 8) <= self.ram_size as u64 {
+                    let read = |off: u32| self.ram.get((pc + off) as usize);
+                    let opcode_word = ((read(0) as u16) << 8) | read(1) as u16;
+                    let (mnemonic, _size) =
+                        m68k::dasm::disassemble(pc, opcode_word, m68k::CpuType::M68000);
+                    let _size = _size.clamp(2, 10);
+                    // Annotate A-line traps with their canonical trap
+                    // entry. The opcode word's bits 10/11 carry trap
+                    // dispatch flags (auto-pop, etc.) — masking to the
+                    // canonical 10-bit trap index and re-OR'ing $A800
+                    // recovers the trap name a human reader recognises.
+                    // Without this annotation a Mac-aware investigator
+                    // sees `DC.W $ACEC` and may not recognise it as
+                    // CopyBits with the auto-pop bit set (canonical
+                    // form: $A8EC). $A000-$A7FF are OS traps; $A800-
+                    // $AFFF are toolbox traps with bit 10 = auto-pop
+                    // (Inside Macintosh Volume I, I-220).
+                    let trap_annotation = if (opcode_word & 0xF000) == 0xA000 {
+                        let canonical = if (opcode_word & 0x0800) != 0 {
+                            // Toolbox trap: 10-bit index, re-OR $A800.
+                            0xA800u16 | (opcode_word & 0x03FF)
+                        } else {
+                            // OS trap: 8-bit index, re-OR $A000.
+                            0xA000u16 | (opcode_word & 0x00FF)
+                        };
+                        let auto_pop = (opcode_word & 0x0800) != 0 && (opcode_word & 0x0400) != 0;
+                        if canonical == opcode_word {
+                            String::new()
+                        } else if auto_pop {
+                            format!(" (canonical=${:04X}, auto-pop)", canonical)
+                        } else {
+                            format!(" (canonical=${:04X})", canonical)
+                        }
+                    } else {
+                        String::new()
+                    };
+                    eprintln!(
+                        "[FB-WRITE-DISASM] PC=${:08X} bytes=[{:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}] {}{}",
+                        pc,
+                        read(0), read(1), read(2), read(3),
+                        read(4), read(5), read(6), read(7),
+                        mnemonic,
+                        trap_annotation,
+                    );
+                    // Optional multi-instruction context: when
+                    // SYSTEMLESS_TRACE_FB_WRITE_DISASM=N for N>1, walk
+                    // forward N-1 more instructions after the first
+                    // and dump each. Useful for spotting the loop
+                    // structure around a write site (e.g. Bcc back to
+                    // a label) instead of just the trapping op alone.
+                    let extra = fb_write_disasm_count().saturating_sub(1);
+                    if extra > 0 {
+                        let mut cur = pc.wrapping_add(_size);
+                        for _ in 0..extra {
+                            if (cur as u64 + 2) > self.ram_size as u64 {
+                                break;
+                            }
+                            let op = ((self.ram.get(cur as usize) as u16) << 8)
+                                | self.ram.get(cur as usize + 1) as u16;
+                            let (m, sz) = m68k::dasm::disassemble(cur, op, m68k::CpuType::M68000);
+                            // Same A-line annotation as above.
+                            let ann = if (op & 0xF000) == 0xA000 {
+                                let canonical = if (op & 0x0800) != 0 {
+                                    0xA800u16 | (op & 0x03FF)
+                                } else {
+                                    0xA000u16 | (op & 0x00FF)
+                                };
+                                let auto_pop = (op & 0x0800) != 0 && (op & 0x0400) != 0;
+                                if canonical == op {
+                                    String::new()
+                                } else if auto_pop {
+                                    format!(" (canonical=${:04X}, auto-pop)", canonical)
+                                } else {
+                                    format!(" (canonical=${:04X})", canonical)
+                                }
+                            } else {
+                                String::new()
+                            };
+                            eprintln!(
+                                "[FB-WRITE-DISASM]   +{:08X}                                           {}{}",
+                                cur, m, ann
+                            );
+                            cur = cur.wrapping_add(sz.clamp(2, 10));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[inline]
     pub(crate) fn range_translates_contiguously(&self, address: u32, len: usize) -> Option<u32> {
         let translated = self.translate_guest_address(address);
@@ -2910,109 +3068,10 @@ impl MemoryBus for MacMemoryBus {
         self.record_write_probe_range(address, 1);
         maybe_log_mem_write(address, 1, value as u32);
 
-        // Optional release-mode FB-write tracer. Cheap when unset (one
-        // atomic load + None branch). The range is read once and shared
-        // with the disassembly companion below rather than fetched twice.
-        let fb_trace = fb_write_trace_range();
-        if fb_trace.is_some() {
-            maybe_log_fb_write(address, value);
-        }
-        // Companion disassembly window: when both FB_WRITE_RANGE and
-        // FB_WRITE_DISASM are set, dump the 8 instruction bytes at PC
-        // alongside an m68k-disassembled mnemonic for each write that
-        // falls in the watched range. Lets release-build pixel-
-        // divergence investigations identify the 68k blit loop
-        // responsible without a debug build.
-        if let Some((start, end)) = fb_trace {
-            if address >= start && address <= end && fb_write_disasm_enabled() {
-                let pc = CURRENT_PC.with(|p| *p.borrow());
-                if pc != 0 && (pc as u64 + 8) <= self.ram_size as u64 {
-                    let read = |off: u32| self.ram.get((pc + off) as usize);
-                    let opcode_word = ((read(0) as u16) << 8) | read(1) as u16;
-                    let (mnemonic, _size) =
-                        m68k::dasm::disassemble(pc, opcode_word, m68k::CpuType::M68000);
-                    let _size = _size.clamp(2, 10);
-                    // Annotate A-line traps with their canonical trap
-                    // entry. The opcode word's bits 10/11 carry trap
-                    // dispatch flags (auto-pop, etc.) — masking to the
-                    // canonical 10-bit trap index and re-OR'ing $A800
-                    // recovers the trap name a human reader recognises.
-                    // Without this annotation a Mac-aware investigator
-                    // sees `DC.W $ACEC` and may not recognise it as
-                    // CopyBits with the auto-pop bit set (canonical
-                    // form: $A8EC). $A000-$A7FF are OS traps; $A800-
-                    // $AFFF are toolbox traps with bit 10 = auto-pop
-                    // (Inside Macintosh Volume I, I-220).
-                    let trap_annotation = if (opcode_word & 0xF000) == 0xA000 {
-                        let canonical = if (opcode_word & 0x0800) != 0 {
-                            // Toolbox trap: 10-bit index, re-OR $A800.
-                            0xA800u16 | (opcode_word & 0x03FF)
-                        } else {
-                            // OS trap: 8-bit index, re-OR $A000.
-                            0xA000u16 | (opcode_word & 0x00FF)
-                        };
-                        let auto_pop = (opcode_word & 0x0800) != 0 && (opcode_word & 0x0400) != 0;
-                        if canonical == opcode_word {
-                            String::new()
-                        } else if auto_pop {
-                            format!(" (canonical=${:04X}, auto-pop)", canonical)
-                        } else {
-                            format!(" (canonical=${:04X})", canonical)
-                        }
-                    } else {
-                        String::new()
-                    };
-                    eprintln!(
-                        "[FB-WRITE-DISASM] PC=${:08X} bytes=[{:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}] {}{}",
-                        pc,
-                        read(0), read(1), read(2), read(3),
-                        read(4), read(5), read(6), read(7),
-                        mnemonic,
-                        trap_annotation,
-                    );
-                    // Optional multi-instruction context: when
-                    // SYSTEMLESS_TRACE_FB_WRITE_DISASM=N for N>1, walk
-                    // forward N-1 more instructions after the first
-                    // and dump each. Useful for spotting the loop
-                    // structure around a write site (e.g. Bcc back to
-                    // a label) instead of just the trapping op alone.
-                    let extra = fb_write_disasm_count().saturating_sub(1);
-                    if extra > 0 {
-                        let mut cur = pc.wrapping_add(_size);
-                        for _ in 0..extra {
-                            if (cur as u64 + 2) > self.ram_size as u64 {
-                                break;
-                            }
-                            let op = ((self.ram.get(cur as usize) as u16) << 8)
-                                | self.ram.get(cur as usize + 1) as u16;
-                            let (m, sz) = m68k::dasm::disassemble(cur, op, m68k::CpuType::M68000);
-                            // Same A-line annotation as above.
-                            let ann = if (op & 0xF000) == 0xA000 {
-                                let canonical = if (op & 0x0800) != 0 {
-                                    0xA800u16 | (op & 0x03FF)
-                                } else {
-                                    0xA000u16 | (op & 0x00FF)
-                                };
-                                let auto_pop = (op & 0x0800) != 0 && (op & 0x0400) != 0;
-                                if canonical == op {
-                                    String::new()
-                                } else if auto_pop {
-                                    format!(" (canonical=${:04X}, auto-pop)", canonical)
-                                } else {
-                                    format!(" (canonical=${:04X})", canonical)
-                                }
-                            } else {
-                                String::new()
-                            };
-                            eprintln!(
-                                "[FB-WRITE-DISASM]   +{:08X}                                           {}{}",
-                                cur, m, ann
-                            );
-                            cur = cur.wrapping_add(sz.clamp(2, 10));
-                        }
-                    }
-                }
-            }
+        // Optional release-mode FB-write tracer. Unset, this is one relaxed
+        // load; the tracer and its disassembly companion stay out of line.
+        if let Some(range) = fb_write_trace_range() {
+            self.trace_fb_write(address, value, range);
         }
 
         // WATCHPOINT CHECK: Only in debug builds (thread-local access is very
