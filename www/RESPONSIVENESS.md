@@ -456,9 +456,7 @@ guest (one boot, owner frames 200→205), without browser errors. An initial
 qualification assertion exposed an incorrect backend label; the label was fixed
 and the complete release comparison rerun with the original assertion intact.
 
-Sustained bitmap lifecycle and comparative performance qualification remain
-pending. The added host GPU submission is not assumed free or zero-copy.
-
+The added host GPU submission is not assumed free or zero-copy.
 
 A bitmap-specific lifecycle run completed 50 restart cycles plus startup
 cancellation and a controlled runtime crash. All 52 received ImageBitmaps were
@@ -469,5 +467,80 @@ The first/last ten teardown samples had median main JavaScript heap usage of
 663 to 2,325 MiB and ended at 686 MiB. Shared pages can be counted more than once,
 and GPU allocations are not isolated; these observations do not prove the
 absence of every GPU or process-memory leak. No competing build or browser probe
-from this task ran during the lifecycle check. Comparative bitmap performance
-qualification remains pending.
+from this task ran during the lifecycle check.
+
+### Same-build bitmap gameplay comparison
+
+A release comparison on source `f16b5f5` uses the same Chrome/macOS machine,
+Marathon archive, empty initial saves, scripted inputs, 25 MHz owner worker and
+800×600 CSS size. Each path has one warm-up and three measured runs, with pair
+order alternating. All eight device-scale-1 runs pass the pacing probe, reach
+tick 4801 and apply all nine inputs. The common 3600–4100 interval contains
+continuous camera rotation while ArrowLeft is held from tick 3500 to 4500.
+
+| Metric (median of three runs) | Main WebGL | Direct bitmap WebGL |
+| --- | ---: | ---: |
+| Milliseconds per guest tick | 16.665 | 16.780 |
+| Retired instructions per guest tick | 214,674 | 215,622 |
+| Host animation callback p99 | 0.6 ms | 0.2 ms |
+| Additional bitmap message callback p99 | — | 0.1 ms |
+| Host frame interval p99 | 18.5 ms | 18.4 ms |
+| Owner round trip p50 / p99 | 9.6 / 17.7 ms | 8.6 / 16.3 ms |
+| Complete packet bytes | 1,920,000 | 2,065,792 |
+| Audio queue p50 | 142.540 ms | 142.630 ms |
+
+The bitmap callback includes host upload, acknowledgement and image closure;
+reporting only animation callbacks would omit that work. Callback durations use
+the browser timer resolution and do not measure asynchronous GPU completion.
+The bitmap request-to-host-submission duration is 11.6 ms p50 and 19.4 ms p99,
+joined by renderer generation and sequence on the host clock. This is not
+physical display completion or measured input latency. Percentiles from separate
+callbacks must not be added as though they were one combined distribution.
+
+Guest time per tick increases 0.69%, with 0.44% more retired instructions per
+tick; this is below the 5% regression investigation threshold. Real-time input
+batch boundaries remain recorded, so these are equal-progress comparisons,
+not instruction-identical replays. Audio queue depth is not an underrun measure.
+At device scale 3 (2400×1800 backing), the same eight-run protocol produced:
+
+| Metric (median of three runs) | Main WebGL | Direct bitmap WebGL |
+| --- | ---: | ---: |
+| Milliseconds per guest tick | 16.686 | 16.667 |
+| Retired instructions per guest tick | 216,024 | 214,980 |
+| Host animation callback p95 / p99 | 6.2 / 7.4 ms | 0.1 / 0.2 ms |
+| Additional bitmap message callback p99 | — | 0.2 ms |
+| Host frame interval p99 | 18.6 ms | 18.3 ms |
+| Owner round trip p50 / p99 | 15.2 / 24.7 ms | 8.6 / 16.3 ms |
+| Complete packet bytes | 17,280,000 | 2,065,792 |
+| Audio queue p50 | 144.354 ms | 142.948 ms |
+
+Bitmap request-to-host-submission is 11.8 ms p50 and 19.5 ms p99. The packet
+figures count owner-to-host/renderer data; they exclude the additional renderer-
+to-host ImageBitmap and GPU upload, whose allocation/transfer byte count was
+not independently measured. The reduced packet size is not a zero-copy claim.
+
+All eight high-DPI runs reached tick 4801 with all nine inputs, but two measured
+main-WebGL runs failed the unchanged 50 ms pacing gate: animation callbacks took
+55.8 and 82.6 ms, with owner round trips of 62.7 and 84.1 ms near guest ticks
+3454–3456. Both failures occurred before the common steady-gameplay interval;
+the affected runs remain in the table and are not reclassified as passes. All
+four bitmap runs, including warm-up, passed. The specific cause of the control
+stalls is not established by these traces. No competing local build, test or
+browser probe from this task ran during primary timing; system background load
+was not isolated.
+
+Steady guest time per tick changes −0.11%, with −0.48% retired instructions per
+tick. Together with the separately counted host bitmap callback, the high-DPI
+result demonstrates lower host presentation work without material guest-progress
+regression in this workload. It does not qualify every game, browser or GPU,
+prove physical input latency, or justify a general default rollout. The bitmap
+path remains explicitly opt-in.
+
+
+A separate bitmap check stalls the owner for 500 ms immediately after direct
+packet submission. The renderer acknowledgement and a host focus-control paint
+complete while the owner is still busy; the control is visible after 26.9 ms.
+The guest resumes without another boot, both workers terminate on navigation,
+and the audio context closes without browser errors. This single controlled
+fault demonstrates independent host/renderer progress, not ordinary gameplay
+latency percentiles or physical display timing.

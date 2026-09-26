@@ -233,4 +233,7 @@ The renderer expands owned packets on a detached OffscreenCanvas and transfers
 an ImageBitmap to a DOM WebGL canvas for host submission. Frame credit waits for
 that submission; stale, failed and submitted bitmaps are closed. This avoids the
 transferred-display-canvas sampling difference in the tested clipped layouts.
-It remains opt-in pending sustained lifecycle and performance qualification.
+Same-build 1×/3× gameplay comparisons include the additional host bitmap
+callback and show reduced high-DPI host work without material guest-progress
+regression in the tested workload. It remains opt-in; see
+[RESPONSIVENESS.md](RESPONSIVENESS.md) for measurements and coverage limits.
