@@ -167,7 +167,7 @@ browser image on success or failure.
 Worker protocol and lifecycle tests run without browser fixtures:
 
 ```sh
-node --test www/tests/emulator-worker.test.cjs www/tests/worker-lifecycle.test.cjs
+node --test www/tests/*.test.cjs
 ```
 
 Worker commands carry a runtime generation and monotonic command sequence. The
