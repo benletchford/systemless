@@ -7601,6 +7601,18 @@ impl super::TrapDispatcher {
                 self.current_selector_operation = operation.map(|route| route.operation_id);
                 let selector = raw_selector & 0xFFFF;
                 let pb = cpu.read_reg(Register::A0);
+                if matches!(selector, 0x38 | 0x39) {
+                    // PBHOpenDeny / PBHOpenRFDeny ($A260, selectors $0038/$0039)
+                    // Open a fork with access-deny sharing modes.
+                    // FUNCTION PBHOpenDeny(paramBlock: HParmBlkPtr; async: Boolean): OSErr;
+                    // Inside Macintosh: Files (1992), pp. 2-209 to 2-210.
+                    // The local VFS does not implement deny-mode sharing.
+                    // paramErr means the volume does not support this operation;
+                    // reporting noErr would imply a valid open ioRefNum.
+                    bus.write_word(pb + 16, (-50i16) as u16);
+                    cpu.write_reg(Register::D0, (-50i32) as u32);
+                    return Some(Ok(()));
+                }
                 if selector == 0x18 {
                     // PBCatSearch ($A260, selector $0018) searches one
                     // volume's complete catalog and returns bounded FSSpec
@@ -16966,6 +16978,34 @@ mod tests {
             disp.open_files.get(&bus.read_word(pb + 24)),
             Some(&"Pilots/Untitled".to_string())
         );
+    }
+
+    #[test]
+    fn unsupported_deny_open_allows_ordinary_open_fallback() {
+        for selector in [0x38, 0x39] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            disp.vfs.insert("Shared File".to_string(), vec![1, 2, 3]);
+            let pb = 0x300000;
+            let name = 0x300100;
+            bus.write_pstring(name, b"Shared File");
+            bus.write_long(pb + 18, name);
+            bus.write_word(pb + 26, 0x33);
+            cpu.write_reg(Register::A0, pb);
+            cpu.write_reg(Register::D0, selector);
+            call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+            assert_eq!(cpu.read_reg(Register::D0) as i32, -50);
+            assert_eq!(bus.read_word(pb + 16) as i16, -50);
+            assert!(disp.open_files.is_empty());
+            // A caller can retry with ordinary file permissions after the
+            // documented unsupported-volume result, as on local HFS volumes.
+            bus.write_byte(pb + 27, 3);
+            call(&mut disp, false, 0x00, &mut cpu, &mut bus).unwrap();
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+            let refnum = bus.read_word(pb + 24);
+            assert_ne!(refnum, 0);
+            assert!(disp.open_files.contains_key(&refnum));
+            assert!(disp.write_refnums.contains(&refnum));
+        }
     }
 
     #[test]
