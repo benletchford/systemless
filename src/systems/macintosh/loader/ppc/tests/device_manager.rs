@@ -63,6 +63,43 @@ fn import_bindings_classify_printing_imports() {
 }
 
 #[test]
+fn printing_compatibility_dispatch_returns_expected_actions() {
+    assert_eq!(
+        ppc_dispatch_printing_compatibility(PpcPrintingCompatibilityOperation::PrJobDialog),
+        PpcImportAction::Return(0)
+    );
+    assert_eq!(
+        ppc_dispatch_printing_compatibility(PpcPrintingCompatibilityOperation::PrStlDialog),
+        PpcImportAction::Return(0)
+    );
+    assert_eq!(
+        ppc_dispatch_printing_compatibility(PpcPrintingCompatibilityOperation::PrOpenDoc),
+        PpcImportAction::Return(0)
+    );
+    assert_eq!(
+        ppc_dispatch_printing_compatibility(PpcPrintingCompatibilityOperation::PrError),
+        PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+    );
+    assert_eq!(
+        ppc_dispatch_printing_compatibility(PpcPrintingCompatibilityOperation::PrintDefault),
+        PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+    );
+    for op in [
+        PpcPrintingCompatibilityOperation::PrClose,
+        PpcPrintingCompatibilityOperation::PrCloseDoc,
+        PpcPrintingCompatibilityOperation::PrClosePage,
+        PpcPrintingCompatibilityOperation::PrOpen,
+        PpcPrintingCompatibilityOperation::PrOpenPage,
+        PpcPrintingCompatibilityOperation::PrPicFile,
+    ] {
+        assert_eq!(
+            ppc_dispatch_printing_compatibility(op),
+            PpcImportAction::ReturnPreserve
+        );
+    }
+}
+
+#[test]
 fn hle_import_runner_get_adb_info_exposes_standard_devices() {
     for (address, expected) in [(2, [2, 2]), (3, [1, 3])] {
         let pef = synthetic_pef_with_import(b"GetADBInfo");
