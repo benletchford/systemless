@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.65.1](https://github.com/benletchford/systemless/compare/v0.65.0...v0.65.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* keep 68k browser gameplay near real time ([#2995](https://github.com/benletchford/systemless/issues/2995)) ([864df39](https://github.com/benletchford/systemless/commit/864df39f38d0b46d29eaab6ebbaaafa3b297a8c4))
+
 ## [0.65.0](https://github.com/benletchford/systemless/compare/v0.64.1...v0.65.0) (2026-09-27)
 
 
