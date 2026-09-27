@@ -28,6 +28,7 @@ fn hle_import_runner_handles_gestalt_powerpc_capabilities_and_rejects_sysa() {
 
     for (selector, expected_error, expected_response) in [
         (*b"sysv", PPC_NO_ERR, u32::from(POWERPC_SYSTEM_VERSION_BCD)),
+        (*b"cbon", PPC_NO_ERR, u32::from(POWERPC_CARBON_VERSION_BCD)),
         (*b"cput", PPC_NO_ERR, 0x0104),
         (*b"proc", PPC_NO_ERR, 2),
         (*b"fpu ", PPC_NO_ERR, 3),

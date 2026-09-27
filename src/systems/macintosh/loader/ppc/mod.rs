@@ -51,7 +51,7 @@ use crate::guest_procedure::{
 };
 use crate::list_manager::ProcessListManagerState;
 use crate::machine_profile::{
-    POWERPC_SYSTEM_VERSION_BCD, REFERENCE_MACHINE_PROFILE,
+    POWERPC_CARBON_VERSION_BCD, POWERPC_SYSTEM_VERSION_BCD, REFERENCE_MACHINE_PROFILE,
     REFERENCE_POWERPC_EXECUTION_CAPABILITIES,
 };
 use crate::managers::resource::{
@@ -16915,6 +16915,7 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
     match &selector.to_be_bytes() {
         b"vers" => Some((0x0001, PPC_NO_ERR)),
         b"sysv" => Some((u32::from(POWERPC_SYSTEM_VERSION_BCD), PPC_NO_ERR)),
+        b"cbon" => Some((u32::from(POWERPC_CARBON_VERSION_BCD), PPC_NO_ERR)),
         b"ostt" => Some((crate::trap::dispatch::OS_TRAP_TABLE_BASE, PPC_NO_ERR)),
         b"tbtt" => Some((crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE, PPC_NO_ERR)),
         b"evnt" => Some((0x0001, PPC_NO_ERR)),
