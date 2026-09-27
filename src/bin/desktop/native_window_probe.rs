@@ -72,6 +72,12 @@ impl Probe {
             "backend": if self.app.owner.is_some() { "thread" } else { "inline-or-stopped" },
             "cursor_scope": "owned snapshot through actual native cursor event; guest origin covered separately",
             "runtime_error": self.app.runtime_error,
+            "window": self.app.window.as_ref().map(|w| serde_json::json!({
+                "width": w.inner_size().width, "height": w.inner_size().height,
+                "fullscreen": w.fullscreen().is_some(), "focused": self.focused,
+                "resized_event": self.resized, "cursor_event": self.moved,
+                "expected_cursor": self.expected_cursor,
+            })),
         });
         std::fs::write(&self.report, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
@@ -91,7 +97,7 @@ impl Probe {
         let Some(window) = self.app.window.as_ref().cloned() else {
             return;
         };
-        let settled = self.phase_started.elapsed() > Duration::from_millis(750);
+        let settled = self.phase_started.elapsed() > Duration::from_secs(2);
         match self.phase {
             0 if self.app.frame.sequence > 2 => {
                 window.focus_window();
@@ -188,6 +194,7 @@ impl ApplicationHandler for Probe {
         }
         match &event {
             WindowEvent::Focused(value) => {
+                eprintln!("[NATIVE-PROBE] phase={} focus={value}", self.phase);
                 self.focused = *value;
                 if !value {
                     self.lost_focus = true;
@@ -196,7 +203,10 @@ impl ApplicationHandler for Probe {
                     self.returned_focus = true;
                 }
             }
-            WindowEvent::Resized(_) => self.resized = true,
+            WindowEvent::Resized(size) => {
+                eprintln!("[NATIVE-PROBE] phase={} resize={size:?}", self.phase);
+                self.resized = true;
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.moved = Some((position.x, position.y))
             }

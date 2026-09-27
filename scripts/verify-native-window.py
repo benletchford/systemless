@@ -21,6 +21,7 @@ for backend in ("inline", "thread"):
     archive = case / "toolbox-showcase.sit"
     shutil.copy2(root / "tests/toolbox-showcase/toolbox-showcase.sit", archive)
     report = case / "report.json"
+    report.unlink(missing_ok=True)
     env = dict(os.environ, SYSTEMLESS_DESKTOP_RUNTIME=backend,
                SYSTEMLESS_NATIVE_WINDOW_PROBE=str(report))
     with (case / "run.log").open("w") as log:

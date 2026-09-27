@@ -29,11 +29,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev pkg-config xvfb openbox
+          sudo apt-get install -y libasound2-dev pkg-config xvfb openbox libxkbcommon-x11-0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: false
       - name: Build optimized native probe
         run: cargo build --locked --profile ci-test --bin systemless --features test-support
       - name: Run Linux native window checks
