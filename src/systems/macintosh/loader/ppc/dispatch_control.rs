@@ -330,6 +330,32 @@ fn ppc_dispatch_popup_track_control(
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcLegacyControlOperation {
+    DisposeControl,
+    DrawOneControl,
+    FindControl,
+    GetControlMaximum,
+    GetControlAction,
+    GetControlReference,
+    GetControlMinimum,
+    GetControlTitle,
+    GetControlValue,
+    GetNewControl,
+    HideControl,
+    KillControls,
+    MoveControl,
+    NewControl,
+    SetControlMaximum,
+    SetControlAction,
+    SetControlReference,
+    SetControlMinimum,
+    ShowControl,
+    SizeControl,
+    TestControl,
+    TrackControl,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn ppc_dispatch_legacy_control(
     operation: PpcLegacyControlOperation,
