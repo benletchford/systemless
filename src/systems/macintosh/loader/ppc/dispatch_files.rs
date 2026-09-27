@@ -405,6 +405,68 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
         PpcImportDispatcherTarget::PBHGetVInfo => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pbh_get_v_info(cpu, memory, vfs_volumes),
         ))),
+        PpcImportDispatcherTarget::GetVInfo => {
+            // Inside Macintosh: Files (1992), p. 2-67: drive 0 selects the
+            // default volume; the result includes its name, vRefNum, and
+            // available bytes.
+            let drive = cpu.gpr[3] as u16 as i16;
+            let name_ptr = cpu.gpr[4];
+            let ref_ptr = cpu.gpr[5];
+            let free_ptr = cpu.gpr[6];
+            let volume = if matches!(drive, 0 | 1 | PPC_BOOT_VOLUME_REF_NUM) {
+                Some((
+                    crate::trap::TrapDispatcher::boot_volume_name().to_string(),
+                    PPC_BOOT_VOLUME_REF_NUM,
+                    0x8000u32 * 4096,
+                ))
+            } else if drive > 1 {
+                vfs_volumes.get((drive - 2) as usize).map(|volume| {
+                    (
+                        volume.name.clone(),
+                        volume.ref_num,
+                        u32::from(volume.free_blocks)
+                            .saturating_mul(volume.allocation_block_size),
+                    )
+                })
+            } else {
+                vfs_volumes
+                    .iter()
+                    .find(|volume| volume.ref_num == drive)
+                    .map(|volume| {
+                        (
+                            volume.name.clone(),
+                            volume.ref_num,
+                            u32::from(volume.free_blocks)
+                                .saturating_mul(volume.allocation_block_size),
+                        )
+                    })
+            };
+            let result = if let Some((name, ref_num, free_bytes)) = volume {
+                let name_bytes = encode_mac_roman_lossy(&name);
+                if ref_ptr == 0
+                    || free_ptr == 0
+                    || !ppc_memory_can_write_bytes(memory, ref_ptr, 2)
+                    || !ppc_memory_can_write_bytes(memory, free_ptr, 4)
+                    || (name_ptr != 0
+                        && !ppc_optional_pstring_output_can_write(memory, name_ptr, &name_bytes))
+                {
+                    PPC_PARAM_ERR
+                } else {
+                    if name_ptr != 0 {
+                        let _ = ppc_write_pstring_bytes(memory, name_ptr, &name_bytes);
+                    }
+                    let _ = memory.write_u16_be(ref_ptr, ref_num as u16);
+                    let _ = memory.write_u32_be(free_ptr, free_bytes);
+                    PPC_NO_ERR
+                }
+            } else {
+                PPC_NSV_ERR
+            };
+            if ppc_hle_trace_enabled() {
+                eprintln!("[PPC-TRACE] GetVInfo drive={drive} -> {result}");
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::PBDTGetPath => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_dt_get_path(cpu, memory, vfs_volumes),
         ))),
