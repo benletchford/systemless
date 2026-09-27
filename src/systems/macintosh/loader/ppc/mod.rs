@@ -12927,7 +12927,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "LUpdate") => PpcImportDispatcherTarget::LUpdate,
         ("InterfaceLib", "LAutoScroll") => PpcImportDispatcherTarget::LAutoScroll,
         ("InterfaceLib", "LSearch") => PpcImportDispatcherTarget::LSearch,
-        ("InterfaceLib", "FlushEvents") => PpcImportDispatcherTarget::FlushEvents,
+        ("InterfaceLib" | "CarbonLib", "FlushEvents") => {
+            PpcImportDispatcherTarget::FlushEvents
+        }
         ("InterfaceLib", "SetEventMask") => PpcImportDispatcherTarget::SetEventMask,
         ("InterfaceLib", "CloseDialog") => PpcImportDispatcherTarget::CloseDialog,
         ("InterfaceLib", "DisposeDialog" | "DisposDialog") => {

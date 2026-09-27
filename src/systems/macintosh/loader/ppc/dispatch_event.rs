@@ -417,10 +417,19 @@ pub(super) fn dispatch_event_import(
     } = context;
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::FlushEvents => {
+            // FlushEvents removes matching low-level events before the first
+            // event selected by stopMask; non-low-level events remain queued.
+            // PROCEDURE FlushEvents(whichMask: Integer; stopMask: Integer);
+            // Macintosh Toolbox Essentials (1992), pp. 2-93–2-94.
             toolbox_startup.flush_events_count =
                 toolbox_startup.flush_events_count.saturating_add(1);
             toolbox_startup.last_flush_event_mask = cpu.gpr[3] as u16;
             toolbox_startup.last_flush_stop_mask = cpu.gpr[4] as u16;
+            ppc_flush_events(
+                event_queue,
+                toolbox_startup.last_flush_event_mask,
+                toolbox_startup.last_flush_stop_mask,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetEventMask => {

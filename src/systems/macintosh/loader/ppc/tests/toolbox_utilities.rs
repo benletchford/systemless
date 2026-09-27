@@ -331,6 +331,10 @@ fn import_bindings_classify_toolbox_init_and_dialog_lifecycle_imports() {
             "{symbol}"
         );
     }
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "FlushEvents"),
+        PpcImportDispatcherTarget::FlushEvents
+    );
 }
 
 #[test]
@@ -516,6 +520,16 @@ fn hle_import_runner_tracks_toolbox_startup_manager_state() {
     assert!(loaded.toolbox_startup.dialogs_initialized);
     assert_eq!(loaded.toolbox_startup.dialog_resume_proc, 0x2468_1357);
 
+    for what in [3, 6, 1, 4] {
+        loaded.event_queue.push_back(PpcQueuedEvent {
+            what,
+            message: 0,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+    }
     run_toolbox_import(
         &mut loaded,
         PpcImportDispatcherTarget::FlushEvents,
@@ -525,6 +539,10 @@ fn hle_import_runner_tracks_toolbox_startup_manager_state() {
     assert_eq!(loaded.toolbox_startup.flush_events_count, 1);
     assert_eq!(loaded.toolbox_startup.last_flush_event_mask, 0xffff);
     assert_eq!(loaded.toolbox_startup.last_flush_stop_mask, 0x0002);
+    assert_eq!(
+        loaded.event_queue.iter().map(|event| event.what).collect::<Vec<_>>(),
+        vec![6, 1, 4]
+    );
 
     run_toolbox_import(
         &mut loaded,
