@@ -7,7 +7,9 @@
 //! render pipeline, and two upload textures alive for the window lifetime.
 //! Native guest and high-resolution raster frames share a latest-frame mailbox to a Metal
 //! worker paced by drawable availability. Thus a full drawable queue never
-//! blocks AppKit input handling or 68k execution.
+//! blocks AppKit input handling or 68k execution. Retained high-resolution
+//! text arrives as a compact cell/detail image that the GPU resolves directly
+//! at the drawable size, like the Windows D3D11 and browser presenters.
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -34,6 +36,7 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
 use systemless::display::CursorImage;
+use systemless::memory::CompactPresentation;
 
 // Double buffering prevents the CPU from overwriting the texture used by the
 // in-flight GPU frame without allowing a third drawable to queue and add input
@@ -54,6 +57,25 @@ struct GuestFrameUniforms {
     cursor_height: u32,
     cursor_left: i32,
     cursor_top: i32,
+}
+
+/// Must match `CompactFrameUniforms` in metal_present.metal. Crop values are
+/// logical guest pixels; the viewport (`ox`, `oy`, `dw`, `dh`) is drawable
+/// pixels, so the shader's coverage arithmetic stays exact integers.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CompactFrameUniforms {
+    width: u32,
+    height: u32,
+    scale: u32,
+    crop_left: u32,
+    crop_top: u32,
+    crop_width: u32,
+    crop_height: u32,
+    dw: u32,
+    dh: u32,
+    ox: u32,
+    oy: u32,
 }
 
 #[repr(C)]
@@ -90,6 +112,7 @@ enum FrameMetadata {
         layout: RasterLayout,
         drawable_size: (u32, u32),
     },
+    Compact(CompactFrameUniforms),
 }
 
 /// Which pixels the presenter must show, and where they sit in the frame buffer
@@ -150,17 +173,22 @@ impl RasterLayout {
 /// ARGB words. Keeping the two apart lets the raster path lend its caller's
 /// allocation to the mailbox — the caller receives a spare buffer in exchange —
 /// instead of copying the frame into storage the mailbox owns.
+/// Compact frames share the owner's immutable snapshot; the worker copies its
+/// cells and detail straight into Metal buffers.
 enum FramePixels {
     Indexed(Vec<u8>),
     Argb(Vec<u32>),
+    Compact(Arc<CompactPresentation>),
 }
 
 impl FramePixels {
-    /// The frame as bytes, borrowing raster ARGB in place.
+    /// The frame as bytes, borrowing raster ARGB in place. Compact frames
+    /// carry two arrays and are uploaded separately.
     fn as_bytes(&self) -> &[u8] {
         match self {
             Self::Indexed(bytes) => bytes,
             Self::Argb(pixels) => argb_bytes(pixels),
+            Self::Compact(_) => &[],
         }
     }
 }
@@ -192,6 +220,7 @@ impl GuestFrameMailboxState {
         match pixels {
             FramePixels::Indexed(bytes) => self.recycled.push(bytes),
             FramePixels::Argb(pixels) => self.recycled_argb.push(pixels),
+            FramePixels::Compact(_) => {}
         }
     }
 }
@@ -214,6 +243,76 @@ struct GuestRenderWorker {
     upload_textures: Vec<Retained<ProtocolObject<dyn MTLTexture>>>,
     upload_size: (u32, u32),
     next_upload_texture: usize,
+    compact_pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    compact_buffers: CompactBuffers,
+}
+
+/// Double-buffered shared storage for compact cells and detail. Callers
+/// acquire the drawable first: with two drawables, that guarantees the GPU has
+/// finished reading the slot about to be overwritten.
+#[derive(Default)]
+struct CompactBuffers {
+    slots: Vec<[(Retained<ProtocolObject<dyn MTLBuffer>>, usize); 2]>,
+    next: usize,
+}
+
+impl CompactBuffers {
+    fn upload(
+        &mut self,
+        device: &ProtocolObject<dyn MTLDevice>,
+        frame: &CompactPresentation,
+    ) -> Result<
+        (
+            &ProtocolObject<dyn MTLBuffer>,
+            &ProtocolObject<dyn MTLBuffer>,
+        ),
+        String,
+    > {
+        let allocate = |words: usize| {
+            // Grow geometrically so a dialog's extra detail does not
+            // reallocate every frame. Metal rejects zero-length buffers.
+            let capacity = words.max(1).next_power_of_two();
+            device
+                .newBufferWithLength_options(
+                    capacity * size_of::<u32>(),
+                    MTLResourceOptions::MTLResourceStorageModeShared,
+                )
+                .map(|buffer| (buffer, capacity))
+                .ok_or_else(|| "Metal failed to allocate a compact frame buffer".to_string())
+        };
+        if self.slots.len() != FRAME_RESOURCE_COUNT {
+            self.slots.clear();
+            for _ in 0..FRAME_RESOURCE_COUNT {
+                self.slots.push([
+                    allocate(frame.cells.len())?,
+                    allocate(frame.detail.len())?,
+                ]);
+            }
+            self.next = 0;
+        }
+        let index = self.next;
+        self.next = (index + 1) % self.slots.len();
+        let slot = &mut self.slots[index];
+        for ((buffer, capacity), data) in slot
+            .iter_mut()
+            .zip([frame.cells.as_slice(), frame.detail.as_slice()])
+        {
+            if *capacity < data.len() {
+                (*buffer, *capacity) = allocate(data.len())?;
+            }
+            // The buffer holds at least data.len() words, and no GPU command
+            // still reads this slot (see the type's documentation).
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    buffer.contents().as_ptr().cast::<u32>(),
+                    data.len(),
+                );
+            }
+        }
+        let [(cells, _), (detail, _)] = &self.slots[index];
+        Ok((cells, detail))
+    }
 }
 
 // Metal devices, queues, immutable pipeline states, and CAMetalLayer drawable
@@ -384,6 +483,33 @@ impl AsyncGuestPresenter {
         let spare = replace_pending_raster_frame(&mut state, pixels, layout, drawable_size);
         self.mailbox.changed.notify_one();
         Ok(spare)
+    }
+
+    /// Queue a shared compact snapshot. Only the Arc changes hands; the worker
+    /// copies cells and detail into Metal storage after acquiring a drawable.
+    fn enqueue_compact(
+        &self,
+        frame: Arc<CompactPresentation>,
+        uniforms: CompactFrameUniforms,
+    ) -> Result<(), String> {
+        let mut state = self
+            .mailbox
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(error) = state.error.as_ref() {
+            return Err(error.clone());
+        }
+        state.paused = false;
+        if let Some(superseded) = take_superseded_pending(&mut state) {
+            state.recycle(superseded);
+        }
+        state.pending = Some(GuestFrameSubmission {
+            pixels: FramePixels::Compact(frame),
+            metadata: FrameMetadata::Compact(uniforms),
+        });
+        self.mailbox.changed.notify_one();
+        Ok(())
     }
 
     fn enqueue_frame(
@@ -577,6 +703,20 @@ impl GuestRenderWorker {
                     false,
                 );
             }
+            FrameMetadata::Compact(uniforms) => {
+                let FramePixels::Compact(frame) = &submission.pixels else {
+                    return Err("compact metadata without a compact frame".to_string());
+                };
+                let buffers = self.compact_buffers.upload(&self.device, frame)?;
+                return encode_compact_frame(
+                    &self.command_queue,
+                    &self.compact_pipeline,
+                    buffers,
+                    drawable,
+                    uniforms,
+                    false,
+                );
+            }
         };
         self.ensure_guest_buffers(framebuffer.len())?;
 
@@ -643,6 +783,12 @@ pub struct MetalPresenter {
     skip_unchanged_guest_frames: bool,
     profile_guest_frames: bool,
     guest_frame_profile: GuestFrameProfile,
+    compact_pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    compact_buffers: CompactBuffers,
+    compact_enabled: bool,
+    /// The compact snapshot and placement most recently presented, so an
+    /// unchanged owner frame is not uploaded again.
+    last_compact: Option<(Arc<CompactPresentation>, CompactFrameUniforms)>,
     async_guest_presenter: AsyncGuestPresenter,
 }
 
@@ -737,6 +883,9 @@ impl MetalPresenter {
         let guest_fragment = library
             .newFunctionWithName(ns_string!("guest_raster_fragment"))
             .ok_or_else(|| "Metal guest framebuffer function was not found".to_string())?;
+        let compact_fragment = library
+            .newFunctionWithName(ns_string!("compact_fragment"))
+            .ok_or_else(|| "Metal compact coverage function was not found".to_string())?;
 
         let descriptor = MTLRenderPipelineDescriptor::new();
         descriptor.setVertexFunction(Some(&vertex));
@@ -756,6 +905,11 @@ impl MetalPresenter {
             .newRenderPipelineStateWithDescriptor_error(&descriptor)
             .map_err(|error| format!("Metal guest pipeline creation failed: {error}"))?;
 
+        descriptor.setFragmentFunction(Some(&compact_fragment));
+        let compact_pipeline = device
+            .newRenderPipelineStateWithDescriptor_error(&descriptor)
+            .map_err(|error| format!("Metal compact pipeline creation failed: {error}"))?;
+
         let async_command_queue = device
             .newCommandQueue()
             .ok_or_else(|| "Metal failed to create the presenter command queue".to_string())?;
@@ -771,6 +925,8 @@ impl MetalPresenter {
             upload_textures: Vec::new(),
             upload_size: (0, 0),
             next_upload_texture: 0,
+            compact_pipeline: compact_pipeline.clone(),
+            compact_buffers: CompactBuffers::default(),
         })?;
 
         Ok(Self {
@@ -796,6 +952,11 @@ impl MetalPresenter {
             .is_none(),
             profile_guest_frames: std::env::var_os("SYSTEMLESS_PROFILE_METAL_FRAMES").is_some(),
             guest_frame_profile: GuestFrameProfile::default(),
+            compact_pipeline,
+            compact_buffers: CompactBuffers::default(),
+            compact_enabled: std::env::var_os("SYSTEMLESS_METAL_COMPACT")
+                .is_none_or(|value| value != "0"),
+            last_compact: None,
             async_guest_presenter,
         })
     }
@@ -835,6 +996,7 @@ impl MetalPresenter {
 
         self.resize_drawable(drawable_width, drawable_height);
         self.last_guest_metadata = None;
+        self.last_compact = None;
         if !unsafe { self.layer.presentsWithTransaction() } {
             return self.async_guest_presenter.enqueue_raster(
                 &pixels[..expected_pixels],
@@ -892,6 +1054,7 @@ impl MetalPresenter {
 
         self.resize_drawable(drawable_width, drawable_height);
         self.last_guest_metadata = None;
+        self.last_compact = None;
         if !unsafe { self.layer.presentsWithTransaction() } {
             return self.async_guest_presenter.enqueue_raster_owned(
                 frame,
@@ -1018,6 +1181,7 @@ impl MetalPresenter {
         }
 
         self.resize_drawable(drawable_width, drawable_height);
+        self.last_compact = None;
         if unsafe { self.layer.presentsWithTransaction() } {
             let visible_bytes = visible_layout
                 .visible_row_bytes
@@ -1059,6 +1223,62 @@ impl MetalPresenter {
         }
         self.guest_frame_profile.presentation_time += presentation_start.elapsed();
         self.maybe_log_guest_frame_profile();
+        Ok(true)
+    }
+
+    /// Whether retained text frames may be resolved by
+    /// [`Self::present_compact`]. `SYSTEMLESS_METAL_COMPACT=0` keeps the CPU
+    /// resampler for comparison.
+    pub fn supports_compact(&self) -> bool {
+        self.compact_enabled
+    }
+
+    /// Present `crop` (logical guest pixels) of a compact retained image,
+    /// resolving its coverage on the GPU at the drawable size. Returns false,
+    /// presenting nothing, when the frame exceeds the shader's exact integer
+    /// range; the caller then resolves it on the CPU.
+    pub fn present_compact(
+        &mut self,
+        frame: &Arc<CompactPresentation>,
+        crop: (u32, u32, u32, u32),
+        drawable_size: (u32, u32),
+        force_present: bool,
+    ) -> Result<bool, String> {
+        let Some(uniforms) = compact_frame_uniforms(frame, crop, drawable_size) else {
+            return Ok(false);
+        };
+        let unchanged = self
+            .last_compact
+            .as_ref()
+            .is_some_and(|(last, last_uniforms)| {
+                Arc::ptr_eq(last, frame) && *last_uniforms == uniforms
+            });
+        if unchanged && !force_present && self.drawable_size == drawable_size {
+            return Ok(true);
+        }
+        self.resize_drawable(drawable_size.0, drawable_size.1);
+        self.last_guest_metadata = None;
+        if unsafe { self.layer.presentsWithTransaction() } {
+            self.async_guest_presenter.pause_and_wait();
+            // Acquire the drawable before overwriting a buffer slot; see
+            // `CompactBuffers`.
+            let Some(drawable) = (unsafe { self.layer.nextDrawable() }) else {
+                return Ok(true);
+            };
+            let buffers = self.compact_buffers.upload(&self.device, frame)?;
+            encode_compact_frame(
+                &self.command_queue,
+                &self.compact_pipeline,
+                buffers,
+                &drawable,
+                &uniforms,
+                true,
+            )?;
+        } else {
+            self.async_guest_presenter
+                .enqueue_compact(frame.clone(), uniforms)?;
+        }
+        self.last_compact = Some((frame.clone(), uniforms));
         Ok(true)
     }
 
@@ -1302,6 +1522,131 @@ fn encode_raster_frame(
 
     finish_presentation(&command_buffer, drawable, transactional);
     Ok(())
+}
+
+fn encode_compact_frame(
+    command_queue: &ProtocolObject<dyn MTLCommandQueue>,
+    pipeline: &ProtocolObject<dyn MTLRenderPipelineState>,
+    (cells, detail): (&ProtocolObject<dyn MTLBuffer>, &ProtocolObject<dyn MTLBuffer>),
+    drawable: &ProtocolObject<dyn CAMetalDrawable>,
+    uniforms: &CompactFrameUniforms,
+    transactional: bool,
+) -> Result<(), String> {
+    let texture = unsafe { drawable.texture() };
+    let pass = unsafe { MTLRenderPassDescriptor::new() };
+    let color = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
+    color.setTexture(Some(&texture));
+    color.setLoadAction(MTLLoadAction::Clear);
+    color.setStoreAction(MTLStoreAction::Store);
+    color.setClearColor(objc2_metal::MTLClearColor {
+        red: 0.0,
+        green: 0.0,
+        blue: 0.0,
+        alpha: 1.0,
+    });
+
+    let command_buffer = command_queue
+        .commandBuffer()
+        .ok_or_else(|| "Metal failed to create a command buffer".to_string())?;
+    let encoder = command_buffer
+        .renderCommandEncoderWithDescriptor(&pass)
+        .ok_or_else(|| "Metal failed to create a render encoder".to_string())?;
+    encoder.setRenderPipelineState(pipeline);
+    unsafe {
+        encoder.setFragmentBuffer_offset_atIndex(Some(cells), 0, 0);
+        encoder.setFragmentBuffer_offset_atIndex(Some(detail), 0, 1);
+        encoder.setFragmentBytes_length_atIndex(
+            non_null_bytes(uniforms),
+            size_of::<CompactFrameUniforms>(),
+            2,
+        );
+    }
+    encoder.setViewport(MTLViewport {
+        originX: uniforms.ox.into(),
+        originY: uniforms.oy.into(),
+        width: uniforms.dw.into(),
+        height: uniforms.dh.into(),
+        znear: 0.0,
+        zfar: 1.0,
+    });
+    unsafe {
+        encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::TriangleStrip, 0, 4)
+    };
+    encoder.endEncoding();
+
+    finish_presentation(&command_buffer, drawable, transactional);
+    Ok(())
+}
+
+/// The integer aspect-fit rectangle `(left, top, width, height)` of `source`
+/// in `drawable`. Integer bounds keep every fragment's coverage footprint an
+/// exact rational of the source size, as in the CPU resampler.
+fn integer_aspect_fit(source: (u32, u32), drawable: (u32, u32)) -> (u32, u32, u32, u32) {
+    let (sw, sh) = (u64::from(source.0), u64::from(source.1));
+    let (dw, dh) = (u64::from(drawable.0), u64::from(drawable.1));
+    let (width, height) = if dw * sh <= dh * sw {
+        (dw, dw * sh / sw)
+    } else {
+        (dh * sw / sh, dh)
+    };
+    (
+        ((dw - width) / 2) as u32,
+        ((dh - height) / 2) as u32,
+        width as u32,
+        height as u32,
+    )
+}
+
+/// Uniforms for presenting `crop` (logical guest pixels) of `frame` into a
+/// drawable, or `None` when the shader's 32-bit coverage arithmetic could
+/// overflow or the inputs are inconsistent; callers then resolve on the CPU.
+fn compact_frame_uniforms(
+    frame: &CompactPresentation,
+    crop: (u32, u32, u32, u32),
+    drawable_size: (u32, u32),
+) -> Option<CompactFrameUniforms> {
+    let (crop_left, crop_top, crop_width, crop_height) = crop;
+    if !(1..=4).contains(&frame.scale)
+        || frame.cells.len() != (frame.width as usize).checked_mul(frame.height as usize)?
+        || crop_width == 0
+        || crop_height == 0
+        || crop_left.checked_add(crop_width)? > frame.width
+        || crop_top.checked_add(crop_height)? > frame.height
+        || drawable_size.0 == 0
+        || drawable_size.1 == 0
+    {
+        return None;
+    }
+    let (ox, oy, dw, dh) = integer_aspect_fit((crop_width, crop_height), drawable_size);
+    let sw = u64::from(crop_width) * u64::from(frame.scale);
+    let sh = u64::from(crop_height) * u64::from(frame.scale);
+    let total =
+        (if sw > u64::from(dw) { sw } else { 1 }) * (if sh > u64::from(dh) { sh } else { 1 });
+    if [sw, sh, u64::from(dw), u64::from(dh)]
+        .iter()
+        .any(|&n| n == 0 || n > 16384)
+        || total * 255 + total / 2 > u64::from(u32::MAX)
+    {
+        return None;
+    }
+    debug_assert!(frame.cells.iter().all(|&cell| {
+        cell >> 31 == 0
+            || (cell & 0x7fffffff) as usize + (frame.scale * frame.scale) as usize
+                <= frame.detail.len()
+    }));
+    Some(CompactFrameUniforms {
+        width: frame.width,
+        height: frame.height,
+        scale: frame.scale,
+        crop_left,
+        crop_top,
+        crop_width,
+        crop_height,
+        dw,
+        dh,
+        ox,
+        oy,
+    })
 }
 
 fn encode_guest_frame(
@@ -1715,6 +2060,232 @@ mod tests {
             }
             result
         })
+    }
+
+    /// Run `compact_fragment` for `crop` of `frame` into a BGRA drawable, as
+    /// the presenter does, and read the drawable back as ARGB words.
+    fn render_compact(
+        frame: &systemless::memory::CompactPresentation,
+        crop: (u32, u32, u32, u32),
+        drawable: (u32, u32),
+    ) -> Vec<u32> {
+        use super::*;
+        let uniforms = compact_frame_uniforms(frame, crop, drawable).expect("supported frame");
+        autoreleasepool(|_| {
+            let device = unsafe { Retained::retain(MTLCreateSystemDefaultDevice()) }
+                .expect("Metal device required");
+            let library = device
+                .newLibraryWithSource_options_error(
+                    ns_string!(include_str!("metal_present.metal")),
+                    None,
+                )
+                .expect("compile presentation shader");
+            let descriptor = MTLRenderPipelineDescriptor::new();
+            descriptor.setVertexFunction(
+                library
+                    .newFunctionWithName(ns_string!("raster_vertex"))
+                    .as_deref(),
+            );
+            descriptor.setFragmentFunction(
+                library
+                    .newFunctionWithName(ns_string!("compact_fragment"))
+                    .as_deref(),
+            );
+            unsafe {
+                descriptor
+                    .colorAttachments()
+                    .objectAtIndexedSubscript(0)
+                    .setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+            }
+            let pipeline = device
+                .newRenderPipelineStateWithDescriptor_error(&descriptor)
+                .unwrap();
+            let desc = unsafe {
+                MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                    MTLPixelFormat::BGRA8Unorm,
+                    drawable.0 as usize,
+                    drawable.1 as usize,
+                    false,
+                )
+            };
+            desc.setStorageMode(MTLStorageMode::Shared);
+            desc.setUsage(MTLTextureUsage::RenderTarget);
+            let output = device.newTextureWithDescriptor(&desc).unwrap();
+            let mut buffers = CompactBuffers::default();
+            let (cells, detail) = buffers.upload(&device, frame).unwrap();
+            let pass = unsafe { MTLRenderPassDescriptor::new() };
+            let color = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
+            color.setTexture(Some(&output));
+            color.setLoadAction(MTLLoadAction::Clear);
+            color.setStoreAction(MTLStoreAction::Store);
+            color.setClearColor(objc2_metal::MTLClearColor {
+                red: 0.0,
+                green: 0.0,
+                blue: 0.0,
+                alpha: 1.0,
+            });
+            let queue = device.newCommandQueue().unwrap();
+            let command = queue.commandBuffer().unwrap();
+            let encoder = command.renderCommandEncoderWithDescriptor(&pass).unwrap();
+            encoder.setRenderPipelineState(&pipeline);
+            unsafe {
+                encoder.setFragmentBuffer_offset_atIndex(Some(cells), 0, 0);
+                encoder.setFragmentBuffer_offset_atIndex(Some(detail), 0, 1);
+                encoder.setFragmentBytes_length_atIndex(
+                    non_null_bytes(&uniforms),
+                    size_of::<CompactFrameUniforms>(),
+                    2,
+                );
+            }
+            encoder.setViewport(MTLViewport {
+                originX: uniforms.ox.into(),
+                originY: uniforms.oy.into(),
+                width: uniforms.dw.into(),
+                height: uniforms.dh.into(),
+                znear: 0.0,
+                zfar: 1.0,
+            });
+            unsafe {
+                encoder.drawPrimitives_vertexStart_vertexCount(
+                    MTLPrimitiveType::TriangleStrip,
+                    0,
+                    4,
+                );
+            }
+            encoder.endEncoding();
+            command.commit();
+            unsafe {
+                command.waitUntilCompleted();
+            }
+            let mut result = vec![0u32; (drawable.0 * drawable.1) as usize];
+            unsafe {
+                output.getBytes_bytesPerRow_fromRegion_mipmapLevel(
+                    NonNull::new(result.as_mut_ptr().cast()).unwrap(),
+                    drawable.0 as usize * 4,
+                    MTLRegion {
+                        origin: objc2_metal::MTLOrigin { x: 0, y: 0, z: 0 },
+                        size: objc2_metal::MTLSize {
+                            width: drawable.0 as usize,
+                            height: drawable.1 as usize,
+                            depth: 1,
+                        },
+                    },
+                    0,
+                );
+            }
+            result
+        })
+    }
+
+    #[test]
+    fn compact_shader_matches_cpu_coverage_for_crops_and_drawables() {
+        use systemless::memory::CompactPresentation;
+        let mut seed = 0x2545_f491u32;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        for scale in [2u32, 3, 4] {
+            let (width, height) = (13u32, 9u32);
+            let mut frame = CompactPresentation {
+                width,
+                height,
+                scale,
+                ..Default::default()
+            };
+            for _ in 0..width * height {
+                if next() % 4 == 0 {
+                    frame.cells.push(0x80000000 | frame.detail.len() as u32);
+                    for _ in 0..scale * scale {
+                        frame.detail.push(next() & 0xffffff);
+                    }
+                } else {
+                    frame.cells.push(next() & 0xffffff);
+                }
+            }
+            let sw = width * scale;
+            let full: Vec<u32> = (0..height * scale)
+                .flat_map(|y| (0..sw).map(move |x| (x, y)))
+                .map(|(x, y)| {
+                    let cell = frame.cells[((y / scale) * width + x / scale) as usize];
+                    0xff000000
+                        | if cell >> 31 == 0 {
+                            cell
+                        } else {
+                            frame.detail[(cell & 0x7fffffff) as usize
+                                + ((y % scale) * scale + x % scale) as usize]
+                        }
+                })
+                .collect();
+            for crop in [(0, 0, width, height), (2, 1, 9, 7), (12, 8, 1, 1)] {
+                for drawable in [
+                    (crop.2 * scale, crop.3 * scale),
+                    (crop.2 * scale + 7, crop.3 * scale + 3),
+                    (crop.2, crop.3 + 5),
+                    (crop.2 * 5 + 1, crop.3 * 2),
+                    (31, 17),
+                ] {
+                    let (cl, ct, cw, ch) = crop;
+                    let cropped: Vec<u32> = (ct * scale..(ct + ch) * scale)
+                        .flat_map(|y| {
+                            full[(y * sw + cl * scale) as usize..(y * sw + (cl + cw) * scale) as usize]
+                                .iter()
+                                .copied()
+                        })
+                        .collect();
+                    let (ox, oy, dw, dh) =
+                        super::integer_aspect_fit((cw, ch), drawable);
+                    let mut scaled = Vec::new();
+                    systemless::display::resize_argb_coverage(
+                        &cropped,
+                        (cw * scale, ch * scale),
+                        (dw, dh),
+                        &mut scaled,
+                    );
+                    let actual = render_compact(&frame, crop, drawable);
+                    for y in 0..drawable.1 {
+                        for x in 0..drawable.0 {
+                            let expected = if x >= ox && x < ox + dw && y >= oy && y < oy + dh {
+                                scaled[((y - oy) * dw + x - ox) as usize]
+                            } else {
+                                0xff000000
+                            };
+                            assert_eq!(
+                                actual[(y * drawable.0 + x) as usize],
+                                expected,
+                                "scale={scale} crop={crop:?} drawable={drawable:?} at ({x},{y})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compact_uniforms_reject_crops_outside_the_frame_and_inexact_totals() {
+        use systemless::memory::CompactPresentation;
+        let frame = CompactPresentation {
+            width: 4,
+            height: 3,
+            scale: 2,
+            cells: vec![0; 12],
+            detail: Vec::new(),
+        };
+        assert!(super::compact_frame_uniforms(&frame, (0, 0, 4, 3), (8, 6)).is_some());
+        assert!(super::compact_frame_uniforms(&frame, (1, 0, 4, 3), (8, 6)).is_none());
+        assert!(super::compact_frame_uniforms(&frame, (0, 0, 0, 3), (8, 6)).is_none());
+        assert!(super::compact_frame_uniforms(&frame, (0, 0, 4, 3), (0, 6)).is_none());
+        let large = CompactPresentation {
+            width: 4096,
+            height: 4096,
+            scale: 4,
+            cells: vec![0; 4096 * 4096],
+            detail: Vec::new(),
+        };
+        assert!(super::compact_frame_uniforms(&large, (0, 0, 4096, 4096), (100, 100)).is_none());
     }
 
     #[test]
@@ -2159,7 +2730,9 @@ mod tests {
                     first_pixels,
                     "the queued frame is the caller's own allocation"
                 ),
-                FramePixels::Indexed(_) => panic!("raster frames queue ARGB words"),
+                FramePixels::Indexed(_) | FramePixels::Compact(_) => {
+                    panic!("raster frames queue ARGB words")
+                }
             }
             assert!(
                 pending.metadata
@@ -2186,7 +2759,9 @@ mod tests {
         assert_eq!(state.coalesced, 1);
         match &state.pending.as_ref().unwrap().pixels {
             FramePixels::Argb(pixels) => assert_eq!(pixels.as_ptr(), second_pixels),
-            FramePixels::Indexed(_) => panic!("raster frames queue ARGB words"),
+            FramePixels::Indexed(_) | FramePixels::Compact(_) => {
+                panic!("raster frames queue ARGB words")
+            }
         }
     }
 

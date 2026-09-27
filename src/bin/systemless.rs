@@ -2023,7 +2023,17 @@ impl App {
             && retained.is_some()
             && cursor.is_none()
             && !self.debug_overlay_visible;
-        #[cfg(not(target_os = "windows"))]
+        // Metal resolves retained text coverage on the GPU, like D3D11 above.
+        // Host cursors and debug text still patch a CPU image first.
+        #[cfg(target_os = "macos")]
+        let compact_ready = self
+            .surface
+            .as_ref()
+            .is_some_and(|surface| surface.supports_compact())
+            && retained.is_some()
+            && cursor.is_none()
+            && !self.debug_overlay_visible;
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         let compact_ready = false;
         let mut frame_argb = std::mem::take(&mut self.frame_argb);
         if !compact_ready {
@@ -2051,6 +2061,41 @@ impl App {
             if let Some(guest) = guest {
                 self.guest_frame_argb = guest;
             }
+        }
+
+        #[cfg(target_os = "macos")]
+        if compact_ready {
+            let (Some(surface), Some(image)) = (self.surface.as_mut(), retained.as_ref()) else {
+                unreachable!("compact presentation requires a surface and retained image");
+            };
+            let _timing = FramePhaseTimer::new("compact presentation submission");
+            let presented = surface
+                .present_compact(
+                    image,
+                    (
+                        presentation_rect.left,
+                        presentation_rect.top,
+                        presentation_rect.width,
+                        presentation_rect.height,
+                    ),
+                    (buf_w, buf_h),
+                    force_gpu_present,
+                )
+                .expect("Failed to present compact Metal frame");
+            if presented {
+                if let Some(transaction) = core_animation_transaction.take() {
+                    drop(transaction);
+                    surface.set_transactional_presentation(false);
+                }
+                self.frame_argb = frame_argb;
+                self.last_presented_guest_tick = Some(presented_tick);
+                self.force_next_render = false;
+                self.force_gpu_present = false;
+                self.render_headroom = GuiDriver::next_render_headroom(render_start.elapsed());
+                return;
+            }
+            // Beyond the shader's exact integer range: resolve on the CPU.
+            frame.screen.render_argb(&mut frame_argb);
         }
 
         #[cfg(target_os = "windows")]
