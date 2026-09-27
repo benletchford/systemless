@@ -129,6 +129,7 @@ use super::*;
                 kind: PPC_ISP_ELEMENT_KIND_BUTTON,
                 default_state: 0,
                 action_binding: PpcInputSprocketActionBinding::ButtonFire,
+                keyboard_binding: None,
                 need_name: "Fire".to_string(),
                 need_record: Vec::new(),
             });
@@ -1180,6 +1181,7 @@ use super::*;
             last_virtual_need_count: 0,
             last_virtual_needs_ptr: 0,
             last_virtual_elements_out_ptr: 0,
+            ..PpcInputSprocketState::default()
         };
 
         let probe = loaded.run_with_hle_imports(64);
@@ -1199,6 +1201,7 @@ use super::*;
                 last_virtual_need_count: 0,
                 last_virtual_needs_ptr: 0,
                 last_virtual_elements_out_ptr: 0,
+                ..PpcInputSprocketState::default()
             }
         );
 
@@ -1343,6 +1346,7 @@ fn sprocket_trace_formatter_includes_input_sprocket_state() {
         last_virtual_need_count: 3,
         last_virtual_needs_ptr: 0x0200_1000,
         last_virtual_elements_out_ptr: 0x0200_2000,
+        ..PpcInputSprocketState::default()
     };
     let entry = PpcHleImportTraceEntry {
         import_index: 51,
@@ -1365,7 +1369,7 @@ fn sprocket_trace_formatter_includes_input_sprocket_state() {
             &input_sprocket,
             &[],
         ),
-        "[SPROCKET-TRACE] InputSprocketLib:ISpElement_GetSimpleState pc=$01F01100 lr=$01002100 rtoc=$02003100 sp=$03FEEFC0 r3=$02003000 r4=$02004000 r5=$00000000 r6=$00000000 r7=$00000000 r8=$00000000 action=return-preserve isp initialized=true suspended=false keyboard=true mouse=false virtuals=5 last_need_count=3 last_needs=$02001000 last_elements=$02002000 configure_count=2"
+        "[SPROCKET-TRACE] InputSprocketLib:ISpElement_GetSimpleState pc=$01F01100 lr=$01002100 rtoc=$02003100 sp=$03FEEFC0 r3=$02003000 r4=$02004000 r5=$00000000 r6=$00000000 r7=$00000000 r8=$00000000 action=return-preserve isp initialized=true suspended=false keyboard=true mouse=false virtuals=5 last_need_count=3 last_needs=$02001000 last_elements=$02002000 configure_count=2 setl=0 tset=0 keys=0"
     );
 }
 
@@ -1381,6 +1385,7 @@ fn sprocket_trace_formatter_includes_input_sprocket_virtual_bindings_on_creation
         last_virtual_need_count: 2,
         last_virtual_needs_ptr: 0x0200_1000,
         last_virtual_elements_out_ptr: 0x0200_2000,
+        ..PpcInputSprocketState::default()
     };
     let virtual_elements = vec![
         PpcInputSprocketVirtualElementRecord {
@@ -1390,6 +1395,7 @@ fn sprocket_trace_formatter_includes_input_sprocket_virtual_bindings_on_creation
             kind: PPC_ISP_ELEMENT_KIND_BUTTON,
             default_state: 0,
             action_binding: PpcInputSprocketActionBinding::ButtonFire,
+            keyboard_binding: None,
             need_name: "Fire".to_string(),
             need_record: Vec::new(),
         },
@@ -1400,6 +1406,7 @@ fn sprocket_trace_formatter_includes_input_sprocket_virtual_bindings_on_creation
             kind: PPC_ISP_ELEMENT_KIND_DELTA,
             default_state: 0,
             action_binding: PpcInputSprocketActionBinding::DeltaYaw,
+            keyboard_binding: None,
             need_name: "Yaw (Mouse)".to_string(),
             need_record: Vec::new(),
         },
@@ -1425,7 +1432,7 @@ fn sprocket_trace_formatter_includes_input_sprocket_virtual_bindings_on_creation
             &input_sprocket,
             &virtual_elements,
         ),
-        "[SPROCKET-TRACE] InputSprocketLib:ISpElement_NewVirtualFromNeeds pc=$01F01000 lr=$01002000 rtoc=$02003000 sp=$03FEF000 r3=$00000002 r4=$02001000 r5=$02002000 r6=$00000000 r7=$00000000 r8=$00000000 action=return($00000000) isp initialized=true suspended=false keyboard=true mouse=true virtuals=2 last_need_count=2 last_needs=$02001000 last_elements=$02002000 configure_count=0 last_bindings=[#0 button 'Fire'=button/fire,#1 delta 'Yaw (Mouse)'=delta/yaw]"
+        "[SPROCKET-TRACE] InputSprocketLib:ISpElement_NewVirtualFromNeeds pc=$01F01000 lr=$01002000 rtoc=$02003000 sp=$03FEF000 r3=$00000002 r4=$02001000 r5=$02002000 r6=$00000000 r7=$00000000 r8=$00000000 action=return($00000000) isp initialized=true suspended=false keyboard=true mouse=true virtuals=2 last_need_count=2 last_needs=$02001000 last_elements=$02002000 configure_count=0 setl=0 tset=0 keys=0 last_bindings=[#0 button 'Fire'=button/fire,#1 delta 'Yaw (Mouse)'=delta/yaw]"
     );
 }
 
@@ -1498,6 +1505,10 @@ fn import_bindings_classify_input_sprocket_compatibility_imports() {
             PpcInputSprocketCompatibilityOperation::DevicesActivateClass,
         ),
         (
+            "ISpDevices_DeactivateClass",
+            PpcInputSprocketCompatibilityOperation::DevicesDeactivateClass,
+        ),
+        (
             "ISpElement_DisposeVirtual",
             PpcInputSprocketCompatibilityOperation::ElementDisposeVirtual,
         ),
@@ -1516,4 +1527,87 @@ fn import_bindings_classify_input_sprocket_compatibility_imports() {
             PpcImportDispatcherTarget::InputSprocketCompatibility(operation),
         );
     }
+}
+
+#[test]
+fn input_sprocket_rejects_resource_counts_larger_than_the_data() {
+    let mut resource = [0u8; 8];
+    resource[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
+    assert!(ppc_isp_parse_setl_entries(&resource).is_none());
+    assert!(ppc_isp_parse_tset_keycodes(&resource).is_none());
+}
+
+#[test]
+fn input_sprocket_setl_tset_defaults_assign_keycodes_in_need_order() {
+    // Synthetic 'setl': version, count=1, an ISpDeviceDefinition naming the
+    // keyboard ('keyd'/'appl'), and a trailing tset ResID 493.
+    let entry = PPC_ISP_SETL_HEADER_SIZE as usize;
+    let mut setl = vec![0u8; entry + PPC_ISP_SETL_ENTRY_SIZE as usize];
+    setl[0..4].copy_from_slice(&2u32.to_be_bytes());
+    setl[4..8].copy_from_slice(&1u32.to_be_bytes());
+    let class = entry + PPC_ISP_SETL_ENTRY_DEVICE_CLASS_OFFSET as usize;
+    let creator = entry + PPC_ISP_SETL_ENTRY_DEVICE_CREATOR_OFFSET as usize;
+    let tset_id = entry + PPC_ISP_SETL_ENTRY_TSET_ID_OFFSET as usize;
+    setl[class..class + 4].copy_from_slice(b"keyd");
+    setl[creator..creator + 4].copy_from_slice(b"appl");
+    setl[tset_id..tset_id + 2].copy_from_slice(&493i16.to_be_bytes());
+
+    // Synthetic 'tset': version, count=14, the Deimos keyboard map.
+    let keys: [u8; 14] = [
+        0x7b, 0x7c, 0x7d, 0x7e, 0x3a, 0x37, 0x31, 0x56, 0x58, 0x57, 0x5b, 0x75, 0x77, 0x79,
+    ];
+    let mut tset = vec![
+        0u8;
+        PPC_ISP_TSET_HEADER_SIZE as usize + keys.len() * PPC_ISP_TSET_ENTRY_SIZE as usize
+    ];
+    tset[0..4].copy_from_slice(&1u32.to_be_bytes());
+    tset[4..8].copy_from_slice(&(keys.len() as u32).to_be_bytes());
+    for (index, key) in keys.iter().copied().enumerate() {
+        let base = PPC_ISP_TSET_HEADER_SIZE as usize + index * PPC_ISP_TSET_ENTRY_SIZE as usize;
+        tset[base..base + 2].copy_from_slice(&u16::from(key).to_be_bytes());
+    }
+
+    let entries = ppc_isp_parse_setl_entries(&setl).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].device_class, PPC_ISP_DEVICE_CLASS_KEYBOARD);
+    assert_eq!(entries[0].tset_id, 493);
+    assert_eq!(ppc_isp_parse_tset_keycodes(&tset).unwrap(), keys.to_vec());
+
+    let record = |res_type: [u8; 4], res_id: i16, data: Vec<u8>| PpcVfsResourceRecord {
+        ref_num: 0,
+        path: "synthetic".to_string(),
+        res_type: u32::from_be_bytes(res_type),
+        res_id,
+        name: Vec::new(),
+        data,
+        raw_data: None,
+        raw_attrs: None,
+        attrs: 0,
+        handle: 0,
+    };
+    let resources = [
+        record(*b"setl", 7, setl),
+        record(*b"tset", 493, tset),
+    ];
+    let defaults = ppc_isp_load_default_keycodes(&resources, 0, 7).unwrap();
+    assert_eq!(defaults.set_list_id, 7);
+    assert_eq!(defaults.tset_id, 493);
+    assert_eq!(defaults.keycode_count, 14);
+    assert_eq!(&defaults.keycodes[..14], &keys);
+
+    // Axis slot order is (minimum, maximum): right key reports AXIS_HIGH.
+    let mut input = PpcInputSnapshot::default();
+    input.key_map[(keys[1] / 8) as usize] |= 1u8 << (keys[1] % 8);
+    let state = ppc_isp_input_simple_state_with_binding(
+        PPC_ISP_ELEMENT_KIND_AXIS,
+        PPC_ISP_AXIS_MIDDLE,
+        input,
+        PpcInputSprocketState {
+            keyboard_defaults: defaults,
+            ..PpcInputSprocketState::default()
+        },
+        PpcInputSprocketActionBinding::AxisHorizontal,
+        Some(PpcInputSprocketKeyboardBinding::axis(keys[0], keys[1])),
+    );
+    assert_eq!(state, PPC_ISP_AXIS_HIGH);
 }

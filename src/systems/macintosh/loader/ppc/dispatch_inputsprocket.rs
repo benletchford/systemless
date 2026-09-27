@@ -13,6 +13,8 @@ pub(super) struct PpcInputSprocketDispatchContext<'a> {
     pub(super) input_sprocket_virtual_elements: &'a mut Vec<PpcInputSprocketVirtualElementRecord>,
     pub(super) input: PpcInputSnapshot,
     pub(super) tick_count: u32,
+    pub(super) vfs_resources: &'a [PpcVfsResourceRecord],
+    pub(super) current_resource_refnum: i16,
 }
 
 pub(super) fn dispatch_inputsprocket_import(
@@ -29,6 +31,8 @@ pub(super) fn dispatch_inputsprocket_import(
         input_sprocket_virtual_elements,
         input,
         tick_count,
+        vfs_resources,
+        current_resource_refnum,
     } = context;
 
     match binding.dispatcher_target {
@@ -114,14 +118,26 @@ pub(super) fn dispatch_inputsprocket_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ISpStartup => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_isp_init(input_sprocket),
+            ppc_isp_init(input_sprocket, PpcInputSprocketKeyboardDefaults::default()),
         ))),
         PpcImportDispatcherTarget::ISpShutdown => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_isp_stop(input_sprocket),
         ))),
-        PpcImportDispatcherTarget::ISpInit => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_isp_init(input_sprocket),
-        ))),
+        PpcImportDispatcherTarget::ISpInit => {
+            // ISpInit(count, needs, virtuals, appCreator, subCreator,
+            // flags, setListResourceId, reserved): argument 7 arrives in r9.
+            let set_list_resource_id = cpu.gpr[9] as u16 as i16;
+            let defaults = ppc_isp_load_default_keycodes(
+                vfs_resources,
+                current_resource_refnum,
+                set_list_resource_id,
+            )
+            .unwrap_or_default();
+            let result = ppc_isp_init(input_sprocket, defaults);
+            // The game may have created its virtual elements before ISpInit.
+            ppc_isp_assign_keyboard_defaults(input_sprocket, input_sprocket_virtual_elements);
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::ISpStop => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_isp_stop(input_sprocket),
         ))),

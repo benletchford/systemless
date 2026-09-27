@@ -1063,6 +1063,7 @@ pub enum PpcStdIoOperation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcInputSprocketCompatibilityOperation {
     DevicesActivateClass,
+    DevicesDeactivateClass,
     ElementDisposeVirtual,
     ElementFlush,
     ElementGetNextEvent,
@@ -13621,6 +13622,11 @@ fn dispatcher_target_for_import(
                 PpcInputSprocketCompatibilityOperation::DevicesActivateClass,
             )
         }
+        ("InputSprocketLib", "ISpDevices_DeactivateClass") => {
+            PpcImportDispatcherTarget::InputSprocketCompatibility(
+                PpcInputSprocketCompatibilityOperation::DevicesDeactivateClass,
+            )
+        }
         ("InputSprocketLib", "ISpElement_DisposeVirtual") => {
             PpcImportDispatcherTarget::InputSprocketCompatibility(
                 PpcInputSprocketCompatibilityOperation::ElementDisposeVirtual,
@@ -14579,6 +14585,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             input_sprocket_virtual_elements,
             input,
             tick_count: *tick_count,
+            vfs_resources,
+            current_resource_refnum: *current_resource_refnum,
         },
     ) {
         return Some(action);
@@ -17548,6 +17556,18 @@ fn ppc_dispatch_input_sprocket_compatibility(
         PpcInputSprocketCompatibilityOperation::DevicesActivateClass => {
             input_sprocket.keyboard_active = true;
             input_sprocket.mouse_active = true;
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        // InputSprocket.h: ISpDevices_DeactivateClass(ISpDeviceClass) stops
+        // every device of that class, such as kISpDeviceClass_Mouse, so the
+        // game reads it through the Event Manager instead. Classes with no
+        // emulated device have nothing to deactivate.
+        PpcInputSprocketCompatibilityOperation::DevicesDeactivateClass => {
+            match cpu.gpr[3] {
+                PPC_ISP_DEVICE_CLASS_KEYBOARD => input_sprocket.keyboard_active = false,
+                PPC_ISP_DEVICE_CLASS_MOUSE => input_sprocket.mouse_active = false,
+                _ => {}
+            }
             PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }
         PpcInputSprocketCompatibilityOperation::ElementDisposeVirtual => {
