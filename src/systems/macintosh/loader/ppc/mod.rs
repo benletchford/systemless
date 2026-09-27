@@ -2123,6 +2123,8 @@ pub enum PpcImportDispatcherTarget {
     QtCloseMovieFile,
     CloseComponent,
     NewRoutineDescriptor,
+    NewIOCompletionUPP,
+    DisposeIOCompletionUPP,
     NewFatRoutineDescriptor,
     DisposeRoutineDescriptor,
     CallUniversalProc,
@@ -13106,6 +13108,12 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetIconSuite") => PpcImportDispatcherTarget::GetIconSuite,
         ("InterfaceLib", "GetPattern") => PpcImportDispatcherTarget::GetPattern,
         ("InterfaceLib", "NewRoutineDescriptor") => PpcImportDispatcherTarget::NewRoutineDescriptor,
+        ("InterfaceLib", "NewIOCompletionUPP") => {
+            PpcImportDispatcherTarget::NewIOCompletionUPP
+        }
+        ("InterfaceLib", "DisposeIOCompletionUPP") => {
+            PpcImportDispatcherTarget::DisposeIOCompletionUPP
+        }
         ("InterfaceLib", "NewFatRoutineDescriptor") => {
             PpcImportDispatcherTarget::NewFatRoutineDescriptor
         }
@@ -16132,6 +16140,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             ppc_close_component(cpu, quicktime),
         ))),
         PpcImportDispatcherTarget::NewRoutineDescriptor
+        | PpcImportDispatcherTarget::NewIOCompletionUPP
+        | PpcImportDispatcherTarget::DisposeIOCompletionUPP
         | PpcImportDispatcherTarget::NewFatRoutineDescriptor
         | PpcImportDispatcherTarget::DisposeRoutineDescriptor
         | PpcImportDispatcherTarget::CallUniversalProc

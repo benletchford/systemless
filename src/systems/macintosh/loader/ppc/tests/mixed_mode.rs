@@ -311,6 +311,45 @@ fn import_bindings_classify_mixed_mode_imports() {
 }
 
 #[test]
+fn carbon_io_completion_upp_uses_a_releasable_ppc_descriptor() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "NewIOCompletionUPP"),
+        PpcImportDispatcherTarget::NewIOCompletionUPP
+    );
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "DisposeIOCompletionUPP"),
+        PpcImportDispatcherTarget::DisposeIOCompletionUPP
+    );
+
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewIOCompletionUPP"))
+        .unwrap();
+    loaded.cpu.gpr[3] = PPC_CODE_BASE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewIOCompletionUPP);
+    let descriptor = loaded.cpu.gpr[3];
+    assert_ne!(descriptor, 0);
+    assert_eq!(loaded.memory.read_u16_be(descriptor), Some(PPC_MIXED_MODE_TRAP));
+    let record = descriptor + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE;
+    assert_eq!(loaded.memory.read_u32_be(record), Some(0x00C1));
+    assert_eq!(
+        loaded.memory.read_u8(record + PPC_ROUTINE_RECORD_ISA_OFFSET),
+        Some(PPC_ROUTINE_RECORD_POWERPC_ISA)
+    );
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(record + PPC_ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET),
+        Some(PPC_CODE_BASE)
+    );
+
+    loaded.cpu.gpr[3] = descriptor;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeIOCompletionUPP);
+    assert_eq!(loaded.cpu.gpr[3], descriptor);
+    loaded.cpu.gpr[3] = PPC_CODE_BASE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewIOCompletionUPP);
+    assert_eq!(loaded.cpu.gpr[3], descriptor);
+}
+
+#[test]
 fn hle_import_runner_builds_new_routine_descriptor() {
     let pef = synthetic_pef_with_import(b"NewRoutineDescriptor");
     let mut loaded = load_pef_application(&pef).unwrap();

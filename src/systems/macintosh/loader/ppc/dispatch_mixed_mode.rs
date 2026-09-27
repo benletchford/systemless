@@ -1,5 +1,9 @@
 use super::*;
 
+// C stack convention, void result, one 4-byte parameter.
+// CarbonCore/Files.h (IOCompletionProcPtr) and MixedMode.h (ProcInfo fields).
+const PPC_IO_COMPLETION_PROC_INFO: u32 = 0x00C1;
+
 pub(super) const PPC_SYSTEM_ALLOCATION_POOL_SIZE: u32 = 64 * 1024;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -107,6 +111,21 @@ pub(super) fn dispatch_mixed_mode_import(
                 &mut toolbox_startup.system_allocations,
             ))))
         }
+        PpcImportDispatcherTarget::NewIOCompletionUPP => {
+            // CarbonCore/Files.h: void IOCompletionProcPtr(ParmBlkPtr).
+            // Carbon CFM UPP creation allocates a Mixed Mode descriptor;
+            // Carbon Porting Guide (2002), p. 22.
+            Some(Some(PpcImportAction::Return(ppc_new_routine_descriptor(
+                cpu.gpr[3],
+                PPC_IO_COMPLETION_PROC_INFO,
+                PPC_ROUTINE_RECORD_POWERPC_ISA,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                &mut toolbox_startup.system_allocations,
+            ))))
+        }
         PpcImportDispatcherTarget::NewFatRoutineDescriptor => Some(Some(PpcImportAction::Return(
             ppc_new_fat_routine_descriptor(
                 cpu,
@@ -117,11 +136,14 @@ pub(super) fn dispatch_mixed_mode_import(
                 &mut toolbox_startup.system_allocations,
             ),
         ))),
-        PpcImportDispatcherTarget::DisposeRoutineDescriptor => {
+        PpcImportDispatcherTarget::DisposeRoutineDescriptor
+        | PpcImportDispatcherTarget::DisposeIOCompletionUPP => {
             // DisposeRoutineDescriptor(theProcPtr: UniversalProcPtr): void.
             // PowerPC ABI: r3 carries the descriptor and is preserved on return.
             // The Mixed Mode Manager releases only creation-allocated heap storage.
             // Inside Macintosh: PowerPC System Software (1994), pp. 2-21, 2-41.
+            // CarbonCore/Files.h: DisposeIOCompletionUPP follows the same
+            // ownership rule for descriptors made by NewIOCompletionUPP.
             let descriptor = cpu.gpr[3];
             if !toolbox_startup
                 .system_allocations
