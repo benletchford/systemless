@@ -822,23 +822,7 @@ pub use dispatch_files::PpcFileCompatibilityOperation;
 
 pub use files::{PpcDeleteByNameOperation, PpcParameterBlockCreateOperation};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PpcLegacyMemoryUtilityOperation {
-    BitClear,
-    BitNot,
-    BitSet,
-    FixToExtended,
-    GetMyZone,
-    HandleZone,
-    LockMemory,
-    MaxBlock,
-    PurgeSpace,
-    ReserveMem,
-    SetGrowZone,
-    StackSpace,
-    TempFreeMem,
-    UnlockMemory,
-}
+pub use memory::PpcLegacyMemoryUtilityOperation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcLegacyWindowOperation {
