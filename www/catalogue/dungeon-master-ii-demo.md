@@ -21,7 +21,9 @@ compatibility:
       Deterministic headless replay of the unchanged demo. Dismissed the promotional
       screen, selected New, reached the first-person dungeon with the champion and
       movement controls, then clicked forward and observed the corridor view change.
-      Native-Mac comparison and browser launch have not yet been verified.
+      The promoted archive and screenshot were fetched back and matched their
+      recorded SHA-256 hashes. Native-Mac comparison and browser launch have
+      not yet been verified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3079
 artifacts:
