@@ -3630,6 +3630,42 @@ fn cloned_native_adapter_detaches_process_cursor_state() {
 }
 
 #[test]
+fn carbon_get_qd_globals_arrow_copies_cursor_and_returns_buffer() {
+    let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+        b"CarbonLib",
+        b"GetQDGlobalsArrow",
+        0x82,
+        &[sm_index_reloc(0x30, 0)],
+    ));
+    let mut weak_loaded = load_pef_application(&pef).unwrap();
+    assert_eq!(
+        weak_loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::GetQDGlobalsArrow
+    );
+    assert_ne!(weak_loaded.imports[0].address, 0);
+    assert_eq!(
+        weak_loaded.memory.read_u32_be(PPC_DATA_BASE),
+        Some(weak_loaded.imports[0].address)
+    );
+
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetQDGlobalsArrow")).unwrap();
+    let out = PPC_DATA_BASE + 0x3000;
+    loaded.memory.add_region(out, vec![0; 68]);
+    loaded.cpu.gpr[3] = out;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], out);
+
+    let (data, mask, hot_v, hot_h) = crate::display::default_arrow_cursor();
+    let mut cursor = [0; 68];
+    loaded.memory.read_bytes_into(out, &mut cursor).unwrap();
+    assert_eq!(&cursor[..32], &data);
+    assert_eq!(&cursor[32..64], &mask);
+    assert_eq!(i16::from_be_bytes([cursor[64], cursor[65]]), hot_v);
+    assert_eq!(i16::from_be_bytes([cursor[66], cursor[67]]), hot_h);
+}
+
+#[test]
 fn attached_cursor_visibility_mutations_cross_isa_immediately() {
     let pef = synthetic_pef_with_import(b"HideCursor");
     let mut native = load_pef_application(&pef).unwrap();

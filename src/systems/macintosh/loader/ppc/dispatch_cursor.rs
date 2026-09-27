@@ -48,6 +48,21 @@ pub(super) fn dispatch_cursor_import(
             cursor_state.init();
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::GetQDGlobalsArrow => {
+            // Carbon's accessor copies the QuickDraw arrow Cursor into the
+            // caller's 68-byte record and returns the same pointer.
+            // Carbon Porting Guide (2002), "A Porting Example".
+            let out = cpu.gpr[3];
+            if !ppc_memory_can_write_bytes(memory, out, 68) {
+                return Some(PpcImportAction::Return(0));
+            }
+            let (data, mask, hot_v, hot_h) = crate::display::default_arrow_cursor();
+            let _ = memory.write_bytes(out, &data);
+            let _ = memory.write_bytes(out + 32, &mask);
+            let _ = memory.write_u16_be(out + 64, hot_v as u16);
+            let _ = memory.write_u16_be(out + 66, hot_h as u16);
+            Some(PpcImportAction::Return(out))
+        }
         PpcImportDispatcherTarget::HideCursor => {
             cursor_state.hide();
             Some(PpcImportAction::ReturnPreserve)
