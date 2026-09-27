@@ -20,7 +20,9 @@ compatibility:
     environment: >-
       Deterministic headless replay of the unchanged demo. Selected Heavy Metal,
       entered Mission I, reached live 3D flight, then sent the bundled Read Me's throttle,
-      landing-gear, and chase-view commands. Browser launch has not yet been verified.
+      landing-gear, and chase-view commands. The same script reached those gameplay
+      checkpoints in BasiliskII; dynamic flight positions differ, so pixel parity
+      is not claimed. Browser launch has not yet been verified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3037
 artifacts:
@@ -86,4 +88,6 @@ capture shows the chase view after the plane responded to those inputs.
 
 This is Parsoft's original Macintosh promotional demo, not the retail game.
 Systemless reached interactive flight in a deterministic replay. Browser
-launch remains disabled until the route is manually tested and approved.
+launch remains disabled until the route is manually tested and approved. A
+separate BasiliskII run also reached flight and the documented control
+checkpoints, though the two simulations did not occupy identical positions.
