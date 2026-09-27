@@ -1,8 +1,9 @@
 # Host responsiveness review handoff
 
-This change is delivered as a draft for review. It is not approved for merging,
-release or a broader default rollout. Additional native qualification is recorded below; coverage limits remain
-explicit and the desktop backend stays opt-in.
+This change is delivered as one draft for user review. Do not merge or release
+before that review. Native qualification now runs on hosted desktops without
+access to a developer’s unlocked Mac. Coverage limits remain explicit and the
+desktop backend stays opt-in.
 
 ## Delivery status
 
@@ -46,16 +47,58 @@ fullscreen, so this is not demonstrated to be an owner-thread regression. Both
 backends exited with status 0 through the window close control. The fullscreen
 exit shortcut attempt was inconclusive and is not counted as a pass.
 
-The following remain **unverified**, rather than silently counted as passes:
+Subsequent current-source macOS checks passed continuous drag resizing smaller
+and larger, fullscreen entry and AppKit Quit. The remaining window-system gates
+are now automated with the public Toolbox Showcase fixture.
 
-- Complete focus, cursor-warp, continuous drag-resize, fullscreen-exit and
-  cross-display DPI transition coverage.
-- Windows/Linux interactive native behavior and broader macOS workload coverage.
+### Automated native qualification
 
-A local diagnostic stall hook is excluded from the public implementation. The
-production source and optimized binary were restored after preparing that probe.
-Headless tests and browser checks do not substitute for the deferred window-system
-checks. They are prerequisites for future native default promotion.
+[Native window run 36284442451](https://github.com/benletchford/systemless/actions/runs/36284442451)
+qualified source `1fcfb52` on hosted macOS and Linux (Xvfb with Openbox). Both inline
+and owner-thread modes passed all eleven assertions: guest frames reach the window,
+initial focus, resize, fullscreen entry at monitor dimensions, fullscreen exit to
+normal bounds, exact resize after exit, focus loss, focus return, subsequent frame
+progress, cursor/input verification, and production close with owner teardown.
+Each case has a JSON report and log in the workflow artifacts.
+
+AppKit may restore remembered normal/zoom geometry when leaving fullscreen. The
+probe checks normal window bounds and then requires a successful exact 700×500
+resize; it does not assume that AppKit always restores the last requested size.
+
+Cursor verification is layered. Driver tests execute a guest instruction and
+verify owned warp retention and matching acknowledgement. The window probe injects
+that owned packet at the host boundary and checks the actual OS pointer position.
+Linux provides a real cursor event, which must return through the input path to
+the matching guest snapshot. macOS deliberately emits no event for cursor warps;
+the probe queries AppKit’s pointer position independently, then verifies a separate
+mapped input-command round trip. It does not claim physical input latency or a
+hardware-generated macOS input event.
+
+The probe is compiled only with `test-support`; ordinary builds contain no
+self-driving controls. To reproduce on a machine with a window server:
+
+```sh
+cargo build --locked --profile ci-test --bin systemless --features test-support
+python3 scripts/verify-native-window.py
+```
+
+The `Native window qualification` workflow provisions the Linux virtual desktop
+and runs macOS on a GitHub-hosted desktop. It needs no private game archive and no
+access to the developer’s desktop. Failures and timeouts are failures, never skips.
+The earlier manual checks remain relevant for live dragging, native menus, saves,
+and host responsiveness during a controlled owner stall; headless tests do not
+replace those observations.
+
+Cross-display DPI transitions, Windows interactive behavior, physical input/display
+latency, and broader hardware coverage remain unverified. The available macOS
+session had only one virtual display. These limits constrain future default
+promotion; they are not silently counted as passing checks.
+
+A repeated Marathon attract-demo failure was independently reproduced on pre-PR
+base `a57b757` and source `9ce37d5`: both failed at frontend tick 9,993 after
+1,261,141,621 instructions, invalid PC `$6961EDD4`, SP `$00FFFD5C`, following the
+same five demo resource loads. All 184 sampled execution/input/fault records
+matched. This is a pre-existing failure and those runs remain failed evidence.
 
 ## Measurement and CI interpretation
 
@@ -71,8 +114,8 @@ results do not erase those failures or prove physical input latency.
 threshold selection, exact scalar/parallel comparisons and gameplay regression
 checks. Neither kernel speedup nor headless execution proves native UI latency.
 
-Website/catalogue CI run 36266595509 passed on browser implementation `f16b5f5`.
-Native CI run 36262864995 passed with the unchanged native implementation,
-including Linux, macOS, Windows, headless, package, license and Clippy jobs.
-Subsequent documentation-only commits are not described as fresh full CI runs.
-No reference images were regenerated to accept changed output.
+Full Linux/macOS/Windows, headless/package, licensing, Clippy, website and catalogue
+CI passed on `9ce37d5` after the rebase. Later changes add only test-support window
+qualification and its workflow; production defaults remain unchanged. Current
+source qualification is linked above; see the PR checks for the final general CI
+status. No reference images were regenerated to accept changed output.
