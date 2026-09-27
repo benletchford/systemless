@@ -74,6 +74,7 @@ artifacts:
       0b04aa438f0ab74e40b34c4dff85a8cfacbe98b3320fd837bef4187d9d0dc20f, 23,080 bytes.
 references:
 - https://classicmacdemos.com/glider
+- https://download.classicmacdemos.com/Glider%20Demo.sit
 - https://static.classicmacdemos.com/demos/glider/README.txt
 - https://github.com/EngineersNeedArt/SoftDorothy-CasadyGreeneProjects
 ---
