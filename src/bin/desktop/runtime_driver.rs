@@ -11,7 +11,8 @@ use super::{
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use systemless::runner::MenuBarPolicy;
-use systemless::{game, runner::FixtureRunner, ui_theme::UiThemeId};
+use systemless::systems::macintosh::game;
+use systemless::{runner::FixtureRunner, ui_theme::UiThemeId};
 
 pub(super) struct GuiDriver {
     generation: u64,

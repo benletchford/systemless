@@ -6,7 +6,7 @@
     use crate::trap::dispatch::{
         DialogItem, LoadedResources, RecentColorTableFetch, ResourceFileMap, ScreenCopyBitsRect,
     };
-    use crate::trap::quickdraw::{
+    use super::{
         CopyBitmapInfo, DM_512_342_MODE_ID, DM_640_480_MODE_ID, DM_MODE_LIST_ENTRY_STRIDE,
         DM_MODE_LIST_MAGIC, DM_MODE_LIST_RESOLUTION_INFO_OFFSET,
         DM_MODE_LIST_SWITCH_INFO_OFFSET, DM_MODE_LIST_VP_BLOCK_OFFSET, DM_NATIVE_MODE_ID,
@@ -16844,8 +16844,8 @@
         let (mut d, mut cpu, mut bus) = setup();
         let palette_handle = bus.alloc(4);
         let palette_ptr = bus.alloc(
-            crate::trap::quickdraw::PALETTE_HEADER_SIZE
-                + crate::trap::quickdraw::PALETTE_COLOR_INFO_SIZE * 2,
+            super::PALETTE_HEADER_SIZE
+                + super::PALETTE_COLOR_INFO_SIZE * 2,
         );
         bus.write_long(palette_handle, palette_ptr);
         bus.write_word(palette_ptr, 2); // pmEntries

@@ -1615,21 +1615,21 @@ mod tests {
             (
                 0x01000100,
                 include_bytes!(
-                    "../tests/toolbox-showcase/reference/native-audio/sndplay-full-44100.u8"
+                    "../../../tests/toolbox-showcase/reference/native-audio/sndplay-full-44100.u8"
                 )
                 .as_slice(),
             ),
             (
                 0x00c000c0,
                 include_bytes!(
-                    "../tests/toolbox-showcase/reference/native-audio/sndplay-volume75-44100.u8"
+                    "../../../tests/toolbox-showcase/reference/native-audio/sndplay-volume75-44100.u8"
                 )
                 .as_slice(),
             ),
             (
                 0x00800080,
                 include_bytes!(
-                    "../tests/toolbox-showcase/reference/native-audio/sndplay-volume50-44100.u8"
+                    "../../../tests/toolbox-showcase/reference/native-audio/sndplay-volume50-44100.u8"
                 )
                 .as_slice(),
             ),

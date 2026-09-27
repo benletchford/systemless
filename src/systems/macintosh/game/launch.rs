@@ -1116,8 +1116,7 @@ fn load_host_payload(
     insert_payload_into_vfs(runner, payload, &mut executable_entry);
     log_vfs(runner);
 
-    let executable =
-        executable_entry.ok_or_else(|| format!("No executable found in {source}"))?;
+    let executable = executable_entry.ok_or_else(|| format!("No executable found in {source}"))?;
     if crate::runner::trace_load_enabled() {
         eprintln!("[LOAD] Selected executable: {}", executable.name);
     }
@@ -1224,15 +1223,8 @@ fn collect_host_directory(
             );
         }
 
-        let entry_payload = payload_from_forks(
-            &rel_name,
-            data,
-            rsrc,
-            file_type,
-            creator,
-            finder_flags,
-            1,
-        )?;
+        let entry_payload =
+            payload_from_forks(&rel_name, data, rsrc, file_type, creator, finder_flags, 1)?;
         merge_payload(payload, entry_payload);
     }
     Ok(())
@@ -4977,6 +4969,42 @@ mod tests {
         assert_eq!(
             runner.dispatcher().vfs_rsrc.get("Self Opening App"),
             Some(&rsrc)
+        );
+    }
+
+    #[test]
+    fn macintosh_session_loads_advances_and_presents_a_headless_application() {
+        use crate::api::{AudioFormat, InstructionBudget, PixelFormat};
+        use crate::systems::macintosh::session::{MacintoshInput, MacintoshSession};
+
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let macbinary = make_macbinary_application("Session App", b"content", &rsrc);
+        let mut session = MacintoshSession::new(true, None);
+        assert!(!session.status().loaded);
+        assert_eq!(session.advance(InstructionBudget(1)).instructions, 0);
+        let app = session
+            .load_bytes(&macbinary)
+            .expect("load application and content");
+        assert!(session.status().loaded);
+        session.initialize(&app);
+        session.deliver_input(MacintoshInput::MouseMove {
+            vertical: 12,
+            horizontal: 34,
+        });
+        let advance = session.advance(InstructionBudget(1));
+        assert!(advance.instructions <= 1);
+        assert_eq!(advance.guest_tick, session.status().guest_tick);
+        let frame = session.video_frame().expect("configured Macintosh screen");
+        assert_eq!(frame.format, PixelFormat::Rgba8);
+        assert_eq!(
+            frame.pixels.len(),
+            (frame.width * frame.height * 4) as usize
+        );
+        assert_eq!(
+            session.drain_audio().format,
+            AudioFormat::Unsigned8BitMono {
+                sample_rate_hz: 22_050
+            }
         );
     }
 

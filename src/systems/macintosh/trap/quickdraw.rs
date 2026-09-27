@@ -3,7 +3,7 @@
 
 use super::types::{read_rect, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
-use crate::display::{self, CursorImage};
+use crate::systems::macintosh::display::{self, CursorImage};
 use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::process_context::DEFAULT_QUICKDRAW_HILITE_COLOR;

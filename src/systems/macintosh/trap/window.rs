@@ -5,7 +5,7 @@ use crate::cpu::{CpuOps, Register};
 use crate::mac_roman::{decode_mac_roman, encode_mac_roman_lossy};
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::trap::dispatch::{DrawOldState, PortDrawState, QueuedEvent};
-use crate::trap::quickdraw::RegionBooleanOp;
+use super::quickdraw::RegionBooleanOp;
 use crate::trap::types::{Rect, ShapeOp};
 use crate::Result;
 use std::sync::OnceLock;

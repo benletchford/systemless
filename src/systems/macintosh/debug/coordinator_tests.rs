@@ -1,7 +1,7 @@
     use super::*;
-    use crate::debug::ids::{AddressSpaceId, ContextId};
-    use crate::debug::model::{DebugAddress, ExecutionLocation};
-    use crate::debug::request::BreakpointSpec;
+    use crate::systems::macintosh::debug::ids::{AddressSpaceId, ContextId};
+    use crate::systems::macintosh::debug::model::{DebugAddress, ExecutionLocation};
+    use crate::systems::macintosh::debug::request::BreakpointSpec;
 
     fn location(pc: u32) -> ExecutionLocation {
         ExecutionLocation {

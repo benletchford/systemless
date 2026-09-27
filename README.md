@@ -343,20 +343,22 @@ resource forks and is kept separate from the original archive.
 
 ## Library Use
 
-Programmatic loading goes through `FixtureRunner`:
+Programmatic loading goes through `MacintoshSession`:
 
 ```rust
-use systemless::runner::{FixtureRunner, FixtureRunnerConfig};
+use systemless::api::InstructionBudget;
+use systemless::systems::macintosh::session::MacintoshSession;
 
 let bytes = std::fs::read("game.sit").expect("read game");
-let mut runner = FixtureRunner::new(32 * 1024 * 1024, FixtureRunnerConfig::default());
-
-systemless::game::load_game(&mut runner, &bytes).expect("load game");
-let (_steps, _still_running) = runner.run_steps(100_000, None);
-runner.composite_frame();
+let mut session = MacintoshSession::new(true, None);
+let app = session.load_bytes(&bytes).expect("load game");
+session.initialize(&app);
+let result = session.advance(InstructionBudget(100_000));
+let frame = session.video_frame();
 ```
 
-Use `systemless::display` to render the current framebuffer for custom frontends.
+The optional `frame` contains RGBA8 pixels. Use
+`systemless::systems::macintosh::display` for specialized rendering.
 
 ## Save Persistence
 
@@ -408,6 +410,37 @@ launched archive under `.systemless/saves/<archive-name>/`.
 | `sound` | Sound Manager state and PCM mixing engine. |
 | `loader` | 68K CODE resource and PowerPC PEF/CFM loading, relocation, and launch setup. |
 | `trace` | Runtime trace hook (event/snapshot types + `TraceSink`) for cross-runtime parity comparison. |
+
+### Macintosh ownership and embedding
+
+The implementation modules in this table live under `systems::macintosh`.
+The former crate-root paths remain deprecated compatibility modules, so existing
+callers can continue using `systemless::runner`, `systemless::game`, and the
+other published module paths while migrating to
+`systemless::systems::macintosh::<module>`. `FixtureRunner` itself remains
+available for specialized operations; the session does not yet replace every
+runner method. The CPU engines remain in the separate `m68k` and
+`ppc` crates; their Systemless adapters, memory map, Toolbox services, task
+state, ABI gateways, and scheduler belong to this one Macintosh world.
+
+`api` contains only small embedding data contracts: an instruction budget,
+an advance result, and explicitly formatted video and audio buffers.
+`systems::macintosh::session::MacintoshSession` owns the existing
+`FixtureRunner`. It loads through `game`, advances through `run_steps`, and
+delivers input through the runner's existing event methods. Guest ticks keep
+the runner's current instruction cadence; a host frontend remains responsible
+for wall-clock pacing. Macintosh key codes and richer configuration stay in
+the Macintosh module. The session reports RGBA8 video and unsigned 8-bit mono
+PCM at 22,050 Hz. It can expose its runner for existing specialized operations
+during incremental frontend migration.
+
+The instruction-budget headless CLI path uses this session end to end. The
+desktop, browser, and timed headless paths still use compatibility exports and
+their current scheduling. The large PowerPC loader module still contains live
+runtime services, and debugger providers still bind to `FixtureRunner`;
+splitting those internals requires separate behavioral work. The current
+directory layout makes ownership explicit without claiming those service
+boundaries are already extracted.
 
 ## Build And Test
 

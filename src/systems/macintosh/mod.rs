@@ -1,0 +1,49 @@
+//! Macintosh guest implementation. Both CPU engines operate on one guest world.
+//! Internal scheduling, services, memory and ABI policy are owned here.
+
+pub(crate) mod adb;
+pub mod audio;
+pub mod binhex;
+pub mod callback_manager;
+pub(crate) mod cfm;
+pub(crate) mod collection_manager;
+pub(crate) mod control_manager;
+pub(crate) mod copy_bits;
+pub mod cpu;
+#[cfg(feature = "debug")]
+pub mod debug;
+pub mod debug_overlay;
+pub mod disk_image;
+pub mod display;
+pub(crate) mod event_queue;
+pub(crate) mod execution_kernel;
+pub(crate) mod execution_m68k;
+pub(crate) mod execution_native;
+pub mod game;
+pub(crate) mod guest_call;
+pub(crate) mod guest_procedure;
+pub(crate) mod list_manager;
+pub mod loader;
+pub(crate) mod mac_roman;
+pub mod machine_profile;
+pub mod managers;
+pub mod memory;
+pub(crate) mod menu_manager;
+pub mod menu_model;
+pub(crate) mod mixed_mode;
+pub(crate) mod process_context;
+pub(crate) mod process_manager;
+pub mod quickdraw;
+pub mod runner;
+#[cfg(feature = "test-support")]
+pub mod scripted_traces;
+pub mod sound;
+pub(crate) mod text_edit;
+pub(crate) mod thread_manager;
+pub mod trace;
+pub mod trap;
+pub(crate) mod ui_art;
+pub mod ui_theme;
+pub(crate) mod window_manager;
+
+pub mod session;

@@ -1,7 +1,7 @@
 use super::*;
 use crate::callback_manager::CallbackTaskArchitecture;
 use crate::cpu::Register;
-use crate::runner::{ActiveInterruptCallbackSource, DIALOG_CALLBACK_SCRATCH_SIZE};
+use crate::systems::macintosh::runner::{ActiveInterruptCallbackSource, DIALOG_CALLBACK_SCRATCH_SIZE};
 use crate::sound::{PendingSoundCallback, SndCommand};
 use crate::trap::dispatch::{DialogTrackingState, QueuedEvent};
 use std::collections::VecDeque;
