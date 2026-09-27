@@ -713,8 +713,7 @@ fn clean_component(raw: &str) -> Option<String> {
             ch => ch,
         })
         .collect();
-    let trimmed = cleaned.trim();
-    (!trimmed.is_empty() && trimmed != "." && trimmed != "..").then(|| trimmed.to_string())
+    (!cleaned.is_empty() && cleaned != "." && cleaned != "..").then_some(cleaned)
 }
 
 #[cfg(test)]
@@ -952,6 +951,36 @@ mod tests {
         assert!(file.rsrc.is_empty());
         assert_eq!(file.file_type, *b"????");
         assert_eq!(file.creator, *b"????");
+    }
+
+    #[test]
+    fn keeps_leading_and_trailing_spaces_in_hfs_names() {
+        // Deimos Rising opens its assets through ": Data:"; installers also
+        // use all-space spacer folders, which must stay distinct.
+        let mut builder = hfsplus::testutil::HfsPlusImageBuilder::new();
+        builder.add_file(" Data", b"leading", 0o100644);
+        builder.add_file("Read Me ", b"trailing", 0o100644);
+        builder.add_file("  ", b"spacer", 0o100644);
+        let bytes = builder.build();
+
+        let image = extract_dc42_or_hfs(&bytes)
+            .expect("HFS+ extraction should succeed")
+            .expect("HFS+ signature should be detected");
+
+        for (path, data) in [
+            ("HFS+ Disk Image/ Data", &b"leading"[..]),
+            ("HFS+ Disk Image/Read Me ", &b"trailing"[..]),
+            ("HFS+ Disk Image/  ", &b"spacer"[..]),
+        ] {
+            let file = image
+                .files
+                .iter()
+                .find(|file| file.path == path)
+                .unwrap_or_else(|| panic!("{path:?} should keep its spaces"));
+            assert_eq!(file.data, data);
+        }
+        assert_eq!(clean_component(" : "), Some(" _ ".to_string()));
+        assert_eq!(clean_component(".."), None);
     }
 
     #[test]
