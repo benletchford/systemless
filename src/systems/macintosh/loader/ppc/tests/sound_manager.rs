@@ -597,6 +597,7 @@ use crate::sound::PendingSoundCallback;
                 num_channels: 2,
                 sample_size: 16,
                 compression_id: 0,
+                format: 0,
                 packet_size: 0,
                 current_buffer_index: 0,
                 callback_pending_mask: 0,
@@ -1608,4 +1609,127 @@ fn import_bindings_classify_speech_and_sound_input_imports() {
             PpcImportDispatcherTarget::SoundInputCompatibility(operation),
         );
     }
+}
+
+fn ima4_test_packet(fill: u8) -> Vec<u8> {
+    let mut packet = vec![fill; 34];
+    // Predictor 0, step index 0.
+    packet[0] = 0;
+    packet[1] = 0;
+    packet
+}
+
+#[test]
+fn get_compression_info_fills_an_uninitialised_record() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"SoundLib",
+        b"GetCompressionInfo",
+    ))
+    .unwrap();
+    let out = PPC_DATA_BASE + 0x3000;
+    let run = |loaded: &mut PpcLoadedApp, id: i16, format: &[u8; 4], channels: u32, bits: u32| {
+        loaded.memory.add_region(out, vec![0xaa; 20]);
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = id as u16 as u32;
+        loaded.cpu.gpr[4] = u32::from_be_bytes(*format);
+        loaded.cpu.gpr[5] = channels;
+        loaded.cpu.gpr[6] = bits;
+        loaded.cpu.gpr[7] = out;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        let fields = (0..8)
+            .map(|index| match index {
+                0 => loaded.memory.read_u32_be(out).unwrap(),
+                1 => loaded.memory.read_u32_be(out + 4).unwrap(),
+                _ => u32::from(loaded.memory.read_u16_be(out + 4 + index * 2).unwrap()),
+            })
+            .collect::<Vec<_>>();
+        (loaded.cpu.gpr[3], fields)
+    };
+
+    // recordSize, format, compressionID, samplesPerPacket, bytesPerPacket,
+    // bytesPerFrame, bytesPerSample, futureUse1.
+    let (result, fields) = run(&mut loaded, -1, b"ima4", 2, 16);
+    assert_eq!(result, ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(fields, vec![20, u32::from_be_bytes(*b"ima4"), 0xffff, 64, 34, 68, 2, 0]);
+
+    let (result, fields) = run(&mut loaded, 3, b"\0\0\0\0", 1, 8);
+    assert_eq!(result, ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(fields, vec![20, u32::from_be_bytes(*b"MAC3"), 3, 6, 2, 2, 1, 0]);
+
+    let (result, fields) = run(&mut loaded, -1, b"ulaw", 1, 16);
+    assert_eq!(result, ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(fields[3..7], [1, 1, 1, 2]);
+
+    let (result, _) = run(&mut loaded, -1, b"QDM2", 2, 16);
+    assert_eq!(result, ppc_i16_result(PPC_PARAM_ERR));
+}
+
+#[test]
+fn ima4_and_mu_law_decode_through_the_sound_codec() {
+    assert_eq!(ppc_sound_codec(-1, u32::from_be_bytes(*b"ima4"), 16), Some(PpcSoundCodec::Ima4));
+    assert_eq!(ppc_sound_codec(0, 0, 16), Some(PpcSoundCodec::Pcm(16)));
+    assert_eq!(ppc_sound_codec(-1, u32::from_be_bytes(*b"QDM2"), 16), None);
+
+    // A stereo IMA4 frame is the left packet then the right packet; the
+    // double buffer decodes it to 64 interleaved stereo samples.
+    let left = ima4_test_packet(0x77);
+    let right = ima4_test_packet(0xff);
+    let expected_left = ppc_qt_decode_ima4_channel_packet(&left).unwrap();
+    let expected_right = ppc_qt_decode_ima4_channel_packet(&right).unwrap();
+    let buffer = PPC_DATA_BASE + 0x4000;
+    let mut memory = PpcSectionMem::new();
+    let mut bytes = vec![0; 16];
+    bytes[0..4].copy_from_slice(&1u32.to_be_bytes());
+    bytes[4..8].copy_from_slice(&1u32.to_be_bytes());
+    bytes.extend_from_slice(&left);
+    bytes.extend_from_slice(&right);
+    memory.add_region(buffer, bytes);
+    let playback = PpcSoundDoubleBufferPlaybackRecord {
+        channel: 1,
+        header: 0,
+        buffers: [buffer, 0],
+        callback: 0,
+        callback_architecture: crate::callback_manager::CallbackTaskArchitecture::PowerPc,
+        sample_rate_fixed: 0,
+        num_channels: 2,
+        sample_size: 16,
+        compression_id: -1,
+        format: u32::from_be_bytes(*b"ima4"),
+        packet_size: 0,
+        current_buffer_index: 0,
+        callback_pending_mask: 0,
+        active: true,
+        host_initialized: true,
+        host_buffer_loaded: false,
+    };
+    let samples = ppc_decode_ready_double_buffer(&mut memory, playback).unwrap();
+    assert_eq!(samples.len(), 64);
+    let to_u8 = |sample: i16| ((i32::from(sample) >> 8) + 128) as u8;
+    assert_eq!(samples[63].left, to_u8(expected_left[63]));
+    assert_eq!(samples[63].right, to_u8(expected_right[63]));
+    assert!(samples[63].left > 0x80 && samples[63].right < 0x80);
+
+    // A mono CmpSoundHeader: numFrames counts packets, sampleSize is 16.
+    let mut header = vec![0u8; 64];
+    header[4..8].copy_from_slice(&1u32.to_be_bytes());
+    header[8..12].copy_from_slice(&0x5622_0000u32.to_be_bytes());
+    header[20] = 0xfe;
+    header[22..26].copy_from_slice(&1u32.to_be_bytes());
+    header[40..44].copy_from_slice(b"ima4");
+    header[56..58].copy_from_slice(&(-1i16).to_be_bytes());
+    header[62..64].copy_from_slice(&16u16.to_be_bytes());
+    header.extend_from_slice(&left);
+    let decoded = ppc_decode_snd_header_at(&header, 0).unwrap();
+    assert_eq!(decoded.samples.len(), 64);
+    assert_eq!(decoded.samples[63], to_u8(expected_left[63]));
+
+    // mu-law: 0xff is silence; 0x00 and 0x80 are -32124 and +32124.
+    header[40..44].copy_from_slice(b"ulaw");
+    header.truncate(64);
+    header[22..26].copy_from_slice(&3u32.to_be_bytes());
+    header.extend_from_slice(&[0xff, 0x00, 0x80]);
+    let decoded = ppc_decode_snd_header_at(&header, 0).unwrap();
+    assert_eq!(decoded.samples, vec![0x80, 0x02, 0xfd]);
 }

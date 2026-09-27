@@ -817,8 +817,6 @@ pub(crate) fn ppc_decode_snd_header_from_memory(
     const STD_SH: u8 = 0x00;
     const CMP_SH: u8 = 0xfe;
     const EXT_SH: u8 = 0xff;
-    const MACE3_FORMAT: u32 = u32::from_be_bytes(*b"MAC3");
-    const MACE6_FORMAT: u32 = u32::from_be_bytes(*b"MAC6");
     const MAX_RETAINED_SAMPLE_BYTES: u32 = 64 * 1024 * 1024;
 
     let sample_ptr = memory.read_u32_be(header_addr)?;
@@ -870,24 +868,14 @@ pub(crate) fn ppc_decode_snd_header_from_memory(
             let compression_id = memory.read_u16_be(header_addr.checked_add(56)?)? as i16;
             let packet_size = usize::from(memory.read_u16_be(header_addr.checked_add(58)?)?);
             let sample_size = usize::from(memory.read_u16_be(header_addr.checked_add(62)?)?);
-            if channels != 1 || sample_size != 8 {
+            let codec =
+                ppc_sound_codec(compression_id, compression_format, sample_size as u16)?;
+            // A zero packetSize means the codec's standard packet.
+            let packet_bits = usize::from(codec.packet_geometry().1) * 8;
+            if packet_size != 0 && packet_size != packet_bits {
                 return None;
             }
-            let (packet_bits, decode): (usize, fn(&[u8]) -> Vec<u8>) =
-                match (compression_id, compression_format) {
-                    (3, _) | (-1, MACE3_FORMAT) => (16, crate::trap::decode_mace3_mono_to_u8),
-                    (4, _) | (-1, MACE6_FORMAT) => (8, crate::trap::decode_mace6_mono_to_u8),
-                    _ => return None,
-                };
-            let packet_size = if packet_size == 0 {
-                packet_bits
-            } else {
-                packet_size
-            };
-            if packet_size != packet_bits {
-                return None;
-            }
-            let byte_count = frames.checked_mul(packet_bits / 8)?;
+            let byte_count = frames.checked_mul(codec.bytes_per_frame(channels)?)?;
             let byte_count = u32::try_from(byte_count).ok()?;
             if byte_count > MAX_RETAINED_SAMPLE_BYTES {
                 return None;
@@ -898,7 +886,7 @@ pub(crate) fn ppc_decode_snd_header_from_memory(
                 header_addr.checked_add(64)?
             };
             let compressed = ppc_memory_read_bytes(memory, data_addr, byte_count)?;
-            decode(&compressed)
+            codec.to_mono_u8(&compressed, frames, channels)?
         }
         _ => return None,
     };
@@ -923,6 +911,14 @@ pub(crate) fn ppc_snd_play_double_buffer(
     let compression_id = memory.read_u16_be(header + 4).unwrap_or(0) as i16;
     let packet_size = memory.read_u16_be(header + 6).unwrap_or(0);
     let raw_sample_rate = memory.read_u32_be(header + 8).unwrap_or(0);
+    // SndDoubleBufferHeader2 appends dbhFormat, which is used only when
+    // dbhCompressionID is fixedCompression. Inside Macintosh: Sound (1994),
+    // pp. 2-69 and 2-111.
+    let format = if compression_id == FIXED_COMPRESSION {
+        memory.read_u32_be(header + 24).unwrap_or(0)
+    } else {
+        0
+    };
     let sample_rate_fixed = if raw_sample_rate == 0 {
         crate::sound::RATE_22KHZ_FIXED
     } else {
@@ -952,6 +948,7 @@ pub(crate) fn ppc_snd_play_double_buffer(
         num_channels,
         sample_size,
         compression_id,
+        format,
         packet_size,
         current_buffer_index: 0,
         callback_pending_mask: 0,
@@ -980,11 +977,6 @@ pub(crate) fn ppc_decode_ready_double_buffer(
     memory: &mut PpcSectionMem,
     playback: PpcSoundDoubleBufferPlaybackRecord,
 ) -> Option<Vec<crate::sound::StereoSample>> {
-    const MAX_RETAINED_SAMPLE_BYTES: usize = 64 * 1024 * 1024;
-
-    if playback.compression_id != 0 {
-        return None;
-    }
     let buffer_ptr = playback.buffers[usize::from(playback.current_buffer_index & 1)];
     if buffer_ptr == 0 {
         return None;
@@ -994,27 +986,159 @@ pub(crate) fn ppc_decode_ready_double_buffer(
     if flags & 0x01 == 0 || num_frames == 0 {
         return None;
     }
-    let num_channels = usize::from(playback.num_channels);
-    let sample_size = usize::from(playback.sample_size);
-    let bytes_per_sample = match sample_size {
-        8 => 1usize,
-        16 => 2usize,
-        _ => return None,
-    };
+    ppc_read_double_buffer_samples(memory, playback, buffer_ptr, num_frames)
+}
+
+/// Decode `num_frames` frames of a SndDoubleBuffer's dbSoundData.
+///
+/// For compressed data a frame is one packet across all channels, the unit
+/// GetCompressionInfo reports as bytesPerFrame.
+pub(crate) fn ppc_read_double_buffer_samples(
+    memory: &mut PpcSectionMem,
+    playback: PpcSoundDoubleBufferPlaybackRecord,
+    buffer_ptr: u32,
+    num_frames: usize,
+) -> Option<Vec<crate::sound::StereoSample>> {
+    const MAX_RETAINED_SAMPLE_BYTES: usize = 64 * 1024 * 1024;
+
+    let channels = usize::from(playback.num_channels);
+    let codec = ppc_sound_codec(playback.compression_id, playback.format, playback.sample_size)?;
     let byte_count = num_frames
-        .checked_mul(num_channels)?
-        .checked_mul(bytes_per_sample)?;
+        .checked_mul(codec.bytes_per_frame(channels)?)?;
     if byte_count > MAX_RETAINED_SAMPLE_BYTES {
         return None;
     }
     let mut raw = vec![0; byte_count];
     memory.read_bytes_into(buffer_ptr.checked_add(16)?, &mut raw)?;
-    crate::trap::decode_interleaved_stereo_samples(
-        &raw,
-        num_frames,
-        num_channels,
-        sample_size,
-    )
+    let (pcm, sample_size) = codec.to_pcm(&raw, num_frames, channels)?;
+    let pcm_frames = pcm.len() / channels.checked_mul(sample_size / 8)?;
+    crate::trap::decode_interleaved_stereo_samples(&pcm, pcm_frames, channels, sample_size)
+}
+
+/// Sound Manager compressionID for a header whose format field names the codec.
+const FIXED_COMPRESSION: i16 = -1;
+
+/// A Sound Manager sample encoding, identified by compressionID and format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PpcSoundCodec {
+    /// Uncompressed big-endian PCM of this many bits per sample.
+    Pcm(usize),
+    /// Little-endian 16-bit PCM ('sowt').
+    PcmLittleEndian16,
+    /// IMA 4:1 ADPCM: per channel, 64 samples in a 34-byte packet (two
+    /// predictor bytes, then 4-bit codes); stereo puts the left channel's
+    /// packet before the right's. Technical Note TN1081.
+    Ima4,
+    /// G.711 mu-law: one byte per sample.
+    MuLaw,
+    /// MACE 3:1, mono only: 2-byte packets of 6 samples.
+    /// Inside Macintosh: Sound (1994), p. 2-11.
+    Mace3,
+    /// MACE 6:1, mono only: 1-byte packets of 6 samples.
+    Mace6,
+}
+
+pub(crate) fn ppc_sound_codec(compression_id: i16, format: u32, sample_size: u16) -> Option<PpcSoundCodec> {
+    let pcm = match sample_size {
+        8 | 16 => Some(PpcSoundCodec::Pcm(usize::from(sample_size))),
+        _ => None,
+    };
+    match compression_id {
+        0 => pcm,
+        // threeToOne and sixToOne predate the format field.
+        3 => Some(PpcSoundCodec::Mace3),
+        4 => Some(PpcSoundCodec::Mace6),
+        // fixedCompression names the codec by format; the Sound Manager does
+        // not use variableCompression. Inside Macintosh: Sound (1994),
+        // p. 2-110. Format codes from Universal Interfaces Sound.h.
+        FIXED_COMPRESSION => match &format.to_be_bytes() {
+            b"MAC3" => Some(PpcSoundCodec::Mace3),
+            b"MAC6" => Some(PpcSoundCodec::Mace6),
+            b"ima4" => Some(PpcSoundCodec::Ima4),
+            b"ulaw" => Some(PpcSoundCodec::MuLaw),
+            b"twos" | b"raw " | b"NONE" => pcm,
+            b"sowt" if sample_size == 16 => Some(PpcSoundCodec::PcmLittleEndian16),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+impl PpcSoundCodec {
+    /// (samplesPerPacket, bytesPerPacket, bytesPerSample) as GetCompressionInfo
+    /// reports them for one channel.
+    pub(crate) fn packet_geometry(self) -> (u16, u16, u16) {
+        match self {
+            Self::Pcm(bits) => (1, (bits / 8) as u16, (bits / 8) as u16),
+            Self::PcmLittleEndian16 => (1, 2, 2),
+            Self::Ima4 => (64, 34, 2),
+            Self::MuLaw => (1, 1, 2),
+            Self::Mace3 => (6, 2, 1),
+            Self::Mace6 => (6, 1, 1),
+        }
+    }
+
+    fn bytes_per_frame(self, channels: usize) -> Option<usize> {
+        if channels == 0 || (matches!(self, Self::Mace3 | Self::Mace6) && channels != 1) {
+            return None;
+        }
+        channels.checked_mul(usize::from(self.packet_geometry().1))
+    }
+
+    /// Expand `frames` frames of `raw` into interleaved big-endian PCM,
+    /// returning the PCM bytes and their sample size in bits.
+    fn to_pcm(self, raw: &[u8], frames: usize, channels: usize) -> Option<(Vec<u8>, usize)> {
+        let raw = raw.get(..frames.checked_mul(self.bytes_per_frame(channels)?)?)?;
+        match self {
+            Self::Pcm(bits) => Some((raw.to_vec(), bits)),
+            Self::PcmLittleEndian16 => Some((
+                raw.chunks_exact(2).flat_map(|pair| [pair[1], pair[0]]).collect(),
+                16,
+            )),
+            Self::MuLaw => Some((
+                raw.iter()
+                    .flat_map(|byte| ppc_mu_law_to_i16(*byte).to_be_bytes())
+                    .collect(),
+                16,
+            )),
+            Self::Ima4 => {
+                // Each frame holds one 34-byte packet per channel, in channel
+                // order; interleave their 64 decoded samples.
+                let mut pcm = Vec::with_capacity(frames * 64 * channels * 2);
+                for frame in raw.chunks_exact(34 * channels) {
+                    let decoded = frame
+                        .chunks_exact(34)
+                        .map(super::quicktime::ppc_qt_decode_ima4_channel_packet)
+                        .collect::<Option<Vec<_>>>()?;
+                    for index in 0..64 {
+                        for channel in &decoded {
+                            pcm.extend_from_slice(&channel[index].to_be_bytes());
+                        }
+                    }
+                }
+                Some((pcm, 16))
+            }
+            Self::Mace3 => Some((crate::trap::decode_mace3_mono_to_u8(raw), 8)),
+            Self::Mace6 => Some((crate::trap::decode_mace6_mono_to_u8(raw), 8)),
+        }
+    }
+
+    /// Decode `frames` frames to the mono unsigned 8-bit samples the
+    /// SoundHeader paths retain.
+    fn to_mono_u8(self, raw: &[u8], frames: usize, channels: usize) -> Option<Vec<u8>> {
+        let (pcm, sample_size) = self.to_pcm(raw, frames, channels)?;
+        let pcm_frames = pcm.len() / channels.checked_mul(sample_size / 8)?;
+        ppc_decode_interleaved_pcm_samples(&pcm, 0, pcm_frames, channels, sample_size)
+    }
+}
+
+/// G.711 mu-law expansion to 16-bit linear PCM.
+fn ppc_mu_law_to_i16(byte: u8) -> i16 {
+    let value = !byte;
+    let exponent = (value >> 4) & 0x07;
+    let mantissa = i32::from(value & 0x0f);
+    let magnitude = (((mantissa << 3) + 0x84) << exponent) - 0x84;
+    (if value & 0x80 != 0 { -magnitude } else { magnitude }) as i16
 }
 
 pub(crate) fn ppc_read_snd_command(memory: &mut PpcSectionMem, cmd_ptr: u32) -> Option<PpcSndCommandRecord> {
@@ -1230,8 +1354,6 @@ pub(crate) fn ppc_decode_snd_header_at(data: &[u8], header_offset: usize) -> Opt
     const STD_SH: u8 = 0x00;
     const CMP_SH: u8 = 0xfe;
     const EXT_SH: u8 = 0xff;
-    const MACE3_FORMAT: u32 = u32::from_be_bytes(*b"MAC3");
-    const MACE6_FORMAT: u32 = u32::from_be_bytes(*b"MAC6");
 
     let sample_ptr = ppc_read_be_u32_from_slice(data, header_offset)? as usize;
     let sample_rate_fixed = ppc_read_be_u32_from_slice(data, header_offset.checked_add(8)?)?;
@@ -1278,21 +1400,11 @@ pub(crate) fn ppc_decode_snd_header_at(data: &[u8], header_offset: usize) -> Opt
                 data,
                 header_offset.checked_add(62)?,
             )?);
-            if channels != 1 || sample_size != 8 {
-                return None;
-            }
-            let (packet_bits, decode): (usize, fn(&[u8]) -> Vec<u8>) =
-                match (compression_id, compression_format) {
-                    (3, _) | (-1, MACE3_FORMAT) => (16, crate::trap::decode_mace3_mono_to_u8),
-                    (4, _) | (-1, MACE6_FORMAT) => (8, crate::trap::decode_mace6_mono_to_u8),
-                    _ => return None,
-                };
-            let packet_size = if packet_size == 0 {
-                packet_bits
-            } else {
-                packet_size
-            };
-            if packet_size != packet_bits {
+            let codec =
+                ppc_sound_codec(compression_id, compression_format, sample_size as u16)?;
+            // A zero packetSize means the codec's standard packet.
+            let packet_bits = usize::from(codec.packet_geometry().1) * 8;
+            if packet_size != 0 && packet_size != packet_bits {
                 return None;
             }
             let data_start = if sample_ptr != 0 && sample_ptr < data.len() {
@@ -1300,9 +1412,9 @@ pub(crate) fn ppc_decode_snd_header_at(data: &[u8], header_offset: usize) -> Opt
             } else {
                 header_offset.checked_add(64)?
             };
-            let byte_count = frames.checked_mul(packet_bits / 8)?;
+            let byte_count = frames.checked_mul(codec.bytes_per_frame(channels)?)?;
             let compressed = data.get(data_start..data_start.checked_add(byte_count)?)?;
-            decode(compressed)
+            codec.to_mono_u8(compressed, frames, channels)?
         }
         _ => return None,
     };

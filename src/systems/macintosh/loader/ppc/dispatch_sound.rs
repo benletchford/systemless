@@ -76,6 +76,55 @@ pub(super) fn dispatch_sound_import(
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
+        PpcImportDispatcherTarget::GetCompressionInfo => {
+            // Sound Manager 3.x GetCompressionInfo(compressionID, format,
+            // numChannels, sampleSize, CompressionInfo*); record layout from
+            // Universal Interfaces Sound.h. Apple's sample code sets
+            // recordSize before the call (develop 24 (1995), "Sound
+            // Secrets"), but a caller-supplied value is not checked here:
+            // Deimos Rising passes an uninitialised record, and its music
+            // only loads without that check. Unverified: Technical Note
+            // SD 1, which documents the call, is not available to check
+            // whether the Sound Manager validates recordSize.
+            const COMPRESSION_INFO_SIZE: u32 = 20;
+            let compression_id = cpu.gpr[3] as u16 as i16;
+            let format = cpu.gpr[4];
+            let channels = cpu.gpr[5] as u16;
+            let sample_size = cpu.gpr[6] as u16;
+            let out = cpu.gpr[7];
+            let codec = super::sound::ppc_sound_codec(compression_id, format, sample_size)
+                .filter(|_| channels != 0 && out != 0)
+                .filter(|_| ppc_memory_can_write_bytes(memory, out, COMPRESSION_INFO_SIZE));
+            let result = if let Some(codec) = codec {
+                let (samples_per_packet, bytes_per_packet, bytes_per_sample) =
+                    codec.packet_geometry();
+                let format = match (compression_id, sample_size) {
+                    (3, _) => u32::from_be_bytes(*b"MAC3"),
+                    (4, _) => u32::from_be_bytes(*b"MAC6"),
+                    (0, 8) => u32::from_be_bytes(*b"raw "),
+                    (0, _) => u32::from_be_bytes(*b"twos"),
+                    _ => format,
+                };
+                let writes = [
+                    memory.write_u32_be(out, COMPRESSION_INFO_SIZE),
+                    memory.write_u32_be(out + 4, format),
+                    memory.write_u16_be(out + 8, compression_id as u16),
+                    memory.write_u16_be(out + 10, samples_per_packet),
+                    memory.write_u16_be(out + 12, bytes_per_packet),
+                    memory.write_u16_be(out + 14, bytes_per_packet.saturating_mul(channels)),
+                    memory.write_u16_be(out + 16, bytes_per_sample),
+                    memory.write_u16_be(out + 18, 0),
+                ];
+                if writes.iter().all(Option::is_some) {
+                    PPC_NO_ERR
+                } else {
+                    PPC_PARAM_ERR
+                }
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::GetSoundVol => {
             // Inside Macintosh Volume II (1985), pp. II-232--II-233:
             // GetSoundVol returns the low three bits of SdVolume as an Integer.

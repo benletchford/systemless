@@ -227,6 +227,8 @@ pub struct ProcessSoundDoubleBufferPlayback {
     pub num_channels: u16,
     pub sample_size: u16,
     pub compression_id: i16,
+    /// SndDoubleBufferHeader2 dbhFormat; zero for a plain header.
+    pub format: u32,
     pub packet_size: u16,
     pub current_buffer_index: u8,
     pub callback_pending_mask: u8,

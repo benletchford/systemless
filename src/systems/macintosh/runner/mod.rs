@@ -8454,11 +8454,6 @@ impl FixtureRunner {
         memory: &mut PpcSectionMem,
         playback: PpcSoundDoubleBufferPlaybackRecord,
     ) -> Option<PpcDecodedDoubleBuffer> {
-        const MAX_RETAINED_SAMPLE_BYTES: usize = 64 * 1024 * 1024;
-
-        if playback.compression_id != 0 {
-            return None;
-        }
         let buffer_index = usize::from(playback.current_buffer_index & 1);
         let buffer_ptr = playback.buffers[buffer_index];
         if buffer_ptr == 0 {
@@ -8473,26 +8468,11 @@ impl FixtureRunner {
                 samples: Vec::new(),
             });
         }
-        let num_channels = usize::from(playback.num_channels);
-        let sample_size = usize::from(playback.sample_size);
-        let bytes_per_sample = match sample_size {
-            8 => 1usize,
-            16 => 2usize,
-            _ => return None,
-        };
-        let byte_count = num_frames
-            .checked_mul(num_channels)?
-            .checked_mul(bytes_per_sample)?;
-        if byte_count > MAX_RETAINED_SAMPLE_BYTES {
-            return None;
-        }
-        let mut raw = vec![0; byte_count];
-        memory.read_bytes_into(buffer_ptr.checked_add(16)?, &mut raw)?;
-        let samples = crate::trap::decode_interleaved_stereo_samples(
-            &raw,
+        let samples = crate::loader::ppc::sound::ppc_read_double_buffer_samples(
+            memory,
+            playback,
+            buffer_ptr,
             num_frames,
-            num_channels,
-            sample_size,
         )?;
         Some(PpcDecodedDoubleBuffer {
             buffer_ptr,
