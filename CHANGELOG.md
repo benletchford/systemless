@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.63.0](https://github.com/benletchford/systemless/compare/v0.62.2...v0.63.0) (2026-09-27)
+
+
+### Features
+
+* **www:** add Souls in the System demo ([#2976](https://github.com/benletchford/systemless/issues/2976)) ([737ac58](https://github.com/benletchford/systemless/commit/737ac58984e9798b1409ca5e7f7406c7da1cade8))
+
+
+### Bug Fixes
+
+* preserve classic display strides for Souls demo ([#2973](https://github.com/benletchford/systemless/issues/2973)) ([dd24044](https://github.com/benletchford/systemless/commit/dd24044c6af114cd00926b6f79b3b468776e150b))
+
+
+### Code Refactoring
+
+* contain Macintosh runtime behind a session API ([#2971](https://github.com/benletchford/systemless/issues/2971)) ([519dd13](https://github.com/benletchford/systemless/commit/519dd13fdd68772533c845184dccc0e0cbcdc66a))
+* **runner:** extract keyboard input and low-memory keymap integration tests into dedicated module ([7024863](https://github.com/benletchford/systemless/commit/70248635ca8feae78fee0aee72b8ea0667040be4))
+
 ## [0.62.2](https://github.com/benletchford/systemless/compare/v0.62.1...v0.62.2) (2026-09-27)
 
 
