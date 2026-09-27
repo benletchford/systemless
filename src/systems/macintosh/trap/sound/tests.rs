@@ -1297,6 +1297,8 @@ fn sounddispatch_midi_stop_time_consumes_refnum_argument() {
 
 #[test]
 fn sounddispatch_get_sound_header_offset_returns_embedded_header_offset() {
+    // Universal Interfaces Sound.h: GetSoundHeaderOffset is
+    // FOURWORDINLINE(0x203C, 0x0404, 0x0018, 0xA800).
     let (mut disp, mut cpu, mut bus) = setup();
     let sp = TEST_SP + 0x80;
     let (snd_handle, snd_ptr) = alloc_minimal_format2_snd_handle(&mut bus, 2, 80);
@@ -1313,7 +1315,7 @@ fn sounddispatch_get_sound_header_offset_returns_embedded_header_offset() {
     bus.write_byte(snd_ptr + header_offset + 20, 0);
 
     cpu.write_reg(Register::A7, sp);
-    cpu.write_reg(Register::D0, 0x0404_0024);
+    cpu.write_reg(Register::D0, 0x0404_0018);
     bus.write_long(sp, offset_ptr);
     bus.write_long(sp + 4, snd_handle);
     bus.write_word(sp + 8, 0xFFFF);

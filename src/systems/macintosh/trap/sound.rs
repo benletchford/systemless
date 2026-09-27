@@ -719,10 +719,14 @@ impl super::TrapDispatcher {
                     // Sound 1994, 2-139
                     //
                     // GetSoundHeaderOffset also uses routine byte $04
-                    // under selector $04040024; dispatch on the full
-                    // selector before treating this as file-play pause.
+                    // under selector $04040018 (Universal Interfaces
+                    // Sound.h: FOURWORDINLINE(0x203C, 0x0404, 0x0018,
+                    // 0xA800)); dispatch on the full selector before
+                    // treating this as file-play pause. Inside Macintosh:
+                    // Sound lists $04040024, which no header emits; keep
+                    // it as a tolerated alias.
                     0x04 => {
-                        if selector == 0x0404_0024 {
+                        if selector == 0x0404_0018 || selector == 0x0404_0024 {
                             let offset_ptr = bus.read_long(sp);
                             let snd_handle = bus.read_long(sp + 4);
                             let err = if snd_handle == 0 {
@@ -949,11 +953,6 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A7, sp + param_bytes);
                     }
 
-                    // GetSoundHeaderOffset (routine $0404>>8=04, sel $04040024)
-                    // Actually routine byte is at bits 16-23, so this would be
-                    // the same $04 as SndPauseFilePlay. The full selector
-                    // distinguishes them via the low word. For now, $04 handles
-                    // both — SndPauseFilePlay is a no-op anyway.
                     _ => {
                         // Unknown selector — pop params and return noErr.
                         if param_bytes > 0 {
