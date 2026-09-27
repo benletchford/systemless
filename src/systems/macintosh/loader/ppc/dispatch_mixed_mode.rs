@@ -6,6 +6,9 @@ const PPC_IO_COMPLETION_PROC_INFO: u32 = 0x00C1;
 // C stack convention, void result, a 4-byte pointer and a 2-byte part code.
 // HIToolbox/HIContainerViews.h and CarbonCore/MixedMode.h.
 const PPC_CONTROL_USER_PANE_DRAW_PROC_INFO: u32 = 0x02C1;
+// AEDataModel.h: OSErr AEEventHandlerProcPtr(const AppleEvent *,
+// AppleEvent *, SRefCon). C stack, 2-byte result, three 4-byte parameters.
+const PPC_AE_EVENT_HANDLER_PROC_INFO: u32 = 0x0FE1;
 
 pub(super) const PPC_SYSTEM_ALLOCATION_POOL_SIZE: u32 = 64 * 1024;
 
@@ -143,6 +146,18 @@ pub(super) fn dispatch_mixed_mode_import(
                 &mut toolbox_startup.system_allocations,
             ))))
         }
+        PpcImportDispatcherTarget::NewAEEventHandlerUPP => {
+            Some(Some(PpcImportAction::Return(ppc_new_routine_descriptor(
+                cpu.gpr[3],
+                PPC_AE_EVENT_HANDLER_PROC_INFO,
+                PPC_ROUTINE_RECORD_POWERPC_ISA,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                &mut toolbox_startup.system_allocations,
+            ))))
+        }
         PpcImportDispatcherTarget::NewFatRoutineDescriptor => Some(Some(PpcImportAction::Return(
             ppc_new_fat_routine_descriptor(
                 cpu,
@@ -155,7 +170,8 @@ pub(super) fn dispatch_mixed_mode_import(
         ))),
         PpcImportDispatcherTarget::DisposeRoutineDescriptor
         | PpcImportDispatcherTarget::DisposeIOCompletionUPP
-        | PpcImportDispatcherTarget::DisposeControlUserPaneDrawUPP => {
+        | PpcImportDispatcherTarget::DisposeControlUserPaneDrawUPP
+        | PpcImportDispatcherTarget::DisposeAEEventHandlerUPP => {
             // DisposeRoutineDescriptor(theProcPtr: UniversalProcPtr): void.
             // PowerPC ABI: r3 carries the descriptor and is preserved on return.
             // The Mixed Mode Manager releases only creation-allocated heap storage.

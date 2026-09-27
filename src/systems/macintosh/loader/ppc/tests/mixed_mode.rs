@@ -389,6 +389,60 @@ fn carbon_user_pane_draw_upp_uses_a_releasable_ppc_descriptor() {
 }
 
 #[test]
+fn carbon_apple_event_handler_upp_installs_and_reuses_a_ppc_descriptor() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "NewAEEventHandlerUPP"),
+        PpcImportDispatcherTarget::NewAEEventHandlerUPP
+    );
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "DisposeAEEventHandlerUPP"),
+        PpcImportDispatcherTarget::DisposeAEEventHandlerUPP
+    );
+
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"NewAEEventHandlerUPP")).unwrap();
+    let tvector = PPC_DATA_BASE + 0x1000;
+    let entry = tvector + 0x100;
+    loaded.memory.add_region(tvector, vec![0; 0x200]);
+    loaded.memory.write_u32_be(tvector, entry).unwrap();
+    loaded.memory.write_u32_be(tvector + 4, PPC_DATA_BASE).unwrap();
+    loaded.memory.write_u32_be(entry, 0x3860_0000).unwrap();
+    loaded.memory.write_u32_be(entry + 4, 0x4e80_0020).unwrap();
+    loaded.cpu.gpr[3] = tvector;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewAEEventHandlerUPP);
+    let descriptor = loaded.cpu.gpr[3];
+    assert_ne!(descriptor, 0);
+    assert_eq!(loaded.memory.read_u16_be(descriptor), Some(PPC_MIXED_MODE_TRAP));
+    let record = descriptor + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE;
+    assert_eq!(loaded.memory.read_u32_be(record), Some(0x0FE1));
+    assert_eq!(
+        loaded.memory.read_u8(record + PPC_ROUTINE_RECORD_ISA_OFFSET),
+        Some(PPC_ROUTINE_RECORD_POWERPC_ISA)
+    );
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(record + PPC_ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET),
+        Some(tvector)
+    );
+
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"aevt");
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"oapp");
+    loaded.cpu.gpr[5] = descriptor;
+    loaded.cpu.gpr[6] = 0x1234;
+    loaded.cpu.gpr[7] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AEInstallEventHandler);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    loaded.cpu.gpr[3] = descriptor;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeAEEventHandlerUPP);
+    assert_eq!(loaded.cpu.gpr[3], descriptor);
+    loaded.cpu.gpr[3] = tvector;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewAEEventHandlerUPP);
+    assert_eq!(loaded.cpu.gpr[3], descriptor);
+}
+
+#[test]
 fn hle_import_runner_builds_new_routine_descriptor() {
     let pef = synthetic_pef_with_import(b"NewRoutineDescriptor");
     let mut loaded = load_pef_application(&pef).unwrap();
