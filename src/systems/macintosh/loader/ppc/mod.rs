@@ -121,6 +121,7 @@ mod dispatch_appearance;
 mod dispatch_bit_transfers;
 mod dispatch_color_tables;
 mod dispatch_collection;
+mod dispatch_core_foundation;
 mod dispatch_control;
 mod dispatch_cursor;
 mod dispatch_desk;
@@ -1758,6 +1759,17 @@ pub enum PpcImportDispatcherTarget {
     C2PStr,
     CopyCStringToPascal,
     CopyPascalStringToC,
+    CfStringMakeConstantString,
+    CfStringCreateWithCString,
+    CfStringCreateWithPascalString,
+    CfStringCreateWithBytes,
+    CfStringGetCString,
+    CfStringGetBytes,
+    CfStringGetLength,
+    CfStringGetSystemEncoding,
+    CfRetain,
+    CfRelease,
+    CfGetRetainCount,
     UpperText,
     GetCurrentThread,
     NewThreadEntryUPP,
@@ -2786,6 +2798,7 @@ pub struct PpcToolboxStartupState {
     /// whenever native PowerPC enters classic code through Mixed Mode.
     mixed_mode_m68k: SharedProcessMixedModeM68kState,
     system_allocations: PpcSystemAllocationPool,
+    cf_strings: dispatch_core_foundation::PpcCfStringState,
     go_away_tracking: Option<PpcGoAwayTrackingState>,
     drag_window_tracking: Option<PpcDragWindowTrackingState>,
     grow_window_tracking: Option<PpcGrowWindowTrackingState>,
@@ -2856,6 +2869,7 @@ impl Default for PpcToolboxStartupState {
             execution: ExecutionMenuViews::detached(),
             mixed_mode_m68k: SharedProcessMixedModeM68kState::default(),
             system_allocations: PpcSystemAllocationPool::default(),
+            cf_strings: dispatch_core_foundation::PpcCfStringState::default(),
             go_away_tracking: None,
             drag_window_tracking: None,
             grow_window_tracking: None,
@@ -12889,6 +12903,27 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "CopyPascalStringToC") => {
             PpcImportDispatcherTarget::CopyPascalStringToC
         }
+        ("InterfaceLib", "__CFStringMakeConstantString") => {
+            PpcImportDispatcherTarget::CfStringMakeConstantString
+        }
+        ("InterfaceLib", "CFStringCreateWithCString") => {
+            PpcImportDispatcherTarget::CfStringCreateWithCString
+        }
+        ("InterfaceLib", "CFStringCreateWithPascalString") => {
+            PpcImportDispatcherTarget::CfStringCreateWithPascalString
+        }
+        ("InterfaceLib", "CFStringCreateWithBytes") => {
+            PpcImportDispatcherTarget::CfStringCreateWithBytes
+        }
+        ("InterfaceLib", "CFStringGetCString") => PpcImportDispatcherTarget::CfStringGetCString,
+        ("InterfaceLib", "CFStringGetBytes") => PpcImportDispatcherTarget::CfStringGetBytes,
+        ("InterfaceLib", "CFStringGetLength") => PpcImportDispatcherTarget::CfStringGetLength,
+        ("InterfaceLib", "CFStringGetSystemEncoding") => {
+            PpcImportDispatcherTarget::CfStringGetSystemEncoding
+        }
+        ("InterfaceLib", "CFRetain") => PpcImportDispatcherTarget::CfRetain,
+        ("InterfaceLib", "CFRelease") => PpcImportDispatcherTarget::CfRelease,
+        ("InterfaceLib", "CFGetRetainCount") => PpcImportDispatcherTarget::CfGetRetainCount,
         ("InterfaceLib", "UpperText") => PpcImportDispatcherTarget::UpperText,
         // Native Thread Manager exports also live in ThreadsLib.
         // Inside Macintosh: Thread Manager (1999), pp. 15, 62.
@@ -14184,6 +14219,17 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             stdc_qsort_stack,
             stdc_signal_state: &mut toolbox_startup.stdc_signal_state,
         },
+    ) {
+        return Some(action);
+    }
+    if let Some(action) = dispatch_core_foundation::dispatch_core_foundation_import(
+        binding,
+        cpu,
+        memory,
+        process_memory_manager,
+        heap_cursor,
+        last_mem_error,
+        toolbox_startup,
     ) {
         return Some(action);
     }
@@ -15806,6 +15852,19 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::CopyPascalStringToC
         | PpcImportDispatcherTarget::UpperText => {
             unreachable!("stdc imports return through dispatch_stdc_import")
+        }
+        PpcImportDispatcherTarget::CfStringMakeConstantString
+        | PpcImportDispatcherTarget::CfStringCreateWithCString
+        | PpcImportDispatcherTarget::CfStringCreateWithPascalString
+        | PpcImportDispatcherTarget::CfStringCreateWithBytes
+        | PpcImportDispatcherTarget::CfStringGetCString
+        | PpcImportDispatcherTarget::CfStringGetBytes
+        | PpcImportDispatcherTarget::CfStringGetLength
+        | PpcImportDispatcherTarget::CfStringGetSystemEncoding
+        | PpcImportDispatcherTarget::CfRetain
+        | PpcImportDispatcherTarget::CfRelease
+        | PpcImportDispatcherTarget::CfGetRetainCount => {
+            unreachable!("Core Foundation imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::GetCurrentProcess
         | PpcImportDispatcherTarget::WakeUpProcess
