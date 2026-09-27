@@ -1649,11 +1649,79 @@ impl super::TrapDispatcher {
                 None
             };
 
+        // Inside Macintosh I, "The GrafPort" (QuickDraw): portBits.bounds
+        // establishes local coordinates; visRgn and clipRgn limit drawing.
+        // Feed only already-clipped cells to the presentation plane, one run
+        // of consecutive pixels per call rather than one call per pixel. Each
+        // row's runs go before the row's pixels are drawn, so every glyph
+        // pixel still sees its background as it was before the text.
+        let glyph_lanes = u32::from(pixel_size / 8);
+        let glyph_detail = matches!(pixel_size, 8 | 16 | 32)
+            && matches!(op, ShapeOp::Glyph(0 | 1))
+            && bus.presentation.is_some();
+        let glyph_foreground = {
+            let (r, g, b) = effective_fg_color;
+            match pixel_size {
+                8 => u32::from(fg_idx),
+                16 => (u32::from(r >> 11) << 10) | (u32::from(g >> 11) << 5) | u32::from(b >> 11),
+                _ => (u32::from(r >> 8) << 16) | (u32::from(g >> 8) << 8) | u32::from(b >> 8),
+            }
+        };
         for y in r.top..r.bottom {
             if y < clip_top || y >= clip_bottom {
                 continue;
             }
             let dy = (y - bounds_top) as u32;
+            if glyph_detail {
+                let mut run: Option<(i16, usize)> = None;
+                for x in r.left..r.right {
+                    let inside = x >= clip_left
+                        && x < clip_right
+                        && (!vis_region_complex
+                            || Self::region_contains_point_cached(
+                                bus,
+                                vis_rgn_handle,
+                                vis_region_cache.as_ref(),
+                                y,
+                                x,
+                            ))
+                        && (!clip_region_complex
+                            || Self::region_contains_point_cached(
+                                bus,
+                                clip_rgn_handle,
+                                clip_region_cache.as_ref(),
+                                y,
+                                x,
+                            ))
+                        && (((x - bounds_left) as u32) + 1) * glyph_lanes <= pix_row_bytes;
+                    run = match (inside, run) {
+                        (true, Some((start, count))) => Some((start, count + 1)),
+                        (true, None) => Some((x, 1)),
+                        (false, Some((start, count))) => {
+                            let dx = (start - bounds_left) as u32;
+                            bus.outline_glyph_span(
+                                pix_base + dy * pix_row_bytes + dx * glyph_lanes,
+                                (start, y),
+                                count,
+                                glyph_lanes as usize,
+                                glyph_foreground,
+                            );
+                            None
+                        }
+                        (false, None) => None,
+                    };
+                }
+                if let Some((start, count)) = run {
+                    let dx = (start - bounds_left) as u32;
+                    bus.outline_glyph_span(
+                        pix_base + dy * pix_row_bytes + dx * glyph_lanes,
+                        (start, y),
+                        count,
+                        glyph_lanes as usize,
+                        glyph_foreground,
+                    );
+                }
+            }
             for x in r.left..r.right {
                 if x < clip_left || x >= clip_right {
                     continue;
@@ -1679,37 +1747,6 @@ impl super::TrapDispatcher {
                     )
                 {
                     continue;
-                }
-                // Inside Macintosh I, "The GrafPort" (QuickDraw): portBits.bounds
-                // establishes local coordinates; visRgn and clipRgn limit drawing.
-                // Feed only these already-clipped cells to the presentation plane.
-                if matches!(pixel_size, 8 | 16 | 32) && matches!(op, ShapeOp::Glyph(0 | 1)) {
-                    let dx = (x - bounds_left) as u32;
-                    let lanes = u32::from(pixel_size / 8);
-                    if (dx + 1) * lanes <= pix_row_bytes {
-                        let (r, g, b) = effective_fg_color;
-                        let foreground = match pixel_size {
-                            8 => u32::from(fg_idx),
-                            16 => {
-                                (u32::from(r >> 11) << 10)
-                                    | (u32::from(g >> 11) << 5)
-                                    | u32::from(b >> 11)
-                            }
-                            _ => {
-                                (u32::from(r >> 8) << 16)
-                                    | (u32::from(g >> 8) << 8)
-                                    | u32::from(b >> 8)
-                            }
-                        };
-                        for lane in 0..lanes {
-                            bus.outline_glyph_pixel(
-                                pix_base + dy * pix_row_bytes + dx * lanes + lane,
-                                x,
-                                y,
-                                (foreground >> ((lanes - 1 - lane) * 8)) as u8,
-                            );
-                        }
-                    }
                 }
                 let alpha = coverage_at(y, x);
                 if alpha == 0 {

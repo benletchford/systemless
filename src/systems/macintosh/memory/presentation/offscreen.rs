@@ -69,6 +69,23 @@ impl Chunk {
         self.present[slot / 64] & (1 << (slot % 64)) != 0
     }
 
+    /// Give an empty `slot` a cell of `len` samples of `background` with no
+    /// ink, reporting whether it was empty.
+    #[inline]
+    fn insert_blank(&mut self, slot: usize, background: u8, len: usize) -> bool {
+        if self.has(slot) {
+            return false;
+        }
+        assert!(len <= TILE_SAMPLES, "cell samples exceed a tile");
+        self.present[slot / 64] |= 1 << (slot % 64);
+        self.count += 1;
+        self.values[slot] = background;
+        self.lens[slot] = len as u8;
+        self.indices[slot * TILE_SAMPLES..slot * TILE_SAMPLES + len].fill(background);
+        self.forget_shared(slot);
+        true
+    }
+
     fn may_have_ink(&self, slot: usize) -> bool {
         self.inked[slot / 64] & (1 << (slot % 64)) != 0
     }
@@ -471,17 +488,39 @@ impl OffscreenDetail {
     ) -> OffscreenCellMut<'_> {
         let (key, slot) = split(address);
         let chunk = self.chunks.entry(key).or_insert_with(|| Box::new(Chunk::new()));
-        if !chunk.has(slot) {
-            assert!(len <= TILE_SAMPLES, "cell samples exceed a tile");
-            chunk.present[slot / 64] |= 1 << (slot % 64);
-            chunk.count += 1;
+        if chunk.insert_blank(slot, background, len) {
             self.count += 1;
-            chunk.values[slot] = background;
-            chunk.lens[slot] = len as u8;
-            chunk.indices[slot * TILE_SAMPLES..slot * TILE_SAMPLES + len].fill(background);
-            chunk.forget_shared(slot);
         }
         OffscreenCellMut { chunk, slot }
+    }
+
+    /// `cell_mut_or_insert` for each of the consecutive addresses from
+    /// `address`, one per byte of `backgrounds`, visiting each cell with its
+    /// offset. Each chunk is looked up once. The span must not wrap.
+    pub(super) fn cells_mut_or_insert(
+        &mut self,
+        address: u32,
+        backgrounds: &[u8],
+        len: usize,
+        mut visit: impl FnMut(usize, &mut OffscreenCellMut<'_>),
+    ) {
+        assert!(
+            u64::from(address) + backgrounds.len() as u64 <= 1 << 32,
+            "offscreen span wraps"
+        );
+        let mut offset = 0;
+        while offset < backgrounds.len() {
+            let (key, first) = split(address + offset as u32);
+            let run = (CHUNK_BYTES - first).min(backgrounds.len() - offset);
+            let chunk = self.chunks.entry(key).or_insert_with(|| Box::new(Chunk::new()));
+            for (i, slot) in (first..first + run).enumerate() {
+                if chunk.insert_blank(slot, backgrounds[offset + i], len) {
+                    self.count += 1;
+                }
+                visit(offset + i, &mut OffscreenCellMut { chunk, slot });
+            }
+            offset += run;
+        }
     }
 }
 

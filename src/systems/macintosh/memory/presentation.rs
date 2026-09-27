@@ -569,6 +569,9 @@ impl<T> SavedPixels<T> {
 #[derive(Default)]
 struct SampleOffsetHasher(u64);
 
+/// Offscreen `(address, sample)` pairs an opaque text run has inked.
+type OffscreenRunInk = HashSet<(u32, usize), BuildHasherDefault<SampleOffsetHasher>>;
+
 impl Hasher for SampleOffsetHasher {
     fn finish(&self) -> u64 {
         self.0
@@ -683,7 +686,7 @@ pub(crate) struct Presentation {
     /// Overwriting text visits the ink list only for cells that have ink.
     ink_mask: Vec<u16>,
     run_ink: HashSet<usize, BuildHasherDefault<SampleOffsetHasher>>,
-    offscreen_run_ink: HashSet<(u32, usize)>,
+    offscreen_run_ink: OffscreenRunInk,
     in_text_run: bool,
     pub erasing_text: bool,
     glyph: Option<(OutlineGlyph, i16, i16)>,
@@ -2001,47 +2004,13 @@ impl Presentation {
                 background,
                 (self.scale * self.scale) as usize,
             );
-            for sy in 0..self.scale {
-                for sx in 0..self.scale {
-                    let gx =
-                        (i32::from(x) - i32::from(*h)) * self.scale as i32 + sx as i32 - glyph.left;
-                    let gy =
-                        (i32::from(y) - i32::from(*v)) * self.scale as i32 + sy as i32 - glyph.top;
-                    if gx < 0 || gy < 0 || gx >= glyph.width || gy >= glyph.height {
-                        continue;
-                    }
-                    let alpha = u32::from(glyph.pixels[(gy * glyph.width + gx) as usize]);
-                    if alpha == 0 {
-                        continue;
-                    }
-                    let i = (sy * self.scale + sx) as usize;
-                    if self.in_text_run {
-                        self.offscreen_run_ink.insert((address, i));
-                    }
-                    if alpha == 255 {
-                        cell.set_index(i, foreground);
-                        cell.remove_ink(i);
-                    } else {
-                        let background_index = cell.index(i);
-                        let ink = cell.ink_or_insert_with(i, || Ink {
-                            foreground,
-                            alpha: 0,
-                            background: IndexedColor::Solid(background_index),
-                        });
-                        if ink.foreground != foreground {
-                            let previous = ink.clone();
-                            *ink = Ink {
-                                foreground,
-                                alpha: 0,
-                                background: previous
-                                    .background
-                                    .over(previous.foreground, previous.alpha),
-                            };
-                        }
-                        ink.alpha = ink.alpha.max(alpha);
-                    }
-                }
-            }
+            paint_offscreen_glyph_cell(
+                &mut cell,
+                (glyph, *h, *v),
+                self.scale,
+                (x, y, foreground),
+                (self.in_text_run, &mut self.offscreen_run_ink, address),
+            );
             return;
         };
         if self.glyph.is_none() {
@@ -2111,6 +2080,127 @@ impl Presentation {
                 }
                 ink.alpha = ink.alpha.max(alpha);
                 samples.rgb[sample] = ink.rgb(palette);
+            }
+        }
+    }
+
+    /// `glyph_pixel` for a run of consecutive guest pixels of `lanes` bytes
+    /// each, starting at `address` (pixel `x0`, row `y`): byte `i` is lane
+    /// `i % lanes` of pixel `x0 + i / lanes`, with foreground byte
+    /// `foreground[i % lanes]` over `backgrounds[i]`. An offscreen run marks
+    /// its pages once and looks each chunk up once; a run touching the
+    /// screen takes the per-pixel path.
+    pub(crate) fn glyph_span(
+        &mut self,
+        address: u32,
+        (x0, y): (i16, i16),
+        lanes: usize,
+        foreground: &[u8],
+        backgrounds: &[u8],
+    ) {
+        let end = u64::from(address) + backgrounds.len() as u64;
+        let screen_end = u64::from(self.base) + u64::from(self.row_bytes) * u64::from(self.height);
+        let offscreen = end <= u64::from(self.base) || u64::from(address) >= screen_end;
+        if backgrounds.is_empty() || self.glyph.is_none() || !offscreen || end > 1 << 32 {
+            for (i, &background) in backgrounds.iter().enumerate() {
+                let x = x0.wrapping_add((i / lanes) as i16);
+                self.glyph_pixel(address + i as u32, x, y, foreground[i % lanes], background);
+            }
+            return;
+        }
+        for _ in backgrounds {
+            self.changed(false);
+        }
+        self.include_offscreen_span(address, backgrounds.len());
+        let Some((glyph, h, v)) = &self.glyph else {
+            return;
+        };
+        let scale = self.scale;
+        let in_text_run = self.in_text_run;
+        let run_ink = &mut self.offscreen_run_ink;
+        self.offscreen.cells_mut_or_insert(
+            address,
+            backgrounds,
+            (scale * scale) as usize,
+            |i, cell| {
+                paint_offscreen_glyph_cell(
+                    cell,
+                    (glyph, *h, *v),
+                    scale,
+                    (x0.wrapping_add((i / lanes) as i16), y, foreground[i % lanes]),
+                    (in_text_run, run_ink, address + i as u32),
+                );
+            },
+        );
+    }
+
+    /// `include_offscreen_address` for every byte of `[address, address +
+    /// len)`, which must not wrap: once per page, at the span's first byte in
+    /// it, which is where the per-byte calls would first reach the page.
+    fn include_offscreen_span(&mut self, address: u32, len: usize) {
+        let last = address + (len as u32 - 1);
+        let mut at = address;
+        loop {
+            self.include_offscreen_address(at);
+            let next_page = (u64::from(at) >> STORE_FILTER_PAGE_SHIFT) + 1;
+            let next = next_page << STORE_FILTER_PAGE_SHIFT;
+            if next > u64::from(last) {
+                break;
+            }
+            at = next as u32;
+        }
+        self.include_offscreen_address(last);
+    }
+}
+
+/// Paint the glyph's coverage for guest pixel (`x`, `y`) into one offscreen
+/// cell: the offscreen half of `Presentation::glyph_pixel`, shared with the
+/// span form. Opaque runs record each inked sample in `run_ink`.
+fn paint_offscreen_glyph_cell(
+    cell: &mut offscreen::OffscreenCellMut<'_>,
+    (glyph, h, v): (&OutlineGlyph, i16, i16),
+    scale: u32,
+    (x, y, foreground): (i16, i16, u8),
+    (in_text_run, run_ink, address): (bool, &mut OffscreenRunInk, u32),
+) {
+    for sy in 0..scale {
+        for sx in 0..scale {
+            let gx =
+                (i32::from(x) - i32::from(h)) * scale as i32 + sx as i32 - glyph.left;
+            let gy =
+                (i32::from(y) - i32::from(v)) * scale as i32 + sy as i32 - glyph.top;
+            if gx < 0 || gy < 0 || gx >= glyph.width || gy >= glyph.height {
+                continue;
+            }
+            let alpha = u32::from(glyph.pixels[(gy * glyph.width + gx) as usize]);
+            if alpha == 0 {
+                continue;
+            }
+            let i = (sy * scale + sx) as usize;
+            if in_text_run {
+                run_ink.insert((address, i));
+            }
+            if alpha == 255 {
+                cell.set_index(i, foreground);
+                cell.remove_ink(i);
+            } else {
+                let background_index = cell.index(i);
+                let ink = cell.ink_or_insert_with(i, || Ink {
+                    foreground,
+                    alpha: 0,
+                    background: IndexedColor::Solid(background_index),
+                });
+                if ink.foreground != foreground {
+                    let previous = ink.clone();
+                    *ink = Ink {
+                        foreground,
+                        alpha: 0,
+                        background: previous
+                            .background
+                            .over(previous.foreground, previous.alpha),
+                    };
+                }
+                ink.alpha = ink.alpha.max(alpha);
             }
         }
     }
@@ -2336,6 +2426,29 @@ impl MacMemoryBus {
         let background = self.read_byte(address);
         if let Some(mut p) = self.presentation.as_mut() {
             p.glyph_pixel(address, x, y, foreground, background);
+        }
+    }
+
+    /// `outline_glyph_pixel` for `count` consecutive pixels of `lanes` bytes
+    /// from `address` (pixel `x0` of row `y`), each lane taking its byte of
+    /// the big-endian `foreground`. The backgrounds are read up front, as
+    /// the per-pixel calls would read them before drawing the run.
+    pub(crate) fn outline_glyph_span(
+        &mut self,
+        address: u32,
+        (x0, y): (i16, i16),
+        count: usize,
+        lanes: usize,
+        foreground: u32,
+    ) {
+        if self.presentation.is_none() || count == 0 {
+            return;
+        }
+        let backgrounds = self.read_bytes(address, count * lanes);
+        let foreground: [u8; 4] =
+            std::array::from_fn(|lane| (foreground >> ((lanes.saturating_sub(1 + lane)) * 8)) as u8);
+        if let Some(mut p) = self.presentation.as_mut() {
+            p.glyph_span(address, (x0, y), lanes, &foreground[..lanes], &backgrounds);
         }
     }
 
@@ -2976,7 +3089,7 @@ impl MacMemoryBus {
             detail_cache: std::cell::RefCell::new(vec![None; width as usize * height as usize]),
             ink_mask: vec![0; width as usize * height as usize],
             run_ink: HashSet::default(),
-            offscreen_run_ink: HashSet::new(),
+            offscreen_run_ink: OffscreenRunInk::default(),
             in_text_run: false,
             erasing_text: false,
             glyph: None,
@@ -3234,6 +3347,69 @@ mod tests {
         bus.outline_glyph_pixel(address, 0, 0, 0);
         bus.write_byte(address, 0);
         bus.end_outline_glyph();
+    }
+
+    #[test]
+    fn glyph_spans_match_the_per_pixel_calls() {
+        let glyph = OutlineGlyph {
+            pixels: (0..40 * 6).map(|i| [0, 255, 64, 128, 0, 200, 255][i % 7]).collect(),
+            width: 40,
+            height: 6,
+            left: -1,
+            top: 0,
+        };
+        let setup = |start: u32, opaque: bool| {
+            let mut bus = MacMemoryBus::new(1024 * 1024);
+            let palette = std::array::from_fn(|i| [i as u8; 3]);
+            bus.enable_outline_presentation((0x1000, 8, 8, 8, 8), palette, 4);
+            for i in 0..96u32 {
+                bus.write_byte(start + i, (i * 7) as u8);
+            }
+            let mut p = bus.presentation.as_mut().unwrap();
+            p.glyph = Some((glyph.clone(), 0, 0));
+            p.in_text_run = opaque;
+            drop(p);
+            bus
+        };
+        let snapshot = |bus: &MacMemoryBus| {
+            let p = bus.presentation.as_ref().unwrap();
+            let cells: Vec<(u32, DetailCell)> = p
+                .offscreen
+                .addresses()
+                .into_iter()
+                .map(|address| (address, (*p.offscreen.get(address).unwrap()).clone()))
+                .collect();
+            (
+                cells,
+                p.revision,
+                p.offscreen_bounds,
+                p.store_filter_new_pages.clone(),
+                p.offscreen_run_ink.clone(),
+            )
+        };
+        for lanes in [1usize, 2, 4] {
+            for opaque in [false, true] {
+                // Within a chunk, across a 256-byte chunk and across a page.
+                for start in [0x4_0010u32, 0x4_00F8, 0x4_0FF0] {
+                    let mut per_pixel = setup(start, opaque);
+                    let mut span = setup(start, opaque);
+                    let count = 20;
+                    for (y, foreground) in [(1i16, 0x0A0B_0C0Du32), (1, 0x1112_1314), (2, 0x0A0B_0C0D)] {
+                        for i in 0..count * lanes {
+                            let lane = i % lanes;
+                            per_pixel.outline_glyph_pixel(
+                                start + i as u32,
+                                3 + (i / lanes) as i16,
+                                y,
+                                (foreground >> ((lanes - 1 - lane) * 8)) as u8,
+                            );
+                        }
+                        span.outline_glyph_span(start, (3, y), count, lanes, foreground);
+                        assert_eq!(snapshot(&span), snapshot(&per_pixel), "lanes {lanes} opaque {opaque} start {start:#x} y {y}");
+                    }
+                }
+            }
+        }
     }
 
     /// JIT store filter bytes: [0] global, [1 + page] per 4 KiB page.
