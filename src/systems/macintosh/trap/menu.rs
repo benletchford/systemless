@@ -5771,8 +5771,8 @@ impl super::TrapDispatcher {
                 }
             };
             let bx_end = byte_right.min(row_bytes);
-            for bx in byte_left..bx_end {
-                saved.push(bus.read_byte(row_start + bx));
+            for byte in bus.read_bytes(row_start + byte_left, bx_end.saturating_sub(byte_left) as usize) {
+                saved.push(byte);
             }
         }
         if pixel_size == 8 {
@@ -5825,12 +5825,11 @@ impl super::TrapDispatcher {
                 continue;
             }
             let row_start = screen_base + (y as u32) * row_bytes;
-            for bx in byte_left..(byte_left + bytes_per_row) {
-                if idx < saved.len() {
-                    bus.restore_saved_pixels(row_start + bx, saved, idx, 1);
-                    idx += 1;
-                }
-            }
+            // One restore per row: identical to a restore per byte, but an
+            // unchanged row is proved with one comparison.
+            let len = (bytes_per_row as usize).min(saved.len().saturating_sub(idx));
+            bus.restore_saved_pixels(row_start + byte_left, saved, idx, len);
+            idx += len;
         }
     }
 

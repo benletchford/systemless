@@ -3038,9 +3038,28 @@ impl MacMemoryBus {
         {
             return;
         }
+        let plain_at = |i: usize| {
+            let value = pixels[i].into() as u8;
+            pixels.detail.get(&i).filter(|cell| cell.value == value).is_none()
+        };
+        let mut next = offset;
         for i in offset..end {
+            if i < next {
+                continue;
+            }
             let dst = address + (i - offset) as u32;
             let value = pixels[i].into() as u8;
+            // A run of bytes without text is a plain store, which the bulk
+            // store applies a row span at a time; storing a byte's own value
+            // over a plain cell changes nothing, as the check below skips.
+            if plain_at(i) {
+                next = (i..end).find(|&j| !plain_at(j)).unwrap_or(end);
+                if next - i > 1 {
+                    let run: Vec<u8> = pixels[i..next].iter().map(|value| (*value).into() as u8).collect();
+                    self.write_bytes(dst, &run);
+                    continue;
+                }
+            }
             let detail = pixels.detail.get(&i).filter(|cell| cell.value == value);
             if self.read_byte(dst) == value
                 && self
@@ -4321,6 +4340,45 @@ mod tests {
                 assert_eq!(bulk.outline_presentation_rgb(), bytes.outline_presentation_rgb(), "{context}: rendered");
                 assert!(bulk.presentation.as_ref().unwrap().ink_mask_matches_ink(), "{context}: ink mask");
             }
+        }
+    }
+
+    #[test]
+    fn span_restores_match_byte_restores() {
+        let setup = || {
+            let mut bus = padded_bus(10, 8, 6, 2);
+            for row in 0..6u32 {
+                for x in 0..10 {
+                    bus.write_byte(0x3_0000 + row * 10 + x, (row * 3 + x) as u8);
+                }
+            }
+            for address in [0x1000 + 11, 0x1000 + 14, 0x3_0000 + 3, 0x3_0000 + 4] {
+                paint_detail(&mut bus, address);
+            }
+            bus
+        };
+        for (address, len) in [(0x1000u32 + 10, 8usize), (0x3_0000, 10)] {
+            let mut saver = setup();
+            let saved = saver.save_pixel_bytes(address, len);
+            // Change the span: new plain bytes, new text, cleared text.
+            let disturb = |bus: &mut MacMemoryBus| {
+                bus.write_bytes(address, &[7, 7, 7]);
+                paint_detail(bus, address + 5);
+                bus.write_byte(address + 4, 1);
+            };
+            let mut span = setup();
+            let mut bytes = setup();
+            disturb(&mut span);
+            disturb(&mut bytes);
+            span.restore_saved_pixels(address, &saved, 0, len);
+            for i in 0..len {
+                bytes.restore_saved_pixels(address + i as u32, &saved, i, 1);
+            }
+            let context = format!("at {address:#x}");
+            assert_eq!(span.read_bytes(address, len), bytes.read_bytes(address, len), "{context}: RAM");
+            assert_eq!(span.save_pixel_bytes(address, len), bytes.save_pixel_bytes(address, len), "{context}: detail");
+            assert_eq!(span.save_pixel_bytes(address, len), saved, "{context}: restored");
+            assert_eq!(span.outline_presentation_rgb(), bytes.outline_presentation_rgb(), "{context}: rendered");
         }
     }
 
