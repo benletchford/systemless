@@ -11,6 +11,7 @@ year: 1993
 architectures:
 - 68k
 default_architecture: 68k
+launch_enabled: true
 category: Puzzle
 compatibility:
   status: playable
@@ -25,9 +26,23 @@ compatibility:
       its physical simulation; the basketball and other objects changed positions.
       BasiliskII needed one extra introduction-dismissal click, then reached
       the same puzzle and moving-object checkpoint. Exact pixel parity and
-      browser launch have not yet been verified.
+      browser launch had not yet been verified in that replay.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3064
+  - date: "2026-09-28"
+    tester: Catalogue maintainer
+    systemless_version: 6ba1ec18ec1d170a7ff75b826cdfb0c56d22e72a
+    architecture: 68k
+    environment: >-
+      Release-mode Chrome 151 loaded the checksum-matched promotional archive.
+      Real browser Escape input skipped the animation and reached the basketball
+      tutorial; a pointer click on Play hid the setup pane and advanced the
+      simulation timer. The separate 20-second Canvas2D pacing sample fetched
+      the archive once with no console errors and reached about 54.9 host FPS
+      and 44.6 guest ticks per second at its steady tail. This misses the
+      generic 55/50 pacing thresholds; browser interaction was still responsive.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3164
 artifacts:
 - id: archive
   role: archive
@@ -95,5 +110,5 @@ roll and collide. This capture shows the puzzle after that change of state.
 This is the original Macintosh demonstration of The (Even More!) Incredible
 Machine, not the retail release. Systemless reached its interactive puzzle
 with the unchanged archive. BasiliskII also reached the running simulation
-after an extra click past the introduction. Browser launch remains disabled
-until manual testing and approval.
+after an extra click past the introduction. Browser testing also reached the
+first tutorial and started its simulation with real keyboard and pointer input.
