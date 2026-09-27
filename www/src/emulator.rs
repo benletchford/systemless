@@ -59,6 +59,8 @@ const MAX_AUDIO_QUEUE_MS: usize = 500;
 const MAX_AUDIO_QUEUE_SAMPLES: usize = (OUTPUT_RATE as usize * MAX_AUDIO_QUEUE_MS) / 1000;
 const HEALTHY_AUDIO_QUEUE_MS: usize = 150;
 const HEALTHY_AUDIO_QUEUE_SAMPLES: usize = (OUTPUT_RATE as usize * HEALTHY_AUDIO_QUEUE_MS) / 1000;
+const CATCHUP_AUDIO_QUEUE_MS: usize = 120;
+const CATCHUP_AUDIO_QUEUE_SAMPLES: usize = (OUTPUT_RATE as usize * CATCHUP_AUDIO_QUEUE_MS) / 1000;
 
 /// Silence queued in the browser audio sink at startup, in ms. Gives the
 /// queue a steady lead so main-thread jitter (slow rAFs, heavy render
@@ -1565,7 +1567,7 @@ fn web_cpu_budget_ms(
         PPC_AUDIO_WORKLET_CATCHUP_CPU_MS_PER_PAINT
     } else if ticks_behind > 0
         && queued_source_samples
-            .map(|samples| samples >= HEALTHY_AUDIO_QUEUE_SAMPLES)
+            .map(|samples| samples >= CATCHUP_AUDIO_QUEUE_SAMPLES)
             .unwrap_or(false)
     {
         AUDIO_WORKLET_HEALTHY_CATCHUP_CPU_MS_PER_PAINT
@@ -1845,11 +1847,11 @@ mod tests {
             AUDIO_WORKLET_CATCHUP_CPU_MS_PER_PAINT
         );
         assert_eq!(
-            web_cpu_budget_ms(true, false, 2, Some(HEALTHY_AUDIO_QUEUE_SAMPLES - 1)),
+            web_cpu_budget_ms(true, false, 2, Some(CATCHUP_AUDIO_QUEUE_SAMPLES - 1)),
             AUDIO_WORKLET_CATCHUP_CPU_MS_PER_PAINT
         );
         assert_eq!(
-            web_cpu_budget_ms(true, false, 2, Some(HEALTHY_AUDIO_QUEUE_SAMPLES)),
+            web_cpu_budget_ms(true, false, 2, Some(CATCHUP_AUDIO_QUEUE_SAMPLES)),
             AUDIO_WORKLET_HEALTHY_CATCHUP_CPU_MS_PER_PAINT
         );
         assert_eq!(
