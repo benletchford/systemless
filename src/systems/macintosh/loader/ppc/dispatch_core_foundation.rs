@@ -20,6 +20,7 @@ struct PpcCfString {
 pub(super) struct PpcCfStringState {
     objects: BTreeMap<u32, PpcCfString>,
     constants: BTreeMap<Vec<u8>, u32>,
+    loaded_bundles: BTreeMap<String, u32>,
 }
 
 impl PpcCfStringState {
@@ -375,6 +376,18 @@ pub(super) fn dispatch_core_foundation_import(
                 .get(&cpu.gpr[3])
                 .map_or(0, |object| object.retain_count),
         )),
+        PpcImportDispatcherTarget::CfBundleGetBundleWithIdentifier => {
+            // CFBundleGetBundleWithIdentifier only searches bundle objects
+            // already loaded into this process. A CFM import does not by
+            // itself load or identify a CFBundle.
+            let reference = state
+                .objects
+                .get(&cpu.gpr[3])
+                .and_then(|identifier| state.loaded_bundles.get(&identifier.value))
+                .copied()
+                .unwrap_or(0);
+            Some(PpcImportAction::Return(reference))
+        }
         _ => None,
     }
 }
