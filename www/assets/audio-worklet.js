@@ -20,12 +20,15 @@ class SystemlessAudioProcessor extends AudioWorkletProcessor {
     this.idx = 0;      // index within chunks[head]
     this.phase = 0.0;  // fractional position into source sample stream
     this.diagnosticsEnabled = false;
+    this.playbackStarted = false;
     this.diagnostics = {
       queuedChunks: 0,
       queuedSourceSamples: 0,
       processedBlocks: 0,
       processedOutputSamples: 0,
       nonSilentOutputSamples: 0,
+      underrunBlocks: 0,
+      underrunOutputSamples: 0,
     };
     this.port.onmessage = (e) => {
       if (e.data instanceof Float32Array && e.data.length > 0) {
@@ -42,6 +45,7 @@ class SystemlessAudioProcessor extends AudioWorkletProcessor {
   }
 
   enqueueChunk(chunk) {
+    this.playbackStarted = true;
     this.chunks.push(chunk);
     this.queuedSamples += chunk.length;
     this.diagnostics.queuedChunks++;
@@ -59,6 +63,7 @@ class SystemlessAudioProcessor extends AudioWorkletProcessor {
   }
 
   clearQueue() {
+    this.playbackStarted = false;
     this.chunks = [];
     this.head = 0;
     this.queuedSamples = 0;
@@ -116,9 +121,11 @@ class SystemlessAudioProcessor extends AudioWorkletProcessor {
     const trackDiagnostics = this.diagnosticsEnabled;
 
     let nonSilentThisBlock = 0;
+    let underrunThisBlock = 0;
     for (let i = 0; i < output.length; i++) {
       if (this.head >= this.chunks.length) {
         output[i] = 0;
+        if (trackDiagnostics && this.playbackStarted) underrunThisBlock++;
         continue;
       }
       const chunk = this.chunks[this.head];
@@ -151,6 +158,8 @@ class SystemlessAudioProcessor extends AudioWorkletProcessor {
     }
     if (trackDiagnostics) {
       this.diagnostics.processedBlocks++;
+      if (underrunThisBlock > 0) this.diagnostics.underrunBlocks++;
+      this.diagnostics.underrunOutputSamples += underrunThisBlock;
       this.diagnostics.processedOutputSamples += output.length;
       this.diagnostics.nonSilentOutputSamples += nonSilentThisBlock;
       if (nonSilentThisBlock > 0 || this.diagnostics.processedBlocks % 16 === 0) {

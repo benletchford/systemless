@@ -2069,3 +2069,13 @@ input {
   .game-focus-toggle { display: block; padding: 8px 12px; margin-bottom: 12px; background: var(--surface); color: var(--ink); border: 1px solid var(--rule); border-radius: 4px; }
   .game-page--focused .game-focus-toggle { position: fixed; top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right)); z-index: 100; }
 }
+
+.runtime-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 1rem;
+  padding: 1rem;
+  border: 1px solid currentColor;
+}

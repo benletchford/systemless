@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
+import { percentiles } from "./runtime-metrics.mjs";
+import { connect, evaluateJson } from "./runtime-cdp.mjs";
 import { spawn } from "node:child_process";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +30,7 @@ if (!route || !archiveUrl || !archivePath) {
   throw new Error("Set SYSTEMLESS_RUNTIME_ROUTE, SYSTEMLESS_RUNTIME_ARCHIVE_URL and SYSTEMLESS_RUNTIME_ARCHIVE_PATH from the catalogue entry under test");
 }
 const archiveRequestUrls = expectedArchiveRequestUrls(baseUrl, archiveUrl);
+const gpuEnabled = process.env.SYSTEMLESS_RUNTIME_GPU === "1";
 const sampleMs = envNumber("SYSTEMLESS_RUNTIME_SAMPLE_MS", 20_000);
 const maxRuntimeRafGapMs = envNumber("SYSTEMLESS_MAX_RUNTIME_RAF_GAP_MS", 250);
 const maxLoadingRafGapMs = envNumber("SYSTEMLESS_MAX_LOADING_RAF_GAP_MS", 500);
@@ -38,6 +41,7 @@ const minRuntimeAudioQueueMs = envNumber("SYSTEMLESS_MIN_RUNTIME_AUDIO_QUEUE_MS"
 const minSteadyHostFps = envNumber("SYSTEMLESS_MIN_STEADY_HOST_FPS", 55);
 const minSteadyGuestTicksPerSec = envNumber("SYSTEMLESS_MIN_STEADY_GUEST_TICKS_PER_SEC", 50);
 const minSteadyGuestMips = envOptionalNumber("SYSTEMLESS_MIN_STEADY_GUEST_MIPS");
+const targetGuestTick = envOptionalNumber("SYSTEMLESS_RUNTIME_TARGET_TICK");
 const runtimeWarmupMs = envNumber("SYSTEMLESS_RUNTIME_WARMUP_MS", 1000);
 const expectedArchiveRequests =
   envOptionalNumber("SYSTEMLESS_EXPECT_ARCHIVE_REQUESTS") ?? 1;
@@ -56,7 +60,7 @@ const chrome = spawn(
     "--headless=new",
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${userDataDir}`,
-    "--disable-gpu",
+    ...(gpuEnabled ? [] : ["--disable-gpu"]),
     "--autoplay-policy=no-user-gesture-required",
     "--no-first-run",
     "--no-default-browser-check",
@@ -84,7 +88,7 @@ try {
   await page.send("Page.enable");
   await page.send("Runtime.enable");
   await page.send("Page.addScriptToEvaluateOnNewDocument", {
-    source: runtimeTracePrelude(),
+    source: `window.__systemlessProbePresentation = ${process.env.SYSTEMLESS_RUNTIME_PRESENTATION_DIAGNOSTICS === "1"};window.__systemlessProbeAudio = ${process.env.SYSTEMLESS_RUNTIME_AUDIO_DIAGNOSTICS === "1"};` + runtimeTracePrelude(),
   });
   await page.send("Fetch.enable", {
     patterns: [...archiveRequestUrls].map((url) => ({
@@ -94,11 +98,15 @@ try {
   });
   await page.send("Page.navigate", { url: `${baseUrl}${route}` });
 
-  const probe = await evaluate(
+  const probe = await evaluateJson(
     page,
-    `(${runtimeProbe.toString()})(${JSON.stringify(sampleMs)})`,
+    `(${runtimeProbe.toString()})(${JSON.stringify(sampleMs)}, ${process.env.SYSTEMLESS_RUNTIME_DEBUG !== "0"}, ${JSON.stringify(targetGuestTick ?? null)})`,
     sampleMs + 60_000,
   );
+  if (process.env.SYSTEMLESS_RUNTIME_SCREENSHOT_PATH) {
+    const screenshot = await page.send("Page.captureScreenshot", { format: "png" });
+    await writeFile(process.env.SYSTEMLESS_RUNTIME_SCREENSHOT_PATH, Buffer.from(screenshot.data, "base64"));
+  }
   page.close();
 
   const report = buildReport(
@@ -111,11 +119,52 @@ try {
     probe.started_at,
   );
   report.archive_server_requests = archiveServer.requests();
+  report.environment = probe.environment;
+  report.browser = version.Browser;
+  report.progress_endpoint = probe.progress_endpoint;
+  report.worker_startup = probe.worker_startup;
+  report.audio_diagnostics = probe.audio_diagnostics;
+  if (process.env.SYSTEMLESS_RUNTIME_PRESENTATION_DIAGNOSTICS === "1") {
+    const cutoff = probe.started_at + (report.first_runtime_ms ?? Infinity) + runtimeWarmupMs;
+    const images = probe.worker_trace.filter(entry => entry.t >= cutoff && entry.presentationMetrics?.completeImage);
+    // Renderer and owner replies use separate channels. Correlate after capture
+    // so a fast submission notice can precede the owner's metadata reply.
+    for (const entry of probe.presentation_trace.filter(entry => entry.direct)) {
+      const owner = probe.worker_trace.findLast(frame => frame.directSequence === entry.sequence
+        && frame.rendererGeneration === entry.rendererGeneration);
+      if (owner) {
+        entry.ownerReceivedAt = owner.t;
+        entry.requestToSubmitAckMs = entry.t - owner.requestedAt;
+      }
+    }
+    const submitted = probe.presentation_trace.filter(entry => entry.ownerReceivedAt >= cutoff);
+    report.presentation_diagnostics = {
+      complete_images: images.length,
+      packet_bytes: percentiles(images.map(entry => entry.packetBytes)),
+      packet_kinds: [...new Set(images.map(entry => entry.packetKind))],
+      owner_guest_ms: percentiles(images.map(entry => entry.presentationMetrics.guestMs)),
+      owner_snapshot_ms: percentiles(images.map(entry => entry.presentationMetrics.snapshotMs)),
+      wasm_to_js_packet_ms: percentiles(images.map(entry => entry.presentationMetrics.jsCopyMs)),
+      host_receive_to_renderer_send_ms: percentiles(submitted.map(entry => entry.hostWaitMs)),
+      renderer_roundtrip_ms: percentiles(submitted.map(entry => entry.rendererRoundtripMs)),
+      renderer_submit_ms: percentiles(submitted.map(entry => entry.renderSubmitMs)),
+      host_request_to_submit_ack_ms: percentiles(submitted.map(entry => entry.requestToSubmitAckMs)),
+      submitted_packets: submitted.length,
+      max_renderer_in_flight: submitted.some(entry => entry.direct) ? null : probe.max_renderer_in_flight,
+      note: "Owner phases use its local clock; request/ack and host waits use the host clock, direct submissions are acknowledged directly by the renderer, without waiting for owner credit processing. Submission acknowledgements do not measure GPU completion or physical display. Diagnostics are separate from primary timing runs.",
+    };
+  }
+  if (process.env.SYSTEMLESS_RUNTIME_TRACE_PATH) {
+    await writeFile(process.env.SYSTEMLESS_RUNTIME_TRACE_PATH, JSON.stringify(probe));
+  }
   console.log(JSON.stringify(report, null, 2));
+  if (targetGuestTick != null && !probe.progress_endpoint.reached) {
+    throw new Error(`Guest did not reach tick ${targetGuestTick} before timeout`);
+  }
   assertRuntimePacing(report);
 } finally {
-  await archiveServer.close();
   chrome.kill("SIGTERM");
+  await archiveServer.close();
   await sleep(250);
   await rmWithRetry(userDataDir);
 }
@@ -175,6 +224,7 @@ async function serveArchive(path) {
       return requests;
     },
     close() {
+      server.closeAllConnections();
       return new Promise((resolve) => server.close(resolve));
     },
   };
@@ -214,7 +264,7 @@ function isLocalBaseUrl(baseUrl) {
   }
 }
 
-async function runtimeProbe(sampleMs) {
+async function runtimeProbe(sampleMs, showDebug, targetGuestTick) {
   const samples = [];
   const console = [];
   const startedAt = performance.now();
@@ -234,7 +284,7 @@ async function runtimeProbe(sampleMs) {
       const canvas = document.querySelector("canvas.game-canvas");
       const status = document.querySelector(".game-status");
 
-      if (canvas && !debugEnabled) {
+      if (canvas && showDebug && !debugEnabled) {
         canvas.focus();
         canvas.dispatchEvent(
           new KeyboardEvent("keydown", { key: "F3", code: "F3", bubbles: true }),
@@ -251,17 +301,42 @@ async function runtimeProbe(sampleMs) {
       });
       lastFrameTimestamp = frameTimestamp;
 
-      if (t < sampleMs) {
+      const latestFrame = (canvas?.getAttribute("data-runtime-worker") === "true"
+        ? window.__systemlessWorkerTrace : window.__systemlessFrameTrace)?.at(-1);
+      const reached = targetGuestTick !== null && latestFrame?.guestTick >= targetGuestTick;
+      if (t < sampleMs && !reached) {
         requestAnimationFrame(tick);
       } else {
         resolve({
           samples,
+          progress_endpoint: {
+            requested_tick: targetGuestTick,
+            reached,
+            observed_tick: latestFrame?.guestTick ?? null,
+            observed_instructions: latestFrame?.totalInstructions ?? null,
+          },
+          environment: {
+            debug_overlay: showDebug,
+            user_agent: navigator.userAgent,
+            device_pixel_ratio: devicePixelRatio,
+            visibility: document.visibilityState,
+            renderer: document.querySelector("canvas.game-canvas")?.getAttribute("data-render-backend"),
+            transport: document.querySelector("canvas.game-canvas")?.getAttribute("data-render-transport"),
+            canvas_width: document.querySelector("canvas.game-canvas")?.width,
+            canvas_height: document.querySelector("canvas.game-canvas")?.height,
+            cpu_mhz: document.querySelector("canvas.game-canvas")?.getAttribute("data-runtime-cpu-mhz"),
+            output_scale: document.querySelector("canvas.game-canvas")?.getAttribute("data-output-scale"),
+          },
           console,
           started_at: startedAt,
           raf_trace: window.__systemlessRafTrace || [],
           long_tasks: window.__systemlessLongTasks || [],
           frame_trace: window.__systemlessFrameTrace || [],
           worker_trace: window.__systemlessWorkerTrace || [],
+          worker_startup: window.__systemlessWorkerStartup || [],
+          audio_diagnostics: window.__systemlessAudioDiagnostics || [],
+          presentation_trace: window.__systemlessPresentationTrace || [],
+          max_renderer_in_flight: window.__systemlessRendererInFlightMax || 0,
         });
       }
     }
@@ -282,33 +357,104 @@ function runtimeTracePrelude() {
     window.__systemlessFrameTrace = frameTrace;
     window.__systemlessWorkerTrace = workerTrace;
     window.__systemlessLongTasks = longTasks;
+    const presentation = window.__systemlessPresentationTrace = [];
+    const ownedPackets = new WeakMap();
+    window.__systemlessRendererInFlightMax = 0;
+    const startup = window.__systemlessWorkerStartup = [];
+    const audio = window.__systemlessAudioDiagnostics = [];
+    if (window.__systemlessProbeAudio && window.AudioWorkletNode) {
+      const NativeAudioWorkletNode = window.AudioWorkletNode;
+      window.AudioWorkletNode = new Proxy(NativeAudioWorkletNode, {
+        construct(Target, args) {
+          const node = Reflect.construct(Target, args);
+          node.port.addEventListener("message", event => {
+            if (event.data?.type !== "diagnostics") return;
+            audio.push({ t: performance.now(), ...event.data });
+            if (audio.length > 6000) audio.splice(0, audio.length - 6000);
+          });
+          node.port.start();
+          node.port.postMessage({ type: "diagnostics", enabled: true });
+          return node;
+        },
+      });
+    }
     const NativeWorker = window.Worker;
     window.Worker = new Proxy(NativeWorker, {
       construct(Target, args) {
         const worker = Reflect.construct(Target, args);
         const postMessage = worker.postMessage.bind(worker);
         let frameSentAt = null;
+        const isRenderer = String(args[0]).includes("renderer-worker");
+        const submissions = new Map();
         worker.postMessage = (...messageArgs) => {
           if (messageArgs[0]?.type === "frame") {
             frameSentAt = performance.now();
+            if (window.__systemlessProbePresentation) {
+              const message = messageArgs[0];
+              if (isRenderer) {
+                const buffer = message.compact?.cells?.buffer ?? message.pixels?.buffer;
+                const owner = buffer && ownedPackets.get(buffer);
+                if (owner) {
+                  const views = [message.pixels, message.palette, message.cursor?.pixels, message.compact?.cells, message.compact?.detail].filter(Boolean);
+                  submissions.set(message.sequence, { ...owner, sentAt: frameSentAt, kind: message.kind,
+                    bytes: views.reduce((total, view) => total + view.byteLength, 0) });
+                  window.__systemlessRendererInFlightMax = Math.max(window.__systemlessRendererInFlightMax, submissions.size);
+                }
+              } else message.measurePresentation = true;
+            }
+          }
+          if (window.__systemlessProbeAudio && messageArgs[0]?.type === "boot") {
+            startup.push({ t: performance.now(), type: "boot" });
           }
           return postMessage(...messageArgs);
         };
         worker.addEventListener("message", (event) => {
           const data = event.data;
+          if (window.__systemlessProbeAudio && ["progress", "ready"].includes(data?.type)) {
+            startup.push({ t: performance.now(), type: data.type, progress: data.progress });
+            if (startup.length > 200) startup.shift();
+          }
+          if (window.__systemlessProbePresentation && isRenderer && ["submitted", "dropped"].includes(data?.type)) {
+            const sent = submissions.get(data.sequence);
+            submissions.delete(data.sequence);
+            if (sent && data.type === "submitted") {
+              const now = performance.now();
+              presentation.push({ ...sent, t: now, sequence: data.sequence,
+                hostWaitMs: sent.sentAt - sent.ownerReceivedAt,
+                rendererRoundtripMs: now - sent.sentAt, renderSubmitMs: data.renderMs,
+                requestToSubmitAckMs: now - sent.requestedAt });
+              if (presentation.length > 6000) presentation.splice(0, presentation.length - 6000);
+            }
+          }
+          if (window.__systemlessProbePresentation && isRenderer && data?.type === "directSubmitted") {
+            presentation.push({ t: performance.now(), sequence: data.sequence, rendererGeneration: data.rendererGeneration,
+              kind: data.kind, bytes: data.bytes, direct: true, renderSubmitMs: data.renderMs });
+            if (presentation.length > 6000) presentation.splice(0, presentation.length - 6000);
+          }
           if (data?.type !== "frame") return;
           const t = performance.now();
+          if (window.__systemlessProbePresentation) {
+            const buffer = data.compactFrame?.compact.cells.buffer ?? data.indexedFrame?.pixels.buffer ?? data.frame?.buffer;
+            if (buffer) ownedPackets.set(buffer, { requestedAt: frameSentAt, ownerReceivedAt: t, guestTick: data.guestTick });
+          }
           workerTrace.push({
             t,
             // Includes worker execution, message transfer, and scheduling.
             totalMs: frameSentAt === null ? null : t - frameSentAt,
             guestTick: data.guestTick,
+            totalInstructions: data.totalInstructions,
             ticksBehind: data.ticksBehind,
             lastSteps: data.lastSteps,
             cpuBudgetMs: data.cpuBudgetMs,
             audioQueueMs: data.audioQueueMs,
+            presentationMetrics: data.presentationMetrics,
+            ...(data.directFrame ? { directSequence: data.directFrame.sequence, rendererGeneration: data.directFrame.rendererGeneration, requestedAt: frameSentAt } : {}),
+            packetKind: data.directFrame?.kind ?? (data.compactFrame ? "compact" : data.indexedFrame ? "indexed8" : data.frame ? "rgba" : null),
+            packetBytes: data.directFrame?.bytes ?? [data.frame, data.indexedFrame?.pixels, data.indexedFrame?.palette,
+              data.indexedFrame?.cursor?.pixels, data.compactFrame?.compact.cells,
+              data.compactFrame?.compact.detail].filter(Boolean).reduce((bytes, view) => bytes + view.byteLength, 0),
             visualWork: data.visualWork,
-            painted: !!(data.frame || data.gpuFrame),
+            painted: !!(data.frame || data.gpuFrame || data.indexedFrame || data.compactFrame || data.directFrame),
           });
           if (workerTrace.length > 6000) workerTrace.splice(0, workerTrace.length - 6000);
         });
@@ -409,6 +555,19 @@ function buildReport(samples, console, rafTrace, longTasks, frameTrace, workerTr
 
   return {
     route,
+    gpu_requested: gpuEnabled,
+    runtime_raf_gap_ms: percentiles(samples.filter((sample) => sample.runtime && sample.t >= measuredRuntimeStart).map((sample) => sample.dt)),
+    runtime_raf_callback_ms: percentiles(runtimeTrace.map((entry) => entry.duration)),
+    runtime_frame_total_ms: percentiles(runtimeFrames.map((entry) => entry.totalMs)),
+    runtime_frame_run_ms: percentiles(runtimeFrames.map((entry) => entry.runMs)),
+    runtime_frame_render_ms: percentiles(runtimeFrames.map((entry) => entry.renderMs)),
+    runtime_frame_paint_ms: percentiles(runtimeFrames.map((entry) => entry.paintMs)),
+    guest_progress: {
+      first_tick: runtimeFrames[0]?.guestTick ?? null,
+      last_tick: runtimeFrames.at(-1)?.guestTick ?? null,
+      first_instructions: runtimeFrames[0]?.totalInstructions ?? null,
+      last_instructions: runtimeFrames.at(-1)?.totalInstructions ?? null,
+    },
     runtime_mode: worker ? "worker" : "main-thread",
     archive_url: archiveUrl,
     archive_path: archivePath,
@@ -662,19 +821,6 @@ function envOptionalNumber(name) {
   return parsed;
 }
 
-async function evaluate(page, expression, timeout) {
-  const result = await page.send("Runtime.evaluate", {
-    expression,
-    returnByValue: true,
-    awaitPromise: true,
-    timeout,
-  });
-  if (result.exceptionDetails) {
-    throw new Error(JSON.stringify(result.exceptionDetails));
-  }
-  return result.result.value;
-}
-
 async function waitForChrome(port) {
   const deadline = Date.now() + 15_000;
   let lastError = null;
@@ -687,54 +833,6 @@ async function waitForChrome(port) {
     }
   }
   throw lastError ?? new Error("Chrome did not start");
-}
-
-function connect(webSocketUrl) {
-  const ws = new WebSocket(webSocketUrl);
-  let nextId = 1;
-  const pending = new Map();
-  const handlers = new Map();
-  const ready = new Promise((resolve, reject) => {
-    ws.addEventListener("open", resolve, { once: true });
-    ws.addEventListener("error", reject, { once: true });
-  });
-
-  ws.addEventListener("message", (event) => {
-    const message = JSON.parse(event.data);
-    if (message.id && pending.has(message.id)) {
-      const { resolve, reject } = pending.get(message.id);
-      pending.delete(message.id);
-      if (message.error) {
-        reject(new Error(JSON.stringify(message.error)));
-      } else {
-        resolve(message.result ?? {});
-      }
-      return;
-    }
-
-    const methodHandlers = handlers.get(message.method);
-    if (methodHandlers) {
-      for (const handler of methodHandlers) {
-        handler(message.params ?? {});
-      }
-    }
-  });
-
-  return {
-    ready,
-    close: () => ws.close(),
-    on(method, handler) {
-      if (!handlers.has(method)) {
-        handlers.set(method, []);
-      }
-      handlers.get(method).push(handler);
-    },
-    send(method, params = {}) {
-      const id = nextId++;
-      ws.send(JSON.stringify({ id, method, params }));
-      return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
-    },
-  };
 }
 
 async function fetchJson(url) {

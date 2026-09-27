@@ -23,3 +23,7 @@ __pycache__/
 
 # Experiment notes stay local.
 /docs/
+
+# Native window qualification artifacts.
+/native-window-results/
+/scripts/__pycache__/

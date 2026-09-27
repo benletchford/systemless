@@ -2,9 +2,14 @@ mod app;
 mod bench;
 mod browser_bridge;
 mod catalogue;
+#[cfg(test)]
+mod compact_vectors;
 mod components;
 mod emulator;
+mod indexed_frame;
 mod paths;
+mod presentation;
+mod renderer_bridge;
 mod save_store;
 mod worker_runtime;
 

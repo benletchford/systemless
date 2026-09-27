@@ -1565,3 +1565,16 @@ fn shipped_games_retain_their_mobile_keyboard_controls() {
         }
     }
 }
+
+#[test]
+fn runtime_defaults_to_workers_without_overriding_explicit_compatibility() {
+    assert!(Runtime::default().worker);
+    let omitted: Runtime = serde_saphyr::from_str("{}").unwrap();
+    assert!(omitted.worker);
+    let enabled: Runtime = serde_saphyr::from_str("worker: true").unwrap();
+    assert!(enabled.worker);
+    let compatibility: Runtime = serde_saphyr::from_str("worker: false").unwrap();
+    assert!(!compatibility.worker);
+    assert_eq!(omitted.runtime_pacing, RuntimePacing::default());
+    assert!(!omitted.show_menu_bar);
+}

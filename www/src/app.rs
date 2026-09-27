@@ -24,6 +24,18 @@ const HOMEBREW_INSTALL_COMMAND: &str = "brew install benletchford/tap/systemless
 const CARGO_INSTALL_COMMAND: &str = "cargo install systemless";
 const CLI_LAUNCH_COMMAND: &str = "systemless path/to/application.sit";
 
+thread_local! {
+    static RUNTIME_NOTICE: std::cell::Cell<Option<RwSignal<String>>> = const { std::cell::Cell::new(None) };
+}
+
+pub(crate) fn report_runtime_notice(message: String) {
+    RUNTIME_NOTICE.with(|notice| {
+        if let Some(notice) = notice.get() {
+            let _ = notice.try_set(message);
+        }
+    });
+}
+
 #[component]
 fn PixelMacMark() -> impl IntoView {
     view! {
@@ -360,7 +372,9 @@ fn LibraryGameCard(
             on:touchstart=move |_| prefetch_game_archive(game)
             on:click=move |ev| {
                 ev.prevent_default();
-                crate::emulator::begin_audio_from_user_gesture();
+                if game.approved {
+                    crate::emulator::begin_audio_from_user_gesture();
+                }
                 set_active_game.set(game);
                 set_view.set("playing");
                 push_route(&game_path);
@@ -523,7 +537,9 @@ fn RelatedGameCard(
             on:focus=move |_| prefetch_game_archive(game)
             on:click=move |ev| {
                 ev.prevent_default();
-                crate::emulator::begin_audio_from_user_gesture();
+                if game.approved {
+                    crate::emulator::begin_audio_from_user_gesture();
+                }
                 set_active_game.set(game);
                 set_view.set("playing");
                 push_route(&game_path);
@@ -627,6 +643,9 @@ fn BuildCrate(
 
 #[component]
 pub fn App() -> impl IntoView {
+    let runtime_notice = RwSignal::new(String::new());
+    RUNTIME_NOTICE.with(|notice| notice.set(Some(runtime_notice)));
+    on_cleanup(|| RUNTIME_NOTICE.with(|notice| notice.set(None)));
     let initial_path = current_path();
     let initial_game = game_from_path(&initial_path);
     let (active_game, set_active_game) = signal(initial_game.unwrap_or_else(default_game));
@@ -656,6 +675,12 @@ pub fn App() -> impl IntoView {
                 dark_theme=dark_theme
                 set_dark_theme=set_dark_theme
             />
+            <Show when=move || !runtime_notice.get().is_empty()>
+                <div class="runtime-notice" role="alert">
+                    <span>{move || runtime_notice.get()}</span>
+                    <button type="button" on:click=move |_| runtime_notice.set(String::new())>"Dismiss"</button>
+                </div>
+            </Show>
             <main class="app__main">
                 {move || match active_view.get() {
                     "playing" => view! {

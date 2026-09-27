@@ -3,29 +3,30 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use js_sys::{Array, Float32Array, Object, Reflect, Uint8Array, Uint8ClampedArray};
+use js_sys::{Array, Object, Reflect, Uint8Array};
 use leptos::prelude::*;
-use leptos::task::spawn_local;
+use leptos::task::{spawn_local, spawn_local_scoped_with_cancellation};
 use systemless::debug_overlay::DebugOverlayFrameStats;
 use wasm_bindgen::{prelude::Closure, JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
-    AddEventListenerOptions, CanvasRenderingContext2d, CssStyleDeclaration, Element, Event,
-    HtmlCanvasElement, HtmlElement, HtmlInputElement, ImageData, KeyboardEvent, MessageEvent,
-    MouseEvent, PointerEvent, ReadableStreamDefaultReader, ReadableStreamReadResult, Touch,
-    TouchEvent, TouchList, WebGlBuffer, WebGlProgram, WebGlRenderingContext, WebGlShader,
-    WebGlTexture, Worker,
+    AddEventListenerOptions, CssStyleDeclaration, Element, Event, HtmlCanvasElement, HtmlElement,
+    HtmlInputElement, KeyboardEvent, MessageEvent, MouseEvent, PointerEvent,
+    ReadableStreamDefaultReader, ReadableStreamReadResult, Touch, TouchEvent, TouchList, Worker,
 };
 
 use crate::browser_bridge::{
-    boot_systemless_worker, fetch_archive_in_worker, prefetch_archive, prefetched_archive,
-    systemless_runtime_assets,
+    acknowledge_systemless_worker_command, boot_systemless_worker, cancel_systemless_worker,
+    fetch_archive_in_worker, post_systemless_worker_command, prefetch_archive, prefetched_archive,
+    shutdown_systemless_worker, systemless_runtime_assets, wait_systemless_worker_shutdown,
 };
 use crate::catalogue::{Game, GameArchitecture, GamePlugin, MobileControlButton, MobileControls};
 use crate::emulator::{
-    BootProgress, FrameRunResult, Machine, PerfCounters, PluginFile, WebAudioBackend,
+    AudioBootstrap, BootProgress, FrameRunResult, Machine, PerfCounters, PluginFile,
+    WebAudioBackend,
 };
 use crate::paths::asset_path;
+use crate::presentation::CanvasFrame;
 use crate::save_store::{self, DownloadableSaveFile};
 
 // Some games poll Button/MBState instead of consuming mouseDown events. A quick
@@ -67,7 +68,12 @@ pub fn GameScreen(game: &'static Game) -> impl IntoView {
                                 aria-pressed=move || bool_attr(
                                     selected_architecture.get() == architecture,
                                 )
-                                on:click=move |_| selected_architecture.set(architecture)
+                                on:click=move |_| {
+                                    if selected_architecture.get_untracked() != architecture {
+                                        crate::emulator::begin_audio_from_user_gesture();
+                                        selected_architecture.set(architecture);
+                                    }
+                                }
                             >
                                 {architecture.label()}
                             </button>
@@ -182,7 +188,11 @@ fn set_plugin_selected(
         } else {
             requested.retain(|id| *id != plugin_id);
         }
-        *ids = normalize_plugin_selection(game, &requested);
+        let next = normalize_plugin_selection(game, &requested);
+        if game.approved && *ids != next {
+            crate::emulator::begin_audio_from_user_gesture();
+        }
+        *ids = next;
     });
 }
 
@@ -193,6 +203,46 @@ enum RuntimeHandle {
 }
 
 impl RuntimeHandle {
+    fn key_down(&self, mac_key: u8, char_code: u8) {
+        self.mobile_key(true, mac_key, char_code);
+    }
+
+    fn key_up(&self, mac_key: u8, char_code: u8) {
+        self.mobile_key(false, mac_key, char_code);
+    }
+
+    fn mouse_down(&self, v: i16, h: i16) {
+        self.mouse("mouseDown", v, h);
+    }
+
+    fn mouse_up(&self, v: i16, h: i16) {
+        self.mouse("mouseUp", v, h);
+    }
+
+    fn mouse_move(&self, v: i16, h: i16) {
+        self.mouse("mouseMove", v, h);
+    }
+
+    fn mouse(&self, kind: &str, v: i16, h: i16) {
+        match self {
+            Self::Local(machine) => {
+                let mut machine = machine.borrow_mut();
+                match kind {
+                    "mouseDown" => machine.mouse_down(v, h),
+                    "mouseUp" => machine.mouse_up(v, h),
+                    _ => machine.mouse_move(v, h),
+                }
+            }
+            Self::Worker(runtime) => {
+                let message = Object::new();
+                set_js_property(&message, "type", &JsValue::from_str(kind));
+                set_js_property(&message, "v", &JsValue::from_f64(v as f64));
+                set_js_property(&message, "h", &JsValue::from_f64(h as f64));
+                let _ = runtime.post(&message);
+            }
+        }
+    }
+
     fn resume_audio(&self) {
         match self {
             Self::Local(machine) => machine.borrow_mut().resume_audio(),
@@ -225,7 +275,7 @@ impl RuntimeHandle {
                 );
                 set_js_property(&message, "macKey", &JsValue::from_f64(mac_key as f64));
                 set_js_property(&message, "charCode", &JsValue::from_f64(char_code as f64));
-                let _ = runtime.worker.post_message(message.as_ref());
+                let _ = runtime.post(&message);
             }
         }
     }
@@ -261,8 +311,36 @@ fn GameRuntime(
     // requires Send + Sync even in CSR mode.
     let alive: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
     let alive_for_cleanup = alive.clone();
+    let pending_worker = StoredValue::new_local(Rc::new(RefCell::new(None::<Worker>)));
+    let runtime_cleanup = StoredValue::new_local(machine_handle.clone());
+    let audio_bootstrap = crate::emulator::prepare_audio_for_boot();
+    let audio_cleanup = StoredValue::new_local(audio_bootstrap.clone());
+    let input_listeners: InputListeners = Rc::new(RefCell::new(Vec::new()));
+    let input_cleanup = StoredValue::new_local(input_listeners.clone());
+    let local_render = Rc::new(RefCell::new(None::<BrowserRenderLoop>));
+    let render_cleanup = StoredValue::new_local(local_render.clone());
     on_cleanup(move || {
         alive_for_cleanup.store(false, Ordering::Relaxed);
+        audio_cleanup.try_with_value(|bootstrap| bootstrap.borrow_mut().take());
+        input_cleanup.try_with_value(|listeners| listeners.borrow_mut().clear());
+        render_cleanup.try_with_value(|render| render.borrow_mut().take());
+        pending_worker.try_with_value(|slot| {
+            if let Some(worker) = slot.borrow_mut().take() {
+                cancel_systemless_worker(&worker);
+            }
+        });
+        runtime_cleanup.try_with_value(|handle| match handle.borrow_mut().take() {
+            Some(RuntimeHandle::Worker(runtime)) => runtime.stop(),
+            Some(RuntimeHandle::Local(machine)) => {
+                let id = machine.borrow_mut().flush_save_files();
+                spawn_local(async move {
+                    if let Err(error) = save_store::flush_pending_saves(&id).await {
+                        crate::app::report_runtime_notice(error);
+                    }
+                });
+            }
+            None => {}
+        });
     });
 
     let machine_handle_for_effect = machine_handle.clone();
@@ -285,29 +363,32 @@ fn GameRuntime(
         let runtime_pacing = game.settings.runtime_pacing;
         let selected_plugin_ids = selected_plugin_ids_for_effect.clone();
         let alive = alive.clone();
+        let audio_bootstrap = audio_bootstrap.clone();
+        let input_listeners = input_listeners.clone();
+        let local_render = local_render.clone();
         machine_ready.set(false);
         *machine_handle_for_effect.borrow_mut() = None;
         let machine_handle_for_task = machine_handle_for_effect.clone();
-        attach_debug_toggle(&canvas, alive.clone(), debug_visible);
-        spawn_local(async move {
-            status.set("Fetching game\u{2026}".into());
+        attach_debug_toggle(&canvas, alive.clone(), debug_visible, &input_listeners);
+        spawn_local_scoped_with_cancellation(async move {
+            set_status(status, "Fetching game\u{2026}".into());
             let bytes = match fetch_bytes(&primary_url, |received, total| {
-                status.set(fetch_status(received, total));
+                set_status(status, fetch_status(received, total));
             })
             .await
             {
                 Ok(b) => b,
                 Err(primary_error) => match fallback_url.as_deref() {
                     Some(url) => {
-                        status.set("Fetching game\u{2026}".into());
+                        set_status(status, "Fetching game\u{2026}".into());
                         match fetch_bytes(url, |received, total| {
-                            status.set(fetch_status(received, total));
+                            set_status(status, fetch_status(received, total));
                         })
                         .await
                         {
                             Ok(b) => b,
                             Err(fallback_error) => {
-                                status.set(format!(
+                                set_status(status, format!(
                                     "Fetch failed: {primary_error}; fallback failed: {fallback_error}"
                                 ));
                                 return;
@@ -315,7 +396,7 @@ fn GameRuntime(
                         }
                     }
                     None => {
-                        status.set(format!("Fetch failed: {primary_error}"));
+                        set_status(status, format!("Fetch failed: {primary_error}"));
                         return;
                     }
                 },
@@ -331,35 +412,73 @@ fn GameRuntime(
             let plugin_files = match fetch_selected_plugins(&selected_plugins, status).await {
                 Ok(files) => files,
                 Err(error) => {
-                    status.set(format!("Plugin failed: {error}"));
+                    set_status(status, format!("Plugin failed: {error}"));
                     return;
                 }
             };
             if !alive.load(Ordering::Relaxed) {
                 return;
             }
-            if game.settings.worker && plugin_files.is_empty() {
-                status.set("Starting runtime worker\u{2026}".into());
-                match boot_catalogue_worker(&bytes, game, architecture, save_files).await {
+            if let Err(error) = JsFuture::from(wait_systemless_worker_shutdown(game.id)).await {
+                set_status(
+                    status,
+                    format!(
+                        "Previous game could not finish saving: {}",
+                        js_value_string(error)
+                    ),
+                );
+                return;
+            }
+            if let Err(error) = save_store::flush_pending_saves(game.id).await {
+                set_status(
+                    status,
+                    format!("Previous game could not finish saving: {error}"),
+                );
+                return;
+            }
+            if !alive.load(Ordering::Relaxed) {
+                return;
+            }
+            if game.settings.worker {
+                set_status(status, "Starting runtime worker\u{2026}".into());
+                match boot_catalogue_worker(
+                    &bytes,
+                    &plugin_files,
+                    game,
+                    architecture,
+                    save_files,
+                    status,
+                    pending_worker,
+                    alive.clone(),
+                    audio_bootstrap.clone(),
+                    input_listeners.clone(),
+                )
+                .await
+                {
                     Ok(runtime) => {
+                        if !alive.load(Ordering::Relaxed) {
+                            runtime.stop();
+                            return;
+                        }
                         let ready_canvas = canvas.clone();
                         let mark_runtime_ready = Box::new(move || {
-                            let _ = ready_canvas.set_attribute("data-runtime-game-id", game.id);
-                            let _ = ready_canvas.set_attribute("data-runtime-worker", "true");
-                            let _ = ready_canvas.set_attribute(
-                                "data-runtime-cpu-mhz",
-                                &runtime_pacing.cpu_mhz.to_string(),
+                            mark_canvas_runtime_ready(
+                                &ready_canvas,
+                                game,
+                                architecture,
+                                true,
+                                status,
                             );
-                            status.set(String::new());
                         });
                         *machine_handle_for_task.borrow_mut() =
                             Some(RuntimeHandle::Worker(runtime.clone()));
                         machine_ready.set(true);
-                        attach_worker_input(
+                        attach_input(
                             &canvas,
-                            runtime.clone(),
+                            RuntimeHandle::Worker(runtime.clone()),
                             alive.clone(),
                             game.settings.key_mappings,
+                            &input_listeners,
                         );
                         if mobile_controls.enabled {
                             if let (Some(controls), Some(joystick)) =
@@ -371,6 +490,7 @@ fn GameRuntime(
                                     mobile_controls,
                                     RuntimeHandle::Worker(runtime.clone()),
                                     alive.clone(),
+                                    &input_listeners,
                                 );
                             }
                         }
@@ -383,16 +503,21 @@ fn GameRuntime(
                         );
                         return;
                     }
-                    Err(error) => status.set(format!(
-                        "PowerPC worker unavailable ({error}); starting compatible runtime\u{2026}"
-                    )),
+                    Err(error) => {
+                        if !alive.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let _ = canvas.set_attribute("data-runtime-fallback", &error);
+                        set_status(status, format!(
+                            "Runtime worker unavailable ({error}); starting compatible runtime\u{2026}"
+                        ));
+                    }
                 }
             }
-            crate::emulator::prepare_audio_for_boot();
-            status.set(format!(
-                "Preparing game data ({} KB)\u{2026}",
-                bytes.len() / 1024
-            ));
+            set_status(
+                status,
+                format!("Preparing game data ({} KB)\u{2026}", bytes.len() / 1024),
+            );
             yield_to_browser_frame().await;
             if !alive.load(Ordering::Relaxed) {
                 return;
@@ -409,13 +534,14 @@ fn GameRuntime(
                 remove_paths,
                 file_mappings,
                 runtime_pacing,
-                |progress| status.set(boot_progress_status(progress)),
+                &audio_bootstrap,
+                |progress| set_status(status, boot_progress_status(progress)),
             )
             .await
             {
                 Ok(m) => m,
                 Err(e) => {
-                    status.set(format!("Boot failed: {e}"));
+                    set_status(status, format!("Boot failed: {e}"));
                     return;
                 }
             };
@@ -423,39 +549,19 @@ fn GameRuntime(
             if !alive.load(Ordering::Relaxed) {
                 return;
             }
-            let runtime_game_id = game.id.to_string();
-            let runtime_architecture = architecture.key();
-            let runtime_arrows_as_numpad = bool_attr(machine.arrows_as_numpad()).to_string();
-            let runtime_show_menu_bar = bool_attr(show_menu_bar).to_string();
-            let runtime_app_partition_size =
-                application_partition_size.map(|bytes| bytes.to_string());
-            let runtime_max_ticks_per_paint = runtime_pacing.max_ticks_per_paint.to_string();
             let ready_canvas = canvas.clone();
             let mark_runtime_ready = Box::new(move || {
-                let _ = ready_canvas.set_attribute("data-runtime-game-id", &runtime_game_id);
-                let _ =
-                    ready_canvas.set_attribute("data-runtime-architecture", runtime_architecture);
-                let _ = ready_canvas
-                    .set_attribute("data-runtime-arrows-as-numpad", &runtime_arrows_as_numpad);
-                let _ = ready_canvas
-                    .set_attribute("data-runtime-show-menu-bar", &runtime_show_menu_bar);
-                if let Some(bytes) = runtime_app_partition_size.as_deref() {
-                    let _ = ready_canvas.set_attribute("data-runtime-app-partition-size", bytes);
-                }
-                let _ = ready_canvas.set_attribute(
-                    "data-runtime-max-ticks-per-paint",
-                    &runtime_max_ticks_per_paint,
-                );
-                status.set(String::new());
+                mark_canvas_runtime_ready(&ready_canvas, game, architecture, false, status);
             });
             let machine = Rc::new(RefCell::new(machine));
             *machine_handle_for_task.borrow_mut() = Some(RuntimeHandle::Local(machine.clone()));
             machine_ready.set(true);
             attach_input(
                 &canvas,
-                machine.clone(),
+                RuntimeHandle::Local(machine.clone()),
                 alive.clone(),
                 game.settings.key_mappings,
+                &input_listeners,
             );
             if mobile_controls.enabled {
                 if let (Some(controls), Some(joystick)) = (controls_ref.get(), joystick_ref.get()) {
@@ -465,6 +571,7 @@ fn GameRuntime(
                         mobile_controls,
                         RuntimeHandle::Local(machine.clone()),
                         alive.clone(),
+                        &input_listeners,
                     );
                 }
             }
@@ -475,6 +582,8 @@ fn GameRuntime(
                 debug_visible,
                 Some(mark_runtime_ready),
                 save_files,
+                status,
+                local_render,
             );
         });
     });
@@ -734,7 +843,14 @@ fn PluginPanel(
                     class="plugin-clear"
                     class:hidden=move || selected_count == 0
                     type="button"
-                    on:click=move |_| selected_plugins_signal.set(Vec::new())
+                    on:click=move |_| {
+                        if !selected_plugins_signal.get_untracked().is_empty() {
+                            if game.approved {
+                                crate::emulator::begin_audio_from_user_gesture();
+                            }
+                            selected_plugins_signal.set(Vec::new());
+                        }
+                    }
                 >
                     "Disable all"
                 </button>
@@ -1082,16 +1198,19 @@ async fn fetch_selected_plugins(
         }
         for (asset_index, install_asset) in plugin.install_assets.iter().enumerate() {
             let url = asset_path(install_asset.asset_path);
-            status.set(format!(
-                "Fetching plugin {}/{}: {} ({}/{})\u{2026}",
-                index + 1,
-                plugins.len(),
-                plugin.label,
-                asset_index + 1,
-                plugin.install_assets.len()
-            ));
+            set_status(
+                status,
+                format!(
+                    "Fetching plugin {}/{}: {} ({}/{})\u{2026}",
+                    index + 1,
+                    plugins.len(),
+                    plugin.label,
+                    asset_index + 1,
+                    plugin.install_assets.len()
+                ),
+            );
             let bytes = fetch_bytes(&url, |received, total| {
-                status.set(plugin_fetch_status(plugin.label, received, total));
+                set_status(status, plugin_fetch_status(plugin.label, received, total));
             })
             .await?;
             let file = save_store::decode_macbinary_save_file("", &bytes).map_err(|error| {
@@ -1120,6 +1239,48 @@ fn plugin_fetch_status(label: &str, received: usize, total: Option<usize>) -> St
     }
 }
 
+fn mark_canvas_runtime_ready(
+    canvas: &HtmlCanvasElement,
+    game: &Game,
+    architecture: GameArchitecture,
+    worker: bool,
+    status: RwSignal<String>,
+) {
+    let settings = &game.settings;
+    for (name, value) in [
+        ("data-runtime-game-id", game.id.to_string()),
+        ("data-runtime-worker", bool_attr(worker).to_string()),
+        ("data-runtime-architecture", architecture.key().to_string()),
+        (
+            "data-runtime-arrows-as-numpad",
+            bool_attr(settings.arrows_as_numpad).to_string(),
+        ),
+        (
+            "data-runtime-show-menu-bar",
+            bool_attr(settings.show_menu_bar).to_string(),
+        ),
+        (
+            "data-runtime-cpu-mhz",
+            settings.runtime_pacing.cpu_mhz.to_string(),
+        ),
+        (
+            "data-runtime-max-ticks-per-paint",
+            settings.runtime_pacing.max_ticks_per_paint.to_string(),
+        ),
+    ] {
+        let _ = canvas.set_attribute(name, &value);
+    }
+    if let Some(bytes) = settings.application_partition_size {
+        let _ = canvas.set_attribute("data-runtime-app-partition-size", &bytes.to_string());
+    }
+    set_status(status, String::new());
+}
+
+fn set_status(status: RwSignal<String>, value: String) {
+    // Fetch/boot futures may finish after their component has been disposed.
+    let _ = status.try_set(value);
+}
+
 fn boot_progress_status(progress: BootProgress) -> String {
     match progress {
         BootProgress::MountingArchive {
@@ -1138,11 +1299,28 @@ fn boot_progress_status(progress: BootProgress) -> String {
     }
 }
 
+struct OwnedArchiveFetch(js_sys::Promise);
+
+impl Drop for OwnedArchiveFetch {
+    fn drop(&mut self) {
+        crate::browser_bridge::cancel_archive_fetch(&self.0);
+    }
+}
+
+struct FetchAbortGuard(web_sys::AbortController);
+
+impl Drop for FetchAbortGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 async fn fetch_bytes<F>(url: &str, mut on_progress: F) -> Result<Vec<u8>, String>
 where
     F: FnMut(usize, Option<usize>),
 {
     if let Some(prefetched) = prefetched_archive_promise(url) {
+        let _fetch = OwnedArchiveFetch(prefetched.clone());
         if let Ok(buffer) = JsFuture::from(prefetched).await {
             return uint8_array_to_vec_chunked(&Uint8Array::new(&buffer), &mut on_progress).await;
         }
@@ -1152,6 +1330,7 @@ where
         Ok(bytes) => return Ok(bytes),
         Err(stream_error) => {
             if let Ok(promise) = fetch_archive_in_worker(url) {
+                let _fetch = OwnedArchiveFetch(promise.clone());
                 if let Ok(buffer) = JsFuture::from(promise).await {
                     return uint8_array_to_vec_chunked(&Uint8Array::new(&buffer), &mut on_progress)
                         .await;
@@ -1183,7 +1362,12 @@ async fn fetch_bytes_streaming<F>(url: &str, on_progress: &mut F) -> Result<Vec<
 where
     F: FnMut(usize, Option<usize>),
 {
+    let abort = FetchAbortGuard(
+        web_sys::AbortController::new()
+            .map_err(|error| js_error_string("fetch cancellation", error))?,
+    );
     let resp = gloo_net::http::Request::get(url)
+        .abort_signal(Some(&abort.0.signal()))
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -1386,15 +1570,6 @@ mod tests {
     }
 
     #[test]
-    fn mutable_runtime_helpers_are_served_network_first() {
-        let service_worker = include_str!("../../public/service-worker.js");
-        assert!(service_worker.contains("static-v6"));
-        assert!(service_worker.contains(
-            "url.pathname === \"/emulator-worker.js\" || url.pathname.startsWith(\"/snippets/\")"
-        ));
-    }
-
-    #[test]
     fn retained_text_resolution_does_not_move_guest_pointer_coordinates() {
         for scale in 1..=4 {
             for css in [(800.0, 600.0), (640.0, 480.0), (1000.0, 750.0)] {
@@ -1438,10 +1613,13 @@ mod tests {
     #[test]
     fn catchup_frames_keep_only_the_latest_rendering_backend() {
         let mut state = super::WorkerFrameState {
+            save_error: None,
             output_scale: 1,
             frame: None,
             js_frame: None,
             gpu_frame: None,
+            owned_frame: None,
+            direct_frame: false,
             running: true,
             requests: super::WorkerFrameRequests::default(),
         };
@@ -1474,12 +1652,63 @@ mod tests {
     }
 
     #[test]
+    fn indexed_and_rgba_catchup_frames_replace_each_other() {
+        let mut state = super::WorkerFrameState {
+            save_error: None,
+            output_scale: 1,
+            frame: None,
+            js_frame: None,
+            gpu_frame: None,
+            owned_frame: None,
+            direct_frame: false,
+            running: true,
+            requests: super::WorkerFrameRequests::default(),
+        };
+        super::replace_worker_visual_frame(
+            &mut state,
+            super::WorkerVisualFrame::Software(1, 1, vec![0; 4]),
+        );
+        super::replace_worker_visual_frame(
+            &mut state,
+            super::WorkerVisualFrame::Owned(wasm_bindgen::JsValue::NULL),
+        );
+        assert!(state.frame.is_none());
+        assert!(matches!(
+            super::take_worker_visual_frame(&mut state),
+            Some(super::WorkerVisualFrame::Owned(_))
+        ));
+        super::replace_worker_visual_frame(
+            &mut state,
+            super::WorkerVisualFrame::Owned(wasm_bindgen::JsValue::NULL),
+        );
+        super::replace_worker_visual_frame(
+            &mut state,
+            super::WorkerVisualFrame::Software(1, 1, vec![255; 4]),
+        );
+        assert!(state.owned_frame.is_none());
+        assert!(matches!(
+            super::take_worker_visual_frame(&mut state),
+            Some(super::WorkerVisualFrame::Software(_, _, _))
+        ));
+        super::replace_worker_visual_frame(&mut state, super::WorkerVisualFrame::Direct);
+        assert!(state.frame.is_none() && state.js_frame.is_none() && state.owned_frame.is_none());
+        assert!(matches!(
+            super::take_worker_visual_frame(&mut state),
+            Some(super::WorkerVisualFrame::Direct)
+        ));
+        assert!(super::take_worker_visual_frame(&mut state).is_none());
+    }
+
+    #[test]
     fn worker_visual_frame_uses_software_frame_without_a_second_borrow() {
         let mut state = super::WorkerFrameState {
+            save_error: None,
             output_scale: 1,
             frame: Some((640, 480, vec![1, 2, 3, 4])),
             js_frame: None,
             gpu_frame: None,
+            owned_frame: None,
+            direct_frame: false,
             running: true,
             requests: super::WorkerFrameRequests::default(),
         };
@@ -1659,34 +1888,6 @@ mod tests {
             "debug overlay toggles and live stats must force a canvas repaint"
         );
     }
-
-    #[test]
-    fn webgl_frame_quad_preserves_full_rgba_texture_coordinates() {
-        assert_eq!(
-            super::webgl_frame_vertices(),
-            [-1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,]
-        );
-    }
-
-    #[test]
-    fn safari_and_ios_use_canvas_2d_for_stable_palette_presentation() {
-        let safari = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 \
-                      (KHTML, like Gecko) Version/18.6 Safari/605.1.15";
-        let ios_chrome = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) \
-                          AppleWebKit/605.1.15 CriOS/138.0 Mobile/15E148 Safari/604.1";
-        assert!(super::requires_canvas_2d_presenter(safari));
-        assert!(super::requires_canvas_2d_presenter(ios_chrome));
-    }
-
-    #[test]
-    fn chromium_and_firefox_keep_webgl_presentation() {
-        let chrome = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
-                      (KHTML, like Gecko) Chrome/138.0 Safari/537.36";
-        let firefox = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:140.0) \
-                       Gecko/20100101 Firefox/140.0";
-        assert!(!super::requires_canvas_2d_presenter(chrome));
-        assert!(!super::requires_canvas_2d_presenter(firefox));
-    }
 }
 
 fn start_render_loop(
@@ -1696,6 +1897,8 @@ fn start_render_loop(
     debug_visible: RwSignal<bool>,
     on_first_paint: Option<Box<dyn FnOnce()>>,
     save_files: RwSignal<Vec<DownloadableSaveFile>>,
+    status: RwSignal<String>,
+    render_slot: Rc<RefCell<Option<BrowserRenderLoop>>>,
 ) {
     let (w, h) = machine.borrow().screen_size();
     canvas.set_width(w.max(1));
@@ -1709,6 +1912,12 @@ fn start_render_loop(
 
     let cb_cell: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let cb_cell_self = cb_cell.clone();
+    let request_id = Rc::new(Cell::new(None));
+    let request_for_callback = request_id.clone();
+    *render_slot.borrow_mut() = Some(BrowserRenderLoop {
+        callback: cb_cell.clone(),
+        request: request_id.clone(),
+    });
     let alive_cb = alive.clone();
     let Some(mut frame) = CanvasFrame::new(&canvas, w, h) else {
         return;
@@ -1722,6 +1931,7 @@ fn start_render_loop(
     let on_first_paint = Rc::new(RefCell::new(on_first_paint));
 
     *cb_cell.borrow_mut() = Some(Closure::wrap(Box::new(move || {
+        request_for_callback.set(None);
         if !alive_cb.load(Ordering::Relaxed) {
             // Component unmounted. Drop the stored closure so the Rc<RefCell<Machine>>
             // capture chain breaks and the Machine can drop (closing audio, freeing RAM).
@@ -1741,6 +1951,7 @@ fn start_render_loop(
         let output_scale = canvas_output_scale(&canvas, m.screen_size());
         m.set_output_scale(output_scale);
         let frame_result = m.run_frame();
+        let save_error = m.take_save_error();
         let current_save_files_version = m.save_files_version();
         let updated_save_files = if current_save_files_version != save_files_version {
             save_files_version = current_save_files_version;
@@ -1824,24 +2035,30 @@ fn start_render_loop(
             }
         }
 
+        if let Some(error) = save_error {
+            set_status(status, error);
+        }
         if frame_result.running {
-            schedule_raf(&cb_cell_self);
+            schedule_runtime_raf(&cb_cell_self, &request_for_callback);
         } else {
             // Emulator halted — break the capture chain so we don't leak.
             *cb_cell_self.borrow_mut() = None;
         }
     }) as Box<dyn FnMut()>));
 
-    schedule_raf(&cb_cell);
+    schedule_runtime_raf(&cb_cell, &request_id);
 }
 
 struct WorkerFrameState {
+    save_error: Option<String>,
     output_scale: u32,
     frame: Option<(u32, u32, Vec<u8>)>,
     // Keep transferred RGBA buffers as JS views so WebGL can upload them
     // without copying through Wasm memory first.
     js_frame: Option<(u32, u32, Uint8Array)>,
     gpu_frame: Option<JsValue>,
+    owned_frame: Option<JsValue>,
+    direct_frame: bool,
     running: bool,
     requests: WorkerFrameRequests<Object>,
 }
@@ -1887,7 +2104,9 @@ impl<T> WorkerFrameRequests<T> {
 }
 
 enum WorkerVisualFrame {
+    Direct,
     Gpu(JsValue),
+    Owned(JsValue),
     Software(u32, u32, Vec<u8>),
     SoftwareJs(u32, u32, Uint8Array),
 }
@@ -1895,7 +2114,21 @@ enum WorkerVisualFrame {
 fn replace_worker_visual_frame(state: &mut WorkerFrameState, frame: WorkerVisualFrame) {
     // Catch-up completions can arrive before the next paint. Keep only the
     // newest result, including when debug mode changes the rendering backend.
+    state.owned_frame = None;
+    state.direct_frame = false;
     match frame {
+        WorkerVisualFrame::Direct => {
+            state.frame = None;
+            state.js_frame = None;
+            state.gpu_frame = None;
+            state.direct_frame = true;
+        }
+        WorkerVisualFrame::Owned(frame) => {
+            state.frame = None;
+            state.js_frame = None;
+            state.gpu_frame = None;
+            state.owned_frame = Some(frame);
+        }
         WorkerVisualFrame::Gpu(frame) => {
             state.frame = None;
             state.js_frame = None;
@@ -1915,7 +2148,11 @@ fn replace_worker_visual_frame(state: &mut WorkerFrameState, frame: WorkerVisual
 }
 
 fn take_worker_visual_frame(state: &mut WorkerFrameState) -> Option<WorkerVisualFrame> {
-    if let Some(frame) = state.gpu_frame.take() {
+    if std::mem::take(&mut state.direct_frame) {
+        Some(WorkerVisualFrame::Direct)
+    } else if let Some(frame) = state.owned_frame.take() {
+        Some(WorkerVisualFrame::Owned(frame))
+    } else if let Some(frame) = state.gpu_frame.take() {
         Some(WorkerVisualFrame::Gpu(frame))
     } else if let Some((width, height, pixels)) = state.js_frame.take() {
         Some(WorkerVisualFrame::SoftwareJs(width, height, pixels))
@@ -1927,20 +2164,217 @@ fn take_worker_visual_frame(state: &mut WorkerFrameState) -> Option<WorkerVisual
     }
 }
 
+thread_local! {
+    static WORKER_GENERATION: Cell<u32> = const { Cell::new(0) };
+}
+
+type PendingWorker = StoredValue<Rc<RefCell<Option<Worker>>>, LocalStorage>;
+
+struct BrowserRenderLoop {
+    callback: Rc<RefCell<Option<Closure<dyn FnMut()>>>>,
+    request: Rc<Cell<Option<i32>>>,
+}
+
+impl Drop for BrowserRenderLoop {
+    fn drop(&mut self) {
+        if let (Some(window), Some(request)) = (web_sys::window(), self.request.take()) {
+            let _ = window.cancel_animation_frame(request);
+        }
+        self.callback.borrow_mut().take();
+    }
+}
+
+fn schedule_runtime_raf(
+    callback: &Rc<RefCell<Option<Closure<dyn FnMut()>>>>,
+    request: &Cell<Option<i32>>,
+) {
+    if let (Some(window), Some(callback)) = (web_sys::window(), callback.borrow().as_ref()) {
+        request.set(
+            window
+                .request_animation_frame(callback.as_ref().unchecked_ref())
+                .ok(),
+        );
+    }
+}
+
+type InputListeners = Rc<RefCell<Vec<InputListener>>>;
+
+#[derive(Clone)]
+struct InputListener {
+    target: web_sys::EventTarget,
+    event_name: String,
+    callback: js_sys::Function,
+    _owner: Rc<dyn std::any::Any>,
+}
+
+impl InputListener {
+    fn retain<T: ?Sized + 'static>(
+        target: &web_sys::EventTarget,
+        event_name: &str,
+        callback: Closure<T>,
+    ) -> Self {
+        Self {
+            target: target.clone(),
+            event_name: event_name.into(),
+            callback: callback
+                .as_ref()
+                .unchecked_ref::<js_sys::Function>()
+                .clone(),
+            _owner: Rc::new(callback),
+        }
+    }
+}
+
+impl Drop for InputListener {
+    fn drop(&mut self) {
+        let _ = self
+            .target
+            .remove_event_listener_with_callback(&self.event_name, &self.callback);
+    }
+}
+
+fn retain_pointer_cancel(
+    listeners: &InputListeners,
+    target: &web_sys::EventTarget,
+    callback: Closure<dyn FnMut(PointerEvent)>,
+) {
+    let mut lost_capture = InputListener::retain(target, "pointercancel", callback);
+    listeners.borrow_mut().push(lost_capture.clone());
+    lost_capture.event_name = "lostpointercapture".into();
+    if target
+        .add_event_listener_with_callback(&lost_capture.event_name, &lost_capture.callback)
+        .is_ok()
+    {
+        listeners.borrow_mut().push(lost_capture);
+    }
+}
+
+fn halt_worker(
+    worker: &Worker,
+    state: &RefCell<WorkerFrameState>,
+    audio: &RefCell<Option<WebAudioBackend>>,
+    failed: &Cell<bool>,
+    listeners: &RefCell<Vec<InputListener>>,
+    render_loop: &RefCell<Option<BrowserRenderLoop>>,
+) {
+    failed.set(true);
+    listeners.borrow_mut().clear();
+    render_loop.borrow_mut().take();
+    worker.set_onmessage(None);
+    worker.set_onerror(None);
+    worker.set_onmessageerror(None);
+    cancel_systemless_worker(worker);
+    audio.borrow_mut().take();
+    let mut state = state.borrow_mut();
+    state.running = false;
+    state.requests = WorkerFrameRequests::default();
+    state.frame = None;
+    state.js_frame = None;
+    state.owned_frame = None;
+    state.direct_frame = false;
+    state.gpu_frame = None;
+}
+
 struct WorkerRuntime {
     worker: Worker,
+    game_id: &'static str,
+    generation: u32,
+    stopped: Cell<bool>,
+    failed: Rc<Cell<bool>>,
+    status: RwSignal<String>,
+    next_save_request: Cell<u32>,
+    pending_save_requests: Rc<RefCell<std::collections::BTreeSet<u32>>>,
+    listeners: InputListeners,
+    render_loop: Rc<RefCell<Option<BrowserRenderLoop>>>,
+    presenter: RefCell<Option<Rc<RefCell<CanvasFrame>>>>,
     state: Rc<RefCell<WorkerFrameState>>,
     audio: Rc<RefCell<Option<WebAudioBackend>>>,
     _on_message: Closure<dyn FnMut(MessageEvent)>,
+    _on_error: Closure<dyn FnMut(Event)>,
+    _on_message_error: Closure<dyn FnMut(Event)>,
 }
 
 impl Drop for WorkerRuntime {
     fn drop(&mut self) {
-        self.worker.terminate();
+        self.stop();
     }
 }
 
 impl WorkerRuntime {
+    fn stop(&self) {
+        if self.stopped.replace(true) {
+            return;
+        }
+        let failed = self.failed.replace(true);
+        self.render_loop.borrow_mut().take();
+        self.presenter.borrow_mut().take();
+        self.worker.set_onmessage(None);
+        self.worker.set_onerror(None);
+        self.worker.set_onmessageerror(None);
+        if failed {
+            cancel_systemless_worker(&self.worker);
+        } else {
+            let shutdown = shutdown_systemless_worker(&self.worker, self.generation, self.game_id);
+            spawn_local(async move {
+                if let Err(error) = JsFuture::from(shutdown).await {
+                    crate::app::report_runtime_notice(format!(
+                        "Could not finish saving the previous game: {}",
+                        js_value_string(error)
+                    ));
+                }
+            });
+        }
+        self.listeners.borrow_mut().clear();
+        self.pending_save_requests.borrow_mut().clear();
+        self.audio.borrow_mut().take();
+        let mut state = self.state.borrow_mut();
+        state.running = false;
+        state.requests = WorkerFrameRequests::default();
+        state.frame = None;
+        state.js_frame = None;
+        state.owned_frame = None;
+        state.direct_frame = false;
+        state.gpu_frame = None;
+    }
+
+    fn post(&self, message: &Object) -> Result<(), String> {
+        if self.failed.get() {
+            return Err("Runtime worker has stopped".into());
+        }
+        set_js_property(
+            message,
+            "generation",
+            &JsValue::from_f64(self.generation as f64),
+        );
+        post_systemless_worker_command(&self.worker, message, &Array::new()).map_err(|error| {
+            self.failed.set(true);
+            let error = js_value_string(error);
+            let _ = self
+                .status
+                .try_set(format!("Runtime worker stopped: {error}"));
+            error
+        })
+    }
+
+    fn begin_save_request(&self, message: &Object) -> Result<u32, String> {
+        if self.failed.get() {
+            return Err("Runtime worker has stopped".into());
+        }
+        let mut pending = self.pending_save_requests.borrow_mut();
+        if pending.len() >= 32 {
+            return Err("Save operations are still pending; please wait".into());
+        }
+        let id = self
+            .next_save_request
+            .get()
+            .checked_add(1)
+            .ok_or("Save request sequence exhausted")?;
+        self.next_save_request.set(id);
+        pending.insert(id);
+        set_js_property(message, "requestId", &JsValue::from_f64(id as f64));
+        Ok(id)
+    }
+
     fn import_save(&self, bytes: &[u8]) -> Result<(), String> {
         let bytes = Uint8Array::from(bytes);
         let message = Object::new();
@@ -1948,26 +2382,44 @@ impl WorkerRuntime {
         set_js_property(&message, "bytes", bytes.buffer().as_ref());
         let transfer = Array::new();
         transfer.push(bytes.buffer().as_ref());
-        self.worker
-            .post_message_with_transfer(message.as_ref(), &transfer)
-            .map_err(js_value_string)
+        set_js_property(
+            &message,
+            "generation",
+            &JsValue::from_f64(self.generation as f64),
+        );
+        let request = self.begin_save_request(&message)?;
+        let result = post_systemless_worker_command(&self.worker, &message, &transfer)
+            .map_err(js_value_string);
+        if result.is_err() {
+            self.pending_save_requests.borrow_mut().remove(&request);
+        }
+        result
     }
 
     fn delete_save(&self, path: &str) -> Result<(), String> {
         let message = Object::new();
         set_js_property(&message, "type", &JsValue::from_str("deleteSave"));
         set_js_property(&message, "path", &JsValue::from_str(path));
-        self.worker
-            .post_message(message.as_ref())
-            .map_err(js_value_string)
+        let request = self.begin_save_request(&message)?;
+        let result = self.post(&message);
+        if result.is_err() {
+            self.pending_save_requests.borrow_mut().remove(&request);
+        }
+        result
     }
 }
 
 async fn boot_catalogue_worker(
     game_bytes: &[u8],
+    plugin_files: &[PluginFile],
     game: &Game,
     architecture: GameArchitecture,
     save_files: RwSignal<Vec<DownloadableSaveFile>>,
+    status: RwSignal<String>,
+    pending_worker: PendingWorker,
+    alive: Arc<AtomicBool>,
+    audio_bootstrap: Rc<RefCell<Option<AudioBootstrap>>>,
+    input_listeners: InputListeners,
 ) -> Result<Rc<WorkerRuntime>, String> {
     let assets = systemless_runtime_assets();
     if assets.length() != 2 {
@@ -1981,9 +2433,25 @@ async fn boot_catalogue_worker(
     let runtime_id = module_url.rsplit('/').next().unwrap_or("current");
     let worker_url = format!("/emulator-worker.js?runtime={runtime_id}");
     let worker = Worker::new(&worker_url).map_err(js_value_string)?;
+    pending_worker.try_with_value(|slot| *slot.borrow_mut() = Some(worker.clone()));
+    let generation = WORKER_GENERATION.with(|counter| {
+        let next = counter
+            .get()
+            .checked_add(1)
+            .expect("runtime generation exhausted");
+        counter.set(next);
+        next
+    });
+    // Transfer a JS copy, retaining the Rust archive for startup fallback.
     let bytes = Uint8Array::from(game_bytes);
     let message = Object::new();
     set_js_property(&message, "type", &JsValue::from_str("boot"));
+    set_js_property(
+        &message,
+        "generation",
+        &JsValue::from_f64(generation as f64),
+    );
+    set_js_property(&message, "protocolVersion", &JsValue::from_f64(7.0));
     set_js_property(&message, "moduleUrl", &JsValue::from_str(&module_url));
     set_js_property(&message, "wasmUrl", &JsValue::from_str(&wasm_url));
     set_js_property(&message, "gameBytes", bytes.buffer().as_ref());
@@ -1997,46 +2465,160 @@ async fn boot_catalogue_worker(
         "file_mappings": game.settings.file_mappings,
         "runtime_pacing": game.settings.runtime_pacing,
         "arrows_as_numpad": game.settings.arrows_as_numpad,
+        "plugins": plugin_files.iter().map(crate::worker_runtime::PluginMetadata::from).collect::<Vec<_>>(),
     });
     set_js_property(&message, "config", &JsValue::from_str(&config.to_string()));
     let transfer = Array::new();
     transfer.push(bytes.buffer().as_ref());
-    let ready =
-        match JsFuture::from(boot_systemless_worker(&worker, &message, &transfer, 15_000)).await {
-            Ok(ready) => ready,
-            Err(error) => {
-                worker.terminate();
-                return Err(js_value_string(error));
-            }
-        };
+    let plugin_forks = Array::new();
+    for plugin in plugin_files {
+        for fork in [&plugin.file.data_fork, &plugin.file.resource_fork] {
+            let bytes = Uint8Array::from(fork.as_slice());
+            plugin_forks.push(bytes.buffer().as_ref());
+            transfer.push(bytes.buffer().as_ref());
+        }
+    }
+    set_js_property(&message, "pluginForks", plugin_forks.as_ref());
+    let on_progress = Closure::wrap(Box::new(move |value: JsValue| {
+        if let Some(progress) = value
+            .as_string()
+            .and_then(|value| serde_json::from_str(&value).ok())
+        {
+            let _ = status.try_set(boot_progress_status(progress));
+        }
+    }) as Box<dyn FnMut(JsValue)>);
+    let ready = match JsFuture::from(boot_systemless_worker(
+        &worker,
+        &message,
+        &transfer,
+        15_000,
+        on_progress.as_ref().unchecked_ref(),
+    ))
+    .await
+    {
+        Ok(ready) => ready,
+        Err(error) => {
+            cancel_systemless_worker(&worker);
+            pending_worker.try_with_value(|slot| slot.borrow_mut().take());
+            return Err(js_value_string(error));
+        }
+    };
+    if !alive.load(Ordering::Relaxed) {
+        cancel_systemless_worker(&worker);
+        return Err("Runtime startup cancelled".into());
+    }
     if let Some(files) = downloadable_save_files_from_js(&ready) {
         save_files.set(files);
     }
 
     let state = Rc::new(RefCell::new(WorkerFrameState {
+        save_error: None,
         output_scale: 1,
         frame: None,
         js_frame: None,
         gpu_frame: None,
+        owned_frame: None,
+        direct_frame: false,
         running: true,
         requests: WorkerFrameRequests::default(),
     }));
-    let audio = Rc::new(RefCell::new(WebAudioBackend::new().await));
+    let audio = Rc::new(RefCell::new(
+        WebAudioBackend::from_bootstrap(&audio_bootstrap).await,
+    ));
+    if !alive.load(Ordering::Relaxed) {
+        cancel_systemless_worker(&worker);
+        return Err("Runtime startup cancelled".into());
+    }
+    pending_worker.try_with_value(|slot| slot.borrow_mut().take());
+    let failed = Rc::new(Cell::new(false));
+    let failed_for_message = failed.clone();
     let state_for_message = state.clone();
     let audio_for_message = audio.clone();
     let worker_for_message = worker.clone();
+    let pending_save_requests = Rc::new(RefCell::new(std::collections::BTreeSet::new()));
+    let pending_saves_for_message = pending_save_requests.clone();
+    let save_version = Cell::new(
+        js_string_property(&ready, "saveFilesVersion")
+            .and_then(|version| version.parse::<u64>().ok())
+            .unwrap_or(0),
+    );
+    let render_loop = Rc::new(RefCell::new(None));
+    let render_for_message = render_loop.clone();
+    let listeners_for_message = input_listeners.clone();
+    let last_sequence = Cell::new(0.0);
     let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
         let data = event.data();
+        if js_number_property(&data, "generation") != Some(generation as f64) {
+            return;
+        }
+        if js_string_property(&data, "type").as_deref() == Some("commandAck") {
+            if let Some(sequence) = js_number_property(&data, "commandSequence") {
+                if let Err(error) =
+                    acknowledge_systemless_worker_command(&worker_for_message, generation, sequence)
+                {
+                    set_status(
+                        status,
+                        format!("Runtime worker stopped: {}", js_value_string(error)),
+                    );
+                    halt_worker(
+                        &worker_for_message,
+                        &state_for_message,
+                        &audio_for_message,
+                        &failed_for_message,
+                        &listeners_for_message,
+                        &render_for_message,
+                    );
+                }
+            }
+            return;
+        }
+        if let Some(request) = js_number_property(&data, "requestId") {
+            pending_saves_for_message
+                .borrow_mut()
+                .remove(&(request as u32));
+        }
+        if js_string_property(&data, "type").as_deref() == Some("error") {
+            let message = js_string_property(&data, "message")
+                .unwrap_or_else(|| "Unknown worker error".into());
+            let _ = status.try_set(format!("Runtime worker: {message}"));
+            if js_bool_property(&data, "fatal").unwrap_or(true) {
+                halt_worker(
+                    &worker_for_message,
+                    &state_for_message,
+                    &audio_for_message,
+                    &failed_for_message,
+                    &listeners_for_message,
+                    &render_for_message,
+                );
+            }
+            return;
+        }
         if js_string_property(&data, "type").as_deref() == Some("saveFiles") {
-            if let Some(files) = downloadable_save_files_from_js(&data) {
-                save_files.set(files);
+            if let Some(version) = js_string_property(&data, "saveFilesVersion")
+                .and_then(|version| version.parse::<u64>().ok())
+                .filter(|version| *version >= save_version.get())
+            {
+                if let Some(files) = downloadable_save_files_from_js(&data) {
+                    save_version.set(version);
+                    let _ = save_files.try_set(files);
+                }
             }
             return;
         }
         if js_string_property(&data, "type").as_deref() != Some("frame") {
             return;
         }
+        let Some(sequence) = js_number_property(&data, "sequence") else {
+            return;
+        };
+        if sequence <= last_sequence.get() {
+            return;
+        }
+        last_sequence.set(sequence);
         let mut state = state_for_message.borrow_mut();
+        if let Some(error) = js_string_property(&data, "saveError") {
+            state.save_error = Some(error);
+        }
         state.running = js_bool_property(&data, "running").unwrap_or(false);
         if let Ok(audio_bytes) = Reflect::get(&data, &JsValue::from_str("audio")) {
             if !audio_bytes.is_undefined() {
@@ -2053,15 +2635,37 @@ async fn boot_catalogue_worker(
                 let width = js_number_property(&data, "width").unwrap_or(1.0) as u32;
                 let height = js_number_property(&data, "height").unwrap_or(1.0) as u32;
                 state.output_scale = js_number_property(&data, "outputScale").unwrap_or(1.0) as u32;
-                replace_worker_visual_frame(
-                    &mut state,
-                    WorkerVisualFrame::SoftwareJs(width, height, Uint8Array::new(&frame)),
-                );
+                if let Ok(pixels) = frame.dyn_into::<Uint8Array>() {
+                    // This array is already owned by the host after transfer.
+                    // Constructing Uint8Array from it would clone every pixel.
+                    replace_worker_visual_frame(
+                        &mut state,
+                        WorkerVisualFrame::SoftwareJs(width, height, pixels),
+                    );
+                }
             }
         }
         if let Ok(frame) = Reflect::get(&data, &JsValue::from_str("gpuFrame")) {
             if !frame.is_undefined() {
                 replace_worker_visual_frame(&mut state, WorkerVisualFrame::Gpu(frame));
+            }
+        }
+        if let Ok(frame) = Reflect::get(&data, &JsValue::from_str("indexedFrame")) {
+            if !frame.is_undefined() {
+                state.output_scale = 1;
+                replace_worker_visual_frame(&mut state, WorkerVisualFrame::Owned(frame));
+            }
+        }
+        if let Ok(frame) = Reflect::get(&data, &JsValue::from_str("compactFrame")) {
+            if !frame.is_undefined() {
+                state.output_scale = js_number_property(&data, "outputScale").unwrap_or(1.0) as u32;
+                replace_worker_visual_frame(&mut state, WorkerVisualFrame::Owned(frame));
+            }
+        }
+        if let Ok(frame) = Reflect::get(&data, &JsValue::from_str("directFrame")) {
+            if !frame.is_undefined() {
+                state.output_scale = js_number_property(&data, "outputScale").unwrap_or(1.0) as u32;
+                replace_worker_visual_frame(&mut state, WorkerVisualFrame::Direct);
             }
         }
         let running = state.running;
@@ -2075,15 +2679,65 @@ async fn boot_catalogue_worker(
                 "queuedAudioSamples",
                 &JsValue::from_f64(worker_audio_queue_samples(&audio_for_message) as f64),
             );
-            let _ = worker_for_message.post_message(message.as_ref());
+            set_js_property(
+                &message,
+                "generation",
+                &JsValue::from_f64(generation as f64),
+            );
+            if let Err(error) =
+                post_systemless_worker_command(&worker_for_message, &message, &Array::new())
+            {
+                let _ = status.try_set(format!(
+                    "Runtime worker stopped: {}",
+                    js_value_string(error)
+                ));
+                halt_worker(
+                    &worker_for_message,
+                    &state_for_message,
+                    &audio_for_message,
+                    &failed_for_message,
+                    &listeners_for_message,
+                    &render_for_message,
+                );
+            }
         }
     }) as Box<dyn FnMut(MessageEvent)>);
     worker.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+    let make_error_handler = |fallback: &'static str| {
+        let worker = worker.clone();
+        let state = state.clone();
+        let audio = audio.clone();
+        let failed = failed.clone();
+        let listeners = input_listeners.clone();
+        let render = render_loop.clone();
+        Closure::wrap(Box::new(move |event: Event| {
+            let message =
+                js_string_property(event.as_ref(), "message").unwrap_or_else(|| fallback.into());
+            let _ = status.try_set(format!("Runtime worker stopped: {message}"));
+            halt_worker(&worker, &state, &audio, &failed, &listeners, &render);
+        }) as Box<dyn FnMut(Event)>)
+    };
+    let on_error = make_error_handler("Worker crashed");
+    let on_message_error = make_error_handler("Unreadable worker reply");
+    worker.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+    worker.set_onmessageerror(Some(on_message_error.as_ref().unchecked_ref()));
     Ok(Rc::new(WorkerRuntime {
         worker,
+        game_id: game.id,
+        generation,
+        stopped: Cell::new(false),
+        failed,
+        status,
+        next_save_request: Cell::new(0),
+        pending_save_requests,
+        listeners: input_listeners,
+        render_loop,
+        presenter: RefCell::new(None),
         state,
         audio,
         _on_message: on_message,
+        _on_error: on_error,
+        _on_message_error: on_message_error,
     }))
 }
 
@@ -2094,7 +2748,14 @@ fn start_worker_render_loop(
     debug_visible: RwSignal<bool>,
     on_first_paint: Box<dyn FnOnce()>,
 ) {
-    let Some(mut renderer) = CanvasFrame::new(&canvas, 640, 480) else {
+    let Some(renderer) =
+        CanvasFrame::new_worker(&canvas, 640, 480, runtime.generation, &runtime.worker)
+    else {
+        set_status(
+            runtime.status,
+            "Unable to initialize the game display".into(),
+        );
+        runtime.stop();
         return;
     };
     let _ = canvas.set_attribute("data-render-backend", renderer.backend_name());
@@ -2103,21 +2764,58 @@ fn start_worker_render_loop(
         let message = Object::new();
         set_js_property(&message, "type", &JsValue::from_str("enableGpu"));
         set_js_property(&message, "enabled", &JsValue::TRUE);
-        let _ = runtime.worker.post_message(message.as_ref());
+        let _ = runtime.post(&message);
     }
+    // The lease outlives the rAF loop so guest exit preserves the final image.
+    let presenter = Rc::new(RefCell::new(renderer));
+    *runtime.presenter.borrow_mut() = Some(presenter.clone());
     let callback_cell: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let callback_self = callback_cell.clone();
+    let request_id = Rc::new(Cell::new(None));
+    let request_for_callback = request_id.clone();
+    *runtime.render_loop.borrow_mut() = Some(BrowserRenderLoop {
+        callback: callback_cell.clone(),
+        request: request_id.clone(),
+    });
     let first_paint = Rc::new(RefCell::new(Some(on_first_paint)));
     *callback_cell.borrow_mut() = Some(Closure::wrap(Box::new(move || {
-        if !alive.load(Ordering::Relaxed) {
+        request_for_callback.set(None);
+        if !alive.load(Ordering::Relaxed) || runtime.failed.get() {
+            runtime.stop();
             *callback_self.borrow_mut() = None;
             return;
         }
+        let mut renderer = presenter.borrow_mut();
+        if let Err(error) = renderer.poll_recovery() {
+            set_status(runtime.status, error);
+        }
+        let _ = canvas.set_attribute("data-render-backend", renderer.backend_name());
+        let mut painted = false;
         let visual_frame = {
             let mut state = runtime.state.borrow_mut();
             take_worker_visual_frame(&mut state)
         };
         match visual_frame {
+            Some(WorkerVisualFrame::Direct) => {
+                // The renderer's submitted notice applies coherent display and
+                // input geometry. This marker only discards older host images.
+            }
+            Some(WorkerVisualFrame::Owned(frame)) => {
+                let width = js_number_property(&frame, "width").unwrap_or(1.0) as u32;
+                let height = js_number_property(&frame, "height").unwrap_or(1.0) as u32;
+                let _ = canvas.set_attribute(
+                    "data-output-scale",
+                    &runtime.state.borrow().output_scale.to_string(),
+                );
+                if canvas.width() != width {
+                    canvas.set_width(width);
+                }
+                if canvas.height() != height {
+                    canvas.set_height(height);
+                }
+                sync_canvas_aspect(&canvas, width, height);
+                renderer.paint_owned(&frame);
+            }
             Some(WorkerVisualFrame::Gpu(frame)) => {
                 let _ = canvas.set_attribute("data-output-scale", "1");
                 let width = js_number_property(&frame, "width").unwrap_or(1.0) as u32;
@@ -2131,9 +2829,7 @@ fn start_worker_render_loop(
                 if renderer.paint_q3(&frame).is_some() {
                     sync_canvas_aspect(&canvas, width, height);
                     let _ = canvas.set_attribute("data-render-backend", "webgl-qd3d");
-                    if let Some(callback) = first_paint.borrow_mut().take() {
-                        callback();
-                    }
+                    painted = true;
                 }
             }
             Some(WorkerVisualFrame::Software(width, height, pixels)) => {
@@ -2149,9 +2845,7 @@ fn start_worker_render_loop(
                 }
                 sync_canvas_aspect(&canvas, width, height);
                 renderer.paint(width, height, &pixels);
-                if let Some(callback) = first_paint.borrow_mut().take() {
-                    callback();
-                }
+                painted = !renderer.asynchronous();
             }
             Some(WorkerVisualFrame::SoftwareJs(width, height, pixels)) => {
                 let _ = canvas.set_attribute(
@@ -2166,17 +2860,44 @@ fn start_worker_render_loop(
                 }
                 sync_canvas_aspect(&canvas, width, height);
                 renderer.paint_js(width, height, &pixels);
-                if let Some(callback) = first_paint.borrow_mut().take() {
-                    callback();
-                }
+                painted = !renderer.asynchronous();
             }
             None => {}
         }
+        if painted || renderer.submitted() {
+            if let Some(callback) = first_paint.borrow_mut().take() {
+                callback();
+            }
+        }
+        let direct_render = renderer.direct();
+        let indexed_render = renderer.supports_packet("indexed8");
+        let compact_render = renderer.supports_packet("compact");
+        let force_snapshot = renderer.needs_snapshot();
+        let presentation_pending = renderer.pending();
+        // A stopped guest can still lose its offscreen context. Keep polling
+        // presenter status without asking the owner to execute guest work.
+        let monitor_presenter = renderer.asynchronous();
+        drop(renderer);
         let mut state = runtime.state.borrow_mut();
-        if state.running {
+        if let Some(error) = state.save_error.take() {
+            set_status(runtime.status, error);
+        }
+        if state.running || force_snapshot {
             let queued = worker_audio_queue_samples(&runtime.audio);
             let message = Object::new();
             set_js_property(&message, "type", &JsValue::from_str("frame"));
+            set_js_property(&message, "forceRender", &JsValue::from_bool(force_snapshot));
+            set_js_property(
+                &message,
+                "indexedRender",
+                &JsValue::from_bool(indexed_render),
+            );
+            set_js_property(
+                &message,
+                "compactRender",
+                &JsValue::from_bool(compact_render),
+            );
+            set_js_property(&message, "directRender", &JsValue::from_bool(direct_render));
             let scale = canvas_backing_scale(&canvas);
             let logical = (canvas.width() / scale, canvas.height() / scale);
             set_js_property(
@@ -2195,18 +2916,18 @@ fn start_worker_render_loop(
                 &JsValue::from_bool(debug_visible.get_untracked()),
             );
             if let Some(message) = state.requests.request(message) {
-                let _ = runtime.worker.post_message(message.as_ref());
+                let _ = runtime.post(&message);
             }
         }
         let running = state.running;
         drop(state);
-        if running {
-            schedule_raf(&callback_self);
+        if running || presentation_pending || force_snapshot || monitor_presenter {
+            schedule_runtime_raf(&callback_self, &request_for_callback);
         } else {
             *callback_self.borrow_mut() = None;
         }
     }) as Box<dyn FnMut()>));
-    schedule_raf(&callback_cell);
+    schedule_runtime_raf(&callback_cell, &request_id);
 }
 
 fn worker_audio_queue_samples(audio: &RefCell<Option<WebAudioBackend>>) -> i32 {
@@ -2257,87 +2978,6 @@ fn downloadable_save_files_from_js(value: &JsValue) -> Option<Vec<DownloadableSa
         .collect()
 }
 
-fn attach_worker_input(
-    canvas: &HtmlCanvasElement,
-    runtime: Rc<WorkerRuntime>,
-    alive: Arc<AtomicBool>,
-    mappings: &'static [(&'static str, &'static str)],
-) {
-    focus_canvas(canvas);
-    for (event_name, message_type) in [("mousedown", "mouseDown"), ("mouseup", "mouseUp")] {
-        let canvas_for_event = canvas.clone();
-        let runtime_for_event = runtime.clone();
-        let alive_for_event = alive.clone();
-        let callback = Closure::wrap(Box::new(move |event: MouseEvent| {
-            if !alive_for_event.load(Ordering::Relaxed) {
-                return;
-            }
-            if let Some((v, h)) = canvas_coords(&canvas_for_event, &event) {
-                if message_type == "mouseDown" {
-                    focus_canvas(&canvas_for_event);
-                }
-                event.prevent_default();
-                runtime_for_event
-                    .audio
-                    .borrow_mut()
-                    .as_mut()
-                    .map(WebAudioBackend::resume);
-                let message = Object::new();
-                set_js_property(&message, "type", &JsValue::from_str(message_type));
-                set_js_property(&message, "v", &JsValue::from_f64(v as f64));
-                set_js_property(&message, "h", &JsValue::from_f64(h as f64));
-                let _ = runtime_for_event.worker.post_message(message.as_ref());
-            }
-        }) as Box<dyn FnMut(MouseEvent)>);
-        let _ =
-            canvas.add_event_listener_with_callback(event_name, callback.as_ref().unchecked_ref());
-        callback.forget();
-    }
-    let runtime_for_move = runtime.clone();
-    let canvas_for_move = canvas.clone();
-    let alive_for_move = alive.clone();
-    let mouse_move = Closure::wrap(Box::new(move |event: MouseEvent| {
-        if alive_for_move.load(Ordering::Relaxed) {
-            if let Some((v, h)) = canvas_coords(&canvas_for_move, &event) {
-                let message = Object::new();
-                set_js_property(&message, "type", &JsValue::from_str("mouseMove"));
-                set_js_property(&message, "v", &JsValue::from_f64(v as f64));
-                set_js_property(&message, "h", &JsValue::from_f64(h as f64));
-                let _ = runtime_for_move.worker.post_message(message.as_ref());
-            }
-        }
-    }) as Box<dyn FnMut(MouseEvent)>);
-    let _ =
-        canvas.add_event_listener_with_callback("mousemove", mouse_move.as_ref().unchecked_ref());
-    mouse_move.forget();
-
-    for (event_name, message_type) in [("keydown", "keyDown"), ("keyup", "keyUp")] {
-        let runtime_for_event = runtime.clone();
-        let alive_for_event = alive.clone();
-        let callback = Closure::wrap(Box::new(move |event: KeyboardEvent| {
-            if !alive_for_event.load(Ordering::Relaxed) {
-                return;
-            }
-            if let Some((mac_key, char_code)) = mapped_key(&event.key(), &event.code(), mappings) {
-                event.prevent_default();
-                runtime_for_event
-                    .audio
-                    .borrow_mut()
-                    .as_mut()
-                    .map(WebAudioBackend::resume);
-                let message = Object::new();
-                set_js_property(&message, "type", &JsValue::from_str(message_type));
-                set_js_property(&message, "macKey", &JsValue::from_f64(mac_key as f64));
-                set_js_property(&message, "charCode", &JsValue::from_f64(char_code as f64));
-                let _ = runtime_for_event.worker.post_message(message.as_ref());
-            }
-        }) as Box<dyn FnMut(KeyboardEvent)>);
-        let _ =
-            canvas.add_event_listener_with_callback(event_name, callback.as_ref().unchecked_ref());
-        callback.forget();
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 struct FrameStageTimings {
     run_ms: f64,
@@ -2381,6 +3021,11 @@ fn record_frame_trace(
     set_trace_number(&entry, "renderMs", timings.render_ms);
     set_trace_number(&entry, "paintMs", timings.paint_ms);
     set_trace_number(&entry, "guestTick", counters.guest_tick as f64);
+    set_trace_number(
+        &entry,
+        "totalInstructions",
+        counters.total_instructions as f64,
+    );
     set_trace_number(&entry, "ticksBehind", counters.ticks_behind as f64);
     set_trace_number(&entry, "lastSteps", counters.last_steps as f64);
     set_trace_number(&entry, "cpuBudgetMs", counters.cpu_budget_ms);
@@ -2510,670 +3155,17 @@ impl PerfSampler {
     }
 }
 
-enum CanvasFrame {
-    WebGl(WebGlFrame),
-    Canvas2d(Canvas2dFrame),
-}
-
-impl CanvasFrame {
-    fn new(canvas: &HtmlCanvasElement, width: u32, height: u32) -> Option<Self> {
-        let user_agent = web_sys::window()
-            .and_then(|window| window.navigator().user_agent().ok())
-            .unwrap_or_default();
-        if !requires_canvas_2d_presenter(&user_agent) {
-            if let Some(gl) = canvas
-                .get_context("webgl")
-                .ok()
-                .flatten()
-                .and_then(|context| context.dyn_into::<WebGlRenderingContext>().ok())
-            {
-                return WebGlFrame::new(gl).map(Self::WebGl);
-            }
-        }
-
-        let context = canvas
-            .get_context("2d")
-            .ok()
-            .flatten()?
-            .dyn_into::<CanvasRenderingContext2d>()
-            .ok()?;
-        Canvas2dFrame::new(context, width, height).map(Self::Canvas2d)
-    }
-
-    fn paint(&mut self, width: u32, height: u32, rgba: &[u8]) {
-        match self {
-            Self::WebGl(frame) => frame.paint(width, height, rgba),
-            Self::Canvas2d(frame) => frame.paint(width, height, rgba),
-        }
-    }
-
-    fn paint_js(&mut self, width: u32, height: u32, rgba: &Uint8Array) {
-        match self {
-            Self::WebGl(frame) => frame.paint_js(width, height, rgba),
-            Self::Canvas2d(frame) => frame.paint_js(width, height, rgba),
-        }
-    }
-
-    fn supports_q3_gpu(&self) -> bool {
-        matches!(self, Self::WebGl(_))
-    }
-
-    fn paint_q3(&mut self, packet: &JsValue) -> Option<(u32, u32)> {
-        match self {
-            Self::WebGl(frame) => frame.paint_q3(packet),
-            Self::Canvas2d(_) => None,
-        }
-    }
-
-    fn backend_name(&self) -> &'static str {
-        match self {
-            Self::WebGl(_) => "webgl",
-            Self::Canvas2d(_) => "canvas2d",
-        }
-    }
-}
-
-fn requires_canvas_2d_presenter(user_agent: &str) -> bool {
-    // WebKit's WebGL texture uploads can corrupt rapid indexed-palette
-    // transitions. Canvas2D consumes the same RGBA frame without remapping it.
-    let ios_webkit = ["iPhone", "iPad", "iPod"]
-        .iter()
-        .any(|marker| user_agent.contains(marker));
-    let desktop_safari = user_agent.contains("Safari/")
-        && ![
-            "Chrome/",
-            "Chromium/",
-            "CriOS/",
-            "Edg/",
-            "EdgiOS/",
-            "OPR/",
-            "FxiOS/",
-        ]
-        .iter()
-        .any(|marker| user_agent.contains(marker));
-    ios_webkit || desktop_safari
-}
-
-struct Canvas2dFrame {
-    context: CanvasRenderingContext2d,
-    width: u32,
-    height: u32,
-    image_data: ImageData,
-    pixels: Uint8ClampedArray,
-}
-
-impl Canvas2dFrame {
-    fn new(context: CanvasRenderingContext2d, width: u32, height: u32) -> Option<Self> {
-        let image_data = context
-            .create_image_data_with_sw_and_sh(width.max(1) as f64, height.max(1) as f64)
-            .ok()?;
-        let pixels = image_data_pixels(&image_data)?;
-        Some(Self {
-            context,
-            width,
-            height,
-            image_data,
-            pixels,
-        })
-    }
-
-    fn paint(&mut self, width: u32, height: u32, rgba: &[u8]) {
-        if self.width != width || self.height != height {
-            let Some(next) = Self::new(self.context.clone(), width, height) else {
-                return;
-            };
-            *self = next;
-        }
-        if self.pixels.length() as usize != rgba.len() {
-            return;
-        }
-        self.pixels.copy_from(rgba);
-        let _ = self.context.put_image_data(&self.image_data, 0.0, 0.0);
-    }
-
-    fn paint_js(&mut self, width: u32, height: u32, rgba: &Uint8Array) {
-        self.paint(width, height, &rgba.to_vec());
-    }
-}
-
-struct WebGlFrame {
-    gl: WebGlRenderingContext,
-    frame_program: WebGlProgram,
-    frame_vertices: WebGlBuffer,
-    frame_texture: WebGlTexture,
-    frame_position: u32,
-    frame_texture_coordinate: u32,
-    q3_program: WebGlProgram,
-    q3_vertices: WebGlBuffer,
-    q3_screen_position: u32,
-    q3_texture_coordinate: u32,
-    q3_color: u32,
-    width: u32,
-    height: u32,
-}
-
-impl WebGlFrame {
-    fn new(gl: WebGlRenderingContext) -> Option<Self> {
-        let vertex_shader = compile_webgl_shader(
-            &gl,
-            WebGlRenderingContext::VERTEX_SHADER,
-            r#"attribute vec2 position;
-attribute vec2 texture_coordinate;
-varying vec2 texture_position;
-void main() {
-    texture_position = texture_coordinate;
-    gl_Position = vec4(position, 0.0, 1.0);
-}"#,
-        )?;
-        let fragment_shader = compile_webgl_shader(
-            &gl,
-            WebGlRenderingContext::FRAGMENT_SHADER,
-            r#"precision mediump float;
-varying vec2 texture_position;
-uniform sampler2D frame_texture;
-void main() {
-    gl_FragColor = texture2D(frame_texture, texture_position);
-}"#,
-        )?;
-        let program = link_webgl_program(&gl, &vertex_shader, &fragment_shader)?;
-        let vertices = gl.create_buffer()?;
-        let texture = gl.create_texture()?;
-        gl.use_program(Some(&program));
-        gl.bind_buffer(WebGlRenderingContext::ARRAY_BUFFER, Some(&vertices));
-        let vertex_data = Float32Array::from(webgl_frame_vertices().as_slice());
-        gl.buffer_data_with_array_buffer_view(
-            WebGlRenderingContext::ARRAY_BUFFER,
-            vertex_data.as_ref(),
-            WebGlRenderingContext::STATIC_DRAW,
-        );
-        let mut frame_locations = Vec::new();
-        for (name, offset) in [("position", 0), ("texture_coordinate", 2 * 4)] {
-            let location = gl.get_attrib_location(&program, name);
-            if location < 0 {
-                return None;
-            }
-            let location = location as u32;
-            gl.enable_vertex_attrib_array(location);
-            gl.vertex_attrib_pointer_with_i32(
-                location,
-                2,
-                WebGlRenderingContext::FLOAT,
-                false,
-                4 * 4,
-                offset,
-            );
-            frame_locations.push(location);
-        }
-        gl.active_texture(WebGlRenderingContext::TEXTURE0);
-        gl.bind_texture(WebGlRenderingContext::TEXTURE_2D, Some(&texture));
-        gl.tex_parameteri(
-            WebGlRenderingContext::TEXTURE_2D,
-            WebGlRenderingContext::TEXTURE_MIN_FILTER,
-            WebGlRenderingContext::NEAREST as i32,
-        );
-        gl.tex_parameteri(
-            WebGlRenderingContext::TEXTURE_2D,
-            WebGlRenderingContext::TEXTURE_MAG_FILTER,
-            WebGlRenderingContext::NEAREST as i32,
-        );
-        gl.tex_parameteri(
-            WebGlRenderingContext::TEXTURE_2D,
-            WebGlRenderingContext::TEXTURE_WRAP_S,
-            WebGlRenderingContext::CLAMP_TO_EDGE as i32,
-        );
-        gl.tex_parameteri(
-            WebGlRenderingContext::TEXTURE_2D,
-            WebGlRenderingContext::TEXTURE_WRAP_T,
-            WebGlRenderingContext::CLAMP_TO_EDGE as i32,
-        );
-        gl.uniform1i(
-            gl.get_uniform_location(&program, "frame_texture").as_ref(),
-            0,
-        );
-        gl.pixel_storei(WebGlRenderingContext::UNPACK_ALIGNMENT, 1);
-        gl.pixel_storei(WebGlRenderingContext::UNPACK_FLIP_Y_WEBGL, 1);
-
-        let q3_vertex_shader = compile_webgl_shader(
-            &gl,
-            WebGlRenderingContext::VERTEX_SHADER,
-            r#"attribute vec4 screen_position;
-attribute vec2 texture_coordinate;
-attribute vec4 vertex_color;
-uniform vec2 target_size;
-varying vec2 texture_position;
-varying vec4 fragment_color;
-void main() {
-    float reciprocal_w = max(abs(screen_position.w), 0.000001);
-    float clip_w = 1.0 / reciprocal_w;
-    vec2 ndc = vec2(
-        screen_position.x / target_size.x * 2.0 - 1.0,
-        1.0 - screen_position.y / target_size.y * 2.0
-    );
-    gl_Position = vec4(ndc * clip_w, screen_position.z * clip_w, clip_w);
-    texture_position = texture_coordinate;
-    fragment_color = vertex_color;
-}"#,
-        )?;
-        let q3_fragment_shader = compile_webgl_shader(
-            &gl,
-            WebGlRenderingContext::FRAGMENT_SHADER,
-            r#"precision mediump float;
-varying vec2 texture_position;
-varying vec4 fragment_color;
-uniform sampler2D frame_texture;
-uniform bool use_texture;
-void main() {
-    vec4 texel = use_texture ? texture2D(frame_texture, texture_position) : vec4(1.0);
-    gl_FragColor = fragment_color * texel;
-}"#,
-        )?;
-        let q3_program = link_webgl_program(&gl, &q3_vertex_shader, &q3_fragment_shader)?;
-        let q3_vertices = gl.create_buffer()?;
-        let q3_screen_position = gl.get_attrib_location(&q3_program, "screen_position");
-        let q3_texture_coordinate = gl.get_attrib_location(&q3_program, "texture_coordinate");
-        let q3_color = gl.get_attrib_location(&q3_program, "vertex_color");
-        if q3_screen_position < 0 || q3_texture_coordinate < 0 || q3_color < 0 {
-            return None;
-        }
-
-        Some(Self {
-            gl,
-            frame_program: program,
-            frame_vertices: vertices,
-            frame_texture: texture,
-            frame_position: frame_locations[0],
-            frame_texture_coordinate: frame_locations[1],
-            q3_program,
-            q3_vertices,
-            q3_screen_position: q3_screen_position as u32,
-            q3_texture_coordinate: q3_texture_coordinate as u32,
-            q3_color: q3_color as u32,
-            width: 0,
-            height: 0,
-        })
-    }
-
-    fn paint(&mut self, width: u32, height: u32, rgba: &[u8]) {
-        let width = width.max(1);
-        let height = height.max(1);
-        if rgba.len() != width as usize * height as usize * 4 {
-            return;
-        }
-        self.gl.use_program(Some(&self.frame_program));
-        self.gl.bind_buffer(
-            WebGlRenderingContext::ARRAY_BUFFER,
-            Some(&self.frame_vertices),
-        );
-        for (location, offset) in [
-            (self.frame_position, 0),
-            (self.frame_texture_coordinate, 2 * 4),
-        ] {
-            self.gl.enable_vertex_attrib_array(location);
-            self.gl.vertex_attrib_pointer_with_i32(
-                location,
-                2,
-                WebGlRenderingContext::FLOAT,
-                false,
-                4 * 4,
-                offset,
-            );
-        }
-        self.gl.active_texture(WebGlRenderingContext::TEXTURE0);
-        self.gl
-            .bind_texture(WebGlRenderingContext::TEXTURE_2D, Some(&self.frame_texture));
-        self.gl.disable(WebGlRenderingContext::DEPTH_TEST);
-        self.gl.disable(WebGlRenderingContext::BLEND);
-        let result = if self.width != width || self.height != height {
-            self.width = width;
-            self.height = height;
-            self.gl
-                .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
-                    WebGlRenderingContext::TEXTURE_2D,
-                    0,
-                    WebGlRenderingContext::RGBA as i32,
-                    width as i32,
-                    height as i32,
-                    0,
-                    WebGlRenderingContext::RGBA,
-                    WebGlRenderingContext::UNSIGNED_BYTE,
-                    Some(rgba),
-                )
-        } else {
-            self.gl
-                .tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_u8_array(
-                    WebGlRenderingContext::TEXTURE_2D,
-                    0,
-                    0,
-                    0,
-                    width as i32,
-                    height as i32,
-                    WebGlRenderingContext::RGBA,
-                    WebGlRenderingContext::UNSIGNED_BYTE,
-                    Some(rgba),
-                )
-        };
-        if result.is_err() {
-            return;
-        }
-        self.gl.viewport(0, 0, width as i32, height as i32);
-        self.gl
-            .draw_arrays(WebGlRenderingContext::TRIANGLE_STRIP, 0, 4);
-    }
-
-    fn paint_js(&mut self, width: u32, height: u32, rgba: &Uint8Array) {
-        let width = width.max(1);
-        let height = height.max(1);
-        if rgba.length() as usize != width as usize * height as usize * 4 {
-            return;
-        }
-        self.gl.use_program(Some(&self.frame_program));
-        self.gl.bind_buffer(
-            WebGlRenderingContext::ARRAY_BUFFER,
-            Some(&self.frame_vertices),
-        );
-        for (location, offset) in [
-            (self.frame_position, 0),
-            (self.frame_texture_coordinate, 2 * 4),
-        ] {
-            self.gl.enable_vertex_attrib_array(location);
-            self.gl.vertex_attrib_pointer_with_i32(
-                location,
-                2,
-                WebGlRenderingContext::FLOAT,
-                false,
-                4 * 4,
-                offset,
-            );
-        }
-        self.gl.active_texture(WebGlRenderingContext::TEXTURE0);
-        self.gl
-            .bind_texture(WebGlRenderingContext::TEXTURE_2D, Some(&self.frame_texture));
-        self.gl.disable(WebGlRenderingContext::DEPTH_TEST);
-        self.gl.disable(WebGlRenderingContext::BLEND);
-        let result = if self.width != width || self.height != height {
-            self.width = width;
-            self.height = height;
-            self.gl
-                .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_js_u8_array(
-                    WebGlRenderingContext::TEXTURE_2D,
-                    0,
-                    WebGlRenderingContext::RGBA as i32,
-                    width as i32,
-                    height as i32,
-                    0,
-                    WebGlRenderingContext::RGBA,
-                    WebGlRenderingContext::UNSIGNED_BYTE,
-                    Some(rgba),
-                )
-        } else {
-            self.gl
-                .tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_js_u8_array(
-                    WebGlRenderingContext::TEXTURE_2D,
-                    0,
-                    0,
-                    0,
-                    width as i32,
-                    height as i32,
-                    WebGlRenderingContext::RGBA,
-                    WebGlRenderingContext::UNSIGNED_BYTE,
-                    Some(rgba),
-                )
-        };
-        if result.is_err() {
-            return;
-        }
-        self.gl.viewport(0, 0, width as i32, height as i32);
-        self.gl
-            .draw_arrays(WebGlRenderingContext::TRIANGLE_STRIP, 0, 4);
-    }
-
-    fn paint_q3(&mut self, packet: &JsValue) -> Option<(u32, u32)> {
-        let width = js_number_property(packet, "width")? as u32;
-        let height = js_number_property(packet, "height")? as u32;
-        if width == 0 || height == 0 {
-            return None;
-        }
-        self.width = width;
-        self.height = height;
-        self.gl.use_program(Some(&self.q3_program));
-        self.gl
-            .bind_buffer(WebGlRenderingContext::ARRAY_BUFFER, Some(&self.q3_vertices));
-        for (location, size, offset) in [
-            (self.q3_screen_position, 4, 0),
-            (self.q3_texture_coordinate, 2, 4 * 4),
-            (self.q3_color, 4, 6 * 4),
-        ] {
-            self.gl.enable_vertex_attrib_array(location);
-            self.gl.vertex_attrib_pointer_with_i32(
-                location,
-                size,
-                WebGlRenderingContext::FLOAT,
-                false,
-                10 * 4,
-                offset,
-            );
-        }
-        self.gl.uniform2f(
-            self.gl
-                .get_uniform_location(&self.q3_program, "target_size")
-                .as_ref(),
-            width as f32,
-            height as f32,
-        );
-        self.gl.uniform1i(
-            self.gl
-                .get_uniform_location(&self.q3_program, "frame_texture")
-                .as_ref(),
-            0,
-        );
-        self.gl.viewport(0, 0, width as i32, height as i32);
-        self.gl.enable(WebGlRenderingContext::SCISSOR_TEST);
-        if let Ok(viewport) = Reflect::get(packet, &JsValue::from_str("viewport")) {
-            let viewport = Float32Array::new(&viewport);
-            if viewport.length() == 4 {
-                let left = viewport.get_index(0) as i32;
-                let top = viewport.get_index(1) as i32;
-                let right = viewport.get_index(2) as i32;
-                let bottom = viewport.get_index(3) as i32;
-                self.gl.scissor(
-                    left,
-                    height as i32 - bottom - 1,
-                    right - left + 1,
-                    bottom - top + 1,
-                );
-            }
-        }
-        self.gl.enable(WebGlRenderingContext::DEPTH_TEST);
-        self.gl.depth_func(WebGlRenderingContext::LEQUAL);
-        self.gl.depth_mask(true);
-        self.gl.clear_depth(1.0);
-        self.gl.clear(WebGlRenderingContext::DEPTH_BUFFER_BIT);
-        if let Ok(clear) = Reflect::get(packet, &JsValue::from_str("clearColor")) {
-            if !clear.is_undefined() {
-                let clear = Float32Array::new(&clear);
-                if clear.length() == 4 {
-                    self.gl.clear_color(
-                        clear.get_index(0),
-                        clear.get_index(1),
-                        clear.get_index(2),
-                        clear.get_index(3),
-                    );
-                    self.gl.clear(WebGlRenderingContext::COLOR_BUFFER_BIT);
-                }
-            }
-        }
-
-        let texture_values =
-            Array::from(&Reflect::get(packet, &JsValue::from_str("textures")).ok()?);
-        let mut textures = Vec::with_capacity(texture_values.length() as usize);
-        for texture_value in texture_values.iter() {
-            let texture = self.gl.create_texture()?;
-            self.gl.active_texture(WebGlRenderingContext::TEXTURE0);
-            self.gl
-                .bind_texture(WebGlRenderingContext::TEXTURE_2D, Some(&texture));
-            let texture_width = js_number_property(&texture_value, "width")? as i32;
-            let texture_height = js_number_property(&texture_value, "height")? as i32;
-            let rgba =
-                Uint8Array::new(&Reflect::get(&texture_value, &JsValue::from_str("rgba")).ok()?)
-                    .to_vec();
-            self.gl
-                .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
-                    WebGlRenderingContext::TEXTURE_2D,
-                    0,
-                    WebGlRenderingContext::RGBA as i32,
-                    texture_width,
-                    texture_height,
-                    0,
-                    WebGlRenderingContext::RGBA,
-                    WebGlRenderingContext::UNSIGNED_BYTE,
-                    Some(&rgba),
-                )
-                .ok()?;
-            for parameter in [
-                WebGlRenderingContext::TEXTURE_MIN_FILTER,
-                WebGlRenderingContext::TEXTURE_MAG_FILTER,
-            ] {
-                self.gl.tex_parameteri(
-                    WebGlRenderingContext::TEXTURE_2D,
-                    parameter,
-                    WebGlRenderingContext::NEAREST as i32,
-                );
-            }
-            for (parameter, wrap) in [
-                (
-                    WebGlRenderingContext::TEXTURE_WRAP_S,
-                    js_bool_property(&texture_value, "wrapU").unwrap_or(false),
-                ),
-                (
-                    WebGlRenderingContext::TEXTURE_WRAP_T,
-                    js_bool_property(&texture_value, "wrapV").unwrap_or(false),
-                ),
-            ] {
-                self.gl.tex_parameteri(
-                    WebGlRenderingContext::TEXTURE_2D,
-                    parameter,
-                    if wrap {
-                        WebGlRenderingContext::REPEAT as i32
-                    } else {
-                        WebGlRenderingContext::CLAMP_TO_EDGE as i32
-                    },
-                );
-            }
-            textures.push(texture);
-        }
-
-        let draws = Array::from(&Reflect::get(packet, &JsValue::from_str("draws")).ok()?);
-        for draw in draws.iter() {
-            let vertices =
-                Float32Array::new(&Reflect::get(&draw, &JsValue::from_str("vertices")).ok()?);
-            if vertices.length() == 0 || vertices.length() % 10 != 0 {
-                continue;
-            }
-            self.gl.buffer_data_with_array_buffer_view(
-                WebGlRenderingContext::ARRAY_BUFFER,
-                vertices.as_ref(),
-                WebGlRenderingContext::STREAM_DRAW,
-            );
-            let texture_index = js_number_property(&draw, "texture").unwrap_or(-1.0) as i32;
-            let texture = usize::try_from(texture_index)
-                .ok()
-                .and_then(|index| textures.get(index));
-            self.gl.active_texture(WebGlRenderingContext::TEXTURE0);
-            self.gl
-                .bind_texture(WebGlRenderingContext::TEXTURE_2D, texture);
-            self.gl.uniform1i(
-                self.gl
-                    .get_uniform_location(&self.q3_program, "use_texture")
-                    .as_ref(),
-                i32::from(texture.is_some()),
-            );
-            if js_bool_property(&draw, "blend").unwrap_or(false) {
-                self.gl.enable(WebGlRenderingContext::BLEND);
-                self.gl.blend_func(
-                    WebGlRenderingContext::SRC_ALPHA,
-                    WebGlRenderingContext::ONE_MINUS_SRC_ALPHA,
-                );
-            } else {
-                self.gl.disable(WebGlRenderingContext::BLEND);
-            }
-            self.gl
-                .depth_mask(js_bool_property(&draw, "writeDepth").unwrap_or(true));
-            self.gl.draw_arrays(
-                WebGlRenderingContext::TRIANGLES,
-                0,
-                (vertices.length() / 10) as i32,
-            );
-        }
-        for texture in textures {
-            self.gl.delete_texture(Some(&texture));
-        }
-        self.gl.disable(WebGlRenderingContext::SCISSOR_TEST);
-        self.gl.depth_mask(true);
-        Some((width, height))
-    }
-}
-
-fn webgl_frame_vertices() -> [f32; 16] {
-    [
-        -1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-    ]
-}
-
-fn compile_webgl_shader(
-    gl: &WebGlRenderingContext,
-    shader_type: u32,
-    source: &str,
-) -> Option<WebGlShader> {
-    let shader = gl.create_shader(shader_type)?;
-    gl.shader_source(&shader, source);
-    gl.compile_shader(&shader);
-    gl.get_shader_parameter(&shader, WebGlRenderingContext::COMPILE_STATUS)
-        .as_bool()
-        .unwrap_or(false)
-        .then_some(shader)
-}
-
-fn link_webgl_program(
-    gl: &WebGlRenderingContext,
-    vertex_shader: &WebGlShader,
-    fragment_shader: &WebGlShader,
-) -> Option<WebGlProgram> {
-    let program = gl.create_program()?;
-    gl.attach_shader(&program, vertex_shader);
-    gl.attach_shader(&program, fragment_shader);
-    gl.link_program(&program);
-    gl.get_program_parameter(&program, WebGlRenderingContext::LINK_STATUS)
-        .as_bool()
-        .unwrap_or(false)
-        .then_some(program)
-}
-
-fn image_data_pixels(image_data: &ImageData) -> Option<Uint8ClampedArray> {
-    Reflect::get(image_data.as_ref(), &JsValue::from_str("data"))
-        .ok()?
-        .dyn_into::<Uint8ClampedArray>()
-        .ok()
-}
-
-fn schedule_raf(cb_cell: &Rc<RefCell<Option<Closure<dyn FnMut()>>>>) {
-    let borrow = cb_cell.borrow();
-    if let Some(cb) = borrow.as_ref() {
-        let _ = web_sys::window()
-            .unwrap()
-            .request_animation_frame(cb.as_ref().unchecked_ref());
-    }
-}
-
 fn attach_input(
     canvas: &HtmlCanvasElement,
-    machine: Rc<RefCell<Machine>>,
+    machine: RuntimeHandle,
     alive: Arc<AtomicBool>,
     mappings: &'static [(&'static str, &'static str)],
+    listeners: &InputListeners,
 ) {
     focus_canvas(canvas);
 
     if pointer_events_supported() {
-        attach_pointer_input(canvas, machine.clone(), alive.clone());
+        attach_pointer_input(canvas, machine.clone(), alive.clone(), listeners);
     } else {
         let suppress_mouse_until_ms = Rc::new(Cell::new(0.0));
         attach_touch_input(
@@ -3181,45 +3173,111 @@ fn attach_input(
             machine.clone(),
             alive.clone(),
             suppress_mouse_until_ms.clone(),
+            listeners,
         );
         attach_mouse_input(
             canvas,
             machine.clone(),
             alive.clone(),
             suppress_mouse_until_ms,
+            listeners,
         );
     }
 
+    let pressed = Rc::new(RefCell::new(
+        std::collections::BTreeMap::<String, (u8, u8)>::new(),
+    ));
+    let pressed_kd = pressed.clone();
     let machine_kd = machine.clone();
     let alive_kd = alive.clone();
     let on_key_down = Closure::wrap(Box::new(move |ev: KeyboardEvent| {
         if !alive_kd.load(Ordering::Relaxed) {
             return;
         }
-        let mut m = machine_kd.borrow_mut();
+        let m = &machine_kd;
         m.resume_audio();
         if let Some((mac_key, char_code)) = mapped_key(&ev.key(), &ev.code(), mappings) {
             ev.prevent_default();
+            pressed_kd
+                .borrow_mut()
+                .insert(ev.code(), (mac_key, char_code));
             m.key_down(mac_key, char_code);
         }
     }) as Box<dyn FnMut(KeyboardEvent)>);
     let _ =
         canvas.add_event_listener_with_callback("keydown", on_key_down.as_ref().unchecked_ref());
-    on_key_down.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        canvas.as_ref(),
+        "keydown",
+        on_key_down,
+    ));
 
-    let machine_ku = machine;
-    let alive_ku = alive;
+    let pressed_ku = pressed.clone();
+    let machine_ku = machine.clone();
+    let alive_ku = alive.clone();
     let on_key_up = Closure::wrap(Box::new(move |ev: KeyboardEvent| {
         if !alive_ku.load(Ordering::Relaxed) {
             return;
         }
-        if let Some((mac_key, char_code)) = mapped_key(&ev.key(), &ev.code(), mappings) {
+        pressed_ku.borrow_mut().remove(&ev.code());
+        let key = mapped_key(&ev.key(), &ev.code(), mappings);
+        if let Some((mac_key, char_code)) = key {
             ev.prevent_default();
-            machine_ku.borrow_mut().key_up(mac_key, char_code);
+            machine_ku.key_up(mac_key, char_code);
         }
     }) as Box<dyn FnMut(KeyboardEvent)>);
     let _ = canvas.add_event_listener_with_callback("keyup", on_key_up.as_ref().unchecked_ref());
-    on_key_up.forget();
+    listeners
+        .borrow_mut()
+        .push(InputListener::retain(canvas.as_ref(), "keyup", on_key_up));
+    attach_focus_release(Some(canvas), listeners, move || {
+        if alive.load(Ordering::Relaxed) {
+            for (_, (mac_key, char_code)) in std::mem::take(&mut *pressed.borrow_mut()) {
+                machine.key_up(mac_key, char_code);
+            }
+        }
+    });
+}
+
+fn attach_focus_release(
+    canvas: Option<&HtmlCanvasElement>,
+    listeners: &InputListeners,
+    release: impl FnMut() + Clone + 'static,
+) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let mut targets = vec![(
+        window.clone().unchecked_into::<web_sys::EventTarget>(),
+        "blur",
+    )];
+    if let Some(document) = window.document() {
+        targets.push((document.unchecked_into(), "visibilitychange"));
+    }
+    if let Some(canvas) = canvas {
+        targets.push((canvas.clone().unchecked_into(), "blur"));
+    }
+    for (target, event_name) in targets {
+        let mut release = release.clone();
+        let callback = Closure::wrap(Box::new(move |event: Event| {
+            if event.type_() == "visibilitychange"
+                && !web_sys::window()
+                    .and_then(|w| w.document())
+                    .is_some_and(|d| d.hidden())
+            {
+                return;
+            }
+            release();
+        }) as Box<dyn FnMut(Event)>);
+        if target
+            .add_event_listener_with_callback(event_name, callback.as_ref().unchecked_ref())
+            .is_ok()
+        {
+            listeners
+                .borrow_mut()
+                .push(InputListener::retain(&target, event_name, callback));
+        }
+    }
 }
 
 fn pointer_events_supported() -> bool {
@@ -3235,13 +3293,34 @@ fn pointer_events_supported() -> bool {
 
 fn attach_pointer_input(
     canvas: &HtmlCanvasElement,
-    machine: Rc<RefCell<Machine>>,
+    machine: RuntimeHandle,
     alive: Arc<AtomicBool>,
+    listeners: &InputListeners,
 ) {
     let active_pointer_id: Rc<Cell<Option<i32>>> = Rc::new(Cell::new(None));
     let last_coords: Rc<Cell<Option<(i16, i16)>>> = Rc::new(Cell::new(None));
     let pointer_down_ms: Rc<Cell<f64>> = Rc::new(Cell::new(0.0));
     let touch_like_pointer: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+
+    let focus_machine = machine.clone();
+    let focus_alive = alive.clone();
+    let focus_canvas_el = canvas.clone();
+    let focus_active = active_pointer_id.clone();
+    let focus_coords = last_coords.clone();
+    attach_focus_release(Some(canvas), listeners, move || {
+        if let Some(pointer_id) = focus_active.get() {
+            release_pointer_mouse_up_after(
+                focus_canvas_el.clone(),
+                focus_machine.clone(),
+                focus_alive.clone(),
+                focus_active.clone(),
+                focus_coords.clone(),
+                pointer_id,
+                focus_coords.get(),
+                0.0,
+            );
+        }
+    });
 
     // Pointer events give touch, pen, and mouse a single path and let us capture
     // the active touch, so a game redraw or finger drift does not lose mouseUp.
@@ -3262,7 +3341,7 @@ fn attach_pointer_input(
         }
         focus_canvas(&canvas_el);
         ev.prevent_default();
-        let mut m = machine_pd.borrow_mut();
+        let m = &machine_pd;
         m.resume_audio();
         if let Some((v, h)) = pointer_coords(&canvas_el, &ev) {
             active_pd.set(Some(ev.pointer_id()));
@@ -3275,7 +3354,11 @@ fn attach_pointer_input(
     }) as Box<dyn FnMut(PointerEvent)>);
     let _ = canvas
         .add_event_listener_with_callback("pointerdown", on_pointer_down.as_ref().unchecked_ref());
-    on_pointer_down.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        canvas.as_ref(),
+        "pointerdown",
+        on_pointer_down,
+    ));
 
     let canvas_el = canvas.clone();
     let machine_pm = machine.clone();
@@ -3298,12 +3381,16 @@ fn attach_pointer_input(
             if active == Some(ev.pointer_id()) {
                 last_pm.set(Some((v, h)));
             }
-            machine_pm.borrow_mut().mouse_move(v, h);
+            machine_pm.mouse_move(v, h);
         }
     }) as Box<dyn FnMut(PointerEvent)>);
     let _ = canvas
         .add_event_listener_with_callback("pointermove", on_pointer_move.as_ref().unchecked_ref());
-    on_pointer_move.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        canvas.as_ref(),
+        "pointermove",
+        on_pointer_move,
+    ));
 
     let canvas_el = canvas.clone();
     let machine_pu = machine.clone();
@@ -3321,6 +3408,9 @@ fn attach_pointer_input(
         }
         ev.prevent_default();
         let coords = pointer_coords(&canvas_el, &ev).or_else(|| last_pu.get());
+        // A focus/capture loss can arrive during the short-touch delay.
+        // Preserve the actual up coordinates for that release too.
+        last_pu.set(coords);
         let delay_ms = if touch_like_pu.get() {
             touch_release_delay_ms(down_ms_pu.get())
         } else {
@@ -3339,7 +3429,11 @@ fn attach_pointer_input(
     }) as Box<dyn FnMut(PointerEvent)>);
     let _ = canvas
         .add_event_listener_with_callback("pointerup", on_pointer_up.as_ref().unchecked_ref());
-    on_pointer_up.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        canvas.as_ref(),
+        "pointerup",
+        on_pointer_up,
+    ));
 
     let canvas_el = canvas.clone();
     let machine_pc = machine;
@@ -3351,30 +3445,53 @@ fn attach_pointer_input(
             return;
         }
         ev.prevent_default();
-        let coords = pointer_coords(&canvas_el, &ev).or_else(|| last_pc.get());
+        let coords = if ev.type_() == "lostpointercapture" {
+            last_pc.get()
+        } else {
+            pointer_coords(&canvas_el, &ev).or_else(|| last_pc.get())
+        };
         active_pc.set(None);
         last_pc.set(None);
         let _ = canvas_el.release_pointer_capture(ev.pointer_id());
         if let Some((v, h)) = coords {
-            machine_pc.borrow_mut().mouse_up(v, h);
+            machine_pc.mouse_up(v, h);
         }
     }) as Box<dyn FnMut(PointerEvent)>);
     let _ = canvas.add_event_listener_with_callback(
         "pointercancel",
         on_pointer_cancel.as_ref().unchecked_ref(),
     );
-    on_pointer_cancel.forget();
+    retain_pointer_cancel(listeners, canvas.as_ref(), on_pointer_cancel);
 }
 
 fn attach_touch_input(
     canvas: &HtmlCanvasElement,
-    machine: Rc<RefCell<Machine>>,
+    machine: RuntimeHandle,
     alive: Arc<AtomicBool>,
     suppress_mouse_until_ms: Rc<Cell<f64>>,
+    listeners: &InputListeners,
 ) {
     let active_touch_id: Rc<Cell<Option<i32>>> = Rc::new(Cell::new(None));
     let last_coords: Rc<Cell<Option<(i16, i16)>>> = Rc::new(Cell::new(None));
     let touch_down_ms: Rc<Cell<f64>> = Rc::new(Cell::new(0.0));
+
+    let focus_machine = machine.clone();
+    let focus_alive = alive.clone();
+    let focus_active = active_touch_id.clone();
+    let focus_coords = last_coords.clone();
+    attach_focus_release(Some(canvas), listeners, move || {
+        if let Some(identifier) = focus_active.get() {
+            release_touch_mouse_up_after(
+                focus_machine.clone(),
+                focus_alive.clone(),
+                focus_active.clone(),
+                focus_coords.clone(),
+                identifier,
+                focus_coords.get(),
+                0.0,
+            );
+        }
+    });
 
     let canvas_el = canvas.clone();
     let machine_ts = machine.clone();
@@ -3393,7 +3510,7 @@ fn attach_touch_input(
         focus_canvas(&canvas_el);
         ev.prevent_default();
         suppress_compat_mouse(&suppress_ts);
-        let mut m = machine_ts.borrow_mut();
+        let m = &machine_ts;
         m.resume_audio();
         if let Some((v, h)) = touch_coords(&canvas_el, &touch) {
             active_ts.set(Some(touch.identifier()));
@@ -3404,7 +3521,11 @@ fn attach_touch_input(
     }) as Box<dyn FnMut(TouchEvent)>);
     let _ = canvas
         .add_event_listener_with_callback("touchstart", on_touch_start.as_ref().unchecked_ref());
-    on_touch_start.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        canvas.as_ref(),
+        "touchstart",
+        on_touch_start,
+    ));
 
     let canvas_el = canvas.clone();
     let machine_tm = machine.clone();
@@ -3426,12 +3547,16 @@ fn attach_touch_input(
         suppress_compat_mouse(&suppress_tm);
         if let Some((v, h)) = touch_coords(&canvas_el, &touch) {
             last_tm.set(Some((v, h)));
-            machine_tm.borrow_mut().mouse_move(v, h);
+            machine_tm.mouse_move(v, h);
         }
     }) as Box<dyn FnMut(TouchEvent)>);
     let _ = canvas
         .add_event_listener_with_callback("touchmove", on_touch_move.as_ref().unchecked_ref());
-    on_touch_move.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        canvas.as_ref(),
+        "touchmove",
+        on_touch_move,
+    ));
 
     let canvas_el = canvas.clone();
     let machine_te = machine.clone();
@@ -3453,6 +3578,7 @@ fn attach_touch_input(
         ev.prevent_default();
         suppress_compat_mouse(&suppress_te);
         let coords = touch_coords(&canvas_el, &touch).or_else(|| last_te.get());
+        last_te.set(coords);
         release_touch_mouse_up_after(
             machine_te.clone(),
             alive_te.clone(),
@@ -3465,7 +3591,11 @@ fn attach_touch_input(
     }) as Box<dyn FnMut(TouchEvent)>);
     let _ =
         canvas.add_event_listener_with_callback("touchend", on_touch_end.as_ref().unchecked_ref());
-    on_touch_end.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        canvas.as_ref(),
+        "touchend",
+        on_touch_end,
+    ));
 
     let machine_tc = machine;
     let alive_tc = alive;
@@ -3488,75 +3618,104 @@ fn attach_touch_input(
         active_tc.set(None);
         last_tc.set(None);
         if let Some((v, h)) = coords {
-            machine_tc.borrow_mut().mouse_up(v, h);
+            machine_tc.mouse_up(v, h);
         }
     }) as Box<dyn FnMut(TouchEvent)>);
     let _ = canvas
         .add_event_listener_with_callback("touchcancel", on_touch_cancel.as_ref().unchecked_ref());
-    on_touch_cancel.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        canvas.as_ref(),
+        "touchcancel",
+        on_touch_cancel,
+    ));
 }
 
 fn attach_mouse_input(
     canvas: &HtmlCanvasElement,
-    machine: Rc<RefCell<Machine>>,
+    machine: RuntimeHandle,
     alive: Arc<AtomicBool>,
     suppress_mouse_until_ms: Rc<Cell<f64>>,
+    listeners: &InputListeners,
 ) {
+    let last_down = Rc::new(Cell::new(None));
+    let focus_down = last_down.clone();
+    let focus_machine = machine.clone();
+    let focus_alive = alive.clone();
+    attach_focus_release(Some(canvas), listeners, move || {
+        if focus_alive.load(Ordering::Relaxed) {
+            if let Some((v, h)) = focus_down.take() {
+                focus_machine.mouse_up(v, h);
+            }
+        }
+    });
     // Mouse down / up / move fallback for browsers without PointerEvent.
     // Interaction-start handlers also try to resume the AudioContext: creation
     // happens inside an async chain that may have slipped outside the
     // click-gesture microtask, so browsers leave the context suspended until
     // we kick it from inside a gesture handler. Handlers short-circuit when the
-    // component has unmounted (the canvas DOM node is already gone but the
-    // closures remain reachable via forget()).
+    // component has unmounted while a callback was already queued.
     let canvas_el = canvas.clone();
     let machine_md = machine.clone();
     let alive_md = alive.clone();
     let suppress_md = suppress_mouse_until_ms.clone();
+    let down_md = last_down.clone();
     let on_down = Closure::wrap(Box::new(move |ev: MouseEvent| {
         if !alive_md.load(Ordering::Relaxed) || mouse_is_suppressed(&suppress_md) {
             return;
         }
         focus_canvas(&canvas_el);
         ev.prevent_default();
-        let mut m = machine_md.borrow_mut();
+        let m = &machine_md;
         m.resume_audio();
         if let Some((v, h)) = canvas_coords(&canvas_el, &ev) {
+            down_md.set(Some((v, h)));
             m.mouse_down(v, h);
         }
     }) as Box<dyn FnMut(MouseEvent)>);
     let _ = canvas.add_event_listener_with_callback("mousedown", on_down.as_ref().unchecked_ref());
-    on_down.forget();
+    listeners
+        .borrow_mut()
+        .push(InputListener::retain(canvas.as_ref(), "mousedown", on_down));
 
     let canvas_el = canvas.clone();
     let machine_mu = machine.clone();
     let alive_mu = alive.clone();
     let suppress_mu = suppress_mouse_until_ms.clone();
+    let down_mu = last_down.clone();
     let on_up = Closure::wrap(Box::new(move |ev: MouseEvent| {
         if !alive_mu.load(Ordering::Relaxed) || mouse_is_suppressed(&suppress_mu) {
             return;
         }
         if let Some((v, h)) = canvas_coords(&canvas_el, &ev) {
-            machine_mu.borrow_mut().mouse_up(v, h);
+            down_mu.set(None);
+            machine_mu.mouse_up(v, h);
         }
     }) as Box<dyn FnMut(MouseEvent)>);
     let _ = canvas.add_event_listener_with_callback("mouseup", on_up.as_ref().unchecked_ref());
-    on_up.forget();
+    listeners
+        .borrow_mut()
+        .push(InputListener::retain(canvas.as_ref(), "mouseup", on_up));
 
     let canvas_el = canvas.clone();
     let machine_mm = machine;
     let alive_mm = alive;
     let suppress_mm = suppress_mouse_until_ms;
+    let down_mm = last_down;
     let on_move = Closure::wrap(Box::new(move |ev: MouseEvent| {
         if !alive_mm.load(Ordering::Relaxed) || mouse_is_suppressed(&suppress_mm) {
             return;
         }
         if let Some((v, h)) = canvas_coords(&canvas_el, &ev) {
-            machine_mm.borrow_mut().mouse_move(v, h);
+            if down_mm.get().is_some() {
+                down_mm.set(Some((v, h)));
+            }
+            machine_mm.mouse_move(v, h);
         }
     }) as Box<dyn FnMut(MouseEvent)>);
     let _ = canvas.add_event_listener_with_callback("mousemove", on_move.as_ref().unchecked_ref());
-    on_move.forget();
+    listeners
+        .borrow_mut()
+        .push(InputListener::retain(canvas.as_ref(), "mousemove", on_move));
 }
 
 fn attach_mobile_controls(
@@ -3565,20 +3724,26 @@ fn attach_mobile_controls(
     settings: MobileControls,
     machine: RuntimeHandle,
     alive: Arc<AtomicBool>,
+    listeners: &InputListeners,
 ) {
     let state = Rc::new(RefCell::new(MobileInputState::new()));
-    attach_mobile_gesture_guard(controls, alive.clone());
+    attach_mobile_gesture_guard(controls, alive.clone(), listeners);
     attach_mobile_joystick(
         joystick,
         settings,
         machine.clone(),
         alive.clone(),
         state.clone(),
+        listeners,
     );
-    attach_mobile_buttons(controls, machine, alive, state);
+    attach_mobile_buttons(controls, machine, alive, state, listeners);
 }
 
-fn attach_mobile_gesture_guard(controls: &HtmlElement, alive: Arc<AtomicBool>) {
+fn attach_mobile_gesture_guard(
+    controls: &HtmlElement,
+    alive: Arc<AtomicBool>,
+    listeners: &InputListeners,
+) {
     let alive_ts = alive.clone();
     let on_touch_start = Closure::wrap(Box::new(move |ev: TouchEvent| {
         if alive_ts.load(Ordering::Relaxed) {
@@ -3586,7 +3751,11 @@ fn attach_mobile_gesture_guard(controls: &HtmlElement, alive: Arc<AtomicBool>) {
         }
     }) as Box<dyn FnMut(TouchEvent)>);
     add_non_passive_touch_listener(controls, "touchstart", &on_touch_start);
-    on_touch_start.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        controls.as_ref(),
+        "touchstart",
+        on_touch_start,
+    ));
 
     let alive_tm = alive.clone();
     let on_touch_move = Closure::wrap(Box::new(move |ev: TouchEvent| {
@@ -3595,7 +3764,11 @@ fn attach_mobile_gesture_guard(controls: &HtmlElement, alive: Arc<AtomicBool>) {
         }
     }) as Box<dyn FnMut(TouchEvent)>);
     add_non_passive_touch_listener(controls, "touchmove", &on_touch_move);
-    on_touch_move.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        controls.as_ref(),
+        "touchmove",
+        on_touch_move,
+    ));
 
     let alive_te = alive.clone();
     let on_touch_end = Closure::wrap(Box::new(move |ev: TouchEvent| {
@@ -3604,7 +3777,11 @@ fn attach_mobile_gesture_guard(controls: &HtmlElement, alive: Arc<AtomicBool>) {
         }
     }) as Box<dyn FnMut(TouchEvent)>);
     add_non_passive_touch_listener(controls, "touchend", &on_touch_end);
-    on_touch_end.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        controls.as_ref(),
+        "touchend",
+        on_touch_end,
+    ));
 
     let alive_tc = alive.clone();
     let on_touch_cancel = Closure::wrap(Box::new(move |ev: TouchEvent| {
@@ -3613,11 +3790,15 @@ fn attach_mobile_gesture_guard(controls: &HtmlElement, alive: Arc<AtomicBool>) {
         }
     }) as Box<dyn FnMut(TouchEvent)>);
     add_non_passive_touch_listener(controls, "touchcancel", &on_touch_cancel);
-    on_touch_cancel.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        controls.as_ref(),
+        "touchcancel",
+        on_touch_cancel,
+    ));
 
-    attach_safari_gesture_guard(controls, "gesturestart", alive.clone());
-    attach_safari_gesture_guard(controls, "gesturechange", alive.clone());
-    attach_safari_gesture_guard(controls, "gestureend", alive);
+    attach_safari_gesture_guard(controls, "gesturestart", alive.clone(), listeners);
+    attach_safari_gesture_guard(controls, "gesturechange", alive.clone(), listeners);
+    attach_safari_gesture_guard(controls, "gestureend", alive, listeners);
 }
 
 fn add_non_passive_touch_listener(
@@ -3633,7 +3814,12 @@ fn add_non_passive_touch_listener(
     );
 }
 
-fn attach_safari_gesture_guard(element: &HtmlElement, event_name: &str, alive: Arc<AtomicBool>) {
+fn attach_safari_gesture_guard(
+    element: &HtmlElement,
+    event_name: &str,
+    alive: Arc<AtomicBool>,
+    listeners: &InputListeners,
+) {
     let on_gesture = Closure::wrap(Box::new(move |ev: Event| {
         if alive.load(Ordering::Relaxed) {
             ev.prevent_default();
@@ -3645,7 +3831,11 @@ fn attach_safari_gesture_guard(element: &HtmlElement, event_name: &str, alive: A
         on_gesture.as_ref().unchecked_ref(),
         &options,
     );
-    on_gesture.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        element.as_ref(),
+        event_name,
+        on_gesture,
+    ));
 }
 
 fn non_passive_listener_options() -> AddEventListenerOptions {
@@ -3660,8 +3850,26 @@ fn attach_mobile_joystick(
     machine: RuntimeHandle,
     alive: Arc<AtomicBool>,
     state: Rc<RefCell<MobileInputState>>,
+    listeners: &InputListeners,
 ) {
     let active_pointer_id: Rc<Cell<Option<i32>>> = Rc::new(Cell::new(None));
+
+    let focus_active = active_pointer_id.clone();
+    let focus_state = state.clone();
+    let focus_joystick = joystick.clone();
+    let focus_machine = machine.clone();
+    let focus_alive = alive.clone();
+    attach_focus_release(None, listeners, move || {
+        if focus_alive.load(Ordering::Relaxed) {
+            if let Some(id) = focus_active.take() {
+                let _ = focus_joystick.release_pointer_capture(id);
+            }
+            set_mobile_joystick_vector(&focus_joystick, 0.0, 0.0);
+            focus_state
+                .borrow_mut()
+                .set_joystick_keys(&focus_machine, &[]);
+        }
+    });
 
     let joystick_el = joystick.clone();
     let machine_pd = machine.clone();
@@ -3692,7 +3900,11 @@ fn attach_mobile_joystick(
     }) as Box<dyn FnMut(PointerEvent)>);
     let _ = joystick
         .add_event_listener_with_callback("pointerdown", on_pointer_down.as_ref().unchecked_ref());
-    on_pointer_down.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        joystick.as_ref(),
+        "pointerdown",
+        on_pointer_down,
+    ));
 
     let joystick_el = joystick.clone();
     let machine_pm = machine.clone();
@@ -3715,7 +3927,11 @@ fn attach_mobile_joystick(
     }) as Box<dyn FnMut(PointerEvent)>);
     let _ = joystick
         .add_event_listener_with_callback("pointermove", on_pointer_move.as_ref().unchecked_ref());
-    on_pointer_move.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        joystick.as_ref(),
+        "pointermove",
+        on_pointer_move,
+    ));
 
     let joystick_el = joystick.clone();
     let machine_pu = machine.clone();
@@ -3735,7 +3951,11 @@ fn attach_mobile_joystick(
     }) as Box<dyn FnMut(PointerEvent)>);
     let _ = joystick
         .add_event_listener_with_callback("pointerup", on_pointer_up.as_ref().unchecked_ref());
-    on_pointer_up.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        joystick.as_ref(),
+        "pointerup",
+        on_pointer_up,
+    ));
 
     let joystick_el = joystick.clone();
     let machine_pc = machine;
@@ -3757,7 +3977,7 @@ fn attach_mobile_joystick(
         "pointercancel",
         on_pointer_cancel.as_ref().unchecked_ref(),
     );
-    on_pointer_cancel.forget();
+    retain_pointer_cancel(listeners, joystick.as_ref(), on_pointer_cancel);
 }
 
 fn attach_mobile_buttons(
@@ -3765,9 +3985,20 @@ fn attach_mobile_buttons(
     machine: RuntimeHandle,
     alive: Arc<AtomicBool>,
     state: Rc<RefCell<MobileInputState>>,
+    listeners: &InputListeners,
 ) {
     let active_buttons: Rc<RefCell<Vec<(i32, &'static str, HtmlElement)>>> =
         Rc::new(RefCell::new(Vec::new()));
+
+    let focus_active = active_buttons.clone();
+    let focus_state = state.clone();
+    let focus_machine = machine.clone();
+    let focus_alive = alive.clone();
+    attach_focus_release(None, listeners, move || {
+        if focus_alive.load(Ordering::Relaxed) {
+            release_active_mobile_buttons(&focus_active, &focus_state, &focus_machine);
+        }
+    });
 
     let controls_pd = controls.clone();
     let machine_pd = machine.clone();
@@ -3807,7 +4038,11 @@ fn attach_mobile_buttons(
     }) as Box<dyn FnMut(PointerEvent)>);
     let _ = controls
         .add_event_listener_with_callback("pointerdown", on_pointer_down.as_ref().unchecked_ref());
-    on_pointer_down.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        controls.as_ref(),
+        "pointerdown",
+        on_pointer_down,
+    ));
 
     let machine_pu = machine.clone();
     let alive_pu = alive.clone();
@@ -3826,7 +4061,11 @@ fn attach_mobile_buttons(
     }) as Box<dyn FnMut(PointerEvent)>);
     let _ = controls
         .add_event_listener_with_callback("pointerup", on_pointer_up.as_ref().unchecked_ref());
-    on_pointer_up.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        controls.as_ref(),
+        "pointerup",
+        on_pointer_up,
+    ));
 
     let machine_pc = machine;
     let alive_pc = alive;
@@ -3847,7 +4086,7 @@ fn attach_mobile_buttons(
         "pointercancel",
         on_pointer_cancel.as_ref().unchecked_ref(),
     );
-    on_pointer_cancel.forget();
+    retain_pointer_cancel(listeners, controls.as_ref(), on_pointer_cancel);
 }
 
 fn update_mobile_joystick(
@@ -4115,6 +4354,7 @@ fn attach_debug_toggle(
     canvas: &HtmlCanvasElement,
     alive: Arc<AtomicBool>,
     debug_visible: RwSignal<bool>,
+    listeners: &InputListeners,
 ) {
     let on_key_down = Closure::wrap(Box::new(move |ev: KeyboardEvent| {
         if !alive.load(Ordering::Relaxed) || ev.code() != "F3" || ev.repeat() {
@@ -4125,7 +4365,11 @@ fn attach_debug_toggle(
     }) as Box<dyn FnMut(KeyboardEvent)>);
     let _ =
         canvas.add_event_listener_with_callback("keydown", on_key_down.as_ref().unchecked_ref());
-    on_key_down.forget();
+    listeners.borrow_mut().push(InputListener::retain(
+        canvas.as_ref(),
+        "keydown",
+        on_key_down,
+    ));
 }
 
 fn perf_now_ms() -> f64 {
@@ -4244,7 +4488,7 @@ fn touch_release_delay_ms(down_ms: f64) -> f64 {
 
 fn release_pointer_mouse_up_after(
     canvas: HtmlCanvasElement,
-    machine: Rc<RefCell<Machine>>,
+    machine: RuntimeHandle,
     alive: Arc<AtomicBool>,
     active_pointer_id: Rc<Cell<Option<i32>>>,
     last_coords: Rc<Cell<Option<(i16, i16)>>>,
@@ -4263,7 +4507,7 @@ fn release_pointer_mouse_up_after(
             return;
         }
         if let Some((v, h)) = coords {
-            machine.borrow_mut().mouse_up(v, h);
+            machine.mouse_up(v, h);
         }
     };
 
@@ -4283,7 +4527,7 @@ fn release_pointer_mouse_up_after(
 }
 
 fn release_touch_mouse_up_after(
-    machine: Rc<RefCell<Machine>>,
+    machine: RuntimeHandle,
     alive: Arc<AtomicBool>,
     active_touch_id: Rc<Cell<Option<i32>>>,
     last_coords: Rc<Cell<Option<(i16, i16)>>>,
@@ -4301,7 +4545,7 @@ fn release_touch_mouse_up_after(
             return;
         }
         if let Some((v, h)) = coords {
-            machine.borrow_mut().mouse_up(v, h);
+            machine.mouse_up(v, h);
         }
     };
 
