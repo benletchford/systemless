@@ -828,16 +828,8 @@ pub use dispatch_window::PpcLegacyWindowOperation;
 
 pub use dispatch_control::PpcLegacyControlOperation;
 
+pub use dispatch_inputsprocket::PpcInputSprocketCompatibilityOperation;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PpcInputSprocketCompatibilityOperation {
-    DevicesActivateClass,
-    DevicesDeactivateClass,
-    ElementDisposeVirtual,
-    ElementFlush,
-    ElementGetNextEvent,
-    Tickle,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcAppleEventCompatibilityOperation {
@@ -16216,14 +16208,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::QuickTimeCompatibility(operation) => Some(
             dispatch_quicktime_compatibility(operation, cpu, memory, quicktime),
         ),
-        PpcImportDispatcherTarget::InputSprocketCompatibility(operation) => {
-            Some(ppc_dispatch_input_sprocket_compatibility(
-                operation,
-                cpu,
-                memory,
-                input_sprocket,
-                input_sprocket_virtual_elements,
-            ))
+        PpcImportDispatcherTarget::InputSprocketCompatibility(_) => {
+            unreachable!("input sprocket compatibility imports return through dispatch_inputsprocket_import")
         }
         PpcImportDispatcherTarget::MathCompatibility(operation) => {
             Some(ppc_dispatch_math_compatibility(operation, cpu, memory))
@@ -16339,51 +16325,6 @@ fn ppc_dispatch_slot_compatibility(
         let _ = memory.write_u32_be(cpu.gpr[3], 0);
     }
     PpcImportAction::Return(ppc_i16_result(PPC_SM_NO_MORE_SRSRCS_ERR))
-}
-
-
-fn ppc_dispatch_input_sprocket_compatibility(
-    operation: PpcInputSprocketCompatibilityOperation,
-    cpu: &mut PpcCpu,
-    memory: &mut PpcSectionMem,
-    input_sprocket: &mut PpcInputSprocketState,
-    virtual_elements: &mut Vec<PpcInputSprocketVirtualElementRecord>,
-) -> PpcImportAction {
-    match operation {
-        PpcInputSprocketCompatibilityOperation::DevicesActivateClass => {
-            input_sprocket.keyboard_active = true;
-            input_sprocket.mouse_active = true;
-            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
-        }
-        // InputSprocket.h: ISpDevices_DeactivateClass(ISpDeviceClass) stops
-        // every device of that class, such as kISpDeviceClass_Mouse, so the
-        // game reads it through the Event Manager instead. Classes with no
-        // emulated device have nothing to deactivate.
-        PpcInputSprocketCompatibilityOperation::DevicesDeactivateClass => {
-            match cpu.gpr[3] {
-                PPC_ISP_DEVICE_CLASS_KEYBOARD => input_sprocket.keyboard_active = false,
-                PPC_ISP_DEVICE_CLASS_MOUSE => input_sprocket.mouse_active = false,
-                _ => {}
-            }
-            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
-        }
-        PpcInputSprocketCompatibilityOperation::ElementDisposeVirtual => {
-            virtual_elements.retain(|element| element.element != cpu.gpr[3]);
-            input_sprocket.virtual_element_count =
-                u32::try_from(virtual_elements.len()).unwrap_or(u32::MAX);
-            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
-        }
-        PpcInputSprocketCompatibilityOperation::ElementGetNextEvent => {
-            if cpu.gpr[4] != 0 {
-                let _ = memory.write_u32_be(cpu.gpr[4], 0);
-            }
-            PpcImportAction::Return(0)
-        }
-        PpcInputSprocketCompatibilityOperation::ElementFlush
-        | PpcInputSprocketCompatibilityOperation::Tickle => {
-            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
-        }
-    }
 }
 
 mod math_compatibility;
