@@ -24,7 +24,8 @@ compatibility:
       and Play entered the first Jurassic level with Pete, enemies, and the full status
       panel visible. Enemies moved and the lives counter changed during the run.
       Deliberate character movement, native-Mac comparison, and browser launch have not yet
-      been verified.
+      been verified. The promoted archive and screenshot were fetched back and
+      matched their recorded SHA-256 hashes.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/3087
 artifacts:
