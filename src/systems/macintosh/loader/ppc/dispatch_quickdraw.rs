@@ -1,4 +1,5 @@
 use super::*;
+use crate::trap::{pict, TrapDispatcher};
 
 pub(super) struct PpcQuickDrawDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
@@ -121,9 +122,7 @@ pub(super) fn dispatch_quickdraw_import(
                     PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET,
                     color,
                 );
-                if let Some(commands) =
-                    ppc_open_picture_commands(toolbox_startup, current_gworld)
-                {
+                if let Some(commands) = ppc_open_picture_commands(toolbox_startup, current_gworld) {
                     pict::recording_push_word(commands, 0x001A);
                     for component in [color.red, color.green, color.blue] {
                         pict::recording_push_word(commands, component);
@@ -177,12 +176,7 @@ pub(super) fn dispatch_quickdraw_import(
                 // and 4-64: HiliteColor updates the current CGrafPort's
                 // GrafVars.rgbHiliteColor. Static ports without a valid
                 // handle use the process-owned per-port fallback.
-                ppc_write_port_hilite_color(
-                    memory,
-                    current_gworld,
-                    color,
-                    quickdraw_hilite_colors,
-                );
+                ppc_write_port_hilite_color(memory, current_gworld, color, quickdraw_hilite_colors);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -285,9 +279,7 @@ pub(super) fn dispatch_quickdraw_import(
         }
         PpcImportDispatcherTarget::Color2Index => {
             let pixel = ppc_read_rgb_color(memory, cpu.gpr[3])
-                .map(|color| {
-                    ppc_color_to_index(memory, current_gdevice, color_manager_clut, color)
-                })
+                .map(|color| ppc_color_to_index(memory, current_gdevice, color_manager_clut, color))
                 .unwrap_or(0);
             Some(PpcImportAction::Return(pixel))
         }
@@ -889,5 +881,932 @@ pub(super) fn dispatch_quickdraw_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcQuickDrawCompatibilityOperation {
+    AnimateEntry,
+    AnimatePalette,
+    BackPat,
+    BackPixPat,
+    ClosePicture,
+    CopyDeepMask,
+    CopyMask,
+    CopyPalette,
+    Ctab2Palette,
+    DisposeGDevice,
+    DisposePalette,
+    Exp1To3,
+    Exp1To6,
+    GetCPixel,
+    GetEntryUsage,
+    GetItemIcon,
+    GetItemStyle,
+    GetNewPalette,
+    NewGDevice,
+    NewPalette,
+    OpenPicture,
+    Palette2Ctab,
+    PenPat,
+    PlotIcon,
+    ScrollRect,
+    SetCPixel,
+    SetEntryColor,
+    SetEntryUsage,
+    SetItemIcon,
+    SetItemStyle,
+    SetStdCProcs,
+    SetStdProcs,
+}
+
+pub(super) fn ppc_quickdraw_background_pattern(
+    memory: &mut PpcSectionMem,
+    current_gworld: u32,
+    fallback: [u8; 8],
+) -> [u8; 8] {
+    // A color port's bkPixPat field is at the same offset as documented by
+    // Color QuickDraw. Its pat1Data member remains the required monochrome
+    // fallback for one-bit patterns and for destinations without a usable
+    // pixel map (Inside Macintosh: Imaging With QuickDraw, pp. 4-80--4-82).
+    let Some(pattern_handle) = memory
+        .read_u32_be(current_gworld.wrapping_add(32))
+        .filter(|handle| *handle != 0)
+    else {
+        return fallback;
+    };
+    let Some(pattern_ptr) = memory.read_u32_be(pattern_handle).filter(|ptr| *ptr != 0) else {
+        return fallback;
+    };
+    let mut pattern = [0u8; 8];
+    memory
+        .read_bytes_into(pattern_ptr.wrapping_add(20), &mut pattern)
+        .is_some()
+        .then_some(pattern)
+        .unwrap_or(fallback)
+}
+
+pub(super) fn ppc_quickdraw_surface_background_pixel(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    local_point: (i32, i32),
+    fore_color: PpcRgbColor,
+    back_color: PpcRgbColor,
+    explicit_back_index: Option<u8>,
+    pattern: [u8; 8],
+) -> Option<u16> {
+    let (x, y) = local_point;
+    let global_x = i32::from(surface.left).checked_add(x)?;
+    let global_y = i32::from(surface.top).checked_add(y)?;
+    let row = pattern[global_y.rem_euclid(8) as usize];
+    let is_foreground = row & (0x80 >> (global_x.rem_euclid(8) as u8)) != 0;
+    if is_foreground {
+        ppc_quickdraw_surface_fore_pixel(memory, surface, fore_color, None)
+    } else {
+        ppc_quickdraw_surface_fore_pixel(memory, surface, back_color, explicit_back_index)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_dispatch_quickdraw_compatibility(
+    operation: PpcQuickDrawCompatibilityOperation,
+    cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    current_gdevice: u32,
+    screen_clut: &mut [[u16; 3]; 256],
+    color_manager_clut: &mut [[u16; 3]; 256],
+    fore_color: PpcRgbColor,
+    fore_index: Option<u8>,
+    back_color: PpcRgbColor,
+    toolbox_startup: &mut PpcToolboxStartupState,
+) -> PpcImportAction {
+    match operation {
+        PpcQuickDrawCompatibilityOperation::SetCPixel => {
+            let color = ppc_read_rgb_color(memory, cpu.gpr[5]);
+            let surface = ppc_live_quickdraw_surface(memory, gworlds, current_gworld);
+            if let (Some(color), Some(surface)) = (color, surface) {
+                let point = surface.local_point((
+                    cpu.gpr[3] as u16 as i16 as i32,
+                    cpu.gpr[4] as u16 as i16 as i32,
+                ));
+                if let Some(pixel) = ppc_quickdraw_surface_color_pixel(memory, surface, color) {
+                    let _ =
+                        ppc_quickdraw_write_raw_pixel(memory, surface.front_buffer, point, pixel);
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::GetCPixel => {
+            let color = ppc_live_quickdraw_surface(memory, gworlds, current_gworld)
+                .and_then(|surface| {
+                    let front = surface.front_buffer;
+                    ppc_quickdraw_read_pixel(
+                        memory,
+                        front,
+                        surface.local_point((
+                            cpu.gpr[3] as u16 as i16 as i32,
+                            cpu.gpr[4] as u16 as i16 as i32,
+                        )),
+                    )
+                    .map(|pixel| match front.depth {
+                        depth @ (1 | 2 | 4 | 8) => {
+                            let fallback = TrapDispatcher::standard_mac_indexed_clut(depth as u16)
+                                .map(|(clut, _)| clut)
+                                .unwrap_or_else(TrapDispatcher::standard_mac_8bpp_clut);
+                            let clut = surface
+                                .ctable_handle
+                                .and_then(|handle| ppc_read_ctable_clut(memory, handle, &fallback))
+                                .unwrap_or(fallback);
+                            let [red, green, blue] = clut[usize::from(pixel as u8)];
+                            PpcRgbColor { red, green, blue }
+                        }
+                        16 => {
+                            let [red, green, blue] = ppc_rgb555_to_rgb16(pixel);
+                            PpcRgbColor { red, green, blue }
+                        }
+                        _ => PPC_RGB_BLACK,
+                    })
+                })
+                .unwrap_or(PPC_RGB_BLACK);
+            let _ = ppc_write_rgb_color(memory, cpu.gpr[5], color);
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::GetItemIcon => {
+            // GetItemIcon reads the one-byte icon number stored after the
+            // item's Pascal text. Macintosh Toolbox Essentials (1992),
+            // pp. 3-132--3-133.
+            let icon =
+                ppc_menu_item_attribute_address(memory, cpu.gpr[3], cpu.gpr[4] as u16 as i16, 0)
+                    .and_then(|address| memory.read_u8(address))
+                    .unwrap_or(0);
+            let _ = memory.write_u8(cpu.gpr[5], icon);
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::SetItemIcon => {
+            // SetItemIcon stores only the icon-number byte; the standard
+            // MDEF resolves resource ID icon+256 when it draws the item.
+            // Macintosh Toolbox Essentials (1992), pp. 3-137--3-138.
+            ppc_mutate_menu_items_in_place(memory, handles, cpu.gpr[3], |items| {
+                items.set_icon(cpu.gpr[4] as u16 as i16, cpu.gpr[5] as u8)
+            });
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::GetItemStyle => {
+            // GetItemStyle returns the item's QuickDraw Style byte.
+            // Macintosh Toolbox Essentials (1992), pp. 3-132--3-133.
+            let style =
+                ppc_menu_item_attribute_address(memory, cpu.gpr[3], cpu.gpr[4] as u16 as i16, 3)
+                    .and_then(|address| memory.read_u8(address))
+                    .unwrap_or(0);
+            let _ = memory.write_u8(cpu.gpr[5], style);
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::SetItemStyle => {
+            // SetItemStyle replaces the one-byte QuickDraw face bitset used
+            // by the standard MDEF. Macintosh Toolbox Essentials (1992),
+            // pp. 3-133--3-134.
+            ppc_mutate_menu_items_in_place(memory, handles, cpu.gpr[3], |items| {
+                items.set_style(cpu.gpr[4] as u16 as i16, cpu.gpr[5] as u8)
+            });
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::OpenPicture => {
+            let rect = ppc_read_rect(memory, cpu.gpr[3]).unwrap_or((0, 0, 1, 1));
+            let mut bytes = Vec::from(minimal_pict_bytes());
+            bytes[2..4].copy_from_slice(&rect.0.to_be_bytes());
+            bytes[4..6].copy_from_slice(&rect.1.to_be_bytes());
+            bytes[6..8].copy_from_slice(&rect.2.to_be_bytes());
+            bytes[8..10].copy_from_slice(&rect.3.to_be_bytes());
+            let handle = ppc_process_alloc_handle_with_bytes(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                &bytes,
+            );
+            *last_mem_error = if handle == 0 {
+                PPC_MEM_FULL_ERR
+            } else {
+                toolbox_startup.open_picture = Some((handle, current_gworld, rect, Vec::new()));
+                PPC_NO_ERR
+            };
+            PpcImportAction::Return(handle)
+        }
+        PpcQuickDrawCompatibilityOperation::ClosePicture => {
+            if let Some((handle, _, frame, commands)) = toolbox_startup.open_picture.take() {
+                let picture = pict::finish_recording(frame, commands);
+                let size = u32::try_from(picture.len()).unwrap_or(u32::MAX);
+                let result = process_memory_manager.set_native_handle_size(memory, handle, size);
+                ppc_apply_process_native_resource_handle(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    handles,
+                    handle,
+                );
+                if result == PPC_NO_ERR {
+                    if let Some(ptr) = memory.read_u32_be(handle) {
+                        *last_mem_error = if memory.write_bytes(ptr, &picture).is_some() {
+                            PPC_NO_ERR
+                        } else {
+                            PPC_PARAM_ERR
+                        };
+                    }
+                } else {
+                    *last_mem_error = result;
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::PlotIcon => {
+            let rect = ppc_read_rect(memory, cpu.gpr[3]);
+            let icon = ppc_handle_bytes(memory, handles, cpu.gpr[4]);
+            let surface = ppc_live_quickdraw_surface(memory, gworlds, current_gworld);
+            if let (Some(rect), Some(icon), Some(surface)) = (rect, icon, surface) {
+                let front = surface.front_buffer;
+                let rect = surface.local_rect(rect);
+                let width = (rect.3 - rect.1).max(0);
+                let height = (rect.2 - rect.0).max(0);
+                let fore_pixel =
+                    ppc_quickdraw_surface_fore_pixel(memory, surface, fore_color, fore_index);
+                if let (true, Some(fore_pixel)) =
+                    (icon.len() >= 128 && width > 0 && height > 0, fore_pixel)
+                {
+                    for y in 0..height {
+                        for x in 0..width {
+                            let sx = (x * 32 / width).clamp(0, 31) as usize;
+                            let sy = (y * 32 / height).clamp(0, 31) as usize;
+                            let bit = icon[sy * 4 + sx / 8] & (0x80 >> (sx & 7)) != 0;
+                            if bit {
+                                let _ = ppc_quickdraw_write_raw_pixel(
+                                    memory,
+                                    front,
+                                    (rect.1 + x, rect.0 + y),
+                                    fore_pixel,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::CopyPalette => {
+            let src_palette = cpu.gpr[3];
+            let dst_palette = cpu.gpr[4];
+            let src_entry = cpu.gpr[5] as u16 as i16;
+            let dst_entry = cpu.gpr[6] as u16 as i16;
+            let dst_length = cpu.gpr[7] as u16 as i16;
+            if src_palette == 0
+                || dst_palette == 0
+                || src_entry < 0
+                || dst_entry < 0
+                || dst_length <= 0
+            {
+                return PpcImportAction::ReturnPreserve;
+            }
+
+            let Some(src_ptr) = memory.read_u32_be(src_palette).filter(|ptr| *ptr != 0) else {
+                return PpcImportAction::ReturnPreserve;
+            };
+            let src_count = u32::from(memory.read_u16_be(src_ptr).unwrap_or(0));
+            let src_entry = u32::from(src_entry as u16);
+            let dst_entry = u32::from(dst_entry as u16);
+            let dst_length = u32::from(dst_length as u16);
+            let mut entries = Vec::new();
+            for offset in 0..dst_length {
+                let source = src_entry.saturating_add(offset);
+                if source >= src_count {
+                    break;
+                }
+                let Some(info) = ppc_memory_read_bytes(memory, src_ptr + 16 + source * 16, 10)
+                else {
+                    break;
+                };
+                entries.push(info);
+            }
+
+            let required_entries = dst_entry.saturating_add(dst_length);
+            let Some(mut dst_ptr) = memory.read_u32_be(dst_palette).filter(|ptr| *ptr != 0) else {
+                return PpcImportAction::ReturnPreserve;
+            };
+            let dst_count = u32::from(memory.read_u16_be(dst_ptr).unwrap_or(0));
+            if required_entries > dst_count && required_entries <= i16::MAX as u32 {
+                let size = 16u32.saturating_add(required_entries.saturating_mul(16));
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                let result = allocator.resize_handle(
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    handles,
+                    dst_palette,
+                    size,
+                );
+                *last_mem_error = result;
+                if result != PPC_NO_ERR {
+                    return PpcImportAction::ReturnPreserve;
+                }
+                let Some(resized_ptr) = memory.read_u32_be(dst_palette).filter(|ptr| *ptr != 0)
+                else {
+                    return PpcImportAction::ReturnPreserve;
+                };
+                dst_ptr = resized_ptr;
+                let _ = memory.write_u16_be(dst_ptr, required_entries as u16);
+            }
+
+            let dst_count = u32::from(memory.read_u16_be(dst_ptr).unwrap_or(0));
+            for (offset, info) in entries.into_iter().enumerate() {
+                let destination = dst_entry.saturating_add(offset as u32);
+                if destination >= dst_count {
+                    break;
+                }
+                let _ = memory.write_bytes(dst_ptr + 16 + destination * 16, &info);
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::NewPalette => {
+            let entry_count = u32::from(cpu.gpr[3] as u16);
+            let byte_count = 16u32.saturating_add(entry_count.saturating_mul(16));
+            let handle = ppc_process_alloc_handle(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                byte_count,
+                true,
+            );
+            *last_mem_error = if handle == 0 {
+                PPC_MEM_FULL_ERR
+            } else {
+                PPC_NO_ERR
+            };
+            if let Some(palette_ptr) = (handle != 0)
+                .then(|| memory.read_u32_be(handle))
+                .flatten()
+                .filter(|ptr| *ptr != 0)
+            {
+                let _ = memory.write_u16_be(palette_ptr, entry_count as u16);
+                let src_ctab = memory.read_u32_be(cpu.gpr[4]).filter(|ptr| *ptr != 0);
+                let src_entries = src_ctab
+                    .and_then(|ptr| memory.read_u16_be(ptr + 6))
+                    .map_or(0, |last| u32::from(last) + 1);
+                for entry in 0..entry_count {
+                    let info_ptr = palette_ptr + 16 + entry * 16;
+                    if let Some(ctab_ptr) = src_ctab.filter(|_| entry < src_entries) {
+                        let spec_ptr = ctab_ptr + 8 + entry * 8;
+                        for offset in [0, 2, 4] {
+                            if let Some(component) = memory.read_u16_be(spec_ptr + 2 + offset) {
+                                let _ = memory.write_u16_be(info_ptr + offset, component);
+                            }
+                        }
+                    }
+                    let _ = memory.write_u16_be(info_ptr + 6, cpu.gpr[5] as u16);
+                    let _ = memory.write_u16_be(info_ptr + 8, cpu.gpr[6] as u16);
+                }
+            }
+            PpcImportAction::Return(handle)
+        }
+        PpcQuickDrawCompatibilityOperation::NewGDevice
+        | PpcQuickDrawCompatibilityOperation::DisposeGDevice => {
+            unreachable!("graphics-device imports return through dispatch_graphics_device_import")
+        }
+        PpcQuickDrawCompatibilityOperation::DisposePalette => {
+            // Inside Macintosh Volume VI 1991, p. 20-24: DisposePalette
+            // releases the relocatable Palette record and its master pointer.
+            ppc_release_palette_allocations_and_restore(
+                memory,
+                toolbox_startup,
+                cpu.gpr[3],
+                current_gdevice,
+                screen_clut,
+                color_manager_clut,
+            );
+            if toolbox_startup.application_palette == cpu.gpr[3] {
+                toolbox_startup.application_palette = 0;
+                toolbox_startup.application_palette_updates = 0;
+            }
+            let mut allocator = PpcProcessAllocatorView {
+                memory_manager: process_memory_manager,
+            };
+            let _ = allocator.dispose_handle(
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                cpu.gpr[3],
+            );
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::Palette2Ctab => {
+            let mut allocator = PpcProcessAllocatorView {
+                memory_manager: process_memory_manager,
+            };
+            ppc_palette_to_ctab(
+                Some(&mut allocator),
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                toolbox_startup,
+                cpu.gpr[3],
+                cpu.gpr[4],
+            );
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::Ctab2Palette => {
+            let ctable_handle = cpu.gpr[3];
+            let palette_handle = cpu.gpr[4];
+            let usage = cpu.gpr[5] as u16;
+            let tolerance = cpu.gpr[6] as u16;
+            let Some(ctable_ptr) = memory.read_u32_be(ctable_handle).filter(|ptr| *ptr != 0) else {
+                return PpcImportAction::ReturnPreserve;
+            };
+            if palette_handle == 0 || memory.read_u32_be(palette_handle).unwrap_or(0) == 0 {
+                return PpcImportAction::ReturnPreserve;
+            }
+            // Inside Macintosh Volume VI (1991), p. 20-24: replacing a
+            // palette from a color table first relinquishes every animated
+            // device index allocated to that palette.
+            ppc_release_palette_allocations_and_restore(
+                memory,
+                toolbox_startup,
+                palette_handle,
+                current_gdevice,
+                screen_clut,
+                color_manager_clut,
+            );
+            let entry_count = memory
+                .read_u16_be(ctable_ptr + 6)
+                .map_or(0, |last| u32::from(last) + 1)
+                .min(256);
+            let size = 16u32.saturating_add(entry_count.saturating_mul(16));
+            let mut allocator = PpcProcessAllocatorView {
+                memory_manager: process_memory_manager,
+            };
+            let result = allocator.resize_handle(
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                palette_handle,
+                size,
+            );
+            *last_mem_error = result;
+            if result != PPC_NO_ERR {
+                return PpcImportAction::ReturnPreserve;
+            }
+            let Some(palette_ptr) = memory.read_u32_be(palette_handle).filter(|ptr| *ptr != 0)
+            else {
+                return PpcImportAction::ReturnPreserve;
+            };
+            let _ = memory.write_u16_be(palette_ptr, entry_count as u16);
+            for entry in 0..entry_count {
+                let spec_ptr = ctable_ptr + 8 + entry * 8;
+                let info_ptr = palette_ptr + 16 + entry * 16;
+                for offset in [0, 2, 4] {
+                    if let Some(component) = memory.read_u16_be(spec_ptr + 2 + offset) {
+                        let _ = memory.write_u16_be(info_ptr + offset, component);
+                    }
+                }
+                let _ = memory.write_u16_be(info_ptr + 6, usage);
+                let _ = memory.write_u16_be(info_ptr + 8, tolerance);
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::GetNewPalette => {
+            let mut allocator = PpcProcessAllocatorView {
+                memory_manager: process_memory_manager,
+            };
+            let palette = ppc_copy_palette_resource(
+                Some(&mut allocator),
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                vfs_resources,
+                current_resource_refnum,
+                cpu.gpr[3] as u16 as i16,
+            );
+            if palette != 0 && current_gworld != 0 {
+                let _ = memory.write_u32_be(
+                    current_gworld + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
+                    palette,
+                );
+                let _ =
+                    memory.write_u16_be(current_gworld + PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET, 1);
+            }
+            PpcImportAction::Return(palette)
+        }
+        PpcQuickDrawCompatibilityOperation::ScrollRect => {
+            let rect = ppc_read_rect(memory, cpu.gpr[3]);
+            let surface = ppc_live_quickdraw_surface(memory, gworlds, current_gworld);
+            if let (Some(port_rect), Some(surface)) = (rect, surface) {
+                let front = surface.front_buffer;
+                if !matches!(front.depth, 1 | 2 | 4 | 8 | 16) {
+                    return PpcImportAction::ReturnPreserve;
+                }
+                let requested_rect = surface.local_rect(port_rect);
+                // ScrollRect operates on the intersection of the requested
+                // rectangle and the live PixMap. Keep both the source
+                // snapshot and every destination write inside that
+                // intersection; otherwise a positive delta can overwrite
+                // pixels outside r.
+                let rect = (
+                    requested_rect.0.clamp(0, front.height as i32),
+                    requested_rect.1.clamp(0, front.width as i32),
+                    requested_rect.2.clamp(0, front.height as i32),
+                    requested_rect.3.clamp(0, front.width as i32),
+                );
+                let dh = cpu.gpr[4] as u16 as i16 as i32;
+                let dv = cpu.gpr[5] as u16 as i16 as i32;
+                if rect.0 < rect.2 && rect.1 < rect.3 {
+                    let width = (rect.3 - rect.1) as usize;
+                    let height = (rect.2 - rect.0) as usize;
+                    let background_pattern = ppc_quickdraw_background_pattern(
+                        memory,
+                        current_gworld,
+                        toolbox_startup.quickdraw_back_pattern,
+                    );
+                    let mut pixels = vec![0; width * height];
+                    for y in rect.0..rect.2 {
+                        for x in rect.1..rect.3 {
+                            if let Some(pixel) = ppc_quickdraw_read_pixel(memory, front, (x, y)) {
+                                pixels[((y - rect.0) as usize) * width + (x - rect.1) as usize] =
+                                    pixel;
+                            }
+                        }
+                    }
+                    // Read all pixels before writing any destination pixel so
+                    // overlapping scrolls use the original raster. Exposed
+                    // cells retain the port's background color/pattern pixel.
+                    for y in rect.0..rect.2 {
+                        for x in rect.1..rect.3 {
+                            let src_x = x - dh;
+                            let src_y = y - dv;
+                            let pixel = if src_x >= rect.1
+                                && src_x < rect.3
+                                && src_y >= rect.0
+                                && src_y < rect.2
+                            {
+                                pixels[((src_y - rect.0) as usize) * width
+                                    + (src_x - rect.1) as usize]
+                            } else {
+                                ppc_quickdraw_surface_background_pixel(
+                                    memory,
+                                    surface,
+                                    (x, y),
+                                    fore_color,
+                                    back_color,
+                                    toolbox_startup
+                                        .quickdraw_back_indices
+                                        .get(&current_gworld)
+                                        .copied(),
+                                    background_pattern,
+                                )
+                                .unwrap_or(0)
+                            };
+                            let _ = ppc_quickdraw_write_raw_pixel(memory, front, (x, y), pixel);
+                        }
+                    }
+                }
+                if cpu.gpr[6] != 0 {
+                    let top = ppc_i32_to_i16_saturating(i32::from(surface.top) + rect.0);
+                    let left = ppc_i32_to_i16_saturating(i32::from(surface.left) + rect.1);
+                    let bottom = ppc_i32_to_i16_saturating(i32::from(surface.top) + rect.2);
+                    let right = ppc_i32_to_i16_saturating(i32::from(surface.left) + rect.3);
+                    let width = i32::from(right) - i32::from(left);
+                    let height = i32::from(bottom) - i32::from(top);
+                    let horizontal_exposed = dh.unsigned_abs().min(width.max(0) as u32) as i32;
+                    let vertical_exposed = dv.unsigned_abs().min(height.max(0) as u32) as i32;
+                    let mut rows = vec![Vec::new(); height.max(0) as usize];
+                    for row in 0..height.max(0) {
+                        let full_row = (dv > 0 && row < vertical_exposed)
+                            || (dv < 0 && row >= height - vertical_exposed);
+                        rows[row as usize] = if full_row {
+                            vec![left, right]
+                        } else if horizontal_exposed > 0 && dh > 0 {
+                            vec![
+                                left,
+                                ppc_i32_to_i16_saturating(i32::from(left) + horizontal_exposed),
+                            ]
+                        } else if horizontal_exposed > 0 && dh < 0 {
+                            vec![
+                                ppc_i32_to_i16_saturating(i32::from(right) - horizontal_exposed),
+                                right,
+                            ]
+                        } else {
+                            Vec::new()
+                        };
+                    }
+                    let storage = ppc_region_storage_from_rows(top, &rows)
+                        .unwrap_or_else(|| vec![0, 10, 0, 0, 0, 0, 0, 0, 0, 0]);
+                    let mut allocator = PpcProcessAllocatorView {
+                        memory_manager: process_memory_manager,
+                    };
+                    let _ = ppc_write_region_storage(
+                        Some(&mut allocator),
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        cpu.gpr[6],
+                        &storage,
+                    );
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::CopyMask
+        | PpcQuickDrawCompatibilityOperation::CopyDeepMask => {
+            unreachable!("bit-transfer imports return through dispatch_bit_transfer_import")
+        }
+        PpcQuickDrawCompatibilityOperation::SetEntryColor => {
+            // PaletteHandle, entry index, and RGBColor pointer. Inside Macintosh
+            // Volume VI 1991, p. 20-25.
+            let palette_handle = cpu.gpr[3];
+            let entry = cpu.gpr[4] as u16 as i16;
+            let rgb_ptr = cpu.gpr[5];
+            if entry >= 0 {
+                if let Some(palette_ptr) = memory
+                    .read_u32_be(palette_handle)
+                    .filter(|palette_ptr| *palette_ptr != 0)
+                {
+                    let entry = entry as u32;
+                    if memory
+                        .read_u16_be(palette_ptr)
+                        .is_some_and(|count| entry < u32::from(count))
+                    {
+                        let info_ptr = palette_ptr + 16 + entry * 16;
+                        if let (Some(red), Some(green), Some(blue)) = (
+                            memory.read_u16_be(rgb_ptr),
+                            memory.read_u16_be(rgb_ptr + 2),
+                            memory.read_u16_be(rgb_ptr + 4),
+                        ) {
+                            let _ = memory.write_u16_be(info_ptr, red);
+                            let _ = memory.write_u16_be(info_ptr + 2, green);
+                            let _ = memory.write_u16_be(info_ptr + 4, blue);
+                        }
+                    }
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::GetEntryUsage => {
+            let palette_handle = cpu.gpr[3];
+            let entry = cpu.gpr[4] as u16 as i16;
+            if entry >= 0 {
+                if let Some(palette_ptr) = memory
+                    .read_u32_be(palette_handle)
+                    .filter(|palette_ptr| *palette_ptr != 0)
+                {
+                    let entry = entry as u32;
+                    if memory
+                        .read_u16_be(palette_ptr)
+                        .is_some_and(|count| entry < u32::from(count))
+                    {
+                        let info_ptr = palette_ptr + 16 + entry * 16;
+                        if let Some(usage) = memory.read_u16_be(info_ptr + 6) {
+                            let _ = memory.write_u16_be(cpu.gpr[5], usage);
+                        }
+                        if let Some(tolerance) = memory.read_u16_be(info_ptr + 8) {
+                            let _ = memory.write_u16_be(cpu.gpr[6], tolerance);
+                        }
+                    }
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::SetEntryUsage => {
+            // Inside Macintosh Volume VI 1991, pp. 20-24--20-25.
+            let palette_handle = cpu.gpr[3];
+            let entry = cpu.gpr[4] as u16 as i16;
+            if entry >= 0 {
+                if let Some(palette_ptr) = memory
+                    .read_u32_be(palette_handle)
+                    .filter(|palette_ptr| *palette_ptr != 0)
+                {
+                    let entry = entry as u32;
+                    if memory
+                        .read_u16_be(palette_ptr)
+                        .is_some_and(|count| entry < u32::from(count))
+                    {
+                        let info_ptr = palette_ptr + 16 + entry * 16;
+                        // Inside Macintosh Volume VI (1991), p. 20-25:
+                        // $FFFF independently preserves the corresponding
+                        // usage or tolerance field.
+                        if cpu.gpr[5] as u16 != u16::MAX {
+                            let _ = memory.write_u16_be(info_ptr + 6, cpu.gpr[5] as u16);
+                        }
+                        if cpu.gpr[6] as u16 != u16::MAX {
+                            let _ = memory.write_u16_be(info_ptr + 8, cpu.gpr[6] as u16);
+                        }
+                    }
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::AnimateEntry => {
+            let window = cpu.gpr[3];
+            let entry = usize::from(cpu.gpr[4] as u16);
+            let assigned_palette = memory
+                .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
+                .unwrap_or(0);
+            let palette = if assigned_palette != 0 {
+                assigned_palette
+            } else {
+                toolbox_startup.application_palette
+            };
+            let palette_ptr = memory.read_u32_be(palette).unwrap_or(0);
+            let info = palette_ptr.wrapping_add(16 + entry as u32 * 16);
+            let usage = memory.read_u16_be(info + 6).unwrap_or(0);
+            if usage & 0x0004 != 0 {
+                let allocations = toolbox_startup
+                    .palette_allocations
+                    .iter()
+                    .filter(|allocation| allocation.palette == palette)
+                    .filter_map(|allocation| {
+                        allocation
+                            .entry_mappings
+                            .get(entry)
+                            .copied()
+                            .and_then(PpcPaletteEntryMapping::animated_index)
+                            .map(|index| (allocation.gdevice, index))
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(color) =
+                    ppc_read_rgb_color(memory, cpu.gpr[5]).filter(|_| !allocations.is_empty())
+                {
+                    let _ = ppc_write_rgb_color(memory, info, color);
+                    for (gdevice, index) in allocations {
+                        let slot = usize::from(index);
+                        if gdevice == current_gdevice {
+                            screen_clut[slot] = [color.red, color.green, color.blue];
+                            color_manager_clut[slot] = [color.red, color.green, color.blue];
+                        }
+                        if let Some(table) = ppc_gdevice_ctable_handle(memory, gdevice)
+                            .and_then(|handle| memory.read_u32_be(handle))
+                            .filter(|ptr| *ptr != 0)
+                        {
+                            let _ = ppc_write_rgb_color(
+                                memory,
+                                table + 10 + u32::from(index) * 8,
+                                color,
+                            );
+                        }
+                    }
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::AnimatePalette => {
+            // Inside Macintosh Volume VI (1991), pp. 20-22--20-23:
+            // copy a source ColorTable range into animated destination
+            // palette entries and immediately update their device indexes.
+            let window = cpu.gpr[3];
+            let ctable_handle = cpu.gpr[4];
+            let src_index = u32::from(cpu.gpr[5] as u16);
+            let dst_entry = u32::from(cpu.gpr[6] as u16);
+            let dst_length = u32::from(cpu.gpr[7] as u16);
+            let assigned_palette = memory
+                .read_u32_be(window + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET)
+                .unwrap_or(0);
+            let palette_handle = if assigned_palette != 0 {
+                assigned_palette
+            } else {
+                toolbox_startup.application_palette
+            };
+            let palette_ptr = memory.read_u32_be(palette_handle).unwrap_or(0);
+            let ctable_ptr = memory.read_u32_be(ctable_handle).unwrap_or(0);
+            let palette_count = u32::from(memory.read_u16_be(palette_ptr).unwrap_or(0));
+            let source_count = memory
+                .read_u16_be(ctable_ptr + 6)
+                .map_or(0, |last| u32::from(last) + 1);
+            for offset in 0..dst_length {
+                let source = src_index + offset;
+                let destination = dst_entry + offset;
+                if source >= source_count || destination >= palette_count {
+                    break;
+                }
+                let spec_ptr = ctable_ptr + 8 + source * 8;
+                let info_ptr = palette_ptr + 16 + destination * 16;
+                let usage = memory.read_u16_be(info_ptr + 6).unwrap_or(0);
+                if usage & 0x0004 == 0 {
+                    continue;
+                }
+                let destination = destination as usize;
+                let allocations = toolbox_startup
+                    .palette_allocations
+                    .iter()
+                    .filter(|allocation| allocation.palette == palette_handle)
+                    .filter_map(|allocation| {
+                        allocation
+                            .entry_mappings
+                            .get(destination)
+                            .copied()
+                            .and_then(PpcPaletteEntryMapping::animated_index)
+                            .map(|index| (allocation.gdevice, index))
+                    })
+                    .collect::<Vec<_>>();
+                if allocations.is_empty() {
+                    continue;
+                }
+                let Some(color) = ppc_read_rgb_color(memory, spec_ptr + 2) else {
+                    break;
+                };
+                let _ = ppc_write_rgb_color(memory, info_ptr, color);
+                let rgb = [color.red, color.green, color.blue];
+                // Inside Macintosh Volume VI (1991), pp. 20-22--20-23:
+                // animation changes only the RGB at the reserved device
+                // index. It is not a color-environment change, so preserve
+                // the table seed, ColorSpec.value metadata, and all other
+                // entries.
+                for (gdevice, index) in allocations {
+                    if let Some(device_ctable) = ppc_gdevice_ctable_handle(memory, gdevice)
+                        .and_then(|handle| memory.read_u32_be(handle))
+                        .filter(|ptr| *ptr != 0)
+                    {
+                        let device_spec = device_ctable + 8 + u32::from(index) * 8;
+                        let _ = ppc_write_rgb_color(memory, device_spec + 2, color);
+                    }
+                    if gdevice == current_gdevice {
+                        screen_clut[usize::from(index)] = rgb;
+                        color_manager_clut[usize::from(index)] = rgb;
+                    }
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::PenPat => {
+            let mut pattern = [0; 8];
+            if memory.read_bytes_into(cpu.gpr[3], &mut pattern).is_some() {
+                // Imaging With QuickDraw (1994), pp. 3-38--3-40: PenPat
+                // installs the 8-by-8 bit pattern used by Paint and Frame
+                // shape operations. A set bit selects the foreground color;
+                // a clear bit selects the background color.
+                toolbox_startup.quickdraw_pen_pattern = pattern;
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::BackPat => {
+            let mut pattern = [0u8; 8];
+            if memory.read_bytes_into(cpu.gpr[3], &mut pattern).is_some() {
+                // BackPat changes the legacy pattern used to fill exposed
+                // ScrollRect pixels. A prior PixPat must not continue to
+                // shadow the newly installed Pattern (IM:V V-72).
+                toolbox_startup.quickdraw_back_pattern = pattern;
+                let _ = memory.write_u32_be(
+                    current_gworld.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET),
+                    0,
+                );
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::BackPixPat => {
+            let pattern_handle = cpu.gpr[3];
+            if pattern_handle != 0 {
+                // Keep the handle in the live CGrafPort so subsequent
+                // ScrollRect calls see exactly the PixPat selected by the
+                // application. Its pat1Data shadow is used by the common
+                // monochrome fallback path.
+                let _ = memory.write_u32_be(
+                    current_gworld.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET),
+                    pattern_handle,
+                );
+                if let Some(pattern_ptr) =
+                    memory.read_u32_be(pattern_handle).filter(|ptr| *ptr != 0)
+                {
+                    let mut pattern = [0u8; 8];
+                    if memory
+                        .read_bytes_into(pattern_ptr.wrapping_add(20), &mut pattern)
+                        .is_some()
+                    {
+                        toolbox_startup.quickdraw_back_pattern = pattern;
+                    }
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::SetStdCProcs
+        | PpcQuickDrawCompatibilityOperation::SetStdProcs
+        | PpcQuickDrawCompatibilityOperation::Exp1To3
+        | PpcQuickDrawCompatibilityOperation::Exp1To6 => PpcImportAction::ReturnPreserve,
     }
 }
