@@ -18,7 +18,7 @@ use super::pef::{
 use super::ApplicationSizeResource;
 use crate::callback_manager::CallbackTaskArchitecture;
 use crate::cfm::fragment::{
-    first_base_for_kind, first_data_base, section_bases, CfmFragmentPlan,
+    first_base_for_kind, first_data_base, resolve_fragment_exports, section_bases, CfmFragmentPlan,
     CfmSection as MappedSection,
 };
 use crate::cfm::{CfmLoadId, CfmOperation, CfmResourceCall, CfmResourcePreparation};
@@ -10193,6 +10193,7 @@ pub fn load_pef_application_with_config(
         config,
         None,
         Vec::new(),
+        None,
     )
 }
 
@@ -10207,6 +10208,7 @@ pub(crate) fn load_pef_application_with_config_and_system_reservation(
         config,
         Some(system_reservation),
         Vec::new(),
+        None,
     )
 }
 
@@ -10221,6 +10223,23 @@ pub(crate) fn load_pef_application_with_config_and_system_reservation_and_librar
         config,
         Some(system_reservation),
         library_fragments,
+        None,
+    )
+}
+
+pub(crate) fn load_pef_application_with_named_fragment_and_libraries(
+    data: &[u8],
+    config: PpcLoadConfig,
+    system_reservation: (u32, u32),
+    library_fragments: Vec<PpcCfmLibraryFragment>,
+    fragment_name: &str,
+) -> Result<PpcLoadedApp, PpcLoadError> {
+    load_pef_application_with_config_and_optional_system_reservation(
+        data,
+        config,
+        Some(system_reservation),
+        library_fragments,
+        Some(fragment_name),
     )
 }
 
@@ -10229,6 +10248,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
     config: PpcLoadConfig,
     system_reservation: Option<(u32, u32)>,
     library_fragments: Vec<PpcCfmLibraryFragment>,
+    application_fragment_name: Option<&str>,
 ) -> Result<PpcLoadedApp, PpcLoadError> {
     if !matches!(config.screen_depth, 1 | 2 | 4 | 8 | 16) {
         return Err(PpcLoadError::ScreenDepthOutOfRange {
@@ -10310,6 +10330,12 @@ fn load_pef_application_with_config_and_optional_system_reservation(
             }
         })?;
     }
+    let application_exports = if application_fragment_name.is_some() {
+        resolve_fragment_exports(data, &mapped_sections, import_addrs)
+            .map_err(|_| PpcLoadError::PefParse)?
+    } else {
+        Vec::new()
+    };
     let main_section = mapped_sections
         .iter()
         .find(|section| section.index == usize::try_from(loader.main_section).unwrap_or(usize::MAX))
@@ -10656,21 +10682,28 @@ fn load_pef_application_with_config_and_optional_system_reservation(
             next_cfm_connection_id,
             fragment_addr,
             fragment_size,
-            "application",
+            application_fragment_name.unwrap_or("application"),
         )
         .map_err(|_| PpcLoadError::AddressOverflow)?;
+        application_startup = Some((init_addr, init_entry, init_rtoc, init_block));
+    }
+
+    // Inside Macintosh: PowerPC System Software (1994), p. 3-6: the
+    // application fragment also acts as an import library for other CFM
+    // fragments. Its cfrg name and mapped exports must be visible even when
+    // the application has no initializer.
+    if application_fragment_name.is_some() || init_tvector.is_some() {
         cfm_connections.push(PpcCfmConnection {
             id: next_cfm_connection_id,
-            library_name: "application".to_string(),
+            library_name: application_fragment_name.unwrap_or("application").to_string(),
             main_addr: main_tvector,
-            init_addr,
+            init_addr: init_tvector.map_or(0, |(addr, _, _)| addr),
             term_addr: term_tvector.map_or(0, |(addr, _, _)| addr),
-            exports: Vec::new(),
+            exports: application_exports,
         });
         next_cfm_connection_id = next_cfm_connection_id
             .checked_add(1)
             .ok_or(PpcLoadError::AddressOverflow)?;
-        application_startup = Some((init_addr, init_entry, init_rtoc, init_block));
     }
 
     let startup = if library_initializer_count == 0 {

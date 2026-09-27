@@ -740,6 +740,7 @@ fn initial_application_imports_bind_bundled_library_data_and_tvectors() {
                 name: "BundledLibrary".to_string(),
                 bytes: library,
             }],
+            None,
         )
         .unwrap();
 
@@ -786,6 +787,7 @@ fn initial_bundled_libraries_bind_dependencies_in_deterministic_order() {
             PpcLoadConfig::default(),
             None,
             fragments,
+            None,
         )
         .unwrap();
         let cfm = loaded.cfm.as_ref().unwrap();
@@ -839,6 +841,7 @@ fn bundled_gamesprockets_use_native_system_bindings() {
                 name: library_name.to_string(),
                 bytes: vec![0; 40],
             }],
+            None,
         )
         .expect("native GameSprockets binding");
         assert!(loaded.imports.iter().any(|binding| {
@@ -869,6 +872,7 @@ fn initial_bundled_library_initializer_runs_before_application_main() {
             name: "BundledInitializer".to_string(),
             bytes: library,
         }],
+        None,
     )
     .unwrap();
 
@@ -1420,6 +1424,47 @@ fn memory_fragment_preparation_rejects_without_publication_and_retries() {
             Some(PPC_IMPORT_TVECTOR_BASE)
         );
     }
+}
+
+#[test]
+fn application_cfrg_name_exposes_exports_to_dynamic_fragments() {
+    let mut application = synthetic_pef_with_single_export(
+        b"InitializeCriticalSection",
+        2,
+        0x0100_1234,
+        -2,
+    );
+    write_i32(&mut application, 0x80, 1); // main TVector in data section
+    let mut loaded = load_pef_application_with_config_and_optional_system_reservation(
+        &application,
+        PpcLoadConfig::default(),
+        None,
+        Vec::new(),
+        Some("DiabAll"),
+    )
+    .unwrap();
+    let connections = loaded.cfm.as_ref().unwrap().connections.clone();
+    assert_eq!(connections.len(), 1);
+    assert_eq!(connections[0].library_name, "DiabAll");
+    assert_eq!(connections[0].exports[0].name, "InitializeCriticalSection");
+    assert_eq!(connections[0].exports[0].address, 0x0100_1234);
+
+    let library = synthetic_pef_with_library_import(b"DiabAll", b"InitializeCriticalSection");
+    let mut cursor = loaded.heap_cursor();
+    let limit = loaded.heap_limit();
+    let mut imports = PpcImportRunState::from_parts(Vec::new(), 0, ppc_import_layout());
+    let mut manager = loaded.process_memory_manager.0.borrow_mut();
+    ppc_prepare_mem_fragment(
+        &library,
+        &mut manager,
+        &mut loaded.memory,
+        &mut cursor,
+        limit,
+        &mut imports,
+        &connections,
+    )
+    .unwrap();
+    assert_eq!(imports.binding_cloned(0).unwrap().address, 0x0100_1234);
 }
 
 #[test]
