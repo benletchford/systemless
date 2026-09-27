@@ -72,6 +72,18 @@ A contributor can submit pending assets for review. Production validation is
 required after promotion, before release; it is not a prerequisite for opening
 the contribution PR.
 
+Managed archive uploads set `Content-Disposition` to the catalogue ID and file
+extension (for example, `escape-velocity-nova.sit`). When multiple entries
+reference identical archive bytes, the alphabetically first catalogue ID is
+used because one R2 object can have only one response filename. The manual R2
+audit can update existing archive metadata without changing keys
+or file bytes. Run the default-branch `R2 connection check` workflow with
+`apply: false` to review the inventory and orphan plan, then run it with
+`apply: true` to update filenames and delete orphaned objects under the two
+catalogue-managed prefixes. The reconciliation verifies the current catalogue
+and bucket inventory immediately before deletion and leaves objects younger
+than 24 hours alone.
+
 ## Validate the catalogue
 
 From the repository root, run preview validation while preparing a PR:

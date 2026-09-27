@@ -29,6 +29,17 @@ const URI_ENCODE: &AsciiSet = &NON_ALPHANUMERIC
 fn encode(s: &str) -> String {
     utf8_percent_encode(s, URI_ENCODE).to_string()
 }
+fn disposition(name: &str) -> Result<String> {
+    ensure!(
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+            && !name.starts_with('.'),
+        "invalid download filename"
+    );
+    Ok(format!("attachment; filename=\"{name}\""))
+}
 fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -186,7 +197,7 @@ impl R2Store {
         }
         request.send().context("R2 request failed")
     }
-    fn verify_object(&self, object: &DesiredObject) -> Result<()> {
+    fn verify_object(&self, object: &DesiredObject, verify_name: bool) -> Result<()> {
         let response = self.request(
             Method::HEAD,
             Some(&object.key),
@@ -213,7 +224,101 @@ impl R2Store {
             "R2 immutable object has conflicting size or SHA-256 metadata: {}",
             object.key
         );
+        if let Some(name) = object.download_name.as_ref().filter(|_| verify_name) {
+            ensure!(
+                headers
+                    .get("content-disposition")
+                    .and_then(|v| v.to_str().ok())
+                    == Some(disposition(name)?.as_str()),
+                "R2 archive download name differs: {}",
+                object.key
+            );
+        }
         Ok(())
+    }
+    fn update_disposition(&self, object: &DesiredObject) -> Result<bool> {
+        let Some(name) = &object.download_name else {
+            return Ok(false);
+        };
+        assets::validate_object(object)?;
+        let wanted = disposition(name)?;
+        let head = self.request(
+            Method::HEAD,
+            Some(&object.key),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            None,
+        )?;
+        ensure!(
+            head.status().is_success(),
+            "R2 HEAD returned {} for {}",
+            head.status(),
+            object.key
+        );
+        let headers = head.headers();
+        ensure!(
+            headers
+                .get("content-length")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                == Some(object.size_bytes)
+                && headers
+                    .get("x-amz-meta-sha256")
+                    .and_then(|v| v.to_str().ok())
+                    == Some(object.sha256.as_str()),
+            "R2 archive size or SHA-256 metadata differs: {}",
+            object.key
+        );
+        if headers
+            .get("content-disposition")
+            .and_then(|v| v.to_str().ok())
+            == Some(wanted.as_str())
+        {
+            return Ok(false);
+        }
+        let etag = headers
+            .get("etag")
+            .context("R2 archive lacks ETag")?
+            .to_str()?
+            .to_string();
+        let copy_source = format!(
+            "/{}/{}",
+            self.bucket,
+            object
+                .key
+                .split('/')
+                .map(encode)
+                .collect::<Vec<_>>()
+                .join("/")
+        );
+        let copy_headers = BTreeMap::from([
+            ("x-amz-copy-source".into(), copy_source),
+            ("x-amz-copy-source-if-match".into(), etag),
+            ("x-amz-metadata-directive".into(), "MERGE".into()),
+            ("content-disposition".into(), wanted),
+        ]);
+        let response = self.request(
+            Method::PUT,
+            Some(&object.key),
+            BTreeMap::new(),
+            copy_headers,
+            None,
+        )?;
+        ensure!(
+            response.status().is_success(),
+            "R2 metadata update returned {} for {}",
+            response.status(),
+            object.key
+        );
+        self.verify_object(object, true)?;
+        Ok(true)
+    }
+    pub fn sync_download_names(&self, objects: &[DesiredObject]) -> Result<usize> {
+        let mut changed = 0;
+        for object in objects {
+            changed += usize::from(self.update_disposition(object)?);
+        }
+        Ok(changed)
     }
     pub fn inventory(&self) -> Result<Inventory> {
         let mut objects = Vec::new();
@@ -315,6 +420,10 @@ impl ObjectStore for R2Store {
             ),
             ("x-amz-meta-sha256".into(), object.sha256.clone()),
         ]);
+        let mut headers = headers;
+        if let Some(name) = &object.download_name {
+            headers.insert("content-disposition".into(), disposition(name)?);
+        }
         let response = self.request(
             Method::PUT,
             Some(&object.key),
@@ -328,7 +437,7 @@ impl ObjectStore for R2Store {
             "R2 conditional upload returned {}",
             response.status()
         );
-        self.verify_object(object)
+        self.verify_object(object, false)
     }
 }
 
@@ -541,6 +650,15 @@ pub fn reconcile(root: &Path, reviewed: &Plan, store: &dyn ReconciliationStore) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disposition_uses_only_safe_catalogue_filenames() {
+        assert_eq!(
+            disposition("escape-velocity-nova.sit").unwrap(),
+            "attachment; filename=\"escape-velocity-nova.sit\""
+        );
+        assert!(disposition("../bad.sit").is_err());
+        assert!(disposition("bad\".sit").is_err());
+    }
     #[test]
     fn signing_is_stable_and_binds_conditional_headers() {
         let mut headers = BTreeMap::from([

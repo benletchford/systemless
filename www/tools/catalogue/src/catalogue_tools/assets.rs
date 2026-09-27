@@ -79,6 +79,7 @@ pub struct DesiredObject {
     pub sha256: String,
     pub size_bytes: u64,
     pub content_type: String,
+    pub download_name: Option<String>,
     pub references: Vec<String>,
 }
 
@@ -89,11 +90,14 @@ pub fn desired(c: &Catalogue) -> Result<Vec<DesiredObject>> {
             if let AssetSource::Sha256 { sha256, size_bytes } = &a.source {
                 validate::sha256(sha256)?;
                 let key = object_key(sha256, a.format);
+                let download_name = (a.role == ArtifactRole::Archive)
+                    .then(|| format!("{}.{}", d.entry.id, a.format.ext()));
                 let object = objects.entry(key.clone()).or_insert_with(|| DesiredObject {
                     key,
                     sha256: sha256.clone(),
                     size_bytes: *size_bytes,
                     content_type: a.format.mime().into(),
+                    download_name: download_name.clone(),
                     references: Vec::new(),
                 });
                 ensure!(
@@ -101,6 +105,15 @@ pub fn desired(c: &Catalogue) -> Result<Vec<DesiredObject>> {
                     "conflicting size for {}",
                     object.key
                 );
+                if let Some(name) = download_name {
+                    if object
+                        .download_name
+                        .as_ref()
+                        .is_none_or(|current| name < *current)
+                    {
+                        object.download_name = Some(name);
+                    }
+                }
                 object.references.push(format!("{}:{}", d.entry.id, a.id));
             }
         }
@@ -472,6 +485,8 @@ pub fn promote(
                 sha256: inspection.sha256.clone(),
                 size_bytes: inspection.size_bytes,
                 content_type: a.format.mime().into(),
+                download_name: (a.role == ArtifactRole::Archive)
+                    .then(|| format!("{}.{}", d.entry.id, a.format.ext())),
                 references: vec![format!("{}:{}", d.entry.id, a.id)],
             };
             a.source = AssetSource::Sha256 {
@@ -833,6 +848,8 @@ pub fn fetch(root: &Path, entry_id: Option<&str>, directory: &Path) -> Result<Ve
                 sha256: actual.sha256.clone(),
                 size_bytes: actual.size_bytes,
                 content_type: asset.format.mime().into(),
+                download_name: (asset.role == ArtifactRole::Archive)
+                    .then(|| format!("{}.{}", doc.entry.id, asset.format.ext())),
                 references: vec![format!("{}:{}", doc.entry.id, asset.id)],
             };
             cache.put_if_absent(&object, staged.path())?;
