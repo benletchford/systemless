@@ -35,7 +35,9 @@ compatibility:
       office after the full opening. Clicking the telephone moved Sam toward it. An
       independently obtained StuffIt demo produced the same framebuffer and has byte-identical
       application data, resource, and game data forks. Puzzle completion, PowerPC
-      execution, and browser behavior were not reverified in this run.
+      execution, and browser behavior were not reverified in this run. The
+      promoted archive and screenshot were fetched back and matched their
+      recorded SHA-256 hashes.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3101
 runtime:
