@@ -31,12 +31,11 @@ compatibility:
     systemless_version: "0.65.1"
     architecture: 68k
     environment: >-
-      Deterministic headless replay of the exact listed official ZIP reached
-      the office after the full opening. Clicking the telephone moved Sam
-      toward it. An independently obtained StuffIt demo produced the same
-      framebuffer and has byte-identical application data, resource, and game
-      data forks. Puzzle completion, PowerPC execution, and browser behavior
-      were not reverified in this run.
+      Deterministic headless replay of the exact listed official ZIP reached the
+      office after the full opening. Clicking the telephone moved Sam toward it. An
+      independently obtained StuffIt demo produced the same framebuffer and has byte-identical
+      application data, resource, and game data forks. Puzzle completion, PowerPC
+      execution, and browser behavior were not reverified in this run.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3101
 runtime:
@@ -67,8 +66,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/sam-and-max-hit-the-road/gameplay.png
+    type: sha256
+    sha256: 2554eec2fee03335304422a3a5de52754ea379940f65cdcc19f2c7c4a446d26d
+    size_bytes: 60605
   provenance:
     redistribution: permitted
     original: true
@@ -79,18 +79,17 @@ artifacts:
       Fresh office-scene capture made for this catalogue entry from the unchanged
       promotional demo. Underlying Sam & Max artwork remains its owners' property.
     notes: >-
-      Exact 640-by-400 office-scene crop at (80,100) from a deterministic
-      800-by-600 Systemless framebuffer on 2026-09-28. Surrounding desktop was
-      excluded without changing game pixels. PNG SHA-256
-      2554eec2fee03335304422a3a5de52754ea379940f65cdcc19f2c7c4a446d26d,
-      60,605 bytes.
+      Exact 640-by-400 office-scene crop at (80,100) from a deterministic 800-by-600
+      Systemless framebuffer on 2026-09-28. Surrounding desktop was excluded without
+      changing game pixels. PNG SHA-256
+      2554eec2fee03335304422a3a5de52754ea379940f65cdcc19f2c7c4a446d26d, 60,605 bytes.
 references:
 - https://www.scummvm.org/demos/
 ---
 
 ## Freelance police, reporting for duty
 
-![Sam and Max in their office beside the telephone](incoming/sam-and-max-hit-the-road/gameplay.png)
+![Sam and Max in their office beside the telephone](https://assets.systemless.org/catalogue/media/sha256/25/2554eec2fee03335304422a3a5de52754ea379940f65cdcc19f2c7c4a446d26d.png)
 
 Sam is a six-foot canine detective. Max is a hyperkinetic rabbity thing. When
 the commissioner sends them after a missing carnival attraction, the case turns
