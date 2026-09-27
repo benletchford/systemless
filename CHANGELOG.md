@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.64.1](https://github.com/benletchford/systemless/compare/v0.64.0...v0.64.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* **ci:** package font licenses from current paths ([#2989](https://github.com/benletchford/systemless/issues/2989)) ([3abe1de](https://github.com/benletchford/systemless/commit/3abe1de6a401eb6d013de90e1ee18971eb53c42b))
+* **ci:** package font licenses from Macintosh module ([#2981](https://github.com/benletchford/systemless/issues/2981)) ([78082a7](https://github.com/benletchford/systemless/commit/78082a78b0f4e90ec00fc5324ec92da013a7215f))
+
 ## [0.64.0](https://github.com/benletchford/systemless/compare/v0.63.0...v0.64.0) (2026-09-27)
 
 
