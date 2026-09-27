@@ -22,6 +22,8 @@ compatibility:
       introduction opened, the initial city map loaded, and its calendar advanced from
       January to March after the final message was dismissed. Successful building
       placement, native-Mac comparison, and browser launch have not yet been verified.
+      The promoted archive and screenshot were fetched back and matched their
+      recorded SHA-256 hashes.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3075
 artifacts:
