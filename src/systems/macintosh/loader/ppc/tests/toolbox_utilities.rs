@@ -331,6 +331,61 @@ fn carbon_copy_c_string_to_pascal_handles_overlap_and_str255_limit() {
 }
 
 #[test]
+fn carbon_copy_pascal_string_to_c_handles_overlap_and_str255_limit() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "CopyPascalStringToC"),
+        PpcImportDispatcherTarget::CopyPascalStringToC
+    );
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"CopyPascalStringToC")).unwrap();
+    let base = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(base, vec![0; 800]);
+
+    loaded.memory.write_bytes(base, b"\x05Hello").unwrap();
+    loaded.cpu.gpr[3] = base;
+    loaded.cpu.gpr[4] = base + 16;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CopyPascalStringToC);
+    assert_eq!(
+        (0..6)
+            .map(|i| loaded.memory.read_u8(base + 16 + i))
+            .collect::<Option<Vec<_>>>(),
+        Some(b"Hello\0".to_vec())
+    );
+
+    loaded.memory.write_bytes(base + 64, b"\x05World").unwrap();
+    loaded.cpu.gpr[3] = base + 64;
+    loaded.cpu.gpr[4] = base + 64;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CopyPascalStringToC);
+    assert_eq!(
+        (0..6)
+            .map(|i| loaded.memory.read_u8(base + 64 + i))
+            .collect::<Option<Vec<_>>>(),
+        Some(b"World\0".to_vec())
+    );
+
+    loaded.memory.write_u8(base + 128, 0).unwrap();
+    loaded.memory.write_u8(base + 144, b'Q').unwrap();
+    loaded.cpu.gpr[3] = base + 128;
+    loaded.cpu.gpr[4] = base + 144;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CopyPascalStringToC);
+    assert_eq!(loaded.memory.read_u8(base + 144), Some(0));
+
+    let payload = vec![b'Z'; 255];
+    loaded.memory.write_u8(base + 256, 255).unwrap();
+    loaded.memory.write_bytes(base + 257, &payload).unwrap();
+    loaded.cpu.gpr[3] = base + 256;
+    loaded.cpu.gpr[4] = base + 512;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CopyPascalStringToC);
+    assert_eq!(
+        (0..255)
+            .map(|i| loaded.memory.read_u8(base + 512 + i))
+            .collect::<Option<Vec<_>>>(),
+        Some(payload)
+    );
+    assert_eq!(loaded.memory.read_u8(base + 767), Some(0));
+}
+
+#[test]
 fn hle_import_runner_upper_text_converts_only_the_requested_bytes() {
     let pef = synthetic_pef_with_import(b"UpperText");
     let mut loaded = load_pef_application(&pef).unwrap();
