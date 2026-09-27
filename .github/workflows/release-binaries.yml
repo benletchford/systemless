@@ -145,8 +145,8 @@ jobs:
               subprocess.run([str(extracted / name / binary), "--help"], check=True)
 
           checksum = hashlib.file_digest(archive.open("rb"), "sha256").hexdigest()
-          archive.with_name(archive.name + ".sha256").write_text(
-              f"{checksum}  {archive.name}\n", encoding="utf-8"
+          archive.with_name(archive.name + ".sha256").write_bytes(
+              f"{checksum}  {archive.name}\n".encode("ascii")
           )
           print(archive)
           PYTHON
