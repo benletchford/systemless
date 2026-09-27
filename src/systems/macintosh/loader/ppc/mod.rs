@@ -1091,6 +1091,7 @@ pub enum PpcImportDispatcherTarget {
     GetMemFragment,
     GetDiskFragment,
     InitCursor,
+    GetQDGlobalsArrow,
     HideCursor,
     ShowCursor,
     ShieldCursor,
@@ -12134,6 +12135,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetMemFragment") => PpcImportDispatcherTarget::GetMemFragment,
         ("InterfaceLib", "GetDiskFragment") => PpcImportDispatcherTarget::GetDiskFragment,
         ("InterfaceLib", "InitCursor") => PpcImportDispatcherTarget::InitCursor,
+        ("InterfaceLib", "GetQDGlobalsArrow") => PpcImportDispatcherTarget::GetQDGlobalsArrow,
         ("InterfaceLib", "HideCursor") => PpcImportDispatcherTarget::HideCursor,
         ("InterfaceLib", "ShowCursor") => PpcImportDispatcherTarget::ShowCursor,
         ("InterfaceLib", "ShieldCursor") => PpcImportDispatcherTarget::ShieldCursor,
@@ -15229,6 +15231,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             unreachable!("picture imports return through dispatch_picture_import")
         }
         PpcImportDispatcherTarget::InitCursor
+        | PpcImportDispatcherTarget::GetQDGlobalsArrow
         | PpcImportDispatcherTarget::HideCursor
         | PpcImportDispatcherTarget::ShowCursor
         | PpcImportDispatcherTarget::ShieldCursor
