@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn carbon_standard_alert_weak_import_binds_and_dispatches() {
+    let weak_pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+        b"CarbonLib",
+        b"StandardAlert",
+        0x82,
+        &[sm_index_reloc(0x30, 0)],
+    ));
+    let mut weak_loaded = load_pef_application(&weak_pef).unwrap();
+    assert_eq!(weak_loaded.imports[0].dispatcher_target, PpcImportDispatcherTarget::StandardAlert);
+    assert_ne!(weak_loaded.imports[0].address, 0);
+    assert_eq!(
+        weak_loaded.memory.read_u32_be(PPC_DATA_BASE),
+        Some(weak_loaded.imports[0].address)
+    );
+
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"StandardAlert");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[7] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+}
+
+#[test]
 fn text_services_leave_events_for_the_application_without_an_input_method() {
     let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"TSMEvent");
     let mut loaded = load_pef_application(&pef).unwrap();
