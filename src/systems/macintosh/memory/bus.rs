@@ -2597,6 +2597,35 @@ impl MacMemoryBus {
         true
     }
 
+    /// Apply an observed fill without allocating a buffer for an arbitrarily
+    /// large offscreen span. Screen row paths still need the row's bytes for
+    /// their presentation update.
+    #[inline(never)]
+    fn fill_presented_span(&mut self, address: u32, len: usize, value: u8) -> bool {
+        if len == 0 || !self.presented_bytes_gates_open() {
+            return false;
+        }
+        let Some(mut p) = self.presentation.as_mut() else {
+            return false;
+        };
+        if p.write_offscreen_span(address, len) {
+            drop(p);
+            self.ram.fill_bytes_in_bounds(address as usize, len, value);
+        } else if p.can_sync_plain_screen_row(address, len) {
+            p.sync_plain_screen_row(address, &vec![value; len]);
+            drop(p);
+            self.ram.fill_bytes_in_bounds(address as usize, len, value);
+        } else if p.can_sync_screen_row_over_text(address, len) {
+            p.sync_screen_row_over_text(address, &vec![value; len]);
+            drop(p);
+            self.ram.fill_bytes_in_bounds(address as usize, len, value);
+        } else {
+            return false;
+        }
+        self.refresh_store_filter();
+        true
+    }
+
     /// Store bytes a caller has proved `presented_bytes_writable` under open
     /// gates, leaving the presentation to the caller.
     pub(crate) fn write_presented_ram(&mut self, address: u32, data: &[u8]) {
@@ -3685,7 +3714,7 @@ impl MemoryBus for MacMemoryBus {
                     .fill_zeros_in_bounds(translated_address as usize, len as usize);
                 return;
             }
-            if self.write_presented_span(translated_address, &vec![0; len as usize]) {
+            if self.fill_presented_span(translated_address, len as usize, 0) {
                 return;
             }
         }
@@ -3779,7 +3808,7 @@ impl MemoryBus for MacMemoryBus {
                     .fill_bytes_in_bounds(translated_address as usize, len as usize, value);
                 return;
             }
-            if self.write_presented_span(translated_address, &vec![value; len as usize]) {
+            if self.fill_presented_span(translated_address, len as usize, value) {
                 return;
             }
         }
