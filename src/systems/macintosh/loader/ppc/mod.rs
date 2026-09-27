@@ -826,31 +826,7 @@ pub use memory::PpcLegacyMemoryUtilityOperation;
 
 pub use dispatch_window::PpcLegacyWindowOperation;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PpcLegacyControlOperation {
-    DisposeControl,
-    DrawOneControl,
-    FindControl,
-    GetControlMaximum,
-    GetControlAction,
-    GetControlReference,
-    GetControlMinimum,
-    GetControlTitle,
-    GetControlValue,
-    GetNewControl,
-    HideControl,
-    KillControls,
-    MoveControl,
-    NewControl,
-    SetControlMaximum,
-    SetControlAction,
-    SetControlReference,
-    SetControlMinimum,
-    ShowControl,
-    SizeControl,
-    TestControl,
-    TrackControl,
-}
+pub use dispatch_control::PpcLegacyControlOperation;
 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
