@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.65.0](https://github.com/benletchford/systemless/compare/v0.64.1...v0.65.0) (2026-09-27)
+
+
+### Features
+
+* **debug:** inspect PowerPC memory and report guest faults ([4b3c631](https://github.com/benletchford/systemless/commit/4b3c631e1c7134595d20ad2f1b1f848121fa9a13))
+* **ppc:** add ISpDevices_DeactivateClass and setl/tset keyboard defaults ([ad6ae99](https://github.com/benletchford/systemless/commit/ad6ae99b956a13543f343a28b14873f1aa7798da))
+* **ppc:** decode GIF and TGA through the QuickTime graphics importer ([9a8060f](https://github.com/benletchford/systemless/commit/9a8060f338c88cbee6391f32322a5479f5e3878f))
+
+
+### Bug Fixes
+
+* **ci:** write portable release checksums ([#2993](https://github.com/benletchford/systemless/issues/2993)) ([26e6ab7](https://github.com/benletchford/systemless/commit/26e6ab7f227a0d9f04393a640bd6e586acdbae6c))
+* **memory:** merge adjacent free native blocks and split reused ones ([9e6e383](https://github.com/benletchford/systemless/commit/9e6e383c012791c67fd0257e661c8451a734bc83))
+* **ppc:** switch the display geometry when activating a DrawSprocket context ([13afffb](https://github.com/benletchford/systemless/commit/13afffb627118eaf0d905390a82d382ccb1b0e05))
+
+
+### Performance Improvements
+
+* **runner:** paint the PowerPC host matte only when its geometry changes ([2d3fac5](https://github.com/benletchford/systemless/commit/2d3fac5f74874e4fbb12715647266c8daf7c830d))
+
 ## [0.64.1](https://github.com/benletchford/systemless/compare/v0.64.0...v0.64.1) (2026-09-27)
 
 
