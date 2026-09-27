@@ -3038,9 +3038,28 @@ impl MacMemoryBus {
         {
             return;
         }
+        let plain_at = |i: usize| {
+            let value = pixels[i].into() as u8;
+            pixels.detail.get(&i).filter(|cell| cell.value == value).is_none()
+        };
+        let mut next = offset;
         for i in offset..end {
+            if i < next {
+                continue;
+            }
             let dst = address + (i - offset) as u32;
             let value = pixels[i].into() as u8;
+            // A run of bytes without text is a plain store, which the bulk
+            // store applies a row span at a time; storing a byte's own value
+            // over a plain cell changes nothing, as the check below skips.
+            if plain_at(i) {
+                next = (i..end).find(|&j| !plain_at(j)).unwrap_or(end);
+                if next - i > 1 {
+                    let run: Vec<u8> = pixels[i..next].iter().map(|value| (*value).into() as u8).collect();
+                    self.write_bytes(dst, &run);
+                    continue;
+                }
+            }
             let detail = pixels.detail.get(&i).filter(|cell| cell.value == value);
             if self.read_byte(dst) == value
                 && self
@@ -4269,6 +4288,144 @@ mod tests {
                     assert_eq!(direct.outline_presentation_rgb(), oracle.outline_presentation_rgb(), "{context}: after store");
                     assert_eq!(direct.save_pixel_bytes(destination(0), 6), oracle.save_pixel_bytes(destination(0), 6), "{context}: after store detail");
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn bulk_stores_over_text_match_byte_stores() {
+        let setup = || {
+            let mut bus = padded_bus(10, 8, 6, 2);
+            for row in 0..6u32 {
+                for x in 0..10 {
+                    bus.write_byte(0x3_0000 + row * 10 + x, (row + x) as u8);
+                }
+            }
+            for address in [0x1000 + 12, 0x1000 + 15, 0x1000 + 31, 0x3_0000 + 2, 0x3_0000 + 13] {
+                paint_detail(&mut bus, address);
+            }
+            bus
+        };
+        // (store kind, address, length): screen rows with and without text,
+        // a span past a row's visible width, offscreen spans with text.
+        let spans = [(0x1000u32 + 10, 8usize), (0x1000 + 40, 8), (0x1000 + 14, 6), (0x1000 + 30, 3), (0x3_0000, 20), (0x3_0000 + 12, 3)];
+        for kind in ["write_bytes", "fill_bytes", "fill_zeros"] {
+            for (address, len) in spans {
+                let mut bulk = setup();
+                let mut bytes = setup();
+                let data: Vec<u8> = match kind {
+                    "write_bytes" => (0..len).map(|i| (i * 11 + 3) as u8).collect(),
+                    "fill_bytes" => vec![9; len],
+                    _ => vec![0; len],
+                };
+                match kind {
+                    "write_bytes" => bulk.write_bytes(address, &data),
+                    "fill_bytes" => bulk.fill_bytes(address, len as u32, 9),
+                    _ => bulk.fill_zeros(address, len as u32),
+                }
+                for (i, &value) in data.iter().enumerate() {
+                    bytes.write_byte(address + i as u32, value);
+                }
+                let context = format!("{kind} at {address:#x} len {len}");
+                for base in [0x1000u32, 0x3_0000] {
+                    assert_eq!(bulk.read_bytes(base, 60), bytes.read_bytes(base, 60), "{context}: RAM");
+                    for row in 0..6 {
+                        assert_eq!(
+                            bulk.save_pixel_bytes(base + row * 10, 10),
+                            bytes.save_pixel_bytes(base + row * 10, 10),
+                            "{context}: detail {base:#x} row {row}"
+                        );
+                    }
+                }
+                assert_eq!(bulk.outline_presentation_rgb(), bytes.outline_presentation_rgb(), "{context}: rendered");
+                assert!(bulk.presentation.as_ref().unwrap().ink_mask_matches_ink(), "{context}: ink mask");
+            }
+        }
+    }
+
+    #[test]
+    fn span_restores_match_byte_restores() {
+        let setup = || {
+            let mut bus = padded_bus(10, 8, 6, 2);
+            for row in 0..6u32 {
+                for x in 0..10 {
+                    bus.write_byte(0x3_0000 + row * 10 + x, (row * 3 + x) as u8);
+                }
+            }
+            for address in [0x1000 + 11, 0x1000 + 14, 0x3_0000 + 3, 0x3_0000 + 4] {
+                paint_detail(&mut bus, address);
+            }
+            bus
+        };
+        for (address, len) in [(0x1000u32 + 10, 8usize), (0x3_0000, 10)] {
+            let mut saver = setup();
+            let saved = saver.save_pixel_bytes(address, len);
+            // Change the span: new plain bytes, new text, cleared text.
+            let disturb = |bus: &mut MacMemoryBus| {
+                bus.write_bytes(address, &[7, 7, 7]);
+                paint_detail(bus, address + 5);
+                bus.write_byte(address + 4, 1);
+            };
+            let mut span = setup();
+            let mut bytes = setup();
+            disturb(&mut span);
+            disturb(&mut bytes);
+            span.restore_saved_pixels(address, &saved, 0, len);
+            for i in 0..len {
+                bytes.restore_saved_pixels(address + i as u32, &saved, i, 1);
+            }
+            let context = format!("at {address:#x}");
+            assert_eq!(span.read_bytes(address, len), bytes.read_bytes(address, len), "{context}: RAM");
+            assert_eq!(span.save_pixel_bytes(address, len), bytes.save_pixel_bytes(address, len), "{context}: detail");
+            assert_eq!(span.save_pixel_bytes(address, len), saved, "{context}: restored");
+            assert_eq!(span.outline_presentation_rgb(), bytes.outline_presentation_rgb(), "{context}: rendered");
+        }
+    }
+
+    #[test]
+    fn observed_block_moves_match_byte_copies() {
+        let inverted: [u8; 256] = std::array::from_fn(|i| (255 - i) as u8);
+        let setup = || {
+            let mut bus = padded_bus(10, 8, 6, 2);
+            for row in 0..6u32 {
+                for x in 0..10 {
+                    bus.write_byte(0x3_0000 + row * 10 + x, (row * 3 + x) as u8);
+                }
+            }
+            for address in [0x1000 + 11, 0x1000 + 13, 0x3_0000 + 2, 0x3_0000 + 5, 0x3_0000 + 12] {
+                paint_detail(&mut bus, address);
+            }
+            bus
+        };
+        // (source, destination, length): same screen row overlapping, an
+        // offscreen overlap, offscreen to a screen row, and a span over two
+        // screen rows (the byte copy).
+        for (src, dst, len) in [(0x1000u32 + 10, 0x1000 + 12, 6u32), (0x3_0000, 0x3_0003, 12), (0x3_0001, 0x1000 + 31, 6), (0x1000 + 5, 0x1000 + 25, 12)] {
+            for map in [None, Some(&inverted)] {
+                let mut moved = setup();
+                let mut bytes = setup();
+                match map {
+                    None => assert!(moved.copy_ram_bytes(src, dst, len)),
+                    Some(map) => assert!(moved.copy_mapped_ram_bytes(src, dst, len, map)),
+                }
+                let pixels = bytes.save_pixel_bytes(src, len as usize);
+                for offset in 0..len {
+                    bytes.copy_saved_pixel(dst + offset, &pixels, offset as usize, |index| {
+                        map.map_or(index, |map| map[index as usize])
+                    });
+                }
+                let context = format!("{src:#x} to {dst:#x} len {len} mapped {}", map.is_some());
+                for base in [0x1000u32, 0x3_0000] {
+                    assert_eq!(moved.read_bytes(base, 60), bytes.read_bytes(base, 60), "{context}: RAM");
+                    for row in 0..6 {
+                        assert_eq!(
+                            moved.save_pixel_bytes(base + row * 10, 10),
+                            bytes.save_pixel_bytes(base + row * 10, 10),
+                            "{context}: detail {base:#x} row {row}"
+                        );
+                    }
+                }
+                assert_eq!(moved.outline_presentation_rgb(), bytes.outline_presentation_rgb(), "{context}: rendered");
             }
         }
     }

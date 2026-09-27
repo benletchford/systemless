@@ -2564,24 +2564,66 @@ impl MacMemoryBus {
             && u64::from(address) + len as u64 <= u64::from(self.ram_size)
     }
 
-    /// Store `data` at the translated in-RAM `address` when the presentation
-    /// can invalidate the span's offscreen detail in one pass, as the byte
-    /// writes would have (a rectangle fill over an offscreen text buffer).
-    /// Out of line so `write_bytes` keeps its shape.
+    /// Store `data` at the translated in-RAM `address` as one store per byte
+    /// would, when the presentation can apply the whole span in one pass: a
+    /// span wholly offscreen (its retained cells are dropped a range at a
+    /// time), a plain screen-row span, or a screen-row span over text (its
+    /// cells cleared in one walk). A rectangle fill or erase then costs one
+    /// pass per row instead of a presentation update per byte. Out of line
+    /// so the bulk store paths keep their shape.
     #[inline(never)]
-    fn write_offscreen_bytes(&mut self, address: u32, data: &[u8]) -> bool {
-        if !self.presented_bytes_gates_open() {
+    fn write_presented_span(&mut self, address: u32, data: &[u8]) -> bool {
+        if data.is_empty() || !self.presented_bytes_gates_open() {
             return false;
         }
-        let handled = self
-            .presentation
-            .as_mut()
-            .is_some_and(|mut p| p.write_offscreen_span(address, data.len()));
-        if handled {
+        let Some(mut p) = self.presentation.as_mut() else {
+            return false;
+        };
+        if p.write_offscreen_span(address, data.len()) {
+            drop(p);
             self.ram.write_bytes_in_bounds(address as usize, data);
-            self.refresh_store_filter();
+        } else if p.can_sync_plain_screen_row(address, data.len()) {
+            p.sync_plain_screen_row(address, data);
+            drop(p);
+            self.ram.write_bytes_in_bounds(address as usize, data);
+        } else if p.can_sync_screen_row_over_text(address, data.len()) {
+            p.sync_screen_row_over_text(address, data);
+            drop(p);
+            self.ram.write_bytes_in_bounds(address as usize, data);
+        } else {
+            return false;
         }
-        handled
+        self.refresh_store_filter();
+        true
+    }
+
+    /// Apply an observed fill without allocating a buffer for an arbitrarily
+    /// large offscreen span. Screen row paths still need the row's bytes for
+    /// their presentation update.
+    #[inline(never)]
+    fn fill_presented_span(&mut self, address: u32, len: usize, value: u8) -> bool {
+        if len == 0 || !self.presented_bytes_gates_open() {
+            return false;
+        }
+        let Some(mut p) = self.presentation.as_mut() else {
+            return false;
+        };
+        if p.write_offscreen_span(address, len) {
+            drop(p);
+            self.ram.fill_bytes_in_bounds(address as usize, len, value);
+        } else if p.can_sync_plain_screen_row(address, len) {
+            p.sync_plain_screen_row(address, &vec![value; len]);
+            drop(p);
+            self.ram.fill_bytes_in_bounds(address as usize, len, value);
+        } else if p.can_sync_screen_row_over_text(address, len) {
+            p.sync_screen_row_over_text(address, &vec![value; len]);
+            drop(p);
+            self.ram.fill_bytes_in_bounds(address as usize, len, value);
+        } else {
+            return false;
+        }
+        self.refresh_store_filter();
+        true
     }
 
     /// Store bytes a caller has proved `presented_bytes_writable` under open
@@ -2606,6 +2648,12 @@ impl MacMemoryBus {
         if self.presentation_observes(src, len as usize)
             || self.presentation_observes(dst, len as usize)
         {
+            // A span within one screen row or wholly offscreen copies its
+            // retained text in one pass; anything else goes byte by byte.
+            let values = self.read_bytes(src, len as usize);
+            if self.copy_detail_spans(&[(src, dst, len as usize)], &values, None) {
+                return true;
+            }
             let pixels = self.save_pixel_bytes(src, len as usize);
             for offset in 0..len {
                 self.copy_saved_pixel(dst + offset, &pixels, offset as usize, |index| index);
@@ -2673,6 +2721,10 @@ impl MacMemoryBus {
         if self.presentation_observes(src, len as usize)
             || self.presentation_observes(dst, len as usize)
         {
+            let values = self.read_bytes(src, len as usize);
+            if self.copy_detail_spans(&[(src, dst, len as usize)], &values, Some(map)) {
+                return true;
+            }
             let pixels = self.save_pixel_bytes(src, len as usize);
             for offset in 0..len {
                 self.copy_saved_pixel(dst + offset, &pixels, offset as usize, |index| {
@@ -3617,7 +3669,7 @@ impl MemoryBus for MacMemoryBus {
                 self.ram.write_bytes_in_bounds(translated_address as usize, data);
                 return;
             }
-            if self.write_offscreen_bytes(translated_address, data) {
+            if self.write_presented_span(translated_address, data) {
                 return;
             }
         }
@@ -3660,6 +3712,9 @@ impl MemoryBus for MacMemoryBus {
                 self.record_write_probe_range(translated_address, len);
                 self.ram
                     .fill_zeros_in_bounds(translated_address as usize, len as usize);
+                return;
+            }
+            if self.fill_presented_span(translated_address, len as usize, 0) {
                 return;
             }
         }
@@ -3751,6 +3806,9 @@ impl MemoryBus for MacMemoryBus {
                 self.record_write_probe_range(translated_address, len);
                 self.ram
                     .fill_bytes_in_bounds(translated_address as usize, len as usize, value);
+                return;
+            }
+            if self.fill_presented_span(translated_address, len as usize, value) {
                 return;
             }
         }
