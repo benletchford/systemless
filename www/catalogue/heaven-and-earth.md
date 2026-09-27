@@ -33,6 +33,7 @@ artifacts:
     original: true
     sources:
     - https://classicmacdemos.com/heaven-and-earth
+    - https://download.classicmacdemos.com/Heaven%20Earth%20DEMO.sit
     - https://www.iangilman.com/software/heavenearth.php
     rights_holder: Heaven & Earth rights holders
     permission: >-
@@ -67,6 +68,7 @@ artifacts:
       0216c4d108de47318935c64cb8a46d9803230ad5995c7c5a30079683111e3623, 23,114 bytes.
 references:
 - https://classicmacdemos.com/heaven-and-earth
+- https://download.classicmacdemos.com/Heaven%20Earth%20DEMO.sit
 - https://www.iangilman.com/software/heavenearth.php
 - https://github.com/benletchford/systemless/pull/3034
 ---
