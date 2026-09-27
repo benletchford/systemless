@@ -4273,6 +4273,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn bulk_stores_over_text_match_byte_stores() {
+        let setup = || {
+            let mut bus = padded_bus(10, 8, 6, 2);
+            for row in 0..6u32 {
+                for x in 0..10 {
+                    bus.write_byte(0x3_0000 + row * 10 + x, (row + x) as u8);
+                }
+            }
+            for address in [0x1000 + 12, 0x1000 + 15, 0x1000 + 31, 0x3_0000 + 2, 0x3_0000 + 13] {
+                paint_detail(&mut bus, address);
+            }
+            bus
+        };
+        // (store kind, address, length): screen rows with and without text,
+        // a span past a row's visible width, offscreen spans with text.
+        let spans = [(0x1000u32 + 10, 8usize), (0x1000 + 40, 8), (0x1000 + 14, 6), (0x1000 + 30, 3), (0x3_0000, 20), (0x3_0000 + 12, 3)];
+        for kind in ["write_bytes", "fill_bytes", "fill_zeros"] {
+            for (address, len) in spans {
+                let mut bulk = setup();
+                let mut bytes = setup();
+                let data: Vec<u8> = match kind {
+                    "write_bytes" => (0..len).map(|i| (i * 11 + 3) as u8).collect(),
+                    "fill_bytes" => vec![9; len],
+                    _ => vec![0; len],
+                };
+                match kind {
+                    "write_bytes" => bulk.write_bytes(address, &data),
+                    "fill_bytes" => bulk.fill_bytes(address, len as u32, 9),
+                    _ => bulk.fill_zeros(address, len as u32),
+                }
+                for (i, &value) in data.iter().enumerate() {
+                    bytes.write_byte(address + i as u32, value);
+                }
+                let context = format!("{kind} at {address:#x} len {len}");
+                for base in [0x1000u32, 0x3_0000] {
+                    assert_eq!(bulk.read_bytes(base, 60), bytes.read_bytes(base, 60), "{context}: RAM");
+                    for row in 0..6 {
+                        assert_eq!(
+                            bulk.save_pixel_bytes(base + row * 10, 10),
+                            bytes.save_pixel_bytes(base + row * 10, 10),
+                            "{context}: detail {base:#x} row {row}"
+                        );
+                    }
+                }
+                assert_eq!(bulk.outline_presentation_rgb(), bytes.outline_presentation_rgb(), "{context}: rendered");
+                assert!(bulk.presentation.as_ref().unwrap().ink_mask_matches_ink(), "{context}: ink mask");
+            }
+        }
+    }
+
     /// The proof `restore_saved_pixels` used before the range walk existed,
     /// written out independently so it can judge the range walk's answer.
     fn per_byte_coverage_proof(
