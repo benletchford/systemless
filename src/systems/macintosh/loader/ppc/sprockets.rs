@@ -2632,13 +2632,17 @@ pub(crate) fn ppc_isp_need_name_matches_all(need_name: Option<&str>, patterns: &
 pub(crate) fn ppc_isp_parse_setl_entries(data: &[u8]) -> Option<Vec<PpcIspSetListEntry>> {
     let count = u32::from_be_bytes(data.get(4..8)?.try_into().ok()?);
     let count = usize::try_from(count).ok()?;
+    let header_size = usize::try_from(PPC_ISP_SETL_HEADER_SIZE).ok()?;
     let entry_size = usize::try_from(PPC_ISP_SETL_ENTRY_SIZE).ok()?;
+    if count > data.len().checked_sub(header_size)? / entry_size {
+        return None;
+    }
     let class_offset = usize::try_from(PPC_ISP_SETL_ENTRY_DEVICE_CLASS_OFFSET).ok()?;
     let creator_offset = usize::try_from(PPC_ISP_SETL_ENTRY_DEVICE_CREATOR_OFFSET).ok()?;
     let tset_offset = usize::try_from(PPC_ISP_SETL_ENTRY_TSET_ID_OFFSET).ok()?;
     let mut entries = Vec::with_capacity(count);
     for index in 0..count {
-        let base = usize::try_from(PPC_ISP_SETL_HEADER_SIZE).ok()? + index.checked_mul(entry_size)?;
+        let base = header_size + index.checked_mul(entry_size)?;
         let entry = data.get(base..base.checked_add(entry_size)?)?;
         let device_class =
             u32::from_be_bytes(entry.get(class_offset..class_offset + 4)?.try_into().ok()?);
@@ -2664,6 +2668,9 @@ pub(crate) fn ppc_isp_parse_tset_keycodes(data: &[u8]) -> Option<Vec<u8>> {
     let count = usize::try_from(count).ok()?;
     let header = usize::try_from(PPC_ISP_TSET_HEADER_SIZE).ok()?;
     let entry_size = usize::try_from(PPC_ISP_TSET_ENTRY_SIZE).ok()?;
+    if count > data.len().checked_sub(header)? / entry_size {
+        return None;
+    }
     let mut keycodes = Vec::with_capacity(count);
     for index in 0..count {
         let base = header + index.checked_mul(entry_size)?;

@@ -1530,6 +1530,14 @@ fn import_bindings_classify_input_sprocket_compatibility_imports() {
 }
 
 #[test]
+fn input_sprocket_rejects_resource_counts_larger_than_the_data() {
+    let mut resource = [0u8; 8];
+    resource[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
+    assert!(ppc_isp_parse_setl_entries(&resource).is_none());
+    assert!(ppc_isp_parse_tset_keycodes(&resource).is_none());
+}
+
+#[test]
 fn input_sprocket_setl_tset_defaults_assign_keycodes_in_need_order() {
     // Synthetic 'setl': version, count=1, an ISpDeviceDefinition naming the
     // keyboard ('keyd'/'appl'), and a trailing tset ResID 493.
