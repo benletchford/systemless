@@ -1385,6 +1385,7 @@ pub enum PpcImportDispatcherTarget {
     DSpGetVersion,
     DSpShutdown,
     DSpProcessEvent,
+    DSpBlitFastest,
     DSpCanUserSelectContext,
     DSpGetMouse,
     DSpFindContextFromPoint,
@@ -11802,6 +11803,7 @@ fn dispatcher_target_for_import(
         ("DrawSprocketLib", "DSpGetFirstContext") => PpcImportDispatcherTarget::DSpGetFirstContext,
         ("DrawSprocketLib", "DSpGetNextContext") => PpcImportDispatcherTarget::DSpGetNextContext,
         ("DrawSprocketLib", "DSpProcessEvent") => PpcImportDispatcherTarget::DSpProcessEvent,
+        ("DrawSprocketLib", "DSpBlit_Fastest") => PpcImportDispatcherTarget::DSpBlitFastest,
         ("DrawSprocketLib", "DSpCanUserSelectContext") => {
             PpcImportDispatcherTarget::DSpCanUserSelectContext
         }
@@ -15051,6 +15053,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::DSpGetFirstContext
         | PpcImportDispatcherTarget::DSpGetNextContext
         | PpcImportDispatcherTarget::DSpProcessEvent
+        | PpcImportDispatcherTarget::DSpBlitFastest
         | PpcImportDispatcherTarget::DSpCanUserSelectContext
         | PpcImportDispatcherTarget::DSpGetMouse
         | PpcImportDispatcherTarget::DSpFindContextFromPoint
