@@ -937,7 +937,7 @@ pub(crate) fn ppc_dsp_blit_fastest(
     };
     // The synchronous software path cannot invoke an asynchronous guest
     // completion routine. A caller without one can observe completionFlag.
-    if completion_proc != 0 || mode & !0x03 != 0 {
+    if (cpu.gpr[4] != 0 && completion_proc != 0) || mode & !0x03 != 0 {
         return PPC_PARAM_ERR;
     }
     let (src_top, src_left, src_bottom, src_right) = src_rect;
