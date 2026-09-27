@@ -2721,19 +2721,45 @@ fn load_powerpc_executable(
         )
     })?;
     let library_fragments = discover_ppc_cfm_library_fragments(&ppc_vfs);
-    let mut loaded =
+    let fragment_name = runner
+        .dispatcher()
+        .vfs_rsrc
+        .get(&executable.vfs_key)
+        .and_then(|resource_data| ResourceFork::parse(resource_data))
+        .and_then(|fork| {
+            fork.get(*b"cfrg", 0)
+                .and_then(|resource| parse_cfrg_resource(&resource.data))
+        })
+        .and_then(|cfrg| {
+            select_powerpc_application_fragment(&cfrg, data.len())
+                .filter(|(_, range)| {
+                    range.start == fragment_offset as usize
+                        && range.len() == fragment_length as usize
+                })
+                .map(|(fragment, _)| fragment.name.clone())
+        });
+    let mut loaded = if let Some(name) = fragment_name.as_deref().filter(|name| !name.is_empty()) {
+        crate::loader::ppc::load_pef_application_with_named_fragment_and_libraries(
+            pef,
+            ppc_config,
+            system_reservation,
+            library_fragments,
+            name,
+        )
+    } else {
         crate::loader::ppc::load_pef_application_with_config_and_system_reservation_and_libraries(
             pef,
             ppc_config,
             system_reservation,
             library_fragments,
         )
-        .map_err(|error| {
-            format!(
-                "PowerPC PEF executable \"{}\" selected, but PPC loading failed: {error:?}",
-                executable.name
-            )
-        })?;
+    }
+    .map_err(|error| {
+        format!(
+            "PowerPC PEF executable \"{}\" selected, but PPC loading failed: {error:?}",
+            executable.name
+        )
+    })?;
     loaded.seed_vfs_volumes(ppc_vfs.volumes);
     loaded.seed_vfs_directories(
         ppc_vfs.directories,

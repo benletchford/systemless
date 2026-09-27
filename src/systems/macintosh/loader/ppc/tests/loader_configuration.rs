@@ -1242,6 +1242,7 @@ fn ppc_loader_rejects_system_reservation_layout_collisions() {
                 name: "BundledInitializer".to_string(),
                 bytes: synthetic_pef_with_initializer(),
             }],
+            None,
         )
         .unwrap_err(),
         PpcLoadError::AddressOverflow
