@@ -134,6 +134,7 @@ mod dispatch_fonts;
 mod dispatch_gestalt;
 mod dispatch_graphics_devices;
 mod dispatch_gworlds;
+mod dispatch_icon_services;
 mod dispatch_inputsprocket;
 mod dispatch_list;
 mod dispatch_low_memory;
@@ -1403,6 +1404,10 @@ pub enum PpcImportDispatcherTarget {
     ResolveAlias,
     ResolveAliasFile,
     ResolveAliasFileWithMountFlags,
+    GetIconRefFromFile,
+    GetIconRef,
+    PlotIconRef,
+    ReleaseIconRef,
     DirCreate,
     FSpDirCreate,
     FSMakeFSSpec,
@@ -2757,6 +2762,7 @@ pub struct PpcToolboxStartupState {
     mixed_mode_m68k: SharedProcessMixedModeM68kState,
     system_allocations: PpcSystemAllocationPool,
     cf_strings: dispatch_core_foundation::PpcCfStringState,
+    icon_refs: dispatch_icon_services::PpcIconRefState,
     go_away_tracking: Option<PpcGoAwayTrackingState>,
     drag_window_tracking: Option<PpcDragWindowTrackingState>,
     grow_window_tracking: Option<PpcGrowWindowTrackingState>,
@@ -2828,6 +2834,7 @@ impl Default for PpcToolboxStartupState {
             mixed_mode_m68k: SharedProcessMixedModeM68kState::default(),
             system_allocations: PpcSystemAllocationPool::default(),
             cf_strings: dispatch_core_foundation::PpcCfStringState::default(),
+            icon_refs: dispatch_icon_services::PpcIconRefState::default(),
             go_away_tracking: None,
             drag_window_tracking: None,
             grow_window_tracking: None,
@@ -12516,6 +12523,10 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "ResolveAliasFileWithMountFlags") => {
             PpcImportDispatcherTarget::ResolveAliasFileWithMountFlags
         }
+        ("InterfaceLib", "GetIconRefFromFile") => PpcImportDispatcherTarget::GetIconRefFromFile,
+        ("InterfaceLib", "GetIconRef") => PpcImportDispatcherTarget::GetIconRef,
+        ("InterfaceLib", "PlotIconRef") => PpcImportDispatcherTarget::PlotIconRef,
+        ("InterfaceLib", "ReleaseIconRef") => PpcImportDispatcherTarget::ReleaseIconRef,
         ("InterfaceLib", "DirCreate") => PpcImportDispatcherTarget::DirCreate,
         ("InterfaceLib", "FSpDirCreate") => PpcImportDispatcherTarget::FSpDirCreate,
         ("InterfaceLib", "FSMakeFSSpec") => PpcImportDispatcherTarget::FSMakeFSSpec,
@@ -14180,6 +14191,24 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         return Some(action);
     }
 
+    if let Some(action) = dispatch_icon_services::dispatch_icon_services_import(
+        binding,
+        cpu,
+        memory,
+        process_memory_manager,
+        heap_cursor,
+        last_mem_error,
+        &mut toolbox_startup.icon_refs,
+        vfs_directories,
+        vfs_files,
+        vfs_resource_files,
+        vfs_resources,
+        gworlds,
+        *current_gworld,
+    ) {
+        return Some(action);
+    }
+
     if let Some(action) = dispatch_stdc::dispatch_stdc_import(
         dispatch_stdc::PpcStdCDispatchContext {
             binding,
@@ -15313,6 +15342,10 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::FindFolder
         | PpcImportDispatcherTarget::ResolveAliasFile
         | PpcImportDispatcherTarget::ResolveAliasFileWithMountFlags
+        | PpcImportDispatcherTarget::GetIconRefFromFile
+        | PpcImportDispatcherTarget::GetIconRef
+        | PpcImportDispatcherTarget::PlotIconRef
+        | PpcImportDispatcherTarget::ReleaseIconRef
         | PpcImportDispatcherTarget::ResolveAlias
         | PpcImportDispatcherTarget::UpdateAlias
         | PpcImportDispatcherTarget::NewAlias
