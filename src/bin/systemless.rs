@@ -44,6 +44,9 @@ mod native_menu;
 #[cfg(target_os = "macos")]
 #[path = "desktop/native_termination.rs"]
 mod native_termination;
+#[cfg(feature = "test-support")]
+#[path = "desktop/native_window_probe.rs"]
+mod native_window_probe;
 #[path = "desktop/runtime_driver.rs"]
 mod runtime_driver;
 #[path = "desktop/runtime_mailbox.rs"]
@@ -3349,6 +3352,12 @@ fn run_gui(
         // window. Finish archive decompression and guest initialization before
         // entering the event loop so startup never exposes an empty host window.
         app.init_game();
+    }
+    #[cfg(feature = "test-support")]
+    if let Some(report) = std::env::var_os("SYSTEMLESS_NATIVE_WINDOW_PROBE") {
+        native_window_probe::run(event_loop, app, PathBuf::from(report));
+        frame_metrics::flush();
+        return;
     }
     event_loop.run_app(&mut app).expect("Event loop failed");
     frame_metrics::flush();
