@@ -7989,6 +7989,31 @@ fn hfs_dispatch_generated_routes_preserve_exact_d0_selectors() {
 }
 
 #[test]
+fn unsupported_deny_open_allows_ordinary_open_fallback() {
+    for selector in [0x38, 0x39] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.vfs.insert("Shared File".to_string(), vec![1, 2, 3]);
+        let pb = 0x300000u32;
+        setup_param_block(&mut bus, &mut cpu, pb, b"Shared File");
+        bus.write_word(pb + 26, 0x0033);
+        cpu.write_reg(Register::D0, selector);
+
+        call_trap_word(&mut disp, 0xA260, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -50);
+        assert_eq!(bus.read_word(pb + 16) as i16, -50);
+        assert!(disp.open_files.is_empty());
+        bus.write_byte(pb + 27, 3); // fsRdWrPerm
+        call_trap_word(&mut disp, 0xA000, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        let refnum = bus.read_word(pb + 24);
+        assert_ne!(refnum, 0);
+        assert!(disp.open_files.get(&refnum).is_some());
+        assert!(disp.write_refnums.contains(&refnum));
+    }
+}
+
+#[test]
 fn hfs_dispatch_records_known_then_clears_nonidentity_without_changing_behavior() {
     let (mut disp, mut cpu, mut bus) = setup();
     let pb = 0x300000u32;

@@ -7601,6 +7601,18 @@ impl super::TrapDispatcher {
                 self.current_selector_operation = operation.map(|route| route.operation_id);
                 let selector = raw_selector & 0xFFFF;
                 let pb = cpu.read_reg(Register::A0);
+                if matches!(selector, 0x38 | 0x39) {
+                    // PBHOpenDeny / PBHOpenRFDeny ($A260, selectors $0038/$0039)
+                    // Open a fork with access-deny sharing modes.
+                    // FUNCTION PBHOpenDeny(paramBlock: HParmBlkPtr; async: Boolean): OSErr;
+                    // Inside Macintosh: Files (1992), pp. 2-209 to 2-210.
+                    // The local VFS does not implement deny-mode sharing.
+                    // paramErr reports an unsupported volume without falsely
+                    // promising a valid ioRefNum.
+                    bus.write_word(pb + 16, (-50i16) as u16);
+                    cpu.write_reg(Register::D0, (-50i32) as u32);
+                    return Some(Ok(()));
+                }
                 if selector == 0x18 {
                     // PBCatSearch ($A260, selector $0018) searches one
                     // volume's complete catalog and returns bounded FSSpec
