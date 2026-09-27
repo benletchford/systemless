@@ -1,5 +1,6 @@
 //! Self-driving window-system qualification, available only in test-support builds.
-//! Requests go through the real host window; observations come from native events.
+//! Requests go through the real host window; observations use native events
+//! and, for macOS event-free cursor warps, an AppKit pointer-position query.
 //! The cursor packet is injected at the owned-snapshot boundary: driver tests
 //! separately prove guest instruction -> retained warp -> matching acknowledgement.
 use super::*;
@@ -20,6 +21,8 @@ struct Probe {
     moved: Option<(f64, f64)>,
     expected_cursor: Option<(f64, f64)>,
     expected_guest: Option<(i16, i16)>,
+    #[cfg(target_os = "macos")]
+    cursor_input_sent: bool,
     sequence: u64,
     checks: Vec<&'static str>,
     complete: bool,
@@ -41,6 +44,8 @@ pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
         moved: None,
         expected_cursor: None,
         expected_guest: None,
+        #[cfg(target_os = "macos")]
+        cursor_input_sent: false,
         sequence: 0,
         checks: Vec::new(),
         complete: false,
@@ -72,7 +77,11 @@ impl Probe {
             "elapsed_seconds": self.started.elapsed().as_secs_f64(),
             "os": std::env::consts::OS,
             "backend": if self.app.owner.is_some() { "thread" } else { "inline-or-stopped" },
-            "cursor_scope": "owned snapshot through actual native cursor event; guest origin covered separately",
+            "cursor_scope": if cfg!(target_os = "macos") {
+                "owned snapshot -> OS pointer query; separate mapped input-command round trip; guest origin covered by driver tests"
+            } else {
+                "owned snapshot -> actual native cursor event -> guest input round trip; guest origin covered by driver tests"
+            },
             "runtime_error": self.app.runtime_error,
             "window": self.app.window.as_ref().map(|w| serde_json::json!({
                 "width": w.inner_size().width, "height": w.inner_size().height,
@@ -101,6 +110,25 @@ impl Probe {
         let Some(window) = self.app.window.as_ref().cloned() else {
             return;
         };
+        #[cfg(target_os = "macos")]
+        if self.phase == 9 {
+            // CGWarpMouseCursorPosition intentionally generates no event:
+            // https://developer.apple.com/documentation/coregraphics/cgwarpmousecursorposition(_:)
+            self.moved = macos_cursor_position(&window);
+            if !self.cursor_input_sent
+                && self
+                    .moved
+                    .zip(self.expected_cursor)
+                    .is_some_and(|(a, b)| (a.0 - b.0).abs() < 2.0 && (a.1 - b.1).abs() < 2.0)
+            {
+                let (x, y) = self.moved.unwrap();
+                let (v, h) = self.app.host_mouse_to_mac(x, y);
+                self.expected_guest = Some((v, h));
+                self.app
+                    .send_command(runtime_protocol::GuiCommand::MouseMove { v, h });
+                self.cursor_input_sent = true;
+            }
+        }
         let settled = self.phase_started.elapsed() > Duration::from_secs(2);
         match self.phase {
             0 if self.app.frame.sequence > 2 => {
@@ -188,9 +216,7 @@ impl Probe {
                 && Some(self.app.frame.mouse_position) == self.expected_guest
                 && settled =>
             {
-                self.advance(
-                    "snapshot warp produces native cursor event and guest input round trip",
-                );
+                self.advance("native cursor position and guest input round trip verified");
                 self.app
                     .window_event(event_loop, window.id(), WindowEvent::CloseRequested);
             }
@@ -237,5 +263,33 @@ impl ApplicationHandler for Probe {
         event_loop.set_control_flow(ControlFlow::WaitUntil(
             Instant::now() + Duration::from_millis(16),
         ));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_cursor_position(window: &Window) -> Option<(f64, f64)> {
+    let handle = window.window_handle().ok()?;
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return None;
+    };
+    // SAFETY: the main-thread event loop owns this live winit NSView/NSWindow.
+    // These are read-only AppKit queries; no event injection or global hooks.
+    unsafe {
+        let view: &NSObject = handle.ns_view.cast().as_ref();
+        let native_window: *mut NSObject = msg_send![view, window];
+        let native_window = native_window.as_ref()?;
+        let point: objc2_foundation::CGPoint =
+            msg_send![native_window, mouseLocationOutsideOfEventStream];
+        let local: objc2_foundation::CGPoint =
+            msg_send![view, convertPoint: point fromView: std::ptr::null::<NSObject>()];
+        let bounds: objc2_foundation::CGRect = msg_send![view, bounds];
+        let flipped: bool = msg_send![view, isFlipped];
+        let y = if flipped {
+            local.y - bounds.origin.y
+        } else {
+            bounds.origin.y + bounds.size.height - local.y
+        };
+        let scale = window.scale_factor();
+        Some(((local.x - bounds.origin.x) * scale, y * scale))
     }
 }
