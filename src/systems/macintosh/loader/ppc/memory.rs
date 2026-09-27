@@ -905,6 +905,24 @@ pub(crate) fn ppc_alloc_ptr(
     ptr
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcLegacyMemoryUtilityOperation {
+    BitClear,
+    BitNot,
+    BitSet,
+    FixToExtended,
+    GetMyZone,
+    HandleZone,
+    LockMemory,
+    MaxBlock,
+    PurgeSpace,
+    ReserveMem,
+    SetGrowZone,
+    StackSpace,
+    TempFreeMem,
+    UnlockMemory,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn ppc_dispatch_legacy_memory_utility(
     operation: PpcLegacyMemoryUtilityOperation,
