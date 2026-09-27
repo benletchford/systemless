@@ -70,6 +70,7 @@ artifacts:
 references:
 - https://classicmacdemos.com/warlords-ii
 - https://static.classicmacdemos.com/demos/warlords-ii/README.txt
+- https://github.com/benletchford/systemless/pull/2879
 ---
 
 ## A kingdom in fifty turns
