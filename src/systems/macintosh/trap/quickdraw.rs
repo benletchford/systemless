@@ -19863,6 +19863,7 @@ impl super::TrapDispatcher {
         bus.write_long(resolution + 16, 60 << 16);
         bus.write_long(resolution + 20, u32::from(depth_mode));
         bus.write_long(timing, mode);
+        bus.write_long(timing + 16, 0b111);
         bus.write_long(depth_block, 1);
         bus.write_long(depth_block + 4, depth_info);
         bus.write_long(depth_info, switch_info);

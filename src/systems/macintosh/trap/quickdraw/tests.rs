@@ -9,7 +9,8 @@
     use super::{
         CopyBitmapInfo, DM_512_342_MODE_ID, DM_640_480_MODE_ID, DM_MODE_LIST_ENTRY_STRIDE,
         DM_MODE_LIST_MAGIC, DM_MODE_LIST_RESOLUTION_INFO_OFFSET,
-        DM_MODE_LIST_SWITCH_INFO_OFFSET, DM_MODE_LIST_VP_BLOCK_OFFSET, DM_NATIVE_MODE_ID,
+        DM_MODE_LIST_SWITCH_INFO_OFFSET, DM_MODE_LIST_TIMING_INFO_OFFSET,
+        DM_MODE_LIST_VP_BLOCK_OFFSET, DM_NATIVE_MODE_ID,
     };
     use crate::trap::types::{Rect, ShapeOp};
     use crate::trap::TrapDispatcher;
@@ -17682,11 +17683,13 @@
             let base = list + index as u32 * DM_MODE_LIST_ENTRY_STRIDE;
             let resolution = base + DM_MODE_LIST_RESOLUTION_INFO_OFFSET;
             let switch_info = base + DM_MODE_LIST_SWITCH_INFO_OFFSET;
+            let timing = base + DM_MODE_LIST_TIMING_INFO_OFFSET;
             let vp_block = base + DM_MODE_LIST_VP_BLOCK_OFFSET;
             assert_eq!(bus.read_long(resolution + 4), mode);
             assert_eq!(bus.read_long(resolution + 8), width);
             assert_eq!(bus.read_long(resolution + 12), height);
             assert_eq!(bus.read_long(switch_info + 2), mode);
+            assert_eq!(bus.read_long(timing + 16), 0b111);
             assert_eq!(bus.read_word(vp_block + 4), width as u16);
             assert_eq!(bus.read_word(vp_block + 10), height as u16);
             assert_eq!(bus.read_word(vp_block + 12), width as u16);
