@@ -14,7 +14,7 @@ default_architecture: 68k
 category: Puzzle
 launch_enabled: true
 compatibility:
-  status: boots
+  status: playable
   verified:
   - date: "2026-09-23"
     tester: Catalogue maintainer
@@ -26,6 +26,20 @@ compatibility:
       same archive under BasiliskII
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/2432
+  - date: "2026-09-28"
+    tester: Catalogue maintainer
+    systemless_version: "0.65.1"
+    architecture: 68k
+    environment: >-
+      Deterministic headless replay of the exact listed official ZIP reached the
+      office after the full opening. Clicking the telephone moved Sam toward it. An
+      independently obtained StuffIt demo produced the same framebuffer and has byte-identical
+      application data, resource, and game data forks. Puzzle completion, PowerPC
+      execution, and browser behavior were not reverified in this run. The
+      promoted archive and screenshot were fetched back and matched their
+      recorded SHA-256 hashes.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3101
 runtime:
   application_partition_size: 8388608
   show_menu_bar: true
@@ -55,30 +69,29 @@ artifacts:
   format: png
   source:
     type: sha256
-    sha256: 42ea66f59bc5e50410e04c12041a73ad54592231c6ad199a71481010df9e64f2
-    size_bytes: 26306
+    sha256: 2554eec2fee03335304422a3a5de52754ea379940f65cdcc19f2c7c4a446d26d
+    size_bytes: 60605
   provenance:
     redistribution: permitted
     original: true
     content_only: true
     sources:
-    - https://github.com/benletchford/systemless/issues/2432
+    - https://github.com/benletchford/systemless/issues/3101
     permission: >-
-      Original in-game screenshot captured for this catalogue at the maintainer's
-      request. Underlying Sam & Max artwork remains the property of its rights holders.
+      Fresh office-scene capture made for this catalogue entry from the unchanged
+      promotional demo. Underlying Sam & Max artwork remains its owners' property.
     notes: >-
-      Fresh deterministic Systemless 0.50.0 capture made from the staged demo archive
-      on 2026-09-23 during its animated opening. The 800x600 guest framebuffer was
-      cropped to the 640x400 game surface, excluding the Classic Mac menu bar and
-      surrounding desktop. PNG SHA-256
-      42ea66f59bc5e50410e04c12041a73ad54592231c6ad199a71481010df9e64f2, 26,306 bytes.
+      Exact 640-by-400 office-scene crop at (80,100) from a deterministic 800-by-600
+      Systemless framebuffer on 2026-09-28. Surrounding desktop was excluded without
+      changing game pixels. PNG SHA-256
+      2554eec2fee03335304422a3a5de52754ea379940f65cdcc19f2c7c4a446d26d, 60,605 bytes.
 references:
 - https://www.scummvm.org/demos/
 ---
 
 ## Freelance police, reporting for duty
 
-![Sam and Max on the road](https://assets.systemless.org/catalogue/media/sha256/42/42ea66f59bc5e50410e04c12041a73ad54592231c6ad199a71481010df9e64f2.png)
+![Sam and Max in their office beside the telephone](https://assets.systemless.org/catalogue/media/sha256/25/2554eec2fee03335304422a3a5de52754ea379940f65cdcc19f2c7c4a446d26d.png)
 
 Sam is a six-foot canine detective. Max is a hyperkinetic rabbity thing. When
 the commissioner sends them after a missing carnival attraction, the case turns
@@ -87,7 +100,9 @@ The SCUMM interface lets players investigate, improvise and inflict their own
 peculiar brand of justice with verbs, dialogue and inventory objects.
 
 This Macintosh demonstration opens with the game's animated road sequence and
-then challenges the player with the first puzzle from the adventure. It is a
+then challenges the player with the first puzzle from the adventure. A later
+deterministic replay reached the office and moved Sam toward the telephone in
+response to a click. It is a
 compact showcase for the hand-drawn animation, comic timing and irreverent
 writing that made Sam and Max enduring adventure-game characters.
 
