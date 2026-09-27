@@ -12,8 +12,20 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
+  verified:
+  - date: "2026-09-27"
+    tester: Catalogue maintainer
+    systemless_version: master at dd24044c6af1
+    architecture: 68k
+    environment: >-
+      Optimized Chrome browser run from the promoted demo archive through the
+      startup prompt and player setup into live first-level gameplay; display
+      and audio remained stable at about 60 host frames per second.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2975
 artifacts:
 - id: archive
   role: archive
