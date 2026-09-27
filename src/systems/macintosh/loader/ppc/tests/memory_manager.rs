@@ -4574,7 +4574,14 @@ fn hle_import_runner_handles_new_ptr_clear_and_continues() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], PPC_HEAP_BASE);
     assert_eq!(loaded.heap_cursor(), heap_cursor);
-    assert!(loaded.free_ptr_blocks().is_empty());
+    // The 32-byte block serves the 16-byte request and keeps its tail free.
+    assert_eq!(
+        loaded.free_ptr_blocks(),
+        vec![PpcPtrRecord {
+            ptr: PPC_HEAP_BASE + 16,
+            size: 16
+        }]
+    );
     assert_eq!(loaded.ptrs()[0].size, 12);
 }
 
