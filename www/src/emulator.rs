@@ -11,9 +11,9 @@ use systemless::runner::{
     FixtureRunner, MenuBarPolicy, VfsFileSnapshot, VfsFileStat, VfsFileSummary, DEFAULT_VBL_HZ,
 };
 use systemless::sound::OUTPUT_RATE;
+use systemless::systems::macintosh::{display, game};
 use systemless::trap::dispatch::ScreenCopyBitsRect;
 use systemless::ui_theme::UiThemeId;
-use systemless::systems::macintosh::{display, game};
 use wasm_bindgen::{prelude::Closure, JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
