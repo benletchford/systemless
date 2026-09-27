@@ -8155,6 +8155,46 @@ fn ppc_pb_get_fcb_info_reports_open_data_and_application_resource_forks() {
 }
 
 #[test]
+fn get_v_info_reports_default_volume_and_rejects_missing_drive() {
+    let pef = synthetic_pef_with_import(b"GetVInfo");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let output = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(output, vec![0; 0x100]);
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = output;
+    loaded.cpu.gpr[5] = output + 0x40;
+    loaded.cpu.gpr[6] = output + 0x44;
+
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, output),
+        Some(encode_mac_roman_lossy(
+            crate::trap::TrapDispatcher::boot_volume_name()
+        ))
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(output + 0x40),
+        Some(PPC_BOOT_VOLUME_REF_NUM as u16)
+    );
+    assert_eq!(loaded.memory.read_u32_be(output + 0x44), Some(0x0800_0000));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u32;
+    let _ = loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(output + 0x44), Some(0x0800_0000));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 2;
+    let _ = loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NSV_ERR));
+}
+
+#[test]
 fn pbh_get_v_info_enumerates_and_selects_mounted_volumes() {
     let pef = synthetic_pef_with_import(b"PBGetVInfoSync");
     let mut loaded = load_pef_application(&pef).unwrap();

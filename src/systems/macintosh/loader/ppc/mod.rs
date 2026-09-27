@@ -1540,6 +1540,7 @@ pub enum PpcImportDispatcherTarget {
     PBGetCatInfo,
     PBSetCatInfo,
     PBHGetVInfo,
+    GetVInfo,
     PBDTGetPath,
     PBDTGetCommentSync,
     PBGetFCBInfo,
@@ -12634,6 +12635,7 @@ fn dispatcher_target_for_import(
         | ("InterfaceLib", "PBHGetVInfo")
         | ("InterfaceLib", "PBHGetVInfoSync")
         | ("InterfaceLib", "PBHGetVInfoAsync") => PpcImportDispatcherTarget::PBHGetVInfo,
+        ("InterfaceLib", "GetVInfo") => PpcImportDispatcherTarget::GetVInfo,
         ("InterfaceLib", "PBDTGetPath") => PpcImportDispatcherTarget::PBDTGetPath,
         ("InterfaceLib", "PBDTGetCommentSync") => PpcImportDispatcherTarget::PBDTGetCommentSync,
         ("InterfaceLib", "PBGetFCBInfo")
@@ -15242,6 +15244,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::FlushVol
         | PpcImportDispatcherTarget::PBFlushVol
         | PpcImportDispatcherTarget::PBHGetVInfo
+        | PpcImportDispatcherTarget::GetVInfo
         | PpcImportDispatcherTarget::PBDTGetPath
         | PpcImportDispatcherTarget::PBDTGetCommentSync
         | PpcImportDispatcherTarget::PBGetFInfo
