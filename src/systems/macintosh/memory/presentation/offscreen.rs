@@ -15,6 +15,7 @@
 //! immutable cell, and a cell stored from a snapshot is returned as that
 //! same `Arc`.
 
+use super::samples::{ink_entry, ink_remove, InkList};
 use super::{DetailCell, Ink, SampleOffsetHasher, TILE_SAMPLES};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -42,8 +43,9 @@ struct Chunk {
     lens: [u8; CHUNK_BYTES],
     /// `TILE_SAMPLES` indices per slot, of which the first `lens[slot]` count.
     indices: Box<[u8; CHUNK_BYTES * TILE_SAMPLES]>,
-    /// Partial-coverage ink, sorted by `slot * TILE_SAMPLES + sample`.
-    ink: Vec<(u16, Ink)>,
+    /// Partial-coverage ink per slot, each list sorted by sample. Empty
+    /// until the chunk first holds ink; a cleared slot keeps its capacity.
+    inks: Vec<InkList>,
     /// Cells already handed out as `Arc`s and unchanged since.
     shared: RefCell<Vec<Option<Arc<DetailCell>>>>,
     count: usize,
@@ -57,7 +59,7 @@ impl Chunk {
             values: [0; CHUNK_BYTES],
             lens: [0; CHUNK_BYTES],
             indices: Box::new([0; CHUNK_BYTES * TILE_SAMPLES]),
-            ink: Vec::new(),
+            inks: Vec::new(),
             shared: RefCell::new(Vec::new()),
             count: 0,
         }
@@ -71,14 +73,22 @@ impl Chunk {
         self.inked[slot / 64] & (1 << (slot % 64)) != 0
     }
 
-    fn ink_range(&self, slot: usize) -> std::ops::Range<usize> {
-        if !self.may_have_ink(slot) {
-            return 0..0;
+    /// The slot's ink, sorted by sample.
+    fn slot_ink(&self, slot: usize) -> &[(u8, Ink)] {
+        if self.may_have_ink(slot) {
+            &self.inks[slot]
+        } else {
+            &[]
         }
-        let first = (slot * TILE_SAMPLES) as u16;
-        let start = self.ink.partition_point(|&(key, _)| key < first);
-        let end = self.ink.partition_point(|&(key, _)| key < first + TILE_SAMPLES as u16);
-        start..end
+    }
+
+    /// The slot's ink list for changes, marking the slot as inked.
+    fn slot_ink_mut(&mut self, slot: usize) -> &mut InkList {
+        if self.inks.is_empty() {
+            self.inks.resize_with(CHUNK_BYTES, Vec::new);
+        }
+        self.inked[slot / 64] |= 1 << (slot % 64);
+        &mut self.inks[slot]
     }
 
     fn forget_shared(&mut self, slot: usize) {
@@ -93,8 +103,8 @@ impl Chunk {
         }
         let len = usize::from(self.lens[slot]);
         let mut ink = CellInkMap::default();
-        for (key, value) in &self.ink[self.ink_range(slot)] {
-            ink.insert(usize::from(*key) % TILE_SAMPLES, value.clone());
+        for (sample, value) in self.slot_ink(slot) {
+            ink.insert(usize::from(*sample), value.clone());
         }
         let cell = Arc::new(DetailCell {
             value: self.values[slot],
@@ -117,11 +127,11 @@ impl Chunk {
         {
             return false;
         }
-        let range = self.ink_range(slot);
-        range.len() == cell.ink.len()
-            && self.ink[range].iter().all(|(key, ink)| {
-                cell.ink.get(&(usize::from(*key) % TILE_SAMPLES)) == Some(ink)
-            })
+        let held = self.slot_ink(slot);
+        held.len() == cell.ink.len()
+            && held
+                .iter()
+                .all(|(sample, ink)| cell.ink.get(&usize::from(*sample)) == Some(ink))
     }
 
     /// Store `cell` in `slot`, which must not hold one. `shared` is the
@@ -135,16 +145,10 @@ impl Chunk {
         self.indices[slot * TILE_SAMPLES..slot * TILE_SAMPLES + cell.indices.len()]
             .copy_from_slice(&cell.indices);
         if !cell.ink.is_empty() {
-            self.inked[slot / 64] |= 1 << (slot % 64);
-            let first = (slot * TILE_SAMPLES) as u16;
-            let at = self.ink.partition_point(|&(key, _)| key < first);
-            let mut ink: Vec<_> = cell
-                .ink
-                .iter()
-                .map(|(&sample, ink)| ((slot * TILE_SAMPLES + sample) as u16, ink.clone()))
-                .collect();
-            ink.sort_unstable_by_key(|&(key, _)| key);
-            self.ink.splice(at..at, ink);
+            let held = self.slot_ink_mut(slot);
+            held.clear();
+            held.extend(cell.ink.iter().map(|(&sample, ink)| (sample as u8, ink.clone())));
+            held.sort_unstable_by_key(|&(sample, _)| sample);
         }
         match shared {
             Some(cell) => {
@@ -162,8 +166,7 @@ impl Chunk {
         self.present[slot / 64] &= !(1 << (slot % 64));
         self.count -= 1;
         if self.may_have_ink(slot) {
-            let range = self.ink_range(slot);
-            self.ink.drain(range);
+            self.inks[slot].clear();
             self.inked[slot / 64] &= !(1 << (slot % 64));
         }
         self.forget_shared(slot);
@@ -172,7 +175,6 @@ impl Chunk {
     /// Clear every occupied slot in `[first, end)`, returning how many.
     fn clear_span(&mut self, first: usize, end: usize) -> usize {
         let mut cleared = 0;
-        let mut inked = false;
         for word in first / 64..end.div_ceil(64) {
             let low = if word == first / 64 { first % 64 } else { 0 };
             let high = if word == (end - 1) / 64 { (end - 1) % 64 + 1 } else { 64 };
@@ -183,8 +185,12 @@ impl Chunk {
             }
             cleared += hit.count_ones() as usize;
             self.present[word] &= !hit;
-            inked |= self.inked[word] & hit != 0;
+            let mut inked = self.inked[word] & hit;
             self.inked[word] &= !hit;
+            while inked != 0 {
+                self.inks[word * 64 + inked.trailing_zeros() as usize].clear();
+                inked &= inked - 1;
+            }
             if let Some(shared) = self.shared.get_mut().get_mut(word * 64..word * 64 + 64) {
                 let mut bits = hit;
                 while bits != 0 {
@@ -192,14 +198,6 @@ impl Chunk {
                     bits &= bits - 1;
                 }
             }
-        }
-        if inked {
-            let (from, to) = ((first * TILE_SAMPLES) as u16, end * TILE_SAMPLES);
-            let present = self.present;
-            self.ink.retain(|&(key, _)| {
-                let slot = usize::from(key) / TILE_SAMPLES;
-                key < from || usize::from(key) >= to || present[slot / 64] & (1 << (slot % 64)) != 0
-            });
         }
         self.count -= cleared;
         cleared
@@ -221,10 +219,10 @@ impl OffscreenCellRef<'_> {
 
     /// The cell's ink as `(sample, ink)` in sample order.
     pub(super) fn inks(&self) -> impl Iterator<Item = (usize, &Ink)> {
-        let slot = self.slot;
-        self.chunk.ink[self.chunk.ink_range(slot)]
+        self.chunk
+            .slot_ink(self.slot)
             .iter()
-            .map(move |(key, ink)| (usize::from(*key) - slot * TILE_SAMPLES, ink))
+            .map(|(sample, ink)| (usize::from(*sample), ink))
     }
 }
 
@@ -277,26 +275,17 @@ impl OffscreenCellMut<'_> {
         if !self.chunk.may_have_ink(self.slot) {
             return;
         }
-        let key = (self.slot * TILE_SAMPLES + sample) as u16;
-        if let Ok(at) = self.chunk.ink.binary_search_by_key(&key, |&(key, _)| key) {
+        let held = &mut self.chunk.inks[self.slot];
+        if held.iter().any(|&(held, _)| usize::from(held) == sample) {
+            ink_remove(held, sample);
             self.chunk.forget_shared(self.slot);
-            self.chunk.ink.remove(at);
         }
     }
 
     /// The ink of `sample`, inserting `ink()` when it has none.
     pub(super) fn ink_or_insert_with(&mut self, sample: usize, ink: impl FnOnce() -> Ink) -> &mut Ink {
         self.chunk.forget_shared(self.slot);
-        self.chunk.inked[self.slot / 64] |= 1 << (self.slot % 64);
-        let key = (self.slot * TILE_SAMPLES + sample) as u16;
-        let at = match self.chunk.ink.binary_search_by_key(&key, |&(key, _)| key) {
-            Ok(at) => at,
-            Err(at) => {
-                self.chunk.ink.insert(at, (key, ink()));
-                at
-            }
-        };
-        &mut self.chunk.ink[at].1
+        ink_entry(self.chunk.slot_ink_mut(self.slot), sample, ink)
     }
 }
 
