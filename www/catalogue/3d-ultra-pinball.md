@@ -75,6 +75,7 @@ artifacts:
       a4bd03f5578a8ce7910e467fe8c7b141101a6ddfc7e29c89b8e60622354b7f16, 472,752 bytes.
 references:
 - https://classicmacdemos.com/3d-ultra-pinball
+- https://download.classicmacdemos.com/3D%20Ultra%20Pinball%20Demo.sit
 - https://static.classicmacdemos.com/demos/3d-ultra-pinball/README.txt
 ---
 
@@ -89,5 +90,5 @@ targets, and animated score display remain active during play.
 
 This is the original Macintosh promotional demo, not the retail release.
 The same gameplay sequence reached the table and exercised its controls in
-Systemless and BasiliskII. Browser launch remains disabled until manual
-testing and approval.
+Systemless and BasiliskII; pixel-perfect parity is not claimed. Browser launch
+remains disabled until manual testing and approval.
