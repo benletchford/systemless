@@ -1859,6 +1859,12 @@ pub enum PpcImportDispatcherTarget {
     C2PStr,
     UpperText,
     GetCurrentThread,
+    NewThreadEntryUPP,
+    DisposeThreadEntryUPP,
+    NewThreadTerminationUPP,
+    DisposeThreadTerminationUPP,
+    NewThreadSwitchUPP,
+    DisposeThreadSwitchUPP,
     SetThreadTerminator,
     SetThreadSwitcher,
     GetThreadState,
@@ -13028,6 +13034,24 @@ fn dispatcher_target_for_import(
         ("InterfaceLib" | "ThreadsLib", "GetCurrentThread" | "MacGetCurrentThread") => {
             PpcImportDispatcherTarget::GetCurrentThread
         }
+        ("InterfaceLib", "NewThreadEntryUPP") => {
+            PpcImportDispatcherTarget::NewThreadEntryUPP
+        }
+        ("InterfaceLib", "DisposeThreadEntryUPP") => {
+            PpcImportDispatcherTarget::DisposeThreadEntryUPP
+        }
+        ("InterfaceLib", "NewThreadTerminationUPP") => {
+            PpcImportDispatcherTarget::NewThreadTerminationUPP
+        }
+        ("InterfaceLib", "DisposeThreadTerminationUPP") => {
+            PpcImportDispatcherTarget::DisposeThreadTerminationUPP
+        }
+        ("InterfaceLib", "NewThreadSwitchUPP") => {
+            PpcImportDispatcherTarget::NewThreadSwitchUPP
+        }
+        ("InterfaceLib", "DisposeThreadSwitchUPP") => {
+            PpcImportDispatcherTarget::DisposeThreadSwitchUPP
+        }
         ("InterfaceLib" | "ThreadsLib", "SetThreadTerminator") => {
             PpcImportDispatcherTarget::SetThreadTerminator
         }
@@ -15152,6 +15176,12 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             unreachable!("menu imports return through dispatch_menu_import")
         }
         PpcImportDispatcherTarget::GetCurrentThread
+        | PpcImportDispatcherTarget::NewThreadEntryUPP
+        | PpcImportDispatcherTarget::DisposeThreadEntryUPP
+        | PpcImportDispatcherTarget::NewThreadTerminationUPP
+        | PpcImportDispatcherTarget::DisposeThreadTerminationUPP
+        | PpcImportDispatcherTarget::NewThreadSwitchUPP
+        | PpcImportDispatcherTarget::DisposeThreadSwitchUPP
         | PpcImportDispatcherTarget::SetThreadTerminator
         | PpcImportDispatcherTarget::SetThreadSwitcher
         | PpcImportDispatcherTarget::GetThreadState

@@ -97,7 +97,9 @@ pub(super) fn dispatch_mixed_mode_import(
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::NewRoutineDescriptor => {
             Some(Some(PpcImportAction::Return(ppc_new_routine_descriptor(
-                cpu,
+                cpu.gpr[3],
+                cpu.gpr[4],
+                cpu.gpr[5] as u8,
                 process_memory_manager,
                 memory,
                 heap_cursor,
@@ -189,29 +191,28 @@ pub(super) fn dispatch_mixed_mode_import(
     }
 }
 
-fn ppc_new_routine_descriptor(
-    cpu: &mut PpcCpu,
+pub(super) fn ppc_new_routine_descriptor(
+    proc_ptr: u32,
+    proc_info: u32,
+    isa: u8,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
     pool: &mut PpcSystemAllocationPool,
 ) -> u32 {
-    let proc_ptr = cpu.gpr[3];
     if ppc_hle_trace_enabled() {
         eprintln!(
             "[PPC-TRACE] NewRoutineDescriptor proc=${proc_ptr:08X} words=({:08X?},{:08X?}) procInfo=${:08X} isa={}",
             memory.read_u32_be(proc_ptr),
             memory.read_u32_be(proc_ptr.wrapping_add(4)),
-            cpu.gpr[4],
-            cpu.gpr[5],
+            proc_info,
+            isa,
         );
     }
     if proc_ptr == 0 {
         return 0;
     }
-    let proc_info = cpu.gpr[4];
-    let isa = cpu.gpr[5] as u8;
     let descriptor_size = PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE + PPC_ROUTINE_RECORD_SIZE;
     let descriptor = ppc_alloc_routine_descriptor(
         process_memory_manager,

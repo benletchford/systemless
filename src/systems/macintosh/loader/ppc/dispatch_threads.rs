@@ -7,6 +7,13 @@ use crate::guest_call::{
 use crate::guest_procedure::{resolve_same_isa_thread_entry, GuestIsa, GuestProcedure};
 use crate::thread_manager::{NewThreadCreationEdge, ThreadManager};
 
+// C stack convention, void result, two 4-byte arguments.
+// CarbonCore/MixedMode.h: kCStackBased | STACK_ROUTINE_PARAMETER(1, 3)
+//   | STACK_ROUTINE_PARAMETER(2, 3).
+const PPC_THREAD_CALLBACK_PROC_INFO: u32 = 0x03C1;
+// C stack convention, 4-byte result, one 4-byte argument.
+const PPC_THREAD_ENTRY_PROC_INFO: u32 = 0x00F1;
+
 pub(super) struct PpcThreadDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
@@ -145,6 +152,51 @@ pub(super) fn dispatch_thread_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::NewThreadEntryUPP
+        | PpcImportDispatcherTarget::NewThreadTerminationUPP
+        | PpcImportDispatcherTarget::NewThreadSwitchUPP => {
+            // CarbonCore/Threads.h declares the entry callback as a function
+            // with one pointer argument and a pointer result; termination and
+            // switch callbacks take a ThreadID and context with no result.
+            // Carbon CFM creates a Mixed Mode routine descriptor for each UPP.
+            // Carbon Porting Guide (2002), p. 22; Threads.h, MixedMode.h.
+            let proc_info = if matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::NewThreadEntryUPP
+            ) {
+                PPC_THREAD_ENTRY_PROC_INFO
+            } else {
+                PPC_THREAD_CALLBACK_PROC_INFO
+            };
+            let descriptor = dispatch_mixed_mode::ppc_new_routine_descriptor(
+                cpu.gpr[3],
+                proc_info,
+                PPC_ROUTINE_RECORD_POWERPC_ISA,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                &mut toolbox_startup.system_allocations,
+            );
+            Some(PpcImportAction::Return(descriptor))
+        }
+        PpcImportDispatcherTarget::DisposeThreadEntryUPP
+        | PpcImportDispatcherTarget::DisposeThreadTerminationUPP
+        | PpcImportDispatcherTarget::DisposeThreadSwitchUPP => {
+            // CarbonCore/Threads.h: dispose the UPP returned by its matching
+            // constructor. A null UPP requires no release.
+            let descriptor = cpu.gpr[3];
+            if descriptor != 0 && !toolbox_startup.system_allocations.release(descriptor) {
+                let _ = process_memory_manager.dispose_native_ptr(descriptor);
+            }
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            Some(PpcImportAction::Return(0))
+        }
         PpcImportDispatcherTarget::GetCurrentThread => {
             // OSErr GetCurrentThread(ThreadID *currentThreadID);
             // Inside Macintosh: Thread Manager (1999), p. 62.
