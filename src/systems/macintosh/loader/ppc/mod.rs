@@ -164,7 +164,7 @@ pub(crate) use dispatch_dialog::PpcDialogCallbackState;
 pub(crate) use dispatch_collection::PpcCollectionCallbackState;
 use dispatch_dialog::*;
 pub(crate) use dispatch_stdc::{PpcQsortState, PpcStdSignalState};
-pub(in crate::loader::ppc) use dispatch_mixed_mode::*;
+pub(in crate::systems::macintosh::loader::ppc) use dispatch_mixed_mode::*;
 pub(super) use dispatch_stdc::*;
 pub(super) use dispatch_window::*;
 #[cfg(test)]
@@ -306,7 +306,7 @@ fn ppc_initial_import_error(error: PpcImportBindingError) -> PpcLoadError {
     }
 }
 
-pub(in crate::loader::ppc) fn ppc_dynamic_import_error(error: PpcImportBindingError) -> i16 {
+pub(in crate::systems::macintosh::loader::ppc) fn ppc_dynamic_import_error(error: PpcImportBindingError) -> i16 {
     match error {
         PpcImportBindingError::CountOverflow
         | PpcImportBindingError::CapacityExceeded { .. }

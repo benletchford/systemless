@@ -47,58 +47,58 @@
 
 #![deny(rustdoc::broken_intra_doc_links)]
 
-mod adb;
-pub mod audio;
-pub mod binhex;
-pub mod callback_manager;
-mod control_manager;
-pub mod cpu;
-#[cfg(feature = "debug")]
-pub mod debug;
-pub mod debug_overlay;
-pub mod disk_image;
-pub mod display;
+pub mod api;
 mod error;
-mod event_queue;
+mod fast_hash;
+pub mod systems;
+
+// Compatibility module paths for existing embedders.
+pub(crate) use systems::macintosh::adb;
+pub use systems::macintosh::audio;
+pub use systems::macintosh::binhex;
+pub use systems::macintosh::callback_manager;
+pub(crate) use systems::macintosh::cfm;
+pub(crate) use systems::macintosh::collection_manager;
+pub(crate) use systems::macintosh::control_manager;
+pub(crate) use systems::macintosh::copy_bits;
+pub use systems::macintosh::cpu;
+#[cfg(feature = "debug")]
+pub use systems::macintosh::debug;
+pub use systems::macintosh::debug_overlay;
+pub use systems::macintosh::disk_image;
+pub use systems::macintosh::display;
+pub(crate) use systems::macintosh::event_queue;
+pub(crate) use systems::macintosh::execution_kernel;
+pub(crate) use systems::macintosh::execution_m68k;
+pub(crate) use systems::macintosh::execution_native;
+pub use systems::macintosh::game;
+pub(crate) use systems::macintosh::guest_call;
+pub(crate) use systems::macintosh::guest_procedure;
+pub(crate) use systems::macintosh::list_manager;
+pub use systems::macintosh::loader;
+pub(crate) use systems::macintosh::mac_roman;
+pub use systems::macintosh::machine_profile;
+pub use systems::macintosh::managers;
+pub use systems::macintosh::memory;
+pub(crate) use systems::macintosh::menu_manager;
+pub use systems::macintosh::menu_model;
+pub(crate) use systems::macintosh::mixed_mode;
+pub(crate) use systems::macintosh::process_context;
+pub(crate) use systems::macintosh::process_manager;
+pub use systems::macintosh::quickdraw;
+pub use systems::macintosh::runner;
+#[cfg(feature = "test-support")]
+pub use systems::macintosh::scripted_traces;
+pub use systems::macintosh::sound;
+pub(crate) use systems::macintosh::text_edit;
+pub(crate) use systems::macintosh::thread_manager;
+pub use systems::macintosh::trace;
+pub use systems::macintosh::trap;
+pub(crate) use systems::macintosh::ui_art;
+pub use systems::macintosh::ui_theme;
+pub(crate) use systems::macintosh::window_manager;
+
+pub use error::{Error, Result};
 pub use event_queue::{
     EventManagerSnapshot, EventProbeResult, EventQueueProbeSnapshot, EventRecordSnapshot,
 };
-mod cfm;
-mod collection_manager;
-mod copy_bits;
-mod execution_kernel;
-mod execution_m68k;
-mod execution_native;
-pub mod game;
-mod guest_call;
-mod guest_procedure;
-mod list_manager;
-pub mod loader;
-mod mac_roman;
-pub mod machine_profile;
-mod fast_hash;
-pub mod managers;
-pub mod memory;
-mod menu_manager;
-pub mod menu_model;
-mod mixed_mode;
-mod process_context;
-mod process_manager;
-pub mod quickdraw;
-pub mod runner;
-/// Deterministic trap-interaction replays. This is internal test
-/// scaffolding, not part of the runtime API, so it is gated behind the
-/// off-by-default `test-support` feature and is absent from normal builds
-/// and docs.
-#[cfg(feature = "test-support")]
-pub mod scripted_traces;
-pub mod sound;
-mod text_edit;
-mod thread_manager;
-pub mod trace;
-pub mod trap;
-mod ui_art;
-pub mod ui_theme;
-mod window_manager;
-
-pub use error::{Error, Result};

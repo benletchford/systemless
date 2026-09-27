@@ -91,10 +91,12 @@ use objc2::{msg_send, runtime::NSObject};
 #[cfg(target_os = "macos")]
 use objc2_quartz_core::CATransaction;
 use runtime_driver::GuiDriver;
+use systemless::api::{InstructionBudget, VideoFrame};
 use systemless::debug_overlay::DebugOverlayFrameStats;
 use systemless::display;
 use systemless::game;
 use systemless::runner::FixtureRunner;
+use systemless::systems::macintosh::session::{MacintoshInput, MacintoshSession};
 use systemless::trap::dispatch::ScreenCopyBitsRect;
 use systemless::ui_theme::UiThemeId;
 
@@ -3375,10 +3377,9 @@ fn relaunch_with_native_guest_identity(game_path: &std::path::Path) {
     }
 }
 
-fn save_screenshot(runner: &FixtureRunner, num: usize) {
-    let (_, _, scrn_width, scrn_height, _) = runner.dispatcher().screen_mode;
-    let w = scrn_width as u32;
-    let h = scrn_height as u32;
+fn save_frame(frame: &VideoFrame, ticks: u32, num: usize) {
+    let w = frame.width;
+    let h = frame.height;
     if w == 0 || h == 0 {
         eprintln!(
             "[HEADLESS] Screenshot #{}: skipped (screen not initialized)",
@@ -3386,21 +3387,13 @@ fn save_screenshot(runner: &FixtureRunner, num: usize) {
         );
         return;
     }
-
-    let device_gamma = runner.dispatcher().device_gamma();
-    let rgba = display::render_screen_with_gamma(
-        runner.bus(),
-        runner.dispatcher().screen_mode,
-        &runner.dispatcher().device_clut,
-        &device_gamma,
-    );
+    let rgba = &frame.pixels;
 
     let img = image::RgbImage::from_fn(w, h, |x, y| {
         let idx = ((y * w + x) * 4) as usize;
         image::Rgb([rgba[idx], rgba[idx + 1], rgba[idx + 2]])
     });
 
-    let ticks = runner.guest_tick();
     let path = std::env::temp_dir().join(format!("systemless_headless_{:04}.png", num));
     img.save(&path).expect("Failed to save screenshot");
     eprintln!(
@@ -3409,6 +3402,30 @@ fn save_screenshot(runner: &FixtureRunner, num: usize) {
         path.display(),
         ticks
     );
+}
+
+fn save_screenshot(runner: &FixtureRunner, num: usize) {
+    let mode = runner.dispatcher().screen_mode;
+    if mode.2 == 0 || mode.3 == 0 {
+        eprintln!(
+            "[HEADLESS] Screenshot #{}: skipped (screen not initialized)",
+            num
+        );
+        return;
+    }
+    let gamma = runner.dispatcher().device_gamma();
+    let frame = VideoFrame {
+        width: u32::from(mode.2),
+        height: u32::from(mode.3),
+        format: systemless::api::PixelFormat::Rgba8,
+        pixels: display::render_screen_with_gamma(
+            runner.bus(),
+            mode,
+            &runner.dispatcher().device_clut,
+            &gamma,
+        ),
+    };
+    save_frame(&frame, runner.guest_tick(), num);
 }
 
 // Both headless clocks use the same transport and command-safe point. A debug
@@ -3458,20 +3475,17 @@ fn run_headless(
     eprintln!("[HEADLESS] Starting: {}", game_path.display());
     eprintln!("[HEADLESS] Max instructions: {}", max_instructions);
 
-    let mut runner = match screen_depth {
-        Some(screen_depth) => game::new_runner_with_configuration(!addressing_24_bit, screen_depth),
-        None => game::new_runner_with_addressing(!addressing_24_bit),
-    };
-    runner.set_ui_theme(ui_theme);
-    let app = game::load_game_from_path(&mut runner, game_path).expect("Failed to load game");
-    let mut save_store = DesktopSaveStore::for_loaded_archive(game_path, &mut runner);
+    let mut session = MacintoshSession::new(!addressing_24_bit, screen_depth);
+    session.runner_mut().set_ui_theme(ui_theme);
+    let app = session.load_path(game_path).expect("Failed to load game");
+    let mut save_store = DesktopSaveStore::for_loaded_archive(game_path, session.runner_mut());
     eprintln!(
         "[SYSTEMLESS] Desktop save dir: {}",
         save_store.root().display()
     );
     let restored_saves = save_store.load_saved_files();
     for file in &restored_saves {
-        runner.import_vfs_file(file);
+        session.runner_mut().import_vfs_file(file);
     }
     if !restored_saves.is_empty() {
         eprintln!(
@@ -3479,9 +3493,9 @@ fn run_headless(
             restored_saves.len()
         );
     }
-    game::init_game(&mut runner, &app);
+    session.initialize(&app);
 
-    let mut debug_server = bind_headless_debug_server(debug_socket, &mut runner);
+    let mut debug_server = bind_headless_debug_server(debug_socket, session.runner_mut());
 
     let chunk = 100_000;
     let mut total: usize = 0;
@@ -3490,7 +3504,7 @@ fn run_headless(
 
     while total < max_instructions {
         if let Some(server) = debug_server.as_mut() {
-            wait_for_debug_resume(server, &mut runner);
+            wait_for_debug_resume(server, session.runner_mut());
         }
         // Deliver everything the script has scheduled at or before this
         // point, then run only as far as the next event so its delivery
@@ -3500,11 +3514,32 @@ fn run_headless(
                 break;
             }
             match event.action {
-                InputAction::MouseMove { v, h } => runner.set_mouse_position(v, h),
-                InputAction::MouseDown { v, h } => runner.push_mouse_down(v, h),
-                InputAction::MouseUp { v, h } => runner.push_mouse_up(v, h),
-                InputAction::KeyDown { key, ch } => runner.push_key_down(key, ch),
-                InputAction::KeyUp { key, ch } => runner.push_key_up(key, ch),
+                InputAction::MouseMove { v, h } => {
+                    session.deliver_input(MacintoshInput::MouseMove {
+                        vertical: v,
+                        horizontal: h,
+                    })
+                }
+                InputAction::MouseDown { v, h } => {
+                    session.deliver_input(MacintoshInput::MouseDown {
+                        vertical: v,
+                        horizontal: h,
+                    })
+                }
+                InputAction::MouseUp { v, h } => session.deliver_input(MacintoshInput::MouseUp {
+                    vertical: v,
+                    horizontal: h,
+                }),
+                InputAction::KeyDown { key, ch } => {
+                    session.deliver_input(MacintoshInput::KeyDown {
+                        mac_key: key,
+                        character: ch,
+                    })
+                }
+                InputAction::KeyUp { key, ch } => session.deliver_input(MacintoshInput::KeyUp {
+                    mac_key: key,
+                    character: ch,
+                }),
             }
             eprintln!("[HEADLESS] input @{}: {:?}", event.at, event.action);
             next_event += 1;
@@ -3515,8 +3550,8 @@ fn run_headless(
             total,
             script.get(next_event).map(|event| event.at),
         );
-        let (steps, running) = runner.run_steps(steps_to_run, None);
-        total += steps;
+        let advance = session.advance(InstructionBudget(steps_to_run));
+        total += advance.instructions;
 
         let screenshot_num = total / 500_000;
         if screenshot_num > last_screenshot {
@@ -3528,29 +3563,32 @@ fn run_headless(
                 .map(|v| v != "0")
                 .unwrap_or(true)
             {
-                runner.composite_frame();
-                save_screenshot(&runner, screenshot_num);
+                if let Some(frame) = session.video_frame() {
+                    save_frame(&frame, session.status().guest_tick, screenshot_num);
+                }
             }
         }
 
-        if !running {
+        if !advance.running {
             eprintln!("[HEADLESS] CPU stopped after {} instructions", total);
             break;
         }
     }
 
     eprintln!("[HEADLESS] Completed {} instructions", total);
-    save_store.sync_save_files_now(&mut runner);
-    save_screenshot(&runner, 9999);
+    save_store.sync_save_files_now(session.runner_mut());
+    if let Some(frame) = session.video_frame() {
+        save_frame(&frame, session.status().guest_tick, 9999);
+    }
     // Measurement-only: prints nothing unless SYSTEMLESS_WAIT_STATS is set.
     systemless::runner::dump_wait_stats();
-    if debug_server.is_some() && runner.is_halted() {
+    if debug_server.is_some() && session.runner().is_halted() {
         eprintln!(
             "[HEADLESS] Debugger remains available after terminal stop (press Ctrl-C to exit)"
         );
         loop {
             if let Some(server) = debug_server.as_mut() {
-                server.pump(&mut runner);
+                server.pump(session.runner_mut());
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
