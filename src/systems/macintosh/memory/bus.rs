@@ -2545,6 +2545,51 @@ impl MacMemoryBus {
         true
     }
 
+    /// No diagnostic observes individual stores and no write probe is armed,
+    /// so presented bytes may be written in bulk (see
+    /// `write_presented_bytes_over_text`).
+    pub(crate) fn presented_bytes_gates_open(&self) -> bool {
+        !(mem_read_trace_active()
+            || mem_write_trace_active()
+            || fb_write_trace_range().is_some()
+            || self.write_probe_original.is_some()
+            || watchpoint_armed())
+    }
+
+    /// `len` bytes at the (untranslated, flat) `address` are plain writable
+    /// RAM: not routed elsewhere, not protected code, within RAM.
+    pub(crate) fn presented_bytes_writable(&self, address: u32, len: usize) -> bool {
+        self.route(address, len) == GuestMemoryRoute::Flat
+            && !self.readonly_code_overlaps(address, len as u32)
+            && u64::from(address) + len as u64 <= u64::from(self.ram_size)
+    }
+
+    /// Store `data` at the translated in-RAM `address` when the presentation
+    /// can invalidate the span's offscreen detail in one pass, as the byte
+    /// writes would have (a rectangle fill over an offscreen text buffer).
+    /// Out of line so `write_bytes` keeps its shape.
+    #[inline(never)]
+    fn write_offscreen_bytes(&mut self, address: u32, data: &[u8]) -> bool {
+        if !self.presented_bytes_gates_open() {
+            return false;
+        }
+        let handled = self
+            .presentation
+            .as_mut()
+            .is_some_and(|mut p| p.write_offscreen_span(address, data.len()));
+        if handled {
+            self.ram.write_bytes_in_bounds(address as usize, data);
+            self.refresh_store_filter();
+        }
+        handled
+    }
+
+    /// Store bytes a caller has proved `presented_bytes_writable` under open
+    /// gates, leaving the presentation to the caller.
+    pub(crate) fn write_presented_ram(&mut self, address: u32, data: &[u8]) {
+        self.ram.write_bytes_in_bounds(address as usize, data);
+    }
+
     /// Copy a RAM range to another RAM range with one bounds/tracing gate.
     /// Falls back to byte writes when debug watchpoints or framebuffer-write
     /// tracing are active so diagnostics still observe each destination byte.
@@ -3570,6 +3615,9 @@ impl MemoryBus for MacMemoryBus {
             if self.only_write_probe_blocks_fast_path() {
                 self.record_write_probe_range(translated_address, data.len() as u32);
                 self.ram.write_bytes_in_bounds(translated_address as usize, data);
+                return;
+            }
+            if self.write_offscreen_bytes(translated_address, data) {
                 return;
             }
         }

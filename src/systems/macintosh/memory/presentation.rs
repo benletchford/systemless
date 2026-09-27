@@ -5,14 +5,16 @@
 mod compact;
 mod controls;
 mod resample;
+mod offscreen;
 mod samples;
+use offscreen::OffscreenDetail;
 pub use compact::{CompactPresentation, CompactPresentationCache};
 use samples::{DetailSamples, TILE_SAMPLES};
 
 use super::page_index::PageIndex;
 use super::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{outline, Glyph};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
 
@@ -188,17 +190,8 @@ impl PresentationSlot {
                 if !p.may_have_offscreen_detail(address, end) {
                     return;
                 }
-                let keys: Vec<_> = p
-                    .offscreen
-                    .range(address..)
-                    .take_while(|(key, _)| u64::from(**key) < end)
-                    .map(|(&key, _)| key)
-                    .collect();
-                if !keys.is_empty() {
+                if p.offscreen.remove_range(address, end) {
                     p.changed(false);
-                }
-                for key in keys {
-                    p.offscreen.remove(&key);
                 }
             } else if p.observes_range(address, bytes.len()) {
                 for (i, &value) in bytes.iter().enumerate() {
@@ -632,7 +625,7 @@ pub(crate) struct Presentation {
     cpu_copy: [Option<Arc<DetailCell>>; 4],
     restored_dialog: Option<(u64, (i16, i16, i16, i16), bool, u64)>,
     output_cache: std::cell::RefCell<Option<ResolvedOutputCache>>,
-    offscreen: BTreeMap<u32, Arc<DetailCell>>,
+    offscreen: OffscreenDetail,
     // Conservative bounds: deletion may leave false positives, never false negatives.
     offscreen_bounds: Option<(u32, u32)>,
     /// Page filter over the keys of `offscreen`, with the same conservative
@@ -906,11 +899,7 @@ impl Presentation {
     #[inline(never)]
     fn observes_offscreen_range(&self, address: u32, end: u64) -> bool {
         self.offscreen_pages.may_overlap(u64::from(address), end)
-            && self
-                .offscreen
-                .range(address..=(end - 1) as u32)
-                .next()
-                .is_some()
+            && self.offscreen.any_in(address, end)
     }
 
     fn position(&self, address: u32) -> Option<(u32, u32)> {
@@ -1170,7 +1159,7 @@ impl Presentation {
     fn detail(&self, address: u32) -> Option<Arc<DetailCell>> {
         let Some((x, y)) = self.position(address) else {
             return if self.may_have_offscreen_detail(address, u64::from(address) + 1) {
-                self.offscreen.get(&address).cloned()
+                self.offscreen.get(address)
             } else {
                 None
             };
@@ -1226,10 +1215,8 @@ impl Presentation {
             let (Ok(from), Ok(to)) = (u32::try_from(from), u32::try_from(to)) else {
                 return;
             };
-            for (&key, cell) in self.offscreen.range(from..to) {
-                pixels
-                    .detail
-                    .insert(offset + (key - address) as usize, cell.clone());
+            for (key, cell) in self.offscreen.range(from, u64::from(to)) {
+                pixels.detail.insert(offset + (key - address) as usize, cell);
             }
         };
 
@@ -1405,14 +1392,14 @@ impl Presentation {
             let (Ok(first), Ok(last)) = (u32::try_from(from), u32::try_from(to - 1)) else {
                 return false;
             };
-            for (&key, cell) in self.offscreen.range(first..=last) {
+            for (key, cell) in self.offscreen.range(first, u64::from(last) + 1) {
                 let index = offset + (key - address) as usize;
                 let value = pixels[index].into() as u8;
                 if pixels
                     .detail
                     .get(&index)
                     .filter(|saved| saved.value == value)
-                    != Some(cell)
+                    != Some(&cell)
                 {
                     return false;
                 }
@@ -1485,7 +1472,7 @@ impl Presentation {
 
     fn matches_detail(&self, address: u32, detail: Option<&Arc<DetailCell>>) -> bool {
         let Some((x, y)) = self.position(address) else {
-            return self.offscreen.get(&address) == detail;
+            return self.offscreen.matches(address, detail.map(|cell| &**cell));
         };
         match detail {
             None => !self.text_cells[(y * self.width + x) as usize],
@@ -1569,7 +1556,7 @@ impl Presentation {
         self.changed(position.is_some());
         let Some((x, y)) = position else {
             self.include_offscreen_address(address);
-            self.offscreen.insert(address, cell.clone());
+            self.offscreen.insert(address, cell);
             return;
         };
         if cell.indices.len() != (self.scale * self.scale) as usize {
@@ -1662,6 +1649,74 @@ impl Presentation {
         expected == self.ink_mask
     }
 
+    /// The offscreen half of `write`, out of line: every screen byte a game
+    /// draws passes through `write`, and few stores reach retained offscreen
+    /// text.
+    #[inline(never)]
+    fn write_offscreen(&mut self, address: u32, value: u8) {
+        if self.offscreen.contains(address) || self.glyph.is_some() {
+            self.changed(false);
+        }
+        if self.glyph.is_some() {
+            if let Some(mut cell) = self.offscreen.cell_mut(address) {
+                cell.set_value(value);
+            }
+        } else if self.erasing_text
+            && self
+                .offscreen_run_ink
+                .iter()
+                .any(|(addr, _)| *addr == address)
+        {
+            if let Some(mut cell) = self.offscreen.cell_mut(address) {
+                cell.set_value(value);
+                for i in 0..cell.len() {
+                    if !self.offscreen_run_ink.contains(&(address, i)) {
+                        cell.set_index(i, value);
+                        cell.remove_ink(i);
+                    }
+                }
+            }
+        } else {
+            self.offscreen.remove(address);
+        }
+    }
+
+    /// Invalidate the detail under a plain store of `len` bytes at
+    /// `address`, exactly as `len` calls to `write` would, when the span lies
+    /// wholly offscreen and no glyph or text erase is in progress, and
+    /// report whether it did. Plain offscreen stores only drop cells, so a
+    /// span erase drops them in one pass.
+    pub(super) fn write_offscreen_span(&mut self, address: u32, len: usize) -> bool {
+        let end = u64::from(address) + len as u64;
+        let screen_end = u64::from(self.base) + u64::from(self.row_bytes) * u64::from(self.height);
+        if len == 0
+            || self.glyph.is_some()
+            || self.erasing_text
+            || !(end <= u64::from(self.base) || u64::from(address) >= screen_end)
+        {
+            return false;
+        }
+        // The first `write` consumes a superseded store, and skips its byte
+        // if it lies in the span.
+        let skipped = self.superseded_write.take().filter(|&skip| {
+            skip >= address && u64::from(skip) < end
+        });
+        if !self.may_have_offscreen_detail(address, end) {
+            return true;
+        }
+        let removed = match skipped {
+            Some(skip) => {
+                let before = self.offscreen.remove_range(address, u64::from(skip));
+                self.offscreen.remove_range(skip + 1, end) | before
+            }
+            None => self.offscreen.remove_range(address, end),
+        };
+        if removed {
+            self.changed(false);
+        }
+        true
+    }
+
     pub fn write(&mut self, address: u32, value: u8) {
         if self.superseded_write.take() == Some(address) {
             return;
@@ -1672,33 +1727,7 @@ impl Presentation {
             {
                 return;
             }
-            if self.offscreen.contains_key(&address) || self.glyph.is_some() {
-                self.changed(false);
-            }
-            if self.glyph.is_some() {
-                if let Some(cell) = self.offscreen.get_mut(&address) {
-                    let cell = Arc::make_mut(cell);
-                    cell.value = value;
-                }
-            } else if self.erasing_text
-                && self
-                    .offscreen_run_ink
-                    .iter()
-                    .any(|(addr, _)| *addr == address)
-            {
-                if let Some(cell) = self.offscreen.get_mut(&address) {
-                    let cell = Arc::make_mut(cell);
-                    cell.value = value;
-                    for i in 0..cell.indices.len() {
-                        if !self.offscreen_run_ink.contains(&(address, i)) {
-                            cell.indices[i] = value;
-                            cell.ink.remove(&i);
-                        }
-                    }
-                }
-            } else {
-                self.offscreen.remove(&address);
-            }
+            self.write_offscreen(address, value);
             return;
         };
         let cell = (y * self.width + x) as usize;
@@ -1815,6 +1844,130 @@ impl Presentation {
         }
     }
 
+    /// Whether `copy_offscreen_row_to_screen` may stand in for copying the
+    /// `len` bytes at `source` to `destination` a pixel at a time: the source
+    /// lies wholly outside the framebuffer and holds only full-size cells,
+    /// the destination is one screen-row span, and no glyph capture, CPU
+    /// drawing or recolor tracking, text erasing or text run is in progress.
+    pub(crate) fn can_copy_offscreen_row_to_screen(
+        &self,
+        source: u32,
+        destination: u32,
+        len: usize,
+    ) -> bool {
+        let source_end = u64::from(source) + len as u64;
+        let screen_end = u64::from(self.base) + u64::from(self.row_bytes) * u64::from(self.height);
+        let samples = (self.scale * self.scale) as usize;
+        !self.cpu_drawing
+            && self.cpu_recolor.is_none()
+            && self.glyph.is_none()
+            && !self.erasing_text
+            && self.run_ink.is_empty()
+            && self.screen_row_span(destination, len).is_some()
+            && (source_end <= u64::from(self.base) || u64::from(source) >= screen_end)
+            && self.offscreen.all_cells_have_len(source, source_end, samples)
+    }
+
+    /// Copy one row from offscreen memory to a screen-row span exactly as
+    /// the per-pixel copy would: `values` are the stored bytes (already
+    /// mapped through `table`). A byte whose source carries detail takes the
+    /// source cell mapped through `table`, as `put_detail` would, leaving an
+    /// identical destination untouched; any other byte is a plain store, as
+    /// `write` would make it. Cells are read from the offscreen chunks
+    /// directly, with no intermediate `Arc` or snapshot.
+    pub(crate) fn copy_offscreen_row_to_screen(
+        &mut self,
+        source: u32,
+        destination: u32,
+        values: &[u8],
+        table: Option<&[u8; 256]>,
+    ) {
+        let Some((x0, y)) = self.position(destination) else {
+            return;
+        };
+        let map = |index: u8| table.map_or(index, |table| table[index as usize]);
+        let samples = (self.scale * self.scale) as usize;
+        // Nothing below touches the offscreen store, so hold it aside and
+        // read the source row's chunks directly while writing the screen.
+        let offscreen = std::mem::take(&mut self.offscreen);
+        let span = offscreen.span(source, values.len());
+        for (i, &value) in values.iter().enumerate() {
+            let x = x0 + i as u32;
+            let cell = (y * self.width + x) as usize;
+            let Some(source_cell) = span.get(i) else {
+                if self.guest_values[cell] == u16::from(value) && !self.text_cells[cell] {
+                    continue;
+                }
+                self.touch_screen(x, y);
+                self.changed(true);
+                self.guest_values[cell] = u16::from(value);
+                if self.text_cells[cell] {
+                    self.clear_text_cell(cell, x, value);
+                }
+                continue;
+            };
+            // Read the mapped source cell before touching the screen.
+            let mut indices = [0u8; TILE_SAMPLES];
+            for (index, &source) in indices.iter_mut().zip(source_cell.indices()).take(samples) {
+                *index = map(source);
+            }
+            let mut inks: [Option<Ink>; TILE_SAMPLES] = Default::default();
+            for (sample, ink) in source_cell.inks() {
+                if sample < samples {
+                    let mut ink = ink.clone();
+                    ink.foreground = map(ink.foreground);
+                    ink.background.map(&mut |index| map(index));
+                    inks[sample] = Some(ink);
+                }
+            }
+            let unchanged = self.text_cells[cell]
+                && self.guest_values[cell] == u16::from(value)
+                && (0..samples).all(|sample| {
+                    self.samples.get(cell).indices[sample] == indices[sample]
+                        && match (self.ink_mask[cell] & (1 << sample) != 0, &inks[sample]) {
+                            (false, None) => true,
+                            (true, Some(ink)) => {
+                                self.ink.get(&(cell * TILE_SAMPLES + sample)) == Some(ink)
+                            }
+                            _ => false,
+                        }
+                });
+            if unchanged {
+                continue;
+            }
+            self.changed(true);
+            self.touch_screen(x, y);
+            let palette = if self.depth == 8 {
+                &self.palette
+            } else {
+                &self.direct_palettes[(x % self.bytes_per_pixel()) as usize]
+            };
+            let tile = self.samples.ensure(cell);
+            Self::set_text_cell(&mut self.text_cells, &mut self.text_cell_count, cell, true);
+            self.detail_cache.get_mut()[cell] = None;
+            self.guest_values[cell] = u16::from(value);
+            for (sample, ink) in inks.into_iter().enumerate().take(samples) {
+                tile.indices[sample] = indices[sample];
+                let offset = cell * TILE_SAMPLES + sample;
+                let bit = 1u16 << sample;
+                if self.ink_mask[cell] & bit != 0 {
+                    self.ink.remove(&offset);
+                    self.ink_mask[cell] &= !bit;
+                }
+                tile.rgb[sample] = if let Some(ink) = ink {
+                    let rgb = ink.rgb(palette);
+                    self.ink.insert(offset, ink);
+                    self.ink_mask[cell] |= bit;
+                    rgb
+                } else {
+                    palette[indices[sample] as usize]
+                };
+            }
+        }
+        drop(span);
+        self.offscreen = offscreen;
+    }
+
     /// Called for every visible glyph cell, including cells with zero 1x ink.
     /// QuickDraw has already applied both the visibility and clipping regions.
     pub fn glyph_pixel(&mut self, address: u32, x: i16, y: i16, foreground: u8, background: u8) {
@@ -1828,14 +1981,11 @@ impl Presentation {
             let Some((glyph, h, v)) = &self.glyph else {
                 return;
             };
-            let cell = self.offscreen.entry(address).or_insert_with(|| {
-                Arc::new(DetailCell {
-                    value: background,
-                    indices: vec![background; (self.scale * self.scale) as usize],
-                    ink: HashMap::default(),
-                })
-            });
-            let cell = Arc::make_mut(cell);
+            let mut cell = self.offscreen.cell_mut_or_insert(
+                address,
+                background,
+                (self.scale * self.scale) as usize,
+            );
             for sy in 0..self.scale {
                 for sx in 0..self.scale {
                     let gx =
@@ -1854,13 +2004,14 @@ impl Presentation {
                         self.offscreen_run_ink.insert((address, i));
                     }
                     if alpha == 255 {
-                        cell.indices[i] = foreground;
-                        cell.ink.remove(&i);
+                        cell.set_index(i, foreground);
+                        cell.remove_ink(i);
                     } else {
-                        let ink = cell.ink.entry(i).or_insert_with(|| Ink {
+                        let background_index = cell.index(i);
+                        let ink = cell.ink_or_insert_with(i, || Ink {
                             foreground,
                             alpha: 0,
-                            background: IndexedColor::Solid(cell.indices[i]),
+                            background: IndexedColor::Solid(background_index),
                         });
                         if ink.foreground != foreground {
                             let previous = ink.clone();
@@ -2011,6 +2162,49 @@ impl MacMemoryBus {
     /// capture, observed offscreen detail, a non-plain screen row, or any
     /// diagnostic, probe or protection gate `write_plain_presented_bytes`
     /// refuses.
+    /// Copy rows of pixels from offscreen memory to the screen, carrying their
+    /// retained text, when every row qualifies for
+    /// `Presentation::copy_offscreen_row_to_screen` and no diagnostic, probe,
+    /// protection or routing gate applies. `pixels` holds the source rows
+    /// (`row_len` bytes each) as read before any row is written. Returns
+    /// false, having written nothing, otherwise.
+    pub(crate) fn copy_offscreen_rows_to_screen(
+        &mut self,
+        rows: &[(u32, u32)],
+        pixels: &[u8],
+        row_len: usize,
+        palette: Option<&[u8; 256]>,
+    ) -> bool {
+        if rows.is_empty() || row_len == 0 || !self.presented_bytes_gates_open() {
+            return false;
+        }
+        let eligible = self.presentation.as_ref().is_some_and(|p| {
+            rows.iter().all(|&(source, destination)| {
+                self.range_translates_contiguously(source, row_len) == Some(source)
+                    && self.range_translates_contiguously(destination, row_len) == Some(destination)
+                    && self.presented_bytes_writable(destination, row_len)
+                    && p.can_copy_offscreen_row_to_screen(source, destination, row_len)
+            })
+        });
+        if !eligible {
+            return false;
+        }
+        let mut row = vec![0u8; row_len];
+        for (&(source, destination), values) in rows.iter().zip(pixels.chunks_exact(row_len)) {
+            row.copy_from_slice(values);
+            if let Some(palette) = palette {
+                for pixel in &mut row {
+                    *pixel = palette[*pixel as usize];
+                }
+            }
+            self.write_presented_ram(destination, &row);
+            if let Some(mut p) = self.presentation.as_mut() {
+                p.copy_offscreen_row_to_screen(source, destination, &row, palette);
+            }
+        }
+        true
+    }
+
     pub(crate) fn write_plain_copy_span(
         &mut self,
         address: u32,
@@ -2068,10 +2262,7 @@ impl MacMemoryBus {
         let plain_row = self.presentation.as_ref().is_some_and(|p| {
             p.can_sync_plain_screen_row(destination_address, bytes.len())
                 && (!p.may_have_offscreen_detail(source, source_end)
-                    || p.offscreen
-                        .range(source..source + bytes.len() as u32)
-                        .next()
-                        .is_none())
+                    || !p.offscreen.any_in(source, source_end))
         });
         if plain_row && self.write_plain_presented_bytes(destination, bytes) {
             return;
@@ -2092,29 +2283,23 @@ impl MacMemoryBus {
         if let Some(mut p) = self.presentation.as_mut() {
             if p.plain_screen_row(destination, bytes.len())
                 && (!p.may_have_offscreen_detail(source, source_end)
-                    || p.offscreen
-                        .range(source..source + bytes.len() as u32)
-                        .next()
-                        .is_none())
+                    || !p.offscreen.any_in(source, source_end))
             {
                 return;
             }
             let changes = {
-                let mut source_cells = p
-                    .offscreen
-                    .range(source..source + bytes.len() as u32)
-                    .peekable();
+                let mut source_cells = p.offscreen.range(source, source_end).into_iter().peekable();
                 let mut changes = Vec::new();
                 for (i, &value) in bytes.iter().enumerate() {
                     let address = source + i as u32;
-                    let detail = if source_cells.peek().is_some_and(|(key, _)| **key == address) {
+                    let detail = if source_cells.peek().is_some_and(|(key, _)| *key == address) {
                         source_cells.next().map(|(_, cell)| cell)
                     } else {
                         None
                     };
                     let destination = destination + i as u32;
-                    if !p.matches_detail(destination, detail) {
-                        changes.push((destination, value, detail.cloned()));
+                    if !p.matches_detail(destination, detail.as_ref()) {
+                        changes.push((destination, value, detail));
                     }
                 }
                 changes
@@ -2347,13 +2532,11 @@ impl MacMemoryBus {
                 return;
             }
             let end = (u64::from(address) + len as u64).min(u64::from(u32::MAX) + 1);
-            for (&addr, cell) in p.offscreen.range(address..=(end - 1) as u32) {
+            for (addr, cell) in p.offscreen.range(address, end) {
                 if p.position(addr).is_some() {
                     continue;
                 }
-                pixels
-                    .detail
-                    .insert(offset + (addr - address) as usize, cell.clone());
+                pixels.detail.insert(offset + (addr - address) as usize, cell);
             }
             let screen_start = u64::from(address).max(u64::from(p.base));
             let screen_end =
@@ -2745,7 +2928,7 @@ impl MacMemoryBus {
             cpu_copy: Default::default(),
             restored_dialog: None,
             output_cache: std::cell::RefCell::new(None),
-            offscreen: BTreeMap::new(),
+            offscreen: OffscreenDetail::default(),
             offscreen_bounds: None,
             offscreen_pages: PageIndex::default(),
             store_filter_new_pages: Vec::new(),
@@ -2794,11 +2977,9 @@ impl MacMemoryBus {
             }
         }
         if let Some((offscreen, glyph_count)) = retained {
-            presentation.offscreen_bounds = offscreen
-                .first_key_value()
-                .zip(offscreen.last_key_value())
-                .map(|((&first, _), (&last, _))| (first, last));
-            for &address in offscreen.keys() {
+            let addresses = offscreen.addresses();
+            presentation.offscreen_bounds = addresses.first().zip(addresses.last()).map(|(&first, &last)| (first, last));
+            for &address in &addresses {
                 presentation
                     .offscreen_pages
                     .mark(u64::from(address), u64::from(address) + 1);
@@ -3417,6 +3598,94 @@ mod tests {
         }
         let mapped = |bus: &MacMemoryBus, address| bus.save_pixel_bytes(address, 1).detail.get(&0).cloned().unwrap();
         assert!(Arc::ptr_eq(&mapped(&fast, 0x1000 + 10 + 1), &mapped(&fast, 0x1000 + 10 + 3)));
+    }
+
+    /// Copying rows of offscreen text to the screen straight from the chunk
+    /// store leaves exactly what capturing each source row and copying it a
+    /// pixel at a time leaves, whatever the destination held and with or
+    /// without a colour table.
+    #[test]
+    fn offscreen_rows_copy_to_the_screen_like_the_per_pixel_copy() {
+        use crate::copy_bits::{BytePixmap, CopyBitsMemory, RowCopy, RowCopyOutcome};
+        let inverted: [u8; 256] = std::array::from_fn(|i| (255 - i) as u8);
+        let source = 0x3_0000u32;
+        let (row_len, rows) = (6usize, 2u32);
+        let destination = |row: u32| 0x1000 + (1 + row) * 10 + 1;
+        for prior in ["plain", "other text", "same text"] {
+            for palette in [None, Some(&inverted)] {
+                let setup = || {
+                    let mut bus = padded_bus(10, 8, 6, 2);
+                    for row in 0..rows {
+                        for i in 0..row_len as u32 {
+                            bus.write_byte(source + row * 10 + i, (row * 7 + i * 3) as u8);
+                        }
+                        // Text in some columns of each source row.
+                        paint_detail(&mut bus, source + row * 10 + 1);
+                        paint_detail(&mut bus, source + row * 10 + 4 - row);
+                    }
+                    match prior {
+                        "other text" => paint_detail(&mut bus, destination(0) + 2),
+                        "same text" => {
+                            let pixels = bus.save_pixel_bytes(source, row_len);
+                            bus.write_copy_pixels(destination(0), &pixels, 0, row_len, palette)
+                                .expect("writable");
+                        }
+                        _ => bus.write_byte(destination(1) + 3, 77),
+                    }
+                    bus
+                };
+                let mut direct = setup();
+                let mut oracle = setup();
+                let context = format!("{prior} palette={}", palette.is_some());
+                assert!(
+                    (0..rows).all(|row| direct.presentation.as_ref().unwrap().can_copy_offscreen_row_to_screen(
+                        source + row * 10,
+                        destination(row),
+                        row_len,
+                    )),
+                    "{context}: the direct path applies"
+                );
+                let copy = RowCopy {
+                    mode: 0,
+                    source: BytePixmap { base: source, row_bytes: 10, depth: 8, bounds: [0, 0, 3, 8] },
+                    destination: BytePixmap { base: 0x1000, row_bytes: 10, depth: 8, bounds: [0, 0, 6, 8] },
+                    source_rect: [0, 0, 2, 6],
+                    destination_rect: [1, 1, 3, 7],
+                    clip: [0, 0, 6, 8],
+                    palette,
+                };
+                assert_eq!(copy.execute(&mut direct), RowCopyOutcome::Completed, "{context}");
+                // The per-pixel sequence `execute` used before the direct path.
+                let mut pixels = vec![0u8; row_len * rows as usize];
+                for row in 0..rows as usize {
+                    oracle
+                        .read_copy_row(source + row as u32 * 10, &mut pixels[row * row_len..][..row_len])
+                        .unwrap();
+                }
+                let mut pixels: SavedPixels = pixels.into();
+                for row in 0..rows as usize {
+                    oracle.capture_copy_detail(source + row as u32 * 10, &mut pixels, row * row_len, row_len);
+                }
+                for row in 0..rows {
+                    oracle
+                        .write_copy_pixels(destination(row), &pixels, row as usize * row_len, row_len, palette)
+                        .expect("writable");
+                }
+                assert_eq!(direct.read_bytes(0x1000, 60), oracle.read_bytes(0x1000, 60), "{context}: RAM");
+                assert_eq!(direct.outline_presentation_rgb(), oracle.outline_presentation_rgb(), "{context}: rendered");
+                for row in 0..6 {
+                    assert_eq!(
+                        direct.save_pixel_bytes(0x1000 + row * 10, 10),
+                        oracle.save_pixel_bytes(0x1000 + row * 10, 10),
+                        "{context}: snapshot row {row}"
+                    );
+                }
+                // A later plain store still clears copied text on both.
+                direct.write_byte(destination(0) + 1, 5);
+                oracle.write_byte(destination(0) + 1, 5);
+                assert_eq!(direct.outline_presentation_rgb(), oracle.outline_presentation_rgb(), "{context}: after store");
+            }
+        }
     }
 
     /// The proof `restore_saved_pixels` used before the range walk existed,
@@ -4707,7 +4976,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .offscreen
-            .insert(0x1000, stale);
+            .insert(0x1000, &stale);
         let original = bus.outline_presentation_rgb().unwrap().2;
         let saved = bus.save_pixel_bytes(0x1000, 8);
         assert!(saved.detail.is_empty());
