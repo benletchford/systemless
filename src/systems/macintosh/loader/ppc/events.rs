@@ -128,6 +128,24 @@ pub(crate) fn ppc_is_low_level_event(what: u16) -> bool {
     matches!(what, 1..=5 | 7)
 }
 
+pub(crate) fn ppc_flush_events(
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    which_mask: u16,
+    stop_mask: u16,
+) {
+    let mut stopped = false;
+    event_queue.retain(|event| {
+        if stopped || !ppc_is_low_level_event(event.what) {
+            return true;
+        }
+        if ppc_event_matches_mask(stop_mask, event.what) {
+            stopped = true;
+            return true;
+        }
+        !ppc_event_matches_mask(which_mask, event.what)
+    });
+}
+
 pub(crate) fn ppc_toolbox_event_priority(what: u16) -> u8 {
     // Macintosh Toolbox Essentials (1992), pp. 2-18--2-19: the Event
     // Manager selects by event-class priority, preserving FIFO order among
