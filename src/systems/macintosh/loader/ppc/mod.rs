@@ -12577,10 +12577,10 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "NewDialog")
         | ("InterfaceLib", "NewColorDialog")
         | ("InterfaceLib", "NewCDialog") => PpcImportDispatcherTarget::NewDialog,
-        ("AppearanceLib", "RegisterAppearanceClient") => {
+        ("InterfaceLib" | "AppearanceLib", "RegisterAppearanceClient") => {
             PpcImportDispatcherTarget::RegisterAppearanceClient
         }
-        ("AppearanceLib", "UnregisterAppearanceClient") => {
+        ("InterfaceLib" | "AppearanceLib", "UnregisterAppearanceClient") => {
             PpcImportDispatcherTarget::UnregisterAppearanceClient
         }
         ("AppearanceLib", "ActivateControl") => PpcImportDispatcherTarget::ActivateControl,

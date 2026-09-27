@@ -927,6 +927,41 @@ fn appearance_imports_map_to_typed_targets() {
 }
 
 #[test]
+fn carbon_appearance_client_imports_bind_and_dispatch() {
+    for (symbol, target) in [
+        (
+            b"RegisterAppearanceClient".as_slice(),
+            PpcImportDispatcherTarget::RegisterAppearanceClient,
+        ),
+        (
+            b"UnregisterAppearanceClient".as_slice(),
+            PpcImportDispatcherTarget::UnregisterAppearanceClient,
+        ),
+    ] {
+        let weak_pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+            b"CarbonLib",
+            symbol,
+            0x82,
+            &[sm_index_reloc(0x30, 0)],
+        ));
+        let mut weak_loaded = load_pef_application(&weak_pef).unwrap();
+        assert_eq!(weak_loaded.imports[0].dispatcher_target, target);
+        assert_ne!(weak_loaded.imports[0].address, 0);
+        assert_eq!(
+            weak_loaded.memory.read_u32_be(PPC_DATA_BASE),
+            Some(weak_loaded.imports[0].address)
+        );
+
+        let pef = synthetic_pef_with_library_import(b"CarbonLib", symbol);
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    }
+}
+
+#[test]
 fn appearance_client_and_collapse_imports_report_their_results() {
     let mut loaded =
         load_pef_application(&synthetic_pef_with_import(b"RegisterAppearanceClient")).unwrap();
