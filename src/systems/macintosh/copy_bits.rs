@@ -350,7 +350,7 @@ impl CopyBitsMemory for MacMemoryBus {
         row_len: usize,
         palette: Option<&[u8; 256]>,
     ) -> bool {
-        self.copy_offscreen_rows_to_screen(rows, pixels, row_len, palette)
+        self.copy_detail_rows(rows, pixels, row_len, palette)
     }
     fn capture_copy_detail(
         &self,
