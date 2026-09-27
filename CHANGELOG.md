@@ -1,5 +1,66 @@
 # Changelog
 
+## [0.62.1](https://github.com/benletchford/systemless/compare/v0.62.0...v0.62.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* dispatch delivered Open Application events ([1d41ac0](https://github.com/benletchford/systemless/commit/1d41ac0b71f06348868e97055faba857a572634a))
+* **events:** accept empty launch high-level events ([#2864](https://github.com/benletchford/systemless/issues/2864)) ([1b0da61](https://github.com/benletchford/systemless/commit/1b0da6181241655ebf6c301b2da7df58a6c86b4d))
+* honor direct guest writes to ResLoad ([f1e9661](https://github.com/benletchford/systemless/commit/f1e9661da4e9b744d9d1369fda0f0f1456a7a3d2))
+* preserve activation when creating invisible windows ([651dbe7](https://github.com/benletchford/systemless/commit/651dbe777431ff56d9b94309fb821463bba42a01))
+* preserve hidden window regions when setting origin ([4075150](https://github.com/benletchford/systemless/commit/4075150efa136885166eb747665ed2853121c939))
+* preserve local coordinates when moving windows ([79152a8](https://github.com/benletchford/systemless/commit/79152a8a7e7d2289c414cff6bcea29a392af3e50))
+* support PowerPC shareware startup and asynchronous loading ([7044bb1](https://github.com/benletchford/systemless/commit/7044bb14434783d580fca6b8ab75678d102ed14b))
+
+
+### Performance Improvements
+
+* **presentation:** share mapped text cells and clear scrolled text rows in bulk ([e2df5d9](https://github.com/benletchford/systemless/commit/e2df5d9cfac699a74ee0ac486252c56fde84edd5))
+* **presentation:** stop re-copying and rebuilding text cells in CopyBits ([21d79ff](https://github.com/benletchford/systemless/commit/21d79ff246013386847f8d92f4dbfd37b24e58d8))
+* **runner:** prove Bad Mojo's counting idle loop and skip it ([3f9b025](https://github.com/benletchford/systemless/commit/3f9b0254c73a62e9f656fd6c5c7d3e28ff8ca2f6))
+* **runner:** re-prove a counting idle loop after a Time Manager task ([c8fe395](https://github.com/benletchford/systemless/commit/c8fe395f86090bee00fca6bfae832e62fa185c1f))
+
+
+### Code Refactoring
+
+* **ppc:** extract event queue and window event routines into events module ([e14b621](https://github.com/benletchford/systemless/commit/e14b6211449b6866e4411d15701270c4d85d2f0a))
+* **ppc:** extract file manager and vfs implementation into files module ([8a03ff0](https://github.com/benletchford/systemless/commit/8a03ff014d2833a46a97cb7b952c495dfccf9b32))
+* **ppc:** extract fixmath and wide operations into fixmath module ([#2899](https://github.com/benletchford/systemless/issues/2899)) ([13432c4](https://github.com/benletchford/systemless/commit/13432c4733cb17b40b4d6cd21a9ffa404677523f))
+* **ppc:** extract gworlds and graphics devices into gworlds module ([#2902](https://github.com/benletchford/systemless/issues/2902)) ([ca51eb8](https://github.com/benletchford/systemless/commit/ca51eb834448861c02a827348a45cba415fbcf9a))
+* **ppc:** extract heap and memory allocation into memory module ([0c377ee](https://github.com/benletchford/systemless/commit/0c377eed4c72b778ee7eefc1f952b548632ad2ab))
+* **ppc:** extract menu manager implementation into menu module ([f416ebd](https://github.com/benletchford/systemless/commit/f416ebd247947d994885dcd2be82ea04b4b45164))
+* **ppc:** extract palette and color table routines into palettes module ([8437f44](https://github.com/benletchford/systemless/commit/8437f44d83ec3b89085a504a3d74594b8952195e))
+* **ppc:** extract quickdraw drawing and blit operations into quickdraw module ([#2896](https://github.com/benletchford/systemless/issues/2896)) ([01fdec2](https://github.com/benletchford/systemless/commit/01fdec23412349aa2b9de92f32d07d9e6afbfb5b))
+* **ppc:** extract quickdraw regions and polygons into regions module ([#2894](https://github.com/benletchford/systemless/issues/2894)) ([cb43d10](https://github.com/benletchford/systemless/commit/cb43d10359e62219f8c11b6f60f419763f7f20e2))
+* **ppc:** extract resource manager routines into resources module ([4a32716](https://github.com/benletchford/systemless/commit/4a32716c1f50a58d1ffd1a206dffaeef74566838))
+* **ppc:** extract textedit implementation into textedit module ([caca9dd](https://github.com/benletchford/systemless/commit/caca9dde23dee2e37862f11d6e3041e195e17520))
+* **runner:** extract application partition and size integration tests into dedicated module ([145fbcd](https://github.com/benletchford/systemless/commit/145fbcd05bc075b76c8300bd98c7b2cf8a8b3bcb))
+* **runner:** extract audio and sound integration tests into dedicated module ([651c6b9](https://github.com/benletchford/systemless/commit/651c6b934239cffb53ccd6b7c49a506268a753fd))
+* **runner:** extract cfm connection and symbol lookup integration tests into dedicated module ([a57b757](https://github.com/benletchford/systemless/commit/a57b7570071c1bf5a46932b05554a8cabf2f7394))
+* **runner:** extract debugger integration tests into dedicated module ([ca58878](https://github.com/benletchford/systemless/commit/ca58878af05d6efcb76032850e948c38fbd8bef5))
+* **runner:** extract dialog manager and callback integration tests into dedicated module ([#2958](https://github.com/benletchford/systemless/issues/2958)) ([8eefd07](https://github.com/benletchford/systemless/commit/8eefd0786d4aface14edadb6f212ed9f377a5443))
+* **runner:** extract display integration tests into dedicated module ([4fc4b3e](https://github.com/benletchford/systemless/commit/4fc4b3e5146c2456446b7a0baa3abb1ca189d792))
+* **runner:** extract event dispatch and wait-next-event integration tests into dedicated module ([#2960](https://github.com/benletchford/systemless/issues/2960)) ([24ffb9e](https://github.com/benletchford/systemless/commit/24ffb9e58c72ba32cdeadedf8c3543ea1686920e))
+* **runner:** extract idle and fast-forward tests into dedicated module ([65ad417](https://github.com/benletchford/systemless/commit/65ad417549c469d9c71a86654ff33a1cc54540ff))
+* **runner:** extract launch state and app initialization integration tests into dedicated module ([#2956](https://github.com/benletchford/systemless/issues/2956)) ([bc0c786](https://github.com/benletchford/systemless/commit/bc0c78626d7755272282b8ac3f27fe2a0ad3b050))
+* **runner:** extract low memory and tick integration tests into dedicated module ([b4e9e09](https://github.com/benletchford/systemless/commit/b4e9e0939a8c85d9c9a70905b32a9964330928ce))
+* **runner:** extract native trap patch and gateway integration tests into dedicated module ([d467699](https://github.com/benletchford/systemless/commit/d4676993f1da1cc62a2684f267a7bb0bf1b03ad8))
+* **runner:** extract process lifecycle and service isolation integration tests into dedicated module ([73e2539](https://github.com/benletchford/systemless/commit/73e25399dd9e8a49a6257759f695e89672c66ccd))
+* **runner:** extract segment loader and relocation integration tests into dedicated module ([7187a74](https://github.com/benletchford/systemless/commit/7187a7434698e810f48845d8e14684b70c794a01))
+* **runner:** extract thread management and cooperative task integration tests into dedicated module ([#2954](https://github.com/benletchford/systemless/issues/2954)) ([21722a4](https://github.com/benletchford/systemless/commit/21722a4de1731df1f5377146d00145b1461ca2fa))
+* **runner:** extract time manager, vbl, and pacing integration tests into dedicated module ([#2962](https://github.com/benletchford/systemless/issues/2962)) ([9dc1d9d](https://github.com/benletchford/systemless/commit/9dc1d9d0165b10cacce1a2599e8dd7de3aa0bd35))
+* **runner:** extract VFS and file integration tests into dedicated module ([72dd193](https://github.com/benletchford/systemless/commit/72dd1934f2dbd9f4ba1896a59e9edeb23acd01fd))
+* **runner:** extract window and snapshot integration tests into dedicated module ([94732bd](https://github.com/benletchford/systemless/commit/94732bd5bc1913b327ae066b6bde6d9258d8f12d))
+* **trap:** extract control manager unit tests into tests module ([e52ad7b](https://github.com/benletchford/systemless/commit/e52ad7b36583b30d5aaac599ea393258516cdfa4))
+* **trap:** extract event manager unit tests into tests module ([8072e49](https://github.com/benletchford/systemless/commit/8072e49585a75cf1aa0e546ec7719c9c3c1b8bad))
+* **trap:** extract memory manager unit tests into tests module ([d6ab852](https://github.com/benletchford/systemless/commit/d6ab852dfef9ee5203e23c77bd65ac91b1e30194))
+* **trap:** extract menu manager unit tests into tests module ([b90449a](https://github.com/benletchford/systemless/commit/b90449a25e9ac312230bd803a9045692cd359ac5))
+* **trap:** extract pict unit tests into tests module ([7b7ee4f](https://github.com/benletchford/systemless/commit/7b7ee4fd3a60820ede6f96f4cd6f1ab25f37e2c0))
+* **trap:** extract resource manager unit tests into tests module ([495d47d](https://github.com/benletchford/systemless/commit/495d47d6e8303dda401138c1b880090aeeaca8da))
+* **trap:** extract sound manager unit tests into tests module ([62ab0a7](https://github.com/benletchford/systemless/commit/62ab0a795972adf0c83afe01d0cc0bb08a9c51fe))
+* **trap:** extract window manager unit tests into tests module ([f691a8b](https://github.com/benletchford/systemless/commit/f691a8be4fe3aab811e2d0025ff1912a7024eb00))
+
 ## [0.62.0](https://github.com/benletchford/systemless/compare/v0.61.1...v0.62.0) (2026-09-25)
 
 
