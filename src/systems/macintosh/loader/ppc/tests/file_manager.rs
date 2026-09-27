@@ -1073,6 +1073,136 @@ fn pb_read_async_queues_completion_on_eof() {
     }
 
     #[test]
+    fn hle_import_runner_resolve_alias_file_with_mount_flags_follows_chains() {
+        assert_eq!(
+            dispatcher_target_for_import("CarbonLib", "ResolveAliasFileWithMountFlags"),
+            PpcImportDispatcherTarget::ResolveAliasFileWithMountFlags
+        );
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(
+            b"ResolveAliasFileWithMountFlags",
+        ))
+        .unwrap();
+        let spec = PPC_HEAP_BASE;
+        let target_is_folder = spec + 80;
+        let was_aliased = spec + 81;
+        loaded.memory.add_region(spec, vec![0; 128]);
+        for (name, target_dir, target_name) in [
+            ("First Alias", PPC_ROOT_DIR_ID, b"Second Alias".as_slice()),
+            (
+                "Second Alias",
+                PPC_PREFERENCES_DIR_ID,
+                b"Test App Prefs".as_slice(),
+            ),
+        ] {
+            loaded.push_test_vfs_file(PpcVfsFileRecord {
+                path: name.to_string(),
+                data: Vec::new().into(),
+                creator: u32::from_be_bytes(*b"MACS"),
+                file_type: PPC_ALIAS_RECORD_MAGIC,
+                finder_flags: 0,
+                dirty: false,
+            });
+            loaded.push_vfs_resource_file(PpcVfsResourceFileRecord {
+                path: name.to_string(),
+                creator: u32::from_be_bytes(*b"MACS"),
+                file_type: PPC_ALIAS_RECORD_MAGIC,
+                finder_flags: 0,
+                resource_len: 0,
+                raw_data: None,
+                map_attrs: 0,
+                dirty: false,
+            });
+            loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: 0,
+                path: name.to_string(),
+                res_type: PPC_ALIAS_RECORD_MAGIC,
+                res_id: 0,
+                name: Vec::new(),
+                data: ppc_alias_record_bytes(PPC_BOOT_VOLUME_REF_NUM, target_dir, target_name)
+                    .unwrap(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+        }
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "System Folder/Preferences/Test App Prefs".to_string(),
+            data: b"prefs".to_vec().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+
+        for (resolve_chains, mount_flags, expected_dir, expected_name) in [
+            (0, 0, PPC_ROOT_DIR_ID, b"Second Alias".as_slice()),
+            (1, 1, PPC_PREFERENCES_DIR_ID, b"Test App Prefs".as_slice()),
+            (1, 2, PPC_PREFERENCES_DIR_ID, b"Test App Prefs".as_slice()),
+        ] {
+            write_ppc_fsspec(
+                &mut loaded.memory,
+                spec,
+                PPC_BOOT_VOLUME_REF_NUM,
+                PPC_ROOT_DIR_ID,
+                b"First Alias",
+            );
+            loaded.memory.write_u8(target_is_folder, 0xff).unwrap();
+            loaded.memory.write_u8(was_aliased, 0xff).unwrap();
+            loaded.cpu.gpr[3] = spec;
+            loaded.cpu.gpr[4] = resolve_chains;
+            loaded.cpu.gpr[5] = target_is_folder;
+            loaded.cpu.gpr[6] = was_aliased;
+            loaded.cpu.gpr[7] = mount_flags;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::ResolveAliasFileWithMountFlags,
+            );
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+            assert_eq!(loaded.memory.read_u32_be(spec + 2), Some(expected_dir));
+            assert_eq!(
+                ppc_read_pstring_bytes(&mut loaded.memory, spec + 6).as_deref(),
+                Some(expected_name)
+            );
+            assert_eq!(loaded.memory.read_u8(target_is_folder), Some(0));
+            assert_eq!(loaded.memory.read_u8(was_aliased), Some(1));
+        }
+    }
+
+    #[test]
+    fn hle_import_runner_resolve_alias_file_with_mount_flags_preserves_missing_outputs() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(
+            b"ResolveAliasFileWithMountFlags",
+        ))
+        .unwrap();
+        let spec = PPC_HEAP_BASE;
+        let target_is_folder = spec + 80;
+        let was_aliased = spec + 81;
+        loaded.memory.add_region(spec, vec![0; 128]);
+        write_ppc_fsspec(
+            &mut loaded.memory,
+            spec,
+            PPC_BOOT_VOLUME_REF_NUM,
+            PPC_PREFERENCES_DIR_ID,
+            b"Missing Prefs",
+        );
+        loaded.memory.write_u8(target_is_folder, 0xff).unwrap();
+        loaded.memory.write_u8(was_aliased, 0xff).unwrap();
+        loaded.cpu.gpr[3] = spec;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = target_is_folder;
+        loaded.cpu.gpr[6] = was_aliased;
+        loaded.cpu.gpr[7] = 1;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::ResolveAliasFileWithMountFlags,
+        );
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_FNF_ERR));
+        assert_eq!(loaded.memory.read_u8(target_is_folder), Some(0xff));
+        assert_eq!(loaded.memory.read_u8(was_aliased), Some(0xff));
+    }
+
+    #[test]
     fn hle_import_runner_resolve_alias_file_decodes_full_path_tag_with_vfs_directory() {
         let pef = synthetic_pef_with_import(b"ResolveAliasFile");
         let mut loaded = load_pef_application(&pef).unwrap();
