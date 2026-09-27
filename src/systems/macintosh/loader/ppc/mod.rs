@@ -830,20 +830,8 @@ pub use dispatch_control::PpcLegacyControlOperation;
 
 pub use dispatch_inputsprocket::PpcInputSprocketCompatibilityOperation;
 
+pub use dispatch_apple_events::PpcAppleEventCompatibilityOperation;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PpcAppleEventCompatibilityOperation {
-    CountItems,
-    CreateAppleEvent,
-    CreateDesc,
-    DisposeDesc,
-    GetAttributePtr,
-    GetNthPtr,
-    GetParamDesc,
-    PutParamDesc,
-    PutParamPtr,
-    Send,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcEventPollOperation {
