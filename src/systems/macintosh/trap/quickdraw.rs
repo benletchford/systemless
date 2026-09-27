@@ -20709,6 +20709,9 @@ impl super::TrapDispatcher {
         let mut spans: Vec<(i32, i32)> = Vec::with_capacity(4);
         let mut next: Vec<(i32, i32)> = Vec::with_capacity(4);
 
+        // Plan every span first: (source, destination, length, offset of
+        // the source in the snapshot when there is one), in write order.
+        let mut plan: Vec<(u32, u32, usize, Option<usize>)> = Vec::new();
         for dy in clip_t..clip_b {
             let rel = i32::from(dy) - i32::from(dst_top);
             if rel < 0 || rel >= dst_h {
@@ -20734,43 +20737,70 @@ impl super::TrapDispatcher {
             let dst_row = dst_info.base
                 + (i32::from(dy) - i32::from(dst_info.bounds_top)) as u32 * dst_info.row_bytes;
             for &(start, end) in &spans {
-                let bytes = &mut row[..(end - start) as usize];
                 let src_addr = src_row + (start + shift - i32::from(src_info.bounds_left)) as u32;
                 let dst_addr = dst_row + (start - i32::from(dst_info.bounds_left)) as u32;
-                if let Some((first_row, pixels)) = source_snapshot {
+                let snapshot_offset = source_snapshot.map(|(first_row, _)| {
                     let source_row = (src_y - i32::from(src_info.bounds_top)) as u32;
-                    let offset = (u64::from(source_row - first_row)
-                        * u64::from(src_info.row_bytes)
+                    (u64::from(source_row - first_row) * u64::from(src_info.row_bytes)
                         + (start + shift - i32::from(src_info.bounds_left)) as u64)
-                        as usize;
-                    // Keep the pixel loop's immutable source, palette map,
-                    // write order, and outline-detail transfer. Only its
-                    // per-pixel geometry and mode evaluation are avoided.
-                    for i in 0..bytes.len() {
-                        bus.copy_saved_pixel(dst_addr + i as u32, pixels, offset + i, |index| {
-                            table[index as usize]
-                        });
-                    }
+                        as usize
+                });
+                plan.push((src_addr, dst_addr, (end - start) as usize, snapshot_offset));
+            }
+        }
+        let table_map = (!identity).then_some(table);
+        // From a snapshot, every span's source comes from the snapshot, never
+        // live memory (the copy may overlap itself), so one snapshot span
+        // copy covers the whole copy in the loop's order.
+        if let Some((_, pixels)) = source_snapshot {
+            if bus.has_outline_presentation() && !plan.is_empty() {
+                let spans: Vec<(u32, usize, usize)> = plan
+                    .iter()
+                    .map(|&(_, destination, len, offset)| (destination, offset.expect("snapshot offset"), len))
+                    .collect();
+                if bus.copy_saved_spans(&spans, pixels, table_map) {
+                    return true;
+                }
+            }
+        }
+        for (src_addr, dst_addr, len, snapshot_offset) in plan {
+            let bytes = &mut row[..len];
+            if let (Some((_, pixels)), Some(offset)) = (source_snapshot, snapshot_offset) {
+                // Keep the pixel loop's immutable source, palette map,
+                // write order, and outline-detail transfer. Only its
+                // per-pixel geometry and mode evaluation are avoided.
+                for i in 0..bytes.len() {
+                    bus.copy_saved_pixel(dst_addr + i as u32, pixels, offset + i, |index| {
+                        table[index as usize]
+                    });
+                }
+                continue;
+            }
+            if bus.has_outline_presentation() {
+                // Each span reads its source after the spans before it are
+                // written, so each is its own span copy.
+                bus.read_bytes_into(src_addr, bytes);
+                if bus.copy_detail_spans(&[(src_addr, dst_addr, len)], bytes, table_map) {
                     continue;
                 }
-                let detail = bus
-                    .has_outline_presentation()
-                    .then(|| bus.save_pixel_bytes(src_addr, bytes.len()));
-                bus.read_bytes_into(src_addr, bytes);
-                if !identity {
-                    for byte in bytes.iter_mut() {
-                        *byte = table[usize::from(*byte)];
-                    }
+            }
+            let detail = bus
+                .has_outline_presentation()
+                .then(|| bus.save_pixel_bytes(src_addr, bytes.len()));
+            bus.read_bytes_into(src_addr, bytes);
+            if !identity {
+                for byte in bytes.iter_mut() {
+                    *byte = table[usize::from(*byte)];
                 }
-                if let Some(detail) = detail {
-                    for i in 0..bytes.len() {
-                        bus.copy_saved_pixel(dst_addr + i as u32, &detail, i, |index| {
-                            table[index as usize]
-                        });
-                    }
-                } else {
-                    bus.write_bytes(dst_addr, bytes);
+            }
+            if let Some(detail) = detail {
+                for i in 0..bytes.len() {
+                    bus.copy_saved_pixel(dst_addr + i as u32, &detail, i, |index| {
+                        table[index as usize]
+                    });
                 }
+            } else {
+                bus.write_bytes(dst_addr, bytes);
             }
         }
         true
