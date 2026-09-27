@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.62.2](https://github.com/benletchford/systemless/compare/v0.62.1...v0.62.2) (2026-09-27)
+
+
+### Performance Improvements
+
+* improve host responsiveness with bounded execution and presentation ([#2900](https://github.com/benletchford/systemless/issues/2900)) ([8062da0](https://github.com/benletchford/systemless/commit/8062da027bf8c72d82f826c87070d5b2ac32a182))
+
 ## [0.62.1](https://github.com/benletchford/systemless/compare/v0.62.0...v0.62.1) (2026-09-27)
 
 
