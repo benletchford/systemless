@@ -23,8 +23,8 @@ compatibility:
       Deterministic headless replay of the unchanged demo reached the Creep Night
       table, actuated a flipper with Shift, then launched a ball with Down Arrow and
       advanced the score to 205,000. The same script launched and scored a ball in
-      BasiliskII; score and ball position differ, so pixel parity is not claimed. Browser launch
-      is unverified.
+      BasiliskII, which reached 115,000 at that checkpoint; score and ball position
+      differ, so pixel parity is not claimed. Browser launch is unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3044
 artifacts:
@@ -89,5 +89,5 @@ advanced to 205,000.
 
 This is Sierra's original promotional demo, not the retail game. Systemless
 reached interactive play with the unchanged archive. A separate BasiliskII
-run also launched and scored a ball, though its score differed. Browser
-launch remains disabled until manual testing and approval.
+run also launched and scored a ball, reaching 115,000 at that checkpoint.
+Browser launch remains disabled until manual testing and approval.
