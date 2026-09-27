@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+fn draw_sprocket_blit_fastest_copies_plain_pixels_and_marks_completion() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpBlit_Fastest");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let info = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(info, vec![0; 64]);
+    let src = ppc_resolve_pixmap_bits(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+        .expect("main buffer");
+    let dst = ppc_resolve_pixmap_bits(&mut loaded.memory, &loaded.gworlds, PPC_DSP_BACK_GWORLD)
+        .expect("back buffer");
+    assert_eq!(src.depth, dst.depth);
+    ppc_write_pixmap_raw_pixel(&mut loaded.memory, src, 0, 0, 0x21).unwrap();
+    ppc_write_pixmap_raw_pixel(&mut loaded.memory, src, 1, 0, 0x43).unwrap();
+    loaded
+        .memory
+        .write_u32_be(info + 12, PPC_MAIN_GWORLD)
+        .unwrap();
+    ppc_write_rect(&mut loaded.memory, info + 16, 0, 0, 1, 2).unwrap();
+    loaded
+        .memory
+        .write_u32_be(info + 32, PPC_DSP_BACK_GWORLD)
+        .unwrap();
+    ppc_write_rect(&mut loaded.memory, info + 36, 0, 0, 1, 2).unwrap();
+    loaded.cpu.gpr[3] = info;
+    loaded.cpu.gpr[4] = 1;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u8(info), Some(1));
+    assert_eq!(
+        ppc_read_pixmap_raw_pixel(&mut loaded.memory, dst, 0, 0),
+        Some(0x21)
+    );
+    assert_eq!(
+        ppc_read_pixmap_raw_pixel(&mut loaded.memory, dst, 1, 0),
+        Some(0x43)
+    );
+}
+
+#[test]
 fn draw_sprocket_temporary_context_restores_desktop_mode_and_pixels() {
     let pef = synthetic_pef_with_import(b"SetPort");
     let mut loaded = load_pef_application(&pef).unwrap();

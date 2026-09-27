@@ -71,6 +71,9 @@ pub(super) fn dispatch_drawsprocket_import(
         PpcImportDispatcherTarget::DSpProcessEvent => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_process_event(cpu, memory)),
         )),
+        PpcImportDispatcherTarget::DSpBlitFastest => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_dsp_blit_fastest(cpu, memory, gworlds),
+        ))),
         PpcImportDispatcherTarget::DSpCanUserSelectContext => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_can_user_select_context(cpu, memory)),
         )),

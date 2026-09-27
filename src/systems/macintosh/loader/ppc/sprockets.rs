@@ -910,6 +910,95 @@ pub(crate) fn ppc_dsp_process_event(cpu: &PpcCpu, memory: &mut PpcSectionMem) ->
     PPC_NO_ERR
 }
 
+pub(crate) fn ppc_dsp_blit_fastest(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+) -> i16 {
+    // DrawSprocket.h (Game Sprockets 1.7.5) defines DSpBlitInfo's field
+    // order. Apple Game Sprockets Legacy Reference (2003), pp. 29-30:
+    // DSpBlit_Fastest copies between CGrafPtrs without scaling.
+    let info = cpu.gpr[3];
+    let Some((src_port, src_rect, src_key, dst_port, dst_rect, dst_key, mode, completion_proc)) =
+        (|| {
+            Some((
+                memory.read_u32_be(info.checked_add(12)?)?,
+                ppc_read_rect(memory, info.checked_add(16)?)?,
+                memory.read_u32_be(info.checked_add(24)?)?,
+                memory.read_u32_be(info.checked_add(32)?)?,
+                ppc_read_rect(memory, info.checked_add(36)?)?,
+                memory.read_u32_be(info.checked_add(44)?)?,
+                memory.read_u32_be(info.checked_add(48)?)?,
+                memory.read_u32_be(info.checked_add(4)?)?,
+            ))
+        })()
+    else {
+        return PPC_PARAM_ERR;
+    };
+    // The synchronous software path cannot invoke an asynchronous guest
+    // completion routine. A caller without one can observe completionFlag.
+    if completion_proc != 0 || mode & !0x03 != 0 {
+        return PPC_PARAM_ERR;
+    }
+    let (src_top, src_left, src_bottom, src_right) = src_rect;
+    let (dst_top, dst_left, dst_bottom, dst_right) = dst_rect;
+    let height = i32::from(src_bottom) - i32::from(src_top);
+    let width = i32::from(src_right) - i32::from(src_left);
+    if height < 0
+        || width < 0
+        || height != i32::from(dst_bottom) - i32::from(dst_top)
+        || width != i32::from(dst_right) - i32::from(dst_left)
+        || i64::from(height) * i64::from(width) > 4_000_000
+    {
+        return PPC_PARAM_ERR;
+    }
+    let Some(src) = ppc_resolve_pixmap_bits(memory, gworlds, src_port) else {
+        return PPC_PARAM_ERR;
+    };
+    let Some(dst) = ppc_resolve_pixmap_bits(memory, gworlds, dst_port) else {
+        return PPC_PARAM_ERR;
+    };
+    if src.depth != dst.depth {
+        return PPC_PARAM_ERR;
+    }
+    let mut pixels = Vec::with_capacity((height * width) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let Some(pixel) = ppc_read_pixmap_raw_pixel(
+                memory,
+                src,
+                i32::from(src_left) + x,
+                i32::from(src_top) + y,
+            ) else {
+                return PPC_PARAM_ERR;
+            };
+            pixels.push(pixel);
+        }
+    }
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = pixels[(y * width + x) as usize];
+            if mode & 1 != 0 && pixel == src_key {
+                continue;
+            }
+            let dst_x = i32::from(dst_left) + x;
+            let dst_y = i32::from(dst_top) + y;
+            if mode & 2 != 0
+                && ppc_read_pixmap_raw_pixel(memory, dst, dst_x, dst_y) != Some(dst_key)
+            {
+                continue;
+            }
+            if ppc_write_pixmap_raw_pixel(memory, dst, dst_x, dst_y, pixel).is_none() {
+                return PPC_PARAM_ERR;
+            }
+        }
+    }
+    if memory.write_u8(info, 1).is_none() {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
 pub(crate) fn ppc_dsp_find_best_context(
     memory: &mut PpcSectionMem,
     desired_attributes_ptr: u32,
@@ -1654,6 +1743,7 @@ pub(crate) fn ppc_draw_sprocket_action_name(target: &PpcImportDispatcherTarget) 
         PpcImportDispatcherTarget::DSpGetFirstContext => Some("get_first_context"),
         PpcImportDispatcherTarget::DSpGetNextContext => Some("get_next_context"),
         PpcImportDispatcherTarget::DSpProcessEvent => Some("process_event"),
+        PpcImportDispatcherTarget::DSpBlitFastest => Some("blit_fastest"),
         PpcImportDispatcherTarget::DSpCanUserSelectContext => Some("can_user_select_context"),
         PpcImportDispatcherTarget::DSpGetMouse => Some("get_mouse"),
         PpcImportDispatcherTarget::DSpFindContextFromPoint => Some("find_context_from_point"),
