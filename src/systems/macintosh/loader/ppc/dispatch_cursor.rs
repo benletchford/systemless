@@ -41,6 +41,10 @@ pub(super) fn dispatch_cursor_import(
 
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::InitCursor => {
+            // InitCursor (_InitCursor)
+            // Sets the standard arrow cursor and makes it visible.
+            // PROCEDURE InitCursor;
+            // Inside Macintosh: Imaging With QuickDraw (1994), p. 8-22.
             cursor_state.init();
             Some(PpcImportAction::ReturnPreserve)
         }

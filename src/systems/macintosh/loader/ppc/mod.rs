@@ -12291,7 +12291,7 @@ fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::CloseConnection,
         ("InterfaceLib", "GetMemFragment") => PpcImportDispatcherTarget::GetMemFragment,
         ("InterfaceLib", "GetDiskFragment") => PpcImportDispatcherTarget::GetDiskFragment,
-        ("InterfaceLib", "InitCursor") => PpcImportDispatcherTarget::InitCursor,
+        ("InterfaceLib" | "CarbonLib", "InitCursor") => PpcImportDispatcherTarget::InitCursor,
         ("InterfaceLib", "HideCursor") => PpcImportDispatcherTarget::HideCursor,
         ("InterfaceLib", "ShowCursor") => PpcImportDispatcherTarget::ShowCursor,
         ("InterfaceLib", "ShieldCursor") => PpcImportDispatcherTarget::ShieldCursor,
