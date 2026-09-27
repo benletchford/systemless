@@ -1011,6 +1011,8 @@ fn ppc_dispatch_dialog_compatibility(
                     && event.where_h < bounds.3 =>
                 {
                     let Some(hit) = ppc_dialog_item_at_global_point(
+                        memory,
+                        controls,
                         &items,
                         bounds,
                         event.where_v,
@@ -1120,15 +1122,14 @@ fn ppc_dispatch_dialog_compatibility(
             let point = cpu.gpr[4];
             let v = (point >> 16) as u16 as i16;
             let h = point as u16 as i16;
+            // FindDialogItem takes dialog-local coordinates, so pass an empty
+            // origin and let the shared hit test apply the same control-list
+            // and group-box fall-through rules as DialogSelect.
             let found = ppc_dialog_items_for_dialog(memory, handles, dialog)
                 .and_then(|items| {
-                    items.iter().enumerate().find_map(|(index, item)| {
-                        let rect = item.rect;
-                        (v >= rect.0 && v < rect.2 && h >= rect.1 && h < rect.3)
-                            .then(|| u32::try_from(index).unwrap_or(u32::MAX))
-                    })
+                    ppc_dialog_item_at_global_point(memory, controls, &items, (0, 0, 0, 0), v, h)
                 })
-                .unwrap_or(u32::MAX);
+                .map_or(u32::MAX, |item| u32::from(item) - 1);
             PpcImportAction::Return(found)
         }
         PpcDialogCompatibilityOperation::HideDialogItem
@@ -3199,19 +3200,56 @@ pub(super) fn ppc_draw_dialog(
 }
 
 fn ppc_dialog_item_at_global_point(
+    memory: &mut PpcSectionMem,
+    controls: &[PpcControlRecord],
     items: &[PpcDialogItemView],
     bounds: (i16, i16, i16, i16),
     where_v: i16,
     where_h: i16,
 ) -> Option<u16> {
-    items.iter().enumerate().find_map(|(index, item)| {
+    // A control item with a live Control Manager record is returned only when
+    // its CDEF reports a real part under the point. FindControl returns 0 for
+    // an inactive control (Inside Macintosh: Macintosh Toolbox Essentials
+    // (1992), p. 5-89); group boxes report kControlNoPart for their body (see
+    // ppc_control_part_at_point; unverified). Both Some(0) and None skip the
+    // item and let the click fall through to whatever it encloses. Items
+    // without a live record still fall back to their DITL rect.
+    //
+    // Dialog-owned control records keep contrlRect in dialog-local
+    // coordinates, so the global point is rebased before asking the CDEF.
+    // FindDialogItem already passes an empty origin and therefore stays local.
+    let local_v = where_v.saturating_sub(bounds.0);
+    let local_h = where_h.saturating_sub(bounds.1);
+    for (index, item) in items.iter().enumerate() {
         if item.item_type & PPC_DIALOG_ITEM_DISABLED != 0 {
-            return None;
+            continue;
         }
         let rect = ppc_dialog_rect_to_global(bounds, item.rect);
-        (where_v >= rect.0 && where_v < rect.2 && where_h >= rect.1 && where_h < rect.3)
-            .then(|| u16::try_from(index + 1).unwrap_or(u16::MAX))
-    })
+        if where_v < rect.0 || where_v >= rect.2 || where_h < rect.1 || where_h >= rect.3 {
+            continue;
+        }
+        let base_type = item.item_type & !PPC_DIALOG_ITEM_DISABLED;
+        if matches!(
+            base_type,
+            PPC_DIALOG_ITEM_BUTTON
+                | PPC_DIALOG_ITEM_CHECKBOX
+                | PPC_DIALOG_ITEM_RADIO
+                | PPC_DIALOG_ITEM_RESOURCE_CONTROL
+        ) && item.handle != 0
+            && controls
+                .iter()
+                .any(|record| record.handle == item.handle)
+        {
+            if ppc_control_part_at_point(memory, controls, item.handle, local_v, local_h)
+                .is_some_and(|part| part != 0)
+            {
+                return u16::try_from(index + 1).ok();
+            }
+            continue;
+        }
+        return u16::try_from(index + 1).ok();
+    }
+    None
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3357,8 +3395,14 @@ fn ppc_modal_dialog(
     let mut handled_edit_event = false;
     let hit = match event.as_ref().map(|event| event.what) {
         Some(1) => event.as_ref().and_then(|event| {
-            let hit =
-                ppc_dialog_item_at_global_point(&items, bounds, event.where_v, event.where_h)?;
+            let hit = ppc_dialog_item_at_global_point(
+                memory,
+                controls,
+                &items,
+                bounds,
+                event.where_v,
+                event.where_h,
+            )?;
             let item = items.get(usize::from(hit).checked_sub(1)?)?;
             if item.item_type & !PPC_DIALOG_ITEM_DISABLED == PPC_DIALOG_ITEM_EDIT_TEXT {
                 let item_index = usize::from(hit).saturating_sub(1);

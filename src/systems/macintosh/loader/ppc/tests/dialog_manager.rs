@@ -674,7 +674,21 @@ fn get_new_dialog_installs_owned_control_records_in_the_live_ditl() {
             proc_id: 0,
             popup_menu_id: 0,
             popup_title_width: None,
+            active: true,
+            font_style: None,
         }]
+    );
+    // The dialog item hit test only accepts control items whose record
+    // reports a part, so the DITL path must register a live record.
+    assert_eq!(
+        ppc_control_part_at_point(
+            &mut loaded.memory,
+            &loaded.controls.records(),
+            control_handle,
+            20,
+            50
+        ),
+        Some(10)
     );
 }
 
@@ -1449,5 +1463,75 @@ fn import_bindings_classify_dialog_imports() {
             dispatcher_target_for_import("InterfaceLib", symbol),
             PpcImportDispatcherTarget::DialogCompatibility(operation),
         );
+    }
+}
+
+#[test]
+fn find_dialog_item_falls_through_group_boxes_to_enclosed_controls() {
+    let pef = synthetic_pef_with_import(b"GetNewDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut dlog = vec![0; 22];
+    dlog[4..6].copy_from_slice(&200i16.to_be_bytes());
+    dlog[6..8].copy_from_slice(&300i16.to_be_bytes());
+    dlog[10] = 1;
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    let item = |rect: [i16; 4], item_type: u8, data: &[u8]| {
+        let mut bytes = vec![0; 4];
+        for value in rect {
+            bytes.extend_from_slice(&value.to_be_bytes());
+        }
+        bytes.push(item_type);
+        bytes.push(data.len() as u8);
+        bytes.extend_from_slice(data);
+        if !bytes.len().is_multiple_of(2) {
+            bytes.push(0);
+        }
+        bytes
+    };
+    // Item 1: a kControlGroupBoxTextTitleProc group box around item 2.
+    let mut ditl = 1i16.to_be_bytes().to_vec();
+    ditl.extend(item([10, 10, 150, 250], PPC_DIALOG_ITEM_RESOURCE_CONTROL, &200i16.to_be_bytes()));
+    ditl.extend(item([40, 30, 60, 110], PPC_DIALOG_ITEM_BUTTON, b"OK"));
+    let mut cntl = vec![0; 23];
+    for (index, value) in [10i16, 10, 150, 250].into_iter().enumerate() {
+        cntl[index * 2..index * 2 + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    cntl[10] = 1;
+    cntl[16..18].copy_from_slice(&160i16.to_be_bytes());
+    for (res_type, res_id, data) in [(*b"DLOG", 128, dlog), (*b"DITL", 128, ditl), (*b"CNTL", 200, cntl)] {
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: current_resource_refnum,
+            path: String::new(),
+            res_type: u32::from_be_bytes(res_type),
+            res_id,
+            name: Vec::new(),
+            data,
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+    }
+    loaded.cpu.gpr[3] = 128;
+    let probe = loaded.run_with_hle_imports(128);
+    assert_eq!(probe.unsupported_import_index, None);
+    let dialog = loaded.cpu.gpr[3];
+    assert_ne!(dialog, 0);
+
+    loaded.imports[0].dispatcher_target =
+        dispatcher_target_for_import("InterfaceLib", "FindDialogItem");
+    for (point, expected) in [
+        // Inside the button: the enclosing group box does not swallow it.
+        ((50u32 << 16) | 70, 1),
+        // Inside the group box but over no control: nothing is hit.
+        ((120u32 << 16) | 200, u32::MAX),
+    ] {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = dialog;
+        loaded.cpu.gpr[4] = point;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], expected, "point {point:08X}");
     }
 }
