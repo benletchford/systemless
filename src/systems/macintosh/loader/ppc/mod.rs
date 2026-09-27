@@ -1809,6 +1809,7 @@ pub enum PpcImportDispatcherTarget {
     P2CStr,
     C2PStr,
     CopyCStringToPascal,
+    CopyPascalStringToC,
     UpperText,
     GetCurrentThread,
     NewThreadEntryUPP,
@@ -12935,6 +12936,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "CopyCStringToPascal") => {
             PpcImportDispatcherTarget::CopyCStringToPascal
         }
+        ("InterfaceLib", "CopyPascalStringToC") => {
+            PpcImportDispatcherTarget::CopyPascalStringToC
+        }
         ("InterfaceLib", "UpperText") => PpcImportDispatcherTarget::UpperText,
         // Native Thread Manager exports also live in ThreadsLib.
         // Inside Macintosh: Thread Manager (1999), pp. 15, 62.
@@ -15843,6 +15847,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::P2CStr
         | PpcImportDispatcherTarget::C2PStr
         | PpcImportDispatcherTarget::CopyCStringToPascal
+        | PpcImportDispatcherTarget::CopyPascalStringToC
         | PpcImportDispatcherTarget::UpperText => {
             unreachable!("stdc imports return through dispatch_stdc_import")
         }

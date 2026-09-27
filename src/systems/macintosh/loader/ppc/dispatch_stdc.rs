@@ -383,6 +383,31 @@ pub(super) fn dispatch_stdc_import(ctx: PpcStdCDispatchContext<'_>) -> Option<Pp
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::CopyPascalStringToC => {
+            // CarbonCore/TextUtils.h permits overlapping buffers, including
+            // in-place conversion. Read the complete Pascal string first.
+            // void CopyPascalStringToC(ConstStr255Param src, char *dst);
+            let source = cpu.gpr[3];
+            let destination = cpu.gpr[4];
+            let Some(length) = memory.read_u8(source) else {
+                return Some(PpcImportAction::ReturnPreserve);
+            };
+            let mut bytes = Vec::with_capacity(usize::from(length));
+            for offset in 0..u32::from(length) {
+                let Some(address) = source.checked_add(offset + 1) else {
+                    return Some(PpcImportAction::ReturnPreserve);
+                };
+                let Some(byte) = memory.read_u8(address) else {
+                    return Some(PpcImportAction::ReturnPreserve);
+                };
+                bytes.push(byte);
+            }
+            if ppc_memory_can_write_bytes(memory, destination, u32::from(length) + 1) {
+                let _ = memory.write_bytes(destination, &bytes);
+                let _ = memory.write_u8(destination + u32::from(length), 0);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::UpperText => {
             // UpperText
             // Converts a byte range to localized uppercase in place.
