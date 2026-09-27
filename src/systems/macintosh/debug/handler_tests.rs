@@ -6,7 +6,8 @@
 
     use super::super::adapters::{
         m68k_disassembly, read_m68k_memory, ArchitectureAdapter, PpcAdapter, M68K_CONTEXT,
-        M68K_SPACE, MAX_DISASSEMBLY_COUNT, MAX_MEMORY_TRANSFER, PPC_CONTEXT, PPC_SPACE,
+        M68K_SPACE, MAX_DISASSEMBLY_COUNT, MAX_MEMORY_TRANSFER, MAX_STACK_PREVIEW_BYTES,
+        PPC_COMPANION_CONTEXT, PPC_COMPANION_SPACE, PPC_CONTEXT, PPC_SPACE,
     };
     use super::super::ids::AddressSpaceId;
     use super::super::model::{ContextSelector, DebugAddress, RegisterRole, RegisterValue};
@@ -648,15 +649,36 @@
     }
 
     #[test]
-    fn ppc_adapter_exposes_registers_and_reports_unsupported_inspection() {
+    fn ppc_adapter_reads_mapped_memory_and_stack_for_native_and_companion() {
+        use crate::memory::{GuestAddressSpace, MacMemoryBus};
+
         let mut cpu = ppc::PpcCpu::new();
         cpu.gpr[3] = 0x1234_5678;
         cpu.pc = 0x0000_4000;
+        cpu.gpr[1] = 0x0000_5000;
         cpu.fpr[2] = 0x3FF0_0000_0000_0000;
-        let adapter = PpcAdapter::new(&cpu, PPC_CONTEXT, PPC_SPACE, "native-application");
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x4000, vec![0x60, 0x00, 0x00, 0x00, 0x38, 0x60, 0x00, 0x01]);
+        memory.add_region(0x4ffc, vec![0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x04]);
+        memory.add_region(0xffff_fffe, vec![0xaa, 0xbb]);
+        let mut shared = MacMemoryBus::new(8);
+        MemoryBus::write_long(&mut shared, 0, 0x1122_3344);
+        MemoryBus::write_long(&mut shared, 4, 0x5566_7788);
+        let mut overlay = MacMemoryBus::new(4);
+        MemoryBus::write_long(&mut overlay, 0, 0xdead_beef);
+        // SAFETY: this test serializes source-bus and PPC adapter access.
+        unsafe {
+            memory.add_shared_region(0x6000, shared.shared_ram_region(0, 8).unwrap());
+            memory.add_shared_region(0x6004, overlay.shared_ram_region(0, 4).unwrap());
+        }
+        let adapter = PpcAdapter::new(&cpu, &memory, PPC_CONTEXT, PPC_SPACE, "native-application");
 
         assert_eq!(adapter.context().id, PPC_CONTEXT);
         assert_eq!(adapter.address_spaces()[0].id, PPC_SPACE);
+        assert!(adapter.context().capabilities.read_memory);
+        assert!(adapter.context().capabilities.stack_preview);
+        assert!(adapter.context().capabilities.disassembly);
+        assert!(adapter.address_space_capabilities(PPC_SPACE).unwrap().read);
         let registers = adapter.registers(PPC_CONTEXT).unwrap();
         let r3 = registers
             .iter()
@@ -675,10 +697,62 @@
         assert_eq!(f2.value.as_u64(), Some(0x3FF0_0000_0000_0000));
 
         assert!(adapter.registers(M68K_CONTEXT).is_err());
+        let read = adapter.read_memory(PPC_SPACE, 0x4000, 8).unwrap();
+        assert_eq!(read.bytes, vec![0x60, 0x00, 0x00, 0x00, 0x38, 0x60, 0x00, 0x01]);
+        assert!(!read.truncated);
+        let alias_read = adapter.read_memory(PPC_SPACE, 0x6000, 8).unwrap();
+        assert_eq!(alias_read.bytes, vec![0x11, 0x22, 0x33, 0x44, 0xde, 0xad, 0xbe, 0xef]);
+        assert!(!alias_read.truncated);
+        let unmapped = adapter.read_memory(PPC_SPACE, 0x4008, 4).unwrap();
+        assert!(unmapped.bytes.is_empty());
+        assert!(unmapped.truncated);
+        let boundary = adapter.read_memory(PPC_SPACE, 0xffff_fffe, 4).unwrap();
+        assert_eq!(boundary.bytes, vec![0xaa, 0xbb]);
+        assert!(boundary.truncated);
+        assert!(adapter.read_memory(PPC_SPACE, u64::from(u32::MAX) + 1, 1).is_err());
+        assert!(adapter.read_memory(PPC_SPACE, 0, MAX_MEMORY_TRANSFER + 1).is_err());
+
+        let stack = adapter.stack_preview(PPC_CONTEXT, 2).unwrap();
+        assert_eq!(stack.address.offset, 0x5000);
+        assert_eq!(stack.stride, 4);
+        assert_eq!(stack.bytes, vec![1, 2, 3, 4]);
+        assert!(stack.truncated);
         assert!(adapter
-            .disassemble(PPC_CONTEXT, DebugAddress::new(PPC_SPACE, 0), 1)
+            .stack_preview(PPC_CONTEXT, (MAX_STACK_PREVIEW_BYTES / 4) as u32 + 1)
             .is_err());
-        assert!(adapter.read_memory(PPC_SPACE, 0, 1).is_err());
+
+        let lines = adapter
+            .disassemble(PPC_CONTEXT, DebugAddress::new(PPC_SPACE, 0x4000), 2)
+            .unwrap();
+        assert_eq!(lines.len(), 2);
+        assert!(lines.iter().all(|line| line.approximate && line.size == 4));
+        assert_eq!(lines[0].bytes, vec![0x60, 0x00, 0x00, 0x00]);
+        assert!(lines[0].text.contains("Ori"), "{}", lines[0].text);
+        assert!(lines[1].text.contains("Addi"), "{}", lines[1].text);
+        assert!(adapter
+            .disassemble(PPC_CONTEXT, DebugAddress::new(PPC_SPACE, 0x4001), 1)
+            .is_err());
+        assert!(adapter
+            .disassemble(PPC_CONTEXT, DebugAddress::new(PPC_SPACE, 0x4000), MAX_DISASSEMBLY_COUNT + 1)
+            .is_err());
+
+        let companion = PpcAdapter::new(
+            &cpu,
+            &memory,
+            PPC_COMPANION_CONTEXT,
+            PPC_COMPANION_SPACE,
+            "native-companion",
+        );
+        assert_eq!(companion.address_spaces()[0].id, PPC_COMPANION_SPACE);
+        assert_eq!(
+            companion.read_memory(PPC_COMPANION_SPACE, 0x4000, 4).unwrap().bytes,
+            vec![0x60, 0x00, 0x00, 0x00]
+        );
+        assert_eq!(
+            companion.stack_preview(PPC_COMPANION_CONTEXT, 1).unwrap().context,
+            PPC_COMPANION_CONTEXT
+        );
+        assert!(companion.read_memory(PPC_SPACE, 0x4000, 4).is_err());
     }
 
     #[test]

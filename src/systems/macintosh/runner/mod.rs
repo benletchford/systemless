@@ -7619,6 +7619,14 @@ impl FixtureRunner {
         }
 
         if !still_running {
+            #[cfg(feature = "debug")]
+            if !exited_via_ppc_exit_to_shell {
+                self.debug_note_ppc_terminal_fault(
+                    &ppc_app,
+                    probe.result,
+                    unsupported_import_index,
+                );
+            }
             self.halted = true;
             if exited_via_ppc_exit_to_shell {
                 self.halted_trap = Some(0xA9F4);

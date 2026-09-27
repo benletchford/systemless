@@ -47,6 +47,7 @@ pub struct DebuggerCoordinator {
     notifications: VecDeque<DebugNotification>,
     next_notification_sequence: u64,
     terminal_announced: bool,
+    pending_ppc_fault: Option<super::model::PpcGuestFault>,
     observed_context: Option<ContextId>,
 }
 
@@ -80,6 +81,7 @@ impl DebuggerCoordinator {
             notifications: VecDeque::new(),
             next_notification_sequence: 1,
             terminal_announced: false,
+            pending_ppc_fault: None,
             observed_context: None,
         }
     }
@@ -114,6 +116,7 @@ impl DebuggerCoordinator {
         self.operation_order.clear();
         self.expired_operation_through = 0;
         self.terminal_announced = false;
+        self.pending_ppc_fault = None;
         self.observed_context = None;
         self.push_notification(NotificationPayload::Invalidated {
             session: self.session,
@@ -432,6 +435,12 @@ impl DebuggerCoordinator {
         }
     }
 
+    pub(crate) fn note_terminal_ppc_fault(&mut self, fault: super::model::PpcGuestFault) {
+        if !self.terminal_announced {
+            self.pending_ppc_fault = Some(fault);
+        }
+    }
+
     pub(crate) fn stop_at_terminal_halt(
         &mut self,
         context: Option<ContextId>,
@@ -451,8 +460,12 @@ impl DebuggerCoordinator {
                 },
             );
         }
+        let reason = self
+            .pending_ppc_fault
+            .take()
+            .map_or(StopReason::TerminalHalt, |fault| StopReason::GuestFault { fault });
         let stop = self.stop(
-            StopReason::TerminalHalt,
+            reason,
             context,
             location,
             guest_tick,

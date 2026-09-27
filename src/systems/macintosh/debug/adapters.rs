@@ -6,7 +6,7 @@ use super::model::{
     ExecutionContextDescriptor, ExecutionLocation, MemoryReadResult, RegisterCategory,
     RegisterDescriptor, RegisterRole, RegisterSnapshot, RegisterValue, RegisterWidth, StackPreview,
 };
-use crate::memory::MemoryBus;
+use crate::memory::{GuestAddressSpace, MemoryBus};
 use crate::runner::FixtureRunner;
 use ppc::PpcCpu;
 
@@ -173,11 +173,11 @@ fn ppc_context_capabilities() -> ContextCapabilities {
         exact_step: false,
         set_breakpoint: false,
         read_registers: true,
-        disassembly: false,
+        disassembly: true,
         exact_disassembly: false,
-        stack_preview: false,
+        stack_preview: true,
         write_registers: false,
-        read_memory: false,
+        read_memory: true,
         write_memory: false,
         precise_breakpoints: false,
         watchpoints: false,
@@ -203,7 +203,7 @@ fn ppc_space_descriptor() -> AddressSpaceDescriptor {
         byte_order: ByteOrder::Big,
         mapping: AddressMappingKind::Ram,
         access: AddressAccess {
-            read: false,
+            read: true,
             write: false,
             execute: true,
         },
@@ -549,6 +549,7 @@ impl ArchitectureAdapter for M68kAdapter<'_> {
 
 pub struct PpcAdapter<'a> {
     cpu: &'a PpcCpu,
+    memory: &'a GuestAddressSpace,
     context: ContextId,
     space: AddressSpaceId,
     task: &'static str,
@@ -557,12 +558,14 @@ pub struct PpcAdapter<'a> {
 impl<'a> PpcAdapter<'a> {
     pub fn new(
         cpu: &'a PpcCpu,
+        memory: &'a GuestAddressSpace,
         context: ContextId,
         space: AddressSpaceId,
         task: &'static str,
     ) -> Self {
         Self {
             cpu,
+            memory,
             context,
             space,
             task,
@@ -604,11 +607,11 @@ impl ArchitectureAdapter for PpcAdapter<'_> {
             });
         }
         Ok(AddressSpaceCapabilities {
-            read: false,
+            read: true,
             write: false,
             observational_reads: true,
             code_cache_invalidation: false,
-            max_transfer_bytes: 0,
+            max_transfer_bytes: MAX_MEMORY_TRANSFER,
         })
     }
 
@@ -630,7 +633,7 @@ impl ArchitectureAdapter for PpcAdapter<'_> {
         &self,
         context: ContextId,
         address: DebugAddress,
-        _count: u32,
+        count: u32,
     ) -> DebugResult<Vec<DisassemblyLine>> {
         if context != self.context {
             return Err(DebugError::UnknownContext { id: context });
@@ -641,22 +644,44 @@ impl ArchitectureAdapter for PpcAdapter<'_> {
                 detail: "ppc adapter only exposes its registered address space".to_string(),
             });
         }
-        Err(DebugError::unsupported("ppc disassembly"))
+        ppc_disassembly(self.memory, self.space, address.offset, count)
     }
 
-    fn stack_preview(&self, _context: ContextId, _words: u32) -> DebugResult<StackPreview> {
-        Err(DebugError::unsupported("ppc stack preview"))
+    fn stack_preview(&self, context: ContextId, words: u32) -> DebugResult<StackPreview> {
+        if context != self.context {
+            return Err(DebugError::UnknownContext { id: context });
+        }
+        let base = u64::from(self.cpu.gpr[1]);
+        let requested = u64::from(words) * 4;
+        if requested > MAX_STACK_PREVIEW_BYTES {
+            return Err(DebugError::TooLarge {
+                limit: MAX_STACK_PREVIEW_BYTES,
+                requested,
+            });
+        }
+        let memory = read_ppc_memory(self.memory, self.space, base, requested)?;
+        Ok(StackPreview {
+            context: self.context,
+            address: DebugAddress::new(self.space, base),
+            bytes: memory.bytes,
+            stride: 4,
+            truncated: memory.truncated,
+        })
     }
 
     fn read_memory(
         &self,
         space: AddressSpaceId,
-        _address: u64,
-        _length: u64,
+        address: u64,
+        length: u64,
     ) -> DebugResult<MemoryReadResult> {
-        Err(DebugError::unsupported(format!(
-            "ppc memory inspection in space {space}"
-        )))
+        if space != self.space {
+            return Err(DebugError::Inaccessible {
+                space,
+                detail: "ppc adapter only exposes its registered address space".to_string(),
+            });
+        }
+        read_ppc_memory(self.memory, self.space, address, length)
     }
 }
 
@@ -675,6 +700,7 @@ fn ppc_factory(runner: &FixtureRunner) -> Option<Box<dyn ArchitectureAdapter + '
     runner.debug_ppc_cpu().map(|cpu| {
         Box::new(PpcAdapter::new(
             cpu,
+            runner.debug_ppc_memory().expect("PPC CPU and memory agree"),
             PPC_CONTEXT,
             PPC_SPACE,
             "native-application",
@@ -686,6 +712,9 @@ fn companion_factory(runner: &FixtureRunner) -> Option<Box<dyn ArchitectureAdapt
     runner.debug_ppc_companion_cpu().map(|cpu| {
         Box::new(PpcAdapter::new(
             cpu,
+            runner
+                .debug_ppc_companion_memory()
+                .expect("PPC companion CPU and memory agree"),
             PPC_COMPANION_CONTEXT,
             PPC_COMPANION_SPACE,
             "native-companion",
@@ -879,6 +908,108 @@ pub(crate) fn read_m68k_memory(
         bytes,
         truncated,
     })
+}
+
+fn read_ppc_memory(
+    memory: &GuestAddressSpace,
+    space: AddressSpaceId,
+    address: u64,
+    length: u64,
+) -> DebugResult<MemoryReadResult> {
+    if length > MAX_MEMORY_TRANSFER {
+        return Err(DebugError::TooLarge {
+            limit: MAX_MEMORY_TRANSFER,
+            requested: length,
+        });
+    }
+    if address > u64::from(u32::MAX) || length > u64::from(u32::MAX) {
+        return Err(DebugError::InvalidRange {
+            detail: "PowerPC address space is 32-bit".to_string(),
+        });
+    }
+
+    // A shared view keeps reads on the authoritative process mapping without
+    // snapshot-cloning all guest sections. Debug requests run at a serialized
+    // runner safe point, so this raw mapped-byte read cannot race guest writes.
+    let guest_memory = memory.shared_view();
+    let mut bytes = Vec::with_capacity(length as usize);
+    let mut truncated = false;
+    for offset in 0..length {
+        let Some(current) = address.checked_add(offset) else {
+            truncated = true;
+            break;
+        };
+        let Ok(current) = u32::try_from(current) else {
+            truncated = true;
+            break;
+        };
+        let Some(byte) = guest_memory.read_routed_u8(current, None) else {
+            truncated = true;
+            break;
+        };
+        bytes.push(byte);
+    }
+    Ok(MemoryReadResult {
+        address: DebugAddress::new(space, address),
+        bytes,
+        truncated,
+    })
+}
+
+fn ppc_disassembly(
+    memory: &GuestAddressSpace,
+    space: AddressSpaceId,
+    address: u64,
+    count: u32,
+) -> DebugResult<Vec<DisassemblyLine>> {
+    if count > MAX_DISASSEMBLY_COUNT {
+        return Err(DebugError::TooLarge {
+            limit: u64::from(MAX_DISASSEMBLY_COUNT),
+            requested: u64::from(count),
+        });
+    }
+    if address > u64::from(u32::MAX) {
+        return Err(DebugError::InvalidRange {
+            detail: "PowerPC address space is 32-bit".to_string(),
+        });
+    }
+    if address & 3 != 0 {
+        return Err(DebugError::InvalidRange {
+            detail: "PowerPC instruction addresses must be four-byte aligned".to_string(),
+        });
+    }
+
+    let mut lines = Vec::with_capacity(count as usize);
+    for index in 0..count {
+        let current = address + u64::from(index) * 4;
+        if current > u64::from(u32::MAX - 3) {
+            break;
+        }
+        let bytes = read_ppc_memory(memory, space, current, 4)?.bytes;
+        if bytes.len() != 4 {
+            lines.push(DisassemblyLine {
+                address: DebugAddress::new(space, current),
+                text: "<unmapped>".to_string(),
+                size: 4,
+                approximate: true,
+                bytes,
+            });
+            break;
+        }
+        let word = u32::from_be_bytes(bytes.as_slice().try_into().expect("four bytes"));
+        let text = match ppc::decode(word) {
+            Ok(instruction) => format!("{instruction:?}"),
+            Err(error) => format!("<undecoded: {error:?}>"),
+        };
+        lines.push(DisassemblyLine {
+            address: DebugAddress::new(space, current),
+            text,
+            size: 4,
+            approximate: true,
+            bytes,
+        });
+    }
+    Ok(lines)
 }
 
 pub(crate) fn m68k_disassembly(
