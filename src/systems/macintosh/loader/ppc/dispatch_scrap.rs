@@ -73,6 +73,29 @@ pub(super) fn dispatch_scrap_import(
             scrap.desktop.load();
             Some(PpcImportAction::Return(0))
         }
+        PpcImportDispatcherTarget::UnloadScrap => {
+            // UnloadScrap (_UnlodeScrap, $A9FA)
+            // Writes the desk scrap to disk and releases resident memory.
+            // FUNCTION UnloadScrap: LONGINT;
+            // Inside Macintosh Volume I (1985), p. I-458.
+            let result = match scrap.desktop.unload() {
+                Err(()) => u32::MAX,
+                Ok(Some(handle)) => {
+                    let _ = ppc_dispose_process_native_handle(
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        handle,
+                    );
+                    0
+                }
+                Ok(None) => 0,
+            };
+            Some(PpcImportAction::Return(result))
+        }
         _ => None,
     }
 }

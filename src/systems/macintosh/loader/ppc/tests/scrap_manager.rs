@@ -1,6 +1,41 @@
 use super::*;
 
 #[test]
+fn carbon_unload_scrap_tracks_residency_and_write_errors() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "UnloadScrap"),
+        PpcImportDispatcherTarget::UnloadScrap
+    );
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"UnloadScrap")).unwrap();
+    loaded.scrap.desktop.zero();
+    loaded.scrap.desktop.set_clipboard_writable(true);
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::UnloadScrap);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert!(!loaded.scrap.desktop.summary().in_memory);
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::UnloadScrap);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    loaded.scrap.desktop.load();
+    let handle = loaded.with_process_memory_manager(|loaded, memory_manager| {
+        memory_manager.new_native_handle(&mut loaded.memory, 8, true)
+    });
+    loaded.scrap.desktop.ensure_handle(|| handle);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::UnloadScrap);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.with_process_memory_manager(|_, memory_manager| {
+        assert!(memory_manager.native_allocation(handle).is_none());
+    });
+
+    loaded.scrap.desktop.load();
+    loaded.scrap.desktop.set_clipboard_writable(false);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::UnloadScrap);
+    assert_eq!(loaded.cpu.gpr[3], u32::MAX);
+    assert!(loaded.scrap.desktop.summary().in_memory);
+}
+
+#[test]
 fn native_textedit_and_scrap_manager_share_the_text_flavor() {
     let pef = synthetic_pef_with_import(b"TECopy");
     let mut loaded = load_pef_application(&pef).unwrap();

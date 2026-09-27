@@ -1572,6 +1572,7 @@ pub enum PpcImportDispatcherTarget {
     PutScrap,
     ZeroScrap,
     LoadScrap,
+    UnloadScrap,
     SndSoundManagerVersion,
     UnsignedFixedMulDiv,
     GetSoundOutputInfo,
@@ -12714,6 +12715,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "PutScrap") => PpcImportDispatcherTarget::PutScrap,
         ("InterfaceLib", "ZeroScrap") => PpcImportDispatcherTarget::ZeroScrap,
         ("InterfaceLib", "LoadScrap") => PpcImportDispatcherTarget::LoadScrap,
+        ("InterfaceLib" | "CarbonLib", "UnloadScrap") => {
+            PpcImportDispatcherTarget::UnloadScrap
+        }
         ("InterfaceLib", "FSpOpenDF") => PpcImportDispatcherTarget::FSpOpenDF,
         ("InterfaceLib", "FSpOpenRF") => PpcImportDispatcherTarget::FSpOpenRF,
         ("InterfaceLib", "HOpen") | ("InterfaceLib", "HOpenDF") => PpcImportDispatcherTarget::HOpen,
@@ -15719,7 +15723,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::GetScrap
         | PpcImportDispatcherTarget::PutScrap
         | PpcImportDispatcherTarget::ZeroScrap
-        | PpcImportDispatcherTarget::LoadScrap => {
+        | PpcImportDispatcherTarget::LoadScrap
+        | PpcImportDispatcherTarget::UnloadScrap => {
             unreachable!("Scrap Manager imports return through dispatch_scrap_import")
         }
         PpcImportDispatcherTarget::DMGetFirstScreenDevice
