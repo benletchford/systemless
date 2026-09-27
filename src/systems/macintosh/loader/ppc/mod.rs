@@ -13006,12 +13006,13 @@ fn dispatcher_target_for_import(
         ("InterfaceLib" | "ThreadsLib", "DisposeThread") => PpcImportDispatcherTarget::DisposeThread,
         ("InterfaceLib" | "ThreadsLib", "ThreadBeginCritical") => PpcImportDispatcherTarget::ThreadBeginCritical,
         ("InterfaceLib" | "ThreadsLib", "ThreadEndCritical") => PpcImportDispatcherTarget::ThreadEndCritical,
-        ("InterfaceLib", "GetCurrentProcess" | "GetFrontProcess") => {
+        ("InterfaceLib", "GetCurrentProcess" | "GetFrontProcess")
+        | ("CarbonLib", "GetCurrentProcess") => {
             PpcImportDispatcherTarget::GetCurrentProcess
         }
         ("InterfaceLib", "WakeUpProcess") => PpcImportDispatcherTarget::WakeUpProcess,
         ("InterfaceLib", "SameProcess") => PpcImportDispatcherTarget::SameProcess,
-        ("InterfaceLib", "GetProcessInformation") => {
+        ("InterfaceLib" | "CarbonLib", "GetProcessInformation") => {
             PpcImportDispatcherTarget::GetProcessInformation
         }
         ("InterfaceLib", "ExitToShell") => PpcImportDispatcherTarget::ExitToShell,
