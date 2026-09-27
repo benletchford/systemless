@@ -19,6 +19,7 @@ struct Probe {
     resized: bool,
     moved: Option<(f64, f64)>,
     expected_cursor: Option<(f64, f64)>,
+    expected_guest: Option<(i16, i16)>,
     sequence: u64,
     checks: Vec<&'static str>,
     complete: bool,
@@ -39,6 +40,7 @@ pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
         resized: false,
         moved: None,
         expected_cursor: None,
+        expected_guest: None,
         sequence: 0,
         checks: Vec::new(),
         complete: false,
@@ -46,7 +48,7 @@ pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
     event_loop
         .run_app(&mut probe)
         .expect("native probe event loop");
-    probe.complete = probe.phase == 9 && probe.app.runtime_error.is_none();
+    probe.complete = probe.phase == 10 && probe.app.runtime_error.is_none();
     if let Some(owner) = probe.app.owner.as_mut() {
         probe.complete &= owner.join_finished().expect("owner teardown");
     }
@@ -77,6 +79,8 @@ impl Probe {
                 "fullscreen": w.fullscreen().is_some(), "focused": self.focused,
                 "resized_event": self.resized, "cursor_event": self.moved,
                 "expected_cursor": self.expected_cursor,
+                "guest_mouse": self.app.frame.mouse_position,
+                "expected_guest": self.expected_guest,
             })),
         });
         std::fs::write(&self.report, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
@@ -123,9 +127,18 @@ impl Probe {
                 self.advance("fullscreen entry reaches monitor dimensions");
             }
             4 if self.resized && window.fullscreen().is_none() && settled => {
-                if window.inner_size() != winit::dpi::PhysicalSize::new(700, 500) {
+                let size = window.inner_size();
+                let monitor = window.current_monitor().expect("window monitor").size();
+                if size.width == 0 || size.height == 0 || size == monitor {
                     return;
                 }
+                // AppKit may restore its remembered standard (zoom) frame.
+                // Verify windowed bounds, then require an exact resize after exit.
+                eprintln!("[NATIVE-PROBE] restored normal size={size:?}");
+                let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(700, 500));
+                self.advance("fullscreen exit returns to normal window bounds");
+            }
+            5 if window.inner_size() == winit::dpi::PhysicalSize::new(700, 500) && settled => {
                 let helper = event_loop
                     .create_window(
                         Window::default_attributes()
@@ -136,19 +149,19 @@ impl Probe {
                 self.lost_focus = false;
                 helper.focus_window();
                 self.helper = Some(helper);
-                self.advance("fullscreen exit restores window dimensions");
+                self.advance("exact resize works after fullscreen exit");
             }
-            5 if self.lost_focus && settled => {
+            6 if self.lost_focus && settled => {
                 self.returned_focus = false;
                 window.focus_window();
                 self.advance("native focus loss observed");
             }
-            6 if self.returned_focus && settled => {
+            7 if self.returned_focus && settled => {
                 self.helper = None;
                 self.sequence = self.app.frame.sequence;
                 self.advance("native focus return observed");
             }
-            7 if self.app.frame.sequence > self.sequence + 2 && settled => {
+            8 if self.app.frame.sequence > self.sequence + 2 && settled => {
                 let size = window.inner_size();
                 let target = self
                     .app
@@ -157,6 +170,7 @@ impl Probe {
                     serial: u64::MAX,
                     position: target,
                 });
+                self.expected_guest = Some(target);
                 self.moved = None;
                 self.app.sync_guest_cursor_warp();
                 assert!(
@@ -167,13 +181,16 @@ impl Probe {
                 self.expected_cursor = Some(self.app.mouse_physical);
                 self.advance("frame delivery continues after focus return");
             }
-            8 if self
+            9 if self
                 .moved
                 .zip(self.expected_cursor)
                 .is_some_and(|(a, b)| (a.0 - b.0).abs() < 2.0 && (a.1 - b.1).abs() < 2.0)
+                && Some(self.app.frame.mouse_position) == self.expected_guest
                 && settled =>
             {
-                self.advance("snapshot warp produces matching native cursor event");
+                self.advance(
+                    "snapshot warp produces native cursor event and guest input round trip",
+                );
                 self.app
                     .window_event(event_loop, window.id(), WindowEvent::CloseRequested);
             }
