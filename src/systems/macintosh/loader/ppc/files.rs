@@ -5448,11 +5448,18 @@ pub(super) fn ppc_resolve_alias_file(
     vfs_files: &[PpcVfsFileRecord],
     vfs_resource_files: &[PpcVfsResourceFileRecord],
     vfs_resources: &[PpcVfsResourceRecord],
+    mount_flags: u32,
 ) -> i16 {
     let spec_ptr = cpu.gpr[3];
-    let _resolve_alias_chains = cpu.gpr[4] != 0;
+    let resolve_alias_chains = cpu.gpr[4] != 0;
     let target_is_folder_ptr = cpu.gpr[5];
     let was_aliased_ptr = cpu.gpr[6];
+    // Aliases.h: only these two mount options are defined for this API.
+    // The local VFS never displays mount UI. Alias records currently carry
+    // target paths but no file ID, so TryFileIDFirst falls back to the path.
+    if mount_flags & !0x0000_0003 != 0 {
+        return PPC_PARAM_ERR;
+    }
     if target_is_folder_ptr == 0 || was_aliased_ptr == 0 {
         return PPC_PARAM_ERR;
     }
@@ -5460,7 +5467,7 @@ pub(super) fn ppc_resolve_alias_file(
         Ok(path) => path,
         Err(err) => return err,
     };
-    let target_is_folder = ppc_directory_id_for_path(vfs_directories, &path).is_some();
+    let mut target_is_folder = ppc_directory_id_for_path(vfs_directories, &path).is_some();
     let known_file = target_is_folder
         || ppc_vfs_file_index(vfs_files, &path).is_some()
         || ppc_vfs_resource_file_index(vfs_resource_files, &path).is_some();
@@ -5472,7 +5479,20 @@ pub(super) fn ppc_resolve_alias_file(
     {
         return PPC_PARAM_ERR;
     }
-    if let Some(alias) = ppc_alias_record_for_path(vfs_directories, vfs_resources, &path) {
+    let mut current_path = path;
+    let mut was_aliased = false;
+    let mut seen_paths = Vec::<String>::new();
+    while let Some(alias) =
+        ppc_alias_record_for_path(vfs_directories, vfs_resources, &current_path)
+    {
+        if seen_paths
+            .iter()
+            .any(|seen| seen.eq_ignore_ascii_case(&current_path))
+            || seen_paths.len() >= 32
+        {
+            return PPC_PARAM_ERR;
+        }
+        seen_paths.push(current_path.clone());
         if !ppc_memory_can_write_bytes(memory, spec_ptr, PPC_FSSPEC_SIZE as u32) {
             return PPC_PARAM_ERR;
         }
@@ -5483,7 +5503,7 @@ pub(super) fn ppc_resolve_alias_file(
             alias.target_dir_id,
             &alias.target_name,
         );
-        let target_is_folder =
+        target_is_folder =
             ppc_fsspec_target_is_folder(vfs_directories, alias.target_dir_id, &alias.target_name);
         if !ppc_write_fsspec_parts(
             memory,
@@ -5491,23 +5511,27 @@ pub(super) fn ppc_resolve_alias_file(
             alias.target_vref,
             alias.target_dir_id,
             &alias.target_name,
-        ) || memory
-            .write_u8(target_is_folder_ptr, u8::from(target_is_folder))
-            .is_none()
-            || memory.write_u8(was_aliased_ptr, 1).is_none()
-        {
+        ) {
             return PPC_PARAM_ERR;
         }
-        return if target_exists {
-            PPC_NO_ERR
-        } else {
-            PPC_FNF_ERR
+        was_aliased = true;
+        if !target_exists {
+            let _ = memory.write_u8(target_is_folder_ptr, u8::from(target_is_folder));
+            let _ = memory.write_u8(was_aliased_ptr, 1);
+            return PPC_FNF_ERR;
+        }
+        if !resolve_alias_chains {
+            break;
+        }
+        current_path = match ppc_path_for_fsspec(memory, vfs_directories, spec_ptr) {
+            Ok(path) => path,
+            Err(err) => return err,
         };
     }
     if memory
         .write_u8(target_is_folder_ptr, u8::from(target_is_folder))
         .is_none()
-        || memory.write_u8(was_aliased_ptr, 0).is_none()
+        || memory.write_u8(was_aliased_ptr, u8::from(was_aliased)).is_none()
     {
         return PPC_PARAM_ERR;
     }
@@ -5597,4 +5621,3 @@ pub(super) fn ppc_directory_id_for_path(vfs_directories: &[PpcVfsDirectory], pat
         .find(|directory| directory.path.eq_ignore_ascii_case(path))
         .map(|directory| directory.dir_id)
 }
-

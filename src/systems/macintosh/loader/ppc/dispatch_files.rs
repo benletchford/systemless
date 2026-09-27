@@ -635,16 +635,26 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
             }
         }
-        PpcImportDispatcherTarget::ResolveAliasFile => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_resolve_alias_file(
+        PpcImportDispatcherTarget::ResolveAliasFile
+        | PpcImportDispatcherTarget::ResolveAliasFileWithMountFlags => {
+            let mount_flags = if matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::ResolveAliasFileWithMountFlags
+            ) {
+                cpu.gpr[7]
+            } else {
+                0
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_resolve_alias_file(
                 cpu,
                 memory,
                 vfs_directories,
                 vfs_files,
                 vfs_resource_files,
                 vfs_resources,
-            )),
-        )),
+                mount_flags,
+            ))))
+        }
         PpcImportDispatcherTarget::FileCompatibility(operation) => {
             Some(ppc_dispatch_file_compatibility(
                 operation,
