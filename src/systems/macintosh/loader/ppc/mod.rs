@@ -12184,8 +12184,12 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::AppendResMenu
         }
         ("InterfaceLib", "InsertResMenu") => PpcImportDispatcherTarget::InsertResMenu,
-        ("InterfaceLib", "EnableItem") => PpcImportDispatcherTarget::EnableMenuItem,
-        ("InterfaceLib", "DisableItem") => PpcImportDispatcherTarget::DisableMenuItem,
+        ("InterfaceLib", "EnableItem" | "EnableMenuItem") => {
+            PpcImportDispatcherTarget::EnableMenuItem
+        }
+        ("InterfaceLib", "DisableItem" | "DisableMenuItem") => {
+            PpcImportDispatcherTarget::DisableMenuItem
+        }
         ("InterfaceLib", "SetItemMark") => PpcImportDispatcherTarget::SetItemMark,
         ("InterfaceLib", "CheckItem") => PpcImportDispatcherTarget::CheckItem,
         ("InterfaceLib", "GetMenuBar") => PpcImportDispatcherTarget::GetMenuBar,

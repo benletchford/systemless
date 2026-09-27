@@ -7944,3 +7944,33 @@ fn hle_import_runner_handles_menu_bar_height_accessors() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR), Some(37));
 }
+
+#[test]
+fn carbon_menu_item_accessors_bind_weak_imports() {
+    for (symbol, target) in [
+        (b"EnableMenuItem".as_slice(), PpcImportDispatcherTarget::EnableMenuItem),
+        (b"DisableMenuItem".as_slice(), PpcImportDispatcherTarget::DisableMenuItem),
+    ] {
+        let weak_pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+            b"CarbonLib",
+            symbol,
+            0x82,
+            &[sm_index_reloc(0x30, 0)],
+        ));
+        let mut weak_loaded = load_pef_application(&weak_pef).unwrap();
+        assert_eq!(weak_loaded.imports[0].dispatcher_target, target);
+        assert_ne!(weak_loaded.imports[0].address, 0);
+        assert_eq!(
+            weak_loaded.memory.read_u32_be(PPC_DATA_BASE),
+            Some(weak_loaded.imports[0].address)
+        );
+
+        let pef = synthetic_pef_with_library_import(b"CarbonLib", symbol);
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+    }
+}
