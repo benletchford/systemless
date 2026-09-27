@@ -151,6 +151,25 @@ fn import_bindings_classify_resource_read_imports() {
 }
 
 #[test]
+fn carbonlib_reuses_exact_interface_toolbox_symbols() {
+    for symbol in ["GetIndString", "GetCurrentProcess", "WaitNextEvent"] {
+        assert_eq!(
+            dispatcher_target_for_import("CarbonLib", symbol),
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            "{symbol}"
+        );
+    }
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "UnknownToolboxExport"),
+        PpcImportDispatcherTarget::Unsupported
+    );
+    assert_eq!(
+        dispatcher_target_for_import("OtherLibrary", "GetIndString"),
+        PpcImportDispatcherTarget::Unsupported
+    );
+}
+
+#[test]
 fn hle_import_runner_handles_cur_res_file() {
     let pef = synthetic_pef_with_import(b"CurResFile");
     let mut loaded = load_pef_application(&pef).unwrap();

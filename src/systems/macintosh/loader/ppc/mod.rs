@@ -10978,6 +10978,14 @@ fn dispatcher_target_for_import(
     library_name: &str,
     symbol_name: &str,
 ) -> PpcImportDispatcherTarget {
+    // CFM Carbon applications link CarbonLib in place of InterfaceLib for
+    // supported Toolbox APIs. An exact symbol match uses the same PPC ABI.
+    // Carbon Porting Guide (2002), pp. 42–43 and 53–54.
+    let library_name = if library_name == "CarbonLib" {
+        "InterfaceLib"
+    } else {
+        library_name
+    };
     match (library_name, symbol_name) {
         ("ColMgrLib", "getCollectionMgrLibVersion") => {
             PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Version)
@@ -12319,7 +12327,7 @@ fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::CloseConnection,
         ("InterfaceLib", "GetMemFragment") => PpcImportDispatcherTarget::GetMemFragment,
         ("InterfaceLib", "GetDiskFragment") => PpcImportDispatcherTarget::GetDiskFragment,
-        ("InterfaceLib" | "CarbonLib", "InitCursor") => PpcImportDispatcherTarget::InitCursor,
+        ("InterfaceLib", "InitCursor") => PpcImportDispatcherTarget::InitCursor,
         ("InterfaceLib", "HideCursor") => PpcImportDispatcherTarget::HideCursor,
         ("InterfaceLib", "ShowCursor") => PpcImportDispatcherTarget::ShowCursor,
         ("InterfaceLib", "ShieldCursor") => PpcImportDispatcherTarget::ShieldCursor,
@@ -12715,7 +12723,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "PutScrap") => PpcImportDispatcherTarget::PutScrap,
         ("InterfaceLib", "ZeroScrap") => PpcImportDispatcherTarget::ZeroScrap,
         ("InterfaceLib", "LoadScrap") => PpcImportDispatcherTarget::LoadScrap,
-        ("InterfaceLib" | "CarbonLib", "UnloadScrap") => {
+        ("InterfaceLib", "UnloadScrap") => {
             PpcImportDispatcherTarget::UnloadScrap
         }
         ("InterfaceLib", "FSpOpenDF") => PpcImportDispatcherTarget::FSpOpenDF,
@@ -12931,7 +12939,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "LUpdate") => PpcImportDispatcherTarget::LUpdate,
         ("InterfaceLib", "LAutoScroll") => PpcImportDispatcherTarget::LAutoScroll,
         ("InterfaceLib", "LSearch") => PpcImportDispatcherTarget::LSearch,
-        ("InterfaceLib" | "CarbonLib", "FlushEvents") => {
+        ("InterfaceLib", "FlushEvents") => {
             PpcImportDispatcherTarget::FlushEvents
         }
         ("InterfaceLib", "SetEventMask") => PpcImportDispatcherTarget::SetEventMask,
@@ -12945,7 +12953,7 @@ fn dispatcher_target_for_import(
         // WaitNextEvent(eventMask, theEvent, sleep, mouseRgn) returns the
         // next matching event and yields time when no event is pending.
         // Macintosh Toolbox Essentials (1992), pp. 2-22–2-25.
-        ("InterfaceLib" | "CarbonLib", "WaitNextEvent") => {
+        ("InterfaceLib", "WaitNextEvent") => {
             PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)
         }
         ("InterfaceLib", "GetOSEvent") => PpcImportDispatcherTarget::GetOSEvent,
@@ -13057,13 +13065,12 @@ fn dispatcher_target_for_import(
         ("InterfaceLib" | "ThreadsLib", "DisposeThread") => PpcImportDispatcherTarget::DisposeThread,
         ("InterfaceLib" | "ThreadsLib", "ThreadBeginCritical") => PpcImportDispatcherTarget::ThreadBeginCritical,
         ("InterfaceLib" | "ThreadsLib", "ThreadEndCritical") => PpcImportDispatcherTarget::ThreadEndCritical,
-        ("InterfaceLib", "GetCurrentProcess" | "GetFrontProcess")
-        | ("CarbonLib", "GetCurrentProcess") => {
+        ("InterfaceLib", "GetCurrentProcess" | "GetFrontProcess") => {
             PpcImportDispatcherTarget::GetCurrentProcess
         }
         ("InterfaceLib", "WakeUpProcess") => PpcImportDispatcherTarget::WakeUpProcess,
         ("InterfaceLib", "SameProcess") => PpcImportDispatcherTarget::SameProcess,
-        ("InterfaceLib" | "CarbonLib", "GetProcessInformation") => {
+        ("InterfaceLib", "GetProcessInformation") => {
             PpcImportDispatcherTarget::GetProcessInformation
         }
         ("InterfaceLib", "ExitToShell") => PpcImportDispatcherTarget::ExitToShell,
