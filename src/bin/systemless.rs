@@ -93,10 +93,9 @@ use objc2_quartz_core::CATransaction;
 use runtime_driver::GuiDriver;
 use systemless::api::{InstructionBudget, VideoFrame};
 use systemless::debug_overlay::DebugOverlayFrameStats;
-use systemless::display;
-use systemless::game;
 use systemless::runner::FixtureRunner;
 use systemless::systems::macintosh::session::{MacintoshInput, MacintoshSession};
+use systemless::systems::macintosh::{display, game};
 use systemless::trap::dispatch::ScreenCopyBitsRect;
 use systemless::ui_theme::UiThemeId;
 

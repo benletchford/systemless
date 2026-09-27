@@ -6,7 +6,7 @@
 
 use crate::cpu::{CpuOps, Register};
 use crate::memory::{MacMemoryBus, MemoryBus};
-use crate::sound::{self, SndChannel, SndCommand, StereoSample};
+use crate::systems::macintosh::sound::{self, SndChannel, SndCommand, StereoSample};
 use crate::trap::dispatch::{selector_operation_route, SelectorOperationRoute};
 use crate::trap::extended80::Extended80;
 use crate::Result;

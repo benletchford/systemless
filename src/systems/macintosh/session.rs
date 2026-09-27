@@ -8,10 +8,9 @@ use std::path::Path;
 use crate::api::{
     AdvanceResult, AudioChunk, AudioFormat, InstructionBudget, PixelFormat, VideoFrame,
 };
-use crate::display;
-use crate::game;
 use crate::loader::LoadedApp;
 use crate::runner::FixtureRunner;
+use crate::systems::macintosh::{display, game};
 
 /// Macintosh key values are guest key codes and character codes, not host keys.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

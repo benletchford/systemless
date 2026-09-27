@@ -4,7 +4,7 @@ use image::{codecs::png::PngEncoder, ImageEncoder};
 use serde::{Deserialize, Serialize};
 use systemless::runner::{FixtureRunner, MenuBarPolicy, DEFAULT_REALTIME_CPU_MHZ, DEFAULT_VBL_HZ};
 use systemless::sound::OUTPUT_RATE;
-use systemless::{display, game};
+use systemless::systems::macintosh::{display, game};
 use wasm_bindgen::prelude::*;
 
 const FIXED_MAC_TIME: u32 = 3_786_912_000;

@@ -31,7 +31,7 @@ fn execution_status(runner: &FixtureRunner) -> DebugResult<ExecutionStatusReply>
 pub fn handle_debug_request(
     runner: &mut FixtureRunner,
     request: DebugRequest,
-) -> crate::debug::error::DebugResult<DebugReply> {
+) -> super::error::DebugResult<DebugReply> {
     use DebugRequest::*;
     match request {
         InSession {

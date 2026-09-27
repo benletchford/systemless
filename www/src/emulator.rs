@@ -13,7 +13,7 @@ use systemless::runner::{
 use systemless::sound::OUTPUT_RATE;
 use systemless::trap::dispatch::ScreenCopyBitsRect;
 use systemless::ui_theme::UiThemeId;
-use systemless::{display, game};
+use systemless::systems::macintosh::{display, game};
 use wasm_bindgen::{prelude::Closure, JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{

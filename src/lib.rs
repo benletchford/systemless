@@ -9,8 +9,10 @@
 //!
 //! # Execution model
 //!
-//! [`FixtureRunner`](runner::FixtureRunner) owns the CPU, guest memory, and
-//! Toolbox dispatcher. Precise single-instruction work uses
+//! [`MacintoshSession`](systems::macintosh::session::MacintoshSession) is the
+//! embedding entry point. Its underlying
+//! [`FixtureRunner`](systems::macintosh::runner::FixtureRunner) owns the CPU,
+//! guest memory, and Toolbox dispatcher. Precise single-instruction work uses
 //! [`m68k::CpuCore::step`]. Budgeted execution uses
 //! [`m68k::CpuCore::run_batch`], with FastMem for ordinary guest RAM and
 //! Cranelift-compiled hot traces on native targets. WebAssembly uses m68k's
@@ -18,29 +20,27 @@
 //! same in both modes.
 //!
 //! The library exposes the full [`m68k::CpuCore`] through
-//! [`M68kCpu::core`](cpu::M68kCpu::core) for diagnostics and specialized
-//! embedding, while [`cpu::CpuOps`] is the narrower register interface used by
+//! [`M68kCpu::core`](systems::macintosh::cpu::M68kCpu::core) for diagnostics and specialized
+//! embedding, while [`CpuOps`](systems::macintosh::cpu::CpuOps) is the narrower register interface used by
 //! Toolbox handlers.
 //!
 //! # Quick start
 //!
 //! ```no_run
-//! use systemless::runner::{FixtureRunner, FixtureRunnerConfig};
+//! use systemless::api::InstructionBudget;
+//! use systemless::systems::macintosh::session::MacintoshSession;
 //!
-//! // Allocate an 8 MiB guest with guest-controlled menu visibility and
-//! // arrow keys left as literal arrow keys.
-//! let config = FixtureRunnerConfig::default();
-//! let mut runner = FixtureRunner::new(8 * 1024 * 1024, config);
+//! let mut session = MacintoshSession::new(true, None);
 //!
 //! // Load a Mac executable (StuffIt archive, MacBinary, or raw
 //! // resource fork — the loader auto-detects the format).
 //! let bytes = std::fs::read("MyGame.sit").unwrap();
-//! let _app = systemless::game::load_game(&mut runner, &bytes).unwrap();
+//! let app = session.load_bytes(&bytes).unwrap();
+//! session.initialize(&app);
 //!
-//! // Step the guest until it halts or the budget runs out.
-//! // The bool is `still_running` — false means the CPU halted.
-//! let (steps_taken, still_running) = runner.run_steps(100_000, None);
-//! println!("ran {} steps, still_running = {}", steps_taken, still_running);
+//! // Bound guest work explicitly; the runner retains its guest clock cadence.
+//! let result = session.advance(InstructionBudget(100_000));
+//! println!("ran {} instructions, running = {}", result.instructions, result.running);
 //! ```
 //!
 //! [`m68k`]: https://crates.io/crates/m68k
@@ -54,48 +54,111 @@ pub mod systems;
 
 // Compatibility module paths for existing embedders.
 pub(crate) use systems::macintosh::adb;
-pub use systems::macintosh::audio;
-pub use systems::macintosh::binhex;
-pub use systems::macintosh::callback_manager;
+#[deprecated(note = "use `systemless::systems::macintosh::audio`")]
+pub mod audio {
+    pub use crate::systems::macintosh::audio::*;
+}
+#[deprecated(note = "use `systemless::systems::macintosh::binhex`")]
+pub mod binhex {
+    pub use crate::systems::macintosh::binhex::*;
+}
+#[deprecated(note = "use `systemless::systems::macintosh::callback_manager`")]
+pub mod callback_manager {
+    pub use crate::systems::macintosh::callback_manager::*;
+}
 pub(crate) use systems::macintosh::cfm;
 pub(crate) use systems::macintosh::collection_manager;
 pub(crate) use systems::macintosh::control_manager;
 pub(crate) use systems::macintosh::copy_bits;
-pub use systems::macintosh::cpu;
+#[deprecated(note = "use `systemless::systems::macintosh::cpu`")]
+pub mod cpu {
+    pub use crate::systems::macintosh::cpu::*;
+}
 #[cfg(feature = "debug")]
-pub use systems::macintosh::debug;
-pub use systems::macintosh::debug_overlay;
-pub use systems::macintosh::disk_image;
-pub use systems::macintosh::display;
+#[deprecated(note = "use `systemless::systems::macintosh::debug`")]
+pub mod debug {
+    pub use crate::systems::macintosh::debug::*;
+}
+#[deprecated(note = "use `systemless::systems::macintosh::debug_overlay`")]
+pub mod debug_overlay {
+    pub use crate::systems::macintosh::debug_overlay::*;
+}
+#[deprecated(note = "use `systemless::systems::macintosh::disk_image`")]
+pub mod disk_image {
+    pub use crate::systems::macintosh::disk_image::*;
+}
+#[deprecated(note = "use `systemless::systems::macintosh::display`")]
+pub mod display {
+    pub use crate::systems::macintosh::display::*;
+}
 pub(crate) use systems::macintosh::event_queue;
 pub(crate) use systems::macintosh::execution_kernel;
 pub(crate) use systems::macintosh::execution_m68k;
 pub(crate) use systems::macintosh::execution_native;
-pub use systems::macintosh::game;
+#[deprecated(note = "use `systemless::systems::macintosh::game`")]
+pub mod game {
+    pub use crate::systems::macintosh::game::*;
+}
 pub(crate) use systems::macintosh::guest_call;
 pub(crate) use systems::macintosh::guest_procedure;
 pub(crate) use systems::macintosh::list_manager;
-pub use systems::macintosh::loader;
+#[deprecated(note = "use `systemless::systems::macintosh::loader`")]
+pub mod loader {
+    pub use crate::systems::macintosh::loader::*;
+}
 pub(crate) use systems::macintosh::mac_roman;
-pub use systems::macintosh::machine_profile;
-pub use systems::macintosh::managers;
-pub use systems::macintosh::memory;
+#[deprecated(note = "use `systemless::systems::macintosh::machine_profile`")]
+pub mod machine_profile {
+    pub use crate::systems::macintosh::machine_profile::*;
+}
+#[deprecated(note = "use `systemless::systems::macintosh::managers`")]
+pub mod managers {
+    pub use crate::systems::macintosh::managers::*;
+}
+#[deprecated(note = "use `systemless::systems::macintosh::memory`")]
+pub mod memory {
+    pub use crate::systems::macintosh::memory::*;
+}
 pub(crate) use systems::macintosh::menu_manager;
-pub use systems::macintosh::menu_model;
+#[deprecated(note = "use `systemless::systems::macintosh::menu_model`")]
+pub mod menu_model {
+    pub use crate::systems::macintosh::menu_model::*;
+}
 pub(crate) use systems::macintosh::mixed_mode;
 pub(crate) use systems::macintosh::process_context;
 pub(crate) use systems::macintosh::process_manager;
-pub use systems::macintosh::quickdraw;
-pub use systems::macintosh::runner;
+#[deprecated(note = "use `systemless::systems::macintosh::quickdraw`")]
+pub mod quickdraw {
+    pub use crate::systems::macintosh::quickdraw::*;
+}
+#[deprecated(note = "use `systemless::systems::macintosh::runner`")]
+pub mod runner {
+    pub use crate::systems::macintosh::runner::*;
+}
 #[cfg(feature = "test-support")]
-pub use systems::macintosh::scripted_traces;
-pub use systems::macintosh::sound;
+#[deprecated(note = "use `systemless::systems::macintosh::scripted_traces`")]
+pub mod scripted_traces {
+    pub use crate::systems::macintosh::scripted_traces::*;
+}
+#[deprecated(note = "use `systemless::systems::macintosh::sound`")]
+pub mod sound {
+    pub use crate::systems::macintosh::sound::*;
+}
 pub(crate) use systems::macintosh::text_edit;
 pub(crate) use systems::macintosh::thread_manager;
-pub use systems::macintosh::trace;
-pub use systems::macintosh::trap;
+#[deprecated(note = "use `systemless::systems::macintosh::trace`")]
+pub mod trace {
+    pub use crate::systems::macintosh::trace::*;
+}
+#[deprecated(note = "use `systemless::systems::macintosh::trap`")]
+pub mod trap {
+    pub use crate::systems::macintosh::trap::*;
+}
 pub(crate) use systems::macintosh::ui_art;
-pub use systems::macintosh::ui_theme;
+#[deprecated(note = "use `systemless::systems::macintosh::ui_theme`")]
+pub mod ui_theme {
+    pub use crate::systems::macintosh::ui_theme::*;
+}
 pub(crate) use systems::macintosh::window_manager;
 
 pub use error::{Error, Result};

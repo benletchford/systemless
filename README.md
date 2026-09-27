@@ -343,20 +343,22 @@ resource forks and is kept separate from the original archive.
 
 ## Library Use
 
-Programmatic loading goes through `FixtureRunner`:
+Programmatic loading goes through `MacintoshSession`:
 
 ```rust
-use systemless::runner::{FixtureRunner, FixtureRunnerConfig};
+use systemless::api::InstructionBudget;
+use systemless::systems::macintosh::session::MacintoshSession;
 
 let bytes = std::fs::read("game.sit").expect("read game");
-let mut runner = FixtureRunner::new(32 * 1024 * 1024, FixtureRunnerConfig::default());
-
-systemless::game::load_game(&mut runner, &bytes).expect("load game");
-let (_steps, _still_running) = runner.run_steps(100_000, None);
-runner.composite_frame();
+let mut session = MacintoshSession::new(true, None);
+let app = session.load_bytes(&bytes).expect("load game");
+session.initialize(&app);
+let result = session.advance(InstructionBudget(100_000));
+let frame = session.video_frame();
 ```
 
-Use `systemless::display` to render the current framebuffer for custom frontends.
+The optional `frame` contains RGBA8 pixels. Use
+`systemless::systems::macintosh::display` for specialized rendering.
 
 ## Save Persistence
 
@@ -412,9 +414,12 @@ launched archive under `.systemless/saves/<archive-name>/`.
 ### Macintosh ownership and embedding
 
 The implementation modules in this table live under `systems::macintosh`.
-The former crate-root paths remain compatibility exports, so existing callers
-can continue using `systemless::runner`, `systemless::game`, and the other
-published module paths. The CPU engines remain in the separate `m68k` and
+The former crate-root paths remain deprecated compatibility modules, so existing
+callers can continue using `systemless::runner`, `systemless::game`, and the
+other published module paths while migrating to
+`systemless::systems::macintosh::<module>`. `FixtureRunner` itself remains
+available for specialized operations; the session does not yet replace every
+runner method. The CPU engines remain in the separate `m68k` and
 `ppc` crates; their Systemless adapters, memory map, Toolbox services, task
 state, ABI gateways, and scheduler belong to this one Macintosh world.
 
