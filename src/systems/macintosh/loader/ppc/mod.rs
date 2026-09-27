@@ -879,23 +879,7 @@ pub use dispatch_printing::PpcPrintingCompatibilityOperation;
 pub(super) use dispatch_printing::ppc_dispatch_printing_compatibility;
 
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PpcFileCompatibilityOperation {
-    Create,
-    FsOpen,
-    OpenDf,
-    OpenRf,
-    PbCatSearchSync,
-    PbCloseWdSync,
-    PbDirCreateSync,
-    PbGetFPosSync,
-    PbGetWdInfoSync,
-    PbHGetVolParmsSync,
-    PbHGetVolSync,
-    PbHOpenRfSync,
-    PbHSetVolSync,
-    PbOpenWdSync,
-}
+pub use dispatch_files::PpcFileCompatibilityOperation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcParameterBlockCreateOperation {
