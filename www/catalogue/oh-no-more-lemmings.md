@@ -20,8 +20,9 @@ compatibility:
     environment: >-
       Deterministic headless replay of the unchanged StuffIt demo. The introduction
       and menu opened, Level 1 Citizen Lemming started, a lemming moved, and the level
-      timer advanced. Browser launch and native-Mac comparison have not yet been
-      verified.
+      timer advanced. The promoted archive and screenshot were fetched back and
+      matched their recorded SHA-256 hashes. Browser launch and native-Mac
+      comparison have not yet been verified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3067
 artifacts:
