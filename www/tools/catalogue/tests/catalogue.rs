@@ -833,6 +833,7 @@ fn shared_hashes_deduplicate_and_last_reference_becomes_orphan() {
     let objects = assets::desired(&c).unwrap();
     assert_eq!(objects.len(), 1);
     assert_eq!(objects[0].references, vec!["one:archive", "two:archive"]);
+    assert_eq!(objects[0].download_name.as_deref(), Some("one.sit"));
     let inv = inventory(vec![remote(&hash(1))]);
     let p = r2::plan(&c, &inv, wide_policy(), now()).unwrap();
     assert!(p.delete.is_empty());
@@ -923,6 +924,7 @@ fn immutable_local_store_rejects_conflicting_bytes() {
         sha256: inspect.sha256,
         size_bytes: inspect.size_bytes,
         content_type: "application/x-stuffit".into(),
+        download_name: None,
         references: vec![],
     };
     let mut store = assets::DirectoryStore {
@@ -1254,6 +1256,7 @@ fn managed_object_requests_must_bind_key_to_content_hash() {
         sha256: hash(2),
         size_bytes: 123,
         content_type: "application/x-stuffit".into(),
+        download_name: None,
         references: vec![],
     };
     assert!(assets::validate_object(&object).is_err());

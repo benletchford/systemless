@@ -2,6 +2,12 @@ name: R2 connection check
 
 on:
   workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Update archive download names and delete orphaned managed objects'
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -24,7 +30,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal
       - name: Build trusted CLI without R2 credentials
         run: cargo +stable build --locked --release -p systemless-catalogue-tools --bin catalogue
-      - name: Read managed R2 inventory
+      - name: Check managed R2 objects
         shell: bash
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -38,15 +44,41 @@ jobs:
               exit 1
             fi
           done
+          ./target/release/catalogue --root www check --production
+          if [[ '${{ inputs.apply }}' == 'true' ]]; then
+            ./target/release/catalogue --root www r2 sync-download-names --apply
+          fi
           ./target/release/catalogue --root www r2 inventory --output "$RUNNER_TEMP/r2-inventory.json"
-      - name: Summarize connection check
+          ./target/release/catalogue --root www r2 plan \
+            --inventory "$RUNNER_TEMP/r2-inventory.json" \
+            --output "$RUNNER_TEMP/r2-plan.json" \
+            --max-delete 100000 --max-delete-percent 100 --min-age-hours 24
+          if [[ '${{ inputs.apply }}' == 'true' ]]; then
+            ./target/release/catalogue --root www r2 reconcile --plan "$RUNNER_TEMP/r2-plan.json" --apply
+            ./target/release/catalogue --root www r2 inventory --output "$RUNNER_TEMP/r2-after.json"
+          fi
+      - name: Save R2 audit
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: r2-audit-${{ github.run_id }}
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/r2-inventory.json
+            ${{ runner.temp }}/r2-plan.json
+            ${{ runner.temp }}/r2-after.json
+      - name: Summarize R2 audit
         shell: bash
         run: |
           count=$(jq '.objects | length' "$RUNNER_TEMP/r2-inventory.json")
+          orphaned=$(jq '.delete | length' "$RUNNER_TEMP/r2-plan.json")
+          named=$(jq '[.desired[] | select(.download_name != null)] | length' "$RUNNER_TEMP/r2-plan.json")
           {
-            echo '### R2 connection successful'
+            echo '### Managed R2 catalogue audit'
             echo
-            echo "Authenticated and listed both managed catalogue prefixes: $count objects."
-            echo 'No objects were uploaded or deleted. No entries were changed.'
-            echo 'This verifies authentication and listing, not upload permissions or public downloads.'
+            echo "Managed objects before reconciliation: $count"
+            echo "Referenced archives with download names: $named"
+            echo "Orphaned managed objects eligible for deletion: $orphaned"
+            echo "Apply requested: ${{ inputs.apply }}"
+            echo 'The attached audit contains the complete inventory and deletion plan.'
           } >> "$GITHUB_STEP_SUMMARY"

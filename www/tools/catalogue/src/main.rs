@@ -126,6 +126,11 @@ enum R2Command {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    /// Idempotently set catalogue download filenames on managed archives.
+    SyncDownloadNames {
+        #[arg(long)]
+        apply: bool,
+    },
     /// Compute a reviewable plan; --inventory makes this command credential-free.
     Plan {
         #[arg(long)]
@@ -265,6 +270,17 @@ fn run() -> Result<()> {
         Command::R2 { command } => match command {
             R2Command::Inventory { output: path } => {
                 output(&r2::R2Store::from_env()?.inventory()?, path.as_deref())?
+            }
+            R2Command::SyncDownloadNames { apply } => {
+                let c = catalogue::load(&cli.root, Mode::Production)?;
+                let objects = assets::desired(&c)?;
+                let archives = objects.iter().filter(|o| o.download_name.is_some()).count();
+                if apply {
+                    let changed = r2::R2Store::from_env()?.sync_download_names(&objects)?;
+                    eprintln!("Updated {changed} of {archives} archive download names");
+                } else {
+                    eprintln!("Would inspect {archives} managed archives; pass --apply to update mismatched metadata");
+                }
             }
             R2Command::Plan {
                 inventory,
