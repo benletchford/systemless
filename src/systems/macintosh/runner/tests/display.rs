@@ -145,6 +145,33 @@ fn ppc_host_sync_excludes_scanline_padding_from_visible_rows() {
 }
 
 #[test]
+fn ppc_host_canvas_presents_draw_sprocket_context_without_matte() {
+    let context_buffer = PpcFrontBuffer {
+        base_addr: 0x1000,
+        row_bytes: 1296,
+        width: 640,
+        height: 480,
+        depth: 16,
+    };
+    // An active DrawSprocket context owns the display mode and is shown 1:1,
+    // so the window switches to 640x480 instead of matting the buffer inside
+    // the machine profile.
+    assert_eq!(
+        FixtureRunner::ppc_host_canvas_dimensions(context_buffer, true),
+        (640, 480)
+    );
+    // Other guest buffers still pad to the machine profile.
+    let profile = crate::machine_profile::reference_machine_profile();
+    assert_eq!(
+        FixtureRunner::ppc_host_canvas_dimensions(context_buffer, false),
+        (
+            640u32.max(u32::from(profile.screen_width)),
+            480u32.max(u32::from(profile.screen_height))
+        )
+    );
+}
+
+#[test]
 fn ppc_packed_indexed_row_copy_preserves_neighbors_at_non_byte_offsets() {
     let mut one_bit = [0u8; 2];
     assert!(FixtureRunner::copy_ppc_packed_indexed_row(

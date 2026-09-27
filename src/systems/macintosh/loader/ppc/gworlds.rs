@@ -196,7 +196,9 @@ pub(crate) fn ppc_init_graf(memory: &mut PpcSectionMem, gworlds: &[PpcGWorldReco
     let dk_gray = [0x77, 0xdd, 0x77, 0xdd, 0x77, 0xdd, 0x77, 0xdd];
     let (arrow_data, arrow_mask, arrow_hot_v, arrow_hot_h) = TrapDispatcher::default_arrow_cursor();
     let arrow = global_ptr - 108;
-    let screen_bits = global_ptr - 122;
+    let Some(screen_bits) = ppc_screen_bits_addr(global_ptr) else {
+        return false;
+    };
 
     memory.write_u32_be(globals_base, 1).is_some()
         && memory
@@ -2474,6 +2476,61 @@ pub(crate) fn ppc_grow_ctables(
     Ok(())
 }
 
+/// Offset from QDGlobals.thePort to the 14-byte screenBits record.
+const PPC_QD_GLOBALS_SCREEN_BITS_OFFSET: u32 = 122;
+
+/// Address of QDGlobals.screenBits for an InitGraf global pointer.
+pub(crate) fn ppc_screen_bits_addr(qd_globals: u32) -> Option<u32> {
+    qd_globals.checked_sub(PPC_QD_GLOBALS_SCREEN_BITS_OFFSET)
+}
+
+/// Writes the live screen extent into the main GDevice bounds, the main
+/// screen CGrafPort's portRect and visible region, and the desktop GrayRgn.
+/// Geometry switches (SetDepth with a size, DrawSprocket activation) use
+/// this; depth-only switches leave the game's regions untouched.
+pub(crate) fn ppc_write_screen_bounds(
+    memory: &mut PpcSectionMem,
+    gdevice: u32,
+    width: u32,
+    height: u32,
+) -> Option<()> {
+    let bottom = ppc_u32_to_i16_saturating(height);
+    let right = ppc_u32_to_i16_saturating(width);
+    ppc_write_rect(memory, gdevice + 34, 0, 0, bottom, right)?;
+    ppc_write_rect(memory, PPC_MAIN_GWORLD + 16, 0, 0, bottom, right)?;
+    ppc_write_rgn_bbox(memory, PPC_MAIN_VIS_RGN_HANDLE, 0, 0, bottom, right)?;
+    // Macintosh Toolbox Essentials (1992), pp. 3-112 and 4-16: GrayRgn is
+    // the desktop area below the menu bar, whose live height is MBarHeight.
+    let menu_bar_height = i16::try_from(
+        u32::from(memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20)).min(height),
+    )
+    .unwrap_or(20);
+    ppc_write_rgn_bbox(memory, PPC_GRAY_RGN_HANDLE, menu_bar_height, 0, bottom, right)
+}
+
+/// Writes the QDGlobals.screenBits record for the live screen extent.
+pub(crate) fn ppc_write_screen_bits(
+    memory: &mut PpcSectionMem,
+    screen_bits: Option<u32>,
+    row_bytes: u32,
+    width: u32,
+    height: u32,
+) -> Option<()> {
+    if let Some(screen_bits) = screen_bits {
+        memory.write_u32_be(screen_bits, PPC_MAIN_SCREEN_BASE)?;
+        memory.write_u16_be(screen_bits + 4, row_bytes as u16 & 0x3fff)?;
+        ppc_write_rect(
+            memory,
+            screen_bits + 6,
+            0,
+            0,
+            ppc_u32_to_i16_saturating(height),
+            ppc_u32_to_i16_saturating(width),
+        )?;
+    }
+    Some(())
+}
+
 pub(crate) fn ppc_set_depth(
     cpu: &PpcCpu,
     allocator: Option<&mut PpcProcessAllocatorView<'_>>,
@@ -2636,7 +2693,7 @@ pub(crate) fn ppc_set_depth_with_geometry(
     let screen_bits = if toolbox_startup.init_graf_global_ptr == 0 {
         None
     } else {
-        let Some(screen_bits) = toolbox_startup.init_graf_global_ptr.checked_sub(122) else {
+        let Some(screen_bits) = ppc_screen_bits_addr(toolbox_startup.init_graf_global_ptr) else {
             return PPC_PARAM_ERR;
         };
         if !ppc_memory_can_write_bytes(memory, screen_bits, 14) {
@@ -2840,74 +2897,25 @@ pub(crate) fn ppc_set_depth_with_geometry(
     {
         return PPC_PARAM_ERR;
     }
-    if geometry.is_some() {
-        if ppc_write_rect(
-            memory,
-            gdevice + 34,
-            0,
-            0,
-            ppc_u32_to_i16_saturating(main_record.height),
-            ppc_u32_to_i16_saturating(main_record.width),
-        )
-        .is_none()
-            || ppc_write_rect(
-                memory,
-                PPC_MAIN_GWORLD + 16,
-                0,
-                0,
-                ppc_u32_to_i16_saturating(main_record.height),
-                ppc_u32_to_i16_saturating(main_record.width),
-            )
+    // Only a geometry switch rewrites the game-visible bounds and regions;
+    // a depth-only switch must leave the game's GrayRgn/visRgn alone. Both
+    // paths refresh QDGlobals.screenBits, including its rowBytes.
+    if geometry.is_some()
+        && ppc_write_screen_bounds(memory, gdevice, main_record.width, main_record.height)
             .is_none()
-            || ppc_write_rgn_bbox(
-                memory,
-                PPC_MAIN_VIS_RGN_HANDLE,
-                0,
-                0,
-                ppc_u32_to_i16_saturating(main_record.height),
-                ppc_u32_to_i16_saturating(main_record.width),
-            )
-            .is_none()
-        {
-            return PPC_PARAM_ERR;
-        }
-        let menu_bar_height = i16::try_from(
-            u32::from(memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20))
-                .min(main_record.height),
-        )
-        .unwrap_or(20);
-        if ppc_write_rgn_bbox(
-            memory,
-            PPC_GRAY_RGN_HANDLE,
-            menu_bar_height,
-            0,
-            ppc_u32_to_i16_saturating(main_record.height),
-            ppc_u32_to_i16_saturating(main_record.width),
-        )
-        .is_none()
-        {
-            return PPC_PARAM_ERR;
-        }
+    {
+        return PPC_PARAM_ERR;
     }
-    if let Some(screen_bits) = screen_bits {
-        if memory
-            .write_u32_be(screen_bits, PPC_MAIN_SCREEN_BASE)
-            .is_none()
-            || memory
-                .write_u16_be(screen_bits + 4, row_bytes as u16 & 0x3fff)
-                .is_none()
-            || ppc_write_rect(
-                memory,
-                screen_bits + 6,
-                0,
-                0,
-                ppc_u32_to_i16_saturating(main_record.height),
-                ppc_u32_to_i16_saturating(main_record.width),
-            )
-            .is_none()
-        {
-            return PPC_PARAM_ERR;
-        }
+    if ppc_write_screen_bits(
+        memory,
+        screen_bits,
+        row_bytes,
+        main_record.width,
+        main_record.height,
+    )
+    .is_none()
+    {
+        return PPC_PARAM_ERR;
     }
 
     let clear_byte = if depth == 8 { 0xff } else { 0x00 };

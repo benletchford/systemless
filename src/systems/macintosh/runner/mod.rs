@@ -8328,14 +8328,16 @@ impl FixtureRunner {
     }
 
     fn ppc_viewport_offset(&self) -> (i16, i16) {
-        let Some(front_buffer) = self
-            .native
-            .application()
-            .and_then(PpcLoadedApp::presented_front_buffer)
-        else {
+        let Some(app) = self.native.application() else {
             return (0, 0);
         };
-        let (canvas_width, canvas_height) = Self::ppc_host_canvas_dimensions(front_buffer);
+        let Some(front_buffer) = app.presented_front_buffer() else {
+            return (0, 0);
+        };
+        let (canvas_width, canvas_height) = Self::ppc_host_canvas_dimensions(
+            front_buffer,
+            app.draw_sprocket.active_context.is_some(),
+        );
         (
             i16::try_from(canvas_height.saturating_sub(front_buffer.height) / 2).unwrap_or(0),
             i16::try_from(canvas_width.saturating_sub(front_buffer.width) / 2).unwrap_or(0),
@@ -8982,7 +8984,10 @@ impl FixtureRunner {
         let Some(primary_buffer) = ppc_app.presented_front_buffer() else {
             return;
         };
-        let (canvas_width, canvas_height) = Self::ppc_host_canvas_dimensions(primary_buffer);
+        let (canvas_width, canvas_height) = Self::ppc_host_canvas_dimensions(
+            primary_buffer,
+            ppc_app.draw_sprocket.active_context.is_some(),
+        );
         let Some(canvas_row_bytes) = Self::ppc_host_row_bytes(canvas_width, primary_buffer.depth)
         else {
             return;
@@ -9048,7 +9053,17 @@ impl FixtureRunner {
         }
     }
 
-    fn ppc_host_canvas_dimensions(front_buffer: PpcFrontBuffer) -> (u32, u32) {
+    /// Host presentation canvas for a guest front buffer. An active
+    /// DrawSprocket context owns the display mode, so its front buffer is
+    /// shown 1:1 like a real mode switch; other guest buffers are padded to
+    /// the machine profile so a smaller window still presents the desktop.
+    fn ppc_host_canvas_dimensions(
+        front_buffer: PpcFrontBuffer,
+        use_context_display: bool,
+    ) -> (u32, u32) {
+        if use_context_display {
+            return (front_buffer.width, front_buffer.height);
+        }
         if front_buffer.width >= 512 && front_buffer.height >= 342 {
             let profile = crate::machine_profile::reference_machine_profile();
             (

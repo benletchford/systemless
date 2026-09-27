@@ -108,6 +108,9 @@ pub(crate) struct PpcDspDesktopSnapshot {
     screen_clut: [[u16; 3]; 256],
     records: Vec<PpcGWorldRecord>,
     pixmaps: Vec<(u32, Vec<u8>)>,
+    /// Screen geometry the game reads (main portRect, visRgn, GrayRgn and
+    /// QDGlobals.screenBits), rewritten while the context is active.
+    screen_geometry: Vec<(u32, Vec<u8>)>,
 }
 
 impl Default for PpcDrawSprocketState {
@@ -1073,6 +1076,7 @@ pub(crate) fn ppc_dsp_context_reserve(
 pub(crate) fn ppc_configure_dsp_framebuffers(
     memory: &mut PpcSectionMem,
     gworlds: &mut [PpcGWorldRecord],
+    screen_bits: Option<u32>,
     attributes: PpcDspContextAttributes,
 ) -> Option<()> {
     if !matches!(
@@ -1142,7 +1146,11 @@ pub(crate) fn ppc_configure_dsp_framebuffers(
         attributes.height as i16,
         attributes.width as i16,
     )?;
-    Some(())
+    // Activation is a display mode switch: the game sizes and centres its
+    // window from the main portRect, GrayRgn and screenBits, so they must
+    // describe the context rather than the desktop it replaced.
+    ppc_write_screen_bounds(memory, PPC_MAIN_GDEVICE_RECORD, attributes.width, attributes.height)?;
+    ppc_write_screen_bits(memory, screen_bits, row_bytes, attributes.width, attributes.height)
 }
 
 fn ppc_dsp_blank_display(
@@ -1172,6 +1180,7 @@ fn ppc_dsp_capture_desktop(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     screen_clut: &[[u16; 3]; 256],
+    screen_bits: Option<u32>,
 ) -> Option<PpcDspDesktopSnapshot> {
     let screen_bytes =
         ppc_memory_read_bytes(memory, PPC_MAIN_SCREEN_BASE, ppc_main_screen_buffer_size())?;
@@ -1192,12 +1201,25 @@ fn ppc_dsp_capture_desktop(
             ));
         }
     }
+    let mut screen_geometry = vec![(
+        PPC_MAIN_GWORLD + 16,
+        ppc_memory_read_bytes(memory, PPC_MAIN_GWORLD + 16, 8)?,
+    )];
+    for rgn in [PPC_MAIN_VIS_RGN_HANDLE, PPC_GRAY_RGN_HANDLE] {
+        let ptr = ppc_rgn_ptr(memory, rgn)?;
+        let size = u32::from(memory.read_u16_be(ptr)?.max(10));
+        screen_geometry.push((ptr, ppc_memory_read_bytes(memory, ptr, size)?));
+    }
+    if let Some(screen_bits) = screen_bits {
+        screen_geometry.push((screen_bits, ppc_memory_read_bytes(memory, screen_bits, 14)?));
+    }
     Some(PpcDspDesktopSnapshot {
         screen_bytes,
         gdevice_bytes,
         screen_clut: *screen_clut,
         records,
         pixmaps,
+        screen_geometry,
     })
 }
 
@@ -1227,6 +1249,11 @@ pub(crate) fn ppc_dsp_restore_desktop(
                     .any(|record| record.port == old.port && record.pixmap == *address)
         });
         if still_live && memory.write_bytes(*address, pixmap).is_none() {
+            return false;
+        }
+    }
+    for (address, bytes) in &snapshot.screen_geometry {
+        if memory.write_bytes(*address, bytes).is_none() {
             return false;
         }
     }
@@ -1270,6 +1297,7 @@ pub(crate) fn ppc_dsp_context_set_state(
     memory: &mut PpcSectionMem,
     gworlds: &mut [PpcGWorldRecord],
     screen_clut: &mut [[u16; 3]; 256],
+    screen_bits: Option<u32>,
     draw_sprocket: &mut PpcDrawSprocketState,
 ) -> i16 {
     let context = cpu.gpr[3];
@@ -1285,13 +1313,14 @@ pub(crate) fn ppc_dsp_context_set_state(
     match state {
         PpcDspContextPlayState::Active => {
             if draw_sprocket.desktop_snapshot.is_none() {
-                let Some(snapshot) = ppc_dsp_capture_desktop(memory, gworlds, screen_clut) else {
+                let Some(snapshot) = ppc_dsp_capture_desktop(memory, gworlds, screen_clut, screen_bits) else {
                     return PPC_PARAM_ERR;
                 };
                 draw_sprocket.desktop_snapshot = Some(snapshot);
                 if ppc_configure_dsp_framebuffers(
                     memory,
                     gworlds,
+                    screen_bits,
                     draw_sprocket.context_attributes,
                 )
                 .is_none()

@@ -17,6 +17,8 @@ pub(super) struct PpcDrawSprocketDispatchContext<'a> {
     pub(super) draw_sprocket: &'a mut PpcDrawSprocketState,
     pub(super) input: PpcInputSnapshot,
     pub(super) screen_clut: &'a mut [[u16; 3]; 256],
+    /// QDGlobals.screenBits, when InitGraf has run.
+    pub(super) screen_bits: Option<u32>,
 }
 
 pub(super) fn dispatch_drawsprocket_import(
@@ -37,6 +39,7 @@ pub(super) fn dispatch_drawsprocket_import(
         draw_sprocket,
         input,
         screen_clut,
+        screen_bits,
     } = context;
 
     match binding.dispatcher_target {
@@ -130,7 +133,14 @@ pub(super) fn dispatch_drawsprocket_import(
         }
         PpcImportDispatcherTarget::DSpContextSetState => {
             Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_dsp_context_set_state(cpu, memory, gworlds, screen_clut, draw_sprocket),
+                ppc_dsp_context_set_state(
+                    cpu,
+                    memory,
+                    gworlds,
+                    screen_clut,
+                    screen_bits,
+                    draw_sprocket,
+                ),
             )))
         }
         PpcImportDispatcherTarget::DSpContextGetState => Some(PpcImportAction::Return(
