@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.64.0](https://github.com/benletchford/systemless/compare/v0.63.0...v0.64.0) (2026-09-27)
+
+
+### Features
+
+* **www:** launch Souls demo after browser verification ([#2979](https://github.com/benletchford/systemless/issues/2979)) ([d5383ef](https://github.com/benletchford/systemless/commit/d5383effd082a4e3a90f63e2fa31f2f931081bca))
+
+
+### Bug Fixes
+
+* **www:** preserve catalogue filenames for R2 downloads ([#2977](https://github.com/benletchford/systemless/issues/2977)) ([dcb6b36](https://github.com/benletchford/systemless/commit/dcb6b36280d61f316ccc71274bb9e945db2d454b))
+
 ## [0.63.0](https://github.com/benletchford/systemless/compare/v0.62.2...v0.63.0) (2026-09-27)
 
 
