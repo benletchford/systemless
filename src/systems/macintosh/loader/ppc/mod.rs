@@ -1761,6 +1761,7 @@ pub enum PpcImportDispatcherTarget {
     CfRetain,
     CfRelease,
     CfGetRetainCount,
+    CfBundleGetBundleWithIdentifier,
     UpperText,
     GetCurrentThread,
     NewThreadEntryUPP,
@@ -12917,6 +12918,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "CFRetain") => PpcImportDispatcherTarget::CfRetain,
         ("InterfaceLib", "CFRelease") => PpcImportDispatcherTarget::CfRelease,
         ("InterfaceLib", "CFGetRetainCount") => PpcImportDispatcherTarget::CfGetRetainCount,
+        ("InterfaceLib", "CFBundleGetBundleWithIdentifier") => {
+            PpcImportDispatcherTarget::CfBundleGetBundleWithIdentifier
+        }
         ("InterfaceLib", "UpperText") => PpcImportDispatcherTarget::UpperText,
         // Native Thread Manager exports also live in ThreadsLib.
         // Inside Macintosh: Thread Manager (1999), pp. 15, 62.
@@ -15858,7 +15862,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::CfStringGetSystemEncoding
         | PpcImportDispatcherTarget::CfRetain
         | PpcImportDispatcherTarget::CfRelease
-        | PpcImportDispatcherTarget::CfGetRetainCount => {
+        | PpcImportDispatcherTarget::CfGetRetainCount
+        | PpcImportDispatcherTarget::CfBundleGetBundleWithIdentifier => {
             unreachable!("Core Foundation imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::GetCurrentProcess

@@ -1,6 +1,49 @@
 use super::*;
 
 #[test]
+fn carbon_cfbundle_lookup_returns_null_when_no_bundle_is_loaded() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "CFBundleGetBundleWithIdentifier"),
+        PpcImportDispatcherTarget::CfBundleGetBundleWithIdentifier
+    );
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(
+        b"CFBundleGetBundleWithIdentifier",
+    ))
+    .unwrap();
+    let source = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(source, vec![0; 64]);
+    loaded
+        .memory
+        .write_bytes(source, b"com.apple.Carbon\0")
+        .unwrap();
+    loaded.cpu.gpr[3] = source;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfStringMakeConstantString,
+    );
+    let identifier = loaded.cpu.gpr[3];
+    assert_ne!(identifier, 0);
+
+    loaded.cpu.gpr[3] = identifier;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfBundleGetBundleWithIdentifier,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    loaded.cpu.gpr[3] = identifier;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfGetRetainCount);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    loaded.cpu.gpr[3] = source;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfBundleGetBundleWithIdentifier,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
 fn carbon_constant_cfstring_is_interned_and_survives_balanced_retain_release() {
     assert_eq!(
         dispatcher_target_for_import("CarbonLib", "__CFStringMakeConstantString"),
