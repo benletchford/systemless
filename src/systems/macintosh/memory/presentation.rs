@@ -4382,6 +4382,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn observed_block_moves_match_byte_copies() {
+        let inverted: [u8; 256] = std::array::from_fn(|i| (255 - i) as u8);
+        let setup = || {
+            let mut bus = padded_bus(10, 8, 6, 2);
+            for row in 0..6u32 {
+                for x in 0..10 {
+                    bus.write_byte(0x3_0000 + row * 10 + x, (row * 3 + x) as u8);
+                }
+            }
+            for address in [0x1000 + 11, 0x1000 + 13, 0x3_0000 + 2, 0x3_0000 + 5, 0x3_0000 + 12] {
+                paint_detail(&mut bus, address);
+            }
+            bus
+        };
+        // (source, destination, length): same screen row overlapping, an
+        // offscreen overlap, offscreen to a screen row, and a span over two
+        // screen rows (the byte copy).
+        for (src, dst, len) in [(0x1000u32 + 10, 0x1000 + 12, 6u32), (0x3_0000, 0x3_0003, 12), (0x3_0001, 0x1000 + 31, 6), (0x1000 + 5, 0x1000 + 25, 12)] {
+            for map in [None, Some(&inverted)] {
+                let mut moved = setup();
+                let mut bytes = setup();
+                match map {
+                    None => assert!(moved.copy_ram_bytes(src, dst, len)),
+                    Some(map) => assert!(moved.copy_mapped_ram_bytes(src, dst, len, map)),
+                }
+                let pixels = bytes.save_pixel_bytes(src, len as usize);
+                for offset in 0..len {
+                    bytes.copy_saved_pixel(dst + offset, &pixels, offset as usize, |index| {
+                        map.map_or(index, |map| map[index as usize])
+                    });
+                }
+                let context = format!("{src:#x} to {dst:#x} len {len} mapped {}", map.is_some());
+                for base in [0x1000u32, 0x3_0000] {
+                    assert_eq!(moved.read_bytes(base, 60), bytes.read_bytes(base, 60), "{context}: RAM");
+                    for row in 0..6 {
+                        assert_eq!(
+                            moved.save_pixel_bytes(base + row * 10, 10),
+                            bytes.save_pixel_bytes(base + row * 10, 10),
+                            "{context}: detail {base:#x} row {row}"
+                        );
+                    }
+                }
+                assert_eq!(moved.outline_presentation_rgb(), bytes.outline_presentation_rgb(), "{context}: rendered");
+            }
+        }
+    }
+
     /// The proof `restore_saved_pixels` used before the range walk existed,
     /// written out independently so it can judge the range walk's answer.
     fn per_byte_coverage_proof(

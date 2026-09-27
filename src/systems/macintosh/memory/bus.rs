@@ -2619,6 +2619,12 @@ impl MacMemoryBus {
         if self.presentation_observes(src, len as usize)
             || self.presentation_observes(dst, len as usize)
         {
+            // A span within one screen row or wholly offscreen copies its
+            // retained text in one pass; anything else goes byte by byte.
+            let values = self.read_bytes(src, len as usize);
+            if self.copy_detail_spans(&[(src, dst, len as usize)], &values, None) {
+                return true;
+            }
             let pixels = self.save_pixel_bytes(src, len as usize);
             for offset in 0..len {
                 self.copy_saved_pixel(dst + offset, &pixels, offset as usize, |index| index);
@@ -2686,6 +2692,10 @@ impl MacMemoryBus {
         if self.presentation_observes(src, len as usize)
             || self.presentation_observes(dst, len as usize)
         {
+            let values = self.read_bytes(src, len as usize);
+            if self.copy_detail_spans(&[(src, dst, len as usize)], &values, Some(map)) {
+                return true;
+            }
             let pixels = self.save_pixel_bytes(src, len as usize);
             for offset in 0..len {
                 self.copy_saved_pixel(dst + offset, &pixels, offset as usize, |index| {
