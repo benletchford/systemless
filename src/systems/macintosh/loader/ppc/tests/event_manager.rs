@@ -696,6 +696,10 @@ fn import_bindings_classify_event_manager_imports() {
         PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)
     );
     assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "WaitNextEvent"),
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)
+    );
+    assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "GetOSEvent"),
         PpcImportDispatcherTarget::GetOSEvent
     );

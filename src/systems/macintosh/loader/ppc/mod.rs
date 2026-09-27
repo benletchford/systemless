@@ -12938,9 +12938,12 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetNextEvent") => PpcImportDispatcherTarget::GetNextEvent(
             PpcEventPollOperation::GetNextEvent,
         ),
-        ("InterfaceLib", "WaitNextEvent") => PpcImportDispatcherTarget::GetNextEvent(
-            PpcEventPollOperation::WaitNextEvent,
-        ),
+        // WaitNextEvent(eventMask, theEvent, sleep, mouseRgn) returns the
+        // next matching event and yields time when no event is pending.
+        // Macintosh Toolbox Essentials (1992), pp. 2-22–2-25.
+        ("InterfaceLib" | "CarbonLib", "WaitNextEvent") => {
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)
+        }
         ("InterfaceLib", "GetOSEvent") => PpcImportDispatcherTarget::GetOSEvent,
         ("InterfaceLib", "EventAvail") => PpcImportDispatcherTarget::EventAvail,
         ("InterfaceLib", "OSEventAvail") => PpcImportDispatcherTarget::OSEventAvail,
