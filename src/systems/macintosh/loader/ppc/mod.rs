@@ -982,6 +982,7 @@ pub enum PpcImportDispatcherTarget {
     SetPtrSize,
     RecoverHandle,
     BlockMove,
+    BlockZero,
     PtrToHand,
     PtrToXHand,
     HandToHand,
@@ -12017,6 +12018,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "BlockMove") | ("InterfaceLib", "BlockMoveData") => {
             PpcImportDispatcherTarget::BlockMove
         }
+        ("InterfaceLib", "BlockZero") => PpcImportDispatcherTarget::BlockZero,
         ("InterfaceLib", "PtrToHand") => PpcImportDispatcherTarget::PtrToHand,
         ("InterfaceLib", "PtrToXHand") => PpcImportDispatcherTarget::PtrToXHand,
         ("InterfaceLib", "HandToHand") => PpcImportDispatcherTarget::HandToHand,
@@ -14975,6 +14977,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::SetPtrSize
         | PpcImportDispatcherTarget::RecoverHandle
         | PpcImportDispatcherTarget::BlockMove
+        | PpcImportDispatcherTarget::BlockZero
         | PpcImportDispatcherTarget::PtrToHand
         | PpcImportDispatcherTarget::PtrToXHand
         | PpcImportDispatcherTarget::HandToHand

@@ -3091,6 +3091,35 @@ fn hle_import_runner_handles_block_move_data_alias() {
 }
 
 #[test]
+fn carbon_block_zero_binds_weak_import_and_clears_requested_bytes() {
+    let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+        b"CarbonLib",
+        b"BlockZero",
+        0x82,
+        &[sm_index_reloc(0x30, 0)],
+    ));
+    let mut weak_loaded = load_pef_application(&pef).unwrap();
+    assert_eq!(weak_loaded.imports[0].dispatcher_target, PpcImportDispatcherTarget::BlockZero);
+    assert_ne!(weak_loaded.imports[0].address, 0);
+    assert_eq!(
+        weak_loaded.memory.read_u32_be(PPC_DATA_BASE),
+        Some(weak_loaded.imports[0].address)
+    );
+
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"BlockZero")).unwrap();
+    let buffer = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(buffer, b"ABCDEFGH".to_vec());
+    loaded.cpu.gpr[3] = buffer + 2;
+    loaded.cpu.gpr[4] = 4;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], buffer + 2);
+    let mut bytes = [0; 8];
+    loaded.memory.read_bytes_into(buffer, &mut bytes).unwrap();
+    assert_eq!(&bytes, b"AB\0\0\0\0GH");
+}
+
+#[test]
 fn hle_import_runner_handles_handle_size_queries() {
     let pef = synthetic_pef_with_import(b"GetHandleSize");
     let mut loaded = load_pef_application(&pef).unwrap();

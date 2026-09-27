@@ -384,6 +384,23 @@ pub(crate) fn ppc_block_move(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) {
     }
 }
 
+pub(crate) fn ppc_block_zero(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
+    let destination = cpu.gpr[3];
+    let byte_count = cpu.gpr[4] as i32;
+    if byte_count <= 0 || !ppc_memory_can_write_bytes(memory, destination, byte_count as u32) {
+        return;
+    }
+    let zeros = [0; 4096];
+    let mut remaining = byte_count as u32;
+    let mut address = destination;
+    while remaining != 0 {
+        let chunk = remaining.min(zeros.len() as u32);
+        let _ = memory.write_bytes(address, &zeros[..chunk as usize]);
+        remaining -= chunk;
+        address += chunk;
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn ppc_hand_to_hand(
     cpu: &PpcCpu,
