@@ -916,6 +916,19 @@ fn ppc_offset_ditl_items(bytes: &mut [u8], items: &[PpcDialogItemView], dv: i16,
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcDialogCompatibilityOperation {
+    AppendDitl,
+    CountDitl,
+    DialogSelect,
+    FindDialogItem,
+    HideDialogItem,
+    IsDialogEvent,
+    ShortenDitl,
+    ShowDialogItem,
+    UpdateDialog,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_dialog_compatibility(
     operation: PpcDialogCompatibilityOperation,

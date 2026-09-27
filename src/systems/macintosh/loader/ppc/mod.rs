@@ -847,18 +847,7 @@ pub enum PpcSpeechCompatibilityOperation {
 
 pub use dispatch_standard_file::PpcStandardFileOperation;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PpcDialogCompatibilityOperation {
-    AppendDitl,
-    CountDitl,
-    DialogSelect,
-    FindDialogItem,
-    HideDialogItem,
-    IsDialogEvent,
-    ShortenDitl,
-    ShowDialogItem,
-    UpdateDialog,
-}
+pub use dispatch_dialog::PpcDialogCompatibilityOperation;
 
 pub use dispatch_quickdraw::PpcQuickDrawCompatibilityOperation;
 pub use dispatch_appletalk::PpcAppleTalkCompatibilityOperation;
