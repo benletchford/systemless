@@ -316,11 +316,19 @@ fn import_bindings_classify_process_manager_imports() {
         PpcImportDispatcherTarget::GetCurrentProcess
     );
     assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "GetCurrentProcess"),
+        PpcImportDispatcherTarget::GetCurrentProcess
+    );
+    assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "WakeUpProcess"),
         PpcImportDispatcherTarget::WakeUpProcess
     );
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "GetProcessInformation"),
+        PpcImportDispatcherTarget::GetProcessInformation
+    );
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "GetProcessInformation"),
         PpcImportDispatcherTarget::GetProcessInformation
     );
     assert_eq!(

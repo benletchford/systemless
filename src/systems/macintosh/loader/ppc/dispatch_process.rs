@@ -43,6 +43,10 @@ pub(super) fn dispatch_process_import(
 }
 
 fn ppc_get_current_process(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+    // GetCurrentProcess (_OSDispatch, selector $0037)
+    // Returns the serial number of the process whose A5 world is current.
+    // FUNCTION GetCurrentProcess(VAR PSN: ProcessSerialNumber): OSErr;
+    // Inside Macintosh: Processes (1994), p. 2-21.
     let psn_ptr = cpu.gpr[3];
     if psn_ptr == 0 || !ppc_memory_can_write_bytes(memory, psn_ptr, 8) {
         return PPC_PARAM_ERR;
@@ -121,6 +125,11 @@ fn ppc_get_process_information(
     vfs_resource_files: &[PpcVfsResourceFileRecord],
     launched_app_path: Option<&str>,
 ) -> i16 {
+    // GetProcessInformation (_OSDispatch, selector $003A)
+    // Returns metadata for the process identified by its serial number.
+    // FUNCTION GetProcessInformation(PSN: ProcessSerialNumber;
+    //   VAR info: ProcessInfoRec): OSErr;
+    // Inside Macintosh: Processes (1994), pp. 2-23–2-25.
     let psn_ptr = cpu.gpr[3];
     let info_ptr = cpu.gpr[4];
     if psn_ptr == 0
