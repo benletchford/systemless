@@ -59,7 +59,14 @@ pub(super) fn dispatch_gworld_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::SetPort => {
+        PpcImportDispatcherTarget::GetWindowPort => {
+            // MacWindows.h: GetWindowPort(WindowRef) returns the window's
+            // GrafPort. Imaging With QuickDraw (1994), pp. 3-52, 6-6:
+            // the classic WindowRecord begins with that GrafPort.
+            Some(PpcImportAction::Return(cpu.gpr[3]))
+        }
+        PpcImportDispatcherTarget::SetPort | PpcImportDispatcherTarget::SetPortWindowPort => {
+            // MacWindows.h: SetPortWindowPort makes the window port current.
             *current_gworld = cpu.gpr[3];
             *current_gdevice =
                 ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);

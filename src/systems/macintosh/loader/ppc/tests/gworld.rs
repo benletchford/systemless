@@ -2455,3 +2455,36 @@ fn import_bindings_classify_gworld_state_imports() {
         PpcImportDispatcherTarget::EmptyRgn
     );
 }
+
+#[test]
+fn carbon_window_port_accessors_use_the_window_grafport() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "GetWindowPort"),
+        PpcImportDispatcherTarget::GetWindowPort
+    );
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "SetPortWindowPort"),
+        PpcImportDispatcherTarget::SetPortWindowPort
+    );
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetWindowPort")).unwrap();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+    let window = super::window_manager::create_test_cwindow(
+        &mut loaded,
+        bounds_ptr,
+        (40, 50, 200, 300),
+        0,
+        true,
+        u32::MAX,
+    );
+    loaded.cpu.gpr[3] = window;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetWindowPort);
+    assert_eq!(loaded.cpu.gpr[3], window);
+
+    loaded.cpu.gpr[3] = window;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPortWindowPort);
+    assert_eq!(*loaded.current_gworld, window);
+    loaded.cpu.gpr[3] = bounds_ptr + 16;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPort);
+    assert_eq!(loaded.memory.read_u32_be(bounds_ptr + 16), Some(window));
+}

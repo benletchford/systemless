@@ -1404,6 +1404,8 @@ pub enum PpcImportDispatcherTarget {
     DisposePixMap,
     GetGWorld,
     SetGWorld,
+    GetWindowPort,
+    SetPortWindowPort,
     GetGWorldDevice,
     GetGWorldPixMap,
     OpenPort,
@@ -12504,6 +12506,8 @@ fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "GetGWorld") => PpcImportDispatcherTarget::GetGWorld,
         ("InterfaceLib", "SetGWorld") => PpcImportDispatcherTarget::SetGWorld,
+        ("InterfaceLib", "GetWindowPort") => PpcImportDispatcherTarget::GetWindowPort,
+        ("InterfaceLib", "SetPortWindowPort") => PpcImportDispatcherTarget::SetPortWindowPort,
         ("InterfaceLib", "GetGWorldDevice") => PpcImportDispatcherTarget::GetGWorldDevice,
         ("InterfaceLib", "GetGWorldPixMap") => PpcImportDispatcherTarget::GetGWorldPixMap,
         ("InterfaceLib", "OpenPort") => PpcImportDispatcherTarget::OpenPort,
@@ -15587,6 +15591,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         }
         PpcImportDispatcherTarget::GetPort
         | PpcImportDispatcherTarget::SetPort
+        | PpcImportDispatcherTarget::GetWindowPort
+        | PpcImportDispatcherTarget::SetPortWindowPort
         | PpcImportDispatcherTarget::NewGWorld
         | PpcImportDispatcherTarget::UpdateGWorld
         | PpcImportDispatcherTarget::DisposeGWorld
