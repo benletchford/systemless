@@ -9,7 +9,7 @@ mod offscreen;
 mod samples;
 use offscreen::OffscreenDetail;
 pub use compact::{CompactPresentation, CompactPresentationCache};
-use samples::{DetailSamples, TILE_SAMPLES};
+use samples::{ink_entry, ink_get, ink_remove, DetailSamples, TILE_SAMPLES};
 
 use super::page_index::PageIndex;
 use super::{MacMemoryBus, MemoryBus};
@@ -226,7 +226,27 @@ enum IndexedColor {
     Mix(Box<IndexedColor>, Box<IndexedColor>, u32),
 }
 
+impl Ink {
+    /// Whether `mapped` is this ink with every index passed through `map`.
+    fn eq_mapped(&self, mapped: &Ink, map: &impl Fn(u8) -> u8) -> bool {
+        map(self.foreground) == mapped.foreground
+            && self.alpha == mapped.alpha
+            && self.background.eq_mapped(&mapped.background, map)
+    }
+}
+
 impl IndexedColor {
+    /// Whether `mapped` is this colour with every index passed through `map`.
+    fn eq_mapped(&self, mapped: &Self, map: &impl Fn(u8) -> u8) -> bool {
+        match (self, mapped) {
+            (Self::Solid(index), Self::Solid(held)) => map(*index) == *held,
+            (Self::Mix(fg, bg, alpha), Self::Mix(held_fg, held_bg, held_alpha)) => {
+                alpha == held_alpha && fg.eq_mapped(held_fg, map) && bg.eq_mapped(held_bg, map)
+            }
+            _ => false,
+        }
+    }
+
     /// Whether `map` leaves every index in this colour unchanged.
     fn fixed_under(&self, map: &mut impl FnMut(u8) -> u8) -> bool {
         match self {
@@ -658,11 +678,9 @@ pub(crate) struct Presentation {
     /// `has_visible_outline_detail` does not rescan the whole screen.
     text_cell_count: usize,
     detail_cache: std::cell::RefCell<Vec<Option<Arc<DetailCell>>>>,
-    // Keys are cell * TILE_SAMPLES + sample, independent of screen stride.
-    ink: HashMap<usize, Ink, BuildHasherDefault<SampleOffsetHasher>>,
-    /// Bit `i` of `ink_mask[cell]` is set exactly when `ink` holds
-    /// `cell * TILE_SAMPLES + i`. Overwriting text probes the map only for
-    /// samples that have ink, instead of once per sample.
+    /// Bit `i` of `ink_mask[cell]` is set exactly when the cell's tile holds
+    /// ink for sample `i` (screen ink lives with the tile, in `samples`).
+    /// Overwriting text visits the ink list only for cells that have ink.
     ink_mask: Vec<u16>,
     run_ink: HashSet<usize, BuildHasherDefault<SampleOffsetHasher>>,
     offscreen_run_ink: HashSet<(u32, usize)>,
@@ -1177,10 +1195,11 @@ impl Presentation {
             ink: HashMap::default(),
         };
         let samples = self.samples.get(index);
-        for i in 0..(self.scale * self.scale) as usize {
-            cell.indices.push(samples.indices[i]);
-            if let Some(ink) = self.ink.get(&(index * TILE_SAMPLES + i)) {
-                cell.ink.insert(i, ink.clone());
+        let len = (self.scale * self.scale) as usize;
+        cell.indices.extend_from_slice(&samples.indices[..len]);
+        for (sample, ink) in self.samples.ink(index) {
+            if usize::from(*sample) < len {
+                cell.ink.insert(usize::from(*sample), ink.clone());
             }
         }
         let cell = Arc::new(cell);
@@ -1511,10 +1530,9 @@ impl Presentation {
         }
         let index = (y * self.width + x) as usize;
         let samples = self.samples.get(index);
+        let ink = self.samples.ink(index);
         for i in 0..(self.scale * self.scale) as usize {
-            if samples.indices[i] != cell.indices[i]
-                || self.ink.get(&(index * TILE_SAMPLES + i)) != cell.ink.get(&i)
-            {
+            if samples.indices[i] != cell.indices[i] || ink_get(ink, i) != cell.ink.get(&i) {
                 return false;
             }
         }
@@ -1569,26 +1587,24 @@ impl Presentation {
         } else {
             &self.direct_palettes[(x % self.bytes_per_pixel()) as usize]
         };
-        let samples = self.samples.ensure(index);
+        let (samples, ink) = self.samples.ensure_with_ink(index);
         Self::set_text_cell(&mut self.text_cells, &mut self.text_cell_count, index, true);
         self.detail_cache.get_mut()[index] = Some(cell.clone());
         self.guest_values[index] = cell.value.into();
-        for i in 0..(self.scale * self.scale) as usize {
+        let len = (self.scale * self.scale) as usize;
+        ink.clear();
+        let mut mask = 0u16;
+        for i in 0..len {
             samples.indices[i] = cell.indices[i];
-            let offset = index * TILE_SAMPLES + i;
-            let bit = 1u16 << i;
-            if self.ink_mask[index] & bit != 0 {
-                self.ink.remove(&offset);
-                self.ink_mask[index] &= !bit;
-            }
-            samples.rgb[i] = if let Some(ink) = cell.ink.get(&i) {
-                self.ink.insert(offset, ink.clone());
-                self.ink_mask[index] |= bit;
-                ink.rgb(palette)
+            samples.rgb[i] = if let Some(held) = cell.ink.get(&i) {
+                ink.push((i as u8, held.clone()));
+                mask |= 1 << i;
+                held.rgb(palette)
             } else {
                 palette[cell.indices[i] as usize]
             };
         }
+        self.ink_mask[index] = mask;
     }
 
     pub fn glyph_bounds(&self) -> Option<(i32, i32, i32, i32)> {
@@ -1643,8 +1659,14 @@ impl Presentation {
     #[cfg(test)]
     fn ink_mask_matches_ink(&self) -> bool {
         let mut expected = vec![0u16; self.ink_mask.len()];
-        for &offset in self.ink.keys() {
-            expected[offset / TILE_SAMPLES] |= 1 << (offset % TILE_SAMPLES);
+        for (cell, mask) in expected.iter_mut().enumerate() {
+            let ink = self.samples.ink(cell);
+            if !ink.windows(2).all(|pair| pair[0].0 < pair[1].0) {
+                return false;
+            }
+            for (sample, _) in ink {
+                *mask |= 1 << sample;
+            }
         }
         expected == self.ink_mask
     }
@@ -1774,7 +1796,7 @@ impl Presentation {
         self.detail_cache.get_mut()[cell] = None;
         Self::set_text_cell(&mut self.text_cells, &mut self.text_cell_count, cell, false);
         let color = self.palette_at(x)[value as usize];
-        let samples = self.samples.get_mut(cell);
+        let (samples, ink) = self.samples.get_mut_with_ink(cell);
         for i in 0..(self.scale * self.scale) as usize {
             let offset = cell * TILE_SAMPLES + i;
             // A following character's opaque background must not shave off
@@ -1788,7 +1810,7 @@ impl Presentation {
             }
             let bit = 1u16 << i;
             if self.ink_mask[cell] & bit != 0 {
-                self.ink.remove(&offset);
+                ink_remove(ink, i);
                 self.ink_mask[cell] &= !bit;
             }
             samples.indices[i] = value;
@@ -1906,33 +1928,30 @@ impl Presentation {
                 }
                 continue;
             };
-            // Read the mapped source cell before touching the screen.
             let mut indices = [0u8; TILE_SAMPLES];
-            for (index, &source) in indices.iter_mut().zip(source_cell.indices()).take(samples) {
-                *index = map(source);
-            }
-            let mut inks: [Option<Ink>; TILE_SAMPLES] = Default::default();
-            for (sample, ink) in source_cell.inks() {
-                if sample < samples {
-                    let mut ink = ink.clone();
-                    ink.foreground = map(ink.foreground);
-                    ink.background.map(&mut |index| map(index));
-                    inks[sample] = Some(ink);
+            match table {
+                Some(table) => {
+                    for (index, &source) in indices.iter_mut().zip(source_cell.indices()) {
+                        *index = table[source as usize];
+                    }
                 }
+                None => indices[..samples].copy_from_slice(source_cell.indices()),
             }
-            let unchanged = self.text_cells[cell]
+            let source_inks = || source_cell.inks().filter(|&(sample, _)| sample < samples);
+            let mut source_mask = 0u16;
+            for (sample, _) in source_inks() {
+                source_mask |= 1 << sample;
+            }
+            // Unchanged when the value, indices and ink (compared through
+            // `map`) already match, as `put_detail`'s comparison would find.
+            if self.text_cells[cell]
                 && self.guest_values[cell] == u16::from(value)
-                && (0..samples).all(|sample| {
-                    self.samples.get(cell).indices[sample] == indices[sample]
-                        && match (self.ink_mask[cell] & (1 << sample) != 0, &inks[sample]) {
-                            (false, None) => true,
-                            (true, Some(ink)) => {
-                                self.ink.get(&(cell * TILE_SAMPLES + sample)) == Some(ink)
-                            }
-                            _ => false,
-                        }
-                });
-            if unchanged {
+                && self.ink_mask[cell] == source_mask
+                && self.samples.get(cell).indices[..samples] == indices[..samples]
+                && source_inks()
+                    .zip(self.samples.ink(cell))
+                    .all(|((_, ink), (_, held))| ink.eq_mapped(held, &map))
+            {
                 continue;
             }
             self.changed(true);
@@ -1942,27 +1961,23 @@ impl Presentation {
             } else {
                 &self.direct_palettes[(x % self.bytes_per_pixel()) as usize]
             };
-            let tile = self.samples.ensure(cell);
+            let (tile, ink) = self.samples.ensure_with_ink(cell);
             Self::set_text_cell(&mut self.text_cells, &mut self.text_cell_count, cell, true);
             self.detail_cache.get_mut()[cell] = None;
             self.guest_values[cell] = u16::from(value);
-            for (sample, ink) in inks.into_iter().enumerate().take(samples) {
-                tile.indices[sample] = indices[sample];
-                let offset = cell * TILE_SAMPLES + sample;
-                let bit = 1u16 << sample;
-                if self.ink_mask[cell] & bit != 0 {
-                    self.ink.remove(&offset);
-                    self.ink_mask[cell] &= !bit;
-                }
-                tile.rgb[sample] = if let Some(ink) = ink {
-                    let rgb = ink.rgb(palette);
-                    self.ink.insert(offset, ink);
-                    self.ink_mask[cell] |= bit;
-                    rgb
-                } else {
-                    palette[indices[sample] as usize]
-                };
+            tile.indices[..samples].copy_from_slice(&indices[..samples]);
+            for (rgb, &index) in tile.rgb[..samples].iter_mut().zip(&indices[..samples]) {
+                *rgb = palette[index as usize];
             }
+            ink.clear();
+            for (sample, source) in source_inks() {
+                let mut held = source.clone();
+                held.foreground = map(held.foreground);
+                held.background.map(&mut |index| map(index));
+                tile.rgb[sample] = held.rgb(palette);
+                ink.push((sample as u8, held));
+            }
+            self.ink_mask[cell] = source_mask;
         }
         drop(span);
         self.offscreen = offscreen;
@@ -2041,7 +2056,7 @@ impl Presentation {
             &self.direct_palettes[lane]
         };
         let color = palette[foreground as usize];
-        let samples = self.samples.get_mut((py * self.width + px) as usize);
+        let (samples, cell_ink) = self.samples.get_mut_with_ink((py * self.width + px) as usize);
         for sy in 0..self.scale {
             for sx in 0..self.scale {
                 let gx =
@@ -2065,7 +2080,7 @@ impl Presentation {
                 if alpha == 255 {
                     samples.rgb[sample] = color;
                     if self.ink_mask[ink_cell] & bit != 0 {
-                        self.ink.remove(&offset);
+                        ink_remove(cell_ink, sample);
                         self.ink_mask[ink_cell] &= !bit;
                     }
                     samples.indices[sample] = foreground;
@@ -2076,7 +2091,7 @@ impl Presentation {
                 // ink on and leaves other bits alone; repeated ink is idempotent.
                 // Retain coverage rather than
                 // repeatedly blending the same ink into its own antialiased edge.
-                let ink = self.ink.entry(offset).or_insert_with(|| Ink {
+                let ink = ink_entry(cell_ink, sample, || Ink {
                     foreground,
                     alpha: 0,
                     background: IndexedColor::Solid(samples.indices[sample]),
@@ -2687,10 +2702,9 @@ impl MacMemoryBus {
                         *rgb = palette[index as usize];
                     }
                 }
-                for (&offset, ink) in &p.ink {
-                    p.samples.get_mut(offset / TILE_SAMPLES).rgb[offset % TILE_SAMPLES] =
-                        ink.rgb(&palette);
-                }
+                p.samples.for_each_ink_mut(|tile, sample, ink| {
+                    tile.rgb[sample] = ink.rgb(&palette);
+                });
             }
         } else {
             // Drop the slot borrow before replacing its surface.
@@ -2960,7 +2974,6 @@ impl MacMemoryBus {
             text_cells: vec![false; width as usize * height as usize],
             text_cell_count: 0,
             detail_cache: std::cell::RefCell::new(vec![None; width as usize * height as usize]),
-            ink: HashMap::default(),
             ink_mask: vec![0; width as usize * height as usize],
             run_ink: HashSet::default(),
             offscreen_run_ink: HashSet::new(),
@@ -4998,7 +5011,8 @@ mod tests {
         // Restore blank pixels even where their guest byte matches a glyph's
         // empty logical cell: no stale subpixel ink may remain behind.
         bus.restore_saved_pixels(0x1000, &blank, 0, 8);
-        assert!(bus.presentation.as_ref().unwrap().ink.is_empty());
+        assert!(bus.presentation.as_ref().unwrap().ink_mask.iter().all(|&mask| mask == 0));
+        assert!(bus.presentation.as_ref().unwrap().ink_mask_matches_ink());
         assert!(bus
             .outline_presentation_rgb()
             .unwrap()
