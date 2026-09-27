@@ -303,6 +303,15 @@ pub(crate) trait CopyBitsMemory {
 }
 
 impl CopyBitsMemory for GuestAddressSpace {
+    fn copy_rows_with_detail(
+        &mut self,
+        rows: &[(u32, u32)],
+        pixels: &[u8],
+        row_len: usize,
+        palette: Option<&[u8; 256]>,
+    ) -> bool {
+        self.copy_detail_rows(rows, pixels, row_len, palette)
+    }
     fn capture_copy_detail(
         &self,
         address: u32,

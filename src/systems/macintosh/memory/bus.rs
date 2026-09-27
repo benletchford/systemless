@@ -2626,10 +2626,16 @@ impl MacMemoryBus {
         true
     }
 
-    /// Store bytes a caller has proved `presented_bytes_writable` under open
-    /// gates, leaving the presentation to the caller.
-    pub(crate) fn write_presented_ram(&mut self, address: u32, data: &[u8]) {
-        self.ram.write_bytes_in_bounds(address as usize, data);
+    /// Run `f` with the presentation and a store into flat RAM, for a
+    /// caller that has proved each address it stores `presented_bytes_writable`
+    /// under open gates and leaves the presentation to `f`.
+    pub(crate) fn with_presentation_and_ram<R>(
+        &mut self,
+        f: impl FnOnce(&super::presentation::PresentationSlot, &mut dyn FnMut(u32, &[u8])) -> R,
+    ) -> R {
+        let ram = &mut self.ram;
+        let mut store = |address: u32, data: &[u8]| ram.write_bytes_in_bounds(address as usize, data);
+        f(&self.presentation, &mut store)
     }
 
     /// Copy a RAM range to another RAM range with one bounds/tracing gate.
