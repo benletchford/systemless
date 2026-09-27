@@ -4,8 +4,7 @@ use super::{
     imports::PpcHleImportTraceEntry, ppc_handle_bytes, ppc_i16_result,
     ppc_memory_can_write_bytes, ppc_memory_read_bytes, ppc_process_heap_alloc,
     ppc_sound_trace_enabled, ppc_vfs_resource_index, PpcCpu, PpcFileRecord, PpcHandleRecord,
-    PpcImportAction, PpcSectionMem, PpcSoundInputCompatibilityOperation,
-    PpcSpeechCompatibilityOperation, PpcVfsFileRecord, PpcVfsResourceRecord, PPC_BAD_FORMAT,
+    PpcImportAction, PpcSectionMem, PpcVfsFileRecord, PpcVfsResourceRecord, PPC_BAD_FORMAT,
     PPC_MEM_FULL_ERR, PPC_NOT_ENOUGH_HARDWARE_ERR, PPC_NO_ERR, PPC_PARAM_ERR, PPC_RES_PROBLEM,
 };
 use crate::callback_manager::CallbackTaskArchitecture;
@@ -207,6 +206,28 @@ pub const PPC_GUEST_SND_CHANNEL_SIZE: u32 = 1088;
 pub const PPC_SQUARE_WAVE_SYNTH_ID: i16 = 1;
 pub const PPC_WAVE_TABLE_SYNTH_ID: i16 = 3;
 pub const PPC_SAMPLED_SYNTH_ID: i16 = 5;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcSoundInputCompatibilityOperation {
+    CloseDevice,
+    GetDeviceInfo,
+    OpenDevice,
+    Record,
+    SetDeviceInfo,
+    StopRecording,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcSpeechCompatibilityOperation {
+    CountVoices,
+    DisposeSpeechChannel,
+    GetIndVoice,
+    GetVoiceDescription,
+    NewSpeechChannel,
+    SpeakString,
+    SpeakText,
+    SpeechBusy,
+}
 
 // --- Compatibility Dispatch ---
 

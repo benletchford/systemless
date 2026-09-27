@@ -823,27 +823,7 @@ pub enum PpcStdCCompatibilityOperation {
     Vsprintf,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PpcSoundInputCompatibilityOperation {
-    CloseDevice,
-    GetDeviceInfo,
-    OpenDevice,
-    Record,
-    SetDeviceInfo,
-    StopRecording,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PpcSpeechCompatibilityOperation {
-    CountVoices,
-    DisposeSpeechChannel,
-    GetIndVoice,
-    GetVoiceDescription,
-    NewSpeechChannel,
-    SpeakString,
-    SpeakText,
-    SpeechBusy,
-}
+pub use sound::{PpcSoundInputCompatibilityOperation, PpcSpeechCompatibilityOperation};
 
 pub use dispatch_standard_file::PpcStandardFileOperation;
 
