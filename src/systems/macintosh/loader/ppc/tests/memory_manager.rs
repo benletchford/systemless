@@ -2577,6 +2577,42 @@ fn ppc_handle_copy_imports_mutate_process_memory_immediately() {
 }
 
 #[test]
+fn ppc_ptr_to_xhand_replaces_existing_handle_bytes() {
+    let pef = synthetic_pef_with_import(b"PtrToXHand");
+    let mut native = load_pef_application(&pef).unwrap();
+    let source = PPC_DATA_BASE + 0x2100;
+    native.memory.add_region(source, b"replacement".to_vec());
+    let mut context = ProcessContext::default();
+    native.attach_unconverted_process_services(&mut context);
+    native.with_process_memory_manager(|native, memory_manager| {
+        let handle = memory_manager.copy_bytes_to_new_native_handle(&mut native.memory, b"old");
+        assert_ne!(handle, 0);
+        native.cpu.gpr[3] = source;
+        native.cpu.gpr[4] = handle;
+        native.cpu.gpr[5] = 11;
+        native.run_with_process_memory_manager(64, false, false, memory_manager);
+
+        assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        let record = memory_manager.native_allocation(handle).unwrap();
+        assert_eq!(record.size, 11);
+        assert_eq!(native.memory.read_u32_be(handle), Some(record.ptr));
+        assert_eq!(
+            ppc_memory_read_bytes(&mut native.memory, record.ptr, 11),
+            Some(b"replacement".to_vec())
+        );
+
+        native.cpu.pc = native.entry_pc;
+        native.cpu.lr = PPC_HALT_PC;
+        native.cpu.gpr[3] = source;
+        native.cpu.gpr[4] = handle;
+        native.cpu.gpr[5] = u32::MAX;
+        native.run_with_process_memory_manager(64, false, false, memory_manager);
+        assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_MEM_FULL_ERR));
+        assert_eq!(memory_manager.native_allocation(handle).unwrap().size, 11);
+    });
+}
+
+#[test]
 fn ppc_hand_to_hand_copies_a_process_owned_classic_handle_across_isa() {
     let pef = synthetic_pef_with_import(b"HandToHand");
     let mut native = load_pef_application(&pef).unwrap();
@@ -4643,4 +4679,3 @@ fn system_arena_leaves_a_separate_resource_tail_after_max_block() {
     assert!(loaded.memory.read_u8(arena).is_some());
     assert_eq!(total - largest, 2 * 1024 * 1024);
 }
-

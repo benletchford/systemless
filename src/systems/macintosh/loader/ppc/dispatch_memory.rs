@@ -153,6 +153,46 @@ pub(super) fn dispatch_memory_import(
             *last_mem_error = result;
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
+        PpcImportDispatcherTarget::PtrToXHand => {
+            // Inside Macintosh: Memory (1992), pp. 2-61--2-62: replace the
+            // contents of an existing relocatable block without changing its
+            // master pointer.
+            let source_ptr = cpu.gpr[3];
+            let destination_handle = cpu.gpr[4];
+            let size = cpu.gpr[5];
+            let result = if (size as i32) < 0 {
+                PPC_MEM_FULL_ERR
+            } else if destination_handle == 0 {
+                PPC_NIL_HANDLE_ERR
+            } else if let Some(bytes) = ppc_memory_read_bytes(memory, source_ptr, size) {
+                let resize_result =
+                    process_memory_manager.set_native_handle_size(memory, destination_handle, size);
+                ppc_apply_process_native_allocator(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                );
+                if resize_result != PPC_NO_ERR {
+                    resize_result
+                } else if bytes.is_empty() {
+                    PPC_NO_ERR
+                } else if memory
+                    .read_u32_be(destination_handle)
+                    .and_then(|ptr| memory.write_bytes(ptr, &bytes))
+                    .is_some()
+                {
+                    PPC_NO_ERR
+                } else {
+                    PPC_PARAM_ERR
+                }
+            } else {
+                PPC_PARAM_ERR
+            };
+            process_memory_manager.set_native_mem_error(result);
+            *last_mem_error = result;
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::HandToHand => {
             let result = {
                 let handle_variable = cpu.gpr[3];
