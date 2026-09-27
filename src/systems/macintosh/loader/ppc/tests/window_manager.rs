@@ -308,6 +308,54 @@ fn hle_import_runner_creates_window_title_and_zoom_state() {
 }
 
 #[test]
+fn carbon_create_new_window_returns_hidden_document_window() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "CreateNewWindow"),
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CreateNewWindow)
+    );
+
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewWindow")).unwrap();
+    let scratch = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        16,
+        true,
+    );
+    ppc_write_rect(&mut loaded.memory, scratch, 40, 50, 240, 350).unwrap();
+    loaded.cpu.gpr[3] = 6; // kDocumentWindowClass
+    loaded.cpu.gpr[4] = 8; // kWindowCollapseBoxAttribute
+    loaded.cpu.gpr[5] = scratch;
+    loaded.cpu.gpr[6] = scratch + 8;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CreateNewWindow),
+    );
+
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let window = loaded.memory.read_u32_be(scratch + 8).unwrap();
+    assert_ne!(window, 0);
+    assert_eq!(loaded.memory.read_u8(window + PPC_CWINDOW_VISIBLE_OFFSET), Some(0));
+    assert_eq!(loaded.memory.read_u8(window + PPC_CWINDOW_GO_AWAY_OFFSET), Some(0));
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, window + 16),
+        Some((0, 0, 200, 300))
+    );
+
+    let window_count = loaded.gworlds.len();
+    loaded.cpu.gpr[3] = 6;
+    loaded.cpu.gpr[4] = 8;
+    loaded.cpu.gpr[5] = scratch;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CreateNewWindow),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(loaded.gworlds.len(), window_count);
+}
+
+#[test]
 fn window_resource_parameters_preserve_compiled_bounds_and_title() {
     let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
     let mut wind = Vec::new();
