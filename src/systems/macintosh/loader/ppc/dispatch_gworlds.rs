@@ -463,6 +463,15 @@ pub(super) fn dispatch_gworld_import(
             }
             Some(PpcImportAction::Return(base))
         }
+        PpcImportDispatcherTarget::GetPixRowBytes => {
+            let pixmap_handle = cpu.gpr[3];
+            let row_bytes = memory
+                .read_u32_be(pixmap_handle)
+                .and_then(|pixmap| memory.read_u16_be(pixmap.checked_add(4)?))
+                .map(|packed| u32::from(packed & 0x3fff))
+                .unwrap_or(0);
+            Some(PpcImportAction::Return(row_bytes))
+        }
         PpcImportDispatcherTarget::LockPixels => Some(PpcImportAction::Return(ppc_lock_pixels(
             gworlds,
             gworld_pixel_states,

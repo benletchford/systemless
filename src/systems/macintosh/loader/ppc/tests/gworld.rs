@@ -2000,6 +2000,36 @@ use super::*;
     }
 
     #[test]
+    fn hle_import_runner_get_pix_row_bytes_masks_pixmap_flags() {
+        let pef = synthetic_pef_with_import(b"GetPixRowBytes");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let handle = ppc_heap_alloc(
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            4,
+            true,
+        );
+        let pixmap = ppc_heap_alloc(
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            50,
+            true,
+        );
+        loaded.memory.write_u32_be(handle, pixmap).unwrap();
+        // rowBytes carries the PixMap flag in its high bit.
+        loaded.memory.write_u16_be(pixmap + 4, 0x8000 | 640).unwrap();
+        loaded.cpu.gpr[3] = handle;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 640);
+    }
+
+    #[test]
     fn hle_import_runner_handles_lock_pixels_true() {
         let pef = synthetic_pef_with_import(b"LockPixels");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -2347,6 +2377,10 @@ fn import_bindings_classify_gworld_state_imports() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "GetPixBaseAddr"),
         PpcImportDispatcherTarget::GetPixBaseAddr
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetPixRowBytes"),
+        PpcImportDispatcherTarget::GetPixRowBytes
     );
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "LockPixels"),

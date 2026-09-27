@@ -317,6 +317,23 @@ pub(super) fn ppc_dispatch_math_compatibility(
             cpu.fpr[1] = f64::from_bits(cpu.fpr[1]).floor().to_bits();
             PpcImportAction::ReturnPreserve
         }
+        PpcMathCompatibilityOperation::Fabs => {
+            cpu.fpr[1] = f64::from_bits(cpu.fpr[1]).abs().to_bits();
+            PpcImportAction::ReturnPreserve
+        }
+        PpcMathCompatibilityOperation::Ldexp => {
+            // MathLib ldexp(x, exp) scales x by an exact power of two. CFM
+            // places x in fr1 and reserves its two GPR slots, so `exp` is r5.
+            let value = f64::from_bits(cpu.fpr[1]);
+            cpu.fpr[1] = libm::scalbn(value, cpu.gpr[5] as i32).to_bits();
+            PpcImportAction::ReturnPreserve
+        }
+        PpcMathCompatibilityOperation::Nan => {
+            // The C nan(tagp) payload is implementation-defined; return the
+            // standard quiet NaN value while ignoring the optional tag.
+            cpu.fpr[1] = f64::NAN.to_bits();
+            PpcImportAction::ReturnPreserve
+        }
         PpcMathCompatibilityOperation::Modf => {
             let value = f64::from_bits(cpu.fpr[1]);
             let integer = if value.is_nan() { value } else { value.trunc() };

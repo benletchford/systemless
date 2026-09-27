@@ -659,6 +659,7 @@ const PPC_CONTROL_HILITE_OFFSET: u32 = 17;
 const PPC_CONTROL_VALUE_OFFSET: u32 = 18;
 const PPC_CONTROL_MIN_OFFSET: u32 = 20;
 const PPC_CONTROL_MAX_OFFSET: u32 = 22;
+const PPC_CONTROL_ACTION_OFFSET: u32 = 32;
 const PPC_CONTROL_REF_CON_OFFSET: u32 = 36;
 const PPC_CONTROL_TITLE_OFFSET: u32 = 40;
 const PPC_KEY_MAP_SIZE: u32 = 16;
@@ -792,11 +793,14 @@ pub enum PpcMath64Operation {
 pub enum PpcMathCompatibilityOperation {
     Dec2Num,
     Dec2Str,
+    Fabs,
     FeClearExcept,
     FeTestExcept,
     Floor,
+    Ldexp,
     LdToX80,
     Modf,
+    Nan,
     Num2Dec,
     Str2Dec,
 }
@@ -1025,6 +1029,7 @@ pub enum PpcLegacyControlOperation {
     DrawOneControl,
     FindControl,
     GetControlMaximum,
+    GetControlAction,
     GetControlReference,
     GetControlMinimum,
     GetControlTitle,
@@ -1035,6 +1040,7 @@ pub enum PpcLegacyControlOperation {
     MoveControl,
     NewControl,
     SetControlMaximum,
+    SetControlAction,
     SetControlReference,
     SetControlMinimum,
     ShowControl,
@@ -1169,7 +1175,9 @@ pub enum PpcImportDispatcherTarget {
     HandAndHand,
     NewHandle { clear: bool },
     TempNewHandle,
+    TempDisposeHandle,
     HoldMemory,
+    UnholdMemory,
     DisposeHandle,
     EmptyHandle,
     GetHandleSize,
@@ -1494,6 +1502,7 @@ pub enum PpcImportDispatcherTarget {
     CloseCPort,
     SetPortBits { color: bool },
     GetPixBaseAddr,
+    GetPixRowBytes,
     LockPixels,
     UnlockPixels,
     GetPixelsState,
@@ -11765,6 +11774,9 @@ fn dispatcher_target_for_import(
         ("MathLib", "ceil") => PpcImportDispatcherTarget::MathCeil,
         ("MathLib", "sqrt") => PpcImportDispatcherTarget::MathSqrt,
         ("MathLib", "exp") => PpcImportDispatcherTarget::MathExp,
+        ("MathLib", "fabs") => PpcImportDispatcherTarget::MathCompatibility(
+            PpcMathCompatibilityOperation::Fabs,
+        ),
         ("MathLib", "sin") => PpcImportDispatcherTarget::MathSin,
         ("MathLib", "cos") => PpcImportDispatcherTarget::MathCos,
         ("MathLib", "asin") => PpcImportDispatcherTarget::MathAsin,
@@ -11775,6 +11787,9 @@ fn dispatcher_target_for_import(
         ("MathLib", "fmod") => PpcImportDispatcherTarget::MathFmod,
         ("MathLib", "log") => PpcImportDispatcherTarget::MathLog,
         ("MathLib", "log10") => PpcImportDispatcherTarget::MathLog10,
+        ("MathLib", "nan") => PpcImportDispatcherTarget::MathCompatibility(
+            PpcMathCompatibilityOperation::Nan,
+        ),
         ("MathLib", "dtox80") => PpcImportDispatcherTarget::MathDtox80,
         ("Math64Lib", "LongDoubleToSInt64") => {
             PpcImportDispatcherTarget::Math64(PpcMath64Operation::LongDoubleToSInt64)
@@ -12175,7 +12190,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "NewHandle") => PpcImportDispatcherTarget::NewHandle { clear: false },
         ("InterfaceLib", "NewHandleClear") => PpcImportDispatcherTarget::NewHandle { clear: true },
         ("InterfaceLib", "TempNewHandle") => PpcImportDispatcherTarget::TempNewHandle,
+        ("InterfaceLib", "TempDisposeHandle") => PpcImportDispatcherTarget::TempDisposeHandle,
         ("InterfaceLib", "HoldMemory") => PpcImportDispatcherTarget::HoldMemory,
+        ("InterfaceLib", "UnholdMemory") => PpcImportDispatcherTarget::UnholdMemory,
         ("InterfaceLib", "DisposeHandle") => PpcImportDispatcherTarget::DisposeHandle,
         ("InterfaceLib", "EmptyHandle") => PpcImportDispatcherTarget::EmptyHandle,
         ("InterfaceLib", "BlockMove") | ("InterfaceLib", "BlockMoveData") => {
@@ -12603,6 +12620,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "SetPortBits") => PpcImportDispatcherTarget::SetPortBits { color: false },
         ("InterfaceLib", "SetPortPix") => PpcImportDispatcherTarget::SetPortBits { color: true },
         ("InterfaceLib", "GetPixBaseAddr") => PpcImportDispatcherTarget::GetPixBaseAddr,
+        ("InterfaceLib", "GetPixRowBytes") => PpcImportDispatcherTarget::GetPixRowBytes,
         ("InterfaceLib", "LockPixels") => PpcImportDispatcherTarget::LockPixels,
         ("InterfaceLib", "UnlockPixels") => PpcImportDispatcherTarget::UnlockPixels,
         ("InterfaceLib", "GetPixelsState") => PpcImportDispatcherTarget::GetPixelsState,
@@ -13201,6 +13219,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetControlMaximum") => PpcImportDispatcherTarget::LegacyControl(
             PpcLegacyControlOperation::GetControlMaximum,
         ),
+        ("InterfaceLib", "GetControlAction") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::GetControlAction,
+        ),
         ("InterfaceLib", "GetControlReference") => PpcImportDispatcherTarget::LegacyControl(
             PpcLegacyControlOperation::GetControlReference,
         ),
@@ -13230,6 +13251,9 @@ fn dispatcher_target_for_import(
         ),
         ("InterfaceLib", "SetControlMaximum") => PpcImportDispatcherTarget::LegacyControl(
             PpcLegacyControlOperation::SetControlMaximum,
+        ),
+        ("InterfaceLib", "SetControlAction") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::SetControlAction,
         ),
         ("InterfaceLib", "SetControlReference") => PpcImportDispatcherTarget::LegacyControl(
             PpcLegacyControlOperation::SetControlReference,
@@ -13699,6 +13723,9 @@ fn dispatcher_target_for_import(
         ),
         ("MathLib", "floor") => PpcImportDispatcherTarget::MathCompatibility(
             PpcMathCompatibilityOperation::Floor,
+        ),
+        ("MathLib", "ldexp") => PpcImportDispatcherTarget::MathCompatibility(
+            PpcMathCompatibilityOperation::Ldexp,
         ),
         ("MathLib", "ldtox80") => PpcImportDispatcherTarget::MathCompatibility(
             PpcMathCompatibilityOperation::LdToX80,
@@ -14985,7 +15012,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::HandAndHand
         | PpcImportDispatcherTarget::NewHandle { .. }
         | PpcImportDispatcherTarget::TempNewHandle
+        | PpcImportDispatcherTarget::TempDisposeHandle
         | PpcImportDispatcherTarget::HoldMemory
+        | PpcImportDispatcherTarget::UnholdMemory
         | PpcImportDispatcherTarget::DisposeHandle
         | PpcImportDispatcherTarget::EmptyHandle
         | PpcImportDispatcherTarget::GetHandleSize
@@ -15558,6 +15587,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::CloseCPort
         | PpcImportDispatcherTarget::SetPortBits { .. }
         | PpcImportDispatcherTarget::GetPixBaseAddr
+        | PpcImportDispatcherTarget::GetPixRowBytes
         | PpcImportDispatcherTarget::LockPixels
         | PpcImportDispatcherTarget::UnlockPixels
         | PpcImportDispatcherTarget::GetPixelsState

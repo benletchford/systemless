@@ -140,9 +140,12 @@ fn native_ppc_math_compatibility_maps_each_export_to_a_typed_operation() {
             PpcMathCompatibilityOperation::FeClearExcept,
         ),
         ("fetestexcept", PpcMathCompatibilityOperation::FeTestExcept),
+        ("fabs", PpcMathCompatibilityOperation::Fabs),
         ("floor", PpcMathCompatibilityOperation::Floor),
+        ("ldexp", PpcMathCompatibilityOperation::Ldexp),
         ("ldtox80", PpcMathCompatibilityOperation::LdToX80),
         ("modf", PpcMathCompatibilityOperation::Modf),
+        ("nan", PpcMathCompatibilityOperation::Nan),
         ("num2dec", PpcMathCompatibilityOperation::Num2Dec),
         ("str2dec", PpcMathCompatibilityOperation::Str2Dec),
     ] {
@@ -329,6 +332,57 @@ fn native_ppc_math64_round_trips_integer_boundaries_through_double_double() {
             ppc_dispatch_math64(math64_operation("LongDoubleToUInt64"), &mut cpu, &mut memory);
         assert_eq!(math64_read_memory(&mut memory, 0x1008), value);
     }
+}
+
+#[test]
+fn native_ppc_math_fabs_clears_the_sign_bit() {
+    let mut memory = PpcSectionMem::new();
+    let mut cpu = PpcCpu::new();
+    for (input, expected) in [(-2.5f64, 2.5f64), (2.5, 2.5), (-0.0, 0.0), (f64::NEG_INFINITY, f64::INFINITY)] {
+        cpu.fpr[1] = input.to_bits();
+        assert_eq!(
+            ppc_dispatch_math_compatibility(math_operation("fabs"), &mut cpu, &mut memory),
+            PpcImportAction::ReturnPreserve
+        );
+        assert_eq!(cpu.fpr[1], expected.to_bits());
+    }
+}
+
+#[test]
+fn native_ppc_math_ldexp_reads_the_exponent_after_the_double_gpr_slots() {
+    let mut memory = PpcSectionMem::new();
+    let mut cpu = PpcCpu::new();
+    // x occupies fr1 and shadows r3/r4, so the int exponent is in r5.
+    for (input, exponent, expected) in [
+        (1.5f64, 3i32, 12.0f64),
+        (12.0, -2, 3.0),
+        (1.0, 1024, f64::INFINITY),
+        (f64::MIN_POSITIVE, -1, f64::MIN_POSITIVE / 2.0),
+    ] {
+        cpu.fpr[1] = input.to_bits();
+        cpu.gpr[3] = 0xdead_beef;
+        cpu.gpr[4] = 0xdead_beef;
+        cpu.gpr[5] = exponent as u32;
+        assert_eq!(
+            ppc_dispatch_math_compatibility(math_operation("ldexp"), &mut cpu, &mut memory),
+            PpcImportAction::ReturnPreserve
+        );
+        assert_eq!(f64::from_bits(cpu.fpr[1]), expected, "ldexp({input}, {exponent})");
+    }
+}
+
+#[test]
+fn native_ppc_math_nan_returns_a_quiet_nan_regardless_of_tag() {
+    let mut memory = PpcSectionMem::new();
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[3] = 0x1234;
+    assert_eq!(
+        ppc_dispatch_math_compatibility(math_operation("nan"), &mut cpu, &mut memory),
+        PpcImportAction::ReturnPreserve
+    );
+    let value = f64::from_bits(cpu.fpr[1]);
+    assert!(value.is_nan());
+    assert_ne!(cpu.fpr[1] & (1 << 51), 0, "quiet bit");
 }
 
 #[test]
