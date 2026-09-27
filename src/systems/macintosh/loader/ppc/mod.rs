@@ -798,21 +798,7 @@ pub enum PpcMath64Operation {
     UInt64ToSInt64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PpcMathCompatibilityOperation {
-    Dec2Num,
-    Dec2Str,
-    Fabs,
-    FeClearExcept,
-    FeTestExcept,
-    Floor,
-    Ldexp,
-    LdToX80,
-    Modf,
-    Nan,
-    Num2Dec,
-    Str2Dec,
-}
+pub use math_compatibility::PpcMathCompatibilityOperation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcStdCCompatibilityOperation {
