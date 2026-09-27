@@ -23,7 +23,9 @@ compatibility:
       Deterministic headless replay of the unchanged demo. The main menu opened, Play
       led to tank selection, and the default tank entered a live level. The timer and
       arena scene changed over successive captures. Steering, combat, native-Mac
-      comparison, and browser launch have not yet been verified.
+      comparison, and browser launch have not yet been verified. The promoted
+      archive and screenshot were fetched back and matched their recorded
+      SHA-256 hashes.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/3082
 artifacts:
