@@ -401,6 +401,18 @@ fn ppc_standard_file_point_from_gpr(point: u32) -> (i16, i16) {
     ((point >> 16) as u16 as i16, point as u16 as i16)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcStandardFileOperation {
+    StandardGetFile,
+    CustomGetFile,
+    CustomPutFile,
+    SfGetFile,
+    SfpGetFile,
+    SfpPutFile,
+    SfPutFile,
+    StandardPutFile,
+}
+
 impl PpcStandardFileOperation {
     fn mode(self) -> PpcStandardFileMode {
         match self {
