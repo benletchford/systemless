@@ -3196,6 +3196,16 @@ impl MacMemoryBus {
 impl MemoryBus for MacMemoryBus {
     #[inline]
     fn read_byte(&self, address: u32) -> u8 {
+        // The common 32-bit local-RAM case needs no address translation or
+        // foreign routing. Keep hooks on this path for debugger reads.
+        if self.addressing_32_bit
+            && self.foreign_address_space.is_none()
+            && address < self.ram_size
+        {
+            let value = self.ram.get_in_bounds(address as usize);
+            read_hooks(address, 1, u32::from(value));
+            return value;
+        }
         let guest_address = address;
         let address = self.translate_guest_address(address);
         let v = match self.route(guest_address, 1) {
@@ -3229,6 +3239,16 @@ impl MemoryBus for MacMemoryBus {
     /// the byte-by-byte path when the read straddles `self.ram_size`.
     #[inline]
     fn read_word(&self, address: u32) -> u16 {
+        // A read crossing RAM's end still takes the byte-wise routed path.
+        if self.addressing_32_bit
+            && self.foreign_address_space.is_none()
+            && address < self.ram_size
+            && self.ram_size - address >= 2
+        {
+            let value = self.ram.read_word_in_bounds(address as usize);
+            read_hooks(address, 2, u32::from(value));
+            return value;
+        }
         let foreign_address = self.translate_guest_address(address);
         let v = match self.route(address, 2) {
             GuestMemoryRoute::Flat => self.ram.read_word_in_bounds(foreign_address as usize),
@@ -3258,6 +3278,16 @@ impl MemoryBus for MacMemoryBus {
     /// slice index when the 4 bytes lie wholly within `self.ram_size`.
     #[inline]
     fn read_long(&self, address: u32) -> u32 {
+        // Match read_word's local-RAM shortcut without changing mixed routes.
+        if self.addressing_32_bit
+            && self.foreign_address_space.is_none()
+            && address < self.ram_size
+            && self.ram_size - address >= 4
+        {
+            let value = self.ram.read_long_in_bounds(address as usize);
+            read_hooks(address, 4, value);
+            return value;
+        }
         let foreign_address = self.translate_guest_address(address);
         let v = match self.route(address, 4) {
             GuestMemoryRoute::Flat => self.ram.read_long_in_bounds(foreign_address as usize),
@@ -3965,6 +3995,19 @@ mod tests {
         bus.set_addressing_32_bit(false);
         assert_eq!(bus.read_byte(0x0301_0000), 0x5A);
         assert!(bus.fast_mem_window().is_none());
+    }
+
+    #[test]
+    fn thirty_two_bit_scalar_reads_keep_ram_boundary_routing() {
+        let mut bus = MacMemoryBus::new(4096);
+        bus.write_bytes(4092, &[0x12, 0x34, 0x56, 0x78]);
+
+        assert_eq!(bus.read_byte(4095), 0x78);
+        assert_eq!(bus.read_word(4094), 0x5678);
+        assert_eq!(bus.read_long(4092), 0x1234_5678);
+        assert_eq!(bus.read_word(4095), 0x7800);
+        assert_eq!(bus.read_long(4094), 0x5678_0000);
+        assert_eq!(bus.read_word(0x0100_0ffe), 0);
     }
 
     #[test]
