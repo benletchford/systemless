@@ -9250,6 +9250,29 @@ fn pbsetvol_rejects_an_unknown_volume_name() {
 }
 
 #[test]
+fn pbopenwd_single_colon_resolves_explicit_directory_id() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let resources_dir_id = disp.ensure_vfs_directory("Demo/H&E Resources");
+    let pb = 0x300000u32;
+    setup_param_block(&mut bus, &mut cpu, pb, b":");
+    bus.write_word(pb + 22, 0);
+    bus.write_long(pb + 28, 0x1234_5678);
+    bus.write_long(pb + 48, resources_dir_id);
+    cpu.write_reg(Register::D0, 1);
+
+    call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+    assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+    assert_eq!(bus.read_word(pb + 16) as i16, 0);
+    let wd_ref = bus.read_word(pb + 22) as i16;
+    assert_eq!(
+        disp.working_directory_info(wd_ref).unwrap().dir_id,
+        resources_dir_id
+    );
+    assert_eq!(bus.read_long(pb + 48), resources_dir_id);
+}
+
+#[test]
 fn pbopenwd_and_pbgetwdinfo_preserve_mounted_volume_identity() {
     let (mut disp, mut cpu, mut bus) = setup();
     let (volume_ref, _) = mount_read_only_test_volume(&mut disp, "Working Disk");

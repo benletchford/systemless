@@ -7638,7 +7638,9 @@ impl super::TrapDispatcher {
                         return Some(Ok(()));
                     }
                     let base_dir_id = self.resolve_directory_id(vref, requested_dir_id);
-                    let effective_dir_id = if name.is_empty() {
+                    // A single-colon partial pathname names the selected directory itself.
+                    // Inside Macintosh: Files (1992), pp. 2-27 to 2-29.
+                    let effective_dir_id = if name.is_empty() || name == ":" {
                         base_dir_id
                     } else if let Some(path) =
                         self.find_vfs_directory_in_directory(base_dir_id, &name)
