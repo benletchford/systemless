@@ -2647,6 +2647,25 @@ pub(super) fn ppc_window_content_color(
     None
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcLegacyWindowOperation {
+    BringToFront,
+    CalculateVisibleRegion,
+    CheckUpdate,
+    DisposeWindow,
+    DragWindow,
+    GetNewWindow,
+    GetWindowTitle,
+    GrowWindow,
+    HighlightWindow,
+    NewWindow,
+    SendBehind,
+    SetWindowTitle,
+    TrackBox,
+    TrackGoAway,
+    ZoomWindow,
+}
+
 pub(super) fn ppc_dispatch_legacy_window(
     operation: PpcLegacyWindowOperation,
     cpu: &mut PpcCpu,
