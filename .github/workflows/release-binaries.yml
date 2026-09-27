@@ -111,13 +111,13 @@ jobs:
               documents = {
                   "LICENSE": "LICENSE",
                   "README.md": "README.md",
-                  "src/quickdraw/fonts/urw/LICENSE.OFL": "URW-LICENSE.OFL",
-                  "src/quickdraw/fonts/urw/LICENSE.md": "URW-LICENSE.md",
-                  "src/quickdraw/fonts/urw/README.md": "URW-README.md",
-                  "src/quickdraw/fonts/noto/OFL.txt": "Noto-OFL.txt",
-                  "src/quickdraw/fonts/noto/README.md": "Noto-README.md",
-                  "src/quickdraw/fonts/coppet/OFL.txt": "Coppet-OFL.txt",
-                  "src/quickdraw/fonts/coppet/README.md": "Coppet-README.md",
+                  "src/systems/macintosh/quickdraw/fonts/urw/LICENSE.OFL": "URW-LICENSE.OFL",
+                  "src/systems/macintosh/quickdraw/fonts/urw/LICENSE.md": "URW-LICENSE.md",
+                  "src/systems/macintosh/quickdraw/fonts/urw/README.md": "URW-README.md",
+                  "src/systems/macintosh/quickdraw/fonts/noto/OFL.txt": "Noto-OFL.txt",
+                  "src/systems/macintosh/quickdraw/fonts/noto/README.md": "Noto-README.md",
+                  "src/systems/macintosh/quickdraw/fonts/coppet/OFL.txt": "Coppet-OFL.txt",
+                  "src/systems/macintosh/quickdraw/fonts/coppet/README.md": "Coppet-README.md",
               }
               for source, destination in documents.items():
                   shutil.copy2(source, package / destination)
