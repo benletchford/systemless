@@ -4589,6 +4589,10 @@ fn import_bindings_classify_quickdraw_bootstrap_noops() {
         PpcImportDispatcherTarget::InitCursor
     );
     assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "InitCursor"),
+        PpcImportDispatcherTarget::InitCursor
+    );
+    assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "HideCursor"),
         PpcImportDispatcherTarget::HideCursor
     );
