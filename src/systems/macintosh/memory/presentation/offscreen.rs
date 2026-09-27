@@ -221,6 +221,14 @@ impl Chunk {
     }
 }
 
+/// Move an ink out, leaving a placeholder that allocates nothing.
+pub(super) fn take_ink(ink: &mut Ink) -> Ink {
+    std::mem::replace(
+        ink,
+        Ink { foreground: 0, alpha: 0, background: super::IndexedColor::Solid(0) },
+    )
+}
+
 /// Read access to one offscreen cell's contents, without building an `Arc`.
 pub(super) struct OffscreenCellRef<'a> {
     chunk: &'a Chunk,
@@ -240,23 +248,6 @@ impl OffscreenCellRef<'_> {
             .slot_ink(self.slot)
             .iter()
             .map(|(sample, ink)| (usize::from(*sample), ink))
-    }
-}
-
-/// The chunks covering one address span, looked up once, so a row copy
-/// reads each cell without a map lookup.
-pub(super) struct OffscreenSpan<'a> {
-    from: u32,
-    first_key: u32,
-    chunks: Vec<Option<&'a Chunk>>,
-}
-
-impl<'a> OffscreenSpan<'a> {
-    /// The cell `offset` bytes into the span, if any.
-    pub(super) fn get(&self, offset: usize) -> Option<OffscreenCellRef<'a>> {
-        let (key, slot) = split(self.from.wrapping_add(offset as u32));
-        let chunk = (*self.chunks.get(key.wrapping_sub(self.first_key) as usize)?)?;
-        chunk.has(slot).then_some(OffscreenCellRef { chunk, slot })
     }
 }
 
@@ -450,6 +441,50 @@ impl OffscreenDetail {
         }
     }
 
+    /// Visit each cell in `[from, from + len)` in address order, with its
+    /// offset from `from`.
+    pub(super) fn visit_cells(&self, from: u32, len: usize, mut visit: impl FnMut(usize, OffscreenCellRef<'_>)) {
+        self.visit(from, u64::from(from) + len as u64, |address, chunk, slot| {
+            visit((address - from) as usize, OffscreenCellRef { chunk, slot });
+            true
+        });
+    }
+
+    /// Make `address` hold the cell `value` / `indices` / `ink` (ink sorted
+    /// by sample), unless it already holds exactly that cell, and report
+    /// whether it changed. The ink is moved out of `ink`.
+    pub(super) fn store_parts(&mut self, address: u32, value: u8, indices: &[u8], ink: &mut [(u8, Ink)]) -> bool {
+        assert!(indices.len() <= TILE_SAMPLES, "cell samples exceed a tile");
+        let (key, slot) = split(address);
+        let chunk = self.chunks.entry(key).or_insert_with(|| Box::new(Chunk::new()));
+        if chunk.has(slot) {
+            let start = slot * TILE_SAMPLES;
+            if chunk.values[slot] == value
+                && usize::from(chunk.lens[slot]) == indices.len()
+                && chunk.indices[start..start + indices.len()] == *indices
+                && chunk.slot_ink(slot) == &*ink
+            {
+                return false;
+            }
+            chunk.clear(slot);
+            self.count -= 1;
+        }
+        chunk.present[slot / 64] |= 1 << (slot % 64);
+        chunk.count += 1;
+        self.count += 1;
+        chunk.values[slot] = value;
+        chunk.lens[slot] = indices.len() as u8;
+        let start = slot * TILE_SAMPLES;
+        chunk.indices[start..start + indices.len()].copy_from_slice(indices);
+        if !ink.is_empty() {
+            let held = chunk.slot_ink_mut(slot);
+            held.clear();
+            held.extend(ink.iter_mut().map(|(sample, ink)| (*sample, take_ink(ink))));
+        }
+        chunk.forget_shared(slot);
+        true
+    }
+
     /// Every occupied address, in order.
     pub(super) fn addresses(&self) -> Vec<u32> {
         let mut addresses = Vec::with_capacity(self.count);
@@ -458,18 +493,6 @@ impl OffscreenDetail {
             true
         });
         addresses
-    }
-
-    /// The chunks covering `[from, from + len)`, which must not wrap.
-    pub(super) fn span(&self, from: u32, len: usize) -> OffscreenSpan<'_> {
-        let first_key = from >> CHUNK_SHIFT;
-        let last = u64::from(from) + len.max(1) as u64 - 1;
-        assert!(last < 1 << 32, "offscreen span wraps");
-        let last_key = (last as u32) >> CHUNK_SHIFT;
-        let chunks = (first_key..=last_key)
-            .map(|key| self.chunks.get(&key).map(|chunk| &**chunk))
-            .collect();
-        OffscreenSpan { from, first_key, chunks }
     }
 
     pub(super) fn cell_mut(&mut self, address: u32) -> Option<OffscreenCellMut<'_>> {
@@ -664,15 +687,28 @@ mod tests {
                     assert_eq!(store.get(address).map(|cell| (*cell).clone()).as_ref(), held, "step {step}");
                     assert!(store.matches(address, held), "step {step}");
                     assert_eq!(store.contains(address), held.is_some(), "step {step}");
-                    let span = store.span(address, 1);
-                    let view = span.get(0);
-                    assert_eq!(view.as_ref().map(|view| view.indices().to_vec()), held.map(|cell| cell.indices.clone()), "step {step}");
-                    let mut model_ink: Vec<(usize, Ink)> =
-                        held.map_or(Vec::new(), |cell| cell.ink.iter().map(|(&k, v)| (k, v.clone())).collect());
-                    model_ink.sort_by_key(|&(sample, _)| sample);
-                    let view_ink: Vec<(usize, Ink)> = view
-                        .map_or(Vec::new(), |view| view.inks().map(|(k, v)| (k, v.clone())).collect());
-                    assert_eq!(view_ink, model_ink, "step {step}");
+                    let mut viewed = None;
+                    store.visit_cells(address, 1, |offset, view| {
+                        assert_eq!(offset, 0);
+                        let ink: Vec<(usize, Ink)> = view.inks().map(|(k, v)| (k, v.clone())).collect();
+                        viewed = Some((view.indices().to_vec(), ink));
+                    });
+                    let expected = held.map(|cell| {
+                        let mut ink: Vec<(usize, Ink)> = cell.ink.iter().map(|(&k, v)| (k, v.clone())).collect();
+                        ink.sort_by_key(|&(sample, _)| sample);
+                        (cell.indices.clone(), ink)
+                    });
+                    assert_eq!(viewed, expected, "step {step}");
+                    // Storing a cell's own parts back changes nothing; a
+                    // different value replaces it.
+                    if let Some((indices, ink)) = expected {
+                        let mut parts: Vec<(u8, Ink)> = ink.iter().map(|(k, v)| (*k as u8, v.clone())).collect();
+                        let value = held.unwrap().value;
+                        assert!(!store.store_parts(address, value, &indices, &mut parts), "step {step}");
+                        let mut parts: Vec<(u8, Ink)> = ink.iter().map(|(k, v)| (*k as u8, v.clone())).collect();
+                        assert!(store.store_parts(address, value ^ 1, &indices, &mut parts), "step {step}");
+                        model.get_mut(&address).unwrap().value ^= 1;
+                    }
                 }
             }
             assert_eq!(store.len(), model.len(), "step {step}");
