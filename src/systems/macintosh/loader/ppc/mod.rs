@@ -845,17 +845,7 @@ pub enum PpcSpeechCompatibilityOperation {
     SpeechBusy,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PpcStandardFileOperation {
-    StandardGetFile,
-    CustomGetFile,
-    CustomPutFile,
-    SfGetFile,
-    SfpGetFile,
-    SfpPutFile,
-    SfPutFile,
-    StandardPutFile,
-}
+pub use dispatch_standard_file::PpcStandardFileOperation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcDialogCompatibilityOperation {
