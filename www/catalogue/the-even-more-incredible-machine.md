@@ -23,7 +23,9 @@ compatibility:
       Deterministic headless replay of the unchanged demo. Skipped the animated
       introduction with Escape, reached the first tutorial puzzle, and clicked Play to run
       its physical simulation; the basketball and other objects changed positions.
-      Browser launch has not yet been verified.
+      BasiliskII needed one extra introduction-dismissal click, then reached
+      the same puzzle and moving-object checkpoint. Exact pixel parity and
+      browser launch have not yet been verified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3064
 artifacts:
@@ -76,6 +78,7 @@ artifacts:
       b01f96573b07e90aaaeb5faeb3d9242405a1aaf0473ecac9c8fb33f916450a7e, 42,550 bytes.
 references:
 - https://classicmacdemos.com/the-even-more-incredible-machine
+- https://download.classicmacdemos.com/The%20Incredible%20Demo.sit
 - >-
   https://static.classicmacdemos.com/demos/the-even-more-incredible-machine/README.txt
 ---
@@ -91,5 +94,6 @@ roll and collide. This capture shows the puzzle after that change of state.
 
 This is the original Macintosh demonstration of The (Even More!) Incredible
 Machine, not the retail release. Systemless reached its interactive puzzle
-with the unchanged archive. Browser launch remains disabled until manual
-testing and approval.
+with the unchanged archive. BasiliskII also reached the running simulation
+after an extra click past the introduction. Browser launch remains disabled
+until manual testing and approval.
