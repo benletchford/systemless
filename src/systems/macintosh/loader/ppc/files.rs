@@ -4387,6 +4387,20 @@ pub(super) fn ppc_h_rename(
     PPC_NO_ERR
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcParameterBlockCreateOperation {
+    Legacy,
+    Hierarchical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcDeleteByNameOperation {
+    LegacyHighLevel,
+    HierarchicalHighLevel,
+    LegacyParameterBlock,
+    HierarchicalParameterBlock,
+}
+
 pub(super) fn ppc_pb_create(
     operation: PpcParameterBlockCreateOperation,
     cpu: &PpcCpu,

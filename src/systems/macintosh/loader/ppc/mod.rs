@@ -820,19 +820,7 @@ pub(super) use dispatch_printing::ppc_dispatch_printing_compatibility;
 
 pub use dispatch_files::PpcFileCompatibilityOperation;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PpcParameterBlockCreateOperation {
-    Legacy,
-    Hierarchical,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PpcDeleteByNameOperation {
-    LegacyHighLevel,
-    HierarchicalHighLevel,
-    LegacyParameterBlock,
-    HierarchicalParameterBlock,
-}
+pub use files::{PpcDeleteByNameOperation, PpcParameterBlockCreateOperation};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcLegacyMemoryUtilityOperation {
