@@ -801,14 +801,7 @@ pub enum PpcMath64Operation {
 
 pub use math_compatibility::PpcMathCompatibilityOperation;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PpcStdCCompatibilityOperation {
-    Qsort,
-    Signal,
-    Sscanf,
-    Strftime,
-    Vsprintf,
-}
+pub use dispatch_stdc::PpcStdCCompatibilityOperation;
 
 pub use sound::{PpcSoundInputCompatibilityOperation, PpcSpeechCompatibilityOperation};
 

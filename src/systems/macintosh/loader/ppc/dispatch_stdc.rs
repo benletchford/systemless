@@ -465,6 +465,15 @@ pub(super) fn ppc_dispatch_stdc_signal(
     PpcImportAction::Return(previous)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcStdCCompatibilityOperation {
+    Qsort,
+    Signal,
+    Sscanf,
+    Strftime,
+    Vsprintf,
+}
+
 pub(super) fn ppc_dispatch_stdc_compatibility(
     operation: PpcStdCCompatibilityOperation,
     cpu: &mut PpcCpu,
