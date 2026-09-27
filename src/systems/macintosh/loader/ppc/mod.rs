@@ -12956,7 +12956,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "Alert" | "StopAlert" | "NoteAlert" | "CautionAlert") => {
             PpcImportDispatcherTarget::AlertReturnDefault
         }
-        ("AppearanceLib", "StandardAlert") => PpcImportDispatcherTarget::StandardAlert,
+        ("InterfaceLib" | "AppearanceLib", "StandardAlert") => {
+            PpcImportDispatcherTarget::StandardAlert
+        }
         ("InterfaceLib", "PurgeMem") => PpcImportDispatcherTarget::PurgeMem,
         ("InterfaceLib", "PurgeMemSys") => PpcImportDispatcherTarget::PurgeMemSys,
         ("InterfaceLib", "ReleaseResource") => PpcImportDispatcherTarget::ReleaseResource,
