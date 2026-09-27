@@ -96,6 +96,7 @@ pub(super) fn ppc_draw_themed_control(
     control: u32,
     proc_id: i16,
     is_default: bool,
+    active: bool,
     bounds: (i16, i16, i16, i16),
 ) -> Option<bool> {
     let theme_id = ppc_ui_theme(gworlds);
@@ -147,8 +148,8 @@ pub(super) fn ppc_draw_themed_control(
                 bottom: pad + height,
                 right: pad + width,
             },
-            enabled: hilite != 255,
-            pressed: hilite != 0 && hilite != 255,
+            enabled: active && hilite != 255,
+            pressed: active && hilite != 0 && hilite != 255,
             selected,
             is_default,
         },

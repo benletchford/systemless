@@ -116,6 +116,7 @@ mod dispatch_cfm;
 use dispatch_cfm::*;
 mod dispatch_apple_events;
 use dispatch_apple_events::*;
+mod dispatch_appearance;
 mod dispatch_bit_transfers;
 mod dispatch_color_tables;
 mod dispatch_collection;
@@ -1255,6 +1256,14 @@ pub enum PpcImportDispatcherTarget {
     DrawPicture,
     KillPicture,
     Gestalt,
+    RegisterAppearanceClient,
+    ActivateControl,
+    DeactivateControl,
+    IsControlActive,
+    CollapseWindow,
+    IsWindowCollapsed,
+    UnregisterAppearanceClient,
+    SetControlFontStyle,
     GetSharedLibrary,
     FindSymbol,
     CountSymbols,
@@ -12784,6 +12793,20 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "NewDialog")
         | ("InterfaceLib", "NewColorDialog")
         | ("InterfaceLib", "NewCDialog") => PpcImportDispatcherTarget::NewDialog,
+        ("AppearanceLib", "RegisterAppearanceClient") => {
+            PpcImportDispatcherTarget::RegisterAppearanceClient
+        }
+        ("AppearanceLib", "UnregisterAppearanceClient") => {
+            PpcImportDispatcherTarget::UnregisterAppearanceClient
+        }
+        ("AppearanceLib", "ActivateControl") => PpcImportDispatcherTarget::ActivateControl,
+        ("AppearanceLib", "DeactivateControl") => PpcImportDispatcherTarget::DeactivateControl,
+        ("AppearanceLib", "IsControlActive") => PpcImportDispatcherTarget::IsControlActive,
+        ("AppearanceLib", "CollapseWindow") => PpcImportDispatcherTarget::CollapseWindow,
+        ("AppearanceLib", "IsWindowCollapsed") => PpcImportDispatcherTarget::IsWindowCollapsed,
+        ("AppearanceLib", "SetControlFontStyle") => {
+            PpcImportDispatcherTarget::SetControlFontStyle
+        }
         ("AppearanceLib", "NewFeaturesDialog") | ("InterfaceLib", "NewFeaturesDialog") => {
             PpcImportDispatcherTarget::NewFeaturesDialog
         }
@@ -14776,6 +14799,19 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         return Some(action);
     }
 
+    if let Some(action) = dispatch_appearance::dispatch_appearance_import(
+        binding,
+        cpu,
+        memory,
+        handles,
+        controls,
+        gworlds,
+        vfs_resources,
+        *current_resource_refnum,
+    ) {
+        return Some(action);
+    }
+
     if let Some(action) = dispatch_dialog::dispatch_dialog_import(
         dispatch_dialog::PpcDialogDispatchContext {
             binding,
@@ -14999,6 +15035,16 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             unreachable!(
                 "native exception imports return through dispatch_native_exception_import"
             )
+        }
+        PpcImportDispatcherTarget::RegisterAppearanceClient
+        | PpcImportDispatcherTarget::ActivateControl
+        | PpcImportDispatcherTarget::DeactivateControl
+        | PpcImportDispatcherTarget::IsControlActive
+        | PpcImportDispatcherTarget::CollapseWindow
+        | PpcImportDispatcherTarget::IsWindowCollapsed
+        | PpcImportDispatcherTarget::UnregisterAppearanceClient
+        | PpcImportDispatcherTarget::SetControlFontStyle => {
+            unreachable!("appearance imports return through dispatch_appearance_import")
         }
         PpcImportDispatcherTarget::NewPtr { .. }
         | PpcImportDispatcherTarget::DisposePtr

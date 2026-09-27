@@ -165,6 +165,8 @@ fn hle_import_runner_creates_and_links_a_classic_control_record() {
             proc_id: 16,
             popup_menu_id: 0,
             popup_title_width: None,
+            active: true,
+            font_style: None,
         }]
     );
 }
@@ -856,4 +858,331 @@ fn hle_import_runner_handles_set_control_value_defaults() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], PPC_HEAP_BASE + 0x100);
     assert_eq!(loaded.cpu.gpr[4], 7);
+}
+
+fn appearance_push_button(loaded: &mut PpcLoadedApp, proc_id: i16) -> u32 {
+    let mut last_mem_error = loaded.last_mem_error();
+    let scratch = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        32,
+        true,
+    );
+    ppc_write_rect(&mut loaded.memory, scratch, 5, 6, 65, 186).unwrap();
+    write_ppc_pstring(&mut loaded.memory, scratch + 8, b"Group");
+    with_test_controls!(
+        loaded,
+        |controls| ppc_new_control_values(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            controls,
+            PPC_MAIN_GWORLD,
+            scratch,
+            scratch + 8,
+            true,
+            0,
+            0,
+            1,
+            proc_id,
+            0,
+        )
+    )
+}
+
+fn run_appearance_import(
+    loaded: &mut PpcLoadedApp,
+    target: &PpcImportDispatcherTarget,
+    gprs: &[u32],
+) -> u32 {
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = target.clone();
+    for (index, value) in gprs.iter().enumerate() {
+        loaded.cpu.gpr[3 + index] = *value;
+    }
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None, "{target:?}");
+    loaded.cpu.gpr[3]
+}
+
+#[test]
+fn appearance_imports_map_to_typed_targets() {
+    for (symbol, expected) in [
+        ("RegisterAppearanceClient", PpcImportDispatcherTarget::RegisterAppearanceClient),
+        ("UnregisterAppearanceClient", PpcImportDispatcherTarget::UnregisterAppearanceClient),
+        ("ActivateControl", PpcImportDispatcherTarget::ActivateControl),
+        ("DeactivateControl", PpcImportDispatcherTarget::DeactivateControl),
+        ("IsControlActive", PpcImportDispatcherTarget::IsControlActive),
+        ("SetControlFontStyle", PpcImportDispatcherTarget::SetControlFontStyle),
+        ("CollapseWindow", PpcImportDispatcherTarget::CollapseWindow),
+        ("IsWindowCollapsed", PpcImportDispatcherTarget::IsWindowCollapsed),
+    ] {
+        assert_eq!(dispatcher_target_for_import("AppearanceLib", symbol), expected, "{symbol}");
+    }
+}
+
+#[test]
+fn appearance_client_and_collapse_imports_report_their_results() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"RegisterAppearanceClient")).unwrap();
+    for target in [
+        PpcImportDispatcherTarget::RegisterAppearanceClient,
+        PpcImportDispatcherTarget::UnregisterAppearanceClient,
+    ] {
+        assert_eq!(run_appearance_import(&mut loaded, &target, &[]), ppc_i16_result(PPC_NO_ERR));
+    }
+    let collapse = PpcImportDispatcherTarget::CollapseWindow;
+    assert_eq!(
+        run_appearance_import(&mut loaded, &collapse, &[PPC_MAIN_GWORLD, 0]),
+        ppc_i16_result(PPC_NO_ERR)
+    );
+    // There is no collapsed-window representation, so collapsing is
+    // refused with unimpErr rather than reported as done.
+    assert_eq!(
+        run_appearance_import(&mut loaded, &collapse, &[PPC_MAIN_GWORLD, 1]),
+        ppc_i16_result(-4)
+    );
+    assert_eq!(
+        run_appearance_import(&mut loaded, &collapse, &[0, 0]),
+        ppc_i16_result(PPC_PARAM_ERR)
+    );
+    assert_eq!(
+        run_appearance_import(
+            &mut loaded,
+            &PpcImportDispatcherTarget::IsWindowCollapsed,
+            &[PPC_MAIN_GWORLD]
+        ),
+        0
+    );
+}
+
+#[test]
+fn deactivated_controls_report_inactive_and_cannot_be_hit() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TestControl")).unwrap();
+    let handle = appearance_push_button(&mut loaded, 0);
+    let test = PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TestControl);
+    let point = (20 << 16) | 20;
+    assert_eq!(run_appearance_import(&mut loaded, &test, &[handle, point]), 10);
+
+    assert_eq!(
+        run_appearance_import(&mut loaded, &PpcImportDispatcherTarget::DeactivateControl, &[handle]),
+        ppc_i16_result(PPC_NO_ERR)
+    );
+    assert_eq!(
+        run_appearance_import(&mut loaded, &PpcImportDispatcherTarget::IsControlActive, &[handle]),
+        0
+    );
+    assert_eq!(run_appearance_import(&mut loaded, &test, &[handle, point]), 0);
+    let control = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!(
+        loaded.memory.read_u8(control + PPC_CONTROL_HILITE_OFFSET),
+        Some(0),
+        "deactivation must not touch contrlHilite"
+    );
+
+    assert_eq!(
+        run_appearance_import(&mut loaded, &PpcImportDispatcherTarget::ActivateControl, &[handle]),
+        ppc_i16_result(PPC_NO_ERR)
+    );
+    assert_eq!(
+        run_appearance_import(&mut loaded, &PpcImportDispatcherTarget::IsControlActive, &[handle]),
+        1
+    );
+    assert_eq!(run_appearance_import(&mut loaded, &test, &[handle, point]), 10);
+
+    // A handle the Control Manager never created is rejected.
+    assert_eq!(
+        run_appearance_import(
+            &mut loaded,
+            &PpcImportDispatcherTarget::DeactivateControl,
+            &[PPC_MAIN_GWORLD]
+        ),
+        ppc_i16_result(PPC_PARAM_ERR)
+    );
+}
+
+#[test]
+fn group_boxes_report_no_part_except_for_interactive_titles() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TestControl")).unwrap();
+    let text_title = appearance_push_button(&mut loaded, 160);
+    let checkbox_title = appearance_push_button(&mut loaded, 161);
+    let records = loaded.controls.records();
+    // Rect is (5, 6, 65, 186); the title band is the top 10 pixels.
+    for (handle, title_part) in [(text_title, 0), (checkbox_title, 10)] {
+        assert_eq!(
+            ppc_control_part_at_point(&mut loaded.memory, &records, handle, 8, 30),
+            Some(title_part)
+        );
+        assert_eq!(
+            ppc_control_part_at_point(&mut loaded.memory, &records, handle, 40, 30),
+            Some(0)
+        );
+    }
+}
+
+#[test]
+fn every_control_creation_path_registers_a_hittable_record() {
+    // Dialog hit testing ignores control items without a live record, so
+    // a creation path that skips registration would make its control dead.
+    // NewControl and DITL controls are pinned by their own tests; this
+    // covers GetNewControl and the List Manager's scroll bars.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetNewControl")).unwrap();
+    let mut cntl = vec![0; 23];
+    for (index, value) in [10i16, 10, 30, 90].into_iter().enumerate() {
+        cntl[index * 2..index * 2 + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    cntl[10] = 1;
+    cntl[12..14].copy_from_slice(&1i16.to_be_bytes());
+    let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+    loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+        ref_num: current_resource_refnum,
+        path: String::new(),
+        res_type: u32::from_be_bytes(*b"CNTL"),
+        res_id: 128,
+        name: Vec::new(),
+        data: cntl,
+        raw_data: None,
+        raw_attrs: None,
+        attrs: 0,
+        handle: 0,
+    });
+    loaded.cpu.gpr[3] = 128;
+    loaded.cpu.gpr[4] = PPC_MAIN_GWORLD;
+    let probe = loaded.run_with_hle_imports(128);
+    assert_eq!(probe.unsupported_import_index, None);
+    let handle = loaded.cpu.gpr[3];
+    assert_ne!(handle, 0);
+    assert_eq!(
+        ppc_control_part_at_point(&mut loaded.memory, &loaded.controls.records(), handle, 20, 50),
+        Some(10)
+    );
+
+    let mut list_app = load_pef_application(&synthetic_pef_with_import(b"LNew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    list_app.memory.add_region(scratch, vec![0; 32]);
+    ppc_write_rect(&mut list_app.memory, scratch, 10, 20, 90, 220).unwrap();
+    ppc_write_rect(&mut list_app.memory, scratch + 8, 0, 0, 20, 1).unwrap();
+    list_app.cpu.gpr[3] = scratch;
+    list_app.cpu.gpr[4] = scratch + 8;
+    list_app.cpu.gpr[5] = (16u32 << 16) | 200;
+    list_app.cpu.gpr[6] = 0;
+    list_app.cpu.gpr[7] = PPC_MAIN_GWORLD;
+    // drawIt: scroll bars stay hidden until drawing is on.
+    list_app.cpu.gpr[8] = 1;
+    list_app.cpu.gpr[9] = 0;
+    list_app.cpu.gpr[10] = 0;
+    list_app
+        .memory
+        .write_u32_be(
+            ppc_parameter_area_slot_addr(list_app.cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
+                .unwrap(),
+            1,
+        )
+        .unwrap();
+    let probe = list_app.run_with_hle_imports(128);
+    assert_eq!(probe.unsupported_import_index, None);
+    let list_ptr = list_app.memory.read_u32_be(list_app.cpu.gpr[3]).unwrap();
+    let scroll = list_app
+        .memory
+        .read_u32_be(list_ptr + PPC_LIST_VSCROLL_OFFSET)
+        .unwrap();
+    assert_ne!(scroll, 0);
+    let scroll_ptr = list_app.memory.read_u32_be(scroll).unwrap();
+    let (top, left, bottom, right) =
+        ppc_read_rect(&mut list_app.memory, scroll_ptr + PPC_CONTROL_RECT_OFFSET).unwrap();
+    assert!(ppc_control_part_at_point(
+        &mut list_app.memory,
+        &list_app.controls.records(),
+        scroll,
+        (top + bottom) / 2,
+        (left + right) / 2,
+    )
+    .is_some_and(|part| part != 0));
+}
+
+#[test]
+fn set_control_font_style_stores_the_style_the_title_painter_uses() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"SetControlFontStyle")).unwrap();
+    let handle = appearance_push_button(&mut loaded, 0);
+    let style_ptr = PPC_DATA_BASE + 0x2000;
+    loaded.memory.add_region(style_ptr, vec![0; 24]);
+    // kControlUseFaceMask | kControlUseForeColorMask | kControlAddFontSizeMask,
+    // without kControlUseSizeMask: size is a +2 delta, bold, red ink. The ink
+    // applies only to static text controls.
+    let mut rec = [0u8; 24];
+    rec[0..2].copy_from_slice(&0x010au16.to_be_bytes());
+    rec[4..6].copy_from_slice(&2i16.to_be_bytes());
+    rec[6..8].copy_from_slice(&1i16.to_be_bytes());
+    rec[12..14].copy_from_slice(&0xffffu16.to_be_bytes());
+    loaded.memory.write_bytes(style_ptr, &rec).unwrap();
+
+    let set = PpcImportDispatcherTarget::SetControlFontStyle;
+    assert_eq!(
+        run_appearance_import(&mut loaded, &set, &[handle, style_ptr]),
+        ppc_i16_result(PPC_NO_ERR)
+    );
+    let records = loaded.controls.records();
+    let style = records[0].font_style.expect("style stored");
+    let push_button = ppc_control_title_style(records[0].proc_id, Some(&style));
+    assert_eq!(
+        push_button,
+        PpcControlTitleStyle {
+            font: PPC_QD_TEXT_FONT_DEFAULT,
+            size: 14,
+            face: 1,
+            foreground: None,
+        }
+    );
+    // kControlStaticTextProc.
+    assert_eq!(
+        ppc_control_title_style(288, Some(&style)),
+        PpcControlTitleStyle {
+            foreground: Some(PpcRgbColor { red: 0xffff, green: 0, blue: 0 }),
+            ..push_button
+        }
+    );
+    assert_eq!(
+        run_appearance_import(&mut loaded, &set, &[PPC_MAIN_GWORLD, style_ptr]),
+        ppc_i16_result(PPC_PARAM_ERR)
+    );
+
+    // Clearing the flags drops the override.
+    loaded.memory.write_bytes(style_ptr, &[0; 24]).unwrap();
+    run_appearance_import(&mut loaded, &set, &[handle, style_ptr]);
+    assert_eq!(loaded.controls.records()[0].font_style, None);
+}
+
+#[test]
+fn control_title_style_resolves_appearance_meta_fonts() {
+    let style = |flags: u16, font: i16, size: i16| crate::control_manager::ControlFontStyle {
+        flags: flags as i16,
+        font,
+        size,
+        style: 0,
+        mode: 0,
+        justification: 0,
+        foreground: [0; 3],
+        background: [0; 3],
+    };
+    let resolve = |flags, font, size| {
+        let resolved = ppc_control_title_style(0, Some(&style(flags, font, size)));
+        (resolved.font, resolved.size, resolved.face)
+    };
+    assert_eq!(ppc_control_title_style(0, None).font, PPC_QD_TEXT_FONT_DEFAULT);
+    // kControlFontBigSystemFont .. kControlFontViewSystemFont.
+    assert_eq!(resolve(0x0001, -1, 0), (PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0));
+    assert_eq!(resolve(0x0001, -2, 0), (3, 10, 0));
+    assert_eq!(resolve(0x0001, -3, 0), (3, 10, 1));
+    assert_eq!(resolve(0x0001, -4, 0), (3, 10, 0));
+    // Theme font IDs under kControlUseThemeFontIDMask.
+    assert_eq!(resolve(0x0081, 2, 0), (3, 10, 1));
+    // A plain family ID with an absolute size, and a delta on a meta font.
+    assert_eq!(resolve(0x0005, 21, 18), (21, 18, 0));
+    assert_eq!(resolve(0x0105, -2, -1), (3, 9, 0));
 }

@@ -918,6 +918,8 @@ pub(super) fn ppc_new_control_record_values(
         proc_id,
         popup_menu_id: if popup { min } else { 0 },
         popup_title_width: popup.then_some(max),
+        active: true,
+        font_style: None,
     });
     *last_mem_error = PPC_NO_ERR;
     handle
@@ -1094,6 +1096,13 @@ pub(super) fn ppc_control_part_at_point(
     h: i16,
 ) -> Option<i16> {
     let control = ppc_control_ptr(memory, handle)?;
+    if !controls
+        .iter()
+        .find(|record| record.handle == handle)
+        .is_some_and(|record| record.active)
+    {
+        return None;
+    }
     if memory.read_u8(control + PPC_CONTROL_VISIBLE_OFFSET)? == 0
         || memory.read_u8(control + PPC_CONTROL_HILITE_OFFSET)? >= 0xfe
     {
@@ -1142,6 +1151,25 @@ pub(super) fn ppc_control_part_at_point(
                 Some(129)
             } else {
                 Some(23)
+            }
+        }
+        // Appearance Manager group boxes are decoration and must not swallow
+        // clicks intended for the controls they enclose. The checkbox- and
+        // popup-title variants keep their title hit area interactive; every
+        // other part reports kControlNoPart. Appearance Manager 1.0,
+        // ControlDefinitions.h kControlGroupBoxTextTitleProc (160) through
+        // kControlGroupBoxSecondaryPopupButtonProc (166). Unverified: the
+        // Mac OS 8 Control Manager Reference does not say which part a group
+        // box reports for a click in its body.
+        160..=166 => {
+            let title_bottom = top.saturating_add(10);
+            if matches!(proc_id & 0x0fff, 161 | 162 | 165 | 166)
+                && v < title_bottom
+                && h >= left.saturating_add(8)
+            {
+                Some(10)
+            } else {
+                Some(0)
             }
         }
         _ => Some(10),
@@ -1429,6 +1457,103 @@ pub(super) fn ppc_blit_theme_bitmap_masked(
     wrote
 }
 
+/// Blend control ink halfway toward the window background for the 50% gray
+/// System 7 uses to dim an inactive control.
+fn ppc_dim_control_color(
+    ink: crate::ui_theme::Rgb8,
+    background: crate::ui_theme::Rgb8,
+) -> crate::ui_theme::Rgb8 {
+    let blend = |a: u8, b: u8| ((u16::from(a) + u16::from(b)) / 2) as u8;
+    crate::ui_theme::Rgb8 {
+        r: blend(ink.r, background.r),
+        g: blend(ink.g, background.g),
+        b: blend(ink.b, background.b),
+    }
+}
+
+/// Font, size, face and ink for a control title after applying the control's
+/// Appearance Manager ControlFontStyleRec.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PpcControlTitleStyle {
+    pub(super) font: i16,
+    pub(super) size: i16,
+    pub(super) face: u8,
+    pub(super) foreground: Option<PpcRgbColor>,
+}
+
+/// Resolve a ControlFontStyleRec against the system font the painter uses by
+/// default. Negative font values (and theme font IDs under
+/// kControlUseThemeFontIDMask) select the Appearance meta fonts; the small
+/// and view fonts are Geneva 10, the Mac OS 8 small system font metric
+/// (Mac OS 8 Human Interface Guidelines (1997), p. 69).
+/// kControlAddFontSizeMask adds `size` to the resolved size, and
+/// kControlUseForeColorMask applies only to static text controls (Mac OS 8
+/// Control Manager Reference, Control Font Style Flag Constants). Mode,
+/// justification and the back colour are retained but not drawn.
+pub(super) fn ppc_control_title_style(
+    proc_id: i16,
+    style: Option<&crate::control_manager::ControlFontStyle>,
+) -> PpcControlTitleStyle {
+    const USE_FONT: u16 = 0x0001;
+    const USE_FACE: u16 = 0x0002;
+    const USE_SIZE: u16 = 0x0004;
+    const USE_FORE_COLOR: u16 = 0x0008;
+    const USE_THEME_FONT_ID: u16 = 0x0080;
+    const ADD_FONT_SIZE: u16 = 0x0100;
+    const STATIC_TEXT_PROC: i16 = 288;
+    const SYSTEM_SIZE: i16 = 12;
+    const GENEVA: i16 = 3;
+    const BOLD: u8 = 0x01;
+
+    let mut resolved = PpcControlTitleStyle {
+        font: PPC_QD_TEXT_FONT_DEFAULT,
+        size: PPC_QD_TEXT_SIZE_SYSTEM,
+        face: 0,
+        foreground: None,
+    };
+    let Some(style) = style else {
+        return resolved;
+    };
+    let flags = style.flags as u16;
+    if flags & USE_FONT != 0 {
+        // Meta font IDs are -1..-4 in the font field, or theme font IDs
+        // 0..3 when kControlUseThemeFontIDMask is set.
+        let meta = if flags & USE_THEME_FONT_ID != 0 {
+            Some(style.font)
+        } else {
+            (style.font < 0).then(|| -style.font - 1)
+        };
+        match meta {
+            Some(0) => {}
+            Some(1 | 3) => (resolved.font, resolved.size) = (GENEVA, 10),
+            Some(2) => (resolved.font, resolved.size, resolved.face) = (GENEVA, 10, BOLD),
+            Some(_) => {}
+            None => resolved.font = style.font,
+        }
+    }
+    if flags & USE_FACE != 0 {
+        resolved.face = style.style as u8;
+    }
+    if flags & ADD_FONT_SIZE != 0 {
+        let base = if resolved.size == PPC_QD_TEXT_SIZE_SYSTEM {
+            SYSTEM_SIZE
+        } else {
+            resolved.size
+        };
+        resolved.size = base.saturating_add(style.size).max(1);
+    } else if flags & USE_SIZE != 0 && style.size > 0 {
+        resolved.size = style.size;
+    }
+    if flags & USE_FORE_COLOR != 0 && proc_id == STATIC_TEXT_PROC {
+        resolved.foreground = Some(PpcRgbColor {
+            red: style.foreground[0],
+            green: style.foreground[1],
+            blue: style.foreground[2],
+        });
+    }
+    resolved
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn ppc_draw_control_inner(
     memory: &mut PpcSectionMem,
@@ -1473,6 +1598,19 @@ pub(super) fn ppc_draw_control_inner(
     let palette = ppc_ui_theme(gworlds).provider().palette();
     let record = controls.iter().find(|record| record.handle == handle);
     let proc_id = record.map_or(0, |record| record.proc_id) & 0x0fff;
+    // Appearance Manager DeactivateControl dims a control without touching
+    // contrlHilite. Draw its frame and title with the same 50% blend the 68K
+    // control manager uses for an inactive title, so a non-hittable control
+    // also looks non-hittable.
+    let active = record.is_none_or(|record| record.active);
+    let palette = if active {
+        palette
+    } else {
+        crate::ui_theme::UiThemePalette {
+            frame_dark: ppc_dim_control_color(palette.frame_dark, palette.window_background),
+            ..palette
+        }
+    };
     let mut frame_cpu = PpcCpu::new();
     frame_cpu.gpr[3] = control + PPC_CONTROL_RECT_OFFSET;
     let is_default = ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7
@@ -1493,6 +1631,7 @@ pub(super) fn ppc_draw_control_inner(
         control,
         proc_id,
         is_default,
+        active,
         (top, left, bottom, right),
     );
     let framed = if let Some(drawn) = themed {
@@ -1910,12 +2049,13 @@ pub(super) fn ppc_draw_control_inner(
                 }
             })
             .collect::<Vec<_>>();
-        let advance = ppc_text_bytes_advance_for_font(
-            &title,
-            PPC_QD_TEXT_FONT_DEFAULT,
-            PPC_QD_TEXT_SIZE_SYSTEM,
+        let title_style = ppc_control_title_style(
+            proc_id,
+            record.and_then(|record| record.font_style.as_ref()),
         );
-        let metrics = get_font_metrics(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
+        let advance =
+            ppc_text_width_bytes(title_style.font, title_style.size, title_style.face, &title);
+        let metrics = get_font_metrics(title_style.font, title_style.size);
         let (centered_h, centered_v) = crate::control_manager::centered_control_label_origin(
             (top, left, bottom, right),
             advance,
@@ -1940,8 +2080,8 @@ pub(super) fn ppc_draw_control_inner(
                 ppc_popup_control_display_title(
                     &title,
                     available_width,
-                    PPC_QD_TEXT_FONT_DEFAULT,
-                    PPC_QD_TEXT_SIZE_SYSTEM,
+                    title_style.font,
+                    title_style.size,
                 ),
             )
         } else {
@@ -1955,21 +2095,37 @@ pub(super) fn ppc_draw_control_inner(
                     crate::control_manager::standard_radio_button_layout((top, left, bottom, right))
                         .label_left
                 }
+                160..=166 => left.saturating_add(8),
                 _ => left.saturating_add(16),
             };
             (title_h, title)
         };
-        let title_v = centered_v.min(bottom.saturating_sub(1));
-        let _ = ppc_draw_text_bytes(
+        let title_v = if (160..=166).contains(&proc_id) {
+            // Group box titles straddle the top border instead of centring in
+            // the box, so they do not overlap the enclosed controls.
+            top.saturating_add(metrics.ascent)
+                .saturating_sub(metrics.ascent.saturating_add(metrics.descent) / 2)
+                .max(top)
+        } else {
+            centered_v.min(bottom.saturating_sub(1))
+        };
+        // An inactive control keeps the dimmed palette ink over its own
+        // foreground colour, so it still reads as disabled.
+        let title_color = title_style
+            .foreground
+            .filter(|_| active)
+            .unwrap_or_else(|| ppc_theme_rgb(palette.frame_dark));
+        let _ = ppc_draw_text_bytes_styled(
             memory,
             gworlds,
             owner,
             (title_h, title_v),
-            PPC_QD_TEXT_FONT_DEFAULT,
-            PPC_QD_TEXT_SIZE_SYSTEM,
+            title_style.font,
+            title_style.size,
             PPC_QD_TEXT_MODE_SRC_OR,
-            ppc_theme_rgb(palette.frame_dark),
+            title_color,
             None,
+            title_style.face,
             &title,
         );
     }

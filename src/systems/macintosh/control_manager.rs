@@ -14,6 +14,22 @@ pub(crate) struct ProcessControlRecord {
     pub(crate) proc_id: i16,
     pub(crate) popup_menu_id: i16,
     pub(crate) popup_title_width: Option<i16>,
+    pub(crate) active: bool,
+    pub(crate) font_style: Option<ControlFontStyle>,
+}
+
+/// The Appearance Manager style override associated with a ControlRef.
+/// RGBColor components are stored in guest byte order as decoded host words.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ControlFontStyle {
+    pub(crate) flags: i16,
+    pub(crate) font: i16,
+    pub(crate) size: i16,
+    pub(crate) style: i16,
+    pub(crate) mode: i16,
+    pub(crate) justification: i16,
+    pub(crate) foreground: [u16; 3],
+    pub(crate) background: [u16; 3],
 }
 
 /// Canonical Control Manager metadata for one Macintosh process.
@@ -48,6 +64,8 @@ impl ProcessControlManagerState {
             proc_id,
             popup_menu_id,
             popup_title_width: None,
+            active: true,
+            font_style: None,
         });
     }
 
