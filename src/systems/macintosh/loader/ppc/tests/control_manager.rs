@@ -701,6 +701,7 @@ fn legacy_control_imports_pre_resolve_to_typed_operations() {
         ("Draw1Control", PpcLegacyControlOperation::DrawOneControl),
         ("FindControl", PpcLegacyControlOperation::FindControl),
         ("GetControlMaximum", PpcLegacyControlOperation::GetControlMaximum),
+        ("GetControlAction", PpcLegacyControlOperation::GetControlAction),
         ("GetControlReference", PpcLegacyControlOperation::GetControlReference),
         ("GetControlMinimum", PpcLegacyControlOperation::GetControlMinimum),
         ("GetControlTitle", PpcLegacyControlOperation::GetControlTitle),
@@ -711,6 +712,7 @@ fn legacy_control_imports_pre_resolve_to_typed_operations() {
         ("MoveControl", PpcLegacyControlOperation::MoveControl),
         ("NewControl", PpcLegacyControlOperation::NewControl),
         ("SetControlMaximum", PpcLegacyControlOperation::SetControlMaximum),
+        ("SetControlAction", PpcLegacyControlOperation::SetControlAction),
         ("SetControlReference", PpcLegacyControlOperation::SetControlReference),
         ("SetControlMinimum", PpcLegacyControlOperation::SetControlMinimum),
         ("ShowControl", PpcLegacyControlOperation::ShowControl),
@@ -723,6 +725,49 @@ fn legacy_control_imports_pre_resolve_to_typed_operations() {
             PpcImportDispatcherTarget::LegacyControl(operation),
         );
     }
+}
+
+#[test]
+fn control_action_imports_update_and_read_the_classic_control_record() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"SetControlAction")).unwrap();
+    let handle = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        4,
+        true,
+    );
+    let record = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        PPC_CONTROL_RECORD_SIZE,
+        true,
+    );
+    loaded.memory.write_u32_be(handle, record).unwrap();
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = 0x0012_3450;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.memory.read_u32_be(record + PPC_CONTROL_ACTION_OFFSET),
+        Some(0x0012_3450)
+    );
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target =
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlAction);
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = 0;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0x0012_3450);
 }
 
 #[test]

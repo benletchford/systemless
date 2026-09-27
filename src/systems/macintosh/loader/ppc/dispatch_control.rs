@@ -537,6 +537,12 @@ pub(super) fn ppc_dispatch_legacy_control(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcLegacyControlOperation::GetControlAction => {
+            let action = ppc_control_ptr(memory, cpu.gpr[3])
+                .and_then(|control| memory.read_u32_be(control + PPC_CONTROL_ACTION_OFFSET))
+                .unwrap_or(0);
+            Some(PpcImportAction::Return(action))
+        }
         PpcLegacyControlOperation::SetControlMinimum
         | PpcLegacyControlOperation::SetControlMaximum => {
             if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
@@ -564,6 +570,12 @@ pub(super) fn ppc_dispatch_legacy_control(
             if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
                 let _ = memory
                     .write_u32_be(control.wrapping_add(PPC_CONTROL_REF_CON_OFFSET), cpu.gpr[4]);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcLegacyControlOperation::SetControlAction => {
+            if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
+                let _ = memory.write_u32_be(control + PPC_CONTROL_ACTION_OFFSET, cpu.gpr[4]);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -659,7 +671,7 @@ pub(super) fn ppc_dispatch_legacy_control(
             // -1 selects contrlAction; a second -1 invokes the popup CDEF.
             let action_proc = if cpu.gpr[5] == u32::MAX {
                 ppc_control_ptr(memory, cpu.gpr[3])
-                    .and_then(|control| memory.read_u32_be(control + 32))
+                    .and_then(|control| memory.read_u32_be(control + PPC_CONTROL_ACTION_OFFSET))
                     .unwrap_or(0)
             } else {
                 cpu.gpr[5]

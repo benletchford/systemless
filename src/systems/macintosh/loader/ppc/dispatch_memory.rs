@@ -41,6 +41,11 @@ pub(super) fn dispatch_memory_import(
             // for the process lifetime, so no page pin is required.
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
+        PpcImportDispatcherTarget::UnholdMemory => {
+            // UnholdMemory (Ptr, Size): OSErr. Guest pages are backed by
+            // resident process memory, so releasing a pin is a no-op.
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
         PpcImportDispatcherTarget::NewPtr { clear } => {
             let size = cpu.gpr[3];
             let ptr = process_memory_manager.new_native_ptr(memory, size, clear);
@@ -337,33 +342,40 @@ pub(super) fn dispatch_memory_import(
             }
             Some(PpcImportAction::Return(handle))
         }
-        PpcImportDispatcherTarget::DisposeHandle => {
+        PpcImportDispatcherTarget::TempDisposeHandle => {
+            // TempDisposeHandle(Handle, OSErr *): dispose like DisposeHandle,
+            // then report MemError through the caller-owned result pointer.
             let handle = cpu.gpr[3];
-            let disposed =
-                process_memory_manager.dispose_process_handle_from_native_import(memory, handle);
-            ppc_apply_process_native_allocator(
-                process_memory_manager,
+            let result_code_ptr = cpu.gpr[4];
+            ppc_dispose_handle(
+                handle,
                 memory,
+                process_memory_manager,
                 heap_cursor,
                 last_mem_error,
+                handles,
+                aliases,
+                vfs_resources,
+                toolbox_startup,
             );
-            if disposed {
-                handles.retain(|record| record.handle != handle);
+            if result_code_ptr != 0 {
+                let _ = memory.write_u16_be(result_code_ptr, *last_mem_error as u16);
             }
-            if disposed {
-                toolbox_startup
-                    .indexed_screen_ctables
-                    .retain(|pixmap_handle, ctable_handle| {
-                        *pixmap_handle != handle && *ctable_handle != handle
-                    });
-                aliases.retain(|record| record.handle != handle);
-                for resource in vfs_resources
-                    .iter_mut()
-                    .filter(|record| record.handle == handle)
-                {
-                    resource.handle = 0;
-                }
-            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::DisposeHandle => {
+            let handle = cpu.gpr[3];
+            ppc_dispose_handle(
+                handle,
+                memory,
+                process_memory_manager,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                aliases,
+                vfs_resources,
+                toolbox_startup,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::EmptyHandle => {
@@ -616,5 +628,33 @@ pub(super) fn dispatch_memory_import(
             Some(PpcImportAction::Return(ppc_i16_result(*last_mem_error)))
         }
         _ => None,
+    }
+}
+
+/// Dispose a handle and drop every loader record that still names it.
+#[allow(clippy::too_many_arguments)]
+fn ppc_dispose_handle(
+    handle: u32,
+    memory: &mut PpcSectionMem,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    aliases: &mut Vec<PpcAliasRecord>,
+    vfs_resources: &mut [PpcVfsResourceRecord],
+    toolbox_startup: &mut PpcToolboxStartupState,
+) {
+    let disposed = process_memory_manager.dispose_process_handle_from_native_import(memory, handle);
+    ppc_apply_process_native_allocator(process_memory_manager, memory, heap_cursor, last_mem_error);
+    if !disposed {
+        return;
+    }
+    handles.retain(|record| record.handle != handle);
+    toolbox_startup
+        .indexed_screen_ctables
+        .retain(|pixmap_handle, ctable_handle| *pixmap_handle != handle && *ctable_handle != handle);
+    aliases.retain(|record| record.handle != handle);
+    for resource in vfs_resources.iter_mut().filter(|record| record.handle == handle) {
+        resource.handle = 0;
     }
 }

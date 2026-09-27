@@ -4623,6 +4623,69 @@ fn hle_import_runner_holds_resident_native_memory() {
 }
 
 #[test]
+fn hle_import_runner_unholds_resident_native_memory() {
+    let pef = synthetic_pef_with_import(b"UnholdMemory");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = PPC_DATA_BASE;
+    loaded.cpu.gpr[4] = 4096;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+}
+
+#[test]
+fn hle_import_runner_temp_dispose_handle_reports_result_code() {
+    let pef = synthetic_pef_with_import(b"TempDisposeHandle");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        b"data",
+    );
+    assert_ne!(handle, 0);
+    loaded.aliases.push(PpcAliasRecord {
+        handle,
+        target_vref: PPC_BOOT_VOLUME_REF_NUM,
+        target_dir_id: PPC_ROOT_DIR_ID,
+        target_name: b"Target".to_vec(),
+    });
+    let result_code_ptr = PPC_DATA_BASE;
+    loaded.memory.add_region(result_code_ptr, vec![0xff; 4]);
+    loaded.set_last_mem_error(PPC_MEM_FULL_ERR);
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = result_code_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.memory.read_u16_be(result_code_ptr),
+        Some(PPC_NO_ERR as u16)
+    );
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+    assert!(test_handle_records!(loaded)
+        .iter()
+        .all(|record| record.handle != handle));
+    assert!(loaded.aliases.is_empty());
+
+    // A nil result pointer is optional: the handle is already gone, and
+    // disposing it again behaves like DisposeHandle on a stale handle.
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+}
+
+#[test]
 fn system_arena_leaves_a_separate_resource_tail_after_max_block() {
     let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
     loaded.reserve_ppc_system_storage();
