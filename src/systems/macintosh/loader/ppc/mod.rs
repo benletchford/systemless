@@ -824,24 +824,7 @@ pub use files::{PpcDeleteByNameOperation, PpcParameterBlockCreateOperation};
 
 pub use memory::PpcLegacyMemoryUtilityOperation;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PpcLegacyWindowOperation {
-    BringToFront,
-    CalculateVisibleRegion,
-    CheckUpdate,
-    DisposeWindow,
-    DragWindow,
-    GetNewWindow,
-    GetWindowTitle,
-    GrowWindow,
-    HighlightWindow,
-    NewWindow,
-    SendBehind,
-    SetWindowTitle,
-    TrackBox,
-    TrackGoAway,
-    ZoomWindow,
-}
+pub use dispatch_window::PpcLegacyWindowOperation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcLegacyControlOperation {
