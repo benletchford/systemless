@@ -2089,6 +2089,8 @@ pub enum PpcImportDispatcherTarget {
     NewRoutineDescriptor,
     NewIOCompletionUPP,
     DisposeIOCompletionUPP,
+    NewControlUserPaneDrawUPP,
+    DisposeControlUserPaneDrawUPP,
     NewFatRoutineDescriptor,
     DisposeRoutineDescriptor,
     CallUniversalProc,
@@ -13081,6 +13083,12 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "DisposeIOCompletionUPP") => {
             PpcImportDispatcherTarget::DisposeIOCompletionUPP
         }
+        ("InterfaceLib", "NewControlUserPaneDrawUPP") => {
+            PpcImportDispatcherTarget::NewControlUserPaneDrawUPP
+        }
+        ("InterfaceLib", "DisposeControlUserPaneDrawUPP") => {
+            PpcImportDispatcherTarget::DisposeControlUserPaneDrawUPP
+        }
         ("InterfaceLib", "NewFatRoutineDescriptor") => {
             PpcImportDispatcherTarget::NewFatRoutineDescriptor
         }
@@ -16110,6 +16118,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         PpcImportDispatcherTarget::NewRoutineDescriptor
         | PpcImportDispatcherTarget::NewIOCompletionUPP
         | PpcImportDispatcherTarget::DisposeIOCompletionUPP
+        | PpcImportDispatcherTarget::NewControlUserPaneDrawUPP
+        | PpcImportDispatcherTarget::DisposeControlUserPaneDrawUPP
         | PpcImportDispatcherTarget::NewFatRoutineDescriptor
         | PpcImportDispatcherTarget::DisposeRoutineDescriptor
         | PpcImportDispatcherTarget::CallUniversalProc
