@@ -287,6 +287,19 @@ pub(crate) trait CopyBitsMemory {
         }
         self.write_copy_row(address, &row)
     }
+    /// Copy whole rows `(source, destination)` of `row_len` bytes, whose
+    /// source pixels were read into `pixels`, carrying retained text straight
+    /// from the source, when the memory can do so without the per-pixel
+    /// detail snapshot. Returns false, having written nothing, otherwise.
+    fn copy_rows_with_detail(
+        &mut self,
+        _rows: &[(u32, u32)],
+        _pixels: &[u8],
+        _row_len: usize,
+        _palette: Option<&[u8; 256]>,
+    ) -> bool {
+        false
+    }
 }
 
 impl CopyBitsMemory for GuestAddressSpace {
@@ -330,6 +343,15 @@ impl CopyBitsMemory for GuestAddressSpace {
 }
 
 impl CopyBitsMemory for MacMemoryBus {
+    fn copy_rows_with_detail(
+        &mut self,
+        rows: &[(u32, u32)],
+        pixels: &[u8],
+        row_len: usize,
+        palette: Option<&[u8; 256]>,
+    ) -> bool {
+        self.copy_offscreen_rows_to_screen(rows, pixels, row_len, palette)
+    }
     fn capture_copy_detail(
         &self,
         address: u32,
@@ -1096,6 +1118,11 @@ impl RowCopy<'_> {
             if memory.read_copy_row(*source, row).is_none() {
                 return RowCopyOutcome::ReadOrGeometryFailure;
             }
+        }
+        if matches!(depth, 8 | 16 | 32)
+            && memory.copy_rows_with_detail(&addresses, &pixels, row_len, self.palette)
+        {
+            return RowCopyOutcome::Completed;
         }
         let mut pixels: SavedPixels = pixels.into();
         if matches!(depth, 8 | 16 | 32) {
