@@ -467,6 +467,20 @@ fn encode_text_face_style(face: i16) -> u16 {
     ((face as u16) & 0x00FF) << 8
 }
 
+/// ScrollRect geometry for `scroll_color_rows`.
+struct ScrollRows {
+    base: u32,
+    row_bytes: u32,
+    /// The rect's (row, byte column) within the pixmap.
+    origin: (u32, u32),
+    /// The rect's top-left in port coordinates, for tiling the pattern.
+    canvas: (i16, i16),
+    /// Width (bytes) and height of the rect.
+    size: (i32, i32),
+    delta: (i16, i16),
+    background: [u8; 8],
+}
+
 impl super::TrapDispatcher {
     fn dispose_color_compound_handle(&mut self, bus: &mut MacMemoryBus, handle: u32) {
         if bus.get_alloc_size(handle) != Some(4) {
@@ -5903,124 +5917,142 @@ impl super::TrapDispatcher {
                     }
                 }
 
-                let mut scroll_pixels: crate::memory::SavedPixels = buf.into();
-                if is_color {
-                    for row in 0..hu {
-                        let addr = base_addr
-                            + ((top - port_top) as u32 + row) * row_bytes
-                            + (left - port_left) as u32;
-                        bus.capture_pixel_detail(
-                            &mut scroll_pixels,
-                            (row * pixel_row_bytes) as usize,
-                            addr,
-                            pixel_row_bytes as usize,
-                        );
-                    }
-                }
-                let buf = scroll_pixels;
-
-                // BackPat updates the dispatcher-level cache (self.bk_pat).
-                // sync_port_draw_state mirrors this into classic GrafPort
-                // memory (+32) for caller visibility, but the cache is the
-                // canonical source used by drawing routines.
-                let bg_pat = self.bk_pat;
-
-                // Write pixels back shifted by (dh, dv). 8bpp uses per-byte
-                // iteration (each byte = one pixel). 1bpp uses per-pixel
-                // iteration so sub-byte horizontal shifts are bit-precise.
-                if is_color {
-                    for dst_row in 0..h {
-                        let src_row = dst_row - dv as i32;
-                        let dst_canvas_y = (top as i32 + dst_row) as usize;
-                        for dst_col_byte in 0..pixel_row_bytes as i32 {
-                            let src_col = dst_col_byte - dh as i32;
-                            let pixel_byte =
-                                if src_row >= 0 && src_row < h && src_col >= 0 && src_col < w {
-                                    buf[(src_row as u32 * pixel_row_bytes + src_col as u32)
-                                        as usize]
-                                } else {
-                                    // Exposed area uses port.bgPat. 8bpp:
-                                    // fg_idx=255 for pattern bit set, bg_idx=0
-                                    // otherwise — matches the typical 8bpp CLUT
-                                    // black/white layout.
-                                    let canvas_x = (left + dst_col_byte as i16) as usize;
-                                    let source_is_black =
-                                        bg_pat[dst_canvas_y & 7] & (1 << (7 - (canvas_x & 7))) != 0;
-                                    if source_is_black {
-                                        0xFF
-                                    } else {
-                                        0x00
-                                    }
-                                };
-                            let dy = (top - port_top) as u32 + dst_row as u32;
-                            let dx = (left - port_left) as u32 + dst_col_byte as u32;
-                            let addr = base_addr + dy * row_bytes + dx;
-                            let old = bus.read_byte(addr);
-                            if old != pixel_byte {
-                                self.debug_scroll_rect_changed_byte_count =
-                                    self.debug_scroll_rect_changed_byte_count.saturating_add(1);
-                                self.debug_scroll_rect_last_changed_bytes =
-                                    self.debug_scroll_rect_last_changed_bytes.saturating_add(1);
-                            }
-                            if src_row >= 0 && src_row < h && src_col >= 0 && src_col < w {
-                                bus.copy_saved_pixel(
-                                    addr,
-                                    &buf,
-                                    (src_row as u32 * pixel_row_bytes + src_col as u32) as usize,
-                                    |index| index,
-                                );
-                            } else {
-                                bus.write_byte(addr, pixel_byte);
-                            }
+                // Colour ports move whole row spans, carrying their retained
+                // text row by row; the exposed strip is written per byte.
+                let scrolled = is_color
+                    && self.scroll_color_rows(
+                        bus,
+                        ScrollRows {
+                            base: base_addr,
+                            row_bytes,
+                            origin: ((top - port_top) as u32, (left - port_left) as u32),
+                            canvas: (top, left),
+                            size: (w, h),
+                            delta: (dh, dv),
+                            background: self.bk_pat,
+                        },
+                        &buf,
+                    );
+                if !scrolled {
+                    let mut scroll_pixels: crate::memory::SavedPixels = buf.into();
+                    if is_color {
+                        for row in 0..hu {
+                            let addr = base_addr
+                                + ((top - port_top) as u32 + row) * row_bytes
+                                + (left - port_left) as u32;
+                            bus.capture_pixel_detail(
+                                &mut scroll_pixels,
+                                (row * pixel_row_bytes) as usize,
+                                addr,
+                                pixel_row_bytes as usize,
+                            );
                         }
                     }
-                } else {
-                    for dst_row in 0..h {
-                        let src_row = dst_row - dv as i32;
-                        let dst_canvas_y = (top as i32 + dst_row) as usize;
-                        for dst_col in 0..w {
-                            let src_col = dst_col - dh as i32;
-                            let pixel_bit =
-                                if src_row >= 0 && src_row < h && src_col >= 0 && src_col < w {
-                                    // Shift the bit lookup by `left & 7` so that
-                                    // src_col=0 maps to source pixel `left`, not
-                                    // to the byte-aligned floor.
-                                    let src_pixel_in_row = left_bit_offset_in_buf + src_col as u32;
-                                    let src_byte_in_row = src_pixel_in_row / 8;
-                                    let src_bit_in_byte = 7 - (src_pixel_in_row & 7) as u8;
-                                    let buf_byte = buf[(src_row as u32 * pixel_row_bytes
-                                        + src_byte_in_row)
-                                        as usize];
-                                    (buf_byte >> src_bit_in_byte) & 1
-                                } else {
-                                    // Exposed area fills with the port's bgPat
-                                    // (per IM:I I-178). The pattern is tiled in
-                                    // CANVAS coordinates so adjacent scrolls line
-                                    // up.
-                                    let canvas_x = (left + dst_col as i16) as usize;
-                                    if bg_pat[dst_canvas_y & 7] & (1 << (7 - (canvas_x & 7))) != 0 {
-                                        1
+                    let buf = scroll_pixels;
+
+                    // BackPat updates the dispatcher-level cache (self.bk_pat).
+                    // sync_port_draw_state mirrors this into classic GrafPort
+                    // memory (+32) for caller visibility, but the cache is the
+                    // canonical source used by drawing routines.
+                    let bg_pat = self.bk_pat;
+
+                    // Write pixels back shifted by (dh, dv). 8bpp uses per-byte
+                    // iteration (each byte = one pixel). 1bpp uses per-pixel
+                    // iteration so sub-byte horizontal shifts are bit-precise.
+                    if is_color {
+                        for dst_row in 0..h {
+                            let src_row = dst_row - dv as i32;
+                            let dst_canvas_y = (top as i32 + dst_row) as usize;
+                            for dst_col_byte in 0..pixel_row_bytes as i32 {
+                                let src_col = dst_col_byte - dh as i32;
+                                let pixel_byte =
+                                    if src_row >= 0 && src_row < h && src_col >= 0 && src_col < w {
+                                        buf[(src_row as u32 * pixel_row_bytes + src_col as u32)
+                                            as usize]
                                     } else {
-                                        0
-                                    }
-                                };
-                            let dy = (top - port_top) as u32 + dst_row as u32;
-                            let dst_pixel_x = (left - port_left) as u32 + dst_col as u32;
-                            let dst_byte_addr = base_addr + dy * row_bytes + dst_pixel_x / 8;
-                            let dst_bit = 7 - (dst_pixel_x & 7) as u8;
-                            let cur = bus.read_byte(dst_byte_addr);
-                            let new = if pixel_bit != 0 {
-                                cur | (1 << dst_bit)
-                            } else {
-                                cur & !(1u8 << dst_bit)
-                            };
-                            if cur != new {
-                                self.debug_scroll_rect_changed_byte_count =
-                                    self.debug_scroll_rect_changed_byte_count.saturating_add(1);
-                                self.debug_scroll_rect_last_changed_bytes =
-                                    self.debug_scroll_rect_last_changed_bytes.saturating_add(1);
+                                        // Exposed area uses port.bgPat. 8bpp:
+                                        // fg_idx=255 for pattern bit set, bg_idx=0
+                                        // otherwise — matches the typical 8bpp CLUT
+                                        // black/white layout.
+                                        let canvas_x = (left + dst_col_byte as i16) as usize;
+                                        let source_is_black =
+                                            bg_pat[dst_canvas_y & 7] & (1 << (7 - (canvas_x & 7))) != 0;
+                                        if source_is_black {
+                                            0xFF
+                                        } else {
+                                            0x00
+                                        }
+                                    };
+                                let dy = (top - port_top) as u32 + dst_row as u32;
+                                let dx = (left - port_left) as u32 + dst_col_byte as u32;
+                                let addr = base_addr + dy * row_bytes + dx;
+                                let old = bus.read_byte(addr);
+                                if old != pixel_byte {
+                                    self.debug_scroll_rect_changed_byte_count =
+                                        self.debug_scroll_rect_changed_byte_count.saturating_add(1);
+                                    self.debug_scroll_rect_last_changed_bytes =
+                                        self.debug_scroll_rect_last_changed_bytes.saturating_add(1);
+                                }
+                                if src_row >= 0 && src_row < h && src_col >= 0 && src_col < w {
+                                    bus.copy_saved_pixel(
+                                        addr,
+                                        &buf,
+                                        (src_row as u32 * pixel_row_bytes + src_col as u32) as usize,
+                                        |index| index,
+                                    );
+                                } else {
+                                    bus.write_byte(addr, pixel_byte);
+                                }
                             }
-                            bus.write_byte(dst_byte_addr, new);
+                        }
+                    } else {
+                        for dst_row in 0..h {
+                            let src_row = dst_row - dv as i32;
+                            let dst_canvas_y = (top as i32 + dst_row) as usize;
+                            for dst_col in 0..w {
+                                let src_col = dst_col - dh as i32;
+                                let pixel_bit =
+                                    if src_row >= 0 && src_row < h && src_col >= 0 && src_col < w {
+                                        // Shift the bit lookup by `left & 7` so that
+                                        // src_col=0 maps to source pixel `left`, not
+                                        // to the byte-aligned floor.
+                                        let src_pixel_in_row = left_bit_offset_in_buf + src_col as u32;
+                                        let src_byte_in_row = src_pixel_in_row / 8;
+                                        let src_bit_in_byte = 7 - (src_pixel_in_row & 7) as u8;
+                                        let buf_byte = buf[(src_row as u32 * pixel_row_bytes
+                                            + src_byte_in_row)
+                                            as usize];
+                                        (buf_byte >> src_bit_in_byte) & 1
+                                    } else {
+                                        // Exposed area fills with the port's bgPat
+                                        // (per IM:I I-178). The pattern is tiled in
+                                        // CANVAS coordinates so adjacent scrolls line
+                                        // up.
+                                        let canvas_x = (left + dst_col as i16) as usize;
+                                        if bg_pat[dst_canvas_y & 7] & (1 << (7 - (canvas_x & 7))) != 0 {
+                                            1
+                                        } else {
+                                            0
+                                        }
+                                    };
+                                let dy = (top - port_top) as u32 + dst_row as u32;
+                                let dst_pixel_x = (left - port_left) as u32 + dst_col as u32;
+                                let dst_byte_addr = base_addr + dy * row_bytes + dst_pixel_x / 8;
+                                let dst_bit = 7 - (dst_pixel_x & 7) as u8;
+                                let cur = bus.read_byte(dst_byte_addr);
+                                let new = if pixel_bit != 0 {
+                                    cur | (1 << dst_bit)
+                                } else {
+                                    cur & !(1u8 << dst_bit)
+                                };
+                                if cur != new {
+                                    self.debug_scroll_rect_changed_byte_count =
+                                        self.debug_scroll_rect_changed_byte_count.saturating_add(1);
+                                    self.debug_scroll_rect_last_changed_bytes =
+                                        self.debug_scroll_rect_last_changed_bytes.saturating_add(1);
+                                }
+                                bus.write_byte(dst_byte_addr, new);
+                            }
                         }
                     }
                 }
@@ -18484,6 +18516,85 @@ impl super::TrapDispatcher {
         } else {
             0
         }
+    }
+
+    /// ScrollRect's move for a colour port, a row span at a time. The moved
+    /// spans go through `copy_detail_rows`, which carries retained text as
+    /// the per-pixel copy would (it snapshots every source row first, so the
+    /// overlap is exact in any direction); the exposed strip then takes the
+    /// background pattern byte by byte. `pixels` is the rect as read before
+    /// the scroll, `size.0` bytes per row. Returns false, having written
+    /// nothing, when the row copy declines.
+    fn scroll_color_rows(&mut self, bus: &mut MacMemoryBus, scroll: ScrollRows, pixels: &[u8]) -> bool {
+        let ScrollRows {
+            base,
+            row_bytes,
+            origin: (y0, x0),
+            canvas: (top, left),
+            size: (w, h),
+            delta: (dh, dv),
+            background,
+        } = scroll;
+        let (dh, dv) = (i32::from(dh), i32::from(dv));
+        let moved_len = (w - dh.abs()).max(0) as usize;
+        let (src_col, dst_col) = if dh >= 0 { (0, dh) } else { (-dh, 0) };
+        let address = |row: i32, col: i32| base + (y0 + row as u32) * row_bytes + x0 + col as u32;
+        let mut rows = Vec::new();
+        let mut moved = Vec::new();
+        if moved_len > 0 {
+            for dst_row in 0..h {
+                let src_row = dst_row - dv;
+                if (0..h).contains(&src_row) {
+                    rows.push((address(src_row, src_col), address(dst_row, dst_col)));
+                    moved.extend_from_slice(&pixels[(src_row * w + src_col) as usize..][..moved_len]);
+                }
+            }
+        }
+        if rows.is_empty() {
+            return false;
+        }
+        let mut changed: u64 = rows
+            .iter()
+            .zip(moved.chunks_exact(moved_len))
+            .map(|(&(_, to), new)| {
+                let old = bus.read_bytes(to, moved_len);
+                old.iter().zip(new).filter(|(old, new)| old != new).count() as u64
+            })
+            .sum();
+        if !bus.copy_detail_rows(&rows, &moved, moved_len, None) {
+            if bus.presentation.is_some() {
+                return false;
+            }
+            // Without retained text the moved spans are plain stores.
+            for (&(_, to), row) in rows.iter().zip(moved.chunks_exact(moved_len)) {
+                bus.write_bytes(to, row);
+            }
+        }
+        for dst_row in 0..h {
+            let src_row = dst_row - dv;
+            let canvas_y = (i32::from(top) + dst_row) as usize;
+            for dst_col_byte in 0..w {
+                if (0..h).contains(&src_row) && (0..w).contains(&(dst_col_byte - dh)) {
+                    continue;
+                }
+                let canvas_x = (left + dst_col_byte as i16) as usize;
+                let byte = if background[canvas_y & 7] & (1 << (7 - (canvas_x & 7))) != 0 {
+                    0xFF
+                } else {
+                    0x00
+                };
+                let addr = address(dst_row, dst_col_byte);
+                if bus.read_byte(addr) != byte {
+                    changed += 1;
+                }
+                bus.write_byte(addr, byte);
+            }
+        }
+        self.debug_scroll_rect_changed_byte_count =
+            self.debug_scroll_rect_changed_byte_count.saturating_add(changed);
+        self.debug_scroll_rect_last_changed_bytes =
+            self.debug_scroll_rect_last_changed_bytes.saturating_add(changed as _);
+        true
     }
 
     pub(super) fn offscreen_pixmap_base_ptr(bus: &MacMemoryBus, pm_ptr: u32) -> u32 {

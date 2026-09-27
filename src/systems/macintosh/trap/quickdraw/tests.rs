@@ -6881,6 +6881,75 @@
     }
 
     #[test]
+    fn scroll_rect_rows_match_the_per_pixel_scroll() {
+        // (top, left, bottom, right) within a 16x16 8-bit screen.
+        let (top, left, bottom, right) = (1i16, 2i16, 15i16, 14i16);
+        let (w, h) = ((right - left) as i32, (bottom - top) as i32);
+        for (dh, dv) in [(0i16, 1i16), (0, -1), (1, 0), (-1, 0), (2, -1), (-3, 2), (0, 20), (13, 0)] {
+            let setup = || {
+                let (mut d, mut cpu, mut bus) = setup_with_port();
+                let base = bus.alloc(256);
+                d.screen_mode = (base, 16, 16, 16, 8);
+                bus.write_long(0x0824, base);
+                for i in 0..256u32 {
+                    bus.write_byte(base + i, (i * 13 % 251) as u8);
+                }
+                let palette = std::array::from_fn(|i| [255 - i as u8; 3]);
+                bus.enable_outline_presentation(d.screen_mode, palette, 4);
+                let port = *d.current_port;
+                install_row_path_test_port(&mut d, &mut cpu, &mut bus, port, base, 0, 0);
+                TrapDispatcher::fb_draw_string(&mut bus, base, 16, 8, 16, 16, 3, 10, "ab", 3, 9);
+                TrapDispatcher::fb_draw_string(&mut bus, base, 16, 8, 16, 16, 6, 5, "c", 3, 9);
+                let rect = bus.alloc(8);
+                write_rect(&mut bus, rect, top, left, bottom, right);
+                (d, cpu, bus, base, rect)
+            };
+            let (mut d, mut cpu, mut direct, base, rect) = setup();
+            let pattern = d.bk_pat;
+            cpu.write_reg(Register::A7, TEST_SP);
+            direct.write_long(TEST_SP, 0);
+            direct.write_word(TEST_SP + 4, dv as u16);
+            direct.write_word(TEST_SP + 6, dh as u16);
+            direct.write_long(TEST_SP + 8, rect);
+            assert!(d.dispatch_quickdraw(true, 0x0EF, &mut cpu, &mut direct).unwrap().is_ok());
+            // The per-pixel scroll ScrollRect used before the row path.
+            let (_, _, mut oracle, _, _) = setup();
+            let address = |row: i32, col: i32| base + (top as i32 + row) as u32 * 16 + (left as i32 + col) as u32;
+            let mut raw = Vec::new();
+            for row in 0..h {
+                raw.extend(oracle.read_bytes(address(row, 0), w as usize));
+            }
+            let mut saved: crate::memory::SavedPixels = raw.into();
+            for row in 0..h {
+                oracle.capture_pixel_detail(&mut saved, (row * w) as usize, address(row, 0), w as usize);
+            }
+            for row in 0..h {
+                for col in 0..w {
+                    let (src_row, src_col) = (row - dv as i32, col - dh as i32);
+                    if (0..h).contains(&src_row) && (0..w).contains(&src_col) {
+                        oracle.copy_saved_pixel(address(row, col), &saved, (src_row * w + src_col) as usize, |index| index);
+                    } else {
+                        let canvas_y = (top as i32 + row) as usize;
+                        let canvas_x = (left + col as i16) as usize;
+                        let black = pattern[canvas_y & 7] & (1 << (7 - (canvas_x & 7))) != 0;
+                        oracle.write_byte(address(row, col), if black { 0xFF } else { 0x00 });
+                    }
+                }
+            }
+            let context = format!("dh {dh} dv {dv}");
+            assert_eq!(direct.read_bytes(base, 256), oracle.read_bytes(base, 256), "{context}: RAM");
+            assert_eq!(direct.outline_presentation_rgb(), oracle.outline_presentation_rgb(), "{context}: rendered");
+            for row in 0..16 {
+                assert_eq!(
+                    direct.save_pixel_bytes(base + row * 16, 16),
+                    oracle.save_pixel_bytes(base + row * 16, 16),
+                    "{context}: detail row {row}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn outline_detail_survives_copybits_scrollrect_and_invertrect() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let base = bus.alloc(256);
