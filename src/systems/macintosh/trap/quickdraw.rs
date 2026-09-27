@@ -7335,14 +7335,12 @@ impl super::TrapDispatcher {
                                 requested_right,
                             )
                         };
-                        // QuickDraw's offscreen PixMaps use 16-byte scanline
-                        // alignment plus one padding quantum. Some classic
-                        // image libraries persist that storage stride and
-                        // stream a complete scanline into a GWorld, so
-                        // exposing only the visible-byte minimum corrupts
-                        // every following row.
+                        // Keep offscreen scanlines 16-byte aligned without
+                        // adding padding when the visible width is already
+                        // aligned. Applications can copy complete scanlines
+                        // directly between GWorlds and the screen.
                         let visible_row_bytes = (width * depth).div_ceil(8);
-                        let row_bytes = (visible_row_bytes / 16 + 1) * 16;
+                        let row_bytes = visible_row_bytes.div_ceil(16) * 16;
 
                         // IM:VI 21-13: noNewDevice uses the supplied GDevice's
                         // depth and color table; custom cTable requires an
@@ -7627,7 +7625,7 @@ impl super::TrapDispatcher {
                         let new_height = ((new_bottom as i32) - (new_top as i32)).max(1) as u32;
 
                         let visible_row_bytes = (new_width * depth).div_ceil(8);
-                        let new_row_bytes = (visible_row_bytes / 16 + 1) * 16;
+                        let new_row_bytes = visible_row_bytes.div_ceil(16) * 16;
                         let new_buf_size = new_row_bytes * new_height;
 
                         let mut result_flags: u32 = 0;
@@ -19690,8 +19688,8 @@ impl super::TrapDispatcher {
             cpu,
             bus,
             depth,
-            REFERENCE_MACHINE_PROFILE.screen_width,
-            REFERENCE_MACHINE_PROFILE.screen_height,
+            self.native_screen_geometry.0,
+            self.native_screen_geometry.1,
             is_color,
         )
     }
@@ -19735,9 +19733,17 @@ impl super::TrapDispatcher {
         height: u16,
         is_color: bool,
     ) -> bool {
-        let Some(row_bytes) = Self::row_bytes_for_depth(width, depth) else {
+        let Some(mut row_bytes) = Self::row_bytes_for_depth(width, depth) else {
             return false;
         };
+        // A mode switch at the same depth can retain the display device's
+        // backing pitch even when fewer pixels are visible. Preserve the
+        // existing stride so direct framebuffer writers and ScreenBits agree.
+        if depth == self.screen_mode.4
+            && (width, height) == self.native_screen_geometry
+        {
+            row_bytes = row_bytes.max(self.screen_mode.1);
+        }
         let ram_size = bus.ram_size();
         let color_screen_base = ram_size - crate::memory::bus::display_reservation_bytes();
         let Some((_, entry_count)) = Self::standard_screen_depth_clut(depth, is_color) else {

@@ -2388,6 +2388,19 @@ impl TrapDispatcher {
         &self.sound_manager
     }
 
+    /// Reset captured double-buffer sound diagnostics between playback probes.
+    pub fn reset_sound_debug_double_buffer_stats(&self) {
+        self.sound_manager.with_mut(|manager| {
+            for channel in &mut manager.channels {
+                channel.debug_double_buffer_loads = 0;
+                channel.debug_double_buffer_non_silent_loads = 0;
+                channel.debug_double_buffer_frames_loaded = 0;
+                channel.debug_double_buffer_non_silent_frames = 0;
+                channel.debug_double_buffer_captured_samples.clear();
+            }
+        });
+    }
+
     /// Add one process-owned Sound Manager channel without exposing the
     /// manager's shared mutable state.
     pub fn add_sound_channel(&self, channel: crate::sound::SndChannel) {

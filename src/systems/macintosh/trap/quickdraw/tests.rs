@@ -18502,6 +18502,22 @@
     }
 
     #[test]
+    fn set_depth_preserves_configured_native_screen_geometry() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        dispatcher.native_screen_geometry = (640, 480);
+        let screen_base = bus.read_long(crate::memory::globals::addr::SCRN_BASE);
+        dispatcher.set_screen_mode_for_test(screen_base, 656, 640, 480, 8);
+
+        assert!(dispatcher.do_setdepth(&mut cpu, &mut bus, 8));
+        assert_eq!(dispatcher.screen_mode.1, 656);
+        assert_eq!(dispatcher.screen_mode.2, 640);
+        assert_eq!(dispatcher.screen_mode.3, 480);
+        assert_eq!(bus.read_word(crate::memory::globals::addr::SCREEN_ROW), 656);
+        assert_eq!(bus.read_word(crate::memory::globals::addr::SCREEN_BITS + 10), 480);
+        assert_eq!(bus.read_word(crate::memory::globals::addr::SCREEN_BITS + 12), 640);
+    }
+
+    #[test]
     fn set_depth_grows_main_color_table_before_writing_palette() {
         for (initial_depth, target_depth) in [(1, 4), (1, 8), (4, 8)] {
             let (mut d, mut cpu, mut bus) = setup();
@@ -20249,7 +20265,7 @@
         let gworld = bus.read_long(gworld_ptr_ptr);
         let pixmap_handle = bus.read_long(gworld + 2);
         let pixmap = bus.read_long(pixmap_handle);
-        assert_eq!(bus.read_word(pixmap + 4) & 0x3FFF, 656);
+        assert_eq!(bus.read_word(pixmap + 4) & 0x3FFF, 640);
     }
 
     #[test]
