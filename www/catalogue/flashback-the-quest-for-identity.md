@@ -9,6 +9,7 @@ year: 1995
 architectures:
 - 68k
 default_architecture: 68k
+launch_enabled: true
 category: Arcade
 compatibility:
   status: boots
@@ -21,9 +22,10 @@ compatibility:
       Deterministic run of the unchanged 68K Flashback Demo archive at 800 by 600.
       The publisher splash and title menu render. Space selects Start, and a later key
       press skips the opening cinematic to the first jungle scene. Holding Right moves
-      Conrad across the scene. A same-origin browser preview rendered the MacPlay
-      splash and menu bar, but a subsequent black transition did not reach the title
-      menu during the preview. Browser launch remains disabled.
+      Conrad across the scene. A release-mode Chrome 151 preview on 2026-09-28
+      loaded the same archive once, rendered the title, accepted Start and
+      cutscene-skip keys, and reached the first jungle gameplay scene at about
+      60 host frames and 59 guest ticks per second.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/2610
 artifacts:
@@ -73,6 +75,7 @@ artifacts:
 references:
 - https://classicmacdemos.com/flashback-the-quest-for-identity
 - https://github.com/benletchford/systemless/issues/2610
+- https://github.com/benletchford/systemless/issues/3143
 ---
 
 ## The jungle opening
@@ -86,5 +89,5 @@ limited portion of the game, rather than the commercial release.
 Systemless reaches the title menu and first jungle scene. Press any key to
 leave the publisher splash, select Start, then press a key during the opening
 cinematic to skip ahead. Use the arrow keys to move; Shift is the action key.
-The browser preview rendered the splash but did not establish interactive play,
-so browser launch remains disabled pending further testing.
+A release-mode browser preview reached the first jungle gameplay scene after
+Start and the opening sequence. Browser launch is enabled.
