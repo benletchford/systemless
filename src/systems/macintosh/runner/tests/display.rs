@@ -439,3 +439,71 @@ fn ppc_packed_front_buffers_sync_centered_pixels_with_process_color_state() {
         assert_eq!(pixel_at(DESTINATION_X + WIDTH), field_mask);
     }
 }
+
+#[test]
+fn ppc_host_sync_paints_the_matte_only_when_its_geometry_changes() {
+    const WIDTH: u32 = 640;
+    const HEIGHT: u32 = 480;
+    const ROW_BYTES: u32 = WIDTH * 2;
+
+    let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+    let mut ppc_app = app.ppc.take().expect("PPC app");
+    ppc_app
+        .memory
+        .add_region(PPC_HEAP_BASE, vec![0x7f; (ROW_BYTES * HEIGHT) as usize]);
+    ppc_app.set_heap_cursor(PPC_HEAP_BASE + ROW_BYTES * HEIGHT);
+    ppc_app.gworlds.push(PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: PPC_MAIN_GWORLD,
+        pixmap_handle: 0,
+        pixmap: 0,
+        base_addr: PPC_HEAP_BASE,
+        gdevice: PPC_MAIN_GDEVICE,
+        width: WIDTH,
+        height: HEIGHT,
+        depth: 16,
+        row_bytes: ROW_BYTES,
+        pixels_locked: false,
+        pixels_no_purge: false,
+    });
+    let mut runner = FixtureRunner::new(16 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.dispatcher.ensure_main_gdevice(&mut runner.bus);
+
+    runner.sync_ppc_front_buffer_to_host(&mut ppc_app);
+    let (base, _, canvas_width, _, _) = runner.dispatcher.screen_mode;
+    assert!(
+        u32::from(canvas_width) > WIDTH,
+        "the profile canvas must leave a matte around a 640x480 image"
+    );
+    assert_eq!(runner.bus.read_byte(base), 0, "matte painted on first sync");
+
+    // Nothing else writes the host mirror, so an unchanged matte is left
+    // alone rather than repainted on every sync.
+    runner.bus.write_byte(base, 0xab);
+    runner.sync_ppc_front_buffer_to_host(&mut ppc_app);
+    assert_eq!(runner.bus.read_byte(base), 0xab);
+
+    // An image the size of the canvas covers the whole mirror, so returning
+    // to the smaller image must paint its matte again.
+    let (_, _, _, canvas_height, _) = runner.dispatcher.screen_mode;
+    let full_row_bytes = u32::from(canvas_width) * 2;
+    let full_base = PPC_HEAP_BASE + ROW_BYTES * HEIGHT;
+    ppc_app.memory.add_region(
+        full_base,
+        vec![0x7f; (full_row_bytes * u32::from(canvas_height)) as usize],
+    );
+    let small = ppc_app.gworlds[0];
+    ppc_app.gworlds[0] = PpcGWorldRecord {
+        base_addr: full_base,
+        width: u32::from(canvas_width),
+        height: u32::from(canvas_height),
+        row_bytes: full_row_bytes,
+        ..small
+    };
+    runner.sync_ppc_front_buffer_to_host(&mut ppc_app);
+    assert_eq!(runner.bus.read_byte(runner.dispatcher.screen_mode.0), 0x7f);
+    ppc_app.gworlds[0] = small;
+    runner.sync_ppc_front_buffer_to_host(&mut ppc_app);
+    assert_eq!(runner.dispatcher.screen_mode.2, canvas_width);
+    assert_eq!(runner.bus.read_byte(runner.dispatcher.screen_mode.0), 0);
+}

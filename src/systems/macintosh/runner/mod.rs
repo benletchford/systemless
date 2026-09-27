@@ -271,6 +271,16 @@ const PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES: u64 = 250_000;
 // pp. 2-68–2-73, 2-146–2-148.
 const PPC_SOUND_DOUBLEBACK_CALLBACK_MAX_CYCLES: u64 = 5_000_000;
 
+/// The matte painted around a PowerPC front buffer on the host canvas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PpcHostMatte {
+    host_base: u32,
+    canvas: PpcFrontBuffer,
+    image_width: u32,
+    image_height: u32,
+    matte_byte: u8,
+}
+
 /// Result of charging one native execution slice against the runner's host
 /// cycle clock.
 ///
@@ -1720,6 +1730,10 @@ pub struct FixtureRunner {
     /// Owned host-side framebuffer mirror reused across PowerPC depth changes.
     ppc_host_mirror_base: u32,
     ppc_host_mirror_capacity: u32,
+    /// Canvas and image geometry plus matte byte of the matte last painted
+    /// around the PowerPC front buffer. Nothing else writes the host mirror,
+    /// so an unchanged matte is not repainted on every sync.
+    ppc_host_matte: Option<PpcHostMatte>,
     prefer_powerpc_executables: bool,
     installer_handoff_baseline: Option<BTreeSet<String>>,
     trace_buffer: std::collections::VecDeque<(u32, u16, u32, u32, u32, u32)>, // (PC, Op, A0, SP, A6, A5)
@@ -2000,6 +2014,7 @@ impl FixtureRunner {
             powerpc_screen_depth_override: None,
             ppc_host_indexed_ctab_handle: 0,
             ppc_host_mirror_base: 0,
+            ppc_host_matte: None,
             ppc_host_mirror_capacity: 0,
             prefer_powerpc_executables: false,
             installer_handoff_baseline: None,
@@ -9006,12 +9021,26 @@ impl FixtureRunner {
         let primary_destination_y = canvas_height.saturating_sub(primary_buffer.height) / 2;
         // Only the matte lies outside the incoming image. Clearing the image
         // itself would discard retained text on every host synchronization.
+        let matte = PpcHostMatte {
+            host_base,
+            canvas,
+            image_width: primary_buffer.width,
+            image_height: primary_buffer.height,
+            matte_byte,
+        };
         if primary_buffer.depth < 8 {
+            // Packed pixels share bytes with the matte, so the whole canvas
+            // is cleared before the rows are copied back in.
+            self.ppc_host_matte = None;
             self.bus.write_bytes(
                 host_base,
                 &vec![matte_byte; (canvas_row_bytes * canvas_height) as usize],
             );
-        } else if canvas_width != primary_buffer.width || canvas_height != primary_buffer.height {
+        } else if self.ppc_host_matte.replace(matte) != Some(matte)
+            && (canvas_width != primary_buffer.width || canvas_height != primary_buffer.height)
+        {
+            // The geometry is recorded even without a matte, so returning to
+            // an earlier geometry after a 1:1 canvas repaints its matte.
             let left_bytes = (primary_destination_x * primary_buffer.depth / 8) as usize;
             let right_byte = ((primary_destination_x + primary_buffer.width) * primary_buffer.depth)
                 .div_ceil(8) as usize;
