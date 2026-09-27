@@ -9,6 +9,7 @@ year: 1992
 architectures:
 - 68k
 default_architecture: 68k
+launch_enabled: true
 category: Puzzle
 compatibility:
   status: playable
@@ -20,6 +21,19 @@ compatibility:
     environment: "Deterministic headless replay of the unchanged Macintosh demo with the PBOpenWD directory-path fix in PR #3034. Opened Illusion Gateway, entered Figure Ground, and moved a connected tile group on the puzzle board. BasiliskII showed a low-memory alert before gameplay in the native test environment, so native parity and browser launch are not yet verified."
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3027
+  - date: "2026-09-28"
+    tester: Catalogue maintainer
+    systemless_version: 370e66f8c3b815d820fc24d0ac80ddc74f4ed486
+    architecture: 68k
+    environment: >-
+      Release-mode local browser preview in Chrome 151 with the unchanged
+      checksum-pinned demo. The worker runtime displayed Illusion Gateway,
+      accepted selection of Figure Ground, and visibly moved a connected tile
+      group after a browser mouse drag. Host presentation was about 60 FPS;
+      guest progress was about 43-45 ticks/sec, below the generic 50-tick
+      pacing-probe target. Native BasiliskII parity remains unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3128
 artifacts:
 - id: archive
   role: archive
@@ -83,5 +97,6 @@ between two boards to recreate the target arrangement. The demo also offers a
 noninteractive introduction to its other worlds.
 
 This is the original 68K Macintosh demonstration, not the retail game. A
-deterministic Systemless replay entered Figure Ground and moved a tile group.
-Browser launch remains disabled pending manual testing and approval.
+deterministic Systemless replay and a release-mode browser check both entered
+Figure Ground and moved a connected tile group. The browser check verified
+interactive puzzle play; native BasiliskII parity remains unverified.
