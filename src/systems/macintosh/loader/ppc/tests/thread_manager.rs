@@ -1,6 +1,70 @@
 use super::*;
 
 #[test]
+fn carbon_thread_callback_upps_use_mixed_mode_descriptors() {
+    for (constructor, disposer, proc_info) in [
+        (
+            PpcImportDispatcherTarget::NewThreadEntryUPP,
+            PpcImportDispatcherTarget::DisposeThreadEntryUPP,
+            0x00F1,
+        ),
+        (
+            PpcImportDispatcherTarget::NewThreadTerminationUPP,
+            PpcImportDispatcherTarget::DisposeThreadTerminationUPP,
+            0x03C1,
+        ),
+        (
+            PpcImportDispatcherTarget::NewThreadSwitchUPP,
+            PpcImportDispatcherTarget::DisposeThreadSwitchUPP,
+            0x03C1,
+        ),
+    ] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"NewThreadSwitchUPP")).unwrap();
+        loaded.cpu.gpr[3] = PPC_CODE_BASE;
+        run_test_import(&mut loaded, constructor.clone());
+        let descriptor = loaded.cpu.gpr[3];
+        assert_ne!(descriptor, 0);
+        assert_eq!(
+            loaded.memory.read_u16_be(descriptor),
+            Some(PPC_MIXED_MODE_TRAP)
+        );
+        let record = descriptor + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE;
+        assert_eq!(loaded.memory.read_u32_be(record), Some(proc_info));
+        assert_eq!(
+            loaded
+                .memory
+                .read_u8(record + PPC_ROUTINE_RECORD_ISA_OFFSET),
+            Some(PPC_ROUTINE_RECORD_POWERPC_ISA)
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(record + PPC_ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET),
+            Some(PPC_CODE_BASE)
+        );
+
+        loaded.cpu.gpr[3] = descriptor;
+        run_test_import(&mut loaded, disposer);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        loaded.cpu.gpr[3] = PPC_CODE_BASE;
+        run_test_import(&mut loaded, constructor);
+        assert_eq!(loaded.cpu.gpr[3], descriptor);
+    }
+
+    for (name, target) in [
+        ("NewThreadEntryUPP", PpcImportDispatcherTarget::NewThreadEntryUPP),
+        ("DisposeThreadEntryUPP", PpcImportDispatcherTarget::DisposeThreadEntryUPP),
+        ("NewThreadTerminationUPP", PpcImportDispatcherTarget::NewThreadTerminationUPP),
+        ("NewThreadSwitchUPP", PpcImportDispatcherTarget::NewThreadSwitchUPP),
+        ("DisposeThreadTerminationUPP", PpcImportDispatcherTarget::DisposeThreadTerminationUPP),
+        ("DisposeThreadSwitchUPP", PpcImportDispatcherTarget::DisposeThreadSwitchUPP),
+    ] {
+        assert_eq!(dispatcher_target_for_import("CarbonLib", name), target);
+    }
+}
+
+#[test]
 fn threads_lib_get_current_thread_reaches_the_native_thread_manager() {
     let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
         b"ThreadsLib",
