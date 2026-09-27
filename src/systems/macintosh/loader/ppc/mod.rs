@@ -1423,6 +1423,7 @@ pub enum PpcImportDispatcherTarget {
     UpdateAlias,
     ResolveAlias,
     ResolveAliasFile,
+    ResolveAliasFileWithMountFlags,
     DirCreate,
     FSpDirCreate,
     FSMakeFSSpec,
@@ -12533,6 +12534,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "UpdateAlias") => PpcImportDispatcherTarget::UpdateAlias,
         ("InterfaceLib", "ResolveAlias") => PpcImportDispatcherTarget::ResolveAlias,
         ("InterfaceLib", "ResolveAliasFile") => PpcImportDispatcherTarget::ResolveAliasFile,
+        ("InterfaceLib", "ResolveAliasFileWithMountFlags") => {
+            PpcImportDispatcherTarget::ResolveAliasFileWithMountFlags
+        }
         ("InterfaceLib", "DirCreate") => PpcImportDispatcherTarget::DirCreate,
         ("InterfaceLib", "FSpDirCreate") => PpcImportDispatcherTarget::FSpDirCreate,
         ("InterfaceLib", "FSMakeFSSpec") => PpcImportDispatcherTarget::FSMakeFSSpec,
@@ -15329,6 +15333,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::PBGetFCBInfo
         | PpcImportDispatcherTarget::FindFolder
         | PpcImportDispatcherTarget::ResolveAliasFile
+        | PpcImportDispatcherTarget::ResolveAliasFileWithMountFlags
         | PpcImportDispatcherTarget::ResolveAlias
         | PpcImportDispatcherTarget::UpdateAlias
         | PpcImportDispatcherTarget::NewAlias
