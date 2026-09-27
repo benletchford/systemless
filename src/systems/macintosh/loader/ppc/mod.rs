@@ -146,6 +146,7 @@ use dispatch_native_exceptions::*;
 mod dispatch_palettes;
 mod dispatch_picture;
 mod dispatch_polygons;
+mod dispatch_printing;
 mod dispatch_process;
 mod dispatch_qd3d;
 mod dispatch_quickdraw;
@@ -845,21 +846,6 @@ pub enum PpcSpeechCompatibilityOperation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PpcPrintingCompatibilityOperation {
-    PrClose,
-    PrCloseDoc,
-    PrClosePage,
-    PrError,
-    PrJobDialog,
-    PrOpen,
-    PrOpenDoc,
-    PrOpenPage,
-    PrPicFile,
-    PrStlDialog,
-    PrintDefault,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcStandardFileOperation {
     StandardGetFile,
     CustomGetFile,
@@ -888,6 +874,9 @@ pub use dispatch_quickdraw::PpcQuickDrawCompatibilityOperation;
 pub use dispatch_appletalk::PpcAppleTalkCompatibilityOperation;
 #[cfg(test)]
 pub(super) use dispatch_appletalk::ppc_dispatch_appletalk_compatibility;
+pub use dispatch_printing::PpcPrintingCompatibilityOperation;
+#[cfg(test)]
+pub(super) use dispatch_printing::ppc_dispatch_printing_compatibility;
 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16265,7 +16254,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             Some(dispatch_appletalk::ppc_dispatch_appletalk_compatibility(operation, cpu, memory))
         }
         PpcImportDispatcherTarget::PrintingCompatibility(operation) => {
-            Some(ppc_dispatch_printing_compatibility(operation))
+            Some(dispatch_printing::ppc_dispatch_printing_compatibility(operation))
         }
         PpcImportDispatcherTarget::SlotCompatibility => {
             Some(ppc_dispatch_slot_compatibility(binding, cpu, memory))
@@ -16417,26 +16406,6 @@ fn ppc_zero_guest_bytes(memory: &mut PpcSectionMem, addr: u32, len: u32) -> bool
         }
     }
     true
-}
-
-fn ppc_dispatch_printing_compatibility(
-    operation: PpcPrintingCompatibilityOperation,
-) -> PpcImportAction {
-    match operation {
-        PpcPrintingCompatibilityOperation::PrJobDialog
-        | PpcPrintingCompatibilityOperation::PrStlDialog
-        | PpcPrintingCompatibilityOperation::PrOpenDoc => PpcImportAction::Return(0),
-        PpcPrintingCompatibilityOperation::PrError
-        | PpcPrintingCompatibilityOperation::PrintDefault => {
-            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
-        }
-        PpcPrintingCompatibilityOperation::PrClose
-        | PpcPrintingCompatibilityOperation::PrCloseDoc
-        | PpcPrintingCompatibilityOperation::PrClosePage
-        | PpcPrintingCompatibilityOperation::PrOpen
-        | PpcPrintingCompatibilityOperation::PrOpenPage
-        | PpcPrintingCompatibilityOperation::PrPicFile => PpcImportAction::ReturnPreserve,
-    }
 }
 
 fn ppc_dispatch_slot_compatibility(
