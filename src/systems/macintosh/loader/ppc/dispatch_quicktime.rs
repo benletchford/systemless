@@ -6,6 +6,10 @@ pub(super) struct PpcQuickTimeDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
     pub(super) memory: &'a mut PpcSectionMem,
+    pub(super) process_memory_manager: &'a mut ProcessNativeMemoryManager,
+    pub(super) heap_cursor: &'a mut u32,
+    pub(super) last_mem_error: &'a mut i16,
+    pub(super) handles: &'a mut Vec<PpcHandleRecord>,
     pub(super) vfs_directories: &'a [PpcVfsDirectory],
     pub(super) vfs_files: &'a [PpcVfsFileRecord],
     pub(super) vfs_resource_files: &'a [PpcVfsResourceFileRecord],
@@ -23,6 +27,10 @@ pub(super) fn dispatch_quicktime_import(
         binding,
         cpu,
         memory,
+        process_memory_manager,
+        heap_cursor,
+        last_mem_error,
+        handles,
         vfs_directories,
         vfs_files,
         vfs_resource_files,
@@ -57,6 +65,32 @@ pub(super) fn dispatch_quicktime_import(
                 memory,
                 vfs_directories,
                 vfs_files,
+                quicktime,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_qt_record_error(quicktime, error),
+            )))
+        }
+        PpcImportDispatcherTarget::QtOpenADefaultComponent => {
+            let error = ppc_qt_open_default_component(cpu, memory, quicktime);
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_qt_record_error(quicktime, error),
+            )))
+        }
+        PpcImportDispatcherTarget::QtGraphicsImportSetDataHandle => {
+            let error = ppc_qt_graphics_import_set_data_handle(cpu, memory, handles, quicktime);
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_qt_record_error(quicktime, error),
+            )))
+        }
+        PpcImportDispatcherTarget::QtGraphicsImportGetImageDescription => {
+            let error = ppc_qt_graphics_import_get_image_description(
+                cpu,
+                memory,
+                process_memory_manager,
+                heap_cursor,
+                last_mem_error,
+                handles,
                 quicktime,
             );
             Some(PpcImportAction::Return(ppc_i16_result(

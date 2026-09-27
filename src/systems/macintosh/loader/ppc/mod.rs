@@ -2119,6 +2119,9 @@ pub enum PpcImportDispatcherTarget {
     QtGetMoviesStickyError,
     QtClearMoviesStickyError,
     QtGetGraphicsImporterForFile,
+    QtOpenADefaultComponent,
+    QtGraphicsImportSetDataHandle,
+    QtGraphicsImportGetImageDescription,
     QtGraphicsImportGetBoundsRect,
     QtGraphicsImportSetGWorld,
     QtGraphicsImportDraw,
@@ -13017,6 +13020,15 @@ fn dispatcher_target_for_import(
         ("QuickTimeLib", "GetGraphicsImporterForFile") => {
             PpcImportDispatcherTarget::QtGetGraphicsImporterForFile
         }
+        ("InterfaceLib", "OpenADefaultComponent") => {
+            PpcImportDispatcherTarget::QtOpenADefaultComponent
+        }
+        ("QuickTimeLib", "GraphicsImportSetDataHandle") => {
+            PpcImportDispatcherTarget::QtGraphicsImportSetDataHandle
+        }
+        ("QuickTimeLib", "GraphicsImportGetImageDescription") => {
+            PpcImportDispatcherTarget::QtGraphicsImportGetImageDescription
+        }
         ("QuickTimeLib", "GraphicsImportGetBoundsRect") => {
             PpcImportDispatcherTarget::QtGraphicsImportGetBoundsRect
         }
@@ -14576,6 +14588,10 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             binding,
             cpu,
             memory,
+            process_memory_manager,
+            heap_cursor,
+            last_mem_error,
+            handles,
             vfs_directories,
             vfs_files,
             vfs_resource_files,
@@ -15115,6 +15131,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::QtGetMoviesStickyError
         | PpcImportDispatcherTarget::QtClearMoviesStickyError
         | PpcImportDispatcherTarget::QtGetGraphicsImporterForFile
+        | PpcImportDispatcherTarget::QtOpenADefaultComponent
+        | PpcImportDispatcherTarget::QtGraphicsImportSetDataHandle
+        | PpcImportDispatcherTarget::QtGraphicsImportGetImageDescription
         | PpcImportDispatcherTarget::QtGraphicsImportGetBoundsRect
         | PpcImportDispatcherTarget::QtGraphicsImportSetGWorld
         | PpcImportDispatcherTarget::QtGraphicsImportDraw
