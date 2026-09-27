@@ -27,6 +27,7 @@ fn hle_import_runner_handles_gestalt_powerpc_capabilities_and_rejects_sysa() {
     loaded.memory.add_region(response_ptr, vec![0; 16]);
 
     for (selector, expected_error, expected_response) in [
+        (*b"sysv", PPC_NO_ERR, u32::from(POWERPC_SYSTEM_VERSION_BCD)),
         (*b"cput", PPC_NO_ERR, 0x0104),
         (*b"proc", PPC_NO_ERR, 2),
         (*b"fpu ", PPC_NO_ERR, 3),
@@ -43,6 +44,7 @@ fn hle_import_runner_handles_gestalt_powerpc_capabilities_and_rejects_sysa() {
             Some(expected_response)
         );
     }
+    assert_eq!(REFERENCE_MACHINE_PROFILE.system_version_bcd, 0x0810);
 }
 
 #[test]
@@ -167,7 +169,7 @@ fn hle_import_runner_handles_sys_environs() {
     );
     assert_eq!(
         loaded.memory.read_u16_be(sys_env_ptr + 4),
-        Some(REFERENCE_MACHINE_PROFILE.system_version_bcd)
+        Some(POWERPC_SYSTEM_VERSION_BCD)
     );
     assert_eq!(
         loaded.memory.read_u16_be(sys_env_ptr + 6),

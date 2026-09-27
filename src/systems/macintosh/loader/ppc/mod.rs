@@ -51,7 +51,8 @@ use crate::guest_procedure::{
 };
 use crate::list_manager::ProcessListManagerState;
 use crate::machine_profile::{
-    REFERENCE_MACHINE_PROFILE, REFERENCE_POWERPC_EXECUTION_CAPABILITIES,
+    POWERPC_SYSTEM_VERSION_BCD, REFERENCE_MACHINE_PROFILE,
+    REFERENCE_POWERPC_EXECUTION_CAPABILITIES,
 };
 use crate::managers::resource::{
     serialize_resource_fork_with_attrs, ResourceFork, ResourceForkEntry,
@@ -16925,10 +16926,7 @@ fn ppc_gestalt(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
 fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
     match &selector.to_be_bytes() {
         b"vers" => Some((0x0001, PPC_NO_ERR)),
-        b"sysv" => Some((
-            u32::from(REFERENCE_MACHINE_PROFILE.system_version_bcd),
-            PPC_NO_ERR,
-        )),
+        b"sysv" => Some((u32::from(POWERPC_SYSTEM_VERSION_BCD), PPC_NO_ERR)),
         b"ostt" => Some((crate::trap::dispatch::OS_TRAP_TABLE_BASE, PPC_NO_ERR)),
         b"tbtt" => Some((crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE, PPC_NO_ERR)),
         b"evnt" => Some((0x0001, PPC_NO_ERR)),
@@ -17257,7 +17255,7 @@ fn ppc_sys_environs(memory: &mut PpcSectionMem, rec_ptr: u32) -> i16 {
     }
     let _ = memory.write_u16_be(rec_ptr, 2);
     let _ = memory.write_u16_be(rec_ptr + 2, REFERENCE_MACHINE_PROFILE.gestalt_machine_type);
-    let _ = memory.write_u16_be(rec_ptr + 4, REFERENCE_MACHINE_PROFILE.system_version_bcd);
+    let _ = memory.write_u16_be(rec_ptr + 4, POWERPC_SYSTEM_VERSION_BCD);
     let _ = memory.write_u16_be(
         rec_ptr + 6,
         REFERENCE_MACHINE_PROFILE.gestalt_processor_type as u16,
