@@ -121,6 +121,10 @@ pub(super) fn dispatch_memory_import(
             ppc_block_move(cpu, memory);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::BlockZero => {
+            ppc_block_zero(cpu, memory);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::PtrToHand => {
             let source_ptr = cpu.gpr[3];
             let destination_handle_ptr = cpu.gpr[4];
