@@ -9,10 +9,23 @@ year: 1995
 architectures:
 - 68k
 default_architecture: 68k
+launch_enabled: true
 category: Role-Playing
 compatibility:
   status: playable
   verified:
+  - date: "2026-09-28"
+    tester: Catalogue maintainer
+    systemless_version: c49d2868c9b91b545bc8067a7146c53cb9276ed3
+    architecture: 68k
+    environment: >-
+      Manual release-mode browser preview using the checksum-matched original demo
+      archive. Escape dismissed the promotional screen; clicking New opened the
+      first-person dungeon. A real browser click on the forward movement control
+      changed the corridor view. This verifies the startup and initial movement
+      path, not native-Mac parity or later dungeon progression.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3173
   - date: "2026-09-28"
     tester: Catalogue maintainer
     systemless_version: 69a62f0608af370f0f26a1295a8719e3b09b3f2f
@@ -22,8 +35,8 @@ compatibility:
       screen, selected New, reached the first-person dungeon with the champion and
       movement controls, then clicked forward and observed the corridor view change.
       The promoted archive and screenshot were fetched back and matched their
-      recorded SHA-256 hashes. Native-Mac comparison and browser launch have
-      not yet been verified.
+      recorded SHA-256 hashes. Native-Mac comparison was not performed in this
+      deterministic replay.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3079
 artifacts:
@@ -91,5 +104,5 @@ forward moves the view into the corridor; the included Read Me explains how to
 inspect nearby chambers, recruit companions, handle items, and cast spells.
 
 This is MacPlay's original 68K Macintosh demonstration, not the retail game.
-Systemless reaches the dungeon and accepts movement input from the unchanged
-archive. Browser launch remains disabled until a manual check is complete.
+Systemless reaches the dungeon from the unchanged archive. A browser check
+confirmed that clicking the forward control changes the corridor view.
