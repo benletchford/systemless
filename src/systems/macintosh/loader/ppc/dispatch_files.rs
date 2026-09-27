@@ -764,6 +764,24 @@ fn ppc_pb_dt_get_comment(
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcFileCompatibilityOperation {
+    Create,
+    FsOpen,
+    OpenDf,
+    OpenRf,
+    PbCatSearchSync,
+    PbCloseWdSync,
+    PbDirCreateSync,
+    PbGetFPosSync,
+    PbGetWdInfoSync,
+    PbHGetVolParmsSync,
+    PbHGetVolSync,
+    PbHOpenRfSync,
+    PbHSetVolSync,
+    PbOpenWdSync,
+}
+
 pub(super) fn ppc_dispatch_file_compatibility(
     operation: PpcFileCompatibilityOperation,
     cpu: &mut PpcCpu,
