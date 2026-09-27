@@ -22,7 +22,9 @@ compatibility:
     environment: >-
       Deterministic headless replay of the unchanged BinHex demo. The notice and
       instructions opened, followed by the full-color pinball table. Ball play, native-Mac
-      comparison, and browser launch have not yet been verified.
+      comparison, and browser launch have not yet been verified. The promoted
+      archive and screenshot were fetched back and matched their recorded
+      SHA-256 hashes.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/3092
 artifacts:
