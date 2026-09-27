@@ -14532,6 +14532,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     ) {
         return Some(action);
     }
+    let screen_bits = ppc_screen_bits_addr(toolbox_startup.init_graf_global_ptr)
+        .filter(|ptr| *ptr != 0 && ppc_memory_can_write_bytes(memory, *ptr, 14));
     if let Some(action) = dispatch_drawsprocket::dispatch_drawsprocket_import(
         dispatch_drawsprocket::PpcDrawSprocketDispatchContext {
             binding,
@@ -14548,6 +14550,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             draw_sprocket,
             input,
             screen_clut,
+            screen_bits,
         },
     ) {
         return Some(action);

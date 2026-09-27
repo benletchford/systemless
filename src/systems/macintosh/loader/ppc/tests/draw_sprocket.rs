@@ -30,6 +30,7 @@ fn draw_sprocket_temporary_context_restores_desktop_mode_and_pixels() {
             &mut loaded.memory,
             &mut loaded.gworlds,
             &mut clut,
+            None,
             &mut loaded.draw_sprocket,
         ),
         PPC_NO_ERR
@@ -45,6 +46,7 @@ fn draw_sprocket_temporary_context_restores_desktop_mode_and_pixels() {
             &mut loaded.memory,
             &mut loaded.gworlds,
             &mut clut,
+            None,
             &mut loaded.draw_sprocket,
         ),
         PPC_NO_ERR
@@ -52,6 +54,97 @@ fn draw_sprocket_temporary_context_restores_desktop_mode_and_pixels() {
     assert_eq!(loaded.presented_front_buffer().unwrap(), desktop);
     assert_eq!(loaded.memory.read_u8(PPC_MAIN_SCREEN_BASE + 100), Some(0x5a));
     assert!(loaded.draw_sprocket.desktop_snapshot.is_none());
+}
+
+#[test]
+fn draw_sprocket_activation_installs_context_screen_geometry() {
+    let pef = synthetic_pef_with_import(b"SetPort");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let screen_bits = PPC_DATA_BASE + 0x2000;
+    loaded.memory.add_region(screen_bits, vec![0; 14]);
+    let desktop = (
+        0,
+        0,
+        ppc_main_screen_height() as i16,
+        ppc_main_screen_width() as i16,
+    );
+    assert!(desktop.3 > 640, "the profile must be larger than the context");
+    ppc_write_screen_bits(
+        &mut loaded.memory,
+        Some(screen_bits),
+        ppc_main_screen_width(),
+        ppc_main_screen_width(),
+        ppc_main_screen_height(),
+    )
+    .unwrap();
+    let screen_geometry = |loaded: &mut PpcLoadedApp| {
+        (
+            ppc_read_rect(&mut loaded.memory, PPC_MAIN_GWORLD + 16).unwrap(),
+            ppc_read_rgn_bbox(&mut loaded.memory, PPC_MAIN_VIS_RGN_HANDLE).unwrap(),
+            ppc_read_rgn_bbox(&mut loaded.memory, PPC_GRAY_RGN_HANDLE).unwrap(),
+            ppc_read_rect(&mut loaded.memory, screen_bits + 6).unwrap(),
+            ppc_read_rect(&mut loaded.memory, PPC_MAIN_GDEVICE_RECORD + 34).unwrap(),
+        )
+    };
+    let before = screen_geometry(&mut loaded);
+    assert_eq!(before.0, desktop);
+
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = 0;
+    assert_eq!(
+        ppc_dsp_context_reserve(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+            &mut loaded.gworlds,
+        ),
+        PPC_NO_ERR
+    );
+    // Reserving alone leaves the desktop geometry in place.
+    assert_eq!(screen_geometry(&mut loaded), before);
+
+    let mut clut = loaded.screen_clut.with_ref(|clut| *clut);
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_ACTIVE;
+    assert_eq!(
+        ppc_dsp_context_set_state(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.gworlds,
+            &mut clut,
+            Some(screen_bits),
+            &mut loaded.draw_sprocket,
+        ),
+        PPC_NO_ERR
+    );
+    // The game centres its window from these, so they must describe the
+    // 640x480 context rather than the profile-sized desktop.
+    let context = (0, 0, 480, 640);
+    let menu_bar_height = loaded.memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap() as i16;
+    assert_eq!(
+        screen_geometry(&mut loaded),
+        (context, context, (menu_bar_height, 0, 480, 640), context, context)
+    );
+    assert_eq!(loaded.memory.read_u32_be(screen_bits), Some(PPC_MAIN_SCREEN_BASE));
+    let front = loaded.presented_front_buffer().unwrap();
+    assert_eq!((front.width, front.height), (640, 480));
+    assert_eq!(
+        loaded.memory.read_u16_be(screen_bits + 4),
+        Some(front.row_bytes as u16)
+    );
+
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_INACTIVE;
+    assert_eq!(
+        ppc_dsp_context_set_state(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.gworlds,
+            &mut clut,
+            Some(screen_bits),
+            &mut loaded.draw_sprocket,
+        ),
+        PPC_NO_ERR
+    );
+    assert_eq!(screen_geometry(&mut loaded), before);
 }
 
 #[test]
@@ -94,6 +187,7 @@ fn draw_sprocket_eight_bit_activation_uses_black_blanking_index() {
             &mut loaded.memory,
             &mut loaded.gworlds,
             &mut clut,
+            None,
             &mut loaded.draw_sprocket,
         ),
         PPC_NO_ERR
@@ -164,6 +258,7 @@ fn draw_sprocket_eight_bit_800x600_context_updates_the_front_buffer() {
             &mut loaded.memory,
             &mut loaded.gworlds,
             &mut clut,
+            None,
             &mut loaded.draw_sprocket,
         ),
         PPC_NO_ERR
