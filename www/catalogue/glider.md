@@ -9,6 +9,7 @@ year: 1991
 architectures:
 - 68k
 default_architecture: 68k
+launch_enabled: true
 category: Arcade
 compatibility:
   status: playable
@@ -22,7 +23,11 @@ compatibility:
       two-colour startup mode, selected mouse controls from the game's Options menu,
       started a new game, and steered the glider right into the next room. BasiliskII reached
       the starting room with the same script but did not reproduce that room advance;
-      native parity and browser launch are not yet verified.
+      native parity is not yet verified. A release-mode Chrome 151 browser test on
+      2026-09-28 selected two-colour mode and Mouse controls, started New Game,
+      and steered from Welcome into Top of the reading list with score 550.
+      The archive loaded once without console errors. The gameplay run recorded
+      one 117.7 ms frame over the generic 50 ms threshold; play continued.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3054
 artifacts:
@@ -77,6 +82,7 @@ references:
 - https://download.classicmacdemos.com/Glider%20Demo.sit
 - https://static.classicmacdemos.com/demos/glider/README.txt
 - https://github.com/EngineersNeedArt/SoftDorothy-CasadyGreeneProjects
+- https://github.com/benletchford/systemless/issues/3153
 ---
 
 ## A little paper plane
@@ -92,5 +98,6 @@ visible at the top of the game surface.
 This is the original Casady & Greene demonstration, not the retail release.
 Systemless reached interactive Demo House play with the unchanged archive.
 A separate BasiliskII run reached the starting room but did not reproduce
-the scripted mouse-steered room change. Browser launch remains disabled until
-manual testing and approval.
+the scripted mouse-steered room change. A release-mode browser test did move
+from Welcome into Top of the reading list using the game's Mouse control mode.
+Browser launch is enabled.
