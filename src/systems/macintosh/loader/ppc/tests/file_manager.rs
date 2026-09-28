@@ -357,6 +357,51 @@ fn pb_read_async_queues_completion_on_eof() {
     }
 
     #[test]
+    fn hle_import_runner_new_alias_minimal_from_full_path_preserves_path() {
+        let pef = synthetic_pef_with_import(b"NewAliasMinimalFromFullPath");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x1200;
+        let path = b"Systemless:Game Folder:Data:Level 1";
+        let alias_out_ptr = scratch + 80;
+        loaded.memory.add_region(scratch, vec![0; 128]);
+        loaded.memory.write_bytes(scratch, path).unwrap();
+        loaded.cpu.gpr[3] = path.len() as u32;
+        loaded.cpu.gpr[4] = scratch;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = alias_out_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        let handle = loaded.memory.read_u32_be(alias_out_ptr).unwrap();
+        assert_ne!(handle, 0);
+        let data_ptr = loaded.memory.read_u32_be(handle).unwrap();
+        let record_size = loaded.memory.read_u16_be(data_ptr + 4).unwrap() as u32;
+        let bytes = ppc_memory_read_bytes(&mut loaded.memory, data_ptr, record_size).unwrap();
+        assert_eq!(
+            ppc_read_fixed_pstring_bytes(
+                &mut loaded.memory,
+                data_ptr + PPC_CLASSIC_ALIAS_FILE_NAME_OFFSET as u32,
+                PPC_FSSPEC_MAX_NAME_LEN,
+            ),
+            Some(b"Level 1".to_vec())
+        );
+        let tag = PPC_CLASSIC_ALIAS_RECORD_HEADER_SIZE;
+        assert_eq!(&bytes[tag + 4..tag + 4 + path.len()], path);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = scratch;
+        loaded.cpu.gpr[7] = alias_out_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+        assert_eq!(loaded.memory.read_u32_be(alias_out_ptr), Some(0));
+    }
+
+    #[test]
     fn hle_import_runner_resolve_alias_returns_tracked_target_fsspec() {
         let pef = synthetic_pef_with_import(b"NewAlias");
         let mut loaded = load_pef_application(&pef).unwrap();

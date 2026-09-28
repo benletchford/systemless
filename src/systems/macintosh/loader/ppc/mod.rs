@@ -1234,6 +1234,7 @@ pub enum PpcImportDispatcherTarget {
     PBStatus,
     FindFolder,
     NewAlias,
+    NewAliasMinimalFromFullPath,
     UpdateAlias,
     ResolveAlias,
     ResolveAliasFile,
@@ -8776,6 +8777,9 @@ fn dispatcher_target_for_import(
         | ("InterfaceLib", "PBStatusAsync") => PpcImportDispatcherTarget::PBStatus,
         ("InterfaceLib", "FindFolder") => PpcImportDispatcherTarget::FindFolder,
         ("InterfaceLib", "NewAlias") => PpcImportDispatcherTarget::NewAlias,
+        ("InterfaceLib", "NewAliasMinimalFromFullPath") => {
+            PpcImportDispatcherTarget::NewAliasMinimalFromFullPath
+        }
         ("InterfaceLib", "UpdateAlias") => PpcImportDispatcherTarget::UpdateAlias,
         ("InterfaceLib", "ResolveAlias") => PpcImportDispatcherTarget::ResolveAlias,
         ("InterfaceLib", "ResolveAliasFile") => PpcImportDispatcherTarget::ResolveAliasFile,
@@ -11624,6 +11628,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::ResolveAlias
         | PpcImportDispatcherTarget::UpdateAlias
         | PpcImportDispatcherTarget::NewAlias
+        | PpcImportDispatcherTarget::NewAliasMinimalFromFullPath
         | PpcImportDispatcherTarget::FileCompatibility(_) => {
             unreachable!("file imports return through dispatch_file_import")
         }
