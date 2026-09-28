@@ -2467,7 +2467,9 @@ fn detached_ppc_clone_has_independent_quickdraw_op_colors() {
 }
 
 #[test]
-fn hle_import_runner_handles_get_picture_as_valid_handle() {
+fn hle_import_runner_get_picture_returns_nil_for_missing_pict() {
+    // GetPicture is GetResource('PICT', picID). Inside Macintosh Volume I,
+    // I-475. EV Nova falls back to an earlier ship's target PICT on NIL.
     let pef = synthetic_pef_with_import(b"GetPicture");
     let mut loaded = load_pef_application(&pef).unwrap();
     loaded.cpu.gpr[3] = 128;
@@ -2476,18 +2478,8 @@ fn hle_import_runner_handles_get_picture_as_valid_handle() {
 
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
-    let handle = loaded.cpu.gpr[3];
-    assert_ne!(handle, 0);
-    assert_eq!(test_handle_records!(loaded).len(), 1);
-    assert_eq!(test_handle_records!(loaded)[0].handle, handle);
-    assert_eq!(
-        test_handle_records!(loaded)[0].size,
-        minimal_pict_bytes().len() as u32
-    );
-    let ptr = loaded.memory.read_u32_be(handle).unwrap();
-    assert_eq!(ptr, test_handle_records!(loaded)[0].ptr);
-    assert_eq!(loaded.memory.read_u16_be(ptr), Some(0x000c));
-    assert_eq!(loaded.memory.read_u16_be(ptr + 10), Some(0x00ff));
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert!(test_handle_records!(loaded).is_empty());
     assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
 }
 
