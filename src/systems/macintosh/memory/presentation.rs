@@ -557,7 +557,17 @@ impl<T> SavedPixels<T> {
     {
         self.identity = next_snapshot_identity();
         let end = offset + values.len();
-        self.detail.retain(|i, _| *i < offset || *i >= end);
+        // A narrow screen draw may refresh one byte from hundreds of rows of
+        // a dialog snapshot. HashMap::retain scans its entire capacity each
+        // time, including buckets left allocated after earlier text changed.
+        // Remove only touched keys when the range is smaller than that scan.
+        if values.len() < self.detail.capacity() {
+            for key in offset..end {
+                self.detail.remove(&key);
+            }
+        } else {
+            self.detail.retain(|i, _| *i < offset || *i >= end);
+        }
         self.values[offset..end].clone_from_slice(values);
     }
 }
@@ -4662,6 +4672,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn snapshot_range_replacement_preserves_detail_outside_narrow_and_wide_draws() {
+        let mut bus = bus();
+        for offset in 0..16u32 {
+            paint_detail(&mut bus, 0x1000 + offset);
+        }
+        paint_detail(&mut bus, 0x1000 + 127);
+        let mut saved = bus.save_pixel_bytes(0x1000, 128);
+        let capacity = saved.detail.capacity();
+        assert!(capacity > 1 && capacity < 127);
+
+        saved.replace_range(3, &[0x55]);
+        assert_eq!(saved[3], 0x55);
+        assert!(!saved.has_detail_at(3));
+        for key in [0, 2, 4, 15, 127] {
+            assert!(saved.has_detail_at(key), "narrow draw lost detail at {key}");
+        }
+
+        saved.replace_range(0, &vec![0x77; capacity]);
+        assert!(saved.detail.keys().all(|&key| key >= capacity));
+        assert!(saved.has_detail_at(127), "wide draw lost outside detail");
+        assert_eq!(saved[0], 0x77);
     }
 
     /// A span reaching the last address has an exclusive end no `u32` holds.

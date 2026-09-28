@@ -2593,6 +2593,67 @@
         }
     }
 
+    #[test]
+    fn patterned_8bpp_rect_rows_match_complex_clip_pixel_path() {
+        fn render(case: u8, complex_clip: bool) -> Vec<u8> {
+            let (mut d, mut cpu, mut bus) = setup();
+            let base = bus.alloc(16 * 8);
+            for offset in 0..128u32 {
+                bus.write_byte(base + offset, (offset * 37 + 11) as u8);
+            }
+            let ctab = make_test_ctab_handle(
+                &mut bus,
+                &TrapDispatcher::standard_mac_8bpp_clut(),
+                0x1234,
+                0,
+            );
+            let pixmap_handle = bus.alloc(4);
+            let pixmap_ptr = bus.alloc(50);
+            bus.write_long(pixmap_handle, pixmap_ptr);
+            write_pixmap_8(&mut bus, pixmap_ptr, base, 16, 8, ctab);
+
+            let port = bus.alloc(96);
+            bus.write_long(port + 2, pixmap_handle);
+            bus.write_word(port + 6, 0xC000);
+            write_rect(&mut bus, port + 16, 0, 0, 8, 16);
+            let vis = make_complex_rgn(&mut bus, (0, 0, 8, 16), &[]);
+            let clip = if complex_clip {
+                make_complex_rgn(
+                    &mut bus,
+                    (2, 3, 6, 15),
+                    &[2, 3, 15, super::REGION_STOP, 6, 3, 15, super::REGION_STOP, super::REGION_STOP],
+                )
+            } else {
+                make_complex_rgn(&mut bus, (2, 3, 6, 15), &[])
+            };
+            bus.write_long(port + 24, vis);
+            bus.write_long(port + 28, clip);
+            d.set_current_port_state(&mut bus, &mut cpu, port, None);
+            d.pn_pat = [0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55];
+            d.pn_mode = 10; // patXor
+            if case != 0 {
+                let pixpat = make_raw_color_pixpat_handle(&mut bus);
+                bus.write_long(port + if case == 1 { 58 } else { 32 }, pixpat);
+            }
+            let rect = Rect { top: 2, left: 3, bottom: 6, right: 15 };
+            d.draw_rect(
+                &mut cpu,
+                &mut bus,
+                &rect,
+                if case == 2 { ShapeOp::Erase } else { ShapeOp::Paint },
+            );
+            bus.read_bytes(base, 16 * 8)
+        }
+
+        let original: Vec<u8> = (0..128u32).map(|offset| (offset * 37 + 11) as u8).collect();
+        for case in 0..3 {
+            let rows = render(case, false);
+            let pixels = render(case, true);
+            assert_eq!(rows, pixels, "pattern case {case} must match per-pixel clipping");
+            assert_ne!(rows, original, "pattern case {case} must paint the rect");
+        }
+    }
+
     /// A basic (1bpp) GrafPort over a 40x6 bitmap (5 bytes per row) filled
     /// with a distinct pattern; draws `op` on rect (1,3)-(5,29) -- partial
     /// bytes at both ends and whole bytes between -- under a rectangular
