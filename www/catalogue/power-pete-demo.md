@@ -12,8 +12,12 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
+runtime:
+  runtime_pacing:
+    cpu_mhz: 10
 compatibility:
-  status: boots
+  status: playable
   verified:
   - date: "2026-09-28"
     tester: Catalogue maintainer
@@ -23,11 +27,27 @@ compatibility:
       Deterministic headless replay of the unchanged demo. The title screen opened
       and Play entered the first Jurassic level with Pete, enemies, and the full status
       panel visible. Enemies moved and the lives counter changed during the run.
-      Deliberate character movement, native-Mac comparison, and browser launch have not yet
+      Deliberate character movement, native-Mac comparison, and browser launch had not yet
       been verified. The promoted archive and screenshot were fetched back and
       matched their recorded SHA-256 hashes.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/3087
+  - date: "2026-09-29"
+    tester: Catalogue maintainer
+    systemless_version: 1c2472e29c61989173c4a3229ad8ef8055f242f5
+    architecture: 68k
+    environment: >-
+      Chrome 151 on a release-mode Pages build loaded the unchanged original demo
+      from its hosted archive. Play entered the Jurassic level; holding Right
+      moved Pete and scrolled the map, and three Space presses reduced weapon
+      ammunition from 500 to 497. Escape opened the Quit/Save overlay, and
+      choosing Quit reached the demo's closing screen. Four interactive runs
+      with the catalogue's supported 10 MHz setting held about 59-60 host frames
+      and guest ticks per second, with no console errors and maximum runtime
+      frames of 24-37 ms. The default 25 MHz setting reached only about 25 guest
+      ticks per second during active play. Native-Mac pixel parity is not claimed.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3180
 artifacts:
 - id: archive
   role: archive
@@ -92,4 +112,6 @@ the first level.
 
 This is Pangea's original Macintosh promotional demo, not the retail game.
 Systemless reaches the live level from its unchanged 68K-capable archive.
-Browser launch remains disabled until a manual check is complete.
+Browser play enters the first level, responds to Right Arrow movement and Space
+shooting, and runs at the catalogue's 10 MHz setting. The original demo only
+contains the first level of the first world.
