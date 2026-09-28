@@ -4117,6 +4117,38 @@
     }
 
     #[test]
+    fn straight_lines_apply_pat_xor_once_across_thick_pen_coverage() {
+        // A pen is a rectangle hanging below and right of pnLoc; the
+        // transfer mode applies to each affected bitmap bit once.
+        // Inside Macintosh Volume I, I-149 and I-157.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let (screen_base, _, _, _, _) = d.screen_mode;
+        let row_bytes = 64;
+        d.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        d.pn_size = (2, 3);
+        d.pn_pat = [0xff; 8];
+        d.pn_mode = 10; // patXor
+
+        d.draw_line(&mut cpu, &mut bus, 10, 10, 20, 10).unwrap();
+        d.draw_line(&mut cpu, &mut bus, 30, 10, 30, 20).unwrap();
+        d.draw_line(&mut cpu, &mut bus, 20, 30, 10, 30).unwrap();
+        d.draw_line(&mut cpu, &mut bus, 40, 20, 40, 10).unwrap();
+
+        let pixel = |y: u32, x: u32| {
+            bus.read_byte(screen_base + y * row_bytes + x / 8) & (0x80 >> (x % 8)) != 0
+        };
+        for y in 9..=32 {
+            for x in 9..=43 {
+                let horizontal = ((10..=11).contains(&y) || (30..=31).contains(&y))
+                    && (10..=22).contains(&x);
+                let vertical = (10..=21).contains(&y)
+                    && ((30..=32).contains(&x) || (40..=42).contains(&x));
+                assert_eq!(pixel(y, x), horizontal || vertical, "pixel ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
     fn test_line_relative() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         d.pn_loc = (10, 10);

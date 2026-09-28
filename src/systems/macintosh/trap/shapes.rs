@@ -1025,34 +1025,31 @@ impl super::TrapDispatcher {
             return Ok(());
         }
 
-        // Handle horizontal and vertical lines specially
+        // The pen covers the union of its positions along a straight line.
+        // Draw that coverage once, including in patXor mode: applying the
+        // transfer mode separately at overlapping pen positions would invert
+        // those pixels more than once. Inside Macintosh Volume I, I-149, I-157.
         if x1 == x2 {
-            // Vertical line
             let (top, bottom) = if y1 <= y2 { (y1, y2) } else { (y2, y1) };
-            for y in top..=bottom {
-                let r = Rect {
-                    top: y,
-                    left: x1,
-                    bottom: y + self.pn_size.0,
-                    right: x1 + self.pn_size.1,
-                };
-                self.draw_rect(cpu, bus, &r, ShapeOp::Paint);
-            }
+            let r = Rect {
+                top,
+                left: x1,
+                bottom: bottom.saturating_add(self.pn_size.0),
+                right: x1.saturating_add(self.pn_size.1),
+            };
+            self.draw_rect(cpu, bus, &r, ShapeOp::Paint);
             return Ok(());
         }
 
         if y1 == y2 {
-            // Horizontal line
             let (left, right) = if x1 <= x2 { (x1, x2) } else { (x2, x1) };
-            for x in left..=right {
-                let r = Rect {
-                    top: y1,
-                    left: x,
-                    bottom: y1 + self.pn_size.0,
-                    right: x + self.pn_size.1,
-                };
-                self.draw_rect(cpu, bus, &r, ShapeOp::Paint);
-            }
+            let r = Rect {
+                top: y1,
+                left,
+                bottom: y1.saturating_add(self.pn_size.0),
+                right: right.saturating_add(self.pn_size.1),
+            };
+            self.draw_rect(cpu, bus, &r, ShapeOp::Paint);
             return Ok(());
         }
 
