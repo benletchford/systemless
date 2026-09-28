@@ -18,9 +18,7 @@ pub(super) struct PpcFontDispatchContext<'a> {
     pub(super) vfs_resources: &'a [PpcVfsResourceRecord],
 }
 
-pub(super) fn dispatch_font_import(
-    context: PpcFontDispatchContext<'_>,
-) -> Option<PpcImportAction> {
+pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Option<PpcImportAction> {
     let PpcFontDispatchContext {
         binding,
         cpu,
@@ -325,4 +323,99 @@ pub(super) fn dispatch_font_import(
         }
         _ => None,
     }
+}
+
+fn ppc_text_width(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    text_font: i16,
+    text_size: i16,
+    text_face: u8,
+) -> u32 {
+    let text_ptr = cpu.gpr[3];
+    let first_byte = cpu.gpr[4];
+    let byte_count = cpu.gpr[5];
+    let mut bytes = Vec::with_capacity(byte_count.min(i16::MAX as u32) as usize);
+    for offset in 0..byte_count {
+        let Some(addr) = text_ptr
+            .checked_add(first_byte)
+            .and_then(|base| base.checked_add(offset))
+        else {
+            break;
+        };
+        bytes.push(memory.read_u8(addr).unwrap_or(0));
+    }
+    ppc_text_width_bytes(text_font, text_size, text_face, &bytes).max(0) as u32
+}
+
+fn ppc_get_font_info(memory: &mut PpcSectionMem, info_ptr: u32, text_font: i16, text_size: i16) {
+    if info_ptr == 0 || !ppc_memory_can_write_bytes(memory, info_ptr, 8) {
+        return;
+    }
+    // Inside Macintosh Volume I (1985), p. I-173: FontInfo contains the
+    // current port font's ascent, descent, maximum advance, and leading.
+    let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
+    let metrics = face.metrics;
+    let _ = memory.write_u16_be(
+        info_ptr,
+        ppc_scale_font_value(i32::from(metrics.ascent), numerator, denominator) as u16,
+    );
+    let _ = memory.write_u16_be(
+        info_ptr + 2,
+        ppc_scale_font_value(i32::from(metrics.descent), numerator, denominator) as u16,
+    );
+    let _ = memory.write_u16_be(
+        info_ptr + 4,
+        ppc_scale_font_value(i32::from(metrics.wid_max), numerator, denominator) as u16,
+    );
+    let _ = memory.write_u16_be(
+        info_ptr + 6,
+        ppc_scale_font_value(i32::from(metrics.leading), numerator, denominator) as u16,
+    );
+}
+
+fn ppc_font_metrics(memory: &mut PpcSectionMem, metrics_ptr: u32, text_font: i16, text_size: i16) {
+    if metrics_ptr == 0 || !ppc_memory_can_write_bytes(memory, metrics_ptr, 20) {
+        return;
+    }
+    // Inside Macintosh: Text (1993), pp. 4-54--4-55: FMetricRec stores
+    // ascent, descent, leading, and maximum width as Fixed values, followed
+    // by a handle to the global width table. Systemless does not model that
+    // table, matching the 68k HLE by returning NIL for its handle.
+    let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
+    let metrics = face.metrics;
+    let to_fixed = |value: i16| -> u32 { (i32::from(value) as u32) << 16 };
+    let _ = memory.write_u32_be(
+        metrics_ptr,
+        to_fixed(ppc_scale_font_value(
+            i32::from(metrics.ascent),
+            numerator,
+            denominator,
+        )),
+    );
+    let _ = memory.write_u32_be(
+        metrics_ptr + 4,
+        to_fixed(ppc_scale_font_value(
+            i32::from(metrics.descent),
+            numerator,
+            denominator,
+        )),
+    );
+    let _ = memory.write_u32_be(
+        metrics_ptr + 8,
+        to_fixed(ppc_scale_font_value(
+            i32::from(metrics.leading),
+            numerator,
+            denominator,
+        )),
+    );
+    let _ = memory.write_u32_be(
+        metrics_ptr + 12,
+        to_fixed(ppc_scale_font_value(
+            i32::from(metrics.wid_max),
+            numerator,
+            denominator,
+        )),
+    );
+    let _ = memory.write_u32_be(metrics_ptr + 16, 0);
 }
