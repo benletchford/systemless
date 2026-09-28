@@ -736,6 +736,10 @@ pub enum PpcImportDispatcherTarget {
     CfBundleGetBundleWithIdentifier,
     UpperText,
     GetCurrentThread,
+    MpCreateSemaphore,
+    MpDeleteSemaphore,
+    MpSignalSemaphore,
+    MpWaitOnSemaphore,
     NewThreadEntryUPP,
     DisposeThreadEntryUPP,
     NewThreadTerminationUPP,
@@ -1110,6 +1114,13 @@ pub(crate) fn dispatcher_target_for_import(
         library_name
     };
     match (library_name, symbol_name) {
+        ("InterfaceLib", "_MPIsFullyInitialized" | "MPProcessors") => {
+            PpcImportDispatcherTarget::ReturnOne
+        }
+        ("InterfaceLib", "MPCreateSemaphore") => PpcImportDispatcherTarget::MpCreateSemaphore,
+        ("InterfaceLib", "MPDeleteSemaphore") => PpcImportDispatcherTarget::MpDeleteSemaphore,
+        ("InterfaceLib", "MPSignalSemaphore") => PpcImportDispatcherTarget::MpSignalSemaphore,
+        ("InterfaceLib", "MPWaitOnSemaphore") => PpcImportDispatcherTarget::MpWaitOnSemaphore,
         ("ColMgrLib", "getCollectionMgrLibVersion") => {
             PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Version)
         }

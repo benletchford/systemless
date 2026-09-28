@@ -74,6 +74,7 @@ pub struct PpcToolboxStartupState {
     pub quickdraw_back_pattern: [u8; 8],
     pub ae_interaction_allowed: u8,
     pub(crate) stdc_signal_state: PpcStdSignalState,
+    pub(super) mp_semaphores: dispatch_threads::PpcMpSemaphoreState,
 }
 
 impl Default for PpcToolboxStartupState {
@@ -139,6 +140,7 @@ impl Default for PpcToolboxStartupState {
             quickdraw_back_pattern: [0x00; 8],
             ae_interaction_allowed: 1,
             stdc_signal_state: PpcStdSignalState::default(),
+            mp_semaphores: dispatch_threads::PpcMpSemaphoreState::default(),
         }
     }
 }

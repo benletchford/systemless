@@ -1,6 +1,87 @@
 use super::*;
 
 #[test]
+fn carbon_multiprocessing_availability_imports_bind_and_report_one_processor() {
+    for name in [b"_MPIsFullyInitialized".as_slice(), b"MPProcessors".as_slice()] {
+        let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+            b"CarbonLib",
+            name,
+            0x82,
+            &[sm_index_reloc(0x30, 0)],
+        ));
+        let mut weak_loaded = load_pef_application(&pef).unwrap();
+        assert_eq!(
+            weak_loaded.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::ReturnOne
+        );
+        assert_ne!(weak_loaded.imports[0].address, 0);
+        assert_eq!(
+            weak_loaded.memory.read_u32_be(PPC_DATA_BASE),
+            Some(weak_loaded.imports[0].address)
+        );
+
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_library_import(b"CarbonLib", name)).unwrap();
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+    }
+}
+
+#[test]
+fn carbon_multiprocessing_semaphore_imports_preserve_counts_and_validate_ids() {
+    for (name, target) in [
+        (b"MPSignalSemaphore".as_slice(), PpcImportDispatcherTarget::MpSignalSemaphore),
+        (b"MPWaitOnSemaphore".as_slice(), PpcImportDispatcherTarget::MpWaitOnSemaphore),
+    ] {
+        let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+            b"CarbonLib", name, 0x82, &[sm_index_reloc(0x30, 0)],
+        ));
+        let mut loaded = load_pef_application(&pef).unwrap();
+        assert_eq!(loaded.imports[0].dispatcher_target, target);
+        assert_ne!(loaded.imports[0].address, 0);
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_DATA_BASE),
+            Some(loaded.imports[0].address)
+        );
+    }
+
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"MPCreateSemaphore")).unwrap();
+    let out = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(out, vec![0; 4]);
+    loaded.cpu.gpr[3] = 2;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = out;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MpCreateSemaphore);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let id = loaded.memory.read_u32_be(out).unwrap();
+    assert_ne!(id, 0);
+
+    loaded.cpu.gpr[3] = id;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MpWaitOnSemaphore);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = id;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MpWaitOnSemaphore);
+    assert_eq!(loaded.cpu.gpr[3], (-29296i32) as u32);
+
+    for expected in [0, 0, -29298] {
+        loaded.cpu.gpr[3] = id;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::MpSignalSemaphore);
+        assert_eq!(loaded.cpu.gpr[3], expected as u32);
+    }
+    loaded.cpu.gpr[3] = id;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MpDeleteSemaphore);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = id;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MpSignalSemaphore);
+    assert_eq!(loaded.cpu.gpr[3], (-29299i32) as u32);
+}
+
+#[test]
 fn carbon_thread_callback_upps_use_mixed_mode_descriptors() {
     for (constructor, disposer, proc_info) in [
         (

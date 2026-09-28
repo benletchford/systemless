@@ -6,6 +6,17 @@ use crate::guest_call::{
 };
 use crate::guest_procedure::{resolve_same_isa_thread_entry, GuestIsa, GuestProcedure};
 use crate::thread_manager::{NewThreadCreationEdge, ThreadManager};
+use std::collections::HashMap;
+
+const MP_INVALID_ID_ERR: i32 = -29299;
+const MP_INSUFFICIENT_RESOURCES_ERR: i32 = -29298;
+const MP_TIMEOUT_ERR: i32 = -29296;
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(super) struct PpcMpSemaphoreState {
+    next_id: u32,
+    semaphores: HashMap<u32, (u32, u32)>, // maximum, current value
+}
 
 // C stack convention, void result, two 4-byte arguments.
 // CarbonCore/MixedMode.h: kCStackBased | STACK_ROUTINE_PARAMETER(1, 3)
@@ -152,6 +163,67 @@ pub(super) fn dispatch_thread_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::MpCreateSemaphore => {
+            // Multiprocessing Services Reference (2008), MPCreateSemaphore.
+            let (maximum, initial, out) = (cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]);
+            let result = if maximum == 0
+                || initial > maximum
+                || out == 0
+                || !ppc_memory_can_write_bytes(memory, out, 4)
+            {
+                i32::from(PPC_PARAM_ERR)
+            } else {
+                let state = &mut toolbox_startup.mp_semaphores;
+                let id = state.next_id.wrapping_add(1).max(1);
+                if state.semaphores.contains_key(&id) {
+                    MP_INSUFFICIENT_RESOURCES_ERR
+                } else {
+                    state.next_id = id;
+                    state.semaphores.insert(id, (maximum, initial));
+                    let _ = memory.write_u32_be(out, id);
+                    0
+                }
+            };
+            Some(PpcImportAction::Return(result as u32))
+        }
+        PpcImportDispatcherTarget::MpDeleteSemaphore => {
+            let result = if toolbox_startup
+                .mp_semaphores
+                .semaphores
+                .remove(&cpu.gpr[3])
+                .is_some()
+            {
+                0
+            } else {
+                MP_INVALID_ID_ERR
+            };
+            Some(PpcImportAction::Return(result as u32))
+        }
+        PpcImportDispatcherTarget::MpSignalSemaphore => {
+            let result = match toolbox_startup.mp_semaphores.semaphores.get_mut(&cpu.gpr[3]) {
+                Some((maximum, value)) if *value < *maximum => {
+                    *value += 1;
+                    0
+                }
+                Some(_) => MP_INSUFFICIENT_RESOURCES_ERR,
+                None => MP_INVALID_ID_ERR,
+            };
+            Some(PpcImportAction::Return(result as u32))
+        }
+        PpcImportDispatcherTarget::MpWaitOnSemaphore => {
+            // Apple advises kDurationImmediate from a cooperative task.
+            // This guest context is cooperative, so never block the host thread.
+            let result = match toolbox_startup.mp_semaphores.semaphores.get_mut(&cpu.gpr[3]) {
+                Some((_, value)) if *value > 0 => {
+                    *value -= 1;
+                    0
+                }
+                Some(_) if cpu.gpr[4] == 0 => MP_TIMEOUT_ERR,
+                Some(_) => MP_INSUFFICIENT_RESOURCES_ERR,
+                None => MP_INVALID_ID_ERR,
+            };
+            Some(PpcImportAction::Return(result as u32))
+        }
         PpcImportDispatcherTarget::NewThreadEntryUPP
         | PpcImportDispatcherTarget::NewThreadTerminationUPP
         | PpcImportDispatcherTarget::NewThreadSwitchUPP => {
