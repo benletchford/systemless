@@ -71,6 +71,12 @@ eligible PR branches. Maintainers handle promotion for fork PRs. Keep
 `launch_enabled: false` until browser testing has been approved; asset promotion
 does not approve a game for launch.
 
+For new catalogue contributions, use this PR and incoming CI path. Do not set
+up R2 locally or run a manual bucket sync to add a game. Check redistribution
+rights for the exact archive and test that archive before submitting it. The
+local R2 commands in the website guide are maintainer recovery and audit tools,
+not steps for adding a game.
+
 The [catalogue contribution guide](www/README.md#contribute-a-catalogue-entry)
 covers metadata, preview validation, browser testing, and the approval workflow.
 
