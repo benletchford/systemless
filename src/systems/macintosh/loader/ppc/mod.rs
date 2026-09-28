@@ -223,6 +223,8 @@ mod loaded_app_callbacks;
 mod loaded_app_vfs;
 mod loaded_app_memory;
 mod loaded_app_process;
+mod loaded_app_input;
+mod loaded_app_time;
 pub mod quicktime;
 pub mod sound;
 pub mod sprockets;
@@ -3258,65 +3260,6 @@ impl PpcLoadedApp {
             .find(|binding| binding.symbol_index == symbol_index)
     }
 
-    pub fn set_input_snapshot(&mut self, input: PpcInputSnapshot) {
-        self.mirror_input_low_memory(input);
-        self.input = input;
-        self.process_input.set_key_map_snapshot(input.key_map);
-        self.process_input
-            .set_mouse_state((input.mouse_v, input.mouse_h), input.mouse_button);
-    }
-
-    fn mirror_input_low_memory(&mut self, input: PpcInputSnapshot) {
-        use crate::memory::globals::addr;
-
-        // Native mouse and keyboard drivers mirror the current device state
-        // into low memory. PowerPC applications may poll these globals
-        // directly instead of calling Button, GetMouse, or GetKeys.
-        let _ = self
-            .memory
-            .write_u8(addr::MB_STATE, if input.mouse_button { 0x00 } else { 0x80 });
-        let _ = self.memory.write_bytes(addr::KEY_MAP_LM, &input.key_map);
-        for point_addr in [addr::M_TEMP, addr::MOUSE_LOC, addr::MOUSE_LOC2] {
-            let _ = self.memory.write_u16_be(point_addr, input.mouse_v as u16);
-            let _ = self
-                .memory
-                .write_u16_be(point_addr + 2, input.mouse_h as u16);
-        }
-    }
-
-    fn current_input_snapshot(&self) -> PpcInputSnapshot {
-        let key_map = self.process_input.key_map_snapshot();
-        let ((mouse_v, mouse_h), mouse_button) = self.process_input.mouse_state_snapshot();
-        PpcInputSnapshot {
-            key_map,
-            mouse_button,
-            mouse_v,
-            mouse_h,
-        }
-    }
-
-    pub fn set_event_queue<I>(&mut self, events: I)
-    where
-        I: IntoIterator<Item = PpcQueuedEvent>,
-    {
-        self.event_queue.clear();
-        self.event_queue.extend(events);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn event_queue(&self) -> &SharedProcessEventQueue {
-        &self.event_queue
-    }
-
-    pub fn cursor_level(&self) -> i16 {
-        self.cursor_state.level()
-    }
-
-    pub fn cursor_data(&self) -> Option<([u8; 32], [u8; 32], i16, i16)> {
-        self.cursor_state.mono_parts()
-    }
-
-
     /// Park the current native context and enter a PowerPC routine selected by
     /// a 68k RoutineDescriptor. The new ABI frame protects the parked caller's
     /// linkage and parameter areas while the shared continuation owns return.
@@ -3390,64 +3333,6 @@ impl PpcLoadedApp {
             .pending_native_menu_selection
             .stage((menu_id, item_number));
         true
-    }
-
-    pub fn set_tick_count(&mut self, tick_count: u32) {
-        // This explicit setter is a guest-memory operation for detached
-        // loader/test setup. Production execution reads `$016A` directly;
-        // no adapter scalar is projected back into guest memory implicitly.
-        self.tick_state.set_tick(tick_count);
-        let _ = self
-            .memory
-            .write_u32_be(crate::memory::globals::addr::TICKS, tick_count);
-        self.callback_scheduling
-            .advance_current_subtick_min(u64::from(tick_count) * 1_000_000);
-    }
-
-    pub(crate) fn current_tick(&mut self) -> u32 {
-        let guest_ticks = self
-            .memory
-            .read_u32_be(crate::memory::globals::addr::TICKS)
-            .unwrap_or_else(|| self.tick_state.current_tick());
-        self.tick_state.read_tick_count(guest_ticks);
-        guest_ticks
-    }
-
-    pub(crate) fn publish_tick(&mut self, candidate: u32) -> u32 {
-        // A guest store may have happened during the native slice. Import it
-        // before applying the host's next VBL candidate. Only the current
-        // value or its single next host VBL are valid candidates: a caller's
-        // pre-slice value may be arbitrarily stale after a direct guest store,
-        // and SharedProcessTickState's wrapping "newer" comparison alone
-        // cannot distinguish that stale value from legitimate forward time.
-        let guest_ticks = self.current_tick();
-        let tick = if candidate == guest_ticks || candidate == guest_ticks.wrapping_add(1) {
-            self.tick_state.publish_tick(candidate)
-        } else {
-            guest_ticks
-        };
-        let _ = self
-            .memory
-            .write_u32_be(crate::memory::globals::addr::TICKS, tick);
-        tick
-    }
-
-    /// Apply one tick from a host cycle epoch that has already been charged by
-    /// the runner. Unlike [`Self::publish_tick`], this is an explicit replay
-    /// operation: the runner owns the trusted baseline and elapsed-VBL count,
-    /// so intermediate ticks must be visible to callbacks even though the
-    /// guest bytes were advanced to the epoch's final tick before replay.
-    pub(crate) fn publish_host_epoch_tick(&mut self, tick: u32) -> u32 {
-        self.tick_state.set_tick(tick);
-        let _ = self
-            .memory
-            .write_u32_be(crate::memory::globals::addr::TICKS, tick);
-        tick
-    }
-
-    pub fn set_clock_cycle_timing(&mut self, cycles_per_tick: u32, cycle_phase: u32) {
-        self.clock_cycles_per_tick = cycles_per_tick.max(1);
-        self.clock_cycle_phase = cycle_phase.min(self.clock_cycles_per_tick.saturating_sub(1));
     }
 
     pub fn current_front_buffer(&self) -> Option<PpcFrontBuffer> {
