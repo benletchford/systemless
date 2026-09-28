@@ -53,9 +53,11 @@ HTTPS download URL with its expected SHA-256 and size in the entry instead of
 committing the archive. Keep optional plugin collections under
 `www/catalogue/plugins/`.
 
-**You do not need local R2 credentials or an upload step to submit a PR.**
-After the required approval, CI uses repository secrets to promote incoming
-assets and managed downloads, then commits the immutable asset URLs back to
+**Contributors do not need local R2 credentials, a local R2 configuration, or
+manual uploads.** Submit the catalogue entry and any small incoming assets in
+the PR; for a large archive, provide its HTTPS URL, SHA-256, and size. After the
+required approval, the incoming CI workflow uses repository secrets to promote
+assets and managed downloads, then commits immutable asset URLs back to
 eligible PR branches. Maintainers handle promotion for fork PRs. Keep
 `launch_enabled: false` until browser testing has been approved; asset promotion
 does not approve a game for launch.
