@@ -32,6 +32,10 @@ fn apple_event_compatibility_imports_pre_resolve_to_typed_operations() {
             PpcAppleEventCompatibilityOperation::GetParamDesc,
         ),
         (
+            "AEGetParamPtr",
+            PpcAppleEventCompatibilityOperation::GetParamPtr,
+        ),
+        (
             "AEPutParamDesc",
             PpcAppleEventCompatibilityOperation::PutParamDesc,
         ),
@@ -257,7 +261,7 @@ fn native_apple_event_parameters_round_trip_through_process_semantics() {
     let source_desc = scratch + 0x20;
     let event_desc = scratch + 0x40;
     let result_desc = scratch + 0x60;
-    native.memory.add_region(scratch, vec![0; 0x80]);
+    native.memory.add_region(scratch, vec![0; 0x90]);
     native
         .memory
         .write_bytes(source_bytes, b"shared value")
@@ -320,6 +324,69 @@ fn native_apple_event_parameters_round_trip_through_process_semantics() {
         ppc_memory_read_bytes(&mut native.memory, allocation.ptr, allocation.size),
         Some(b"shared value".to_vec())
     );
+
+    let returned_type = scratch + 0x70;
+    let returned_size = scratch + 0x74;
+    let data_ptr = scratch + 0x78;
+    native.cpu.gpr[3] = event_desc;
+    native.cpu.gpr[4] = keyword;
+    native.cpu.gpr[5] = PPC_TYPE_WILDCARD;
+    native.cpu.gpr[6] = returned_type;
+    native.cpu.gpr[7] = data_ptr;
+    native.cpu.gpr[8] = 4;
+    native.cpu.gpr[9] = returned_size;
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::GetParamPtr,
+        ),
+    );
+    assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_AE_BUFFER_IS_SMALL);
+    assert_eq!(
+        native.memory.read_u32_be(returned_type),
+        Some(u32::from_be_bytes(*b"TEXT"))
+    );
+    assert_eq!(native.memory.read_u32_be(returned_size), Some(12));
+    assert_eq!(
+        ppc_memory_read_bytes(&mut native.memory, data_ptr, 4),
+        Some(b"shar".to_vec())
+    );
+
+    native.cpu.gpr[3] = event_desc;
+    native.cpu.gpr[8] = 12;
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::GetParamPtr,
+        ),
+    );
+    assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_NO_ERR);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut native.memory, data_ptr, 12),
+        Some(b"shared value".to_vec())
+    );
+
+    native.cpu.gpr[3] = event_desc;
+    native.cpu.gpr[5] = u32::from_be_bytes(*b"long");
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::GetParamPtr,
+        ),
+    );
+    assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_ERR_AE_COERCION_FAIL);
+
+    native.cpu.gpr[3] = event_desc;
+    native.cpu.gpr[4] = u32::from_be_bytes(*b"none");
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::GetParamPtr,
+        ),
+    );
+    assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_ERR_AE_DESC_NOT_FOUND);
+    assert_eq!(native.memory.read_u32_be(returned_type), Some(0));
+    assert_eq!(native.memory.read_u32_be(returned_size), Some(0));
 }
 
 #[test]

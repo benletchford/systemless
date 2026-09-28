@@ -277,6 +277,7 @@ pub enum PpcAppleEventCompatibilityOperation {
     GetAttributePtr,
     GetNthPtr,
     GetParamDesc,
+    GetParamPtr,
     PutParamDesc,
     PutParamPtr,
     Send,
@@ -445,6 +446,35 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
             } else {
                 if cpu.gpr[6] != 0 {
                     let _ = ppc_write_ae_desc(memory, cpu.gpr[6], 0, 0);
+                }
+                PPC_ERR_AE_DESC_NOT_FOUND
+            }
+        }
+        PpcAppleEventCompatibilityOperation::GetParamPtr => {
+            let value = apple_events
+                .descriptors
+                .events
+                .get(&cpu.gpr[3])
+                .and_then(|event| event.params.get(&cpu.gpr[4]).cloned())
+                .or_else(|| {
+                    ppc_ae_descriptor(memory, &apple_events.descriptors, cpu.gpr[3])
+                        .and_then(|descriptor| descriptor.fields.get(&cpu.gpr[4]).cloned())
+                });
+            if let Some(value) = value {
+                if cpu.gpr[5] != PPC_TYPE_WILDCARD && cpu.gpr[5] != value.desc_type {
+                    PPC_ERR_AE_COERCION_FAIL
+                } else {
+                    if cpu.gpr[6] != 0 {
+                        let _ = memory.write_u32_be(cpu.gpr[6], value.desc_type);
+                    }
+                    ppc_copy_ae_bytes(memory, &value.data, cpu.gpr[7], cpu.gpr[8], cpu.gpr[9])
+                }
+            } else {
+                if cpu.gpr[6] != 0 {
+                    let _ = memory.write_u32_be(cpu.gpr[6], 0);
+                }
+                if cpu.gpr[9] != 0 {
+                    let _ = memory.write_u32_be(cpu.gpr[9], 0);
                 }
                 PPC_ERR_AE_DESC_NOT_FOUND
             }
