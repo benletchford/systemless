@@ -1555,6 +1555,86 @@ impl super::TrapDispatcher {
             }
         }
 
+        // A rectangular patterned draw has no per-pixel coverage or complex
+        // region test. Prepare each clipped row in memory, then commit it in
+        // one write so the destination and presentation plane observe the
+        // same transfer result without a bus round trip for every pixel.
+        // Patterns remain aligned to port coordinates. Inside Macintosh
+        // Volume I, I-149 and I-157; Imaging With QuickDraw (1994), p. 4-82.
+        if pixel_size == 8
+            && full_rect_coverage
+            && !has_complex_port_clip
+            && matches!(op, ShapeOp::Paint | ShapeOp::Erase)
+        {
+            let top = r.top.max(clip_top);
+            let left = r.left.max(clip_left);
+            let bottom = r.bottom.min(clip_bottom);
+            let right = r.right.min(clip_right);
+            if top < bottom && left < right {
+                let dx = (left - bounds_left) as u32;
+                let width = (right - left) as u32;
+                if dx < pix_row_bytes && width <= pix_row_bytes.saturating_sub(dx) {
+                    let mut raw_indices = [None; 256];
+                    for y in top..bottom {
+                        let dy = (y - bounds_top) as u32;
+                        let addr = pix_base + dy * pix_row_bytes + dx;
+                        let mut row = bus.read_bytes(addr, width as usize);
+                        let mut has_source = installed_raw_pixpat.is_none();
+                        for (offset, pixel) in row.iter_mut().enumerate() {
+                            let x = (i32::from(left) + offset as i32) as i16;
+                            if let (Some(pixpat), Some(dst_clut)) =
+                                (installed_raw_pixpat.as_ref(), indexed_clut.as_ref())
+                            {
+                                if let Some(source_index) =
+                                    Self::raw_pixpat_index_at(bus, pixpat, y, x)
+                                {
+                                    let destination_index = raw_indices[usize::from(source_index)]
+                                        .get_or_insert_with(|| {
+                                            shape_palette_index_for_rgb(
+                                                pixpat.clut[usize::from(source_index)],
+                                                pixel_size,
+                                                dst_clut,
+                                            )
+                                        });
+                                    *pixel = *destination_index;
+                                    has_source = true;
+                                }
+                            } else if matches!(op, ShapeOp::Paint) {
+                                let source_is_black = effective_pn_pat[y.rem_euclid(8) as usize]
+                                    & (1 << (7 - x.rem_euclid(8)))
+                                    != 0;
+                                *pixel = apply_boolean_transfer_8(
+                                    *pixel,
+                                    self.pn_mode,
+                                    source_is_black,
+                                    fg_idx,
+                                    bg_idx,
+                                );
+                            } else {
+                                let source_is_black = effective_bk_pat[y.rem_euclid(8) as usize]
+                                    & (1 << (7 - x.rem_euclid(8)))
+                                    != 0;
+                                *pixel =
+                                    apply_boolean_transfer_8(*pixel, 0, source_is_black, fg_idx, bg_idx);
+                            }
+                        }
+                        if has_source {
+                            bus.write_bytes(addr, &row);
+                        }
+                    }
+                    let screen_rect = (
+                        top.saturating_sub(bounds_top),
+                        left.saturating_sub(bounds_left),
+                        bottom.saturating_sub(bounds_top),
+                        right.saturating_sub(bounds_left),
+                    );
+                    self.refresh_dialog_saved_pixels_after_screen_draw(bus, port, screen_rect);
+                    self.refresh_visible_dialog_snapshot_region_for_port(bus, port, screen_rect);
+                    return;
+                }
+            }
+        }
+
         // Whole-row 1bpp paths. On a monochrome port the per-pixel arm
         // below reads and writes a byte per PIXEL; the ops that reduce to
         // "set", "clear" or "toggle" every bit of the clipped rect --
