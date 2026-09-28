@@ -2,11 +2,13 @@
 
 use super::*;
 use crate::dialog_manager::{
-    parse_ditl_items, position_dialog_bounds as unified_position_dialog_bounds, DialogItemRecord,
-    DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
-    DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ITEMS_OFFSET, DIALOG_ITEM_BUTTON,
-    DIALOG_ITEM_CHECKBOX, DIALOG_ITEM_DISABLED_FLAG, DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON,
-    DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO, DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT,
+    dialog_rect_to_global, hide_dialog_item_rect, is_dialog_item_rect_hidden, offset_ditl_bytes,
+    parse_ditl_items, position_dialog_bounds as unified_position_dialog_bounds,
+    rect_contains_point, show_dialog_item_rect, DialogItemRecord, DIALOG_ALERT_HIT_OFFSET,
+    DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET, DIALOG_EDIT_FIELD_OFFSET,
+    DIALOG_EDIT_OPEN_OFFSET, DIALOG_ITEMS_OFFSET, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX,
+    DIALOG_ITEM_DISABLED_FLAG, DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE,
+    DIALOG_ITEM_RADIO, DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT,
     DIALOG_ITEM_USER_ITEM, DIALOG_RECORD_SIZE, DIALOG_RESOURCE_ID_OFFSET,
     DIALOG_STANDARD_ALERT_OUTPUT_OFFSET, DIALOG_STANDARD_ALERT_STACK_OFFSET,
     DIALOG_TEXT_HANDLE_OFFSET,
@@ -917,21 +919,7 @@ fn ppc_dialog_item_end(bytes: &[u8], item: &PpcDialogItemView) -> Option<usize> 
 }
 
 fn ppc_offset_ditl_items(bytes: &mut [u8], items: &[PpcDialogItemView], dv: i16, dh: i16) {
-    for item in items {
-        let offset = item.item_offset;
-        for (coordinate_offset, delta) in [(4usize, dv), (6, dh), (8, dv), (10, dh)] {
-            let Some(start) = offset.checked_add(coordinate_offset) else {
-                continue;
-            };
-            let Some(pair) = bytes.get(start..start.saturating_add(2)) else {
-                continue;
-            };
-            let value = i16::from_be_bytes([pair[0], pair[1]]).saturating_add(delta);
-            if let Some(destination) = bytes.get_mut(start..start.saturating_add(2)) {
-                destination.copy_from_slice(&value.to_be_bytes());
-            }
-        }
-    }
+    offset_ditl_bytes(bytes, items.iter().map(|item| item.item_offset), dv, dh);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1173,16 +1161,18 @@ fn ppc_dispatch_dialog_compatibility(
                     .checked_sub(1)
                     .and_then(|index| items.get(index))
                 {
-                    let left = item.rect.1;
                     let hide = operation == PpcDialogCompatibilityOperation::HideDialogItem;
-                    let should_move = if hide { left < 0x2000 } else { left > 0x2000 };
+                    let is_hidden = is_dialog_item_rect_hidden(item.rect);
+                    let should_move = if hide { !is_hidden } else { is_hidden };
                     if should_move {
-                        let delta = if hide { 0x4000i16 } else { -0x4000i16 };
+                        let new_rect = if hide {
+                            hide_dialog_item_rect(item.rect)
+                        } else {
+                            show_dialog_item_rect(item.rect)
+                        };
                         let item_addr = ptr + item.item_offset as u32;
-                        let _ = memory
-                            .write_u16_be(item_addr + 6, item.rect.1.wrapping_add(delta) as u16);
-                        let _ = memory
-                            .write_u16_be(item_addr + 10, item.rect.3.wrapping_add(delta) as u16);
+                        let _ = memory.write_u16_be(item_addr + 6, new_rect.1 as u16);
+                        let _ = memory.write_u16_be(item_addr + 10, new_rect.3 as u16);
                     }
                 }
             }
@@ -2606,12 +2596,7 @@ fn ppc_dialog_rect_to_global(
     bounds: (i16, i16, i16, i16),
     rect: (i16, i16, i16, i16),
 ) -> (i16, i16, i16, i16) {
-    (
-        bounds.0.saturating_add(rect.0),
-        bounds.1.saturating_add(rect.1),
-        bounds.0.saturating_add(rect.2),
-        bounds.1.saturating_add(rect.3),
-    )
+    dialog_rect_to_global(bounds, rect)
 }
 
 fn ppc_dialog_draw_callbacks(
@@ -3238,7 +3223,7 @@ fn ppc_dialog_item_at_global_point(
             continue;
         }
         let rect = ppc_dialog_rect_to_global(bounds, item.rect);
-        if where_v < rect.0 || where_v >= rect.2 || where_h < rect.1 || where_h >= rect.3 {
+        if !rect_contains_point(rect, where_v, where_h) {
             continue;
         }
         let base_type = item.item_type & !PPC_DIALOG_ITEM_DISABLED;
