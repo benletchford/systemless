@@ -1693,6 +1693,35 @@ impl super::TrapDispatcher {
         )
     }
 
+    /// The darkest index of the device CLUT, which kiosk margins take.
+    pub(super) fn kiosk_black_index(&self) -> u8 {
+        self.device_clut
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, rgb)| u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]))
+            .map(|(index, _)| index as u8)
+            .unwrap_or(255)
+    }
+
+    /// Whether the four kiosk margin bands around `rect` (top, left,
+    /// bottom, right) are unchanged since `mark`.
+    pub(super) fn kiosk_margins_unchanged_since(
+        &self,
+        bus: &MacMemoryBus,
+        mark: crate::memory::presentation::ScreenMark,
+        (top, left, bottom, right): (i16, i16, i16, i16),
+    ) -> bool {
+        let (_, _, screen_width, screen_height, _) = self.get_screen_params();
+        [
+            (0, 0, screen_width, top),
+            (bottom, 0, screen_width, screen_height - bottom),
+            (top, 0, left, bottom - top),
+            (top, right, screen_width - right, bottom - top),
+        ]
+        .into_iter()
+        .all(|band| bus.screen_rect_unchanged_since(mark, band))
+    }
+
     fn fill_kiosk_stage_around_rect_when(
         &self,
         bus: &mut MacMemoryBus,
@@ -1717,13 +1746,7 @@ impl super::TrapDispatcher {
             return false;
         }
 
-        let black_index = self
-            .device_clut
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, rgb)| u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]))
-            .map(|(index, _)| index as u8)
-            .unwrap_or(255);
+        let black_index = self.kiosk_black_index();
         for (margin_top, margin_left, margin_bottom, margin_right) in [
             (0, 0, top, screen_width),
             (bottom, 0, screen_height, screen_width),

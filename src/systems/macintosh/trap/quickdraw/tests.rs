@@ -223,6 +223,41 @@
     }
 
     #[test]
+    fn repeated_kiosk_copybits_skips_unchanged_margins_but_sees_changes() {
+        let (mut d, _cpu, mut bus) = setup();
+        let (screen_base, row_bytes, _width, height, _) = d.screen_mode;
+        bus.fill_bytes(screen_base, row_bytes * u32::from(height), 0x7F);
+        let palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.enable_outline_presentation(d.screen_mode, palette, 2);
+        d.menu_bar_hidden = true;
+        d.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+        d.device_clut.set_entry(37, [0, 0, 0]);
+        let margin = screen_base + 300 * row_bytes + 10;
+        let other = screen_base + 10 * row_bytes + 10;
+
+        d.fill_kiosk_letterbox_for_copybits(&mut bus, centered_640x480_copybits_rect());
+        assert_eq!((bus.read_byte(margin), bus.read_byte(other)), (37, 37));
+        assert!(d.kiosk_letterbox_filled.get().is_some(), "a fill records its mark");
+        // Unchanged: the repeat leaves the margins as the fill left them.
+        d.fill_kiosk_letterbox_for_copybits(&mut bus, centered_640x480_copybits_rect());
+        assert_eq!((bus.read_byte(margin), bus.read_byte(other)), (37, 37));
+        // A changed margin makes the surround nonuniform: like the full
+        // check, the repeat must leave it alone.
+        bus.write_byte(margin, 0x11);
+        d.fill_kiosk_letterbox_for_copybits(&mut bus, centered_640x480_copybits_rect());
+        assert_eq!((bus.read_byte(margin), bus.read_byte(other)), (0x11, 37));
+        // Uniform again: the fill runs again.
+        bus.write_byte(margin, 37);
+        d.fill_kiosk_letterbox_for_copybits(&mut bus, centered_640x480_copybits_rect());
+        assert_eq!((bus.read_byte(margin), bus.read_byte(other)), (37, 37));
+        // A new darkest CLUT entry changes what the fill writes.
+        d.device_clut.set_entry(37, [0xFFFF, 0xFFFF, 0xFFFF]);
+        d.device_clut.set_entry(90, [0, 0, 0]);
+        d.fill_kiosk_letterbox_for_copybits(&mut bus, centered_640x480_copybits_rect());
+        assert_eq!((bus.read_byte(margin), bus.read_byte(other)), (90, 90));
+    }
+
+    #[test]
     fn centered_copybits_preserves_nonuniform_application_surround() {
         let (mut d, _cpu, mut bus) = setup();
         let (screen_base, row_bytes, _width, height, _) = d.screen_mode;

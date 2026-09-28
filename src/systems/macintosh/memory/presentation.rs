@@ -2909,12 +2909,22 @@ impl MacMemoryBus {
         if self.presentation.is_none() || count == 0 {
             return;
         }
-        let backgrounds = self.read_bytes(address, count * lanes);
+        // A glyph's run fits on the stack; read longer runs into the heap.
+        let len = count * lanes;
+        let mut stack = [0u8; 256];
+        let heap;
+        let backgrounds: &[u8] = if len <= stack.len() {
+            self.read_bytes_into(address, &mut stack[..len]);
+            &stack[..len]
+        } else {
+            heap = self.read_bytes(address, len);
+            &heap
+        };
         let foreground: [u8; 4] = std::array::from_fn(|lane| {
             (foreground >> ((lanes.saturating_sub(1 + lane)) * 8)) as u8
         });
         if let Some(mut p) = self.presentation.as_mut() {
-            p.glyph_span(address, (x0, y), lanes, &foreground[..lanes], &backgrounds);
+            p.glyph_span(address, (x0, y), lanes, &foreground[..lanes], backgrounds);
         }
     }
 

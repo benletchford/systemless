@@ -108,6 +108,9 @@ fn power_manager_operation_route(
     selector_operation_route(POWER_MANAGER_OPERATION_ROUTES, u32::from(selector))
 }
 
+/// Inputs of a kiosk letterbox fill (see `kiosk_letterbox_filled`).
+pub(crate) type KioskLetterboxKey = ((i16, i16, i16, i16), bool, (u32, u32, u16, u16, u16), u8);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScreenCopyBitsRect {
     pub src_top: i16,
@@ -1885,6 +1888,12 @@ pub struct TrapDispatcher {
     pub debug_scroll_rect_nonzero_delta_count: u64,
     pub debug_scroll_rect_changed_byte_count: u64,
     pub debug_scroll_rect_last_changed_bytes: u64,
+    /// The last kiosk letterbox fill around a screen CopyBits: its inputs
+    /// (destination, menu bar hidden, screen mode, black index) and the
+    /// screen mark after it. While those inputs hold and the margins are
+    /// unchanged since, another fill would find them uniform and rewrite the
+    /// same bytes.
+    pub(crate) kiosk_letterbox_filled: std::cell::Cell<Option<(KioskLetterboxKey, crate::memory::presentation::ScreenMark)>>,
     pub debug_scroll_rect_last_rect: (i16, i16, i16, i16),
     pub debug_scroll_rect_last_delta: (i16, i16),
     pub debug_scroll_rect_last_port: u32,
@@ -3844,6 +3853,7 @@ impl TrapDispatcher {
             debug_scroll_rect_nonzero_delta_count: 0,
             debug_scroll_rect_changed_byte_count: 0,
             debug_scroll_rect_last_changed_bytes: 0,
+            kiosk_letterbox_filled: std::cell::Cell::new(None),
             debug_scroll_rect_last_rect: (0, 0, 0, 0),
             debug_scroll_rect_last_delta: (0, 0),
             debug_scroll_rect_last_port: 0,
