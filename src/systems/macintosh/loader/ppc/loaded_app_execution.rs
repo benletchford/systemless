@@ -1781,3 +1781,44 @@ pub(crate) fn ppc_random(memory: &mut PpcSectionMem) -> u16 {
     }
 }
 
+pub(crate) fn ppc_i16_result(value: i16) -> u32 {
+    i32::from(value) as u32
+}
+
+pub(crate) fn ppc_run_result_cycles(result: PpcRunResult) -> u64 {
+    match result {
+        PpcRunResult::CycleLimit { cycles }
+        | PpcRunResult::Halted { cycles, .. }
+        | PpcRunResult::Unimplemented { cycles, .. }
+        | PpcRunResult::MemoryFault { cycles, .. }
+        | PpcRunResult::Exception { cycles, .. }
+        | PpcRunResult::FetchFault { cycles, .. } => cycles,
+    }
+}
+
+pub(crate) fn ppc_run_result_with_cycles(result: PpcRunResult, cycles: u64) -> PpcRunResult {
+    match result {
+        PpcRunResult::CycleLimit { .. } => PpcRunResult::CycleLimit { cycles },
+        PpcRunResult::Halted { pc, .. } => PpcRunResult::Halted { pc, cycles },
+        PpcRunResult::Unimplemented { pc, error, .. } => {
+            PpcRunResult::Unimplemented { pc, error, cycles }
+        }
+        PpcRunResult::MemoryFault {
+            pc,
+            addr,
+            was_write,
+            ..
+        } => PpcRunResult::MemoryFault {
+            pc,
+            addr,
+            was_write,
+            cycles,
+        },
+        PpcRunResult::Exception { pc, exception, .. } => PpcRunResult::Exception {
+            pc,
+            exception,
+            cycles,
+        },
+        PpcRunResult::FetchFault { pc, .. } => PpcRunResult::FetchFault { pc, cycles },
+    }
+}

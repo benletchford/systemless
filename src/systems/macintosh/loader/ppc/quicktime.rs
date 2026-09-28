@@ -4,29 +4,23 @@ use std::collections::HashMap;
 
 use super::{
     format_ppc_fourcc, ppc_decoded_sound_data, ppc_draw_pict_bytes_to_16bpp,
-    ppc_existing_path_for_fsspec, ppc_i16_result,
-    ppc_live_front_buffer_for_gworld, ppc_live_quickdraw_surface,
-    ppc_memory_can_write_bytes,
-    ppc_process_alloc_handle_with_bytes, ppc_q3_write_software_pixel,
-    ppc_quickdraw_surface_color_pixel,
-    ppc_quickdraw_write_raw_pixel,
-    ppc_read_be_u32_from_slice,
-    ppc_read_rect, ppc_write_rect, qt_trace_enabled, PpcCpu, PpcDecodedAiffData,
-    PpcDecodedAiffPlaybackRecord, PpcFrontBuffer, PpcGWorldRecord, PpcImportAction,
-    PpcHandleRecord, PpcQuickDrawSurface, PpcRgbColor, PpcSectionMem,
-    PpcSoundFilePlaybackRecord, PpcSoundState,
-    PpcVfsDirectory, PpcVfsFileRecord,
+    ppc_existing_path_for_fsspec, ppc_i16_result, ppc_live_front_buffer_for_gworld,
+    ppc_live_quickdraw_surface, ppc_memory_can_write_bytes, ppc_process_alloc_handle_with_bytes,
+    ppc_q3_write_software_pixel, ppc_quickdraw_surface_color_pixel, ppc_quickdraw_write_raw_pixel,
+    ppc_read_be_u32_from_slice, ppc_read_rect, ppc_write_rect, qt_trace_enabled, PpcCpu,
+    PpcDecodedAiffData, PpcDecodedAiffPlaybackRecord, PpcFrontBuffer, PpcGWorldRecord,
+    PpcHandleRecord, PpcImportAction, PpcQuickDrawSurface, PpcRgbColor, PpcSectionMem,
+    PpcSoundFilePlaybackRecord, PpcSoundState, PpcVfsDirectory, PpcVfsFileRecord,
     PpcVfsResourceFileRecord, PpcVfsResourceRecord, PPC_FIRST_FILE_REF_NUM,
-    PPC_INVALID_COMPONENT_ID, PPC_PARAM_ERR, PPC_QT_GRAPHICS_IMPORTER, PPC_QT_MOVIE,
-    PPC_QT_MOVIE_TASKS_PER_SECOND, PPC_RES_NOT_FOUND_ERR, PPC_MEM_FULL_ERR,
+    PPC_INVALID_COMPONENT_ID, PPC_MEM_FULL_ERR, PPC_NO_ERR, PPC_PARAM_ERR,
+    PPC_QT_GRAPHICS_IMPORTER, PPC_QT_MOVIE, PPC_QT_MOVIE_TASKS_PER_SECOND, PPC_RES_NOT_FOUND_ERR,
 };
-use crate::process_context::ProcessNativeMemoryManager;
 use crate::managers::resource::ResourceFork;
+use crate::process_context::ProcessNativeMemoryManager;
 use crate::trap::TrapDispatcher;
 use ppc::PpcMemory;
 
 pub const PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE: u32 = 3;
-pub const PPC_NO_ERR: i16 = 0;
 
 /// Width of the synthesized PowerPC main screen. Reads the active machine
 /// profile so a `SYSTEMLESS_SCREEN_WIDTH` override reaches the GDevice,
@@ -421,10 +415,8 @@ pub(crate) fn ppc_qt_open_default_component(
     ppc_qt_clear_graphics_importer(quicktime);
     quicktime.graphics_importer_open = true;
     quicktime.graphics_importer_subtype = cpu.gpr[4];
-    quicktime.graphics_importer_path = format!(
-        "<synthetic {} importer>",
-        format_ppc_fourcc(cpu.gpr[4])
-    );
+    quicktime.graphics_importer_path =
+        format!("<synthetic {} importer>", format_ppc_fourcc(cpu.gpr[4]));
     PPC_NO_ERR
 }
 
@@ -435,10 +427,7 @@ const PPC_QT_GRAPHICS_IMPORTER_MAX_DATA: u32 = 16 * 1024 * 1024;
 const PPC_QT_GRAPHICS_IMPORTER_MAX_DIMENSION: u32 = 8192;
 const PPC_QT_GRAPHICS_IMPORTER_MAX_PIXELS: u32 = 16 * 1024 * 1024;
 
-fn ppc_qt_decode_graphics_image(
-    subtype: u32,
-    data: &[u8],
-) -> Option<PpcQtGraphicsImage> {
+fn ppc_qt_decode_graphics_image(subtype: u32, data: &[u8]) -> Option<PpcQtGraphicsImage> {
     let format = if subtype == u32::from_be_bytes(*b"GIF ") {
         image::ImageFormat::Gif
     } else if subtype == u32::from_be_bytes(*b"TGA ") {
@@ -799,7 +788,10 @@ pub(crate) fn ppc_qt_graphics_import_get_bounds_rect(
     }
 }
 
-pub(crate) fn ppc_qt_graphics_import_set_gworld(cpu: &mut PpcCpu, quicktime: &mut PpcQuickTimeState) -> i16 {
+pub(crate) fn ppc_qt_graphics_import_set_gworld(
+    cpu: &mut PpcCpu,
+    quicktime: &mut PpcQuickTimeState,
+) -> i16 {
     if cpu.gpr[3] != PPC_QT_GRAPHICS_IMPORTER || !quicktime.graphics_importer_open {
         return PPC_PARAM_ERR;
     }
@@ -835,11 +827,7 @@ pub(crate) fn ppc_qt_graphics_import_draw(
     let front_buffer = surface.front_buffer;
     quicktime.graphics_import_draw_count = quicktime.graphics_import_draw_count.saturating_add(1);
     let source_drawn = if quicktime.graphics_importer_subtype == 0 {
-        ppc_qt_draw_pict_source_to_16bpp(
-            memory,
-            front_buffer,
-            &quicktime.graphics_importer_data,
-        )
+        ppc_qt_draw_pict_source_to_16bpp(memory, front_buffer, &quicktime.graphics_importer_data)
     } else {
         ppc_qt_draw_graphics_image(memory, surface, quicktime)
     };
@@ -930,7 +918,9 @@ fn ppc_qt_write_graphics_pixel(
             };
             if x >= front_buffer.width
                 || y >= front_buffer.height
-                || pixel_offset.checked_add(4).map_or(true, |end| end > front_buffer.row_bytes)
+                || pixel_offset
+                    .checked_add(4)
+                    .map_or(true, |end| end > front_buffer.row_bytes)
             {
                 return false;
             }
@@ -1012,7 +1002,9 @@ fn ppc_qt_draw_graphics_image(
     wrote_any
 }
 
-pub(crate) fn ppc_qt_pict_record_offset_and_bounds(data: &[u8]) -> Option<(usize, (i16, i16, i16, i16))> {
+pub(crate) fn ppc_qt_pict_record_offset_and_bounds(
+    data: &[u8],
+) -> Option<(usize, (i16, i16, i16, i16))> {
     [0usize, 512usize].into_iter().find_map(|offset| {
         let header = data.get(offset..offset.checked_add(10)?)?;
         let top = i16::from_be_bytes(header.get(2..4)?.try_into().ok()?);
@@ -1030,7 +1022,6 @@ pub(crate) fn ppc_qt_pict_bounds(data: &[u8]) -> Option<(i16, i16, i16, i16)> {
     ppc_qt_pict_record_offset_and_bounds(data).map(|(_, bounds)| bounds)
 }
 
-
 pub(crate) fn ppc_qt_movie_bounds(data: &[u8]) -> Option<(i16, i16, i16, i16)> {
     ppc_qt_scan_movie_bounds(data, 0, data.len(), 0)
 }
@@ -1043,7 +1034,9 @@ pub(crate) fn ppc_qt_movie_first_video_track(data: &[u8]) -> Option<PpcQuickTime
     ppc_qt_scan_movie_video_track(data, 0, data.len(), 0)
 }
 
-pub(crate) fn ppc_qt_movie_video_samples(data: &[u8]) -> Option<PpcQuickTimeVideoSampleTableRecord> {
+pub(crate) fn ppc_qt_movie_video_samples(
+    data: &[u8],
+) -> Option<PpcQuickTimeVideoSampleTableRecord> {
     ppc_qt_scan_movie_video_samples(data, 0, data.len(), 0)
 }
 
@@ -2798,7 +2791,10 @@ fn ppc_qt_refresh_open_movie_metadata(quicktime: &mut PpcQuickTimeState) {
 }
 
 #[cfg(test)]
-pub(crate) fn ppc_qt_top_level_atom<'a>(data: &'a [u8], expected_type: &[u8; 4]) -> Option<&'a [u8]> {
+pub(crate) fn ppc_qt_top_level_atom<'a>(
+    data: &'a [u8],
+    expected_type: &[u8; 4],
+) -> Option<&'a [u8]> {
     let mut offset = 0usize;
     while offset.checked_add(8)? <= data.len() {
         let (atom_type, _, atom_end) = ppc_qt_atom_range(data, offset, data.len())?;
@@ -2903,7 +2899,10 @@ pub(crate) fn ppc_qt_go_to_end_of_movie(
     PPC_NO_ERR
 }
 
-pub(crate) fn ppc_qt_get_movie_duration(cpu: &mut PpcCpu, quicktime: &PpcQuickTimeState) -> (i16, u32) {
+pub(crate) fn ppc_qt_get_movie_duration(
+    cpu: &mut PpcCpu,
+    quicktime: &PpcQuickTimeState,
+) -> (i16, u32) {
     if cpu.gpr[3] != PPC_QT_MOVIE || quicktime.movie_disposed {
         return (PPC_PARAM_ERR, 0);
     }
@@ -3054,7 +3053,10 @@ pub(crate) fn ppc_qt_reset_movie_video_decode_cache(quicktime: &mut PpcQuickTime
     quicktime.movie_video_decode_cache = None;
 }
 
-pub(crate) fn ppc_qt_start_movie_audio(quicktime: &PpcQuickTimeState, sound: &mut PpcSoundState) -> bool {
+pub(crate) fn ppc_qt_start_movie_audio(
+    quicktime: &PpcQuickTimeState,
+    sound: &mut PpcSoundState,
+) -> bool {
     ppc_qt_stop_movie_audio(sound);
     let Some(decoded_sound) = ppc_qt_decode_movie_audio_samples(quicktime) else {
         return false;
@@ -3112,7 +3114,9 @@ fn ppc_qt_stop_movie_audio(sound: &mut PpcSoundState) {
     sound.manager.quiet_channel(PPC_QT_MOVIE);
 }
 
-pub(crate) fn ppc_qt_decode_movie_audio_samples(quicktime: &PpcQuickTimeState) -> Option<PpcDecodedAiffData> {
+pub(crate) fn ppc_qt_decode_movie_audio_samples(
+    quicktime: &PpcQuickTimeState,
+) -> Option<PpcDecodedAiffData> {
     if let Some(decoded) = ppc_qt_movie_audio_samples(&quicktime.movie_file_data) {
         return Some(decoded);
     }
@@ -3803,8 +3807,6 @@ pub(super) fn ppc_qt_decode_ima4_channel_packet(packet: &[u8]) -> Option<[i16; 6
     }
     Some(decoded)
 }
-
-
 
 pub(crate) struct PpcQuickTimeCinepakDecoder {
     pub(crate) width: usize,

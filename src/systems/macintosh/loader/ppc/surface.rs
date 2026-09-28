@@ -282,3 +282,137 @@ pub(crate) fn ppc_zero_guest_bytes(memory: &mut PpcSectionMem, addr: u32, len: u
     }
     true
 }
+
+pub(crate) fn ppc_front_buffer_for_gworld(
+    gworlds: &[PpcGWorldRecord],
+    gworld: u32,
+) -> Option<PpcFrontBuffer> {
+    gworlds
+        .iter()
+        .find(|record| record.port == gworld)
+        .map(|record| PpcFrontBuffer {
+            base_addr: record.base_addr,
+            row_bytes: record.row_bytes,
+            width: record.width,
+            height: record.height,
+            depth: record.depth,
+        })
+}
+
+pub(crate) fn ppc_live_front_buffer_for_gworld(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    gworld: u32,
+) -> Option<PpcFrontBuffer> {
+    ppc_live_quickdraw_surface(memory, gworlds, gworld).map(|surface| surface.front_buffer)
+}
+
+pub(crate) fn ppc_live_quickdraw_surface(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    gworld: u32,
+) -> Option<PpcQuickDrawSurface> {
+    let record = gworlds.iter().find(|record| record.port == gworld);
+    // Color QuickDraw permits callers to replace a CGrafPort's portPixMap
+    // after OpenCPort. Resolve that live Handle on every drawing operation;
+    // the host-side GWorld record describes the port at creation time only.
+    // A monochrome GrafPort embeds a BitMap at portBits instead.
+    let live_bits = gworld.checked_add(6).and_then(|row_bytes| {
+        let is_color = memory.read_u16_be(row_bytes)? & 0x8000 != 0;
+        let port_bits = gworld.checked_add(2)?;
+        if is_color {
+            let pixmap_handle = memory.read_u32_be(port_bits)?;
+            let pixmap = memory.read_u32_be(pixmap_handle)?;
+            let bits = ppc_read_pixmap_bits(memory, pixmap)?;
+            let ctable_handle = pixmap
+                .checked_add(42)
+                .and_then(|pm_table| memory.read_u32_be(pm_table))
+                .filter(|handle| *handle != 0);
+            Some((bits, ctable_handle))
+        } else {
+            let mut bits = ppc_read_pixmap_bits(memory, port_bits)?;
+            let row_capacity = bits.row_bytes.checked_mul(8)?.checked_div(bits.depth)?;
+            if bits.width > row_capacity {
+                // Basic GrafPorts commonly start as a copy of screenBits and
+                // are then converted to an offscreen port by replacing only
+                // baseAddr/rowBytes and portRect. In that idiom the copied
+                // BitMap.bounds can remain screen-sized even though portRect
+                // and rowBytes describe the actual backing store. QuickDraw
+                // clips drawing to portRect; recover that live extent when
+                // the stale bounds cannot possibly fit in one bitmap row.
+                // Imaging With QuickDraw (1994), pp. 2-38--2-40, 2-46.
+                let (top, left, bottom, right) = ppc_read_rect(memory, gworld + 16)?;
+                let (width, height) = ppc_rect_dimensions(top, left, bottom, right);
+                if width == 0 || height == 0 || width > row_capacity {
+                    return None;
+                }
+                bits.top = top;
+                bits.left = left;
+                bits.bottom = bottom;
+                bits.right = right;
+                bits.width = width;
+                bits.height = height;
+            }
+            Some((bits, None))
+        }
+    });
+    live_bits
+        .map(|(bits, ctable_handle)| PpcQuickDrawSurface {
+            front_buffer: PpcFrontBuffer {
+                base_addr: bits.base_addr,
+                row_bytes: bits.row_bytes,
+                width: bits.width,
+                height: bits.height,
+                depth: bits.depth,
+            },
+            top: bits.top,
+            left: bits.left,
+            ctable_handle,
+        })
+        .or_else(|| {
+            let record = record?;
+            let ctable_handle = (record.pixmap != 0)
+                .then_some(record.pixmap)
+                .and_then(|pixmap| pixmap.checked_add(42))
+                .and_then(|pm_table| memory.read_u32_be(pm_table))
+                .filter(|handle| *handle != 0);
+            Some(PpcQuickDrawSurface {
+                front_buffer: PpcFrontBuffer {
+                    base_addr: record.base_addr,
+                    row_bytes: record.row_bytes,
+                    width: record.width,
+                    height: record.height,
+                    depth: record.depth,
+                },
+                top: 0,
+                left: 0,
+                ctable_handle,
+            })
+        })
+}
+
+pub(crate) fn ppc_write_rect(
+    memory: &mut PpcSectionMem,
+    rect_ptr: u32,
+    top: i16,
+    left: i16,
+    bottom: i16,
+    right: i16,
+) -> Option<()> {
+    memory.write_u16_be(rect_ptr, top as u16)?;
+    memory.write_u16_be(rect_ptr + 2, left as u16)?;
+    memory.write_u16_be(rect_ptr + 4, bottom as u16)?;
+    memory.write_u16_be(rect_ptr + 6, right as u16)?;
+    Some(())
+}
+
+pub(crate) fn ppc_read_rect(
+    memory: &mut PpcSectionMem,
+    rect_ptr: u32,
+) -> Option<(i16, i16, i16, i16)> {
+    let top = memory.read_u16_be(rect_ptr)? as i16;
+    let left = memory.read_u16_be(rect_ptr + 2)? as i16;
+    let bottom = memory.read_u16_be(rect_ptr + 4)? as i16;
+    let right = memory.read_u16_be(rect_ptr + 6)? as i16;
+    Some((top, left, bottom, right))
+}

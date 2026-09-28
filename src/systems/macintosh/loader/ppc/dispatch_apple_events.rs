@@ -2,6 +2,22 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PpcAppleEventDispatchAllocation {
+    pub(super) resume_guest_call_depth: usize,
+    pub(super) descriptors: u32,
+    pub(super) event_handle: u32,
+    pub(super) reply_handle: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PpcAppleEventState {
+    pub(crate) apple_event_launch_state: SharedProcessAppleEventLaunchState,
+    pub(super) handlers: SharedProcessAppleEventHandlers,
+    pub(super) descriptors: SharedProcessAppleEventDescriptors,
+    pub(super) pending_dispatches: Vec<PpcAppleEventDispatchAllocation>,
+}
+
 pub(super) struct PpcAppleEventDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,

@@ -14,7 +14,6 @@ use crate::mac_roman::decode_mac_roman;
 use crate::process_context::ProcessNativeMemoryManager;
 use ppc::PpcMemory;
 
-
 pub const PPC_DSP_FREQUENCY_60HZ: u32 = 60 << 16;
 pub const PPC_DSP_SCREEN_WIDTH: u32 = 640;
 pub const PPC_DSP_SCREEN_HEIGHT: u32 = 480;
@@ -24,8 +23,6 @@ pub const PPC_DSP_CONTEXT_OPTION_QD3D_ACCEL: u32 = 1 << 0;
 pub const PPC_DSP_DEPTH_MASK_16: u32 = 1 << 4;
 pub const PPC_MAIN_SCREEN_STORAGE_DEPTH: u32 = 16;
 pub const PPC_DSP_ADVERTISED_PAGE_COUNT: u32 = 2;
-pub const PPC_MAIN_GWORLD: u32 = 0x02f0_0000;
-pub const PPC_DSP_BACK_GWORLD: u32 = 0x0501_0000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PpcDspContextAttributes {
@@ -639,7 +636,6 @@ pub(crate) fn format_sprocket_trace(
     )
 }
 
-
 pub(crate) fn ppc_read_dsp_context_attributes(
     memory: &mut PpcSectionMem,
     attributes: u32,
@@ -739,7 +735,10 @@ pub(crate) fn ppc_dsp_depth_request_is_supported(depth_mask: u32, best_depth: u3
         && (best_depth == 0 || matches!(best_depth, 8 | 16))
 }
 
-pub(crate) fn ppc_dsp_back_buffer_depth_request_is_supported(depth_mask: u32, best_depth: u32) -> bool {
+pub(crate) fn ppc_dsp_back_buffer_depth_request_is_supported(
+    depth_mask: u32,
+    best_depth: u32,
+) -> bool {
     if depth_mask == 1 && best_depth == 1 {
         return true;
     }
@@ -790,10 +789,7 @@ pub(crate) fn ppc_write_dsp_context_attributes(
     Some(())
 }
 
-pub(crate) fn ppc_dsp_context_get_flattened_size(
-    cpu: &PpcCpu,
-    memory: &mut PpcSectionMem,
-) -> i16 {
+pub(crate) fn ppc_dsp_context_get_flattened_size(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
     // Apple Game Sprockets Legacy Reference (2003), p. 32:
     // OSStatus DSpContext_GetFlattenedSize(DSpContextReference, UInt32 *).
     if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
@@ -803,7 +799,10 @@ pub(crate) fn ppc_dsp_context_get_flattened_size(
     if out_size == 0 || !ppc_memory_can_write_bytes(memory, out_size, 4) {
         return PPC_PARAM_ERR;
     }
-    if memory.write_u32_be(out_size, PPC_DSP_FLAT_CONTEXT_SIZE).is_none() {
+    if memory
+        .write_u32_be(out_size, PPC_DSP_FLAT_CONTEXT_SIZE)
+        .is_none()
+    {
         return PPC_PARAM_ERR;
     }
     PPC_NO_ERR
@@ -825,17 +824,15 @@ pub(crate) fn ppc_dsp_context_flatten(
     }
     // DrawSprocket defines the blob as opaque. A versioned HLE format keeps
     // contexts saved by this implementation self-consistent across launches.
-    if memory.write_u32_be(flat, PPC_DSP_FLAT_CONTEXT_MAGIC).is_none()
+    if memory
+        .write_u32_be(flat, PPC_DSP_FLAT_CONTEXT_MAGIC)
+        .is_none()
         || memory
             .write_u32_be(flat + 4, PPC_DSP_FLAT_CONTEXT_VERSION)
             .is_none()
         || memory.write_u32_be(flat + 8, PPC_DSP_DISPLAY_ID).is_none()
-        || ppc_write_dsp_context_attributes(
-            memory,
-            flat + 12,
-            draw_sprocket.context_attributes,
-        )
-        .is_none()
+        || ppc_write_dsp_context_attributes(memory, flat + 12, draw_sprocket.context_attributes)
+            .is_none()
     {
         return PPC_PARAM_ERR;
     }
@@ -1161,7 +1158,11 @@ pub(crate) fn ppc_dsp_set_blanking_color(
     PPC_NO_ERR
 }
 
-pub(crate) fn ppc_dsp_get_mouse(cpu: &PpcCpu, memory: &mut PpcSectionMem, input: &PpcInputSnapshot) -> i16 {
+pub(crate) fn ppc_dsp_get_mouse(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    input: &PpcInputSnapshot,
+) -> i16 {
     // DrawSprocket.h: DSpGetMouse reports a global QuickDraw Point.
     let out_global_point = cpu.gpr[3];
     if out_global_point == 0 || !ppc_memory_can_write_bytes(memory, out_global_point, 4) {
@@ -1416,8 +1417,19 @@ pub(crate) fn ppc_configure_dsp_framebuffers(
     // Activation is a display mode switch: the game sizes and centres its
     // window from the main portRect, GrayRgn and screenBits, so they must
     // describe the context rather than the desktop it replaced.
-    ppc_write_screen_bounds(memory, PPC_MAIN_GDEVICE_RECORD, attributes.width, attributes.height)?;
-    ppc_write_screen_bits(memory, screen_bits, row_bytes, attributes.width, attributes.height)
+    ppc_write_screen_bounds(
+        memory,
+        PPC_MAIN_GDEVICE_RECORD,
+        attributes.width,
+        attributes.height,
+    )?;
+    ppc_write_screen_bits(
+        memory,
+        screen_bits,
+        row_bytes,
+        attributes.width,
+        attributes.height,
+    )
 }
 
 fn ppc_dsp_blank_display(
@@ -1430,7 +1442,11 @@ fn ppc_dsp_blank_display(
     let size = usize::try_from(row_bytes.checked_mul(attributes.height)?).ok()?;
     let mut pixels = vec![0; size];
     match attributes.display_depth {
-        8 => pixels.fill(ppc_rgb_color_to_index_in_clut(blanking_color, screen_clut, 256)),
+        8 => pixels.fill(ppc_rgb_color_to_index_in_clut(
+            blanking_color,
+            screen_clut,
+            256,
+        )),
         16 => {
             let pixel = ppc_rgb_color_to_rgb555(blanking_color).to_be_bytes();
             for pair in pixels.chunks_exact_mut(2) {
@@ -1580,7 +1596,9 @@ pub(crate) fn ppc_dsp_context_set_state(
     match state {
         PpcDspContextPlayState::Active => {
             if draw_sprocket.desktop_snapshot.is_none() {
-                let Some(snapshot) = ppc_dsp_capture_desktop(memory, gworlds, screen_clut, screen_bits) else {
+                let Some(snapshot) =
+                    ppc_dsp_capture_desktop(memory, gworlds, screen_clut, screen_bits)
+                else {
                     return PPC_PARAM_ERR;
                 };
                 draw_sprocket.desktop_snapshot = Some(snapshot);
@@ -1644,7 +1662,10 @@ pub(crate) fn ppc_dsp_context_get_state(
     PPC_NO_ERR
 }
 
-pub(crate) fn ppc_optional_rgb_color(memory: &mut PpcSectionMem, color: u32) -> Option<Option<PpcRgbColor>> {
+pub(crate) fn ppc_optional_rgb_color(
+    memory: &mut PpcSectionMem,
+    color: u32,
+) -> Option<Option<PpcRgbColor>> {
     if color == 0 {
         Some(None)
     } else {
@@ -1870,7 +1891,9 @@ pub(crate) fn ppc_i16_return_value(action: &PpcImportAction) -> Option<i16> {
     }
 }
 
-pub(crate) fn ppc_draw_sprocket_action_name(target: &PpcImportDispatcherTarget) -> Option<&'static str> {
+pub(crate) fn ppc_draw_sprocket_action_name(
+    target: &PpcImportDispatcherTarget,
+) -> Option<&'static str> {
     match target {
         PpcImportDispatcherTarget::DSpStartup => Some("startup"),
         PpcImportDispatcherTarget::DSpShutdown => Some("shutdown"),
@@ -1906,7 +1929,9 @@ pub(crate) fn ppc_draw_sprocket_action_name(target: &PpcImportDispatcherTarget) 
         PpcImportDispatcherTarget::DSpContextIsBusy => Some("is_busy"),
         PpcImportDispatcherTarget::DSpAltBufferDispose => Some("alt_buffer_dispose"),
         PpcImportDispatcherTarget::DSpContextInvalBackBufferRect => Some("inval_back_buffer_rect"),
-        PpcImportDispatcherTarget::DSpContextSetUnderlayAltBuffer => Some("set_underlay_alt_buffer"),
+        PpcImportDispatcherTarget::DSpContextSetUnderlayAltBuffer => {
+            Some("set_underlay_alt_buffer")
+        }
         _ => None,
     }
 }
@@ -2005,7 +2030,10 @@ pub(crate) fn ppc_draw_sprocket_trace_context(action: &str, cpu: &PpcCpu) -> Opt
     }
 }
 
-pub(crate) fn ppc_draw_sprocket_trace_requested_state(action: &str, cpu: &PpcCpu) -> Option<String> {
+pub(crate) fn ppc_draw_sprocket_trace_requested_state(
+    action: &str,
+    cpu: &PpcCpu,
+) -> Option<String> {
     if action != "context_set_state" {
         return None;
     }
@@ -2289,25 +2317,16 @@ pub(crate) fn ppc_isp_element_list_get_next_event(
         else {
             return PPC_PARAM_ERR;
         };
-        let Some(current_state) = ppc_isp_virtual_element_simple_state(
-            element,
-            input,
-            input_sprocket,
-            virtual_elements,
-        ) else {
+        let Some(current_state) =
+            ppc_isp_virtual_element_simple_state(element, input, input_sprocket, virtual_elements)
+        else {
             continue;
         };
         if current_state == previous_state {
             continue;
         }
 
-        let event = [
-            0u32,
-            tick_count,
-            element,
-            ref_con,
-            current_state,
-        ];
+        let event = [0u32, tick_count, element, ref_con, current_state];
         let copy_size = buffer_size.min(PPC_ISP_ELEMENT_EVENT_SIZE);
         for offset in 0..copy_size {
             let word = event[(offset / 4) as usize];
@@ -2361,12 +2380,9 @@ pub(crate) fn ppc_isp_element_list_flush(
         let Some((element, _, _)) = ppc_isp_element_list_read_entry(memory, list, index) else {
             return PPC_PARAM_ERR;
         };
-        let Some(state) = ppc_isp_virtual_element_simple_state(
-            element,
-            input,
-            input_sprocket,
-            virtual_elements,
-        ) else {
+        let Some(state) =
+            ppc_isp_virtual_element_simple_state(element, input, input_sprocket, virtual_elements)
+        else {
             continue;
         };
         if memory
@@ -2439,7 +2455,10 @@ pub(crate) fn ppc_isp_virtual_element_simple_state(
     ))
 }
 
-pub(crate) fn ppc_isp_read_need_record(memory: &mut PpcSectionMem, need_ptr: u32) -> Option<Vec<u8>> {
+pub(crate) fn ppc_isp_read_need_record(
+    memory: &mut PpcSectionMem,
+    need_ptr: u32,
+) -> Option<Vec<u8>> {
     let mut record = Vec::with_capacity(usize::try_from(PPC_ISP_NEED_SIZE).ok()?);
     for offset in 0..PPC_ISP_NEED_SIZE {
         record.push(memory.read_u8(need_ptr.checked_add(offset)?)?);
@@ -2487,7 +2506,10 @@ pub(crate) fn ppc_isp_default_simple_state(kind: u32) -> u32 {
     }
 }
 
-pub(crate) fn ppc_isp_action_binding(kind: u32, need_name: Option<&str>) -> PpcInputSprocketActionBinding {
+pub(crate) fn ppc_isp_action_binding(
+    kind: u32,
+    need_name: Option<&str>,
+) -> PpcInputSprocketActionBinding {
     match kind {
         PPC_ISP_ELEMENT_KIND_AXIS => {
             if ppc_isp_need_name_matches(need_name, &["pitch", "look"]) {
@@ -2654,10 +2676,7 @@ pub(crate) fn ppc_isp_input_simple_state_with_binding(
                         ],
                     )
                 };
-                (
-                    input.any_key_down(low_keys),
-                    input.any_key_down(high_keys),
-                )
+                (input.any_key_down(low_keys), input.any_key_down(high_keys))
             };
             match (low, high) {
                 (true, false) => PPC_ISP_AXIS_LOW,
@@ -2871,10 +2890,13 @@ pub(crate) fn ppc_isp_parse_setl_entries(data: &[u8]) -> Option<Vec<PpcIspSetLis
         let entry = data.get(base..base.checked_add(entry_size)?)?;
         let device_class =
             u32::from_be_bytes(entry.get(class_offset..class_offset + 4)?.try_into().ok()?);
-        let device_creator =
-            u32::from_be_bytes(entry.get(creator_offset..creator_offset + 4)?.try_into().ok()?);
-        let tset_id =
-            i16::from_be_bytes(entry.get(tset_offset..tset_offset + 2)?.try_into().ok()?);
+        let device_creator = u32::from_be_bytes(
+            entry
+                .get(creator_offset..creator_offset + 4)?
+                .try_into()
+                .ok()?,
+        );
+        let tset_id = i16::from_be_bytes(entry.get(tset_offset..tset_offset + 2)?.try_into().ok()?);
         entries.push(PpcIspSetListEntry {
             device_class,
             device_creator,
@@ -2983,7 +3005,10 @@ fn ppc_isp_take_keyboard_binding(
     }
     let first = input_sprocket.keyboard_defaults.keycodes[start];
     let binding = if needed == 2 {
-        PpcInputSprocketKeyboardBinding::axis(first, input_sprocket.keyboard_defaults.keycodes[start + 1])
+        PpcInputSprocketKeyboardBinding::axis(
+            first,
+            input_sprocket.keyboard_defaults.keycodes[start + 1],
+        )
     } else {
         PpcInputSprocketKeyboardBinding::button(first)
     };
@@ -3064,7 +3089,10 @@ pub(crate) fn ppc_isp_devices_set_active(
     PPC_NO_ERR
 }
 
-pub(crate) fn ppc_isp_device_arguments(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> Option<Vec<u32>> {
+pub(crate) fn ppc_isp_device_arguments(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+) -> Option<Vec<u32>> {
     let first = cpu.gpr[3];
     let second = cpu.gpr[4];
     if ppc_isp_known_device(first) {
@@ -3315,7 +3343,10 @@ pub(crate) fn ppc_isp_devices_extract(cpu: &mut PpcCpu, memory: &mut PpcSectionM
     PPC_NO_ERR
 }
 
-pub(crate) fn ppc_isp_devices_extract_by_class(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+pub(crate) fn ppc_isp_devices_extract_by_class(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+) -> i16 {
     let device_class = cpu.gpr[3];
     let buffer_count = cpu.gpr[4];
     let out_count_ptr = cpu.gpr[5];
@@ -3451,7 +3482,10 @@ pub(crate) fn ppc_isp_element_keyboard_binding(
         .and_then(|record| record.keyboard_binding)
 }
 
-pub(crate) fn ppc_isp_element_need_name(memory: &mut PpcSectionMem, element: u32) -> Option<String> {
+pub(crate) fn ppc_isp_element_need_name(
+    memory: &mut PpcSectionMem,
+    element: u32,
+) -> Option<String> {
     let name_ptr = element.checked_add(PPC_ISP_ELEMENT_NEED_RECORD_OFFSET)?;
     let len = usize::from(memory.read_u8(name_ptr)?).min(63);
     let mut bytes = Vec::with_capacity(len);

@@ -1,5 +1,56 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcMath64Operation {
+    LongDoubleToSInt64,
+    LongDoubleToUInt64,
+    S32Set,
+    S64Absolute,
+    S64Add,
+    S64And,
+    S64BitwiseAnd,
+    S64BitwiseEor,
+    S64BitwiseNot,
+    S64BitwiseOr,
+    S64Compare,
+    S64Divide,
+    S64Eor,
+    S64Max,
+    S64Min,
+    S64Multiply,
+    S64Negate,
+    S64Not,
+    S64Or,
+    S64Set,
+    S64SetU,
+    S64ShiftLeft,
+    S64ShiftRight,
+    S64Subtract,
+    SInt64ToLongDouble,
+    SInt64ToUInt64,
+    U32SetU,
+    U64Add,
+    U64And,
+    U64BitwiseAnd,
+    U64BitwiseEor,
+    U64BitwiseNot,
+    U64BitwiseOr,
+    U64Compare,
+    U64Divide,
+    U64Eor,
+    U64Max,
+    U64Multiply,
+    U64Not,
+    U64Or,
+    U64Set,
+    U64SetU,
+    U64ShiftLeft,
+    U64ShiftRight,
+    U64Subtract,
+    UInt64ToLongDouble,
+    UInt64ToSInt64,
+}
+
 pub(super) fn ppc_decimal_read(memory: &mut PpcSectionMem, decimal: u32) -> Option<f64> {
     let negative = memory.read_u8(decimal)? != 0;
     let exponent = memory.read_u16_be(decimal + 2)? as i16;
@@ -311,10 +362,9 @@ pub(super) fn ppc_dispatch_math_compatibility(
             if ppc_memory_can_read_bytes(memory, source, 16)
                 && ppc_memory_can_write_bytes(memory, destination, 10)
             {
-                if let (Some(head), Some(tail)) = (
-                    memory.read_u64_be(source),
-                    memory.read_u64_be(source + 8),
-                ) {
+                if let (Some(head), Some(tail)) =
+                    (memory.read_u64_be(source), memory.read_u64_be(source + 8))
+                {
                     let extended = Extended80::from(f64::from_bits(head))
                         .add(Extended80::from(f64::from_bits(tail)));
                     let _ = memory.write_u16_be(
