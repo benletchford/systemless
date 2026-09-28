@@ -10,6 +10,10 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
+runtime:
+  runtime_pacing:
+    cpu_mhz: 10
 compatibility:
   status: playable
   verified:
@@ -17,9 +21,23 @@ compatibility:
     tester: Catalogue maintainer
     systemless_version: "0.56.0"
     architecture: 68k
-    environment: "Deterministic run of the unchanged 68K demo with the generic 24-bit trap gateway correction in PR #2617. The application opens Prince2.opt, reaches its self-running sequence, and enters the first playable rooftop level after the publisher-documented mouse click. Holding F moves the Prince to the right. A native 512-by-384 capture shows the level without host or emulator framing. An optimized browser pacing probe reached 60 host FPS but only about 29.5 guest ticks per second, below the site's 50-tick launch gate (issue #2620), so browser launch remains disabled."
+    environment: "Deterministic run of the unchanged 68K demo with the generic 24-bit trap gateway correction in PR #2617. The application opens Prince2.opt, reaches its self-running sequence, and enters the first playable rooftop level after the publisher-documented mouse click. Holding F moves the Prince to the right. A native 512-by-384 capture shows the level without host or emulator framing. At the then-default clock setting, an optimized browser pacing probe reached 60 host FPS but only about 29.5 guest ticks per second, below the site's 50-tick launch gate (issue #2620)."
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2618
+  - date: "2026-09-28"
+    tester: Catalogue maintainer
+    systemless_version: "0.65.1"
+    architecture: 68k
+    environment: >-
+      Release-mode browser check of the unchanged checksum-pinned demo at the
+      supported 10 MHz catalogue clock setting. Independent 20- and 30-second
+      pacing samples sustained about 60 host FPS and 60-61 guest ticks per
+      second, above the 50-tick launch gate, with healthy audio and no console
+      errors. A separate browser interaction entered the first rooftop level
+      with a mouse click;
+      holding the documented F key visibly moved the Prince to the right.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2620
 artifacts:
 - id: archive
   role: archive
@@ -92,5 +110,5 @@ E, or I jumps or climbs. Hold Shift or Control to grab a ledge. The archive's
 Read Me gives the full movement and sword controls.
 
 Systemless reaches the rooftop and responds to movement using the unchanged
-demo archive. Browser launch remains disabled while its current guest-tick
-performance is investigated.
+demo archive. Browser launch uses a 10 MHz emulated CPU setting, which meets
+the current browser pacing gate for this demo.
