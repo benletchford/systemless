@@ -501,9 +501,7 @@ impl PpcLoadedApp {
                     return PpcImportAction::Halt;
                 }
                 if index == PPC_STD_FILTER_IMPORT_INDEX {
-                    // The standard filter declines events it does not handle;
-                    // ModalDialog applies its default event handling.
-                    return PpcImportAction::Return(0);
+                    return PpcImportAction::Return(ppc_standard_filter_proc(cpu, memory));
                 }
                 last_import_index = Some(index);
                 // A Mixed Mode callback can advance process time while the
@@ -789,7 +787,9 @@ impl PpcLoadedApp {
                                 cpu.gpr[3] as u16 as i16,
                             ))
                         }
-                        PpcImportDispatcherTarget::StdFilterProc => PpcImportAction::Return(0),
+                        PpcImportDispatcherTarget::StdFilterProc => {
+                            PpcImportAction::Return(ppc_standard_filter_proc(cpu, memory))
+                        }
                         PpcImportDispatcherTarget::DialogCompatibility(
                             PpcDialogCompatibilityOperation::DialogSelect,
                         ) => PpcImportAction::Return(0),

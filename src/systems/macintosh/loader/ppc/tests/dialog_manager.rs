@@ -1519,6 +1519,28 @@ fn get_std_filter_proc_returns_a_guest_callable_standard_filter() {
     let callback = loaded.run_with_hle_imports(64);
     assert_eq!(callback.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 0);
+
+    let dialog = PPC_DATA_BASE + 0x5100;
+    let event = PPC_DATA_BASE + 0x5300;
+    let item_hit = PPC_DATA_BASE + 0x5400;
+    loaded.memory.add_region(dialog, vec![0; PPC_DIALOG_RECORD_SIZE as usize]);
+    loaded.memory.add_region(event, vec![0; 16]);
+    loaded.memory.add_region(item_hit, vec![0; 2]);
+    loaded
+        .memory
+        .write_u16_be(dialog + PPC_DIALOG_DEFAULT_ITEM_OFFSET, 2)
+        .unwrap();
+    loaded.memory.write_u16_be(event, 3).unwrap();
+    loaded.memory.write_u32_be(event + 2, b'\r' as u32).unwrap();
+    loaded.cpu.pc = callback_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = event;
+    loaded.cpu.gpr[5] = item_hit;
+    let callback = loaded.run_with_hle_imports(64);
+    assert_eq!(callback.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    assert_eq!(loaded.memory.read_u16_be(item_hit), Some(2));
 }
 
 #[test]

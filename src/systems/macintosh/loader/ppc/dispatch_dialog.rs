@@ -442,9 +442,7 @@ pub(super) fn dispatch_dialog_import(
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
         PpcImportDispatcherTarget::StdFilterProc => {
-            // The standard modal filter declines events that it does not
-            // handle; ModalDialog then performs its default event handling.
-            Some(PpcImportAction::Return(0))
+            Some(PpcImportAction::Return(ppc_standard_filter_proc(cpu, memory)))
         }
         PpcImportDispatcherTarget::GetStdFilterProc => {
             // Apple Dialog Manager Reference (2007), p. 38:
@@ -2579,6 +2577,35 @@ fn ppc_read_dialog_event(memory: &mut PpcSectionMem, event_ptr: u32) -> Option<P
         where_h: memory.read_u16_be(event_ptr.checked_add(12)?)? as i16,
         modifiers: memory.read_u16_be(event_ptr.checked_add(14)?)?,
     })
+}
+
+pub(super) fn ppc_standard_filter_proc(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> u32 {
+    // Inside Macintosh Volume I (1985), p. I-415: the standard filter returns
+    // TRUE and sets itemHit to the default item for Return or Enter.
+    let dialog = cpu.gpr[3];
+    let event_ptr = cpu.gpr[4];
+    let item_hit_ptr = cpu.gpr[5];
+    let Some(event) = ppc_read_dialog_event(memory, event_ptr) else {
+        return 0;
+    };
+    if !matches!(event.what, 3 | 5) {
+        return 0;
+    }
+    let character = event.message as u8;
+    let key_code = (event.message >> 8) as u8;
+    if !matches!(character, b'\r' | 3)
+        && !matches!(key_code, PPC_KEY_RETURN | PPC_KEY_NUMPAD_ENTER)
+    {
+        return 0;
+    }
+    let Some(default_item) = dialog
+        .checked_add(PPC_DIALOG_DEFAULT_ITEM_OFFSET)
+        .and_then(|address| memory.read_u16_be(address))
+        .filter(|item| *item != 0)
+    else {
+        return 0;
+    };
+    u32::from(memory.write_u16_be(item_hit_ptr, default_item).is_some())
 }
 
 fn ppc_dialog_for_event(
