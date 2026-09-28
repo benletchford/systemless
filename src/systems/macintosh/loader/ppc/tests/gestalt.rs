@@ -59,7 +59,7 @@ fn gestalt_logical_ram_matches_physical_ram_without_virtual_memory() {
 }
 
 #[test]
-fn hle_import_runner_handles_gestalt_powerpc_capabilities_and_rejects_sysa() {
+fn hle_import_runner_handles_gestalt_powerpc_capabilities() {
     let pef = synthetic_pef_with_import(b"Gestalt");
     let mut loaded = load_pef_application(&pef).unwrap();
     let response_ptr = PPC_HEAP_BASE;
@@ -69,10 +69,10 @@ fn hle_import_runner_handles_gestalt_powerpc_capabilities_and_rejects_sysa() {
         (*b"sysv", PPC_NO_ERR, u32::from(POWERPC_SYSTEM_VERSION_BCD)),
         (*b"cbon", PPC_NO_ERR, u32::from(POWERPC_CARBON_VERSION_BCD)),
         (*b"cput", PPC_NO_ERR, 0x0104),
-        (*b"proc", PPC_NO_ERR, 2),
+        (*b"proc", PPC_NO_ERR, 3),
         (*b"fpu ", PPC_NO_ERR, 3),
         (*b"mmu ", PPC_NO_ERR, 4),
-        (*b"sysa", PPC_GESTALT_UNDEF_SELECTOR_ERR, 0),
+        (*b"sysa", PPC_NO_ERR, 2),
     ] {
         loaded.cpu.gpr[3] = u32::from_be_bytes(selector);
         loaded.cpu.gpr[4] = response_ptr;

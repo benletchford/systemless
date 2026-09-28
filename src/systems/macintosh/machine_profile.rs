@@ -106,11 +106,13 @@ impl MachineProfile {
     /// hardware profile.
     pub(crate) const fn powerpc_execution_capabilities(self) -> GuestExecutionCapabilities {
         GuestExecutionCapabilities {
-            // The native adapter does not currently support the 'sysa'
-            // selector, so keep that absence explicit.
-            system_architecture: None,
+            // Inside Macintosh: Operating System Utilities (1994), p. 1-24:
+            // gestaltPowerPC is the native system architecture.
+            system_architecture: Some(2),
             native_cpu_type: 0x0104,
-            processor_type: 2,
+            // Inside Macintosh: PowerPC System Software (1994), p. 1-7:
+            // Gestalt('proc') reports gestalt68020 under the 68LC040 emulator.
+            processor_type: 3,
             fpu_type: self.gestalt_fpu_type,
             mmu_type: self.gestalt_mmu_type,
         }
@@ -281,13 +283,13 @@ mod tests {
     }
 
     #[test]
-    fn powerpc_capability_record_preserves_shipped_values_and_unsupported_sysa() {
+    fn powerpc_capability_record_reports_native_architecture_and_legacy_processor() {
         assert_eq!(
             REFERENCE_POWERPC_EXECUTION_CAPABILITIES,
             GuestExecutionCapabilities {
-                system_architecture: None,
+                system_architecture: Some(2),
                 native_cpu_type: 0x0104,
-                processor_type: 2,
+                processor_type: 3,
                 fpu_type: 3,
                 mmu_type: 4,
             }

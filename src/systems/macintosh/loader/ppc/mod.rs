@@ -12824,6 +12824,9 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
             REFERENCE_POWERPC_EXECUTION_CAPABILITIES.native_cpu_type,
             PPC_NO_ERR,
         )),
+        b"sysa" => REFERENCE_POWERPC_EXECUTION_CAPABILITIES
+            .system_architecture
+            .map(|architecture| (architecture, PPC_NO_ERR)),
         b"proc" => Some((
             REFERENCE_POWERPC_EXECUTION_CAPABILITIES.processor_type,
             PPC_NO_ERR,
