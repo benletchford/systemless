@@ -1698,3 +1698,86 @@ impl PpcLoadedApp {
         }
     }
 }
+
+pub(crate) fn ppc_virtual_microseconds(
+    tick_count: u32,
+    cycles_per_tick: u32,
+    cycle_phase: u32,
+    elapsed_cycles: u64,
+) -> u64 {
+    let cycles_per_tick = u64::from(cycles_per_tick.max(1));
+    let elapsed_cycles = u64::from(cycle_phase).saturating_add(elapsed_cycles);
+    u64::from(tick_count)
+        .saturating_mul(PPC_MICROSECONDS_PER_TICK)
+        .saturating_add(elapsed_cycles.saturating_mul(PPC_MICROSECONDS_PER_TICK) / cycles_per_tick)
+}
+
+pub(crate) fn ppc_virtual_tick_count(
+    tick_count: u32,
+    cycles_per_tick: u32,
+    cycle_phase: u32,
+    elapsed_cycles: u64,
+) -> u32 {
+    // Inside Macintosh: Processes (1993), p. 3-46: TickCount is the low-memory
+    // time counter maintained by the vertical retrace interrupt. The native
+    // runner keeps the persisted counter at the start of an execution slice,
+    // so imports within that slice must include elapsed guest cycles. This is
+    // especially important when an idle poll is accelerated with extra cycles:
+    // inventing a caller-local future tick can make two Toolbox clock reads
+    // disagree and send applications down their fatal startup path.
+    let cycles_per_tick = u64::from(cycles_per_tick.max(1));
+    let elapsed_cycles = u64::from(cycle_phase).saturating_add(elapsed_cycles);
+    tick_count.wrapping_add((elapsed_cycles / cycles_per_tick) as u32)
+}
+
+pub(crate) fn ppc_cycles_until_next_tick(
+    cycles_per_tick: u32,
+    cycle_phase: u32,
+    elapsed_cycles: u64,
+) -> u64 {
+    let cycles_per_tick = u64::from(cycles_per_tick.max(1));
+    let cycle_phase = u64::from(cycle_phase).saturating_add(elapsed_cycles) % cycles_per_tick;
+    cycles_per_tick - cycle_phase
+}
+
+pub(crate) fn dispatch_simple_hot_import_fast(
+    target: &PpcImportDispatcherTarget,
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    microseconds: u64,
+) -> Option<PpcImportAction> {
+    match target {
+        PpcImportDispatcherTarget::Microseconds => Some(dispatch_microseconds_import(
+            cpu,
+            memory,
+            microseconds,
+            None,
+        )),
+        PpcImportDispatcherTarget::AbsoluteToNanoseconds => {
+            // PowerPC's struct-return ABI places the output pointer in r3 and
+            // the 64-bit AbsoluteTime input in r4:r5. Our virtual absolute
+            // clock counts microseconds, so conversion to nanoseconds is exact.
+            let output = cpu.gpr[3];
+            let absolute = (u64::from(cpu.gpr[4]) << 32) | u64::from(cpu.gpr[5]);
+            if output != 0 && ppc_memory_can_write_bytes(memory, output, 8) {
+                let _ = memory.write_u64_be(output, absolute.saturating_mul(1_000));
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        _ => dispatch_math::dispatch_math_import(target, cpu, memory),
+    }
+}
+
+pub(crate) fn ppc_random(memory: &mut PpcSectionMem) -> u16 {
+    let old_seed = memory.read_u32_be(PPC_RAND_SEED_ADDR).unwrap_or(1);
+    let seed = if old_seed == 0 { 1 } else { old_seed };
+    let new_seed = ((u64::from(seed) * 16_807) % 2_147_483_647) as u32;
+    let _ = memory.write_u32_be(PPC_RAND_SEED_ADDR, new_seed);
+    let result = new_seed as u16;
+    if result == 0x8000 {
+        0
+    } else {
+        result
+    }
+}
+
