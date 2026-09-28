@@ -10,9 +10,25 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Simulation
+launch_enabled: true
 compatibility:
   status: playable
   verified:
+  - date: "2026-09-29"
+    tester: Catalogue maintainer
+    systemless_version: f50661d5 release-mode browser preview
+    architecture: 68k
+    environment: >-
+      Chromium loaded the checksum-pinned original demo at the normal 25 MHz
+      setting. A real click on Mission 1: Heavy Metal entered live 3D cockpit
+      flight, and the documented 3 key switched to a chase view showing the
+      aircraft on the airfield. The 52-second Canvas2D browser sample held about
+      60 host frames and 60 guest ticks per second, with no console errors,
+      healthy audio queue, and a worst runtime frame of 25 ms. The throttle
+      and gear keys were sent, but their individual effects were not isolated
+      in this check. Browser launch was approved for the default 68K route.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3330
   - date: "2026-09-28"
     tester: Catalogue maintainer
     systemless_version: c1e4685bc77730ad04977c2c2c5d6987814b1c
@@ -87,7 +103,8 @@ controls, from throttle and landing gear to different camera views. This
 capture shows the chase view after the plane responded to those inputs.
 
 This is Parsoft's original Macintosh promotional demo, not the retail game.
-Systemless reached interactive flight in a deterministic replay. Browser
-launch remains disabled until the route is manually tested and approved. A
-separate BasiliskII run also reached flight and the documented control
-checkpoints, though the two simulations did not occupy identical positions.
+Systemless reached interactive flight in both a deterministic replay and a
+release-mode browser session. A real browser click started Mission 1, and the
+documented chase-view key changed the live camera. A separate BasiliskII run
+also reached flight and the documented control checkpoints, though the two
+simulations did not occupy identical positions.
