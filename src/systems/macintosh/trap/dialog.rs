@@ -3565,22 +3565,9 @@ impl super::TrapDispatcher {
         data_len: u32,
         record_offset: u32,
     ) -> Option<u32> {
-        if record_offset + 14 > data_len {
-            return None;
-        }
-
-        let item_type = bus.read_byte(ptr + record_offset + 12);
-        let data_len_byte = bus.read_byte(ptr + record_offset + 13);
-        let base_type = item_type & 0x7F;
-        let payload_offset = record_offset + 14;
-        let remaining = data_len.saturating_sub(payload_offset);
-        let payload_len = Self::ditl_item_payload_len(base_type, data_len_byte, remaining)?;
-        let padded = (payload_len + 1) & !1;
-        if padded > remaining {
-            return None;
-        }
-
-        Some(14 + padded)
+        let bytes = bus.read_bytes(ptr, data_len as usize);
+        crate::dialog_manager::ditl_item_record_len_at(&bytes, record_offset as usize)
+            .map(|len| len as u32)
     }
 
     fn ditl_used_len(bus: &MacMemoryBus, ptr: u32, data_len: u32) -> u32 {
@@ -3588,21 +3575,8 @@ impl super::TrapDispatcher {
             return data_len;
         }
 
-        let max_index = bus.read_word(ptr) as i16;
-        let count = if max_index < 0 {
-            0
-        } else {
-            max_index as usize + 1
-        };
-        let mut offset = 2u32;
-        for _ in 0..count {
-            let Some(record_len) = Self::ditl_item_record_len_at(bus, ptr, data_len, offset) else {
-                break;
-            };
-            offset = offset.saturating_add(record_len);
-        }
-
-        offset.min(data_len)
+        let bytes = bus.read_bytes(ptr, data_len as usize);
+        (crate::dialog_manager::ditl_total_used_len(&bytes) as u32).min(data_len)
     }
 
     fn dialog_local_size(bus: &MacMemoryBus, dialog_ptr: u32) -> (i16, i16) {
@@ -4376,120 +4350,19 @@ impl super::TrapDispatcher {
     /// Parse a DITL resource from guest memory into a list of DialogItems.
     /// Inside Macintosh Volume I, I-439
     fn parse_ditl(bus: &MacMemoryBus, ptr: u32, data_len: u32) -> Vec<DialogItem> {
-        if data_len < 2 {
-            return Vec::new();
-        }
-        let max_index = bus.read_word(ptr) as i16; // number of items minus 1
-        let count = if max_index < 0 {
-            0
-        } else {
-            max_index as usize + 1
-        };
-        let mut items = Vec::with_capacity(count);
-        let mut offset = 2u32; // skip dlgMaxIndex
-
-        for _ in 0..count {
-            if offset + 14 > data_len {
-                break;
-            }
-            // Read 4-byte handle/procPtr field.
-            // For userItem types, the game may write a procedure pointer here
-            // via SetDItem or direct memory manipulation.
-            // Inside Macintosh Volume I, I-427
-            let item_handle = bus.read_long(ptr + offset);
-            offset += 4;
-            // Read display rectangle
-            let top = bus.read_word(ptr + offset) as i16;
-            let left = bus.read_word(ptr + offset + 2) as i16;
-            let bottom = bus.read_word(ptr + offset + 4) as i16;
-            let right = bus.read_word(ptr + offset + 6) as i16;
-            offset += 8;
-            // Read type byte and data length
-            let item_type = bus.read_byte(ptr + offset);
-            let data_len_byte = bus.read_byte(ptr + offset + 1);
-            offset += 2;
-
-            let base_type = item_type & 0x7F; // strip itemDisable bit
-
-            let mut text = String::new();
-            let mut resource_id: i16 = 0;
-            let remaining = data_len - offset;
-            let Some(payload_len) =
-                Self::ditl_item_payload_len(base_type, data_len_byte, remaining)
-            else {
-                break;
-            };
-            if matches!(base_type, 7 | 32 | 64) {
-                resource_id = bus.read_word(ptr + offset) as i16;
-            }
-
-            let padded = (payload_len + 1) & !1;
-            if padded > remaining {
-                break;
-            }
-
-            if payload_len > 0 {
-                match base_type {
-                    // button (4), checkbox (5), radio (6), statText (8),
-                    // editText (16): title/text data. IM:I I-427.
-                    4 | 5 | 6 | 8 | 16 => {
-                        let bytes = bus.read_bytes(ptr + offset, payload_len as usize);
-                        text = decode_mac_roman(&bytes);
-                    }
-                    _ => {}
-                }
-            }
-
-            // Advance past data, padded to even boundary
-            offset += padded;
-
-            // For userItems, itmhand is a ProcPtr, not a relocatable handle.
-            // Dialog Manager preserves it in the duplicated DITL and calls it
-            // during update/redraw. Some apps replace it later via SetDItem or
-            // by writing the duplicated DITL directly.
-            // Inside Macintosh Volume I, I-405, I-426 to I-427.
-            let proc_ptr = if base_type == 0 { item_handle } else { 0 };
-
-            items.push(DialogItem {
-                item_type,
-                rect: (top, left, bottom, right),
-                text,
-                resource_id,
-                proc_ptr,
-                sel_start: 0,
-                sel_end: 0,
-            });
-        }
-        items
+        let bytes = bus.read_bytes(ptr, data_len as usize);
+        crate::dialog_manager::parse_ditl_items(&bytes)
+            .map(|records| records.into_iter().map(DialogItem::from).collect())
+            .unwrap_or_default()
     }
 
     fn ditl_item_payload_len(base_type: u8, data_len_byte: u8, remaining: u32) -> Option<u32> {
-        let payload_len = match base_type {
-            // The compiled item record stores a length byte for every item
-            // type. User items do not interpret their payload, but the Dialog
-            // Manager must still skip it to locate the next record.
-            // Inside Macintosh Volume I, I-404 to I-405 and I-427.
-            0 => u32::from(data_len_byte),
-            // Help items use the byte after itmtype as a sized payload.
-            // Macintosh Toolbox Essentials 1992, p. 6-154
-            1 => u32::from(data_len_byte),
-            // icon, picture, resCtrl: 2-byte resource ID. IM:I I-427
-            // describes the byte after itmtype as length=2; MTE 1992
-            // p. 6-153 documents the same compiled records as a
-            // reserved byte plus the two-byte resource ID. Accept both.
-            7 | 32 | 64 => {
-                if remaining < 2 {
-                    return None;
-                }
-                if data_len_byte >= 2 {
-                    u32::from(data_len_byte)
-                } else {
-                    2
-                }
-            }
-            _ => u32::from(data_len_byte),
-        };
-        Some(payload_len)
+        crate::dialog_manager::ditl_item_payload_len(
+            base_type,
+            data_len_byte,
+            remaining as usize,
+        )
+        .map(|len| len as u32)
     }
 
     /// Re-read userItem proc pointers from the DITL data in guest memory.
