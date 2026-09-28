@@ -134,6 +134,41 @@ fn hle_import_runner_handles_equal_string() {
 }
 
 #[test]
+fn iu_equal_pstring_uses_primary_roman_order_for_default_script() {
+    let pef = synthetic_pef_with_import(b"IUEqualPString");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::IUEqualPString
+    );
+    let left_ptr = PPC_DATA_BASE + 0x1000;
+    let right_ptr = PPC_DATA_BASE + 0x1040;
+    loaded.memory.add_region(left_ptr, vec![0; 64]);
+    loaded.memory.add_region(right_ptr, vec![0; 64]);
+    write_ppc_pstring(&mut loaded.memory, left_ptr, b"Rose");
+    write_ppc_pstring(&mut loaded.memory, right_ptr, b"ros\x8e");
+    loaded.cpu.gpr[3] = left_ptr;
+    loaded.cpu.gpr[4] = right_ptr;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::IUEqualPString);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    write_ppc_pstring(&mut loaded.memory, right_ptr, b"Rope");
+    loaded.cpu.gpr[3] = left_ptr;
+    loaded.cpu.gpr[4] = right_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::IUEqualPString);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = left_ptr;
+    loaded.cpu.gpr[4] = right_ptr;
+    loaded.cpu.gpr[5] = PPC_HEAP_BASE;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, Some(0));
+}
+
+#[test]
 fn hle_import_runner_handles_random() {
     let pef = synthetic_pef_with_import(b"Random");
     let mut loaded = load_pef_application(&pef).unwrap();
