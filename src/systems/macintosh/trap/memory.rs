@@ -3632,7 +3632,8 @@ impl super::TrapDispatcher {
                         return 0;
                     }
 
-                    let items_handle = bus.read_long(dialog_ptr + 156);
+                    let items_handle = bus
+                        .read_long(dialog_ptr + crate::dialog_manager::DIALOG_ITEMS_OFFSET);
                     if items_handle != 0 {
                         let ditl_ptr = bus.read_long(items_handle);
                         if ditl_ptr != 0 {

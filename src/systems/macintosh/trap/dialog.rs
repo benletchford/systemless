@@ -3585,32 +3585,13 @@ impl super::TrapDispatcher {
     }
 
     fn append_ditl_offset(&self, bus: &MacMemoryBus, dialog_ptr: u32, method: i16) -> (i16, i16) {
-        match method {
-            // overlayDITL: appended rectangles are already dialog-local.
-            // Macintosh Toolbox Essentials 1992, pp. 6-108, 6-153.
-            0 => (0, 0),
-            // appendDITLRight / appendDITLBottom position relative to the
-            // dialog's upper-right or lower-left coordinate. The HLE updates
-            // item rectangles here; full window resizing is handled by callers
-            // that subsequently show/redraw the dialog.
-            1 => {
-                let (_, width) = Self::dialog_local_size(bus, dialog_ptr);
-                (0, width)
-            }
-            2 => {
-                let (height, _) = Self::dialog_local_size(bus, dialog_ptr);
-                (height, 0)
-            }
-            item_method if item_method < 0 => {
-                let item_no = item_method.checked_neg().unwrap_or(i16::MAX) as usize;
-                self.dialog_items
-                    .get(&dialog_ptr)
-                    .and_then(|items| item_no.checked_sub(1).and_then(|index| items.get(index)))
-                    .map(|item| (item.rect.0, item.rect.1))
-                    .unwrap_or((0, 0))
-            }
-            _ => (0, 0),
-        }
+        let (height, width) = Self::dialog_local_size(bus, dialog_ptr);
+        crate::dialog_manager::append_ditl_offset_delta(method, height, width, |item_no| {
+            self.dialog_items
+                .get(&dialog_ptr)
+                .and_then(|items| item_no.checked_sub(1).and_then(|index| items.get(index)))
+                .map(|item| (item.rect.0, item.rect.1))
+        })
     }
 
     fn offset_dialog_item_rect(item: &mut DialogItem, v_delta: i16, h_delta: i16) {
@@ -3698,13 +3679,17 @@ impl super::TrapDispatcher {
                 .unwrap_or(0);
         }
 
-        let mut items_handle = bus.read_long(dialog_ptr + 156);
+        let mut items_handle =
+            bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_ITEMS_OFFSET);
         if items_handle == 0 {
             items_handle = bus.alloc(4);
             let empty_ditl_ptr = bus.alloc(2);
             bus.write_word(empty_ditl_ptr, 0xFFFF);
             bus.write_long(items_handle, empty_ditl_ptr);
-            bus.write_long(dialog_ptr + 156, items_handle);
+            bus.write_long(
+                dialog_ptr + crate::dialog_manager::DIALOG_ITEMS_OFFSET,
+                items_handle,
+            );
         }
 
         let old_ptr = bus.read_long(items_handle);
@@ -3792,7 +3777,7 @@ impl super::TrapDispatcher {
             return 0;
         }
 
-        let items_handle = bus.read_long(dialog_ptr + 156);
+        let items_handle = bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_ITEMS_OFFSET);
         let ditl_ptr = if items_handle != 0 {
             bus.read_long(items_handle)
         } else {
@@ -3809,8 +3794,8 @@ impl super::TrapDispatcher {
             .get(&dialog_ptr)
             .cloned()
             .unwrap_or(raw_items);
-        let remove_count = (number_items as usize).min(items.len());
-        let keep_count = items.len().saturating_sub(remove_count);
+        let (keep_count, count_minus_one) =
+            crate::dialog_manager::shorten_ditl_counts(items.len(), number_items as usize);
 
         for item_no in (keep_count + 1)..=items.len() {
             let item_no = item_no as i16;
@@ -3823,12 +3808,7 @@ impl super::TrapDispatcher {
         let removed_items = items[keep_count..].to_vec();
         items.truncate(keep_count);
         if ditl_ptr != 0 && ditl_len >= 2 {
-            let max_index = if keep_count == 0 {
-                0xFFFF
-            } else {
-                (keep_count as u16).saturating_sub(1)
-            };
-            bus.write_word(ditl_ptr, max_index);
+            bus.write_word(ditl_ptr, count_minus_one as u16);
         }
         self.dialog_items.insert(dialog_ptr, items);
         self.erase_retained_dialog_items_after_ditl_shorten(bus, dialog_ptr, &removed_items);
@@ -10199,25 +10179,18 @@ impl super::TrapDispatcher {
     }
 
     fn rects_intersect(a: (i16, i16, i16, i16), b: (i16, i16, i16, i16)) -> bool {
-        a.0 < b.2 && a.2 > b.0 && a.1 < b.3 && a.3 > b.1
+        crate::dialog_manager::rects_intersect(a, b)
     }
 
     fn dialog_item_intersects_bounds(bounds: (i16, i16, i16, i16), item: &DialogItem) -> bool {
-        Self::rects_intersect(Self::dialog_item_screen_rect(bounds, item.rect), bounds)
+        crate::dialog_manager::dialog_item_intersects_bounds(bounds, item.rect)
     }
 
     fn dialog_is_game_managed(bounds: (i16, i16, i16, i16), items: &[DialogItem]) -> bool {
-        let mut has_visible_item = false;
-        for item in items {
-            if !Self::dialog_item_intersects_bounds(bounds, item) {
-                continue;
-            }
-            has_visible_item = true;
-            if (item.item_type & 0x7F) != 0 {
-                return false;
-            }
-        }
-        has_visible_item
+        crate::dialog_manager::is_dialog_game_managed(
+            bounds,
+            items.iter().map(|item| (item.item_type, item.rect)),
+        )
     }
 
     fn start_dialog_button_flash(

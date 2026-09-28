@@ -1148,26 +1148,24 @@ fn ppc_dispatch_dialog_compatibility(
                 return PpcImportAction::ReturnPreserve;
             };
             let method = cpu.gpr[5] as u16 as i16;
-            let (dv, dh) = match method {
-                1 => (
-                    0,
-                    gworlds
-                        .iter()
-                        .find(|gworld| gworld.port == dialog)
-                        .map_or(0, |gworld| ppc_u32_to_i16_saturating(gworld.width)),
-                ),
-                2 => (
-                    gworlds
-                        .iter()
-                        .find(|gworld| gworld.port == dialog)
-                        .map_or(0, |gworld| ppc_u32_to_i16_saturating(gworld.height)),
-                    0,
-                ),
-                value if value < 0 => current_items
-                    .get(usize::from(value.unsigned_abs()).saturating_sub(1))
-                    .map_or((0, 0), |item| (item.rect.0, item.rect.1)),
-                _ => (0, 0),
-            };
+            let dialog_width = gworlds
+                .iter()
+                .find(|gworld| gworld.port == dialog)
+                .map_or(0, |gworld| ppc_u32_to_i16_saturating(gworld.width));
+            let dialog_height = gworlds
+                .iter()
+                .find(|gworld| gworld.port == dialog)
+                .map_or(0, |gworld| ppc_u32_to_i16_saturating(gworld.height));
+            let (dv, dh) = crate::dialog_manager::append_ditl_offset_delta(
+                method,
+                dialog_height,
+                dialog_width,
+                |item_no| {
+                    current_items
+                        .get(item_no.saturating_sub(1))
+                        .map(|item| (item.rect.0, item.rect.1))
+                },
+            );
             ppc_offset_ditl_items(&mut appended_bytes, &appended_items, dv, dh);
             let total_count = current_items.len().saturating_add(appended_items.len());
             let mut combined = current_bytes;
@@ -1194,19 +1192,15 @@ fn ppc_dispatch_dialog_compatibility(
             else {
                 return PpcImportAction::ReturnPreserve;
             };
-            let remove = usize::from(cpu.gpr[4] as u16).min(items.len());
-            let retained = items.len().saturating_sub(remove);
+            let remove_count = usize::from(cpu.gpr[4] as u16);
+            let (retained, count_minus_one) =
+                crate::dialog_manager::shorten_ditl_counts(items.len(), remove_count);
             let end = if retained == 0 {
                 2
             } else {
                 ppc_dialog_item_end(&bytes, &items[retained - 1]).unwrap_or(bytes.len())
             };
             bytes.truncate(end);
-            let count_minus_one = if retained == 0 {
-                -1
-            } else {
-                retained.saturating_sub(1).min(i16::MAX as usize) as i16
-            };
             bytes[0..2].copy_from_slice(&count_minus_one.to_be_bytes());
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
@@ -2521,9 +2515,7 @@ fn ppc_dialog_draw_callbacks(
             {
                 return None;
             }
-            let rect = ppc_dialog_rect_to_global(bounds, item.rect);
-            if rect.0 >= bounds.2 || rect.2 <= bounds.0 || rect.1 >= bounds.3 || rect.3 <= bounds.1
-            {
+            if !crate::dialog_manager::dialog_item_intersects_bounds(bounds, item.rect) {
                 return None;
             }
             let target = ppc_resolve_callback_target(memory, item.handle, default_rtoc, None)?;
@@ -2908,15 +2900,15 @@ pub(super) fn ppc_draw_dialog(
         .read_u16_be(dialog.wrapping_add(PPC_DIALOG_DEFAULT_ITEM_OFFSET))
         .unwrap_or(1) as usize;
     for (index, item) in items.iter().enumerate() {
-        let rect = ppc_dialog_rect_to_global(bounds, item.rect);
         // Imaging With QuickDraw (1994), pp. 2-20--2-21: drawing is clipped
         // to the port's visible region. Some applications deliberately keep
         // inactive DITL items beyond the DialogRecord's portRect; the native
         // dialog renderer targets the screen directly, so reject those items
         // here rather than letting their placeholder text escape the window.
-        if rect.0 >= bounds.2 || rect.2 <= bounds.0 || rect.1 >= bounds.3 || rect.3 <= bounds.1 {
+        if !crate::dialog_manager::dialog_item_intersects_bounds(bounds, item.rect) {
             continue;
         }
+        let rect = ppc_dialog_rect_to_global(bounds, item.rect);
         match item.item_type & !PPC_DIALOG_ITEM_DISABLED {
             PPC_DIALOG_ITEM_BUTTON | PPC_DIALOG_ITEM_CHECKBOX | PPC_DIALOG_ITEM_RADIO => {
                 // Macintosh Toolbox Essentials (1992), pp. 5-4--5-6 and
