@@ -841,48 +841,8 @@ pub enum PpcEventPollOperation {
 }
 
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PpcCollectionOperation {
-    Version,
-    New,
-    Dispose,
-    Clone,
-    CountOwners,
-    Copy,
-    GetDefaultAttributes,
-    SetDefaultAttributes,
-    CountItems,
-    AddItem,
-    GetItem,
-    RemoveItem,
-    SetItemInfo,
-    GetItemInfo,
-    ReplaceIndexedItem,
-    GetIndexedItem,
-    RemoveIndexedItem,
-    SetIndexedItemInfo,
-    GetIndexedItemInfo,
-    TagExists,
-    CountTags,
-    GetIndexedTag,
-    CountTaggedItems,
-    GetTaggedItem,
-    GetTaggedItemInfo,
-    Purge,
-    PurgeTag,
-    Empty,
-    Flatten,
-    FlattenPartial,
-    Unflatten,
-    GetExceptionProc,
-    SetExceptionProc,
-    AddItemHandle,
-    GetItemHandle,
-    ReplaceIndexedItemHandle,
-    GetIndexedItemHandle,
-    FlattenToHandle,
-    UnflattenFromHandle,
-}
+pub use dispatch_collection::PpcCollectionOperation;
+
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PpcImportDispatcherTarget {

@@ -18,6 +18,49 @@ pub(super) struct PpcCollectionDispatchContext<'a> {
     pub(super) callback_stack: &'a mut Vec<PpcCollectionCallbackState>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcCollectionOperation {
+    Version,
+    New,
+    Dispose,
+    Clone,
+    CountOwners,
+    Copy,
+    GetDefaultAttributes,
+    SetDefaultAttributes,
+    CountItems,
+    AddItem,
+    GetItem,
+    RemoveItem,
+    SetItemInfo,
+    GetItemInfo,
+    ReplaceIndexedItem,
+    GetIndexedItem,
+    RemoveIndexedItem,
+    SetIndexedItemInfo,
+    GetIndexedItemInfo,
+    TagExists,
+    CountTags,
+    GetIndexedTag,
+    CountTaggedItems,
+    GetTaggedItem,
+    GetTaggedItemInfo,
+    Purge,
+    PurgeTag,
+    Empty,
+    Flatten,
+    FlattenPartial,
+    Unflatten,
+    GetExceptionProc,
+    SetExceptionProc,
+    AddItemHandle,
+    GetItemHandle,
+    ReplaceIndexedItemHandle,
+    GetIndexedItemHandle,
+    FlattenToHandle,
+    UnflattenFromHandle,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PpcCollectionCallbackKind {
     Flatten {
