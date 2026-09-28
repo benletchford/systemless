@@ -93,6 +93,21 @@ impl CellInk {
         out
     }
 
+    /// A block inking each sample set in `mask` with `foreground` at
+    /// `alphas[sample]` over the solid background `backgrounds[sample]`.
+    pub(super) fn painted(mask: u16, foreground: u8, alphas: &[u8], backgrounds: &[u8]) -> Self {
+        let mut block = Self::EMPTY;
+        block.present = mask;
+        for sample in Bits(mask) {
+            block.packed[sample] = Packed(
+                u32::from(foreground)
+                    | u32::from(alphas[sample]) << 8
+                    | u32::from(backgrounds[sample]) << 16,
+            );
+        }
+        block
+    }
+
     /// This block with ink only on samples below `len`.
     pub(super) fn within(&self, len: usize) -> Self {
         let mut out = *self;

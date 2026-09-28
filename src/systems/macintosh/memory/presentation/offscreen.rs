@@ -296,6 +296,7 @@ impl OffscreenCellMut<'_> {
         self.chunk.values[self.slot] = value;
     }
 
+    #[cfg(test)]
     pub(super) fn index(&self, sample: usize) -> u8 {
         assert!(sample < self.len());
         self.chunk.indices[self.slot * TILE_SAMPLES + sample]
@@ -330,6 +331,18 @@ impl OffscreenCellMut<'_> {
             let i = bits.trailing_zeros() as usize;
             bits &= bits - 1;
             self.chunk.indices[base + i] = foreground;
+        }
+        if !self.chunk.may_have_ink(self.slot) {
+            // A cell without ink (text drawn onto an erased buffer): each
+            // partly covered sample's ink is the foreground at its coverage
+            // over the sample's current index, exactly what `update` would
+            // build from nothing.
+            if partial != 0 {
+                let indices = &self.chunk.indices[base..base + TILE_SAMPLES];
+                let block = CellInk::painted(partial, foreground, alphas, indices);
+                self.chunk.slot_ink_mut(self.slot).assign(&block);
+            }
+            return;
         }
         let ink_to_clear = self.chunk.may_have_ink(self.slot) && full != 0;
         if !ink_to_clear && partial == 0 {
@@ -390,6 +403,7 @@ impl OffscreenCellMut<'_> {
 
     /// Apply `change` to the ink of `sample`, starting from `ink()` when it
     /// has none.
+    #[cfg(test)]
     pub(super) fn update_ink(&mut self, sample: usize, ink: impl FnOnce() -> Ink, change: impl FnOnce(&mut Ink)) {
         self.chunk.forget_shared(self.slot);
         self.chunk.slot_ink_mut(self.slot).update(sample, ink, change);
