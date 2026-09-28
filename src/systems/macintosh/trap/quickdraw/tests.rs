@@ -10666,6 +10666,79 @@
         assert_eq!(bus.read_bytes(dst_base + 4, 8), expected);
     }
 
+    // Opaque runs are stored as spans. On a presented screen that must match
+    // per-pixel stores: retained text under opaque pixels is replaced, and
+    // text under transparent pixels stays as it was.
+    #[test]
+    fn copymask_8bpp_runs_keep_text_under_transparent_pixels() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let (width, height) = (64u32, 16u32);
+        let screen = bus.alloc(width * height);
+        d.set_screen_mode_for_test(screen, width, width as u16, height as u16, 8);
+        bus.fill_bytes(screen, width * height, 0);
+        let palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.enable_outline_presentation(d.screen_mode, palette, 4);
+        super::super::TrapDispatcher::fb_draw_string_styled_index(
+            &mut bus, screen, width, 8, 64, 16, 1, 12, "WWWWWW", 0, 12, 0, 255,
+        );
+        let has_text = |bus: &crate::memory::MacMemoryBus, x: u32, y: u32| {
+            bus.save_pixel_bytes(screen + y * width + x, 1).has_detail_at(0)
+        };
+        let before: Vec<Vec<u8>> =
+            (0..height).map(|y| bus.read_bytes(screen + y * width, width as usize)).collect();
+        let text_before: Vec<Vec<bool>> =
+            (0..height).map(|y| (0..width).map(|x| has_text(&bus, x, y)).collect()).collect();
+        assert!(
+            (0..height).any(|y| (0..32).any(|x| text_before[y as usize][x])),
+            "text under the opaque half"
+        );
+        assert!(
+            (0..height).any(|y| (32..64).any(|x| text_before[y as usize][x])),
+            "text under the transparent half"
+        );
+
+        let src_pixmap = bus.alloc(50);
+        let src_base = bus.alloc(width * height);
+        write_pixmap_8(&mut bus, src_pixmap, src_base, width as u16, height as u16, 0);
+        bus.fill_bytes(src_base, width * height, 0x33);
+        let mask_bits = bus.alloc(14);
+        let mask_base = bus.alloc(8 * height);
+        write_bitmap_1bpp(&mut bus, mask_bits, mask_base, 8, (0, 0, 16, 64));
+        for y in 0..height {
+            bus.write_bytes(mask_base + y * 8, &[0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0]);
+        }
+        let dst_pixmap = bus.alloc(50);
+        write_pixmap_8(&mut bus, dst_pixmap, screen, width as u16, height as u16, 0);
+        let rect = bus.alloc(8);
+        write_rect(&mut bus, rect, 0, 0, 16, 64);
+        bus.write_long(TEST_SP, rect);
+        bus.write_long(TEST_SP + 4, rect);
+        bus.write_long(TEST_SP + 8, rect);
+        bus.write_long(TEST_SP + 12, dst_pixmap);
+        bus.write_long(TEST_SP + 16, mask_bits);
+        bus.write_long(TEST_SP + 20, src_pixmap);
+        assert!(d.dispatch_quickdraw(true, 0x017, &mut cpu, &mut bus).unwrap().is_ok());
+
+        let stored = bus.read_byte(screen);
+        for y in 0..height {
+            let row = bus.read_bytes(screen + y * width, width as usize);
+            for x in 0..width {
+                let (column, line) = (x as usize, y as usize);
+                if x < 32 {
+                    assert_eq!(row[column], stored, "opaque pixel ({x}, {y})");
+                    assert!(!has_text(&bus, x, y), "text replaced at ({x}, {y})");
+                } else {
+                    assert_eq!(row[column], before[line][column], "transparent pixel ({x}, {y})");
+                    assert_eq!(
+                        has_text(&bus, x, y),
+                        text_before[line][column],
+                        "text kept at ({x}, {y})"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn copymask_matches_indexed_source_colors_to_destination_table() {
         // On indexed devices, CopyMask interprets source pixels through the
