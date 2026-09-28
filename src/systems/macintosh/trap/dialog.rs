@@ -7223,7 +7223,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn refresh_dialog_tracking_snapshot(&mut self, bus: &mut MacMemoryBus) {
+    fn refresh_dialog_tracking_snapshot(&mut self, bus: &mut MacMemoryBus, only_item: Option<i16>) {
         let Some(tracking) = self.dialog_tracking.as_ref() else {
             return;
         };
@@ -7249,7 +7249,7 @@ impl super::TrapDispatcher {
             &edit_text,
             edit_item,
             dialog_ptr,
-            None,
+            only_item,
         );
         self.redraw_dialog_popup_controls(bus, &popup_draws);
         let rendered = self.save_dialog_pixels(bus, bounds);
@@ -12925,7 +12925,7 @@ impl super::TrapDispatcher {
                                             }
                                         }
                                         if switched {
-                                            self.refresh_dialog_tracking_snapshot(bus);
+                                            self.refresh_dialog_tracking_snapshot(bus, None);
                                         }
                                     }
                                     // Unhandled Command-key equivalents belong
@@ -12998,7 +12998,7 @@ impl super::TrapDispatcher {
                                             enabled_edit_text,
                                         )) = text_trace
                                         {
-                                            self.refresh_dialog_tracking_snapshot(bus);
+                                            self.refresh_dialog_tracking_snapshot(bus, None);
                                             let outcome = if enabled_edit_text {
                                                 "enabled_edittext_item_hit"
                                             } else {
@@ -16537,7 +16537,7 @@ impl super::TrapDispatcher {
                             }
                         }
                         if refresh_tracking {
-                            self.refresh_dialog_tracking_snapshot(bus);
+                            self.refresh_dialog_tracking_snapshot(bus, Some(item_no));
                         } else {
                             redraw_text_item = Some((dlg_ptr, item_no));
                         }
