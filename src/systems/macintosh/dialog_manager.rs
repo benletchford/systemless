@@ -169,6 +169,18 @@ impl DialogItemKind {
     pub const fn is_text(self) -> bool {
         matches!(self, Self::StaticText | Self::EditText)
     }
+
+    /// Whether this item represents static or editable text, or a control with a title string.
+    pub const fn has_text_or_title(self) -> bool {
+        matches!(
+            self,
+            Self::StaticText
+                | Self::EditText
+                | Self::Button
+                | Self::Checkbox
+                | Self::RadioButton
+        )
+    }
 }
 
 /// Parsed Dialog Item List (DITL) entry.
@@ -215,9 +227,25 @@ impl DialogItemRecord {
         is_dialog_item_text(self.item_type)
     }
 
-    /// Decoded Mac Roman text if the payload represents a Pascal string.
+    /// Whether the item represents text or a control with a title string.
+    pub fn has_text_or_title(&self) -> bool {
+        is_dialog_item_text_or_title(self.item_type)
+    }
+
+    /// Returns the raw payload bytes if the item represents text or a title string.
+    pub fn text_payload(&self) -> Option<&[u8]> {
+        if self.has_text_or_title() {
+            Some(&self.payload)
+        } else {
+            None
+        }
+    }
+
+    /// Decoded Mac Roman text if the payload represents a text or title string; otherwise empty.
     pub fn text(&self) -> String {
-        decode_mac_roman(&self.payload)
+        self.text_payload()
+            .map(decode_mac_roman)
+            .unwrap_or_default()
     }
 
     /// 16-bit resource ID if the item references a resource (ICON, PICT, CNTL).
@@ -1096,6 +1124,7 @@ pub fn find_next_edit_text_in_items(
 }
 
 /// Clamps a text length to 255 bytes (Pascal string maximum payload).
+#[allow(dead_code)]
 pub fn clamp_dialog_item_text_len(len: usize) -> u8 {
     len.min(255) as u8
 }
@@ -1106,10 +1135,34 @@ pub fn clamp_dialog_item_text_bytes(text_bytes: &[u8]) -> &[u8] {
     &text_bytes[..len]
 }
 
+/// Clamps a UTF-8 string so its byte length does not exceed 255 bytes,
+/// ensuring character boundary safety.
+#[allow(dead_code)]
+pub fn clamp_dialog_item_text_str(text: &str) -> &str {
+    if text.len() <= 255 {
+        return text;
+    }
+    let mut boundary = 255;
+    while boundary > 0 && !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    &text[..boundary]
+}
+
 /// Encodes raw text bytes into Pascal string format: `(length_byte, clamped_payload)`.
 pub fn encode_dialog_item_pstring(text_bytes: &[u8]) -> (u8, &[u8]) {
     let clamped = clamp_dialog_item_text_bytes(text_bytes);
     (clamped.len() as u8, clamped)
+}
+
+/// Formats text bytes into a Pascal string byte vector with length prefix: `[len, byte0, byte1, ...]`.
+#[allow(dead_code)]
+pub fn format_dialog_item_pstring(text_bytes: &[u8]) -> Vec<u8> {
+    let clamped = clamp_dialog_item_text_bytes(text_bytes);
+    let mut result = Vec::with_capacity(1 + clamped.len());
+    result.push(clamped.len() as u8);
+    result.extend_from_slice(clamped);
+    result
 }
 
 /// Decodes a Pascal string slice (where the first byte is length) into payload bytes.
@@ -1122,6 +1175,59 @@ pub fn decode_dialog_item_pstring(bytes: &[u8]) -> Option<&[u8]> {
     } else {
         None
     }
+}
+
+/// Decodes a Pascal string slice (where the first byte is length) into a Mac Roman string.
+#[allow(dead_code)]
+pub fn decode_dialog_item_pstring_to_string(bytes: &[u8]) -> Option<String> {
+    decode_dialog_item_pstring(bytes).map(decode_mac_roman)
+}
+
+/// Prepares input text bytes for `SetDialogItemText`, clamping to at most 255 bytes
+/// and returning both the clamped byte slice and the decoded Mac Roman string.
+#[allow(dead_code)]
+pub fn prepare_set_dialog_item_text(text_bytes: &[u8]) -> (&[u8], String) {
+    let clamped = clamp_dialog_item_text_bytes(text_bytes);
+    let decoded = decode_mac_roman(clamped);
+    (clamped, decoded)
+}
+
+/// Encodes raw text bytes into Pascal string format for `GetDialogItemText`: `(length_byte, clamped_payload)`.
+#[allow(dead_code)]
+pub fn prepare_get_dialog_item_text(text_bytes: &[u8]) -> (u8, &[u8]) {
+    encode_dialog_item_pstring(text_bytes)
+}
+
+/// Resolves the active dialog item text bytes from an optional handle buffer and fallback DITL payload.
+///
+/// If `handle_bytes` is provided, it takes precedence. Otherwise, falls back to `fallback_payload`
+/// if the item type represents text or a titled control. Returns an empty slice for other item types.
+pub fn extract_dialog_item_text_bytes<'a>(
+    base_type: u8,
+    handle_bytes: Option<&'a [u8]>,
+    fallback_payload: &'a [u8],
+) -> &'a [u8] {
+    if let Some(bytes) = handle_bytes {
+        bytes
+    } else if is_dialog_item_text_or_title(base_type) {
+        fallback_payload
+    } else {
+        &[]
+    }
+}
+
+/// Resolves the active dialog item text string from an optional handle buffer and fallback DITL payload.
+#[allow(dead_code)]
+pub fn extract_dialog_item_text_string(
+    base_type: u8,
+    handle_bytes: Option<&[u8]>,
+    fallback_payload: &[u8],
+) -> String {
+    decode_mac_roman(extract_dialog_item_text_bytes(
+        base_type,
+        handle_bytes,
+        fallback_payload,
+    ))
 }
 
 /// Retrieves a reference to an item from a 1-indexed slice (returns `None` if `item_number == 0` or out of bounds).
@@ -1150,6 +1256,11 @@ pub fn is_dialog_item_control(raw_type: u8) -> bool {
 /// Returns true if the raw item type represents static text or edit text.
 pub fn is_dialog_item_text(raw_type: u8) -> bool {
     DialogItemKind::from_raw_type(raw_type).is_text()
+}
+
+/// Returns true if the raw item type represents static text, edit text, or a titled control.
+pub fn is_dialog_item_text_or_title(raw_type: u8) -> bool {
+    DialogItemKind::from_raw_type(raw_type).has_text_or_title()
 }
 
 /// Returns true if the raw item type represents static or editable text requiring handle disposal.
@@ -2026,6 +2137,86 @@ mod tests {
         ));
         assert!(!is_dialog_item_text(DIALOG_ITEM_BUTTON));
         assert!(!is_dialog_item_text(DIALOG_ITEM_ICON));
+
+        assert!(is_dialog_item_text_or_title(DIALOG_ITEM_STATIC_TEXT));
+        assert!(is_dialog_item_text_or_title(DIALOG_ITEM_EDIT_TEXT));
+        assert!(is_dialog_item_text_or_title(DIALOG_ITEM_BUTTON));
+        assert!(is_dialog_item_text_or_title(DIALOG_ITEM_CHECKBOX));
+        assert!(is_dialog_item_text_or_title(DIALOG_ITEM_RADIO));
+        assert!(!is_dialog_item_text_or_title(DIALOG_ITEM_RESOURCE_CONTROL));
+        assert!(!is_dialog_item_text_or_title(DIALOG_ITEM_ICON));
+        assert!(!is_dialog_item_text_or_title(DIALOG_ITEM_PICTURE));
+        assert!(!is_dialog_item_text_or_title(DIALOG_ITEM_USER_ITEM));
+
+        // String clamping and formatting
+        let short_str = "Dialog item text";
+        assert_eq!(clamp_dialog_item_text_str(short_str), short_str);
+        let long_str = "a".repeat(300);
+        let clamped_str = clamp_dialog_item_text_str(&long_str);
+        assert_eq!(clamped_str.len(), 255);
+
+        let pstr_formatted = format_dialog_item_pstring(b"Sample");
+        assert_eq!(pstr_formatted[0], 6);
+        assert_eq!(&pstr_formatted[1..], b"Sample");
+        assert_eq!(
+            decode_dialog_item_pstring_to_string(&pstr_formatted),
+            Some("Sample".to_string())
+        );
+
+        let (set_bytes, set_string) = prepare_set_dialog_item_text(b"Config");
+        assert_eq!(set_bytes, b"Config");
+        assert_eq!(set_string, "Config");
+
+        let (get_len, get_bytes) = prepare_get_dialog_item_text(b"Result");
+        assert_eq!(get_len, 6);
+        assert_eq!(get_bytes, b"Result");
+
+        // Active text resolution from handle vs fallback payload
+        let payload = b"Default text";
+        let handle_override = b"Active handle text";
+        assert_eq!(
+            extract_dialog_item_text_bytes(DIALOG_ITEM_EDIT_TEXT, Some(handle_override), payload),
+            handle_override
+        );
+        assert_eq!(
+            extract_dialog_item_text_bytes(DIALOG_ITEM_EDIT_TEXT, None, payload),
+            payload
+        );
+        assert_eq!(
+            extract_dialog_item_text_bytes(DIALOG_ITEM_BUTTON, None, b"Cancel"),
+            b"Cancel"
+        );
+        assert_eq!(
+            extract_dialog_item_text_bytes(DIALOG_ITEM_ICON, None, &[0x00, 0x80]),
+            b""
+        );
+        assert_eq!(
+            extract_dialog_item_text_string(DIALOG_ITEM_STATIC_TEXT, None, b"Info"),
+            "Info"
+        );
+
+        // DialogItemRecord text queries and payload isolation
+        let text_record = DialogItemRecord {
+            item_offset: 0,
+            item_type: DIALOG_ITEM_STATIC_TEXT,
+            rect: (0, 0, 10, 50),
+            handle: 0,
+            payload: b"Hello".to_vec(),
+        };
+        assert!(text_record.has_text_or_title());
+        assert_eq!(text_record.text_payload(), Some(&b"Hello"[..]));
+        assert_eq!(text_record.text(), "Hello");
+
+        let icon_record = DialogItemRecord {
+            item_offset: 0,
+            item_type: DIALOG_ITEM_ICON,
+            rect: (0, 0, 32, 32),
+            handle: 0,
+            payload: vec![0x00, 0x80],
+        };
+        assert!(!icon_record.has_text_or_title());
+        assert_eq!(icon_record.text_payload(), None);
+        assert_eq!(icon_record.text(), "");
 
         // Control procIDs
         assert_eq!(dialog_item_control_proc_id(DIALOG_ITEM_BUTTON), Some(0));

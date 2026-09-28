@@ -10,7 +10,8 @@ use crate::cpu::{CpuOps, Register};
 use crate::dialog_manager::{
     dialog_dbox_frame_rect, dialog_item_base_type, dialog_target_for_event, edit_text_frame_rect,
     find_dialog_item_hit, global_to_dialog_local_point, is_dialog_item_control,
-    is_dialog_item_disabled, is_dialog_item_enabled, normalize_selection_bounds,
+    is_dialog_item_disabled, is_dialog_item_enabled, is_dialog_item_text,
+    normalize_selection_bounds, prepare_get_dialog_item_text, prepare_set_dialog_item_text,
     rect_contains_point, DIALOG_DBOX_FRAME_MARGIN, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX,
     DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO,
     DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT, DIALOG_ITEM_USER_ITEM,
@@ -4875,7 +4876,7 @@ impl super::TrapDispatcher {
             return;
         };
         let base_type = dialog_item_base_type(item.item_type);
-        if base_type != DIALOG_ITEM_STATIC_TEXT && base_type != DIALOG_ITEM_EDIT_TEXT {
+        if !is_dialog_item_text(base_type) {
             return;
         }
 
@@ -11739,9 +11740,7 @@ impl super::TrapDispatcher {
                             // userItem: the "item" parameter is a ProcPtr
                             // Inside Macintosh Volume I, I-405
                             item.proc_ptr = item_handle;
-                        } else if base_type == DIALOG_ITEM_STATIC_TEXT
-                            || base_type == DIALOG_ITEM_EDIT_TEXT
-                        {
+                        } else if is_dialog_item_text(base_type) {
                             item.text = Self::text_item_string_from_handle(bus, item_handle);
                         }
                     }
@@ -11795,7 +11794,7 @@ impl super::TrapDispatcher {
                     }
                 }
 
-                if base_type == DIALOG_ITEM_STATIC_TEXT || base_type == DIALOG_ITEM_EDIT_TEXT {
+                if is_dialog_item_text(base_type) {
                     if item_handle != 0 {
                         self.dialog_item_handles
                             .insert(item_handle, (dialog_ptr, (item_no - 1) as usize));
@@ -11827,9 +11826,7 @@ impl super::TrapDispatcher {
                         item.rect = (box_top, box_left, box_bottom, box_right);
                         if base_type == DIALOG_ITEM_USER_ITEM {
                             item.proc_ptr = item_handle;
-                        } else if base_type == DIALOG_ITEM_STATIC_TEXT
-                            || base_type == DIALOG_ITEM_EDIT_TEXT
-                        {
+                        } else if is_dialog_item_text(base_type) {
                             item.text = Self::text_item_string_from_handle(bus, item_handle);
                             if tracking.edit_item == item_no {
                                 tracking.edit_text = item.text.clone();
@@ -16280,10 +16277,9 @@ impl super::TrapDispatcher {
                 let item_handle = bus.read_long(sp + 4);
                 let mut redraw_text_item = None;
                 if text_str_ptr != 0 {
-                    let bytes = bus.read_pstring(text_str_ptr);
-                    let bytes = crate::dialog_manager::clamp_dialog_item_text_bytes(&bytes);
+                    let raw_bytes = bus.read_pstring(text_str_ptr);
+                    let (bytes, text) = prepare_set_dialog_item_text(&raw_bytes);
                     let len = bytes.len();
-                    let text = decode_mac_roman(bytes);
 
                     if item_handle != 0 {
                         let data_ptr = Self::ensure_text_handle_size(bus, item_handle, len);
@@ -16370,8 +16366,7 @@ impl super::TrapDispatcher {
                             );
                         if current_edit_handle.is_some() {
                             let bytes = encode_mac_roman_lossy(&tracking.edit_text);
-                            let (len, text) =
-                                crate::dialog_manager::encode_dialog_item_pstring(&bytes);
+                            let (len, text) = prepare_get_dialog_item_text(&bytes);
                             bus.write_byte(text_ptr, len);
                             for (i, byte) in text.iter().enumerate() {
                                 bus.write_byte(text_ptr + 1 + i as u32, *byte);
@@ -16386,14 +16381,11 @@ impl super::TrapDispatcher {
                             let master = bus.read_long(item_handle);
                             if master != 0 {
                                 let total_size = bus.get_alloc_size(master).unwrap_or(0) as usize;
-                                let len =
-                                    crate::dialog_manager::clamp_dialog_item_text_len(total_size);
+                                let raw_bytes = bus.read_bytes(master, total_size);
+                                let (len, text) = prepare_get_dialog_item_text(&raw_bytes);
                                 bus.write_byte(text_ptr, len);
-                                for i in 0..len as usize {
-                                    bus.write_byte(
-                                        text_ptr + 1 + i as u32,
-                                        bus.read_byte(master + i as u32),
-                                    );
+                                for (i, byte) in text.iter().enumerate() {
+                                    bus.write_byte(text_ptr + 1 + i as u32, *byte);
                                 }
                                 wrote = true;
                             }

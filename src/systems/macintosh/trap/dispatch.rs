@@ -478,14 +478,7 @@ pub struct DialogItem {
 impl From<crate::dialog_manager::DialogItemRecord> for DialogItem {
     fn from(record: crate::dialog_manager::DialogItemRecord) -> Self {
         let base_type = crate::dialog_manager::dialog_item_base_type(record.item_type);
-        let text = match base_type {
-            crate::dialog_manager::DIALOG_ITEM_BUTTON
-            | crate::dialog_manager::DIALOG_ITEM_CHECKBOX
-            | crate::dialog_manager::DIALOG_ITEM_RADIO
-            | crate::dialog_manager::DIALOG_ITEM_STATIC_TEXT
-            | crate::dialog_manager::DIALOG_ITEM_EDIT_TEXT => record.text(),
-            _ => String::new(),
-        };
+        let text = record.text();
         let resource_id = match base_type {
             crate::dialog_manager::DIALOG_ITEM_RESOURCE_CONTROL
             | crate::dialog_manager::DIALOG_ITEM_ICON
