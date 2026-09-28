@@ -9570,6 +9570,11 @@ fn dispatcher_target_for_import(
                 PpcAppleEventCompatibilityOperation::GetParamDesc,
             )
         }
+        ("InterfaceLib", "AEGetParamPtr") => {
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::GetParamPtr,
+            )
+        }
         ("InterfaceLib", "AEPutParamDesc") => {
             PpcImportDispatcherTarget::AppleEventCompatibility(
                 PpcAppleEventCompatibilityOperation::PutParamDesc,
