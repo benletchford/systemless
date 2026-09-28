@@ -46,6 +46,18 @@ pub const DEFAULT_BUTTON_OUTLINE_THICKNESS: i16 = 3;
 /// Macintosh Toolbox Essentials (1992), Listing 6-17.
 pub const DEFAULT_BUTTON_OUTLINE_INSET: i16 = 4;
 
+/// Standard margin around dialog content for a modal dialog box (`dBoxProc`).
+/// Inside Macintosh Volume I, p. I-273.
+pub const DIALOG_DBOX_FRAME_MARGIN: i16 = 8;
+
+/// Standard outset around an active edit-text field for focus/border frame rendering.
+/// Inside Macintosh Volume I, p. I-414; Macintosh Human Interface Guidelines (1992), p. 184.
+pub const EDIT_TEXT_FRAME_OUTSET: i16 = 3;
+
+/// Standard flush-left text glyph inset from destination rectangle leading edge.
+/// Inside Macintosh Volume I, pp. I-373--I-374.
+pub const DIALOG_TEXT_LEFT_INSET: i16 = 1;
+
 /// Canonical AppendDITL placement methods.
 /// Macintosh Toolbox Essentials (1992), pp. 6-108, 6-153.
 pub const APPEND_DITL_OVERLAY: i16 = 0;
@@ -446,6 +458,92 @@ pub fn dialog_rect_to_local(
 /// Whether a rectangle contains a point `(v, h)` (with half-open interval `top <= v < bottom` and `left <= h < right`).
 pub fn rect_contains_point(rect: (i16, i16, i16, i16), v: i16, h: i16) -> bool {
     v >= rect.0 && v < rect.2 && h >= rect.1 && h < rect.3
+}
+
+/// Inset a rectangle by `(v_delta, h_delta)` using saturating arithmetic.
+#[allow(dead_code)]
+pub fn inset_rect(rect: (i16, i16, i16, i16), v_delta: i16, h_delta: i16) -> (i16, i16, i16, i16) {
+    (
+        rect.0.saturating_add(v_delta),
+        rect.1.saturating_add(h_delta),
+        rect.2.saturating_sub(v_delta),
+        rect.3.saturating_sub(h_delta),
+    )
+}
+
+/// Outset a rectangle by `(v_delta, h_delta)` using saturating arithmetic.
+pub fn outset_rect(rect: (i16, i16, i16, i16), v_delta: i16, h_delta: i16) -> (i16, i16, i16, i16) {
+    (
+        rect.0.saturating_sub(v_delta),
+        rect.1.saturating_sub(h_delta),
+        rect.2.saturating_add(v_delta),
+        rect.3.saturating_add(h_delta),
+    )
+}
+
+/// Calculate the outer boundary rectangle for a modal dialog box (`dBoxProc`)
+/// structure frame including its standard 8-pixel margin.
+///
+/// Inside Macintosh Volume I, p. I-273.
+pub fn dialog_dbox_frame_rect(content_bounds: (i16, i16, i16, i16)) -> (i16, i16, i16, i16) {
+    outset_rect(
+        content_bounds,
+        DIALOG_DBOX_FRAME_MARGIN,
+        DIALOG_DBOX_FRAME_MARGIN,
+    )
+}
+
+/// Calculate the outer border frame rectangle for an edit-text dialog item.
+///
+/// Inside Macintosh Volume I, p. I-414;
+/// Macintosh Human Interface Guidelines (1992), p. 184.
+pub fn edit_text_frame_rect(item_rect: (i16, i16, i16, i16)) -> (i16, i16, i16, i16) {
+    outset_rect(item_rect, EDIT_TEXT_FRAME_OUTSET, EDIT_TEXT_FRAME_OUTSET)
+}
+
+/// Calculate the text rendering rectangle for a static or editable text dialog item,
+/// applying the standard 1-pixel flush-left glyph inset.
+///
+/// Inside Macintosh Volume I, pp. I-373--I-374.
+pub fn dialog_text_rect(item_rect: (i16, i16, i16, i16)) -> (i16, i16, i16, i16) {
+    (
+        item_rect.0,
+        item_rect.1.saturating_add(DIALOG_TEXT_LEFT_INSET),
+        item_rect.2,
+        item_rect.3,
+    )
+}
+
+/// Extract the base dialog item type code, stripping the disabled bit flag (`0x80`).
+pub const fn dialog_item_base_type(raw_type: u8) -> u8 {
+    raw_type & !DIALOG_ITEM_DISABLED_FLAG
+}
+
+/// Resolve the target dialog pointer for a Toolbox event.
+///
+/// Inside Macintosh Volume I, pp. I-416--I-417:
+/// Update and activate events name their target window in `message`; if that
+/// window is a dialog box, the event routes to it (and if not, no dialog is targeted).
+/// All other events are routed to the frontmost active dialog.
+pub fn dialog_target_for_event<F>(
+    what: u16,
+    message: u32,
+    is_dialog: F,
+    front_dialog: Option<u32>,
+) -> Option<u32>
+where
+    F: FnOnce(u32) -> bool,
+{
+    match what {
+        EVENT_UPDATE | EVENT_ACTIVATE => {
+            if is_dialog(message) {
+                Some(message)
+            } else {
+                None
+            }
+        }
+        _ => front_dialog,
+    }
 }
 
 /// Determine whether a dialog item rectangle is hidden off-screen.
@@ -2174,5 +2272,91 @@ mod tests {
         let (res, caret) = textedit_key_result(initial, 0, 0, 0x08);
         assert_eq!(res, b"Hello World");
         assert_eq!(caret, 0);
+    }
+
+    #[test]
+    fn dialog_target_routing_and_frame_geometry() {
+        // Target resolution for events
+        let front = Some(0x1000);
+        let dialog_window = 0x2000;
+        let other_window = 0x3000;
+        let is_dialog = |ptr| ptr == dialog_window;
+
+        // Update events route to message only if it is a dialog
+        assert_eq!(
+            dialog_target_for_event(EVENT_UPDATE, dialog_window, is_dialog, front),
+            Some(dialog_window)
+        );
+        assert_eq!(
+            dialog_target_for_event(EVENT_UPDATE, other_window, is_dialog, front),
+            None
+        );
+
+        // Activate events route to message only if it is a dialog
+        assert_eq!(
+            dialog_target_for_event(EVENT_ACTIVATE, dialog_window, is_dialog, front),
+            Some(dialog_window)
+        );
+        assert_eq!(
+            dialog_target_for_event(EVENT_ACTIVATE, other_window, is_dialog, front),
+            None
+        );
+
+        // Mouse, key, and other events route to front dialog regardless of message
+        assert_eq!(
+            dialog_target_for_event(EVENT_MOUSE_DOWN, other_window, is_dialog, front),
+            front
+        );
+        assert_eq!(
+            dialog_target_for_event(EVENT_KEY_DOWN, other_window, is_dialog, front),
+            front
+        );
+        assert_eq!(
+            dialog_target_for_event(EVENT_AUTO_KEY, other_window, is_dialog, front),
+            front
+        );
+        assert_eq!(
+            dialog_target_for_event(EVENT_NULL, other_window, is_dialog, front),
+            front
+        );
+
+        // Inset and outset math
+        let base = (10, 20, 100, 200);
+        assert_eq!(inset_rect(base, 2, 5), (12, 25, 98, 195));
+        assert_eq!(outset_rect(base, 3, 4), (7, 16, 103, 204));
+
+        // Modal dialog dBoxProc frame rect: 8px margin
+        assert_eq!(
+            dialog_dbox_frame_rect((50, 60, 150, 260)),
+            (42, 52, 158, 268)
+        );
+
+        // Edit text frame rect: 3px outset
+        assert_eq!(edit_text_frame_rect((10, 20, 30, 80)), (7, 17, 33, 83));
+
+        // Dialog text rect: 1px left inset
+        assert_eq!(dialog_text_rect((10, 20, 30, 80)), (10, 21, 30, 80));
+
+        // Dialog item base type stripping 0x80
+        assert_eq!(
+            dialog_item_base_type(DIALOG_ITEM_USER_ITEM),
+            DIALOG_ITEM_USER_ITEM
+        );
+        assert_eq!(
+            dialog_item_base_type(DIALOG_ITEM_BUTTON),
+            DIALOG_ITEM_BUTTON
+        );
+        assert_eq!(
+            dialog_item_base_type(DIALOG_ITEM_BUTTON | DIALOG_ITEM_DISABLED_FLAG),
+            DIALOG_ITEM_BUTTON
+        );
+        assert_eq!(
+            dialog_item_base_type(DIALOG_ITEM_EDIT_TEXT | DIALOG_ITEM_DISABLED_FLAG),
+            DIALOG_ITEM_EDIT_TEXT
+        );
+        assert_eq!(
+            dialog_item_base_type(DIALOG_ITEM_PICTURE | DIALOG_ITEM_DISABLED_FLAG),
+            DIALOG_ITEM_PICTURE
+        );
     }
 }
