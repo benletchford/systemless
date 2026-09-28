@@ -34,10 +34,10 @@ pub(super) trait PpcImportBindingPolicy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct PpcImportLayout {
-    pub(super) capacity: u32,
-    pub(super) tvector_base: u32,
-    pub(super) trap_base: u32,
+pub(crate) struct PpcImportLayout {
+    pub(crate) capacity: u32,
+    pub(crate) tvector_base: u32,
+    pub(crate) trap_base: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,7 +189,7 @@ fn checked_slot_address(
 }
 
 #[derive(Debug)]
-pub(super) struct PpcImportRunState {
+pub(crate) struct PpcImportRunState {
     bindings: Vec<PpcImportBinding>,
     count: u32,
     indices: Vec<Option<usize>>,
@@ -197,7 +197,7 @@ pub(super) struct PpcImportRunState {
 }
 
 impl PpcImportRunState {
-    pub(super) fn from_parts(
+    pub(crate) fn from_parts(
         bindings: Vec<PpcImportBinding>,
         count: u32,
         layout: PpcImportLayout,
