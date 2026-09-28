@@ -47,7 +47,10 @@ pub(super) fn dispatch_toolbox_import(
             let left = ppc_read_pstring_bytes(memory, cpu.gpr[3])?;
             let right = ppc_read_pstring_bytes(memory, cpu.gpr[4])?;
             let primary = |byte| crate::trap::mac_roman_to_upper(byte, true);
-            let equal = left.into_iter().map(primary).eq(right.into_iter().map(primary));
+            let equal = left
+                .into_iter()
+                .map(primary)
+                .eq(right.into_iter().map(primary));
             Some(PpcImportAction::Return(u32::from(!equal)))
         }
         PpcImportDispatcherTarget::NumToString => {
@@ -79,4 +82,64 @@ pub(super) fn dispatch_toolbox_import(
         }
         _ => None,
     }
+}
+
+pub(crate) fn ppc_string_to_num(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
+    let string_ptr = cpu.gpr[3];
+    let number_ptr = cpu.gpr[4];
+    if string_ptr == 0 || number_ptr == 0 || !ppc_memory_can_write_bytes(memory, number_ptr, 4) {
+        return;
+    }
+    let Some(bytes) = ppc_read_pstring_bytes(memory, string_ptr) else {
+        return;
+    };
+    let mut index = 0usize;
+    while bytes
+        .get(index)
+        .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
+        index += 1;
+    }
+    let mut sign = 1i64;
+    if let Some(byte) = bytes.get(index) {
+        if *byte == b'-' {
+            sign = -1;
+            index += 1;
+        } else if *byte == b'+' {
+            index += 1;
+        }
+    }
+    let mut value = 0i64;
+    while let Some(byte) = bytes.get(index) {
+        if !byte.is_ascii_digit() {
+            break;
+        }
+        value = value
+            .saturating_mul(10)
+            .saturating_add(i64::from(byte - b'0'));
+        index += 1;
+    }
+    let signed = value
+        .saturating_mul(sign)
+        .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    let _ = memory.write_u32_be(number_ptr, signed as u32);
+}
+
+pub(crate) fn ppc_sys_environs(memory: &mut PpcSectionMem, rec_ptr: u32) -> i16 {
+    if rec_ptr < 0x100 || !ppc_memory_can_write_bytes(memory, rec_ptr, 16) {
+        return PPC_PARAM_ERR;
+    }
+    let _ = memory.write_u16_be(rec_ptr, 2);
+    let _ = memory.write_u16_be(rec_ptr + 2, REFERENCE_MACHINE_PROFILE.gestalt_machine_type);
+    let _ = memory.write_u16_be(rec_ptr + 4, POWERPC_SYSTEM_VERSION_BCD);
+    let _ = memory.write_u16_be(
+        rec_ptr + 6,
+        REFERENCE_MACHINE_PROFILE.gestalt_processor_type as u16,
+    );
+    let _ = memory.write_u8(rec_ptr + 8, u8::from(REFERENCE_MACHINE_PROFILE.has_fpu()));
+    let _ = memory.write_u8(rec_ptr + 9, 1);
+    let _ = memory.write_u16_be(rec_ptr + 10, 0);
+    let _ = memory.write_u16_be(rec_ptr + 12, 0);
+    let _ = memory.write_u16_be(rec_ptr + 14, 0);
+    PPC_NO_ERR
 }

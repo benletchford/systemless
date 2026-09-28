@@ -186,3 +186,73 @@ pub(super) fn dispatch_math_import(
         _ => None,
     }
 }
+
+pub(crate) fn ppc_math_ceil(cpu: &mut PpcCpu) {
+    // Inside Macintosh: PowerPC Numerics (1994), pp. 9-7--9-8:
+    // ceil rounds upward without an inexact exception and preserves signed
+    // zero, infinities, and quiet NaNs. A signaling NaN raises invalid and
+    // returns the corresponding quiet NaN.
+    const EXPONENT_MASK: u64 = 0x7ff0_0000_0000_0000;
+    const FRACTION_MASK: u64 = 0x000f_ffff_ffff_ffff;
+    const QUIET_NAN_BIT: u64 = 0x0008_0000_0000_0000;
+    let bits = cpu.fpr[1];
+    let signaling_nan = bits & EXPONENT_MASK == EXPONENT_MASK
+        && bits & FRACTION_MASK != 0
+        && bits & QUIET_NAN_BIT == 0;
+    if signaling_nan {
+        cpu.fpr[1] = bits | QUIET_NAN_BIT;
+        cpu.set_fpscr_bit(0, true);
+        cpu.set_fpscr_bit(2, true);
+        cpu.set_fpscr_bit(7, true);
+        if cpu.fpscr_bit(24) {
+            cpu.set_fpscr_bit(1, true);
+        }
+    } else {
+        cpu.fpr[1] = f64::from_bits(bits).ceil().to_bits();
+    }
+}
+
+pub(crate) fn ppc_math_fmod(cpu: &mut PpcCpu) {
+    // The PowerPC C ABI passes the two double arguments in f1/f2 and returns
+    // the remainder in f1. Rust's floating remainder has C fmod semantics:
+    // its magnitude is less than the divisor and its sign follows the dividend.
+    let dividend = f64::from_bits(cpu.fpr[1]);
+    let divisor = f64::from_bits(cpu.fpr[2]);
+    cpu.fpr[1] = (dividend % divisor).to_bits();
+}
+
+pub(crate) fn ppc_math_dtox80(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> bool {
+    let Some(hi) = memory.read_u32_be(cpu.gpr[3]) else {
+        return false;
+    };
+    let Some(lo) = memory.read_u32_be(cpu.gpr[3].wrapping_add(4)) else {
+        return false;
+    };
+    let extended = Extended80::from(f64::from_bits((u64::from(hi) << 32) | u64::from(lo)));
+    let sign_bit = if extended.sign { 0x8000 } else { 0 };
+    let out = cpu.gpr[4];
+
+    // Universal Interfaces fp.h (MathLib 2), `dtox80(const double *, extended80 *)`:
+    // convert a PowerPC double into the 10-byte big-endian 68K extended format.
+    memory
+        .write_u16_be(out, sign_bit | extended.exponent)
+        .is_some()
+        && memory
+            .write_u16_be(out.wrapping_add(2), (extended.significand >> 48) as u16)
+            .is_some()
+        && memory
+            .write_u16_be(out.wrapping_add(4), (extended.significand >> 32) as u16)
+            .is_some()
+        && memory
+            .write_u16_be(out.wrapping_add(6), (extended.significand >> 16) as u16)
+            .is_some()
+        && memory
+            .write_u16_be(out.wrapping_add(8), extended.significand as u16)
+            .is_some()
+}
+
+pub(crate) fn ppc_f64_to_fixed(value: f64) -> u32 {
+    (value * 65536.0)
+        .round()
+        .clamp(i32::MIN as f64, i32::MAX as f64) as i32 as u32
+}
