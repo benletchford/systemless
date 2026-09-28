@@ -332,6 +332,101 @@ fn draw_sprocket_get_version_writes_num_version() {
 }
 
 #[test]
+fn draw_sprocket_context_flatten_and_restore_round_trip() {
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_GetFlattenedSize"),
+        PpcImportDispatcherTarget::DSpContextGetFlattenedSize
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_Flatten"),
+        PpcImportDispatcherTarget::DSpContextFlatten
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_Restore"),
+        PpcImportDispatcherTarget::DSpContextRestore
+    );
+
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_Flatten");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let base = PPC_DATA_BASE + 0x3000;
+    let size_out = base;
+    let flat = base + 8;
+    let context_out = flat + PPC_DSP_FLAT_CONTEXT_SIZE;
+    loaded.memory.add_region(base, vec![0; 128]);
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = size_out;
+    assert_eq!(
+        ppc_dsp_context_get_flattened_size(&loaded.cpu, &mut loaded.memory),
+        PPC_NO_ERR
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(size_out),
+        Some(PPC_DSP_FLAT_CONTEXT_SIZE)
+    );
+
+    let mut saved_attributes = PpcDspContextAttributes::default();
+    saved_attributes.page_count = 1;
+    loaded.draw_sprocket.context_attributes = saved_attributes;
+    loaded.cpu.gpr[4] = flat;
+    assert_eq!(
+        ppc_dsp_context_flatten(&loaded.cpu, &mut loaded.memory, &loaded.draw_sprocket),
+        PPC_NO_ERR
+    );
+
+    loaded.draw_sprocket.context_attributes = PpcDspContextAttributes::default();
+    loaded.cpu.gpr[3] = flat;
+    loaded.cpu.gpr[4] = context_out;
+    assert_eq!(
+        ppc_dsp_context_restore(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+        ),
+        PPC_NO_ERR
+    );
+    assert_eq!(loaded.memory.read_u32_be(context_out), Some(PPC_DSP_CONTEXT));
+    assert_eq!(loaded.draw_sprocket.context_attributes, saved_attributes);
+}
+
+#[test]
+fn draw_sprocket_context_serialization_rejects_bad_inputs_without_overwriting_state() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_Restore");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let base = PPC_DATA_BASE + 0x3000;
+    let flat = base;
+    let context_out = base + PPC_DSP_FLAT_CONTEXT_SIZE;
+    loaded.memory.add_region(base, vec![0; 128]);
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = base;
+    assert_eq!(
+        ppc_dsp_context_get_flattened_size(&loaded.cpu, &mut loaded.memory),
+        PPC_DSP_CONTEXT_NOT_FOUND_ERR
+    );
+
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = base + 127;
+    assert_eq!(
+        ppc_dsp_context_flatten(&loaded.cpu, &mut loaded.memory, &loaded.draw_sprocket),
+        PPC_PARAM_ERR
+    );
+
+    let original_attributes = loaded.draw_sprocket.context_attributes;
+    loaded.memory.write_u32_be(context_out, 0x1234_5678).unwrap();
+    loaded.cpu.gpr[3] = flat;
+    loaded.cpu.gpr[4] = context_out;
+    assert_eq!(
+        ppc_dsp_context_restore(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+        ),
+        PPC_DSP_CONTEXT_NOT_FOUND_ERR
+    );
+    assert_eq!(loaded.memory.read_u32_be(context_out), Some(0x1234_5678));
+    assert_eq!(loaded.draw_sprocket.context_attributes, original_attributes);
+}
+
+#[test]
 fn find_best_context_on_display_id_selects_main_display_only() {
     let pef = synthetic_pef_with_library_import(
         b"DrawSprocketLib",

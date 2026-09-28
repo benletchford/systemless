@@ -227,6 +227,17 @@ pub(super) fn dispatch_drawsprocket_import(
                 Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
             }
         }
+        PpcImportDispatcherTarget::DSpContextGetFlattenedSize => {
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_dsp_context_get_flattened_size(cpu, memory),
+            )))
+        }
+        PpcImportDispatcherTarget::DSpContextFlatten => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_dsp_context_flatten(cpu, memory, draw_sprocket)),
+        )),
+        PpcImportDispatcherTarget::DSpContextRestore => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_dsp_context_restore(cpu, memory, draw_sprocket)),
+        )),
         PpcImportDispatcherTarget::DSpContextSetVblProc => {
             let error = if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
                 error

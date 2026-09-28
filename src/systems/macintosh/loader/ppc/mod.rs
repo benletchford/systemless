@@ -1372,6 +1372,9 @@ pub enum PpcImportDispatcherTarget {
     DSpContextSetClutEntries,
     DSpContextGetDisplayID,
     DSpContextGetAttributes,
+    DSpContextGetFlattenedSize,
+    DSpContextFlatten,
+    DSpContextRestore,
     DSpContextSetVblProc,
     DSpContextIsBusy,
     DSpAltBufferDispose,
@@ -7344,6 +7347,15 @@ fn dispatcher_target_for_import(
         ("DrawSprocketLib", "DSpContext_GetAttributes") => {
             PpcImportDispatcherTarget::DSpContextGetAttributes
         }
+        ("DrawSprocketLib", "DSpContext_GetFlattenedSize") => {
+            PpcImportDispatcherTarget::DSpContextGetFlattenedSize
+        }
+        ("DrawSprocketLib", "DSpContext_Flatten") => {
+            PpcImportDispatcherTarget::DSpContextFlatten
+        }
+        ("DrawSprocketLib", "DSpContext_Restore") => {
+            PpcImportDispatcherTarget::DSpContextRestore
+        }
         ("DrawSprocketLib", "DSpContext_SetVBLProc") => {
             PpcImportDispatcherTarget::DSpContextSetVblProc
         }
@@ -10582,6 +10594,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::DSpContextSetClutEntries
         | PpcImportDispatcherTarget::DSpContextGetDisplayID
         | PpcImportDispatcherTarget::DSpContextGetAttributes
+        | PpcImportDispatcherTarget::DSpContextGetFlattenedSize
+        | PpcImportDispatcherTarget::DSpContextFlatten
+        | PpcImportDispatcherTarget::DSpContextRestore
         | PpcImportDispatcherTarget::DSpContextSetVblProc
         | PpcImportDispatcherTarget::DSpContextIsBusy
         | PpcImportDispatcherTarget::DSpAltBufferDispose
