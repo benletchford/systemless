@@ -40,6 +40,16 @@ test('boot ignores stale generations, forwards progress and settles once', async
   assert.equal(b.worker.onmessageerror, null);
 });
 
+test('boot progress renews the inactivity deadline', async () => {
+  const b = bridge();
+  const firstTimer = [...b.timers.keys()][0];
+  b.receive({ type: 'progress', progress: 'StartingRuntime' });
+  assert.equal(b.timers.has(firstTimer), false);
+  assert.equal(b.timers.size, 1);
+  [...b.timers.values()][0]();
+  await assert.rejects(b.promise, /timed out/);
+});
+
 test('navigation cancellation terminates startup and removes listeners', async () => {
   const b = bridge();
   b.context.cancelSystemlessWorker(b.worker);
