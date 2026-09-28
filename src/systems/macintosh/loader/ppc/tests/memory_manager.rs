@@ -4120,6 +4120,42 @@ fn hle_import_runner_tracks_more_masters_requests() {
 }
 
 #[test]
+fn carbon_more_master_pointers_weak_import_is_callable() {
+    let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+        b"CarbonLib",
+        b"MoreMasterPointers",
+        0x82,
+        &[sm_index_reloc(0x30, 0)],
+    ));
+    let mut weak_loaded = load_pef_application(&pef).unwrap();
+    assert_eq!(
+        weak_loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::MoreMasters
+    );
+    assert_ne!(weak_loaded.imports[0].address, 0);
+    assert_eq!(
+        weak_loaded.memory.read_u32_be(PPC_DATA_BASE),
+        Some(weak_loaded.imports[0].address)
+    );
+
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"CarbonLib",
+        b"MoreMasterPointers",
+    ))
+    .unwrap();
+    loaded.set_last_mem_error(PPC_MEM_FULL_ERR);
+    loaded.cpu.gpr[3] = 640;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 640);
+    assert_eq!(loaded.master_pointer_blocks_requested(), 1);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+}
+
+#[test]
 fn hand_to_hand_duplicates_tracked_handle_storage() {
     let heap_base = 0x3000;
     let handle_variable = 0x3f00;

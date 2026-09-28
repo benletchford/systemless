@@ -632,6 +632,10 @@ pub(super) fn dispatch_memory_import(
             Some(PpcImportAction::Return(0))
         }
         PpcImportDispatcherTarget::MoreMasters => {
+            // Carbon MoreMasterPointers(inCount) requests one block containing
+            // inCount masters; our handle pool grows on demand, so the count
+            // imposes no allocation limit. Both APIs return void.
+            // Apple Memory Manager Reference (2007), p. 58.
             process_memory_manager.request_native_master_pointers();
             *last_mem_error = PPC_NO_ERR;
             Some(PpcImportAction::ReturnPreserve)
