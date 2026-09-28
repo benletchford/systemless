@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.67.0](https://github.com/benletchford/systemless/compare/v0.66.0...v0.67.0) (2026-09-28)
+
+
+### Features
+
+* **catalogue:** enable Bad Mojo browser launch ([#3235](https://github.com/benletchford/systemless/issues/3235)) ([46605a7](https://github.com/benletchford/systemless/commit/46605a71fdac78c1dc3b54ddb65c3757d2ce2288))
+* **catalogue:** enable Glypha browser launch ([#3258](https://github.com/benletchford/systemless/issues/3258)) ([7f9aae2](https://github.com/benletchford/systemless/commit/7f9aae20f593540fc50efba93382bd5fd7db58a7))
+* **catalogue:** enable Shanghai II demo browser launch ([#3255](https://github.com/benletchford/systemless/issues/3255)) ([8ecd53c](https://github.com/benletchford/systemless/commit/8ecd53cb135ea12e75f115aab7d519cfee99e512))
+* **catalogue:** enable Snood browser launch ([#3226](https://github.com/benletchford/systemless/issues/3226)) ([4a33047](https://github.com/benletchford/systemless/commit/4a330476e418a993216b0434dcd570038aa8aad2))
+
+
+### Bug Fixes
+
+* decode grouped extended VISE records ([#3231](https://github.com/benletchford/systemless/issues/3231)) ([d41060c](https://github.com/benletchford/systemless/commit/d41060c7ea840f6c74636ed7792bd90155adeb26))
+* **ppc:** handle application refnum and volume queue imports ([#3256](https://github.com/benletchford/systemless/issues/3256)) ([368d9f5](https://github.com/benletchford/systemless/commit/368d9f58adcfc8e47987437b03ebb2454cb17664))
+* **ppc:** report correct Gestalt processor identity ([#3239](https://github.com/benletchford/systemless/issues/3239)) ([192068e](https://github.com/benletchford/systemless/commit/192068ecffbf1330e0802e17c92bfcbe3c4536ad))
+* preserve PixMap color tables when copying Falcon demo screens ([#3244](https://github.com/benletchford/systemless/issues/3244)) ([b7dc927](https://github.com/benletchford/systemless/commit/b7dc927784e185ec96f034388cef07ac4a01658c))
+
+
+### Code Refactoring
+
+* **loader/ppc:** extract loaded app display and menu methods into loaded_app_display and loaded_app_menu submodules ([2745bb0](https://github.com/benletchford/systemless/commit/2745bb0732280befdb394f4081097c2a154135bf))
+* **loader/ppc:** extract loaded app memory and heap partition methods into loaded_app_memory submodule ([667172c](https://github.com/benletchford/systemless/commit/667172c8039b25f77cba56c44dd86fc640b1342f))
+* **loader/ppc:** extract loaded app process services and migration methods into loaded_app_process submodule ([6914ea9](https://github.com/benletchford/systemless/commit/6914ea9704207b84187e21e1f0156c8367d18280))
+* **loader/ppc:** extract loaded app resources, probes, and mixed mode activation into dedicated submodules ([6ef5d17](https://github.com/benletchford/systemless/commit/6ef5d17455f186b55d2e4aa4d96e70e2031aeb84))
+* **loader/ppc:** extract loaded app time and input methods into loaded_app_time and loaded_app_input submodules ([0c4bcb1](https://github.com/benletchford/systemless/commit/0c4bcb19305b69ba6e9965bd4efef786d4571e97))
+* **loader/ppc:** extract test vfs helpers and trap gateway methods into loaded_app_vfs and loaded_app_gateways submodules ([be9c19b](https://github.com/benletchford/systemless/commit/be9c19b521d7b6d3e4c7bd0b6883edf36fbba5c6))
+
 ## [0.66.0](https://github.com/benletchford/systemless/compare/v0.65.1...v0.66.0) (2026-09-28)
 
 
