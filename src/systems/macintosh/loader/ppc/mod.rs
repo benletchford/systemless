@@ -13081,6 +13081,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "CheckUpdate") => PpcImportDispatcherTarget::LegacyWindow(
             PpcLegacyWindowOperation::CheckUpdate,
         ),
+        ("InterfaceLib", "CreateNewWindow") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::CreateNewWindow,
+        ),
         ("InterfaceLib", "DisposeWindow") => PpcImportDispatcherTarget::LegacyWindow(
             PpcLegacyWindowOperation::DisposeWindow,
         ),

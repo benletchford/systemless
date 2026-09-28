@@ -2652,6 +2652,7 @@ pub enum PpcLegacyWindowOperation {
     BringToFront,
     CalculateVisibleRegion,
     CheckUpdate,
+    CreateNewWindow,
     DisposeWindow,
     DragWindow,
     GetNewWindow,
@@ -2811,6 +2812,63 @@ pub(super) fn ppc_dispatch_legacy_window(
                 }
             }
             Some(PpcImportAction::Return(window))
+        }
+        PpcLegacyWindowOperation::CreateNewWindow => {
+            // Carbon Window Manager, CreateNewWindow: the bounds describe the
+            // content region, and the returned WindowRef starts hidden.
+            // Apple, Handling Carbon Windows and Controls, "Window and Control Tasks".
+            let window_class = cpu.gpr[3];
+            let attributes = cpu.gpr[4];
+            let bounds = cpu.gpr[5];
+            let out_window = cpu.gpr[6];
+            if window_class != 6
+                || bounds == 0
+                || out_window == 0
+                || ppc_read_rect(memory, bounds).is_none()
+                || !ppc_memory_can_write_bytes(memory, out_window, 4)
+            {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+
+            let mut window_cpu = cpu.clone();
+            window_cpu.gpr[3] = 0;
+            window_cpu.gpr[4] = bounds;
+            window_cpu.gpr[5] = 0;
+            window_cpu.gpr[6] = 0;
+            window_cpu.gpr[7] = 0;
+            window_cpu.gpr[8] = u32::MAX;
+            window_cpu.gpr[9] = u32::from(attributes & 1 != 0);
+            window_cpu.gpr[10] = 0;
+            let mut allocator = PpcProcessAllocatorView {
+                memory_manager: process_memory_manager,
+            };
+            let window = ppc_new_window_from_cpu(
+                &window_cpu,
+                Some(&mut allocator),
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                gworlds,
+                window_list,
+                *current_gdevice,
+                toolbox_startup.host_menu_bar_hidden,
+            );
+            if window == 0 {
+                return Some(PpcImportAction::Return(ppc_i16_result(*last_mem_error)));
+            }
+            let _ = memory.write_u32_be(out_window, window);
+            ppc_recalculate_window_vis_regions(
+                process_memory_manager,
+                memory,
+                window_list,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
         PpcLegacyWindowOperation::GetNewWindow => {
             let previous_front = ppc_front_visible_process_window(memory, window_list);
