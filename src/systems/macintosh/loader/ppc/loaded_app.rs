@@ -1,0 +1,125 @@
+//! PowerPC loaded application execution model and process bindings.
+
+use super::*;
+
+#[derive(Debug, Clone)]
+pub struct PpcLoadedApp {
+    pub cpu: PpcCpu,
+    /// Mapped guest bytes shared by native and emulated 68k execution.
+    pub memory: crate::memory::GuestAddressSpace,
+    pub entry_pc: u32,
+    pub rtoc: u32,
+    pub stack_base: u32,
+    pub stack_size: u32,
+    pub stack_pointer: u32,
+    /// Process-scoped host pacing snapshot for the wrapping Macintosh clock.
+    /// Guest-visible time is always read from low-memory `Ticks`; this handle
+    /// only lets callback scheduling share the last observed value while a
+    /// native slice is active.
+    pub(crate) tick_state: SharedProcessTickState,
+    pub clock_cycles_per_tick: u32,
+    pub clock_cycle_phase: u32,
+    /// Canonical system-owned trap gateways captured when this native adapter
+    /// joins a materialized process. A live table entry equal to one of these
+    /// identities still selects the HLE default; every other callable entry is
+    /// an application patch and must run through Mixed Mode.
+    pub(crate) trap_default_gateways: HashMap<u16, u32>,
+    pub native_exception_handler: u32,
+    pub(crate) native_exception_stack: Vec<PpcNativeExceptionContext>,
+    pub(crate) stdc_qsort_stack: Vec<PpcQsortState>,
+    pub(crate) dialog_callback_stack: Vec<PpcDialogCallbackState>,
+    pub(crate) collection_callback_stack: Vec<PpcCollectionCallbackState>,
+    pub(crate) pending_file_completions: VecDeque<(u32, u32)>,
+    pub(crate) apple_events: PpcAppleEventState,
+    /// Standalone CFM seed; None after a runner moves it into its process.
+    /// Installed execution must receive the process service explicitly.
+    pub cfm: Option<PpcCfmState>,
+    pub(crate) controls: SharedProcessControlManager,
+    pub aliases: Vec<PpcAliasRecord>,
+    pub gworlds: Vec<PpcGWorldRecord>,
+    /// Process-owned state bits keyed by PixMapHandle. GWorld geometry,
+    /// allocation, and rendering records remain in `gworlds`.
+    pub(crate) gworld_pixel_states: SharedProcessQuickDrawPixelStates,
+    pub q3_objects: Vec<PpcQ3ObjectRecord>,
+    pub q3_object_refs: Vec<PpcQ3ObjectReferenceRecord>,
+    pub next_q3_object: u32,
+    pub q3_error_state: PpcQ3ErrorState,
+    pub q3_lifecycle: PpcQ3LifecycleState,
+    pub q3_memory_storages: Vec<PpcQ3MemoryStorageRecord>,
+    pub q3_files: Vec<PpcQ3FileRecord>,
+    pub q3_group_memberships: Vec<PpcQ3GroupMembershipRecord>,
+    pub q3_file_groups: Vec<PpcQ3FileGroupRecord>,
+    pub q3_views: Vec<PpcQ3ViewStateRecord>,
+    pub q3_submissions: Vec<PpcQ3SubmissionRecord>,
+    pub q3_view_transforms: Vec<PpcQ3ViewTransformRecord>,
+    pub q3_submission_transforms: Vec<PpcQ3SubmissionTransformRecord>,
+    pub q3_view_materials: Vec<PpcQ3ViewMaterialRecord>,
+    pub q3_submission_materials: Vec<PpcQ3SubmissionMaterialRecord>,
+    pub q3_submission_lights: Vec<PpcQ3SubmissionLightRecord>,
+    pub q3_view_state_stack: Vec<PpcQ3ViewStateSnapshotRecord>,
+    pub q3_completed_frames: Vec<PpcQ3CompletedFrameRecord>,
+    pub q3_retained_frames: Vec<PpcQ3RetainedFrameRecord>,
+    pub q3_state_only_completed_frame_batches: Vec<PpcQ3StateOnlyCompletedFrameBatch>,
+    pub q3_fog_styles: Vec<PpcQ3FogStyleRecord>,
+    pub q3_attributes: Vec<PpcQ3AttributeRecord>,
+    pub q3_shader_uv_transforms: Vec<PpcQ3ShaderUvTransformRecord>,
+    pub q3_shader_boundaries: Vec<PpcQ3ShaderBoundaryRecord>,
+    pub q3_mipmap_textures: Vec<PpcQ3MipmapTextureRecord>,
+    pub q3_texture_shaders: Vec<PpcQ3TextureShaderRecord>,
+    pub q3_renderer_preferences: Vec<PpcQ3RendererPreferenceRecord>,
+    pub q3_draw_contexts: Vec<PpcQ3DrawContextRecord>,
+    pub q3_trimeshes: Vec<PpcQ3TriMeshRecord>,
+    pub q3_styles: Vec<PpcQ3StyleRecord>,
+    pub q3_cameras: Vec<PpcQ3CameraRecord>,
+    pub q3_lights: Vec<PpcQ3LightRecord>,
+    pub input_sprocket: PpcInputSprocketState,
+    pub input_sprocket_virtual_elements: Vec<PpcInputSprocketVirtualElementRecord>,
+    pub toolbox_startup: PpcToolboxStartupState,
+    pub quicktime: PpcQuickTimeState,
+    pub sound: PpcSoundState,
+    pub(crate) timer_tasks: SharedProcessTimerTasks,
+    pub(crate) vbl_tasks: SharedProcessVblTasks,
+    pub(crate) callback_scheduling: SharedProcessCallbackScheduling,
+    pub(crate) process_file_system: SharedProcessFileSystem,
+    pub(crate) current_gworld: SharedProcessGraphicsPort,
+    pub(crate) current_gdevice: SharedProcessGraphicsDevice,
+    pub(crate) quickdraw_op_colors: SharedProcessQuickDrawOpColors,
+    pub(crate) quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors,
+    pub screen_clut: SharedProcessDisplayClut,
+    pub color_manager_clut: SharedProcessDisplayClut,
+    pub(crate) display_gamma: SharedProcessDisplayGamma,
+    /// Whether QuickDraw draw state is canonical in the attached process's
+    /// current CGrafPort record and must be reloaded at each import boundary.
+    pub(crate) process_quickdraw_port_state_attached: bool,
+    pub quickdraw_fore_color: PpcRgbColor,
+    pub(crate) quickdraw_fore_indices: HashMap<u32, u8>,
+    pub quickdraw_back_color: PpcRgbColor,
+    pub quickdraw_pen_h: i16,
+    pub quickdraw_pen_v: i16,
+    pub quickdraw_text_mode: i16,
+    pub quickdraw_text_size: i16,
+    pub(crate) cursor_state: SharedProcessCursorState,
+    pub(crate) param_text: SharedProcessDialogText,
+    pub scrap: PpcScrapState,
+    pub(crate) list_manager: PpcListManagerState,
+    pub(crate) collections: SharedProcessCollectionManager,
+    pub halt_pc: u32,
+    pub import_trap_base: u32,
+    pub import_count: u32,
+    pub imports: Vec<PpcImportBinding>,
+    pub section_bases: Vec<Option<u32>>,
+    pub input: PpcInputSnapshot,
+    pub(crate) process_input: SharedProcessInputState,
+    pub(crate) event_queue: SharedProcessEventQueue,
+    pub(crate) window_list: crate::process_context::SharedProcessWindowList,
+    pub(crate) process_memory_manager: PpcProcessMemoryManager,
+    pub draw_sprocket: PpcDrawSprocketState,
+}
+
+impl std::ops::Deref for PpcLoadedApp {
+    type Target = ProcessFileSystemState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.process_file_system
+    }
+}

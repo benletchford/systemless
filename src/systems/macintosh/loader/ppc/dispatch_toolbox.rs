@@ -143,3 +143,62 @@ pub(crate) fn ppc_sys_environs(memory: &mut PpcSectionMem, rec_ptr: u32) -> i16 
     let _ = memory.write_u16_be(rec_ptr + 14, 0);
     PPC_NO_ERR
 }
+
+pub(crate) fn ppc_read_pstring(memory: &mut PpcSectionMem, addr: u32) -> Option<String> {
+    Some(decode_mac_roman(&ppc_read_pstring_bytes(memory, addr)?))
+}
+
+pub(crate) fn ppc_equal_string(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> u32 {
+    let a_ptr = cpu.gpr[3];
+    let b_ptr = cpu.gpr[4];
+    let case_sensitive = (cpu.gpr[5] & 0xff) != 0;
+    let _diac_sensitive = (cpu.gpr[6] & 0xff) != 0;
+    let Some(a_bytes) = ppc_read_pstring_bytes(memory, a_ptr) else {
+        return 0;
+    };
+    let Some(b_bytes) = ppc_read_pstring_bytes(memory, b_ptr) else {
+        return 0;
+    };
+    let equal = if case_sensitive {
+        a_bytes == b_bytes
+    } else {
+        a_bytes.eq_ignore_ascii_case(&b_bytes)
+    };
+
+    if ppc_hle_trace_enabled() {
+        eprintln!(
+            "[PPC-TRACE] EqualString a={:?} b={:?} case_sensitive={} -> {}",
+            decode_mac_roman(&a_bytes),
+            decode_mac_roman(&b_bytes),
+            case_sensitive,
+            equal
+        );
+    }
+
+    u32::from(equal)
+}
+
+pub(crate) fn ppc_write_pstring_bytes(memory: &mut PpcSectionMem, addr: u32, bytes: &[u8]) -> bool {
+    let len = bytes.len().min(255);
+    if memory.write_u8(addr, len as u8).is_none() {
+        return false;
+    }
+    for (offset, byte) in bytes.iter().copied().take(len).enumerate() {
+        let Some(byte_addr) = addr.checked_add(1 + offset as u32) else {
+            return false;
+        };
+        if memory.write_u8(byte_addr, byte).is_none() {
+            return false;
+        }
+    }
+    true
+}
+
+pub(crate) fn ppc_read_pstring_bytes(memory: &mut PpcSectionMem, addr: u32) -> Option<Vec<u8>> {
+    let len = memory.read_u8(addr)? as usize;
+    let mut bytes = Vec::with_capacity(len);
+    for offset in 0..len {
+        bytes.push(memory.read_u8(addr.checked_add(1 + offset as u32)?)?);
+    }
+    Some(bytes)
+}

@@ -924,3 +924,63 @@ impl PpcLoadedApp {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PpcCallbackTarget {
+    pub(crate) entry: u32,
+    pub(crate) rtoc: u32,
+    pub(crate) proc_info: u32,
+    pub(crate) routine_flags: u16,
+}
+
+pub(crate) fn ppc_resolve_callback_target(
+    memory: &mut PpcSectionMem,
+    proc_ptr: u32,
+    default_rtoc: u32,
+    selector: Option<u32>,
+) -> Option<PpcCallbackTarget> {
+    let procedure = resolve_guest_procedure(
+        memory,
+        proc_ptr,
+        default_rtoc,
+        selector,
+        GuestIsa::PowerPc,
+        GuestIsa::PowerPc,
+    )?;
+    (procedure.isa == GuestIsa::PowerPc).then_some(PpcCallbackTarget {
+        entry: procedure.entry,
+        rtoc: procedure.rtoc,
+        proc_info: procedure.proc_info,
+        routine_flags: procedure.routine_flags,
+    })
+}
+
+struct PpcRetiredThreadStorageEdge<'a> {
+    manager: &'a mut ProcessNativeMemoryManager,
+}
+
+impl RetiredThreadStorageEdge for PpcRetiredThreadStorageEdge<'_> {
+    fn release_classic(&mut self, stack_base: u32) {
+        self.manager
+            .dispose_classic_ptr_from_native_import(stack_base);
+    }
+
+    fn release_native(&mut self, stack_base: u32) {
+        self.manager.dispose_native_ptr(stack_base);
+    }
+}
+
+pub(crate) fn ppc_release_retired_thread_storage(
+    manager: &mut ProcessNativeMemoryManager,
+    retirement: NativeRetirement,
+    recycle: bool,
+) {
+    let storage = match retirement {
+        NativeRetirement::Removed(storage) | NativeRetirement::Switched(storage) => storage,
+    };
+    ThreadManager::release_retired_storage(
+        storage,
+        recycle,
+        &mut PpcRetiredThreadStorageEdge { manager },
+    );
+}
