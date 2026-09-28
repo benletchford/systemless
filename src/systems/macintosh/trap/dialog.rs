@@ -4453,7 +4453,7 @@ impl super::TrapDispatcher {
         bus: &MacMemoryBus,
         dialog_ptr: u32,
     ) -> Vec<(u8, u32)> {
-        let items_handle = bus.read_long(dialog_ptr + 156);
+        let items_handle = bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_ITEMS_OFFSET);
         if items_handle == 0 {
             return Vec::new();
         }
@@ -4543,10 +4543,10 @@ impl super::TrapDispatcher {
         if can_read_dialog_record {
             for (base_type, handle) in Self::dialog_item_storage_handles_from_ditl(bus, dialog_ptr)
             {
-                match base_type {
-                    8 | 16 => text_handles.push(handle),
-                    4..=7 => control_handles.push(handle),
-                    _ => {}
+                if crate::dialog_manager::is_dialog_item_disposable_text(base_type) {
+                    text_handles.push(handle);
+                } else if crate::dialog_manager::is_dialog_item_disposable_control(base_type) {
+                    control_handles.push(handle);
                 }
             }
         }
@@ -4585,9 +4585,13 @@ impl super::TrapDispatcher {
         }
 
         if can_read_dialog_record {
-            let text_h = bus.read_long(dialog_ptr + 160);
+            let text_h =
+                bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
             self.dispose_dialog_te_storage(bus, text_h);
-            bus.write_long(dialog_ptr + 160, 0);
+            bus.write_long(
+                dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET,
+                0,
+            );
         }
 
         self.clear_dialog_scoped_item_state(dialog_ptr);
@@ -4598,7 +4602,7 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let items_handle = bus.read_long(dialog_ptr + 156);
+        let items_handle = bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_ITEMS_OFFSET);
         self.dispose_dialog_handle_storage(bus, items_handle);
         bus.free(dialog_ptr);
     }
@@ -5159,7 +5163,10 @@ impl super::TrapDispatcher {
         // dialogKind=2. The WDEF procID is retained in window_proc_ids.
         // Inside Macintosh Volume I, I-407..I-408, I-273; Volume VI, 11-42.
         bus.write_word(dlg_ptr + 108, 2);
-        bus.write_long(dlg_ptr + 156, items_handle);
+        bus.write_long(
+            dlg_ptr + crate::dialog_manager::DIALOG_ITEMS_OFFSET,
+            items_handle,
+        );
 
         // SetDAFont / SetDialogFont affect subsequently created dialog and
         // alert grafPorts; assembly callers may set DlgFont directly.
@@ -5172,10 +5179,19 @@ impl super::TrapDispatcher {
         }
 
         let text_h = Self::allocate_te_handle(bus);
-        bus.write_long(dlg_ptr + 160, text_h);
-        bus.write_word(dlg_ptr + 164, 0xFFFF); // editField = -1
-        bus.write_word(dlg_ptr + 166, 0); // editOpen
-        bus.write_word(dlg_ptr + 168, 1); // aDefItem
+        bus.write_long(
+            dlg_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET,
+            text_h,
+        );
+        bus.write_word(
+            dlg_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
+            0xFFFF,
+        ); // editField = -1
+        bus.write_word(dlg_ptr + crate::dialog_manager::DIALOG_EDIT_OPEN_OFFSET, 0); // editOpen
+        bus.write_word(
+            dlg_ptr + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET,
+            1,
+        ); // aDefItem
 
         self.initialize_dialog_item_handles(bus, dlg_ptr, &items);
         self.dialog_items.insert(dlg_ptr, items.clone());

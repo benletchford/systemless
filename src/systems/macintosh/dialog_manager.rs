@@ -897,6 +897,16 @@ pub fn is_dialog_item_text(raw_type: u8) -> bool {
     DialogItemKind::from_raw_type(raw_type).is_text()
 }
 
+/// Returns true if the raw item type represents static or editable text requiring handle disposal.
+pub fn is_dialog_item_disposable_text(raw_type: u8) -> bool {
+    is_dialog_item_text(raw_type)
+}
+
+/// Returns true if the raw item type represents a button, checkbox, radio, or resource control requiring control record disposal.
+pub fn is_dialog_item_disposable_control(raw_type: u8) -> bool {
+    is_dialog_item_control(raw_type)
+}
+
 /// Maps a dialog item type (with or without disabled bit) to its standard Control Manager procID.
 ///
 /// Inside Macintosh Volume I, pp. I-410, I-421:
@@ -1600,5 +1610,26 @@ mod tests {
         assert_eq!(next_alert_stage(2), 3);
         assert_eq!(next_alert_stage(3), 3);
         assert_eq!(next_alert_stage(10), 3);
+
+        // Disposal classification predicates
+        assert!(is_dialog_item_disposable_text(DIALOG_ITEM_STATIC_TEXT));
+        assert!(is_dialog_item_disposable_text(DIALOG_ITEM_EDIT_TEXT));
+        assert!(is_dialog_item_disposable_text(
+            DIALOG_ITEM_EDIT_TEXT | DIALOG_ITEM_DISABLED_FLAG
+        ));
+        assert!(!is_dialog_item_disposable_text(DIALOG_ITEM_BUTTON));
+        assert!(!is_dialog_item_disposable_text(DIALOG_ITEM_ICON));
+
+        assert!(is_dialog_item_disposable_control(DIALOG_ITEM_BUTTON));
+        assert!(is_dialog_item_disposable_control(DIALOG_ITEM_CHECKBOX));
+        assert!(is_dialog_item_disposable_control(DIALOG_ITEM_RADIO));
+        assert!(is_dialog_item_disposable_control(
+            DIALOG_ITEM_RESOURCE_CONTROL
+        ));
+        assert!(is_dialog_item_disposable_control(
+            DIALOG_ITEM_BUTTON | DIALOG_ITEM_DISABLED_FLAG
+        ));
+        assert!(!is_dialog_item_disposable_control(DIALOG_ITEM_STATIC_TEXT));
+        assert!(!is_dialog_item_disposable_control(DIALOG_ITEM_ICON));
     }
 }
