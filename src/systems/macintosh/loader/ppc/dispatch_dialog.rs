@@ -2454,12 +2454,8 @@ pub(super) fn ppc_standard_filter_proc(cpu: &PpcCpu, memory: &mut PpcSectionMem)
     let Some(event) = ppc_read_dialog_event(memory, event_ptr) else {
         return 0;
     };
-    if !matches!(event.what, 3 | 5) {
-        return 0;
-    }
-    let character = event.message as u8;
-    let key_code = (event.message >> 8) as u8;
-    if !matches!(character, b'\r' | 3) && !matches!(key_code, PPC_KEY_RETURN | PPC_KEY_NUMPAD_ENTER)
+    if crate::dialog_manager::evaluate_modal_dialog_key(event.what, event.message, event.modifiers)
+        != crate::dialog_manager::DialogFilterDecision::TriggerDefaultButton
     {
         return 0;
     }

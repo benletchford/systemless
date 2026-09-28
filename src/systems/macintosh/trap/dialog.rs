@@ -12628,15 +12628,12 @@ impl super::TrapDispatcher {
                             }
                             // keyDown
                             3 => {
-                                let char_code = (e.message & 0xFF) as u8;
-                                let key_code = ((e.message >> 8) & 0xFF) as u8;
-                                let command_period =
-                                    char_code == b'.' && (e.modifiers & 0x0100) != 0;
-                                let command_printable =
-                                    (e.modifiers & 0x0100) != 0 && matches!(char_code, 0x20..=0x7E);
-                                match char_code {
-                                    // Return or Enter: trigger default button
-                                    0x0D | 0x03 => {
+                                match crate::dialog_manager::evaluate_modal_dialog_key(
+                                    e.what,
+                                    e.message,
+                                    e.modifiers,
+                                ) {
+                                    crate::dialog_manager::DialogFilterDecision::TriggerDefaultButton => {
                                         let target =
                                             self.dialog_tracking.as_ref().and_then(|tracking| {
                                                 let def = tracking.default_item;
@@ -12666,10 +12663,7 @@ impl super::TrapDispatcher {
                                             t.flash_item = def;
                                         }
                                     }
-                                    // Escape or Command-period: trigger cancel button.
-                                    // MTE 1992 p. 6-138 maps Esc and Command-period
-                                    // to Cancel before dialog-select style handling.
-                                    0x1B | b'.' if char_code == 0x1B || command_period => {
+                                    crate::dialog_manager::DialogFilterDecision::TriggerCancelButton => {
                                         let target =
                                             self.dialog_tracking.as_ref().and_then(|tracking| {
                                                 let cancel = tracking.cancel_item;
@@ -12704,51 +12698,40 @@ impl super::TrapDispatcher {
                                             t.flash_item = cancel;
                                         }
                                     }
-                                    // Tab: move to the next editText item, wrapping.
-                                    0x09 => {
+                                    crate::dialog_manager::DialogFilterDecision::AdvanceEditTextFocus => {
                                         let mut switched = false;
                                         if let Some(tracking) = self.dialog_tracking.as_mut() {
                                             if tracking.edit_item > 0 {
                                                 Self::sync_tracking_active_edit_item(tracking);
                                             }
-                                            if !tracking.items.is_empty() {
-                                                let start = tracking.edit_item.max(0) as usize;
-                                                let next =
-                                                    (0..tracking.items.len()).find_map(|offset| {
-                                                        let idx =
-                                                            (start + offset) % tracking.items.len();
-                                                        if (tracking.items[idx].item_type & 0x7F)
-                                                            == 16
-                                                        {
-                                                            Some(idx)
-                                                        } else {
-                                                            None
-                                                        }
-                                                    });
-                                                if let Some(idx) = next {
-                                                    tracking.edit_item = (idx + 1) as i16;
-                                                    tracking.edit_text =
-                                                        tracking.items[idx].text.clone();
-                                                    tracking.edit_text_modified = false;
-                                                    bus.write_word(dialog_ptr + 164, idx as u16);
-                                                    switched = true;
-                                                }
+                                            if let Some(next) =
+                                                crate::dialog_manager::find_next_edit_text_item(
+                                                    tracking.items.iter().map(|item| item.item_type),
+                                                    tracking.edit_item.max(0) as usize,
+                                                )
+                                            {
+                                                let idx = next - 1;
+                                                tracking.edit_item = next as i16;
+                                                tracking.edit_text =
+                                                    tracking.items[idx].text.clone();
+                                                tracking.edit_text_modified = false;
+                                                bus.write_word(dialog_ptr + 164, idx as u16);
+                                                switched = true;
                                             }
                                         }
                                         if switched {
                                             self.refresh_dialog_tracking_snapshot(bus, None);
                                         }
                                     }
-                                    // Unhandled Command-key equivalents belong
-                                    // to the application and Menu Manager.
-                                    // ModalDialog ignores them instead of
-                                    // inserting their printable character into
-                                    // the active editText item. Command-period
-                                    // is handled above as Cancel.
-                                    // Inside Macintosh Volume I, I-415, I-428.
-                                    _ if command_printable => {}
-                                    // Backspace/Delete or printable ASCII.
-                                    0x08 | 0x20..=0x7E => {
+                                    crate::dialog_manager::DialogFilterDecision::Unhandled => {
+                                        let char_code = (e.message & 0xFF) as u8;
+                                        let key_code = ((e.message >> 8) & 0xFF) as u8;
+                                        let command_printable =
+                                            (e.modifiers & 0x0100) != 0 && matches!(char_code, 0x20..=0x7E);
+                                        if !command_printable {
+                                            match char_code {
+                                                // Backspace/Delete or printable ASCII.
+                                                0x08 | 0x20..=0x7E => {
                                         let mut text_trace = None;
                                         let mut modified_key_to_set = None;
                                         if let Some(tracking) = self.dialog_tracking.as_mut() {
@@ -12876,7 +12859,10 @@ impl super::TrapDispatcher {
                                             }
                                         }
                                     }
-                                    _ => {}
+                                                _ => {}
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             _ => {}

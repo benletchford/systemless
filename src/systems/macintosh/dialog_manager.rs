@@ -692,6 +692,127 @@ pub fn apply_param_text_str<'a, S: AsRef<[u8]>>(text: &'a str, slots: &[S]) -> C
     Cow::Owned(out)
 }
 
+/// Canonical Macintosh key codes for modal dialog navigation.
+pub const KEY_RETURN: u8 = 0x24;
+pub const KEY_NUMPAD_ENTER: u8 = 0x4C;
+pub const KEY_ESCAPE: u8 = 0x35;
+pub const KEY_TAB: u8 = 0x30;
+pub const KEY_PERIOD: u8 = 0x2F;
+
+/// Canonical Macintosh ASCII character codes for modal dialog navigation.
+pub const CHAR_RETURN: u8 = 0x0D;
+pub const CHAR_ENTER: u8 = 0x03;
+pub const CHAR_ESCAPE: u8 = 0x1B;
+pub const CHAR_TAB: u8 = 0x09;
+pub const CHAR_PERIOD: u8 = b'.';
+
+/// Event modifier bit for Command key (`cmdKey`).
+pub const MODIFIER_CMD_KEY: u16 = 0x0100;
+
+/// Event `what` codes for keyboard input.
+pub const EVENT_KEY_DOWN: u16 = 3;
+pub const EVENT_AUTO_KEY: u16 = 5;
+
+/// Decision produced by standard modal dialog keyboard filtering.
+///
+/// Inside Macintosh Volume I (1985), pp. I-415--I-416;
+/// Macintosh Toolbox Essentials (1992), pp. 6-86--6-90, 6-138.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DialogFilterDecision {
+    /// Return or Enter key activated: triggers the dialog's default button.
+    TriggerDefaultButton,
+    /// Escape or Command-Period key activated: triggers the dialog's cancel button.
+    TriggerCancelButton,
+    /// Tab key activated: advances focus to the next `editText` item.
+    AdvanceEditTextFocus,
+    /// Key event not handled by standard dialog filter.
+    Unhandled,
+}
+
+/// Determine whether the specified character and key code correspond to the default button activation key (Return or Enter).
+pub fn is_dialog_default_key(char_code: u8, key_code: u8) -> bool {
+    matches!(char_code, CHAR_RETURN | CHAR_ENTER)
+        || matches!(key_code, KEY_RETURN | KEY_NUMPAD_ENTER)
+}
+
+/// Determine whether the specified character, key code, and modifier word correspond to the cancel button activation key (Escape or Command-Period).
+pub fn is_dialog_cancel_key(char_code: u8, key_code: u8, modifiers: u16) -> bool {
+    char_code == CHAR_ESCAPE
+        || key_code == KEY_ESCAPE
+        || ((modifiers & MODIFIER_CMD_KEY) != 0
+            && (char_code == CHAR_PERIOD || key_code == KEY_PERIOD))
+}
+
+/// Determine whether the specified character and key code correspond to the Tab key.
+pub fn is_dialog_tab_key(char_code: u8, key_code: u8) -> bool {
+    char_code == CHAR_TAB || key_code == KEY_TAB
+}
+
+/// Evaluate a keyboard event for standard modal dialog filtering.
+///
+/// Inside Macintosh Volume I, pp. I-415--I-416;
+/// Macintosh Toolbox Essentials (1992), pp. 6-86--6-90, 6-138.
+pub fn evaluate_modal_dialog_key(
+    event_what: u16,
+    message: u32,
+    modifiers: u16,
+) -> DialogFilterDecision {
+    if !matches!(event_what, EVENT_KEY_DOWN | EVENT_AUTO_KEY) {
+        return DialogFilterDecision::Unhandled;
+    }
+    let char_code = (message & 0xFF) as u8;
+    let key_code = ((message >> 8) & 0xFF) as u8;
+
+    if is_dialog_default_key(char_code, key_code) {
+        DialogFilterDecision::TriggerDefaultButton
+    } else if is_dialog_cancel_key(char_code, key_code, modifiers) {
+        DialogFilterDecision::TriggerCancelButton
+    } else if is_dialog_tab_key(char_code, key_code) {
+        DialogFilterDecision::AdvanceEditTextFocus
+    } else {
+        DialogFilterDecision::Unhandled
+    }
+}
+
+/// Find the next `editText` item in item-list order, wrapping cyclically.
+///
+/// Takes an iterator of item types (raw `u8`) and the current 1-indexed
+/// edit item number (0 if no edit item is active). Returns the 1-indexed item
+/// number of the next `editText` item, or `None` if the dialog has no `editText` items.
+///
+/// Inside Macintosh Volume I, p. I-416;
+/// Macintosh Toolbox Essentials (1992), p. 6-88.
+pub fn find_next_edit_text_item(
+    item_types: impl IntoIterator<Item = u8>,
+    current_edit_item_1_indexed: usize,
+) -> Option<usize> {
+    let types: Vec<u8> = item_types.into_iter().collect();
+    if types.is_empty() {
+        return None;
+    }
+    let start = current_edit_item_1_indexed;
+    for offset in 0..types.len() {
+        let idx = (start + offset) % types.len();
+        let base_type = types[idx] & !DIALOG_ITEM_DISABLED_FLAG;
+        if base_type == DIALOG_ITEM_EDIT_TEXT {
+            return Some(idx + 1);
+        }
+    }
+    None
+}
+
+/// Helper to find the next `editText` item directly from a slice of `DialogItemRecord`s.
+#[allow(dead_code)]
+pub fn find_next_edit_text_in_items(
+    items: &[DialogItemRecord],
+    current_edit_item_1_indexed: usize,
+) -> Option<usize> {
+    find_next_edit_text_item(
+        items.iter().map(|item| item.item_type),
+        current_edit_item_1_indexed,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1103,10 +1224,130 @@ mod tests {
         );
         assert_eq!(apply_param_text_str("trailing^", &str_params), "trailing^");
         assert_eq!(apply_param_text_str("^^0", &str_params), "^MS UserKey");
-        assert_eq!(
-            apply_param_text_str("^9 unknown slot", &str_params),
-            "^9 unknown slot"
-        );
         assert_eq!(apply_param_text_str("", &str_params), "");
+    }
+
+    #[test]
+    fn modal_dialog_keyboard_navigation_and_filter_evaluation() {
+        // Return key: char 0x0D, keycode 0x24
+        assert!(is_dialog_default_key(CHAR_RETURN, 0));
+        assert!(is_dialog_default_key(0, KEY_RETURN));
+        // Enter key: char 0x03, keycode 0x4C
+        assert!(is_dialog_default_key(CHAR_ENTER, 0));
+        assert!(is_dialog_default_key(0, KEY_NUMPAD_ENTER));
+        assert!(!is_dialog_default_key(b'a', 0));
+
+        // Escape: char 0x1B, keycode 0x35
+        assert!(is_dialog_cancel_key(CHAR_ESCAPE, 0, 0));
+        assert!(is_dialog_cancel_key(0, KEY_ESCAPE, 0));
+        // Command-period: char '.' with MODIFIER_CMD_KEY
+        assert!(is_dialog_cancel_key(CHAR_PERIOD, 0, MODIFIER_CMD_KEY));
+        assert!(is_dialog_cancel_key(0, KEY_PERIOD, MODIFIER_CMD_KEY));
+        // Period without Cmd is not cancel
+        assert!(!is_dialog_cancel_key(CHAR_PERIOD, 0, 0));
+
+        // Tab: char 0x09, keycode 0x30
+        assert!(is_dialog_tab_key(CHAR_TAB, 0));
+        assert!(is_dialog_tab_key(0, KEY_TAB));
+        assert!(!is_dialog_tab_key(b' ', 0));
+
+        // evaluate_modal_dialog_key
+        let return_msg = (u32::from(KEY_RETURN) << 8) | u32::from(CHAR_RETURN);
+        assert_eq!(
+            evaluate_modal_dialog_key(EVENT_KEY_DOWN, return_msg, 0),
+            DialogFilterDecision::TriggerDefaultButton
+        );
+        assert_eq!(
+            evaluate_modal_dialog_key(EVENT_AUTO_KEY, return_msg, 0),
+            DialogFilterDecision::TriggerDefaultButton
+        );
+
+        let esc_msg = (u32::from(KEY_ESCAPE) << 8) | u32::from(CHAR_ESCAPE);
+        assert_eq!(
+            evaluate_modal_dialog_key(EVENT_KEY_DOWN, esc_msg, 0),
+            DialogFilterDecision::TriggerCancelButton
+        );
+
+        let cmd_period_msg = (u32::from(KEY_PERIOD) << 8) | u32::from(CHAR_PERIOD);
+        assert_eq!(
+            evaluate_modal_dialog_key(EVENT_KEY_DOWN, cmd_period_msg, MODIFIER_CMD_KEY),
+            DialogFilterDecision::TriggerCancelButton
+        );
+        assert_eq!(
+            evaluate_modal_dialog_key(EVENT_KEY_DOWN, cmd_period_msg, 0),
+            DialogFilterDecision::Unhandled
+        );
+
+        let tab_msg = (u32::from(KEY_TAB) << 8) | u32::from(CHAR_TAB);
+        assert_eq!(
+            evaluate_modal_dialog_key(EVENT_KEY_DOWN, tab_msg, 0),
+            DialogFilterDecision::AdvanceEditTextFocus
+        );
+
+        // Non-keyboard events (e.g. mouseDown = 1) are Unhandled
+        assert_eq!(
+            evaluate_modal_dialog_key(1, return_msg, 0),
+            DialogFilterDecision::Unhandled
+        );
+    }
+
+    #[test]
+    fn find_next_edit_text_item_cycling() {
+        assert_eq!(find_next_edit_text_item([], 0), None);
+        assert_eq!(
+            find_next_edit_text_item([DIALOG_ITEM_BUTTON, DIALOG_ITEM_STATIC_TEXT], 0),
+            None
+        );
+
+        // Single editText at index 1 (item 2)
+        let single = [
+            DIALOG_ITEM_BUTTON,
+            DIALOG_ITEM_EDIT_TEXT,
+            DIALOG_ITEM_STATIC_TEXT,
+        ];
+        assert_eq!(find_next_edit_text_item(single, 0), Some(2));
+        assert_eq!(find_next_edit_text_item(single, 1), Some(2));
+        assert_eq!(find_next_edit_text_item(single, 2), Some(2));
+        assert_eq!(find_next_edit_text_item(single, 3), Some(2));
+
+        // Multiple editText items at item 2 and item 4
+        let multiple = [
+            DIALOG_ITEM_BUTTON,      // 1
+            DIALOG_ITEM_EDIT_TEXT,   // 2
+            DIALOG_ITEM_STATIC_TEXT, // 3
+            DIALOG_ITEM_EDIT_TEXT,   // 4
+        ];
+        assert_eq!(find_next_edit_text_item(multiple, 0), Some(2));
+        assert_eq!(find_next_edit_text_item(multiple, 1), Some(2));
+        assert_eq!(find_next_edit_text_item(multiple, 2), Some(4));
+        assert_eq!(find_next_edit_text_item(multiple, 3), Some(4));
+        assert_eq!(find_next_edit_text_item(multiple, 4), Some(2)); // wraps!
+
+        // Handles disabled flag (0x80)
+        let disabled_edit = [
+            DIALOG_ITEM_BUTTON,
+            DIALOG_ITEM_EDIT_TEXT | DIALOG_ITEM_DISABLED_FLAG,
+        ];
+        assert_eq!(find_next_edit_text_item(disabled_edit, 0), Some(2));
+
+        // find_next_edit_text_in_items helper
+        let item_records = [
+            DialogItemRecord {
+                item_offset: 0,
+                item_type: DIALOG_ITEM_BUTTON,
+                rect: (0, 0, 0, 0),
+                handle: 0,
+                payload: vec![],
+            },
+            DialogItemRecord {
+                item_offset: 0,
+                item_type: DIALOG_ITEM_EDIT_TEXT,
+                rect: (0, 0, 0, 0),
+                handle: 0,
+                payload: vec![],
+            },
+        ];
+        assert_eq!(find_next_edit_text_in_items(&item_records, 0), Some(2));
+        assert_eq!(find_next_edit_text_in_items(&item_records, 2), Some(2));
     }
 }

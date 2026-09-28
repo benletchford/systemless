@@ -1254,13 +1254,13 @@ fn ppc_standard_file_get_service(
         } else {
             let character = event.message as u8;
             let key_code = (event.message >> 8) as u8;
-            if character == b'\r'
-                || character == 3
-                || key_code == PPC_KEY_RETURN
-                || key_code == PPC_KEY_NUMPAD_ENTER
-            {
+            if crate::dialog_manager::is_dialog_default_key(character, key_code) {
                 open = true;
-            } else if character == 0x1b || key_code == PPC_KEY_ESCAPE {
+            } else if crate::dialog_manager::is_dialog_cancel_key(
+                character,
+                key_code,
+                event.modifiers,
+            ) {
                 return ppc_standard_file_finish_get(
                     memory,
                     startup,
@@ -1628,13 +1628,13 @@ fn ppc_dispatch_standard_file(
                     } else {
                         let character = event.message as u8;
                         let key_code = (event.message >> 8) as u8;
-                        if character == b'\r'
-                            || character == 3
-                            || key_code == PPC_KEY_RETURN
-                            || key_code == PPC_KEY_NUMPAD_ENTER
-                        {
+                        if crate::dialog_manager::is_dialog_default_key(character, key_code) {
                             accept = true;
-                        } else if character == 0x1b || key_code == PPC_KEY_ESCAPE {
+                        } else if crate::dialog_manager::is_dialog_cancel_key(
+                            character,
+                            key_code,
+                            event.modifiers,
+                        ) {
                             return ppc_standard_file_finish_put(
                                 memory,
                                 startup,
