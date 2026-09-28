@@ -361,6 +361,10 @@ pub const PPC_DSP_CONTEXT_STATE_PAUSED: u32 = 1;
 pub const PPC_DSP_CONTEXT_STATE_INACTIVE: u32 = 2;
 pub const PPC_DSP_CONTEXT: u32 = 0x0500_0000;
 pub const PPC_DSP_CONTEXT_ATTRIBUTES_SIZE: u32 = 72;
+/// Private, versioned DrawSprocket context blob used for HLE save/restore.
+pub const PPC_DSP_FLAT_CONTEXT_SIZE: u32 = 12 + PPC_DSP_CONTEXT_ATTRIBUTES_SIZE;
+const PPC_DSP_FLAT_CONTEXT_MAGIC: u32 = u32::from_be_bytes(*b"DSPC");
+const PPC_DSP_FLAT_CONTEXT_VERSION: u32 = 1;
 pub const PPC_DSP_DEPTH_MASK_8: u32 = 1 << 3;
 pub const PPC_DSP_DISPLAY_ID: u32 = 1;
 pub const PPC_DSP_BUFFER_KIND_NORMAL: u32 = 0;
@@ -784,6 +788,93 @@ pub(crate) fn ppc_write_dsp_context_attributes(
     memory.write_u32_be(attributes + 44, context_attributes.display_depth)?;
     memory.write_u32_be(attributes + 48, context_attributes.page_count)?;
     Some(())
+}
+
+pub(crate) fn ppc_dsp_context_get_flattened_size(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+) -> i16 {
+    // Apple Game Sprockets Legacy Reference (2003), p. 32:
+    // OSStatus DSpContext_GetFlattenedSize(DSpContextReference, UInt32 *).
+    if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
+        return error;
+    }
+    let out_size = cpu.gpr[4];
+    if out_size == 0 || !ppc_memory_can_write_bytes(memory, out_size, 4) {
+        return PPC_PARAM_ERR;
+    }
+    if memory.write_u32_be(out_size, PPC_DSP_FLAT_CONTEXT_SIZE).is_none() {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
+pub(crate) fn ppc_dsp_context_flatten(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    draw_sprocket: &PpcDrawSprocketState,
+) -> i16 {
+    // Apple Game Sprockets Legacy Reference (2003), p. 30:
+    // OSStatus DSpContext_Flatten(DSpContextReference, void *).
+    if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
+        return error;
+    }
+    let flat = cpu.gpr[4];
+    if flat == 0 || !ppc_memory_can_write_bytes(memory, flat, PPC_DSP_FLAT_CONTEXT_SIZE) {
+        return PPC_PARAM_ERR;
+    }
+    // DrawSprocket defines the blob as opaque. A versioned HLE format keeps
+    // contexts saved by this implementation self-consistent across launches.
+    if memory.write_u32_be(flat, PPC_DSP_FLAT_CONTEXT_MAGIC).is_none()
+        || memory
+            .write_u32_be(flat + 4, PPC_DSP_FLAT_CONTEXT_VERSION)
+            .is_none()
+        || memory.write_u32_be(flat + 8, PPC_DSP_DISPLAY_ID).is_none()
+        || ppc_write_dsp_context_attributes(
+            memory,
+            flat + 12,
+            draw_sprocket.context_attributes,
+        )
+        .is_none()
+    {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
+pub(crate) fn ppc_dsp_context_restore(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    draw_sprocket: &mut PpcDrawSprocketState,
+) -> i16 {
+    // Apple Game Sprockets Legacy Reference (2003), p. 35:
+    // OSStatus DSpContext_Restore(void *, DSpContextReference *).
+    let flat = cpu.gpr[3];
+    let out_context = cpu.gpr[4];
+    if flat == 0
+        || out_context == 0
+        || !ppc_memory_can_read_bytes(memory, flat, PPC_DSP_FLAT_CONTEXT_SIZE)
+        || !ppc_memory_can_write_bytes(memory, out_context, 4)
+    {
+        return PPC_PARAM_ERR;
+    }
+    if memory.read_u32_be(flat) != Some(PPC_DSP_FLAT_CONTEXT_MAGIC)
+        || memory.read_u32_be(flat + 4) != Some(PPC_DSP_FLAT_CONTEXT_VERSION)
+        || memory.read_u32_be(flat + 8) != Some(PPC_DSP_DISPLAY_ID)
+    {
+        return PPC_DSP_CONTEXT_NOT_FOUND_ERR;
+    }
+    let Some(attributes) = ppc_read_dsp_context_attributes(memory, flat + 12) else {
+        return PPC_PARAM_ERR;
+    };
+    if !ppc_dsp_context_request_is_supported(attributes) {
+        return PPC_DSP_CONTEXT_NOT_FOUND_ERR;
+    }
+    if memory.write_u32_be(out_context, PPC_DSP_CONTEXT).is_none() {
+        return PPC_PARAM_ERR;
+    }
+    draw_sprocket.context_attributes = attributes;
+    PPC_NO_ERR
 }
 
 pub(crate) fn ppc_dsp_context_get_buffer(
