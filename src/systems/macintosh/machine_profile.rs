@@ -183,6 +183,7 @@ pub const REFERENCE_MACHINE_PROFILE: MachineProfile = BASILISK_II_PLAY_PROFILE;
 /// PPC Carbon guests use the Mac OS 9 system version. The shared BasiliskII
 /// reference profile remains Mac OS 8.1 for 68k guest compatibility.
 pub(crate) const POWERPC_SYSTEM_VERSION_BCD: u16 = 0x0900;
+pub(crate) const POWERPC_CARBON_VERSION_BCD: u16 = 0x0130;
 
 pub(crate) const REFERENCE_M68K_EXECUTION_CAPABILITIES: GuestExecutionCapabilities =
     REFERENCE_MACHINE_PROFILE.m68k_execution_capabilities();
