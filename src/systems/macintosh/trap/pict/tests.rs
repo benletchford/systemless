@@ -1580,6 +1580,71 @@ fn one_bit_packbitsrect_uses_destination_clut_black_and_white() {
 }
 
 #[test]
+fn one_bit_packbitsrect_to_direct_destination_writes_exact_black_and_white() {
+    // A 16-bit destination has no CLUT, so an application CLUT whose black
+    // is not at index 255 must not leak into the direct pixels. EV Nova's
+    // sprite compiler treats only 0x0000 mask pixels as opaque.
+    let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+    let screen_base = 0x08_0000u32;
+    bus.write_bytes(screen_base, &[0x42; 16]);
+
+    let mut clut = [[0x7777u16; 3]; 256];
+    clut[214] = [0x0000, 0x0000, 0x0000];
+    clut[7] = [0xFFFF, 0xFFFF, 0xFFFF];
+
+    let pic = 0x10_0000u32;
+    bus.write_word(pic, 42); // picSize
+    bus.write_word(pic + 2, 0); // frame top
+    bus.write_word(pic + 4, 0); // frame left
+    bus.write_word(pic + 6, 1); // frame bottom
+    bus.write_word(pic + 8, 8); // frame right
+    let mut p = pic + 10;
+    bus.write_byte(p, 0x11);
+    p += 1;
+    bus.write_byte(p, 0x01);
+    p += 1;
+    bus.write_byte(p, 0x98); // PackBitsRect
+    p += 1;
+    bus.write_word(p, 1); // rowBytes < 8: unpacked
+    p += 2;
+    for value in [0i16, 0, 1, 8] {
+        bus.write_word(p, value as u16);
+        p += 2;
+    }
+    for _ in 0..2 {
+        for value in [0i16, 0, 1, 8] {
+            bus.write_word(p, value as u16);
+            p += 2;
+        }
+    }
+    bus.write_word(p, 0); // srcCopy
+    p += 2;
+    bus.write_byte(p, 0b1010_0000);
+    p += 1;
+    bus.write_byte(p, 0xFF); // EndOfPicture
+
+    let (ok, _) = draw_picture(
+        &mut bus,
+        pic,
+        0,
+        0,
+        1,
+        8,
+        (screen_base, 16, 8, 1, 16),
+        &clut,
+        0,
+        None,
+    );
+
+    assert!(ok);
+    let pixels: Vec<u16> = (0..8).map(|x| bus.read_word(screen_base + x * 2)).collect();
+    assert_eq!(
+        pixels,
+        vec![0x0000, 0x7FFF, 0x0000, 0x7FFF, 0x7FFF, 0x7FFF, 0x7FFF, 0x7FFF]
+    );
+}
+
+#[test]
 fn eight_bit_packbitsrect_srcor_preserves_white_source_pixels() {
     // Imaging With QuickDraw 1994, p. 4-33: with colored pixels,
     // srcOr applies foreground color for black source pixels and leaves
