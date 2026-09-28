@@ -24,6 +24,12 @@ pub(super) fn dispatch_low_memory_import(
         PpcImportDispatcherTarget::LMGetMenuList => {
             Some(PpcImportAction::Return(current_menu_list))
         }
+        PpcImportDispatcherTarget::LMSetMenuHook => {
+            // Inside Macintosh Volume III (1985), low-memory globals:
+            // MenuHook at $A30 is the callback address used by MenuSelect.
+            let _ = memory.write_u32_be(0x0a30, cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::LMGetMenuFlash => Some(PpcImportAction::Return(ppc_i16_result(
             memory
                 .read_u16_be(crate::memory::globals::addr::MENU_FLASH)

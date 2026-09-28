@@ -5043,6 +5043,22 @@ fn native_menu_flash_accessors_use_the_live_low_memory_word() {
 }
 
 #[test]
+fn lm_set_menu_hook_updates_the_callback_read_by_menu_select() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LMSetMenuHook"),
+        PpcImportDispatcherTarget::LMSetMenuHook
+    );
+    let pef = synthetic_pef_with_import(b"LMSetMenuHook");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 0x0123_4568;
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMSetMenuHook);
+
+    assert_eq!(loaded.memory.read_u32_be(0x0a30), Some(0x0123_4568));
+    assert_eq!(loaded.cpu.gpr[3], 0x0123_4568);
+}
+
+#[test]
 fn native_insert_and_append_res_menu_share_resource_name_policy() {
     let pef = synthetic_pef_with_import(b"InsertResMenu");
     let mut loaded = load_pef_application(&pef).unwrap();

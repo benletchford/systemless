@@ -1140,6 +1140,7 @@ pub enum PpcImportDispatcherTarget {
     GetMenuBar,
     GetNewMBar,
     LMGetMenuList,
+    LMSetMenuHook,
     LMGetMenuFlash,
     LMGetPaintWhite,
     LMGetSysMap,
@@ -8513,6 +8514,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetMenuBar") => PpcImportDispatcherTarget::GetMenuBar,
         ("InterfaceLib", "GetNewMBar") => PpcImportDispatcherTarget::GetNewMBar,
         ("InterfaceLib", "LMGetMenuList") => PpcImportDispatcherTarget::LMGetMenuList,
+        ("InterfaceLib", "LMSetMenuHook") => PpcImportDispatcherTarget::LMSetMenuHook,
         ("InterfaceLib", "LMGetMenuFlash") => PpcImportDispatcherTarget::LMGetMenuFlash,
         ("InterfaceLib", "LMGetPaintWhite") => PpcImportDispatcherTarget::LMGetPaintWhite,
         ("InterfaceLib", "LMGetSysMap") => PpcImportDispatcherTarget::LMGetSysMap,
@@ -12629,6 +12631,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             unreachable!("event imports return through dispatch_event_import")
         }
         PpcImportDispatcherTarget::LMGetMenuList
+        | PpcImportDispatcherTarget::LMSetMenuHook
         | PpcImportDispatcherTarget::LMGetMenuFlash
         | PpcImportDispatcherTarget::LMGetPaintWhite
         | PpcImportDispatcherTarget::LMGetSysMap
