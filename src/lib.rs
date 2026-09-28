@@ -83,6 +83,7 @@ pub mod debug {
 pub mod debug_overlay {
     pub use crate::systems::macintosh::debug_overlay::*;
 }
+pub(crate) use systems::macintosh::dialog_manager;
 #[deprecated(note = "use `systemless::systems::macintosh::disk_image`")]
 pub mod disk_image {
     pub use crate::systems::macintosh::disk_image::*;
