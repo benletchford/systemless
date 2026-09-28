@@ -735,6 +735,7 @@ pub enum PpcImportDispatcherTarget {
     CfGetRetainCount,
     CfBundleGetBundleWithIdentifier,
     CfBundleGetMainBundle,
+    CfBundleCopyPrivateFrameworksUrl,
     UpperText,
     GetCurrentThread,
     MpCreateSemaphore,
@@ -3185,6 +3186,9 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "CFBundleGetMainBundle") => {
             PpcImportDispatcherTarget::CfBundleGetMainBundle
+        }
+        ("InterfaceLib", "CFBundleCopyPrivateFrameworksURL") => {
+            PpcImportDispatcherTarget::CfBundleCopyPrivateFrameworksUrl
         }
         ("InterfaceLib", "UpperText") => PpcImportDispatcherTarget::UpperText,
         // Native Thread Manager exports also live in ThreadsLib.

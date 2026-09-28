@@ -2,6 +2,89 @@ use super::*;
 use crate::process_context::ProcessVfsFileRecord;
 
 #[test]
+fn carbon_private_frameworks_url_is_owned_and_uses_bundle_directory() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "CFBundleCopyPrivateFrameworksURL"),
+        PpcImportDispatcherTarget::CfBundleCopyPrivateFrameworksUrl
+    );
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(
+        b"CFBundleCopyPrivateFrameworksURL",
+    ))
+    .unwrap();
+    loaded.set_launched_app_path("Demo.app/Contents/MacOSClassic/Demo");
+    loaded.seed_vfs_files_and_resources(
+        vec![ProcessVfsFileRecord {
+            path: "Demo.app/Contents/Frameworks/Plugin.bundle/Contents/Info.plist".to_string(),
+            data: b"<plist/>".to_vec().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        }],
+        vec![],
+        vec![],
+    );
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfBundleGetMainBundle,
+    );
+    let bundle = loaded.cpu.gpr[3];
+    loaded.cpu.gpr[3] = bundle;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfBundleCopyPrivateFrameworksUrl,
+    );
+    let url = loaded.cpu.gpr[3];
+    assert_ne!(url, 0);
+    assert_eq!(
+        loaded.toolbox_startup.cf_strings.url_path(url),
+        Some("Demo.app/Contents/Frameworks")
+    );
+    loaded.cpu.gpr[3] = url;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfGetRetainCount);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    loaded.cpu.gpr[3] = url;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfRelease);
+    assert_eq!(loaded.toolbox_startup.cf_strings.url_path(url), None);
+}
+
+#[test]
+fn carbon_private_frameworks_url_is_null_without_directory_or_bundle() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(
+        b"CFBundleCopyPrivateFrameworksURL",
+    ))
+    .unwrap();
+    loaded.set_launched_app_path("Demo.app/Contents/MacOSClassic/Demo");
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfBundleGetMainBundle,
+    );
+    let bundle = loaded.cpu.gpr[3];
+    loaded.cpu.gpr[3] = bundle;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfBundleCopyPrivateFrameworksUrl,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let mut unbundled = load_pef_application(&synthetic_pef_with_import(
+        b"CFBundleCopyPrivateFrameworksURL",
+    ))
+    .unwrap();
+    unbundled.set_launched_app_path("Legacy App");
+    run_test_import(
+        &mut unbundled,
+        PpcImportDispatcherTarget::CfBundleGetMainBundle,
+    );
+    let bundle = unbundled.cpu.gpr[3];
+    unbundled.cpu.gpr[3] = bundle;
+    run_test_import(
+        &mut unbundled,
+        PpcImportDispatcherTarget::CfBundleCopyPrivateFrameworksUrl,
+    );
+    assert_eq!(unbundled.cpu.gpr[3], 0);
+}
+
+#[test]
 fn carbon_main_bundle_is_stable_and_found_by_its_info_plist_identifier() {
     assert_eq!(
         dispatcher_target_for_import("CarbonLib", "CFBundleGetMainBundle"),

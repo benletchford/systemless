@@ -2179,7 +2179,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CfRelease
         | PpcImportDispatcherTarget::CfGetRetainCount
         | PpcImportDispatcherTarget::CfBundleGetBundleWithIdentifier
-        | PpcImportDispatcherTarget::CfBundleGetMainBundle => {
+        | PpcImportDispatcherTarget::CfBundleGetMainBundle
+        | PpcImportDispatcherTarget::CfBundleCopyPrivateFrameworksUrl => {
             unreachable!("Core Foundation imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::GetCurrentProcess

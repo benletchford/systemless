@@ -1,4 +1,4 @@
-//! Core Foundation string imports used by Carbon CFM applications.
+//! Core Foundation imports used by Carbon CFM applications.
 
 use super::*;
 use std::collections::BTreeMap;
@@ -20,6 +20,13 @@ struct PpcCfString {
 struct PpcCfBundle {
     reference: u32,
     retain_count: u32,
+    path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PpcCfUrl {
+    path: String,
+    retain_count: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -28,9 +35,15 @@ pub(super) struct PpcCfStringState {
     constants: BTreeMap<Vec<u8>, u32>,
     loaded_bundles: BTreeMap<String, u32>,
     main_bundle: Option<PpcCfBundle>,
+    urls: BTreeMap<u32, PpcCfUrl>,
 }
 
 impl PpcCfStringState {
+    #[cfg(test)]
+    pub(super) fn url_path(&self, reference: u32) -> Option<&str> {
+        self.urls.get(&reference).map(|url| url.path.as_str())
+    }
+
     fn create(
         &mut self,
         value: String,
@@ -153,6 +166,10 @@ fn main_bundle_identifier(path: &str, files: &ProcessVfsFileRecords) -> Option<S
     let end = value.find("</string>")?;
     let identifier = value[..end].trim();
     (!identifier.is_empty() && !identifier.contains('&')).then(|| identifier.to_string())
+}
+
+fn bundle_root(path: &str) -> Option<&str> {
+    path.split_once("/Contents/").map(|(root, _)| root)
 }
 
 fn encode_bytes(value: &str, encoding: u32) -> Option<Vec<u8>> {
@@ -390,6 +407,9 @@ pub(super) fn dispatch_core_foundation_import(
             {
                 bundle.retain_count = bundle.retain_count.saturating_add(1);
                 Some(PpcImportAction::Return(bundle.reference))
+            } else if let Some(url) = state.urls.get_mut(&cpu.gpr[3]) {
+                url.retain_count = url.retain_count.saturating_add(1);
+                Some(PpcImportAction::Return(cpu.gpr[3]))
             } else {
                 Some(PpcImportAction::Return(0))
             }
@@ -401,6 +421,18 @@ pub(super) fn dispatch_core_foundation_import(
                 .filter(|bundle| bundle.reference == cpu.gpr[3])
             {
                 bundle.retain_count = bundle.retain_count.saturating_sub(1).max(1);
+            } else if let Some(url) = state.urls.get_mut(&cpu.gpr[3]) {
+                url.retain_count -= 1;
+                if url.retain_count == 0 {
+                    state.urls.remove(&cpu.gpr[3]);
+                    let _ = process_memory_manager.dispose_native_ptr(cpu.gpr[3]);
+                    ppc_apply_process_native_allocator(
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        last_mem_error,
+                    );
+                }
             } else {
                 state.release(
                     cpu.gpr[3],
@@ -424,6 +456,7 @@ pub(super) fn dispatch_core_foundation_import(
                         .filter(|bundle| bundle.reference == cpu.gpr[3])
                         .map(|bundle| bundle.retain_count)
                 })
+                .or_else(|| state.urls.get(&cpu.gpr[3]).map(|url| url.retain_count))
                 .unwrap_or(0),
         )),
         PpcImportDispatcherTarget::CfBundleGetMainBundle => {
@@ -450,7 +483,52 @@ pub(super) fn dispatch_core_foundation_import(
             state.main_bundle = Some(PpcCfBundle {
                 reference,
                 retain_count: 1,
+                path: path.to_string(),
             });
+            Some(PpcImportAction::Return(reference))
+        }
+        PpcImportDispatcherTarget::CfBundleCopyPrivateFrameworksUrl => {
+            // CFBundleCopyPrivateFrameworksURL returns a caller-owned CFURL
+            // for Contents/Frameworks, or NULL if that directory is absent.
+            // Apple Core Foundation CFBundle Reference, Finding Locations in a Bundle.
+            let Some(bundle) = state
+                .main_bundle
+                .as_ref()
+                .filter(|bundle| bundle.reference == cpu.gpr[3])
+            else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let Some(root) = bundle_root(&bundle.path) else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let path = format!("{root}/Contents/Frameworks");
+            let prefix = format!("{path}/");
+            if !vfs_files.iter().any(|file| {
+                file.path.eq_ignore_ascii_case(&path)
+                    || file
+                        .path
+                        .get(..prefix.len())
+                        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(&prefix))
+            }) {
+                return Some(PpcImportAction::Return(0));
+            }
+            let reference =
+                process_memory_manager.new_native_ptr(memory, CF_STRING_OBJECT_SIZE, true);
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            if reference != 0 {
+                state.urls.insert(
+                    reference,
+                    PpcCfUrl {
+                        path,
+                        retain_count: 1,
+                    },
+                );
+            }
             Some(PpcImportAction::Return(reference))
         }
         PpcImportDispatcherTarget::CfBundleGetBundleWithIdentifier => {
