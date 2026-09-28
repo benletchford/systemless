@@ -500,6 +500,9 @@ impl PpcLoadedApp {
                     unsupported_import_index = Some(index);
                     return PpcImportAction::Halt;
                 }
+                if index == PPC_STD_FILTER_IMPORT_INDEX {
+                    return PpcImportAction::Return(ppc_standard_filter_proc(cpu, memory));
+                }
                 last_import_index = Some(index);
                 // A Mixed Mode callback can advance process time while the
                 // native slice is suspended. Refresh the whole-tick baseline
@@ -784,7 +787,9 @@ impl PpcLoadedApp {
                                 cpu.gpr[3] as u16 as i16,
                             ))
                         }
-                        PpcImportDispatcherTarget::StdFilterProc => PpcImportAction::Return(0),
+                        PpcImportDispatcherTarget::StdFilterProc => {
+                            PpcImportAction::Return(ppc_standard_filter_proc(cpu, memory))
+                        }
                         PpcImportDispatcherTarget::DialogCompatibility(
                             PpcDialogCompatibilityOperation::DialogSelect,
                         ) => PpcImportAction::Return(0),
