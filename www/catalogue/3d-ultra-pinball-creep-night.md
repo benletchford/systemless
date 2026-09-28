@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -24,9 +25,23 @@ compatibility:
       table, actuated a flipper with Shift, then launched a ball with Down Arrow and
       advanced the score to 205,000. The same script launched and scored a ball in
       BasiliskII, which reached 115,000 at that checkpoint; score and ball position
-      differ, so pixel parity is not claimed. Browser launch is unverified.
+      differ, so pixel parity is not claimed.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3044
+  - date: "2026-09-29"
+    tester: Catalogue maintainer
+    systemless_version: b546fda4d2f97be6e4bd32c50b97aa59915d59a7
+    architecture: 68k
+    environment: >-
+      Chrome 151 on the local release-mode Pages build loaded the unchanged
+      archive through its public asset URL. Clicking the demo's start prompt
+      reached Player 1 Ready; holding and releasing Down Arrow launched a ball
+      and advanced the score from 0 to 202,000. Holding Shift raised the right
+      flipper. The 55-second run had no console errors, approximately 60 host
+      frames and 61 guest ticks per second, and a 24 ms maximum runtime frame.
+      This verifies browser input and gameplay, not pixel parity.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3345
 artifacts:
 - id: archive
   role: archive
@@ -90,4 +105,6 @@ advanced to 205,000.
 This is Sierra's original promotional demo, not the retail game. Systemless
 reached interactive play with the unchanged archive. A separate BasiliskII
 run also launched and scored a ball, reaching 115,000 at that checkpoint.
-Browser launch remains disabled until manual testing and approval.
+Browser play also reached the table using the same archive: click the demo's
+start prompt, hold and release Down Arrow to launch, and use Shift for the
+flipper. The browser run launched and scored a ball without console errors.
