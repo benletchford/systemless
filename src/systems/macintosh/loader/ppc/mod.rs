@@ -6,7 +6,6 @@
 //! stack frame. Parsed loader facts are mapped here into the native runtime;
 //! optional PEF dump formatting lives in the private `pef_dump` child.
 
-use crate::guest_call::{MenuBarBuildResume, MenuBarCallOrigin};
 #[cfg(test)]
 use super::pef::SECTION_KIND_UNPACKED_DATA;
 use super::pef::{
@@ -22,14 +21,13 @@ use crate::cfm::fragment::{
     CfmSection as MappedSection,
 };
 use crate::cfm::{CfmLoadId, CfmOperation, CfmResourceCall, CfmResourcePreparation};
-use crate::event_queue::{
-    EventQueue, EventQueueProbeSnapshot, EventRecordSnapshot, QueuedEvent,
-};
+use crate::event_queue::{EventQueue, EventQueueProbeSnapshot, EventRecordSnapshot, QueuedEvent};
 use crate::guest_call::{
     format_ppc_import_action, install_powerpc_call_arguments, ExecutionMenuViews,
     GuestCallContinuation, GuestCallEffect, GuestCallRequest, GuestCallTarget, MenuTrackingCall,
     MenuTrackingOrigin, NativeRetirement, SharedGuestCallStack,
 };
+use crate::guest_call::{MenuBarBuildResume, MenuBarCallOrigin};
 use crate::guest_procedure::{
     resolve_guest_procedure, GuestIsa, GuestProcedure,
     ROUTINE_DESCRIPTOR_HEADER_SIZE as PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE,
@@ -58,30 +56,25 @@ use crate::managers::resource::{
     serialize_resource_fork_with_attrs, ResourceFork, ResourceForkEntry,
 };
 pub(crate) use crate::memory::{GuestAddressSpace as PpcSectionMem, MacMemoryBus, MemoryBus};
-use crate::menu_manager::{
-    MenuDefinitionTracking, MenuTrackingKind, SharedNativeMenuSelection,
-};
+use crate::menu_manager::{MenuDefinitionTracking, MenuTrackingKind, SharedNativeMenuSelection};
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{
     ProcessAeDescriptor, ProcessAppleEventHandler, ProcessContext, ProcessFileSystemState,
-    ProcessSyntheticAppleEvent,
-    ProcessHandleHeap, ProcessHandleRecord, ProcessHandleStateRecord,
-    ProcessMemoryManager, ProcessNewHandleBackend, ProcessNewHandleRequest,
-    ProcessNativeHeapState, ProcessNativeMemoryManager, ProcessPtrRecord,
-    ProcessResourceManagerState, ProcessVfsFileRecords,
-    ProcessVfsResourceFileRecords, ProcessWorkingDirectory, SharedProcessAppleEventDescriptors,
-    SharedProcessAppleEventHandlers, SharedProcessAppleEventLaunchState,
-    SharedProcessCallbackScheduling, SharedProcessCollectionManager, SharedProcessCursorState,
-    SharedProcessDialogText, SharedProcessDisplayClut,
-    SharedProcessControlManager, SharedProcessEventQueue,
-    SharedProcessFileSystem, SharedProcessGraphicsDevice, SharedProcessGraphicsPort,
-    SharedProcessInputState, SharedProcessMemoryManager,
+    ProcessHandleHeap, ProcessHandleRecord, ProcessHandleStateRecord, ProcessMemoryManager,
+    ProcessNativeHeapState, ProcessNativeMemoryManager, ProcessNewHandleBackend,
+    ProcessNewHandleRequest, ProcessPtrRecord, ProcessResourceManagerState,
+    ProcessSyntheticAppleEvent, ProcessVfsFileRecords, ProcessVfsResourceFileRecords,
+    ProcessWorkingDirectory, SharedProcessAppleEventDescriptors, SharedProcessAppleEventHandlers,
+    SharedProcessAppleEventLaunchState, SharedProcessCallbackScheduling,
+    SharedProcessCollectionManager, SharedProcessControlManager, SharedProcessCursorState,
+    SharedProcessDialogText, SharedProcessDisplayClut, SharedProcessDisplayGamma,
+    SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessGraphicsDevice,
+    SharedProcessGraphicsPort, SharedProcessInputState, SharedProcessMemoryManager,
+    SharedProcessMixedModeM68kState, SharedProcessQuickDrawError,
+    SharedProcessQuickDrawHiliteColors, SharedProcessQuickDrawOpColors,
+    SharedProcessQuickDrawPixelStates, SharedProcessResourcePolicy, SharedProcessTickState,
+    SharedProcessTimerTasks, SharedProcessVblTasks, SharedProcessWindowList,
     DEFAULT_QUICKDRAW_HILITE_COLOR,
-    SharedProcessMixedModeM68kState,
-    SharedProcessQuickDrawError, SharedProcessQuickDrawHiliteColors, SharedProcessQuickDrawOpColors,
-    SharedProcessDisplayGamma, SharedProcessQuickDrawPixelStates, SharedProcessResourcePolicy,
-    SharedProcessTickState, SharedProcessTimerTasks, SharedProcessVblTasks,
-    SharedProcessWindowList,
 };
 use crate::process_manager::{
     resolve_process_application_metadata, ProcessSerialNumber, SingleProcessEnumeration,
@@ -96,13 +89,13 @@ use crate::quickdraw::fonts::{
 use crate::quickdraw::text::{
     get_font_metrics, get_glyph, get_glyph_italic, get_underline_thickness, QuickDrawTextStyle,
 };
+use crate::thread_manager::{RetiredThreadStorageEdge, ThreadManager};
 use crate::trap::extended80::Extended80;
 use crate::trap::manager::{
     TrapManager, TrapManagerMemoryOp, TrapManagerMemoryResult, TrapManagerSetError, TrapTableKind,
 };
 use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy, Rect};
 use crate::trap::{pict, TrapDispatcher};
-use crate::thread_manager::{RetiredThreadStorageEdge, ThreadManager};
 use crate::ui_theme::{render_scrollbar_bitmap, Rgb8, ThemeBitmap, UiThemeId};
 use ppc::{
     PpcAlignmentPolicy, PpcCpu, PpcException, PpcExecutionContext, PpcFetchHistogram,
@@ -117,13 +110,13 @@ mod dispatch_cfm;
 use dispatch_cfm::*;
 mod dispatch_apple_events;
 use dispatch_apple_events::*;
-mod dispatch_appletalk;
 mod dispatch_appearance;
+mod dispatch_appletalk;
 mod dispatch_bit_transfers;
-mod dispatch_color_tables;
 mod dispatch_collection;
-mod dispatch_core_foundation;
+mod dispatch_color_tables;
 mod dispatch_control;
+mod dispatch_core_foundation;
 mod dispatch_cursor;
 mod dispatch_desk;
 mod dispatch_devices;
@@ -145,6 +138,7 @@ mod dispatch_menu;
 mod dispatch_mixed_mode;
 mod dispatch_native_exceptions;
 use dispatch_native_exceptions::*;
+mod dispatch_display;
 mod dispatch_palettes;
 mod dispatch_picture;
 mod dispatch_polygons;
@@ -158,44 +152,43 @@ mod dispatch_resources;
 mod dispatch_scrap;
 mod dispatch_sound;
 mod dispatch_standard_file;
-mod dispatch_textedit;
-mod dispatch_threads;
-mod dispatch_time;
 mod dispatch_stdc;
 mod dispatch_stdio;
 mod dispatch_system;
+mod dispatch_textedit;
+mod dispatch_threads;
+mod dispatch_time;
 mod dispatch_toolbox;
 mod dispatch_window;
-mod dispatch_display;
+pub(crate) use dispatch_collection::PpcCollectionCallbackState;
 use dispatch_control::*;
 pub(crate) use dispatch_dialog::PpcDialogCallbackState;
-pub(crate) use dispatch_collection::PpcCollectionCallbackState;
 use dispatch_dialog::*;
-pub(crate) use dispatch_stdc::{PpcQsortState, PpcStdSignalState};
-pub(in crate::systems::macintosh::loader::ppc) use dispatch_mixed_mode::*;
-pub(super) use dispatch_stdc::*;
-pub(crate) use dispatch_stdio::*;
-pub use dispatch_stdio::PpcStdIoOperation;
-pub use dispatch_system::PpcSystemCompatibilityOperation;
-#[cfg(test)]
-pub(super) use dispatch_system::ppc_munger_compatibility;
-pub(super) use dispatch_window::*;
 #[cfg(test)]
 use dispatch_display::*;
 #[cfg(test)]
 use dispatch_list::*;
+pub(in crate::systems::macintosh::loader::ppc) use dispatch_mixed_mode::*;
 use dispatch_standard_file::*;
+pub(super) use dispatch_stdc::*;
+pub(crate) use dispatch_stdc::{PpcQsortState, PpcStdSignalState};
+pub use dispatch_stdio::PpcStdIoOperation;
+pub(crate) use dispatch_stdio::*;
+#[cfg(test)]
+pub(super) use dispatch_system::ppc_munger_compatibility;
+pub use dispatch_system::PpcSystemCompatibilityOperation;
+pub(super) use dispatch_window::*;
 mod pef_dump;
 mod theme;
-#[cfg(test)]
-use pef_dump::format_pef_dump_json;
-use pef_dump::{maybe_write, PefDumpContext};
-use theme::*;
 use dispatch_time::ppc_sync_vbl_task_links;
 #[cfg(test)]
 pub(crate) use dispatch_time::{
     ppc_install_time_task, ppc_install_vbl_task, ppc_remove_time_task, ppc_remove_vbl_task,
 };
+#[cfg(test)]
+use pef_dump::format_pef_dump_json;
+use pef_dump::{maybe_write, PefDumpContext};
+use theme::*;
 
 use dispatch_event::{
     dispatch_button_import, dispatch_getkeys_import, dispatch_microseconds_import,
@@ -203,56 +196,57 @@ use dispatch_event::{
     ppc_wait_mouse_up_result, PpcTickCountIdlePollState,
 };
 
-pub mod graphics;
-pub mod menu;
-pub mod files;
-pub mod textedit;
-pub mod regions;
-pub mod quickdraw;
-pub mod fixmath;
-pub mod gworlds;
-pub mod memory;
-pub mod resources;
 pub mod events;
-pub mod palettes;
+pub mod files;
+pub mod fixmath;
+pub mod graphics;
+pub mod gworlds;
 pub mod imports;
+mod loaded_app_callbacks;
+mod loaded_app_display;
+mod loaded_app_execution;
+mod loaded_app_gateways;
+mod loaded_app_input;
+mod loaded_app_memory;
+mod loaded_app_menu;
+mod loaded_app_mixed_mode;
+mod loaded_app_probes;
+mod loaded_app_process;
+mod loaded_app_qd3d;
+mod loaded_app_resources;
+mod loaded_app_time;
+mod loaded_app_vfs;
+pub mod memory;
+pub mod menu;
+pub mod palettes;
 pub mod qd3d;
 pub(crate) mod qd3d_text;
-mod loaded_app_qd3d;
-mod loaded_app_callbacks;
-mod loaded_app_vfs;
-mod loaded_app_memory;
-mod loaded_app_process;
-mod loaded_app_input;
-mod loaded_app_time;
-mod loaded_app_display;
-mod loaded_app_menu;
-mod loaded_app_resources;
-mod loaded_app_probes;
-mod loaded_app_mixed_mode;
-mod loaded_app_gateways;
+pub mod quickdraw;
 pub mod quicktime;
+pub mod regions;
+pub mod resources;
 pub mod sound;
 pub mod sprockets;
+pub mod textedit;
 pub mod vfs;
 
-pub use graphics::*;
-pub use menu::*;
-pub(crate) use files::*;
-pub(crate) use textedit::*;
-use regions::*;
-pub(crate) use quickdraw::*;
-pub(crate) use fixmath::*;
-pub(crate) use gworlds::*;
-pub(crate) use memory::*;
-pub(crate) use resources::*;
 pub(crate) use events::*;
-pub(crate) use palettes::*;
+pub(crate) use files::*;
+pub(crate) use fixmath::*;
+pub use graphics::*;
+pub(crate) use gworlds::*;
 pub use imports::*;
+pub(crate) use memory::*;
+pub use menu::*;
+pub(crate) use palettes::*;
 pub use qd3d::*;
+pub(crate) use quickdraw::*;
 pub use quicktime::*;
+use regions::*;
+pub(crate) use resources::*;
 pub use sound::*;
 pub use sprockets::*;
+pub(crate) use textedit::*;
 pub use vfs::*;
 
 #[derive(Debug, Clone, Copy)]
@@ -291,7 +285,12 @@ impl PpcImportBindingPolicy for PpcConnectedCfmBindingPolicy<'_> {
             .find(|connection| connection.library_name.eq_ignore_ascii_case(library))
             // PEF symbol classes annotate imports and exports; CFM binding
             // resolves the symbol by name within the selected library.
-            .and_then(|connection| connection.exports.iter().find(|export| export.name == symbol))
+            .and_then(|connection| {
+                connection
+                    .exports
+                    .iter()
+                    .find(|export| export.name == symbol)
+            })
             .map(|export| export.address)
             .or_else(|| self.fixed_data_address(library, symbol))
     }
@@ -332,7 +331,9 @@ fn ppc_initial_import_error(error: PpcImportBindingError) -> PpcLoadError {
     }
 }
 
-pub(in crate::systems::macintosh::loader::ppc) fn ppc_dynamic_import_error(error: PpcImportBindingError) -> i16 {
+pub(in crate::systems::macintosh::loader::ppc) fn ppc_dynamic_import_error(
+    error: PpcImportBindingError,
+) -> i16 {
     match error {
         PpcImportBindingError::CountOverflow
         | PpcImportBindingError::CapacityExceeded { .. }
@@ -493,7 +494,8 @@ const PPC_LINKAGE_BACK_CHAIN_OFFSET: u32 = 0;
 const PPC_LINKAGE_SAVED_CR_OFFSET: u32 = 4;
 const PPC_LINKAGE_SAVED_LR_OFFSET: u32 = 8;
 const PPC_LINKAGE_SAVED_RTOC_OFFSET: u32 = 20;
-pub(super) const PPC_GUEST_CALL_RETURN_PC: u32 = PPC_IMPORT_TRAP_BASE + PPC_GUEST_CALL_RETURN_IMPORT_INDEX * 4;
+pub(super) const PPC_GUEST_CALL_RETURN_PC: u32 =
+    PPC_IMPORT_TRAP_BASE + PPC_GUEST_CALL_RETURN_IMPORT_INDEX * 4;
 const PPC_INITIALIZERS_TRAMPOLINE_BASE: u32 = PPC_IMPORT_TRAP_BASE - 0x1_0000;
 const PPC_APPLICATION_INIT_RETURN_PC: u32 = PPC_IMPORT_TRAP_BASE - 0x100;
 const PPC_EXCEPTION_INFORMATION_SIZE: u32 = 24;
@@ -556,8 +558,7 @@ const PPC_PROCINFO_SIZE_ONE: u32 = crate::mixed_mode::proc_info::SIZE_ONE;
 const PPC_PROCINFO_SIZE_TWO: u32 = crate::mixed_mode::proc_info::SIZE_TWO;
 const PPC_PROCINFO_SIZE_FOUR: u32 = crate::mixed_mode::proc_info::SIZE_FOUR;
 
-pub(crate) const PPC_LIVE_TRAP_IMPORT_WORDS: &[u16] =
-    &[0xA973, 0xA974, 0xA975, 0xA976, 0xA977];
+pub(crate) const PPC_LIVE_TRAP_IMPORT_WORDS: &[u16] = &[0xA973, 0xA974, 0xA975, 0xA976, 0xA977];
 const PPC_PROCINFO_MAX_STACK_PARAMETERS: usize = crate::mixed_mode::proc_info::MAX_STACK_PARAMETERS;
 const PPC_PROCINFO_MAX_DISPATCHED_STACK_PARAMETERS: usize =
     crate::mixed_mode::proc_info::MAX_DISPATCHED_STACK_PARAMETERS;
@@ -824,14 +825,13 @@ pub use dispatch_standard_file::PpcStandardFileOperation;
 
 pub use dispatch_dialog::PpcDialogCompatibilityOperation;
 
-pub use dispatch_quickdraw::PpcQuickDrawCompatibilityOperation;
-pub use dispatch_appletalk::PpcAppleTalkCompatibilityOperation;
 #[cfg(test)]
 pub(super) use dispatch_appletalk::ppc_dispatch_appletalk_compatibility;
-pub use dispatch_printing::PpcPrintingCompatibilityOperation;
+pub use dispatch_appletalk::PpcAppleTalkCompatibilityOperation;
 #[cfg(test)]
 pub(super) use dispatch_printing::ppc_dispatch_printing_compatibility;
-
+pub use dispatch_printing::PpcPrintingCompatibilityOperation;
+pub use dispatch_quickdraw::PpcQuickDrawCompatibilityOperation;
 
 pub use dispatch_files::PpcFileCompatibilityOperation;
 
@@ -847,13 +847,9 @@ pub use dispatch_inputsprocket::PpcInputSprocketCompatibilityOperation;
 
 pub use dispatch_apple_events::PpcAppleEventCompatibilityOperation;
 
-
 pub use dispatch_event::PpcEventPollOperation;
 
-
-
 pub use dispatch_collection::PpcCollectionOperation;
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PpcImportDispatcherTarget {
@@ -2791,7 +2787,6 @@ impl PpcToolboxStartupState {
     }
 }
 
-
 pub type PpcHandleRecord = ProcessHandleRecord;
 pub type PpcPtrRecord = ProcessPtrRecord;
 pub type PpcHandleStateRecord = ProcessHandleStateRecord;
@@ -2957,9 +2952,7 @@ impl PpcProcessMemoryManager {
     }
 
     fn application_heap_limit(&self, fallback: u32) -> u32 {
-        self.0
-            .borrow()
-            .application_heap_limit(fallback)
+        self.0.borrow().application_heap_limit(fallback)
     }
     #[cfg(test)]
     fn heap_cursor_mut(&self) -> PpcTestHeapCursor {
@@ -3104,1682 +3097,10 @@ impl std::ops::Deref for PpcLoadedApp {
     }
 }
 
-fn ppc_hle_import_trace_same_run(
-    left: &PpcHleImportTraceEntry,
-    right: &PpcHleImportTraceEntry,
-) -> bool {
-    left.library_name == right.library_name && left.symbol_name == right.symbol_name
-}
-
-fn push_ppc_hle_import_trace_entry(
-    trace: &mut Vec<PpcHleImportTraceEntry>,
-    entry: PpcHleImportTraceEntry,
-) {
-    if let Some(last) = trace.last_mut() {
-        if ppc_hle_import_trace_same_run(last, &entry) {
-            last.repeat_count = last.repeat_count.saturating_add(entry.repeat_count);
-            return;
-        }
-    }
-    trace.push(entry);
-}
-
-impl PpcLoadedApp {
-    pub(crate) fn assert_cfm_execution_owner(&self, process_cfm: Option<&PpcCfmState>) {
-        assert!(
-            process_cfm.is_some() || self.cfm.is_some(),
-            "installed native execution requires process CFM services"
-        );
-        assert!(
-            process_cfm.is_none() || self.cfm.is_none(),
-            "move the standalone CFM seed before using process services"
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn run_with_process_services(
-        &mut self,
-        max_cycles: u64,
-        trace_imports: bool,
-        trace_fetches: bool,
-        memory_manager: &mut ProcessMemoryManager,
-        cfm: &mut PpcCfmState,
-    ) -> PpcHleRunProbe {
-        self.run_with_hle_imports_with_trace(
-            max_cycles,
-            trace_imports,
-            trace_fetches,
-            Some(memory_manager),
-            Some(cfm),
-        )
-    }
-
-    pub fn run_with_hle_imports(&mut self, max_cycles: u64) -> PpcHleRunProbe {
-        self.run_with_hle_imports_with_trace(max_cycles, false, false, None, None)
-    }
-
-    pub fn run_with_hle_import_trace(&mut self, max_cycles: u64) -> PpcHleRunProbe {
-        self.run_with_hle_imports_with_trace(max_cycles, true, false, None, None)
-    }
-
-    pub fn run_with_hle_import_fetch_histogram(&mut self, max_cycles: u64) -> PpcHleRunProbe {
-        self.run_with_hle_imports_with_trace(max_cycles, false, true, None, None)
-    }
-
-    pub fn run_with_hle_import_trace_and_fetch_histogram(
-        &mut self,
-        max_cycles: u64,
-    ) -> PpcHleRunProbe {
-        self.run_with_hle_imports_with_trace(max_cycles, true, true, None, None)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn run_with_process_memory_manager(
-        &mut self,
-        max_cycles: u64,
-        trace_imports: bool,
-        trace_fetches: bool,
-        memory_manager: &mut ProcessMemoryManager,
-    ) -> PpcHleRunProbe {
-        self.run_with_hle_imports_with_trace(
-            max_cycles,
-            trace_imports,
-            trace_fetches,
-            Some(memory_manager),
-            None,
-        )
-    }
-
-    pub(crate) fn run_with_hle_imports_with_trace(
-        &mut self,
-        max_cycles: u64,
-        trace_imports: bool,
-        trace_fetches: bool,
-        process_memory_manager: Option<&mut ProcessMemoryManager>,
-        mut process_cfm: Option<&mut PpcCfmState>,
-    ) -> PpcHleRunProbe {
-        self.assert_cfm_execution_owner(process_cfm.as_deref());
-        let guest_calls = self.toolbox_startup.execution.calls().shared_handle();
-        let trap_default_gateways = self.trap_default_gateways.clone();
-        // Wakeup selects and prepares a saved context before any native step.
-        guest_calls.resume_ready_task();
-        if !guest_calls.current_task_is_running()
-            || guest_calls.has_classic_task_handoff()
-            || (guest_calls.has_pending_task_handoff()
-                && !guest_calls.prepare_native_task(&mut self.cpu))
-        {
-            return PpcHleRunProbe {
-                result: PpcRunResult::CycleLimit { cycles: 0 },
-                handled_import_count: 0,
-                last_import_index: None,
-                unsupported_import_index: None,
-                import_trace: Vec::new(),
-                draw_sprocket_trace: Vec::new(),
-                input_sprocket_trace: Vec::new(),
-                fetch_histogram: None,
-            };
-        }
-        let standalone_memory_manager = process_memory_manager
-            .is_none()
-            .then(|| self.process_memory_manager.0.clone());
-        let mut standalone_memory_manager_borrow;
-        let process_memory_manager = if let Some(memory_manager) = process_memory_manager {
-            memory_manager
-        } else {
-            standalone_memory_manager_borrow = standalone_memory_manager
-                .as_ref()
-                .expect("standalone process Memory Manager created")
-                .borrow_mut();
-            assert!(
-                standalone_memory_manager_borrow.has_native_allocator(),
-                "loaded adapter owns a native allocator before execution"
-            );
-            &mut standalone_memory_manager_borrow
-        };
-        let mut import_run_state = PpcImportRunState::from_parts(
-            std::mem::take(&mut self.imports),
-            self.import_count,
-            ppc_import_layout(),
-        );
-        let q3_start_rendering_import_index = import_run_state
-            .bindings()
-            .iter()
-            .find(|binding| {
-                binding.dispatcher_target == PpcImportDispatcherTarget::Q3ViewStartRendering
-            })
-            .map(|binding| binding.symbol_index);
-        let q3_end_rendering_import_index = import_run_state
-            .bindings()
-            .iter()
-            .find(|binding| {
-                binding.dispatcher_target == PpcImportDispatcherTarget::Q3ViewEndRendering
-            })
-            .map(|binding| binding.symbol_index);
-        let input = self.current_input_snapshot();
-        self.mirror_input_low_memory(input);
-        let event_queue = std::mem::take(&mut self.event_queue);
-        let process_memory_manager = process_memory_manager.native_mut();
-        let _ = self.current_tick();
-        let tick_state = self.tick_state.shared_handle();
-        let clock_cycles_per_tick = self.clock_cycles_per_tick;
-        let clock_cycle_phase = self.clock_cycle_phase;
-        let mut process_file_system = self.process_file_system.shared_handle();
-        let current_resource_refnum = process_file_system
-            .current_resource_file
-            .shared_handle();
-        let mut last_resource_error = self
-            .memory
-            .read_u16_be(crate::memory::globals::addr::RES_ERR)
-            .unwrap_or(0) as i16;
-        let resource_policy = process_file_system.policy.shared_handle();
-        let native_exception_handler = Cell::new(self.native_exception_handler);
-        let mut native_exception_stack = std::mem::take(&mut self.native_exception_stack);
-        let mut stdc_qsort_stack = std::mem::take(&mut self.stdc_qsort_stack);
-        let mut dialog_callback_stack = std::mem::take(&mut self.dialog_callback_stack);
-        let mut collection_callback_stack = std::mem::take(&mut self.collection_callback_stack);
-        let mut pending_file_completions = std::mem::take(&mut self.pending_file_completions);
-        let mut apple_events = std::mem::take(&mut self.apple_events);
-        let mut standalone_cfm = if process_cfm.is_none() {
-            self.cfm.take()
-        } else {
-            None
-        };
-        let cfm = if let Some(cfm) = process_cfm.as_deref_mut() {
-            cfm
-        } else {
-            standalone_cfm.as_mut().expect("standalone CFM seed exists")
-        };
-        let (mut cfm_connections, mut cfm_library_fragments, mut next_cfm_connection_id) = (
-            &mut cfm.connections,
-            &mut cfm.library_fragments,
-            &mut cfm.next_connection_id,
-        );
-        let controls = std::mem::take(&mut self.controls);
-        let mut aliases = std::mem::take(&mut self.aliases);
-        let mut gworlds = std::mem::take(&mut self.gworlds);
-        let gworld_pixel_states = self.gworld_pixel_states.shared_handle();
-        let window_list = self.window_list.shared_handle();
-        if window_list.is_empty() {
-            window_list.with_mut(|windows| {
-                windows.extend(
-                    gworlds
-                        .iter()
-                        .rev()
-                        .map(|record| record.port)
-                        .filter(|port| !matches!(*port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)),
-                );
-            });
-        }
-        let mut q3_objects = std::mem::take(&mut self.q3_objects);
-        let mut q3_object_refs = std::mem::take(&mut self.q3_object_refs);
-        let mut next_q3_object = self.next_q3_object;
-        let mut q3_error_state = self.q3_error_state;
-        let mut q3_lifecycle = self.q3_lifecycle;
-        let mut q3_memory_storages = std::mem::take(&mut self.q3_memory_storages);
-        let mut q3_files = std::mem::take(&mut self.q3_files);
-        let mut q3_group_memberships = std::mem::take(&mut self.q3_group_memberships);
-        let mut q3_file_groups = std::mem::take(&mut self.q3_file_groups);
-        let mut q3_views = std::mem::take(&mut self.q3_views);
-        let mut q3_submissions = std::mem::take(&mut self.q3_submissions);
-        let mut q3_view_transforms = std::mem::take(&mut self.q3_view_transforms);
-        let mut q3_submission_transforms = std::mem::take(&mut self.q3_submission_transforms);
-        let mut q3_view_materials = std::mem::take(&mut self.q3_view_materials);
-        let mut q3_submission_materials = std::mem::take(&mut self.q3_submission_materials);
-        let mut q3_submission_lights = std::mem::take(&mut self.q3_submission_lights);
-        let mut q3_view_state_stack = std::mem::take(&mut self.q3_view_state_stack);
-        let mut q3_completed_frames = std::mem::take(&mut self.q3_completed_frames);
-        let mut q3_retained_frames = std::mem::take(&mut self.q3_retained_frames);
-        let mut q3_state_only_completed_frame_batches =
-            std::mem::take(&mut self.q3_state_only_completed_frame_batches);
-        let mut q3_fog_styles = std::mem::take(&mut self.q3_fog_styles);
-        let mut q3_attributes = std::mem::take(&mut self.q3_attributes);
-        let mut q3_shader_uv_transforms = std::mem::take(&mut self.q3_shader_uv_transforms);
-        let mut q3_shader_boundaries = std::mem::take(&mut self.q3_shader_boundaries);
-        let mut q3_mipmap_textures = std::mem::take(&mut self.q3_mipmap_textures);
-        let mut q3_texture_shaders = std::mem::take(&mut self.q3_texture_shaders);
-        let mut q3_renderer_preferences = std::mem::take(&mut self.q3_renderer_preferences);
-        let mut q3_draw_contexts = std::mem::take(&mut self.q3_draw_contexts);
-        let mut q3_trimeshes = std::mem::take(&mut self.q3_trimeshes);
-        let mut q3_styles = std::mem::take(&mut self.q3_styles);
-        let mut q3_cameras = std::mem::take(&mut self.q3_cameras);
-        let mut q3_lights = std::mem::take(&mut self.q3_lights);
-        let mut input_sprocket = self.input_sprocket;
-        let mut input_sprocket_virtual_elements =
-            std::mem::take(&mut self.input_sprocket_virtual_elements);
-        let mut toolbox_startup = std::mem::take(&mut self.toolbox_startup);
-        let mut quicktime = std::mem::take(&mut self.quicktime);
-        let mut sound = std::mem::take(&mut self.sound);
-        let timer_tasks = std::mem::take(&mut self.timer_tasks);
-        let vbl_tasks = std::mem::take(&mut self.vbl_tasks);
-        let callback_scheduling = self.callback_scheduling.shared_handle();
-        // Keep File and Resource Manager records in their process-owned
-        // managers for the whole native execution slice. The classic
-        // adapter can enter through Mixed Mode while an import is running,
-        // so taking these records out and restoring them at slice teardown
-        // would leave the process temporarily with an empty manager view.
-        // (Inside Macintosh: Files, 1992, pp. 1-7–1-9; Inside Macintosh
-        // Volume I, 1985, pp. I-109–I-110.)
-        let current_gworld = self.current_gworld.shared_handle();
-        let current_gdevice = self.current_gdevice.shared_handle();
-        let quickdraw_op_colors = self.quickdraw_op_colors.shared_handle();
-        let quickdraw_hilite_colors = self.quickdraw_hilite_colors.shared_handle();
-        let screen_clut = self.screen_clut.shared_handle();
-        let color_manager_clut = self.color_manager_clut.shared_handle();
-        let display_gamma = self.display_gamma.shared_handle();
-        let mut quickdraw_fore_color = self.quickdraw_fore_color;
-        let mut quickdraw_fore_indices = std::mem::take(&mut self.quickdraw_fore_indices);
-        let mut quickdraw_back_color = self.quickdraw_back_color;
-        let mut quickdraw_pen_h = self.quickdraw_pen_h;
-        let mut quickdraw_pen_v = self.quickdraw_pen_v;
-        let mut quickdraw_text_mode = self.quickdraw_text_mode;
-        let mut quickdraw_text_size = self.quickdraw_text_size;
-        let process_quickdraw_port_state_attached = self.process_quickdraw_port_state_attached;
-        let cursor_state = std::mem::take(&mut self.cursor_state);
-        let vfs_volumes = self.vfs_volumes.shared_handle();
-        let vfs_directories = self.vfs_directories.shared_handle();
-        let next_vfs_dir_id = self.next_vfs_dir_id.shared_handle();
-        let default_dir_id = self.default_dir_id.shared_handle();
-        let working_directories = self.working_directories.shared_handle();
-        let next_working_directory_ref_num = self
-            .next_working_directory_ref_num
-            .shared_handle();
-        let application_working_directory_ref_num = self
-            .application_working_directory_ref_num
-            .shared_handle();
-        let param_text = self.param_text.shared_handle();
-        let mut scrap = std::mem::take(&mut self.scrap);
-        let list_manager = std::mem::take(&mut self.list_manager);
-        let collections = self.collections.shared_handle();
-        let mut draw_sprocket = std::mem::take(&mut self.draw_sprocket);
-        let mut handled_import_count = 0u32;
-        let mut last_import_index = None;
-        let mut unsupported_import_index = None;
-        let mut import_trace = Vec::new();
-        let mut draw_sprocket_trace = Vec::new();
-        let mut input_sprocket_trace = Vec::new();
-        let mut fetch_histogram = PpcFetchHistogram::new();
-        let trace_ppc = ppc_trace_enabled();
-        let trace_sprocket = sprocket_trace_enabled();
-        let trace_qd3d = qd3d_trace_enabled();
-        let trace_pc_range = ppc_trace_pc_range();
-        let trace_recent_on_halt = ppc_recent_imports_on_halt_enabled();
-        let mut recent_imports = VecDeque::<PpcHleImportTraceEntry>::new();
-        let mut idle_poll_counts = HashMap::<u32, u32>::new();
-        let mut tick_count_idle_poll = PpcTickCountIdlePollState::default();
-        let needs_fetch_observer = trace_fetches || trace_ppc || trace_pc_range.is_some();
-        let mut fetch_observer = PpcHleFetchObserver {
-            histogram: if trace_fetches {
-                Some(&mut fetch_histogram)
-            } else {
-                None
-            },
-            trace_fetches: trace_ppc,
-            trace_pc_range,
-        };
-
-        let result = {
-            type Mem = PpcSectionMem;
-            let mut handle_import = |elapsed, index, cpu: &mut PpcCpu, memory: &mut Mem| {
-                if index == PPC_THREAD_RETURN_IMPORT_INDEX {
-                    // ThreadEntryProc returns its result in R3. Retire only
-                    // after validating the successor and result destination.
-                    // Inside Macintosh: Thread Manager (1999), pp. 59–60.
-                    let task = guest_calls.current_task();
-                    let result = cpu.gpr[3];
-                    if let Some((procedure, parameter)) = guest_calls.take_thread_terminator(task) {
-                        if procedure != 0 {
-                            // The terminator takes the retiring ID and its
-                            // registered parameter. Its return value does not
-                            // replace the thread entry's result.
-                            // Thread Manager (1999), pp. 81–82, 88–89.
-                            if install_powerpc_call_arguments(
-                                cpu,
-                                memory,
-                                &[task.thread_id(), parameter],
-                            )
-                            .is_none()
-                            {
-                                return PpcImportAction::Halt;
-                            }
-                            return GuestCallEffect::call_guest(
-                                GuestCallRequest::new(GuestCallTarget {
-                                    isa: GuestIsa::PowerPc,
-                                    entry: procedure,
-                                    rtoc: cpu.gpr[2],
-                                }),
-                                GuestCallContinuation::to_powerpc(
-                                    PPC_GUEST_CALL_RETURN_PC,
-                                    PPC_THREAD_RETURN_PC,
-                                    cpu.gpr[2],
-                                    PpcNativeReturnGpr3::Set(result),
-                                ),
-                            )
-                            .into_ppc_import_action()
-                            .unwrap_or(PpcImportAction::Halt);
-                        }
-                    }
-                    if let Ok(retirement) =
-                        guest_calls.retire_native_thread(task, cpu, false, |context| {
-                            context.result_destination == 0
-                                || memory
-                                    .write_u32_be(context.result_destination, result)
-                                    .is_some()
-                        })
-                    {
-                        ppc_release_retired_thread_storage(
-                            process_memory_manager,
-                            retirement,
-                            false,
-                        );
-                    }
-                    return PpcImportAction::Yield(1);
-                }
-                if index == PPC_GUEST_CALL_RETURN_IMPORT_INDEX {
-                    let mut resource_call = None;
-                    if toolbox_startup.execution.menu().ready_call(GuestIsa::PowerPc).is_some()
-                        || guest_calls
-                        .ready_menu_bar_build(GuestIsa::PowerPc)
-                        .is_some()
-                        || guest_calls.complete_powerpc_resuming_operation(
-                        cpu,
-                        process_memory_manager,
-                        |operation, result| match operation {
-                            crate::guest_call::ManagerContinuation::Menu(
-                                crate::guest_call::MenuManagerContinuation::Definition(operation),
-                            ) => {
-                                operation.complete(memory);
-                                result
-                            }
-                            crate::guest_call::ManagerContinuation::Menu(
-                                crate::guest_call::MenuManagerContinuation::Hook(_),
-                            ) => unreachable!("MenuHook completes after native caller restore"),
-                            crate::guest_call::ManagerContinuation::Cfm(CfmOperation::Load(
-                                load,
-                            )) => ppc_complete_cfm_load(load, result, memory, &mut cfm_connections),
-                            crate::guest_call::ManagerContinuation::Cfm(
-                                CfmOperation::Resource(call),
-                            ) => match call.complete(result, &mut cfm_connections, memory) {
-                                Ok(call) => {
-                                    resource_call = Some(call);
-                                    0
-                                }
-                                Err(error) => ppc_i16_result(error.os_error()),
-                            },
-                        },
-                    ) {
-                        if guest_calls.ready_menu_bar_build(GuestIsa::PowerPc).is_some() {
-                            let heap = process_memory_manager.native_heap_state()
-                                .expect("native allocator registered during execution");
-                            let mut cursor = heap.heap_cursor;
-                            let limit =
-                                process_memory_manager.native_allocation_limit(heap.heap_limit);
-                            return ppc_continue_menu_bar_build(
-                                cpu,
-                                process_memory_manager,
-                                memory,
-                                &mut cursor,
-                                limit,
-                                &mut toolbox_startup,
-                                &process_file_system.resource_manager.vfs_resources,
-                                *current_resource_refnum,
-                            );
-                        }
-                        if let Some((_call, _scope)) = toolbox_startup.execution.resume_menu_call(GuestIsa::PowerPc) {
-                            let heap = process_memory_manager.native_heap_state()
-                                .expect("native allocator registered during execution");
-                            let mut cursor = heap.heap_cursor;
-                            let limit = process_memory_manager.native_allocation_limit(heap.heap_limit);
-                            return current_gworld.with_mut(|current_gworld| {
-                                current_gdevice.with_mut(|current_gdevice| {
-                                    ppc_step_menu_tracking(
-                                        cpu,
-                                        process_memory_manager,
-                                        memory,
-                                        &mut cursor,
-                                        limit,
-                                        &gworlds,
-                                        &screen_clut,
-                                        &mut toolbox_startup,
-                                        current_gworld,
-                                        current_gdevice,
-                                        input,
-                                        &process_file_system.resource_manager.vfs_resources,
-                                        *current_resource_refnum,
-                                    )
-                                    .unwrap_or(PpcImportAction::Halt)
-                                })
-                            });
-                        }
-                        if let Some(call) = resource_call {
-                            if let Err(error) = ppc_invoke_prepared_resource(
-                                cpu,
-                                memory,
-                                &guest_calls,
-                                call,
-                                cpu.pc,
-                            ) {
-                                cpu.gpr[3] = ppc_i16_result(error);
-                            }
-                            return PpcImportAction::Continue;
-                        }
-                        let native_heap = process_memory_manager
-                            .native_heap_state()
-                            .expect("native allocator registered during execution");
-                        let mut heap_cursor = native_heap.heap_cursor;
-                        let mut last_mem_error = native_heap.last_mem_error;
-                        let handles =
-                            &mut process_memory_manager.native_handle_records().to_vec();
-                        ppc_complete_apple_event_dispatch(
-                            &mut apple_events,
-                            guest_calls.depth(),
-                            &mut *process_memory_manager,
-                            memory,
-                            &mut heap_cursor,
-                            &mut last_mem_error,
-                            handles,
-                        );
-                        process_memory_manager.set_native_mem_error(last_mem_error);
-                        return PpcImportAction::Continue;
-                    }
-                    if guest_calls.complete_powerpc_for_m68k(cpu) {
-                        return PpcImportAction::Halt;
-                    }
-                    unsupported_import_index = Some(index);
-                    return PpcImportAction::Halt;
-                }
-                last_import_index = Some(index);
-                // A Mixed Mode callback can advance process time while the
-                // native slice is suspended. Refresh the whole-tick baseline
-                // before every import so TickCount and EventRecord.when use
-                // the same canonical process clock while retaining this
-                // slice's native cycle phase.
-                let process_tick = memory
-                    .read_u32_be(crate::memory::globals::addr::TICKS)
-                    .map(|guest_ticks| tick_state.read_tick_count(guest_ticks))
-                    .unwrap_or_else(|| tick_state.current_tick());
-                let mut import_tick_count = ppc_virtual_tick_count(
-                    process_tick,
-                    clock_cycles_per_tick,
-                    clock_cycle_phase,
-                    elapsed,
-                );
-                let dispatcher_target = import_run_state.dispatcher_target_cloned(index);
-                let is_tick_count_import = dispatcher_target.as_ref().is_some_and(|target| {
-                    *target == PpcImportDispatcherTarget::TickCount
-                });
-                // Most per-frame imports are handled by the small fast path
-                // below. Defer cloning their library and symbol strings until
-                // tracing or the general dispatcher actually needs them.
-                let mut binding = trace_recent_on_halt
-                    .then(|| import_run_state.binding_cloned(index))
-                    .flatten();
-                if !is_tick_count_import {
-                    tick_count_idle_poll.reset();
-                }
-                if !trace_imports && !trace_ppc && !trace_qd3d {
-                    if q3_start_rendering_import_index == Some(index) {
-                        let action =
-                            PpcImportAction::Return(u32::from(ppc_q3_view_start_rendering(
-                                cpu,
-                                &mut q3_views,
-                                &q3_objects,
-                                &mut q3_submissions,
-                                &mut q3_submission_transforms,
-                                &mut q3_submission_materials,
-                                &mut q3_submission_lights,
-                                &mut q3_error_state,
-                            )));
-                        handled_import_count = handled_import_count.saturating_add(1);
-                        return ppc_import_action_with_extra_cycles(
-                            action,
-                            PPC_Q3_HOT_IMPORT_EXTRA_CYCLES,
-                        );
-                    }
-                    if q3_end_rendering_import_index == Some(index) {
-                        let action = dispatch_q3_view_end_rendering_import(
-                            cpu,
-                            &mut q3_views,
-                            &q3_objects,
-                            &mut q3_submissions,
-                            &mut q3_submission_transforms,
-                            &mut q3_submission_materials,
-                            &mut q3_submission_lights,
-                            &mut q3_completed_frames,
-                            &mut q3_retained_frames,
-                            &mut q3_state_only_completed_frame_batches,
-                            &q3_draw_contexts,
-                            &q3_trimeshes,
-                            &gworlds,
-                            *current_gworld,
-                            &mut q3_error_state,
-                            input.is_idle(),
-                        );
-                        handled_import_count = handled_import_count.saturating_add(1);
-                        return ppc_import_action_with_extra_cycles(
-                            action,
-                            PPC_Q3_HOT_IMPORT_EXTRA_CYCLES,
-                        );
-                    }
-                }
-                let Some(dispatcher_target) = dispatcher_target.as_ref() else {
-                    unsupported_import_index = Some(index);
-                    if trace_ppc {
-                        eprintln!(
-                            "{}",
-                            format_ppc_trace_unknown_import(
-                                index, cpu.pc, cpu.lr, cpu.gpr[2], cpu.gpr[1]
-                            )
-                        );
-                    }
-                    return PpcImportAction::Halt;
-                };
-                match ppc_live_trap_import_action(
-                    dispatcher_target,
-                    &trap_default_gateways,
-                    cpu,
-                    &mut *process_memory_manager,
-                    memory,
-                    &mut toolbox_startup,
-                ) {
-                    Ok(Some(action)) => {
-                        if trace_imports {
-                            if binding.is_none() {
-                                binding = import_run_state.binding_cloned(index);
-                            }
-                            let binding = binding
-                                .as_ref()
-                                .expect("live trap import tracing resolves a known binding");
-                            push_ppc_hle_import_trace_entry(
-                                &mut import_trace,
-                                PpcHleImportTraceEntry {
-                                    import_index: index,
-                                    library_name: binding.library_name.clone(),
-                                    symbol_name: binding.symbol_name.clone(),
-                                    pc: cpu.pc,
-                                    lr: cpu.lr,
-                                    rtoc: cpu.gpr[2],
-                                    sp: cpu.gpr[1],
-                                    dispatcher_target: dispatcher_target.clone(),
-                                    repeat_count: 1,
-                                },
-                            );
-                        }
-                        handled_import_count = handled_import_count.saturating_add(1);
-                        return guest_calls.externalize_powerpc_action(cpu, action);
-                    }
-                    Ok(None) => {}
-                    Err(()) => return PpcImportAction::Halt,
-                }
-                if trace_recent_on_halt {
-                    let binding = binding
-                        .as_ref()
-                        .expect("recent import tracing resolves a known binding");
-                    let entry = PpcHleImportTraceEntry {
-                        import_index: index,
-                        library_name: binding.library_name.clone(),
-                        symbol_name: binding.symbol_name.clone(),
-                        pc: cpu.pc,
-                        lr: cpu.lr,
-                        rtoc: cpu.gpr[2],
-                        sp: cpu.gpr[1],
-                        dispatcher_target: binding.dispatcher_target.clone(),
-                        repeat_count: 1,
-                    };
-                    match recent_imports.back_mut() {
-                        Some(last) if ppc_hle_import_trace_same_run(last, &entry) => {
-                            last.repeat_count = last.repeat_count.saturating_add(1);
-                        }
-                        _ => recent_imports.push_back(entry),
-                    }
-                    while recent_imports.len() > 64 {
-                        recent_imports.pop_front();
-                    }
-                }
-                // A null event cannot select an item. Pending callbacks
-                // still need the general dispatch path.
-                let null_dialog_poll = matches!(
-                    dispatcher_target,
-                    PpcImportDispatcherTarget::DialogCompatibility(
-                        PpcDialogCompatibilityOperation::DialogSelect
-                    )
-                ) && dialog_callback_stack.is_empty()
-                    && memory.read_u16_be(cpu.gpr[3]) == Some(0);
-                if !trace_ppc
-                    && (*dispatcher_target != PpcImportDispatcherTarget::TickCount
-                        || !trace_imports)
-                    && (matches!(
-                        dispatcher_target,
-                        PpcImportDispatcherTarget::Button
-                            | PpcImportDispatcherTarget::StillDown
-                            | PpcImportDispatcherTarget::WaitMouseUp
-                            | PpcImportDispatcherTarget::GetKeys
-                            | PpcImportDispatcherTarget::TickCount
-                            | PpcImportDispatcherTarget::Microseconds
-                            | PpcImportDispatcherTarget::GetCurrentThread
-                            | PpcImportDispatcherTarget::YieldToThread
-                            | PpcImportDispatcherTarget::GetMenuHandle
-                            | PpcImportDispatcherTarget::StdFilterProc
-                            | PpcImportDispatcherTarget::EnableMenuItem
-                            | PpcImportDispatcherTarget::DisableMenuItem
-                    ) || null_dialog_poll)
-                {
-                    if trace_imports {
-                        if binding.is_none() {
-                            binding = import_run_state.binding_cloned(index);
-                        }
-                        let binding = binding
-                            .as_ref()
-                            .expect("import tracing resolves a known binding");
-                        push_ppc_hle_import_trace_entry(
-                            &mut import_trace,
-                            PpcHleImportTraceEntry {
-                                import_index: index,
-                                library_name: binding.library_name.clone(),
-                                symbol_name: binding.symbol_name.clone(),
-                                pc: cpu.pc,
-                                lr: cpu.lr,
-                                rtoc: cpu.gpr[2],
-                                sp: cpu.gpr[1],
-                                dispatcher_target: dispatcher_target.clone(),
-                                repeat_count: 1,
-                            },
-                        );
-                    }
-                    let action = match dispatcher_target {
-                        PpcImportDispatcherTarget::Button => {
-                            toolbox_startup.last_button_result = Some(input.mouse_button);
-                            dispatch_button_import(cpu, input, Some(&mut idle_poll_counts))
-                        }
-                        PpcImportDispatcherTarget::StillDown => {
-                            let (still_down, action) = event_queue.with_ref(|queue| {
-                                let still_down = ppc_still_down_result(input, queue);
-                                let action = dispatch_still_down_import(
-                                    cpu,
-                                    input,
-                                    queue,
-                                    Some(&mut idle_poll_counts),
-                                );
-                                (still_down, action)
-                            });
-                            toolbox_startup.last_still_down_result = Some(still_down);
-                            action
-                        }
-                        PpcImportDispatcherTarget::WaitMouseUp => {
-                            let result = event_queue
-                                .with_mut(|queue| ppc_wait_mouse_up_result(input, queue));
-                            toolbox_startup.last_wait_mouse_up_result = Some(result);
-                            PpcImportAction::Return(u32::from(result))
-                        }
-                        PpcImportDispatcherTarget::GetKeys => {
-                            dispatch_getkeys_import(cpu, memory, input, Some(&mut idle_poll_counts))
-                        }
-                        PpcImportDispatcherTarget::TickCount => dispatch_tick_count_import(
-                            cpu,
-                            import_tick_count,
-                            ppc_cycles_until_next_tick(
-                                clock_cycles_per_tick,
-                                clock_cycle_phase,
-                                elapsed,
-                            )
-                            .min(max_cycles.saturating_sub(elapsed)),
-                            Some(&mut tick_count_idle_poll),
-                        ),
-                        PpcImportDispatcherTarget::Microseconds => dispatch_microseconds_import(
-                            cpu,
-                            memory,
-                            ppc_virtual_microseconds(
-                                process_tick,
-                                clock_cycles_per_tick,
-                                clock_cycle_phase,
-                                elapsed,
-                            ),
-                            Some(&mut idle_poll_counts),
-                        ),
-                        PpcImportDispatcherTarget::GetCurrentThread => {
-                            let id = ThreadManager::new(toolbox_startup.execution.calls())
-                                .current_thread();
-                            let result = if cpu.gpr[3] != 0
-                                && memory.write_u32_be(cpu.gpr[3], id).is_some()
-                            {
-                                PPC_NO_ERR
-                            } else {
-                                PPC_PARAM_ERR
-                            };
-                            PpcImportAction::Return(ppc_i16_result(result))
-                        }
-                        PpcImportDispatcherTarget::YieldToThread => {
-                            let suggested = cpu.gpr[3];
-                            let action = match toolbox_startup
-                                .execution
-                                .calls()
-                                .yield_native_thread(cpu, suggested)
-                            {
-                                Ok(true) => PpcImportAction::Yield(1),
-                                Ok(false) => PpcImportAction::Return(0),
-                                Err(error) => PpcImportAction::Return(ppc_i16_result(error)),
-                            };
-                            if std::env::var_os("SYSTEMLESS_PPC_THREAD_TRACE").is_some() {
-                                eprintln!("[PPC-THREAD-TRACE] YieldToThread caller={} suggested={} action={:?} pc=${:08X}", toolbox_startup.execution.calls().current_task().thread_id(), suggested, action, cpu.pc);
-                            }
-                            action
-                        }
-                        PpcImportDispatcherTarget::GetMenuHandle => {
-                            let menu_list = ppc_current_menu_list(memory);
-                            PpcImportAction::Return(ppc_get_menu_handle(
-                                memory,
-                                menu_list,
-                                cpu.gpr[3] as u16 as i16,
-                            ))
-                        }
-                        PpcImportDispatcherTarget::StdFilterProc => PpcImportAction::Return(0),
-                        PpcImportDispatcherTarget::DialogCompatibility(
-                            PpcDialogCompatibilityOperation::DialogSelect,
-                        ) => PpcImportAction::Return(0),
-                        PpcImportDispatcherTarget::EnableMenuItem
-                        | PpcImportDispatcherTarget::DisableMenuItem => {
-                            ppc_set_menu_item_enabled(
-                                memory,
-                                process_memory_manager.native_handle_records(),
-                                cpu.gpr[3],
-                                cpu.gpr[4] as u16 as i16,
-                                *dispatcher_target == PpcImportDispatcherTarget::EnableMenuItem,
-                            );
-                            PpcImportAction::ReturnPreserve
-                        }
-                        _ => unreachable!(),
-                    };
-                    handled_import_count = handled_import_count.saturating_add(1);
-                    return action;
-                }
-                let Some(binding) = binding.or_else(|| import_run_state.binding_cloned(index)) else {
-                    unsupported_import_index = Some(index);
-                    if trace_ppc {
-                        eprintln!(
-                            "{}",
-                            format_ppc_trace_unknown_import(
-                                index, cpu.pc, cpu.lr, cpu.gpr[2], cpu.gpr[1]
-                            )
-                        );
-                    }
-                    return PpcImportAction::Halt;
-                };
-                let binding = &binding;
-                if !trace_ppc && !trace_qd3d {
-                    if q3_start_rendering_import_index == Some(index) {
-                        if trace_imports {
-                            push_ppc_hle_import_trace_entry(
-                                &mut import_trace,
-                                PpcHleImportTraceEntry {
-                                    import_index: index,
-                                    library_name: binding.library_name.clone(),
-                                    symbol_name: binding.symbol_name.clone(),
-                                    pc: cpu.pc,
-                                    lr: cpu.lr,
-                                    rtoc: cpu.gpr[2],
-                                    sp: cpu.gpr[1],
-                                    dispatcher_target: binding.dispatcher_target.clone(),
-                                    repeat_count: 1,
-                                },
-                            );
-                        }
-                        let action =
-                            PpcImportAction::Return(u32::from(ppc_q3_view_start_rendering(
-                                cpu,
-                                &mut q3_views,
-                                &q3_objects,
-                                &mut q3_submissions,
-                                &mut q3_submission_transforms,
-                                &mut q3_submission_materials,
-                                &mut q3_submission_lights,
-                                &mut q3_error_state,
-                            )));
-                        handled_import_count = handled_import_count.saturating_add(1);
-                        return ppc_import_action_with_extra_cycles(
-                            action,
-                            ppc_import_extra_cycles_for_binding(binding),
-                        );
-                    }
-                    if q3_end_rendering_import_index == Some(index) {
-                        if trace_imports {
-                            push_ppc_hle_import_trace_entry(
-                                &mut import_trace,
-                                PpcHleImportTraceEntry {
-                                    import_index: index,
-                                    library_name: binding.library_name.clone(),
-                                    symbol_name: binding.symbol_name.clone(),
-                                    pc: cpu.pc,
-                                    lr: cpu.lr,
-                                    rtoc: cpu.gpr[2],
-                                    sp: cpu.gpr[1],
-                                    dispatcher_target: binding.dispatcher_target.clone(),
-                                    repeat_count: 1,
-                                },
-                            );
-                        }
-                        let action = dispatch_q3_view_end_rendering_import(
-                            cpu,
-                            &mut q3_views,
-                            &q3_objects,
-                            &mut q3_submissions,
-                            &mut q3_submission_transforms,
-                            &mut q3_submission_materials,
-                            &mut q3_submission_lights,
-                            &mut q3_completed_frames,
-                            &mut q3_retained_frames,
-                            &mut q3_state_only_completed_frame_batches,
-                            &q3_draw_contexts,
-                            &q3_trimeshes,
-                            &gworlds,
-                            *current_gworld,
-                            &mut q3_error_state,
-                            input.is_idle(),
-                        );
-                        handled_import_count = handled_import_count.saturating_add(1);
-                        return ppc_import_action_with_extra_cycles(
-                            action,
-                            ppc_import_extra_cycles_for_binding(binding),
-                        );
-                    }
-                }
-                let trace_this_sprocket = trace_sprocket && is_sprocket_import(binding);
-                let trace_this_qd3d = trace_qd3d
-                    && (is_quickdraw_3d_library(&binding.library_name)
-                        || is_quickdraw_3d_accelerator_library(&binding.library_name));
-                let entry = if trace_imports || trace_ppc || trace_this_sprocket || trace_this_qd3d
-                {
-                    let entry = PpcHleImportTraceEntry {
-                        import_index: index,
-                        library_name: binding.library_name.clone(),
-                        symbol_name: binding.symbol_name.clone(),
-                        pc: cpu.pc,
-                        lr: cpu.lr,
-                        rtoc: cpu.gpr[2],
-                        sp: cpu.gpr[1],
-                        dispatcher_target: binding.dispatcher_target.clone(),
-                        repeat_count: 1,
-                    };
-                    if trace_ppc {
-                        eprintln!("{}", format_ppc_trace_import(&entry));
-                    }
-                    if trace_imports {
-                        push_ppc_hle_import_trace_entry(&mut import_trace, entry.clone());
-                    }
-                    Some(entry)
-                } else {
-                    None
-                };
-                let import_args = [
-                    cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6], cpu.gpr[7], cpu.gpr[8],
-                ];
-                let qd3d_before = if trace_this_qd3d {
-                    Some(qd3d_trace_snapshot(
-                        &q3_objects,
-                        &q3_views,
-                        &q3_submissions,
-                        &q3_completed_frames,
-                        &q3_state_only_completed_frame_batches,
-                        &q3_memory_storages,
-                        &q3_files,
-                        &q3_group_memberships,
-                        &q3_trimeshes,
-                        &q3_draw_contexts,
-                        &q3_mipmap_textures,
-                        &q3_texture_shaders,
-                        &q3_styles,
-                        &q3_cameras,
-                        &q3_lights,
-                    ))
-                } else {
-                    None
-                };
-
-                // ResErr is canonical process low memory. Refresh it at each
-                // import boundary so a preceding 68K callback is visible to
-                // native Resource Manager entry points immediately.
-                last_resource_error = memory
-                    .read_u16_be(crate::memory::globals::addr::RES_ERR)
-                    .unwrap_or(last_resource_error as u16) as i16;
-
-                let native_heap = process_memory_manager
-                    .native_heap_state()
-                    .expect("native allocator registered during execution");
-                let mut heap_cursor = native_heap.heap_cursor;
-                let native_heap_ceiling = native_heap.heap_limit;
-                // Allocation and capacity imports observe ApplLimit inside
-                // the mapped native heap. Keep the physical ceiling separate
-                // for SetApplLimit validation and stack protection. Inside
-                // Macintosh: Memory (1992), pp. 2-42--2-44 and 2-83--2-85.
-                let heap_limit = process_memory_manager
-                    .native_allocation_limit(native_heap_ceiling);
-                let mut last_mem_error = native_heap.last_mem_error;
-                if process_quickdraw_port_state_attached {
-                    ppc_restore_process_port_draw_state(
-                        memory,
-                        *current_gworld,
-                        &mut quickdraw_fore_color,
-                        &mut quickdraw_back_color,
-                        &mut quickdraw_pen_h,
-                        &mut quickdraw_pen_v,
-                        &mut quickdraw_text_mode,
-                        &mut quickdraw_text_size,
-                    );
-                }
-                let action = if binding.dispatcher_target == PpcImportDispatcherTarget::GetKeys {
-                    Some(dispatch_getkeys_import(
-                        cpu,
-                        memory,
-                        input,
-                        Some(&mut idle_poll_counts),
-                    ))
-                } else if let Some(action) = dispatch_qd3d::dispatch_q3_math_import_fast(
-                    dispatch_qd3d::PpcQ3MathDispatchContext {
-                        target: &binding.dispatcher_target,
-                        cpu,
-                        memory,
-                        q3_objects: &mut q3_objects,
-                        next_q3_object: &mut next_q3_object,
-                        q3_error_state: &mut q3_error_state,
-                    },
-                ) {
-                    Some(action)
-                } else if let Some(action) = dispatch_qd3d::dispatch_q3_shader_style_import_fast(
-                    dispatch_qd3d::PpcQ3ShaderStyleDispatchContext {
-                        target: &binding.dispatcher_target,
-                        cpu,
-                        memory,
-                        q3_objects: &mut q3_objects,
-                        q3_object_refs: &mut q3_object_refs,
-                        q3_error_state: &mut q3_error_state,
-                        next_q3_object: &mut next_q3_object,
-                        q3_texture_shaders: &mut q3_texture_shaders,
-                        q3_mipmap_textures: &mut q3_mipmap_textures,
-                        q3_shader_uv_transforms: &mut q3_shader_uv_transforms,
-                        q3_shader_boundaries: &mut q3_shader_boundaries,
-                        q3_styles: &mut q3_styles,
-                    },
-                ) {
-                    Some(action)
-                } else if let Some(action) = dispatch_qd3d::dispatch_q3_scene_import_fast(
-                    dispatch_qd3d::PpcQ3SceneDispatchContext {
-                        target: &binding.dispatcher_target,
-                        cpu,
-                        memory,
-                        q3_objects: &mut q3_objects,
-                        next_q3_object: &mut next_q3_object,
-                        q3_cameras: &mut q3_cameras,
-                        q3_lights: &mut q3_lights,
-                        q3_error_state: &mut q3_error_state,
-                    },
-                ) {
-                    Some(action)
-                } else if let Some(action) =
-                    dispatch_qd3d::dispatch_q3_object_renderer_import_fast(
-                        dispatch_qd3d::PpcQ3ObjectRendererDispatchContext {
-                            target: &binding.dispatcher_target,
-                            cpu,
-                            memory,
-                            stores: PpcQ3ObjectStores {
-                                q3_objects: &mut q3_objects,
-                                q3_object_refs: &mut q3_object_refs,
-                                q3_renderer_preferences: &mut q3_renderer_preferences,
-                                q3_files: &mut q3_files,
-                                q3_group_memberships: &mut q3_group_memberships,
-                                q3_file_groups: &mut q3_file_groups,
-                                q3_views: &mut q3_views,
-                                q3_submissions: &mut q3_submissions,
-                                q3_view_transforms: &mut q3_view_transforms,
-                                q3_submission_transforms: &mut q3_submission_transforms,
-                                q3_view_materials: &mut q3_view_materials,
-                                q3_submission_materials: &mut q3_submission_materials,
-                                q3_submission_lights: &mut q3_submission_lights,
-                                q3_view_state_stack: &mut q3_view_state_stack,
-                                q3_completed_frames: &mut q3_completed_frames,
-                                q3_retained_frames: &mut q3_retained_frames,
-                                q3_fog_styles: &mut q3_fog_styles,
-                                q3_memory_storages: &mut q3_memory_storages,
-                                q3_attributes: &mut q3_attributes,
-                                q3_shader_uv_transforms: &mut q3_shader_uv_transforms,
-                                q3_shader_boundaries: &mut q3_shader_boundaries,
-                                q3_mipmap_textures: &mut q3_mipmap_textures,
-                                q3_texture_shaders: &mut q3_texture_shaders,
-                                q3_draw_contexts: &mut q3_draw_contexts,
-                                q3_trimeshes: &mut q3_trimeshes,
-                                q3_styles: &mut q3_styles,
-                                q3_cameras: &mut q3_cameras,
-                                q3_lights: &mut q3_lights,
-                            },
-                            q3_error_state: &mut q3_error_state,
-                            next_q3_object: &mut next_q3_object,
-                        },
-                    )
-                {
-                    Some(action)
-                } else if let Some(action) = dispatch_qd3d::dispatch_q3_object_group_import_fast(
-                    dispatch_qd3d::PpcQ3ObjectGroupDispatchContext {
-                        target: &binding.dispatcher_target,
-                        cpu,
-                        memory,
-                        q3_objects: &q3_objects,
-                        q3_object_refs: &mut q3_object_refs,
-                        q3_group_memberships: &q3_group_memberships,
-                        q3_file_groups: &q3_file_groups,
-                        q3_lights: &q3_lights,
-                        q3_error_state: &mut q3_error_state,
-                    },
-                ) {
-                    Some(action)
-                } else if let Some(action) = dispatch_simple_hot_import_fast(
-                    &binding.dispatcher_target,
-                    cpu,
-                    memory,
-                    ppc_virtual_microseconds(
-                        process_tick,
-                        clock_cycles_per_tick,
-                        clock_cycle_phase,
-                        elapsed,
-                    ),
-                ) {
-                    Some(action)
-                } else if let Some(action) = dispatch_qd3d::dispatch_q3_submit_import_fast(
-                    dispatch_qd3d::PpcQ3SubmitDispatchContext {
-                        target: &binding.dispatcher_target,
-                        cpu,
-                        memory,
-                        q3_objects: &q3_objects,
-                        q3_group_memberships: &q3_group_memberships,
-                        q3_views: &mut q3_views,
-                        q3_view_transforms: &mut q3_view_transforms,
-                        q3_submissions: &mut q3_submissions,
-                        q3_submission_transforms: &mut q3_submission_transforms,
-                        q3_view_materials: &mut q3_view_materials,
-                        q3_submission_materials: &mut q3_submission_materials,
-                        q3_submission_lights: &mut q3_submission_lights,
-                        q3_view_state_stack: &mut q3_view_state_stack,
-                        q3_attributes: &q3_attributes,
-                        q3_styles: &q3_styles,
-                        q3_shader_boundaries: &q3_shader_boundaries,
-                        q3_shader_uv_transforms: &q3_shader_uv_transforms,
-                        q3_texture_shaders: &q3_texture_shaders,
-                        q3_mipmap_textures: &q3_mipmap_textures,
-                        q3_trimeshes: &q3_trimeshes,
-                        q3_fog_styles: &mut q3_fog_styles,
-                        q3_lights: &q3_lights,
-                        q3_error_state: &mut q3_error_state,
-                    },
-                ) {
-                    Some(action)
-                } else {
-                    // Borrow process-owned File and Resource Manager records
-                    // only for this import. A Mixed Mode continuation may
-                    // expose another adapter between imports, so no mutable
-                    // reference into an UnsafeCell-backed process collection
-                    // may outlive this dispatch call or be retained in its
-                    // returned action.
-                    let action = process_file_system.with_mut(|file_system| {
-                        let launched_app_path = file_system.launched_app_path.clone();
-                        let ProcessFileSystemState {
-                            files,
-                            writable_refnums,
-                            stdio_streams,
-                            vfs_files,
-                            deleted_vfs_file_paths,
-                            resource_manager,
-                            next_file_ref_num,
-                            ..
-                        } = file_system;
-                        screen_clut.with_mut(|screen_clut| {
-                            color_manager_clut.with_mut(|color_manager_clut| {
-                                event_queue.with_mut(|event_queue| {
-                                    controls.with_mut(|controls| {
-                                        list_manager.with_mut(|list_manager| {
-                                            writable_refnums.with_mut(|writable_refnums| {
-                                            vfs_directories.with_mut(|vfs_directories| {
-                                            working_directories.with_mut(|working_directories| {
-                                            next_working_directory_ref_num.with_mut(|next_working_directory_ref_num| {
-                                            application_working_directory_ref_num.with_mut(|application_working_directory_ref_num| {
-                                            next_vfs_dir_id.with_mut(|next_vfs_dir_id| {
-                                            current_resource_refnum.with_mut(|current_resource_refnum| {
-                                            resource_manager.with_mut(|resource_manager| {
-                                            let ProcessResourceManagerState {
-                                                resource_files,
-                                                vfs_resource_files,
-                                                vfs_resources,
-                                                ..
-                                            } = resource_manager;
-                                            current_gworld.with_mut(|current_gworld| {
-                                            current_gdevice.with_mut(|current_gdevice| {
-                                            files.with_mut(|files| {
-                                            dispatch_supported_import(PpcDispatchContext {
-                                            binding,
-                                            cpu,
-                                            memory,
-                                            process_memory_manager: &mut *process_memory_manager,
-                                            heap_cursor: &mut heap_cursor,
-                                            heap_limit,
-                                            native_heap_ceiling,
-                                            last_mem_error: &mut last_mem_error,
-                                            tick_count: &mut import_tick_count,
-                                            cycles_per_tick: clock_cycles_per_tick,
-                                            current_resource_refnum,
-                                            last_resource_error: &mut last_resource_error,
-                                            resource_policy: &resource_policy,
-                                            native_exception_handler: &native_exception_handler,
-                                            stdc_qsort_stack: &mut stdc_qsort_stack,
-                                            dialog_callback_stack: &mut dialog_callback_stack,
-                                            collection_callback_stack: &mut collection_callback_stack,
-                                            apple_events: &mut apple_events,
-                                            cfm_connections: &mut cfm_connections,
-                                            cfm_library_fragments: &mut cfm_library_fragments,
-                                            next_cfm_connection_id: &mut next_cfm_connection_id,
-                                            import_run_state: &mut import_run_state,
-                                            controls,
-                                            aliases: &mut aliases,
-                                            gworlds: &mut gworlds,
-                                            gworld_pixel_states: &gworld_pixel_states,
-                                            window_list: &window_list,
-                                            q3_objects: &mut q3_objects,
-                                            q3_object_refs: &mut q3_object_refs,
-                                            next_q3_object: &mut next_q3_object,
-                                            q3_error_state: &mut q3_error_state,
-                                            q3_lifecycle: &mut q3_lifecycle,
-                                            q3_memory_storages: &mut q3_memory_storages,
-                                            q3_files: &mut q3_files,
-                                            q3_group_memberships: &mut q3_group_memberships,
-                                            q3_file_groups: &mut q3_file_groups,
-                                            q3_views: &mut q3_views,
-                                            q3_submissions: &mut q3_submissions,
-                                            q3_view_transforms: &mut q3_view_transforms,
-                                            q3_submission_transforms: &mut q3_submission_transforms,
-                                            q3_view_materials: &mut q3_view_materials,
-                                            q3_submission_materials: &mut q3_submission_materials,
-                                            q3_submission_lights: &mut q3_submission_lights,
-                                            q3_view_state_stack: &mut q3_view_state_stack,
-                                            q3_completed_frames: &mut q3_completed_frames,
-                                            q3_retained_frames: &mut q3_retained_frames,
-                                            q3_state_only_completed_frame_batches:
-                                                &mut q3_state_only_completed_frame_batches,
-                                            q3_fog_styles: &mut q3_fog_styles,
-                                            q3_attributes: &mut q3_attributes,
-                                            q3_shader_uv_transforms: &mut q3_shader_uv_transforms,
-                                            q3_shader_boundaries: &mut q3_shader_boundaries,
-                                            q3_mipmap_textures: &mut q3_mipmap_textures,
-                                            q3_texture_shaders: &mut q3_texture_shaders,
-                                            q3_renderer_preferences: &mut q3_renderer_preferences,
-                                            q3_draw_contexts: &mut q3_draw_contexts,
-                                            q3_trimeshes: &mut q3_trimeshes,
-                                            q3_styles: &mut q3_styles,
-                                            q3_cameras: &mut q3_cameras,
-                                            q3_lights: &mut q3_lights,
-                                            input_sprocket: &mut input_sprocket,
-                                            input_sprocket_virtual_elements:
-                                                &mut input_sprocket_virtual_elements,
-                                            toolbox_startup: &mut toolbox_startup,
-                                            quicktime: &mut quicktime,
-                                            sound: &mut sound,
-                                            timer_tasks: &timer_tasks,
-                                            vbl_tasks: &vbl_tasks,
-                                            callback_scheduling: &callback_scheduling,
-                                            files,
-                                            writable_refnums,
-                                            vfs_files,
-                                            stdio_streams,
-                                            deleted_vfs_file_paths,
-                                            resource_files,
-                                            vfs_resource_files,
-                                            vfs_resources,
-                                            next_file_ref_num,
-                                            current_gworld,
-                                            current_gdevice,
-                                            quickdraw_op_colors: &quickdraw_op_colors,
-                                            quickdraw_hilite_colors: &quickdraw_hilite_colors,
-                                            screen_clut,
-                                            color_manager_clut,
-                                            display_gamma: &display_gamma,
-                                            quickdraw_fore_color: &mut quickdraw_fore_color,
-                                            quickdraw_fore_indices: &mut quickdraw_fore_indices,
-                                            quickdraw_back_color: &mut quickdraw_back_color,
-                                            quickdraw_pen_h: &mut quickdraw_pen_h,
-                                            quickdraw_pen_v: &mut quickdraw_pen_v,
-                                            quickdraw_text_mode: &mut quickdraw_text_mode,
-                                            quickdraw_text_size: &mut quickdraw_text_size,
-                                            cursor_state: &cursor_state,
-                                            vfs_volumes: &vfs_volumes,
-                                            vfs_directories,
-                                            next_vfs_dir_id,
-                                            default_dir_id: *default_dir_id,
-                                            working_directories,
-                                            next_working_directory_ref_num,
-                                            application_working_directory_ref_num,
-                                            launched_app_path: launched_app_path.as_deref(),
-                                            param_text: &param_text,
-                                            scrap: &mut scrap,
-                                            list_manager,
-                                            collections: &collections,
-                                            input,
-                                            event_queue,
-                                            draw_sprocket: &mut draw_sprocket,
-                                            })
-                                            })
-                                            })
-                                            })
-                                            })
-                                            })
-                                            })
-                                            })
-                                            })
-                                            })
-                                            })
-                                            })
-                                        })
-                                    })
-                                })
-                            })
-                        })
-                    });
-                    action
-                };
-
-                ppc_sync_process_window_list(memory, &window_list);
-
-                // MemError is process Memory Manager state even when a
-                // Toolbox helper reports it through the native ABI cache.
-                // Publish at the import boundary so a following 68K callback
-                // observes the result immediately, not at slice teardown.
-                process_memory_manager.set_native_mem_error(last_mem_error);
-                let _ = memory.write_u16_be(
-                    crate::memory::globals::addr::RES_ERR,
-                    last_resource_error as u16,
-                );
-
-                // Resource records are the native Resource Manager's parsed
-                // view, while the classic adapter opens the same process fork
-                // through its byte map. Publish every dirty parsed mutation at
-                // the import boundary so a following 68K callback observes it
-                // without waiting for runner teardown or host persistence.
-                process_file_system.resource_manager.with_mut(|resource_manager| {
-                    ppc_publish_resource_fork_bytes(
-                        &mut resource_manager.vfs_resource_files,
-                        &resource_manager.vfs_resources,
-                        true,
-                    );
-                });
-
-                let current_default_dir_id = *default_dir_id;
-                let updated_default_dir_id = memory
-                    .read_u32_be(crate::memory::globals::addr::CUR_DIR_STORE)
-                    .unwrap_or(current_default_dir_id);
-                default_dir_id.with_mut(|default_dir_id| {
-                    *default_dir_id = updated_default_dir_id;
-                });
-
-                match action {
-                    Some(action) => {
-                        // Complete asynchronous File Manager calls after returning
-                        // from the import, at the next interrupt-work boundary.
-                        let action = if binding.library_name == "InterfaceLib"
-                            && binding.symbol_name == "PBReadAsync"
-                            && matches!(action, PpcImportAction::Return(_))
-                        {
-                            let parameter_block = cpu.gpr[3];
-                            let completion = memory.read_u32_be(parameter_block + 12).unwrap_or(0);
-                            if completion != 0 {
-                                pending_file_completions.push_back((parameter_block, completion));
-                                cpu.gpr[3] = 0;
-                                cpu.pc = cpu.lr;
-                                PpcImportAction::Yield(0)
-                            } else {
-                                action
-                            }
-                        } else {
-                            action
-                        };
-                        let action = ppc_import_action_with_extra_cycles(
-                            action,
-                            ppc_import_extra_cycles_for_binding(binding),
-                        );
-                        if trace_imports {
-                            if let (Some(action_name), Some(result)) = (
-                                ppc_draw_sprocket_action_name(&binding.dispatcher_target),
-                                ppc_i16_return_value(&action),
-                            ) {
-                                draw_sprocket_trace.push(ppc_draw_sprocket_trace_entry(
-                                    index,
-                                    cpu.pc,
-                                    memory,
-                                    cpu,
-                                    action_name,
-                                    result,
-                                    &draw_sprocket,
-                                ));
-                            }
-                        }
-                        if trace_imports
-                            && binding.dispatcher_target
-                                == PpcImportDispatcherTarget::ISpElementGetSimpleState
-                            && matches!(action, PpcImportAction::Return(0))
-                        {
-                            if let Some(entry) = ppc_isp_simple_state_trace_entry(
-                                index,
-                                cpu.pc,
-                                cpu,
-                                memory,
-                                input,
-                                input_sprocket,
-                                &input_sprocket_virtual_elements,
-                            ) {
-                                input_sprocket_trace.push(entry);
-                            }
-                        }
-                        if trace_this_sprocket {
-                            if let Some(entry) = entry.as_ref() {
-                                eprintln!(
-                                    "{}",
-                                    format_sprocket_trace(
-                                        entry,
-                                        import_args,
-                                        &format_sprocket_action(&action),
-                                        &draw_sprocket,
-                                        &input_sprocket,
-                                        &input_sprocket_virtual_elements
-                                    )
-                                );
-                            }
-                        }
-                        if trace_this_qd3d {
-                            if let (Some(entry), Some(before)) =
-                                (entry.as_ref(), qd3d_before.as_ref())
-                            {
-                                let after = qd3d_trace_snapshot(
-                                    &q3_objects,
-                                    &q3_views,
-                                    &q3_submissions,
-                                    &q3_completed_frames,
-                                    &q3_state_only_completed_frame_batches,
-                                    &q3_memory_storages,
-                                    &q3_files,
-                                    &q3_group_memberships,
-                                    &q3_trimeshes,
-                                    &q3_draw_contexts,
-                                    &q3_mipmap_textures,
-                                    &q3_texture_shaders,
-                                    &q3_styles,
-                                    &q3_cameras,
-                                    &q3_lights,
-                                );
-                                eprintln!(
-                                    "{}",
-                                    format_qd3d_trace(
-                                        entry,
-                                        import_args,
-                                        &format_hle_import_action(&action),
-                                        before,
-                                        &after
-                                    )
-                                );
-                            }
-                        }
-                        handled_import_count = handled_import_count.saturating_add(1);
-                        guest_calls.externalize_powerpc_action(cpu, action)
-                    }
-                    None => {
-                        if trace_this_sprocket {
-                            if let Some(entry) = entry.as_ref() {
-                                eprintln!(
-                                    "{}",
-                                    format_sprocket_trace(
-                                        entry,
-                                        import_args,
-                                        "unsupported",
-                                        &draw_sprocket,
-                                        &input_sprocket,
-                                        &input_sprocket_virtual_elements
-                                    )
-                                );
-                            }
-                        }
-                        if trace_this_qd3d {
-                            if let (Some(entry), Some(before)) =
-                                (entry.as_ref(), qd3d_before.as_ref())
-                            {
-                                let after = qd3d_trace_snapshot(
-                                    &q3_objects,
-                                    &q3_views,
-                                    &q3_submissions,
-                                    &q3_completed_frames,
-                                    &q3_state_only_completed_frame_batches,
-                                    &q3_memory_storages,
-                                    &q3_files,
-                                    &q3_group_memberships,
-                                    &q3_trimeshes,
-                                    &q3_draw_contexts,
-                                    &q3_mipmap_textures,
-                                    &q3_texture_shaders,
-                                    &q3_styles,
-                                    &q3_cameras,
-                                    &q3_lights,
-                                );
-                                eprintln!(
-                                    "{}",
-                                    format_qd3d_trace(
-                                        entry,
-                                        import_args,
-                                        "unsupported",
-                                        before,
-                                        &after
-                                    )
-                                );
-                            }
-                        }
-                        unsupported_import_index = Some(index);
-                        PpcImportAction::Halt
-                    }
-                }
-            };
-
-            let mut total_cycles = 0u64;
-            loop {
-                let remaining_cycles = max_cycles.saturating_sub(total_cycles);
-                if remaining_cycles == 0 {
-                    break PpcRunResult::CycleLimit {
-                        cycles: total_cycles,
-                    };
-                }
-                let step_result = if let Some(range) = ppc_watch_range() {
-                    let mut write_observer = PpcWatchObserver { range };
-                    self.cpu.run_with_imports_and_observers_and_cycle_handler(
-                        &mut self.memory,
-                        remaining_cycles,
-                        self.halt_pc,
-                        self.import_trap_base,
-                        PPC_IMPORT_SLOT_COUNT,
-                        &mut fetch_observer,
-                        &mut write_observer,
-                        &mut handle_import,
-                    )
-                } else if needs_fetch_observer {
-                    self.cpu
-                        .run_with_imports_and_fetch_observer_and_cycle_handler(
-                            &mut self.memory,
-                            remaining_cycles,
-                            self.halt_pc,
-                            self.import_trap_base,
-                            PPC_IMPORT_SLOT_COUNT,
-                            &mut fetch_observer,
-                            &mut handle_import,
-                        )
-                } else {
-                    self.cpu.run_with_imports_and_cycle_handler(
-                        &mut self.memory,
-                        remaining_cycles,
-                        self.halt_pc,
-                        self.import_trap_base,
-                        PPC_IMPORT_SLOT_COUNT,
-                        &mut handle_import,
-                    )
-                };
-                total_cycles = total_cycles.saturating_add(ppc_run_result_cycles(step_result));
-
-                match step_result {
-                    PpcRunResult::Exception { pc, exception, .. }
-                        if native_exception_handler.get() != 0
-                            && ppc_native_exception_kind(exception).is_some() =>
-                    {
-                        let Some(context) = ppc_begin_native_exception(
-                            &mut self.cpu,
-                            &mut self.memory,
-                            self.stack_base,
-                            native_exception_handler.get(),
-                            pc,
-                            PpcNativeExceptionCause::Processor(exception),
-                        ) else {
-                            break ppc_run_result_with_cycles(step_result, total_cycles);
-                        };
-                        native_exception_stack.push(context);
-                    }
-                    PpcRunResult::MemoryFault {
-                        pc,
-                        addr,
-                        was_write,
-                        ..
-                    } if native_exception_handler.get() != 0 => {
-                        let Some(context) = ppc_begin_native_exception(
-                            &mut self.cpu,
-                            &mut self.memory,
-                            self.stack_base,
-                            native_exception_handler.get(),
-                            pc,
-                            PpcNativeExceptionCause::UnmappedMemory {
-                                address: addr,
-                                was_write,
-                            },
-                        ) else {
-                            break ppc_run_result_with_cycles(step_result, total_cycles);
-                        };
-                        native_exception_stack.push(context);
-                    }
-                    PpcRunResult::Halted { pc, .. }
-                        if pc == self.halt_pc && !native_exception_stack.is_empty() =>
-                    {
-                        let context = native_exception_stack.pop().expect("checked nonempty");
-                        let handler_result = self.cpu.gpr[3];
-                        let restored =
-                            ppc_restore_native_exception(&mut self.cpu, &mut self.memory, context)
-                                .is_some();
-                        if handler_result == 0 && restored {
-                            continue;
-                        }
-                        native_exception_stack.clear();
-                        break ppc_native_exception_result(context, total_cycles);
-                    }
-                    PpcRunResult::CycleLimit { .. } => {
-                        break ppc_run_result_with_cycles(step_result, total_cycles);
-                    }
-                    _ => {
-                        native_exception_stack.clear();
-                        break ppc_run_result_with_cycles(step_result, total_cycles);
-                    }
-                }
-            }
-        };
-        drop(fetch_observer);
-
-        // Native execution never projects a scalar baseline back into guest
-        // memory. Low-memory `Ticks` remains the source of truth, including
-        // when a nested Mixed Mode callback changed it during this slice.
-        self.native_exception_handler = native_exception_handler.get();
-        self.native_exception_stack = native_exception_stack;
-        self.stdc_qsort_stack = stdc_qsort_stack;
-        self.dialog_callback_stack = dialog_callback_stack;
-        self.collection_callback_stack = collection_callback_stack;
-        self.pending_file_completions = pending_file_completions;
-        self.apple_events = apple_events;
-        self.cfm = standalone_cfm;
-        (self.imports, self.import_count) = import_run_state.into_parts();
-        self.controls = controls;
-        self.aliases = aliases;
-        self.gworlds = gworlds;
-        self.q3_objects = q3_objects;
-        self.q3_object_refs = q3_object_refs;
-        self.next_q3_object = next_q3_object;
-        self.q3_error_state = q3_error_state;
-        self.q3_lifecycle = q3_lifecycle;
-        self.q3_memory_storages = q3_memory_storages;
-        self.q3_files = q3_files;
-        self.q3_group_memberships = q3_group_memberships;
-        self.q3_file_groups = q3_file_groups;
-        self.q3_views = q3_views;
-        self.q3_submissions = q3_submissions;
-        self.q3_view_transforms = q3_view_transforms;
-        self.q3_submission_transforms = q3_submission_transforms;
-        self.q3_view_materials = q3_view_materials;
-        self.q3_submission_materials = q3_submission_materials;
-        self.q3_submission_lights = q3_submission_lights;
-        self.q3_view_state_stack = q3_view_state_stack;
-        self.q3_completed_frames = q3_completed_frames;
-        self.q3_retained_frames = q3_retained_frames;
-        self.q3_state_only_completed_frame_batches = q3_state_only_completed_frame_batches;
-        self.q3_fog_styles = q3_fog_styles;
-        self.q3_attributes = q3_attributes;
-        self.q3_shader_uv_transforms = q3_shader_uv_transforms;
-        self.q3_shader_boundaries = q3_shader_boundaries;
-        self.q3_mipmap_textures = q3_mipmap_textures;
-        self.q3_texture_shaders = q3_texture_shaders;
-        self.q3_renderer_preferences = q3_renderer_preferences;
-        self.q3_draw_contexts = q3_draw_contexts;
-        self.q3_trimeshes = q3_trimeshes;
-        self.q3_styles = q3_styles;
-        self.q3_cameras = q3_cameras;
-        self.q3_lights = q3_lights;
-        self.input_sprocket = input_sprocket;
-        self.input_sprocket_virtual_elements = input_sprocket_virtual_elements;
-        self.toolbox_startup = toolbox_startup;
-        self.quicktime = quicktime;
-        self.sound = sound;
-        self.timer_tasks = timer_tasks;
-        self.vbl_tasks = vbl_tasks;
-        self.quickdraw_fore_color = quickdraw_fore_color;
-        self.quickdraw_fore_indices = quickdraw_fore_indices;
-        self.quickdraw_back_color = quickdraw_back_color;
-        self.quickdraw_pen_h = quickdraw_pen_h;
-        self.quickdraw_pen_v = quickdraw_pen_v;
-        self.quickdraw_text_mode = quickdraw_text_mode;
-        self.quickdraw_text_size = quickdraw_text_size;
-        self.cursor_state = cursor_state;
-        process_file_system.with_mut(ProcessFileSystemState::publish_native_vfs_catalogue);
-        self.scrap = scrap;
-        self.list_manager = list_manager;
-        self.event_queue = event_queue;
-        self.draw_sprocket = draw_sprocket;
-        if trace_recent_on_halt && !matches!(result, PpcRunResult::CycleLimit { .. }) {
-            let indirect = self.cpu.gpr[12];
-            eprintln!(
-                "[PPC-RECENT-IMPORTS] result={result:?} pc=${:08X} lr=${:08X} ctr=${:08X} r2=${:08X} r12=${:08X} indirect=({:?}, {:?})",
-                self.cpu.pc,
-                self.cpu.lr,
-                self.cpu.ctr,
-                self.cpu.gpr[2],
-                indirect,
-                self.memory.read_u32_be(indirect),
-                self.memory.read_u32_be(indirect.wrapping_add(4)),
-            );
-            for entry in &recent_imports {
-                eprintln!("{}", format_ppc_trace_import(entry));
-            }
-        }
-        PpcHleRunProbe {
-            result,
-            handled_import_count,
-            last_import_index,
-            unsupported_import_index,
-            import_trace,
-            draw_sprocket_trace,
-            input_sprocket_trace,
-            fetch_histogram: trace_fetches.then_some(fetch_histogram),
-        }
-    }
-}
-
-pub(super) fn ppc_front_buffer_for_gworld(gworlds: &[PpcGWorldRecord], gworld: u32) -> Option<PpcFrontBuffer> {
+pub(super) fn ppc_front_buffer_for_gworld(
+    gworlds: &[PpcGWorldRecord],
+    gworld: u32,
+) -> Option<PpcFrontBuffer> {
     gworlds
         .iter()
         .find(|record| record.port == gworld)
@@ -5238,9 +3559,9 @@ fn initial_cfm_library_order(
             .unwrap_or_default()
             .into_iter()
             .filter_map(|import| {
-                fragments.iter().position(|fragment| {
-                    fragment.name.eq_ignore_ascii_case(&import.library_name)
-                })
+                fragments
+                    .iter()
+                    .position(|fragment| fragment.name.eq_ignore_ascii_case(&import.library_name))
             })
             .collect();
         dependencies.sort_unstable();
@@ -5257,9 +3578,9 @@ fn initial_cfm_library_order(
     let mut roots: Vec<_> = application_imports
         .iter()
         .filter_map(|import| {
-            fragments.iter().position(|fragment| {
-                fragment.name.eq_ignore_ascii_case(&import.library_name)
-            })
+            fragments
+                .iter()
+                .position(|fragment| fragment.name.eq_ignore_ascii_case(&import.library_name))
         })
         .collect();
     roots.sort_unstable();
@@ -5268,13 +3589,7 @@ fn initial_cfm_library_order(
     let mut visited = HashSet::new();
     let mut order = Vec::new();
     for root in roots {
-        visit(
-            root,
-            fragments,
-            &mut visiting,
-            &mut visited,
-            &mut order,
-        );
+        visit(root, fragments, &mut visiting, &mut visited, &mut order);
     }
     order
 }
@@ -5666,10 +3981,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         crate::memory::globals::addr::DEFLT_STACK,
         crate::memory::globals::DEFAULT_DEFLT_STACK_SIZE,
     );
-    let _ = memory.write_u32_be(
-        crate::memory::globals::addr::CUR_STACK_BASE,
-        stack_base,
-    );
+    let _ = memory.write_u32_be(crate::memory::globals::addr::CUR_STACK_BASE, stack_base);
     let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 20);
     let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
     // PaintOne normally starts with PaintWhite enabled. Carbon's generated
@@ -5920,7 +4232,9 @@ fn load_pef_application_with_config_and_optional_system_reservation(
     if application_fragment_name.is_some() || init_tvector.is_some() {
         cfm_connections.push(PpcCfmConnection {
             id: next_cfm_connection_id,
-            library_name: application_fragment_name.unwrap_or("application").to_string(),
+            library_name: application_fragment_name
+                .unwrap_or("application")
+                .to_string(),
             main_addr: main_tvector,
             init_addr: init_tvector.map_or(0, |(addr, _, _)| addr),
             term_addr: term_tvector.map_or(0, |(addr, _, _)| addr),
@@ -5953,21 +4267,12 @@ fn load_pef_application_with_config_and_optional_system_reservation(
                 .readonly_allocation_overlap_end(PPC_INITIALIZERS_TRAMPOLINE_BASE, size)
                 .is_some()
             || memory
-                .publish_system_code(
-                    GuestIsa::PowerPc,
-                    PPC_INITIALIZERS_TRAMPOLINE_BASE,
-                    bytes,
-                )
+                .publish_system_code(GuestIsa::PowerPc, PPC_INITIALIZERS_TRAMPOLINE_BASE, bytes)
                 .is_none()
         {
             return Err(PpcLoadError::AddressOverflow);
         }
-        Some((
-            PPC_INITIALIZERS_TRAMPOLINE_BASE,
-            rtoc,
-            0,
-            PPC_HALT_PC,
-        ))
+        Some((PPC_INITIALIZERS_TRAMPOLINE_BASE, rtoc, 0, PPC_HALT_PC))
     };
 
     let stack_pointer = PPC_STACK_TOP - PPC_INITIAL_STACK_FRAME_SIZE;
@@ -6838,7 +5143,9 @@ fn dispatcher_target_for_import(
         (library_name, "Q3Point3D_CrossProductTri") if is_quickdraw_3d_library(library_name) => {
             PpcImportDispatcherTarget::Q3Point3DCrossProductTri
         }
-        (library_name, "Q3BoundingBox_SetFromPoints3D") if is_quickdraw_3d_library(library_name) => {
+        (library_name, "Q3BoundingBox_SetFromPoints3D")
+            if is_quickdraw_3d_library(library_name) =>
+        {
             PpcImportDispatcherTarget::Q3BoundingBoxSetFromPoints3D
         }
         (library_name, "Q3File_SetStorage") if is_quickdraw_3d_library(library_name) => {
@@ -6998,9 +5305,9 @@ fn dispatcher_target_for_import(
         ("MathLib", "ceil") => PpcImportDispatcherTarget::MathCeil,
         ("MathLib", "sqrt") => PpcImportDispatcherTarget::MathSqrt,
         ("MathLib", "exp") => PpcImportDispatcherTarget::MathExp,
-        ("MathLib", "fabs") => PpcImportDispatcherTarget::MathCompatibility(
-            PpcMathCompatibilityOperation::Fabs,
-        ),
+        ("MathLib", "fabs") => {
+            PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Fabs)
+        }
         ("MathLib", "sin") => PpcImportDispatcherTarget::MathSin,
         ("MathLib", "cos") => PpcImportDispatcherTarget::MathCos,
         ("MathLib", "asin") => PpcImportDispatcherTarget::MathAsin,
@@ -7011,9 +5318,9 @@ fn dispatcher_target_for_import(
         ("MathLib", "fmod") => PpcImportDispatcherTarget::MathFmod,
         ("MathLib", "log") => PpcImportDispatcherTarget::MathLog,
         ("MathLib", "log10") => PpcImportDispatcherTarget::MathLog10,
-        ("MathLib", "nan") => PpcImportDispatcherTarget::MathCompatibility(
-            PpcMathCompatibilityOperation::Nan,
-        ),
+        ("MathLib", "nan") => {
+            PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Nan)
+        }
         ("MathLib", "dtox80") => PpcImportDispatcherTarget::MathDtox80,
         ("Math64Lib", "LongDoubleToSInt64") => {
             PpcImportDispatcherTarget::Math64(PpcMath64Operation::LongDoubleToSInt64)
@@ -7021,18 +5328,12 @@ fn dispatcher_target_for_import(
         ("Math64Lib", "LongDoubleToUInt64") => {
             PpcImportDispatcherTarget::Math64(PpcMath64Operation::LongDoubleToUInt64)
         }
-        ("Math64Lib", "S32Set") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S32Set)
-        }
+        ("Math64Lib", "S32Set") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::S32Set),
         ("Math64Lib", "S64Absolute") => {
             PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Absolute)
         }
-        ("Math64Lib", "S64Add") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Add)
-        }
-        ("Math64Lib", "S64And") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64And)
-        }
+        ("Math64Lib", "S64Add") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Add),
+        ("Math64Lib", "S64And") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64And),
         ("Math64Lib", "S64BitwiseAnd") => {
             PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64BitwiseAnd)
         }
@@ -7051,33 +5352,19 @@ fn dispatcher_target_for_import(
         ("Math64Lib", "S64Divide") => {
             PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Divide)
         }
-        ("Math64Lib", "S64Eor") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Eor)
-        }
-        ("Math64Lib", "S64Max") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Max)
-        }
-        ("Math64Lib", "S64Min") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Min)
-        }
+        ("Math64Lib", "S64Eor") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Eor),
+        ("Math64Lib", "S64Max") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Max),
+        ("Math64Lib", "S64Min") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Min),
         ("Math64Lib", "S64Multiply") => {
             PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Multiply)
         }
         ("Math64Lib", "S64Negate") => {
             PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Negate)
         }
-        ("Math64Lib", "S64Not") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Not)
-        }
-        ("Math64Lib", "S64Or") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Or)
-        }
-        ("Math64Lib", "S64Set") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Set)
-        }
-        ("Math64Lib", "S64SetU") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64SetU)
-        }
+        ("Math64Lib", "S64Not") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Not),
+        ("Math64Lib", "S64Or") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Or),
+        ("Math64Lib", "S64Set") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64Set),
+        ("Math64Lib", "S64SetU") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64SetU),
         ("Math64Lib", "S64ShiftLeft") => {
             PpcImportDispatcherTarget::Math64(PpcMath64Operation::S64ShiftLeft)
         }
@@ -7093,15 +5380,9 @@ fn dispatcher_target_for_import(
         ("Math64Lib", "SInt64ToUInt64") => {
             PpcImportDispatcherTarget::Math64(PpcMath64Operation::SInt64ToUInt64)
         }
-        ("Math64Lib", "U32SetU") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U32SetU)
-        }
-        ("Math64Lib", "U64Add") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Add)
-        }
-        ("Math64Lib", "U64And") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64And)
-        }
+        ("Math64Lib", "U32SetU") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::U32SetU),
+        ("Math64Lib", "U64Add") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Add),
+        ("Math64Lib", "U64And") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64And),
         ("Math64Lib", "U64BitwiseAnd") => {
             PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64BitwiseAnd)
         }
@@ -7120,27 +5401,15 @@ fn dispatcher_target_for_import(
         ("Math64Lib", "U64Divide") => {
             PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Divide)
         }
-        ("Math64Lib", "U64Eor") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Eor)
-        }
-        ("Math64Lib", "U64Max") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Max)
-        }
+        ("Math64Lib", "U64Eor") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Eor),
+        ("Math64Lib", "U64Max") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Max),
         ("Math64Lib", "U64Multiply") => {
             PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Multiply)
         }
-        ("Math64Lib", "U64Not") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Not)
-        }
-        ("Math64Lib", "U64Or") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Or)
-        }
-        ("Math64Lib", "U64Set") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Set)
-        }
-        ("Math64Lib", "U64SetU") => {
-            PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64SetU)
-        }
+        ("Math64Lib", "U64Not") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Not),
+        ("Math64Lib", "U64Or") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Or),
+        ("Math64Lib", "U64Set") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64Set),
+        ("Math64Lib", "U64SetU") => PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64SetU),
         ("Math64Lib", "U64ShiftLeft") => {
             PpcImportDispatcherTarget::Math64(PpcMath64Operation::U64ShiftLeft)
         }
@@ -7345,9 +5614,7 @@ fn dispatcher_target_for_import(
         ("DrawSprocketLib", "DSpContext_SetVBLProc") => {
             PpcImportDispatcherTarget::DSpContextSetVblProc
         }
-        ("DrawSprocketLib", "DSpContext_IsBusy") => {
-            PpcImportDispatcherTarget::DSpContextIsBusy
-        }
+        ("DrawSprocketLib", "DSpContext_IsBusy") => PpcImportDispatcherTarget::DSpContextIsBusy,
         ("DrawSprocketLib", "DSpAltBuffer_Dispose") => {
             PpcImportDispatcherTarget::DSpAltBufferDispose
         }
@@ -7949,9 +6216,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "PutScrap") => PpcImportDispatcherTarget::PutScrap,
         ("InterfaceLib", "ZeroScrap") => PpcImportDispatcherTarget::ZeroScrap,
         ("InterfaceLib", "LoadScrap") => PpcImportDispatcherTarget::LoadScrap,
-        ("InterfaceLib", "UnloadScrap") => {
-            PpcImportDispatcherTarget::UnloadScrap
-        }
+        ("InterfaceLib", "UnloadScrap") => PpcImportDispatcherTarget::UnloadScrap,
         ("InterfaceLib", "FSpOpenDF") => PpcImportDispatcherTarget::FSpOpenDF,
         ("InterfaceLib", "FSpOpenRF") => PpcImportDispatcherTarget::FSpOpenRF,
         ("InterfaceLib", "HOpen") | ("InterfaceLib", "HOpenDF") => PpcImportDispatcherTarget::HOpen,
@@ -8009,17 +6274,17 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::PBCreate(PpcParameterBlockCreateOperation::Legacy)
         }
         ("InterfaceLib", "FSpDelete") => PpcImportDispatcherTarget::FSpDelete,
-        ("InterfaceLib", "HDelete") => PpcImportDispatcherTarget::DeleteByName(
-            PpcDeleteByNameOperation::HierarchicalHighLevel,
-        ),
-        ("InterfaceLib", "FSDelete") => PpcImportDispatcherTarget::DeleteByName(
-            PpcDeleteByNameOperation::LegacyHighLevel,
-        ),
+        ("InterfaceLib", "HDelete") => {
+            PpcImportDispatcherTarget::DeleteByName(PpcDeleteByNameOperation::HierarchicalHighLevel)
+        }
+        ("InterfaceLib", "FSDelete") => {
+            PpcImportDispatcherTarget::DeleteByName(PpcDeleteByNameOperation::LegacyHighLevel)
+        }
         ("InterfaceLib", "PBDelete")
         | ("InterfaceLib", "PBDeleteSync")
-        | ("InterfaceLib", "PBDeleteAsync") => PpcImportDispatcherTarget::DeleteByName(
-            PpcDeleteByNameOperation::LegacyParameterBlock,
-        ),
+        | ("InterfaceLib", "PBDeleteAsync") => {
+            PpcImportDispatcherTarget::DeleteByName(PpcDeleteByNameOperation::LegacyParameterBlock)
+        }
         ("InterfaceLib", "PBHDelete" | "PBHDeleteSync" | "PBHDeleteAsync") => {
             PpcImportDispatcherTarget::DeleteByName(
                 PpcDeleteByNameOperation::HierarchicalParameterBlock,
@@ -8043,9 +6308,7 @@ fn dispatcher_target_for_import(
         ("AppearanceLib", "IsControlActive") => PpcImportDispatcherTarget::IsControlActive,
         ("AppearanceLib", "CollapseWindow") => PpcImportDispatcherTarget::CollapseWindow,
         ("AppearanceLib", "IsWindowCollapsed") => PpcImportDispatcherTarget::IsWindowCollapsed,
-        ("AppearanceLib", "SetControlFontStyle") => {
-            PpcImportDispatcherTarget::SetControlFontStyle
-        }
+        ("AppearanceLib", "SetControlFontStyle") => PpcImportDispatcherTarget::SetControlFontStyle,
         ("AppearanceLib", "NewFeaturesDialog") | ("InterfaceLib", "NewFeaturesDialog") => {
             PpcImportDispatcherTarget::NewFeaturesDialog
         }
@@ -8089,9 +6352,15 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "TEUseStyleScrap") => PpcImportDispatcherTarget::TEUseStyleScrap,
         ("InterfaceLib", "TEContinuousStyle") => PpcImportDispatcherTarget::TEContinuousStyle,
         ("InterfaceLib", "TEGetText") => PpcImportDispatcherTarget::TEGetText,
-        ("InterfaceLib", "TEDispose") | ("InterfaceLib", "TEDispos") => PpcImportDispatcherTarget::TEDispose,
-        ("InterfaceLib", "TEActivate") | ("InterfaceLib", "TEActivat") => PpcImportDispatcherTarget::TEActivate { active: true },
-        ("InterfaceLib", "TEDeactivate") | ("InterfaceLib", "TEDeactivat") => PpcImportDispatcherTarget::TEActivate { active: false },
+        ("InterfaceLib", "TEDispose") | ("InterfaceLib", "TEDispos") => {
+            PpcImportDispatcherTarget::TEDispose
+        }
+        ("InterfaceLib", "TEActivate") | ("InterfaceLib", "TEActivat") => {
+            PpcImportDispatcherTarget::TEActivate { active: true }
+        }
+        ("InterfaceLib", "TEDeactivate") | ("InterfaceLib", "TEDeactivat") => {
+            PpcImportDispatcherTarget::TEActivate { active: false }
+        }
         ("InterfaceLib", "TESetSelect") => PpcImportDispatcherTarget::TESetSelect,
         ("InterfaceLib", "TESetText") => PpcImportDispatcherTarget::TESetText,
         ("InterfaceLib", "TECalText") => PpcImportDispatcherTarget::TECalText,
@@ -8103,8 +6372,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "TEIdle") => PpcImportDispatcherTarget::TEIdle,
         ("InterfaceLib", "TEUpdate") => PpcImportDispatcherTarget::TEUpdate,
         ("InterfaceLib", "TETextBox") => PpcImportDispatcherTarget::TETextBox,
-        ("InterfaceLib", "TESetAlignment")
-        | ("InterfaceLib", "TESetJust") => PpcImportDispatcherTarget::TESetAlignment,
+        ("InterfaceLib", "TESetAlignment") | ("InterfaceLib", "TESetJust") => {
+            PpcImportDispatcherTarget::TESetAlignment
+        }
         ("InterfaceLib", "TEGetHeight") => PpcImportDispatcherTarget::TEGetHeight,
         ("InterfaceLib", "TEGetPoint") => PpcImportDispatcherTarget::TEGetPoint,
         ("InterfaceLib", "TEScroll") => PpcImportDispatcherTarget::TEScroll { pinned: false },
@@ -8165,17 +6435,15 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "LUpdate") => PpcImportDispatcherTarget::LUpdate,
         ("InterfaceLib", "LAutoScroll") => PpcImportDispatcherTarget::LAutoScroll,
         ("InterfaceLib", "LSearch") => PpcImportDispatcherTarget::LSearch,
-        ("InterfaceLib", "FlushEvents") => {
-            PpcImportDispatcherTarget::FlushEvents
-        }
+        ("InterfaceLib", "FlushEvents") => PpcImportDispatcherTarget::FlushEvents,
         ("InterfaceLib", "SetEventMask") => PpcImportDispatcherTarget::SetEventMask,
         ("InterfaceLib", "CloseDialog") => PpcImportDispatcherTarget::CloseDialog,
         ("InterfaceLib", "DisposeDialog" | "DisposDialog") => {
             PpcImportDispatcherTarget::DisposeDialog
         }
-        ("InterfaceLib", "GetNextEvent") => PpcImportDispatcherTarget::GetNextEvent(
-            PpcEventPollOperation::GetNextEvent,
-        ),
+        ("InterfaceLib", "GetNextEvent") => {
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent)
+        }
         // WaitNextEvent(eventMask, theEvent, sleep, mouseRgn) returns the
         // next matching event and yields time when no event is pending.
         // Macintosh Toolbox Essentials (1992), pp. 2-22–2-25.
@@ -8249,12 +6517,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "c2pstr") | ("InterfaceLib", "C2PStr") => {
             PpcImportDispatcherTarget::C2PStr
         }
-        ("InterfaceLib", "CopyCStringToPascal") => {
-            PpcImportDispatcherTarget::CopyCStringToPascal
-        }
-        ("InterfaceLib", "CopyPascalStringToC") => {
-            PpcImportDispatcherTarget::CopyPascalStringToC
-        }
+        ("InterfaceLib", "CopyCStringToPascal") => PpcImportDispatcherTarget::CopyCStringToPascal,
+        ("InterfaceLib", "CopyPascalStringToC") => PpcImportDispatcherTarget::CopyPascalStringToC,
         ("InterfaceLib", "__CFStringMakeConstantString") => {
             PpcImportDispatcherTarget::CfStringMakeConstantString
         }
@@ -8285,9 +6549,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib" | "ThreadsLib", "GetCurrentThread" | "MacGetCurrentThread") => {
             PpcImportDispatcherTarget::GetCurrentThread
         }
-        ("InterfaceLib", "NewThreadEntryUPP") => {
-            PpcImportDispatcherTarget::NewThreadEntryUPP
-        }
+        ("InterfaceLib", "NewThreadEntryUPP") => PpcImportDispatcherTarget::NewThreadEntryUPP,
         ("InterfaceLib", "DisposeThreadEntryUPP") => {
             PpcImportDispatcherTarget::DisposeThreadEntryUPP
         }
@@ -8297,9 +6559,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "DisposeThreadTerminationUPP") => {
             PpcImportDispatcherTarget::DisposeThreadTerminationUPP
         }
-        ("InterfaceLib", "NewThreadSwitchUPP") => {
-            PpcImportDispatcherTarget::NewThreadSwitchUPP
-        }
+        ("InterfaceLib", "NewThreadSwitchUPP") => PpcImportDispatcherTarget::NewThreadSwitchUPP,
         ("InterfaceLib", "DisposeThreadSwitchUPP") => {
             PpcImportDispatcherTarget::DisposeThreadSwitchUPP
         }
@@ -8318,13 +6578,21 @@ fn dispatcher_target_for_import(
         ("InterfaceLib" | "ThreadsLib", "SetThreadReadyGivenTaskRef") => {
             PpcImportDispatcherTarget::SetThreadReadyGivenTaskRef
         }
-        ("InterfaceLib" | "ThreadsLib", "GetThreadState") => PpcImportDispatcherTarget::GetThreadState,
-        ("InterfaceLib" | "ThreadsLib", "SetThreadState") => PpcImportDispatcherTarget::SetThreadState,
+        ("InterfaceLib" | "ThreadsLib", "GetThreadState") => {
+            PpcImportDispatcherTarget::GetThreadState
+        }
+        ("InterfaceLib" | "ThreadsLib", "SetThreadState") => {
+            PpcImportDispatcherTarget::SetThreadState
+        }
         ("InterfaceLib" | "ThreadsLib", "SetThreadStateEndCritical") => {
             PpcImportDispatcherTarget::SetThreadStateEndCritical
         }
-        ("InterfaceLib" | "ThreadsLib", "CreateThreadPool") => PpcImportDispatcherTarget::CreateThreadPool,
-        ("InterfaceLib" | "ThreadsLib", "GetFreeThreadCount") => PpcImportDispatcherTarget::GetFreeThreadCount,
+        ("InterfaceLib" | "ThreadsLib", "CreateThreadPool") => {
+            PpcImportDispatcherTarget::CreateThreadPool
+        }
+        ("InterfaceLib" | "ThreadsLib", "GetFreeThreadCount") => {
+            PpcImportDispatcherTarget::GetFreeThreadCount
+        }
         ("InterfaceLib" | "ThreadsLib", "GetSpecificFreeThreadCount") => {
             PpcImportDispatcherTarget::GetSpecificFreeThreadCount
         }
@@ -8335,11 +6603,21 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::ThreadCurrentStackSpace
         }
         ("InterfaceLib" | "ThreadsLib", "NewThread") => PpcImportDispatcherTarget::NewThread,
-        ("InterfaceLib" | "ThreadsLib", "YieldToThread") => PpcImportDispatcherTarget::YieldToThread,
-        ("InterfaceLib" | "ThreadsLib", "YieldToAnyThread") => PpcImportDispatcherTarget::YieldToAnyThread,
-        ("InterfaceLib" | "ThreadsLib", "DisposeThread") => PpcImportDispatcherTarget::DisposeThread,
-        ("InterfaceLib" | "ThreadsLib", "ThreadBeginCritical") => PpcImportDispatcherTarget::ThreadBeginCritical,
-        ("InterfaceLib" | "ThreadsLib", "ThreadEndCritical") => PpcImportDispatcherTarget::ThreadEndCritical,
+        ("InterfaceLib" | "ThreadsLib", "YieldToThread") => {
+            PpcImportDispatcherTarget::YieldToThread
+        }
+        ("InterfaceLib" | "ThreadsLib", "YieldToAnyThread") => {
+            PpcImportDispatcherTarget::YieldToAnyThread
+        }
+        ("InterfaceLib" | "ThreadsLib", "DisposeThread") => {
+            PpcImportDispatcherTarget::DisposeThread
+        }
+        ("InterfaceLib" | "ThreadsLib", "ThreadBeginCritical") => {
+            PpcImportDispatcherTarget::ThreadBeginCritical
+        }
+        ("InterfaceLib" | "ThreadsLib", "ThreadEndCritical") => {
+            PpcImportDispatcherTarget::ThreadEndCritical
+        }
         ("InterfaceLib", "GetCurrentProcess" | "GetFrontProcess") => {
             PpcImportDispatcherTarget::GetCurrentProcess
         }
@@ -8454,9 +6732,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetIconSuite") => PpcImportDispatcherTarget::GetIconSuite,
         ("InterfaceLib", "GetPattern") => PpcImportDispatcherTarget::GetPattern,
         ("InterfaceLib", "NewRoutineDescriptor") => PpcImportDispatcherTarget::NewRoutineDescriptor,
-        ("InterfaceLib", "NewIOCompletionUPP") => {
-            PpcImportDispatcherTarget::NewIOCompletionUPP
-        }
+        ("InterfaceLib", "NewIOCompletionUPP") => PpcImportDispatcherTarget::NewIOCompletionUPP,
         ("InterfaceLib", "DisposeIOCompletionUPP") => {
             PpcImportDispatcherTarget::DisposeIOCompletionUPP
         }
@@ -8466,9 +6742,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "DisposeControlUserPaneDrawUPP") => {
             PpcImportDispatcherTarget::DisposeControlUserPaneDrawUPP
         }
-        ("InterfaceLib", "NewAEEventHandlerUPP") => {
-            PpcImportDispatcherTarget::NewAEEventHandlerUPP
-        }
+        ("InterfaceLib", "NewAEEventHandlerUPP") => PpcImportDispatcherTarget::NewAEEventHandlerUPP,
         ("InterfaceLib", "DisposeAEEventHandlerUPP") => {
             PpcImportDispatcherTarget::DisposeAEEventHandlerUPP
         }
@@ -8504,12 +6778,12 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "BitClr") => PpcImportDispatcherTarget::LegacyMemoryUtility(
             PpcLegacyMemoryUtilityOperation::BitClear,
         ),
-        ("InterfaceLib", "BitNot") => PpcImportDispatcherTarget::LegacyMemoryUtility(
-            PpcLegacyMemoryUtilityOperation::BitNot,
-        ),
-        ("InterfaceLib", "BitSet") => PpcImportDispatcherTarget::LegacyMemoryUtility(
-            PpcLegacyMemoryUtilityOperation::BitSet,
-        ),
+        ("InterfaceLib", "BitNot") => {
+            PpcImportDispatcherTarget::LegacyMemoryUtility(PpcLegacyMemoryUtilityOperation::BitNot)
+        }
+        ("InterfaceLib", "BitSet") => {
+            PpcImportDispatcherTarget::LegacyMemoryUtility(PpcLegacyMemoryUtilityOperation::BitSet)
+        }
         ("InterfaceLib", "Fix2X") => PpcImportDispatcherTarget::LegacyMemoryUtility(
             PpcLegacyMemoryUtilityOperation::FixToExtended,
         ),
@@ -8543,123 +6817,123 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "UnlockMemory") => PpcImportDispatcherTarget::LegacyMemoryUtility(
             PpcLegacyMemoryUtilityOperation::UnlockMemory,
         ),
-        ("InterfaceLib", "DisposeControl") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::DisposeControl,
-        ),
-        ("InterfaceLib", "Draw1Control") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::DrawOneControl,
-        ),
-        ("InterfaceLib", "FindControl") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::FindControl,
-        ),
-        ("InterfaceLib", "GetControlMaximum") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::GetControlMaximum,
-        ),
-        ("InterfaceLib", "GetControlAction") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::GetControlAction,
-        ),
-        ("InterfaceLib", "GetControlReference") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::GetControlReference,
-        ),
-        ("InterfaceLib", "GetControlMinimum") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::GetControlMinimum,
-        ),
-        ("InterfaceLib", "GetControlTitle") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::GetControlTitle,
-        ),
-        ("InterfaceLib", "GetControlValue") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::GetControlValue,
-        ),
-        ("InterfaceLib", "GetNewControl") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::GetNewControl,
-        ),
-        ("InterfaceLib", "HideControl") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::HideControl,
-        ),
-        ("InterfaceLib", "KillControls") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::KillControls,
-        ),
-        ("InterfaceLib", "MoveControl") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::MoveControl,
-        ),
-        ("InterfaceLib", "NewControl") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::NewControl,
-        ),
-        ("InterfaceLib", "SetControlMaximum") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::SetControlMaximum,
-        ),
-        ("InterfaceLib", "SetControlAction") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::SetControlAction,
-        ),
-        ("InterfaceLib", "SetControlReference") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::SetControlReference,
-        ),
-        ("InterfaceLib", "SetControlMinimum") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::SetControlMinimum,
-        ),
-        ("InterfaceLib", "ShowControl") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::ShowControl,
-        ),
-        ("InterfaceLib", "SizeControl") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::SizeControl,
-        ),
-        ("InterfaceLib", "TestControl") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::TestControl,
-        ),
-        ("InterfaceLib", "TrackControl") => PpcImportDispatcherTarget::LegacyControl(
-            PpcLegacyControlOperation::TrackControl,
-        ),
-        ("InterfaceLib", "BringToFront") => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::BringToFront,
-        ),
+        ("InterfaceLib", "DisposeControl") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisposeControl)
+        }
+        ("InterfaceLib", "Draw1Control") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl)
+        }
+        ("InterfaceLib", "FindControl") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::FindControl)
+        }
+        ("InterfaceLib", "GetControlMaximum") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMaximum)
+        }
+        ("InterfaceLib", "GetControlAction") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlAction)
+        }
+        ("InterfaceLib", "GetControlReference") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlReference)
+        }
+        ("InterfaceLib", "GetControlMinimum") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMinimum)
+        }
+        ("InterfaceLib", "GetControlTitle") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlTitle)
+        }
+        ("InterfaceLib", "GetControlValue") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlValue)
+        }
+        ("InterfaceLib", "GetNewControl") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetNewControl)
+        }
+        ("InterfaceLib", "HideControl") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::HideControl)
+        }
+        ("InterfaceLib", "KillControls") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::KillControls)
+        }
+        ("InterfaceLib", "MoveControl") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::MoveControl)
+        }
+        ("InterfaceLib", "NewControl") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl)
+        }
+        ("InterfaceLib", "SetControlMaximum") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMaximum)
+        }
+        ("InterfaceLib", "SetControlAction") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlAction)
+        }
+        ("InterfaceLib", "SetControlReference") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlReference)
+        }
+        ("InterfaceLib", "SetControlMinimum") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMinimum)
+        }
+        ("InterfaceLib", "ShowControl") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ShowControl)
+        }
+        ("InterfaceLib", "SizeControl") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SizeControl)
+        }
+        ("InterfaceLib", "TestControl") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TestControl)
+        }
+        ("InterfaceLib", "TrackControl") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TrackControl)
+        }
+        ("InterfaceLib", "BringToFront") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::BringToFront)
+        }
         ("InterfaceLib", "CalcVis") => PpcImportDispatcherTarget::LegacyWindow(
             PpcLegacyWindowOperation::CalculateVisibleRegion,
         ),
-        ("InterfaceLib", "CheckUpdate") => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::CheckUpdate,
-        ),
-        ("InterfaceLib", "CreateNewWindow") => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::CreateNewWindow,
-        ),
-        ("InterfaceLib", "DisposeWindow") => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::DisposeWindow,
-        ),
-        ("InterfaceLib", "DragWindow") => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::DragWindow,
-        ),
-        ("InterfaceLib", "GetNewWindow") => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::GetNewWindow,
-        ),
-        ("InterfaceLib", "GetWTitle") => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::GetWindowTitle,
-        ),
-        ("InterfaceLib", "GrowWindow") => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::GrowWindow,
-        ),
-        ("InterfaceLib", "HiliteWindow") => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::HighlightWindow,
-        ),
-        ("InterfaceLib", "NewWindow") => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::NewWindow,
-        ),
-        ("InterfaceLib", "RepositionWindow") => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::RepositionWindow,
-        ),
-        ("InterfaceLib", "SendBehind") => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::SendBehind,
-        ),
-        ("InterfaceLib", "SetWTitle") => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::SetWindowTitle,
-        ),
-        ("InterfaceLib", "TrackBox") => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::TrackBox,
-        ),
-        ("InterfaceLib", "TrackGoAway") => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::TrackGoAway,
-        ),
-        ("InterfaceLib", "ZoomWindow") => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::ZoomWindow,
-        ),
+        ("InterfaceLib", "CheckUpdate") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CheckUpdate)
+        }
+        ("InterfaceLib", "CreateNewWindow") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CreateNewWindow)
+        }
+        ("InterfaceLib", "DisposeWindow") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::DisposeWindow)
+        }
+        ("InterfaceLib", "DragWindow") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::DragWindow)
+        }
+        ("InterfaceLib", "GetNewWindow") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetNewWindow)
+        }
+        ("InterfaceLib", "GetWTitle") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowTitle)
+        }
+        ("InterfaceLib", "GrowWindow") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GrowWindow)
+        }
+        ("InterfaceLib", "HiliteWindow") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::HighlightWindow)
+        }
+        ("InterfaceLib", "NewWindow") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::NewWindow)
+        }
+        ("InterfaceLib", "RepositionWindow") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RepositionWindow)
+        }
+        ("InterfaceLib", "SendBehind") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SendBehind)
+        }
+        ("InterfaceLib", "SetWTitle") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle)
+        }
+        ("InterfaceLib", "TrackBox") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::TrackBox)
+        }
+        ("InterfaceLib", "TrackGoAway") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::TrackGoAway)
+        }
+        ("InterfaceLib", "ZoomWindow") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ZoomWindow)
+        }
         ("InterfaceLib", "AECountItems") => PpcImportDispatcherTarget::AppleEventCompatibility(
             PpcAppleEventCompatibilityOperation::CountItems,
         ),
@@ -8671,11 +6945,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "AECreateDesc") => PpcImportDispatcherTarget::AppleEventCompatibility(
             PpcAppleEventCompatibilityOperation::CreateDesc,
         ),
-        ("InterfaceLib", "AEDisposeDesc") => {
-            PpcImportDispatcherTarget::AppleEventCompatibility(
-                PpcAppleEventCompatibilityOperation::DisposeDesc,
-            )
-        }
+        ("InterfaceLib", "AEDisposeDesc") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::DisposeDesc,
+        ),
         ("InterfaceLib", "AEGetAttributePtr") => {
             PpcImportDispatcherTarget::AppleEventCompatibility(
                 PpcAppleEventCompatibilityOperation::GetAttributePtr,
@@ -8684,21 +6956,15 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "AEGetNthPtr") => PpcImportDispatcherTarget::AppleEventCompatibility(
             PpcAppleEventCompatibilityOperation::GetNthPtr,
         ),
-        ("InterfaceLib", "AEGetParamDesc") => {
-            PpcImportDispatcherTarget::AppleEventCompatibility(
-                PpcAppleEventCompatibilityOperation::GetParamDesc,
-            )
-        }
-        ("InterfaceLib", "AEGetParamPtr") => {
-            PpcImportDispatcherTarget::AppleEventCompatibility(
-                PpcAppleEventCompatibilityOperation::GetParamPtr,
-            )
-        }
-        ("InterfaceLib", "AEPutParamDesc") => {
-            PpcImportDispatcherTarget::AppleEventCompatibility(
-                PpcAppleEventCompatibilityOperation::PutParamDesc,
-            )
-        }
+        ("InterfaceLib", "AEGetParamDesc") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::GetParamDesc,
+        ),
+        ("InterfaceLib", "AEGetParamPtr") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::GetParamPtr,
+        ),
+        ("InterfaceLib", "AEPutParamDesc") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::PutParamDesc,
+        ),
         ("InterfaceLib", "AEPutParamPtr") => PpcImportDispatcherTarget::AppleEventCompatibility(
             PpcAppleEventCompatibilityOperation::PutParamPtr,
         ),
@@ -8732,100 +6998,266 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "UpdateDialog") => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::UpdateDialog,
         ),
-        ("InterfaceLib", "AnimateEntry") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::AnimateEntry),
-        ("InterfaceLib", "AnimatePalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::AnimatePalette),
-        ("InterfaceLib", "BackPat") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::BackPat),
-        ("InterfaceLib", "BackPixPat") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::BackPixPat),
-        ("InterfaceLib", "ClosePicture") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::ClosePicture),
-        ("InterfaceLib", "CopyDeepMask") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::CopyDeepMask),
-        ("InterfaceLib", "CopyMask") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::CopyMask),
-        ("InterfaceLib", "CopyPalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::CopyPalette),
-        ("InterfaceLib", "CTab2Palette") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::Ctab2Palette),
-        ("InterfaceLib", "DisposeGDevice") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::DisposeGDevice),
-        ("InterfaceLib", "DisposePalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::DisposePalette),
-        ("InterfaceLib", "Exp1to3") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::Exp1To3),
-        ("InterfaceLib", "Exp1to6") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::Exp1To6),
-        ("InterfaceLib", "GetCPixel") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::GetCPixel),
-        ("InterfaceLib", "GetEntryUsage") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::GetEntryUsage),
-        ("InterfaceLib", "GetItemIcon") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::GetItemIcon),
-        ("InterfaceLib", "GetItemStyle") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::GetItemStyle),
-        ("InterfaceLib", "GetNewPalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::GetNewPalette),
-        ("InterfaceLib", "NewGDevice") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::NewGDevice),
-        ("InterfaceLib", "NewPalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::NewPalette),
-        ("InterfaceLib", "OpenPicture") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::OpenPicture),
-        ("InterfaceLib", "Palette2CTab") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::Palette2Ctab),
-        ("InterfaceLib", "PenPat") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::PenPat),
-        ("InterfaceLib", "PlotIcon") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::PlotIcon),
-        ("InterfaceLib", "ScrollRect") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::ScrollRect),
-        ("InterfaceLib", "SetCPixel") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::SetCPixel),
-        ("InterfaceLib", "SetEntryColor") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::SetEntryColor),
-        ("InterfaceLib", "SetEntryUsage") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::SetEntryUsage),
-        ("InterfaceLib", "SetItemIcon") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::SetItemIcon),
-        ("InterfaceLib", "SetItemStyle") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::SetItemStyle),
-        ("InterfaceLib", "SetStdCProcs") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::SetStdCProcs),
-        ("InterfaceLib", "SetStdProcs") => PpcImportDispatcherTarget::QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation::SetStdProcs),
-        ("InterfaceLib", "BuildDDPwds") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::BuildDdPwds),
-        ("InterfaceLib", "CTBGetCTBVersion") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::CtbGetCtbVersion),
-        ("InterfaceLib", "CallComponentUPP") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::CallComponentUpp),
-        ("InterfaceLib", "DIBadMount") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::DiBadMount),
-        ("InterfaceLib", "DILoad") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::DiLoad),
-        ("InterfaceLib", "DIUnload") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::DiUnload),
-        ("InterfaceLib", "Debugger") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::Debugger),
-        ("InterfaceLib", "Dequeue") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::Dequeue),
-        ("InterfaceLib", "Enqueue") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::Enqueue),
-        ("InterfaceLib", "FindNextComponent") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::FindNextComponent),
-        ("InterfaceLib", "GetNextProcess") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::GetNextProcess),
-        ("InterfaceLib", "GetScript") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::GetScript),
-        ("InterfaceLib", "GetScriptManagerVariable") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::GetScriptManagerVariable),
-        ("InterfaceLib", "GetScriptVariable") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::GetScriptVariable),
-        ("InterfaceLib", "GetSysBeepVolume") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::GetSysBeepVolume),
-        ("InterfaceLib", "IUCompString") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::IuCompString),
-        ("InterfaceLib", "IUDateString") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::IuDateString),
-        ("InterfaceLib", "InitCRM") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::InitCrm),
-        ("InterfaceLib", "InitCTBUtilities") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::InitCtbUtilities),
-        ("InterfaceLib", "KeyTranslate") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::KeyTranslate),
-        ("InterfaceLib", "LMGetCurApName") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::LmGetCurApName),
-        ("InterfaceLib", "LMGetSysFontFam") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::LmGetSysFontFam),
-        ("InterfaceLib", "LMGetSysFontSize") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::LmGetSysFontSize),
-        ("InterfaceLib", "LaunchApplication") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::LaunchApplication),
-        ("InterfaceLib", "MIDIAddPort") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::MidiAddPort),
-        ("InterfaceLib", "MIDIRemovePort") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::MidiRemovePort),
-        ("InterfaceLib", "MIDISignOut") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::MidiSignOut),
-        ("InterfaceLib", "MIDIWritePacket") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::MidiWritePacket),
-        ("InterfaceLib", "Munger") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::Munger),
-        ("InterfaceLib", "NMRemove") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::NmRemove),
-        ("InterfaceLib", "ObscureCursor") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::ObscureCursor),
-        ("InterfaceLib", "OpenDefaultComponent") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::OpenDefaultComponent),
-        ("InterfaceLib", "ResetAlertStage") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::ResetAlertStage),
-        ("InterfaceLib", "SetFrontProcess") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::SetFrontProcess),
-        ("InterfaceLib", "StyledLineBreak") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::StyledLineBreak),
-        ("InterfaceLib", "SystemEdit") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::SystemEdit),
-        ("InterfaceLib", "TruncText") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::TruncText),
-        ("InterfaceLib", "UpperString") => PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::UpperString),
-        ("InterfaceLib", "OpenDF") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::OpenDf),
-        ("InterfaceLib", "OpenRF") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::OpenRf),
-        ("InterfaceLib", "PBCatSearchSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbCatSearchSync),
-        ("InterfaceLib", "PBCloseWDSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbCloseWdSync),
-        ("InterfaceLib", "PBDirCreateSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbDirCreateSync),
-        ("InterfaceLib", "PBGetFPosSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbGetFPosSync),
-        ("InterfaceLib", "PBGetWDInfoSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbGetWdInfoSync),
-        ("InterfaceLib", "PBHGetVolParmsSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbHGetVolParmsSync),
-        ("InterfaceLib", "PBHGetVolSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbHGetVolSync),
-        ("InterfaceLib", "PBHOpenRFSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbHOpenRfSync),
-        ("InterfaceLib", "PBHSetVolSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbHSetVolSync),
-        ("InterfaceLib", "PBOpenWDSync") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbOpenWdSync),
-        ("InterfaceLib", "create") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::Create),
-        ("InterfaceLib", "fsopen") => PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::FsOpen),
-        ("InterfaceLib", "GetBridgeAddress") => {
-            PpcImportDispatcherTarget::AppleTalkCompatibility(
-                PpcAppleTalkCompatibilityOperation::GetBridgeAddress,
+        ("InterfaceLib", "AnimateEntry") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::AnimateEntry,
+        ),
+        ("InterfaceLib", "AnimatePalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::AnimatePalette,
+        ),
+        ("InterfaceLib", "BackPat") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::BackPat,
+        ),
+        ("InterfaceLib", "BackPixPat") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::BackPixPat,
+        ),
+        ("InterfaceLib", "ClosePicture") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::ClosePicture,
+        ),
+        ("InterfaceLib", "CopyDeepMask") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::CopyDeepMask,
+        ),
+        ("InterfaceLib", "CopyMask") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::CopyMask,
+        ),
+        ("InterfaceLib", "CopyPalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::CopyPalette,
+        ),
+        ("InterfaceLib", "CTab2Palette") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::Ctab2Palette,
+        ),
+        ("InterfaceLib", "DisposeGDevice") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::DisposeGDevice,
+        ),
+        ("InterfaceLib", "DisposePalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::DisposePalette,
+        ),
+        ("InterfaceLib", "Exp1to3") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::Exp1To3,
+        ),
+        ("InterfaceLib", "Exp1to6") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::Exp1To6,
+        ),
+        ("InterfaceLib", "GetCPixel") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::GetCPixel,
+        ),
+        ("InterfaceLib", "GetEntryUsage") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::GetEntryUsage,
+        ),
+        ("InterfaceLib", "GetItemIcon") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::GetItemIcon,
+        ),
+        ("InterfaceLib", "GetItemStyle") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::GetItemStyle,
+        ),
+        ("InterfaceLib", "GetNewPalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::GetNewPalette,
+        ),
+        ("InterfaceLib", "NewGDevice") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::NewGDevice,
+        ),
+        ("InterfaceLib", "NewPalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::NewPalette,
+        ),
+        ("InterfaceLib", "OpenPicture") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::OpenPicture,
+        ),
+        ("InterfaceLib", "Palette2CTab") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::Palette2Ctab,
+        ),
+        ("InterfaceLib", "PenPat") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::PenPat,
+        ),
+        ("InterfaceLib", "PlotIcon") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::PlotIcon,
+        ),
+        ("InterfaceLib", "ScrollRect") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::ScrollRect,
+        ),
+        ("InterfaceLib", "SetCPixel") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::SetCPixel,
+        ),
+        ("InterfaceLib", "SetEntryColor") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::SetEntryColor,
+        ),
+        ("InterfaceLib", "SetEntryUsage") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::SetEntryUsage,
+        ),
+        ("InterfaceLib", "SetItemIcon") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::SetItemIcon,
+        ),
+        ("InterfaceLib", "SetItemStyle") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::SetItemStyle,
+        ),
+        ("InterfaceLib", "SetStdCProcs") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::SetStdCProcs,
+        ),
+        ("InterfaceLib", "SetStdProcs") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::SetStdProcs,
+        ),
+        ("InterfaceLib", "BuildDDPwds") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::BuildDdPwds,
+        ),
+        ("InterfaceLib", "CTBGetCTBVersion") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::CtbGetCtbVersion,
+        ),
+        ("InterfaceLib", "CallComponentUPP") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::CallComponentUpp,
+        ),
+        ("InterfaceLib", "DIBadMount") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::DiBadMount,
+        ),
+        ("InterfaceLib", "DILoad") => {
+            PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::DiLoad)
+        }
+        ("InterfaceLib", "DIUnload") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::DiUnload,
+        ),
+        ("InterfaceLib", "Debugger") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::Debugger,
+        ),
+        ("InterfaceLib", "Dequeue") => {
+            PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::Dequeue)
+        }
+        ("InterfaceLib", "Enqueue") => {
+            PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::Enqueue)
+        }
+        ("InterfaceLib", "FindNextComponent") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::FindNextComponent,
+        ),
+        ("InterfaceLib", "GetNextProcess") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetNextProcess,
+        ),
+        ("InterfaceLib", "GetScript") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetScript,
+        ),
+        ("InterfaceLib", "GetScriptManagerVariable") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::GetScriptManagerVariable,
             )
         }
-        ("InterfaceLib", "GetNodeAddress") => {
-            PpcImportDispatcherTarget::AppleTalkCompatibility(
-                PpcAppleTalkCompatibilityOperation::GetNodeAddress,
-            )
+        ("InterfaceLib", "GetScriptVariable") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetScriptVariable,
+        ),
+        ("InterfaceLib", "GetSysBeepVolume") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetSysBeepVolume,
+        ),
+        ("InterfaceLib", "IUCompString") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuCompString,
+        ),
+        ("InterfaceLib", "IUDateString") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuDateString,
+        ),
+        ("InterfaceLib", "InitCRM") => {
+            PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::InitCrm)
         }
+        ("InterfaceLib", "InitCTBUtilities") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::InitCtbUtilities,
+        ),
+        ("InterfaceLib", "KeyTranslate") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::KeyTranslate,
+        ),
+        ("InterfaceLib", "LMGetCurApName") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::LmGetCurApName,
+        ),
+        ("InterfaceLib", "LMGetSysFontFam") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::LmGetSysFontFam,
+        ),
+        ("InterfaceLib", "LMGetSysFontSize") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::LmGetSysFontSize,
+        ),
+        ("InterfaceLib", "LaunchApplication") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::LaunchApplication,
+        ),
+        ("InterfaceLib", "MIDIAddPort") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::MidiAddPort,
+        ),
+        ("InterfaceLib", "MIDIRemovePort") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::MidiRemovePort,
+        ),
+        ("InterfaceLib", "MIDISignOut") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::MidiSignOut,
+        ),
+        ("InterfaceLib", "MIDIWritePacket") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::MidiWritePacket,
+        ),
+        ("InterfaceLib", "Munger") => {
+            PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::Munger)
+        }
+        ("InterfaceLib", "NMRemove") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::NmRemove,
+        ),
+        ("InterfaceLib", "ObscureCursor") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::ObscureCursor,
+        ),
+        ("InterfaceLib", "OpenDefaultComponent") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::OpenDefaultComponent,
+        ),
+        ("InterfaceLib", "ResetAlertStage") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::ResetAlertStage,
+        ),
+        ("InterfaceLib", "SetFrontProcess") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::SetFrontProcess,
+        ),
+        ("InterfaceLib", "StyledLineBreak") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::StyledLineBreak,
+        ),
+        ("InterfaceLib", "SystemEdit") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::SystemEdit,
+        ),
+        ("InterfaceLib", "TruncText") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::TruncText,
+        ),
+        ("InterfaceLib", "UpperString") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::UpperString,
+        ),
+        ("InterfaceLib", "OpenDF") => {
+            PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::OpenDf)
+        }
+        ("InterfaceLib", "OpenRF") => {
+            PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::OpenRf)
+        }
+        ("InterfaceLib", "PBCatSearchSync") => PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbCatSearchSync,
+        ),
+        ("InterfaceLib", "PBCloseWDSync") => PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbCloseWdSync,
+        ),
+        ("InterfaceLib", "PBDirCreateSync") => PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbDirCreateSync,
+        ),
+        ("InterfaceLib", "PBGetFPosSync") => PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbGetFPosSync,
+        ),
+        ("InterfaceLib", "PBGetWDInfoSync") => PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbGetWdInfoSync,
+        ),
+        ("InterfaceLib", "PBHGetVolParmsSync") => PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbHGetVolParmsSync,
+        ),
+        ("InterfaceLib", "PBHGetVolSync") => PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbHGetVolSync,
+        ),
+        ("InterfaceLib", "PBHOpenRFSync") => PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbHOpenRfSync,
+        ),
+        ("InterfaceLib", "PBHSetVolSync") => PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbHSetVolSync,
+        ),
+        ("InterfaceLib", "PBOpenWDSync") => PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbOpenWdSync,
+        ),
+        ("InterfaceLib", "create") => {
+            PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::Create)
+        }
+        ("InterfaceLib", "fsopen") => {
+            PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::FsOpen)
+        }
+        ("InterfaceLib", "GetBridgeAddress") => PpcImportDispatcherTarget::AppleTalkCompatibility(
+            PpcAppleTalkCompatibilityOperation::GetBridgeAddress,
+        ),
+        ("InterfaceLib", "GetNodeAddress") => PpcImportDispatcherTarget::AppleTalkCompatibility(
+            PpcAppleTalkCompatibilityOperation::GetNodeAddress,
+        ),
         ("InterfaceLib", "GetZoneList") => PpcImportDispatcherTarget::AppleTalkCompatibility(
             PpcAppleTalkCompatibilityOperation::GetZoneList,
         ),
@@ -8835,11 +7267,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "NBPExtract") => PpcImportDispatcherTarget::AppleTalkCompatibility(
             PpcAppleTalkCompatibilityOperation::NbpExtract,
         ),
-        ("InterfaceLib", "NBPSetEntity") => {
-            PpcImportDispatcherTarget::AppleTalkCompatibility(
-                PpcAppleTalkCompatibilityOperation::NbpSetEntity,
-            )
-        }
+        ("InterfaceLib", "NBPSetEntity") => PpcImportDispatcherTarget::AppleTalkCompatibility(
+            PpcAppleTalkCompatibilityOperation::NbpSetEntity,
+        ),
         ("InterfaceLib", "NBPSetNTE") => PpcImportDispatcherTarget::AppleTalkCompatibility(
             PpcAppleTalkCompatibilityOperation::NbpSetNte,
         ),
@@ -8855,11 +7285,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "POpenSkt") => PpcImportDispatcherTarget::AppleTalkCompatibility(
             PpcAppleTalkCompatibilityOperation::POpenSkt,
         ),
-        ("InterfaceLib", "PRegisterName") => {
-            PpcImportDispatcherTarget::AppleTalkCompatibility(
-                PpcAppleTalkCompatibilityOperation::PRegisterName,
-            )
-        }
+        ("InterfaceLib", "PRegisterName") => PpcImportDispatcherTarget::AppleTalkCompatibility(
+            PpcAppleTalkCompatibilityOperation::PRegisterName,
+        ),
         ("InterfaceLib", "PRemoveName") => PpcImportDispatcherTarget::AppleTalkCompatibility(
             PpcAppleTalkCompatibilityOperation::PRemoveName,
         ),
@@ -8933,55 +7361,39 @@ fn dispatcher_target_for_import(
                 PpcStandardFileOperation::StandardPutFile,
             )
         }
-        ("InterfaceLib", "SPBCloseDevice") => {
-            PpcImportDispatcherTarget::SoundInputCompatibility(
-                PpcSoundInputCompatibilityOperation::CloseDevice,
-            )
-        }
-        ("InterfaceLib", "SPBGetDeviceInfo") => {
-            PpcImportDispatcherTarget::SoundInputCompatibility(
-                PpcSoundInputCompatibilityOperation::GetDeviceInfo,
-            )
-        }
-        ("InterfaceLib", "SPBOpenDevice") => {
-            PpcImportDispatcherTarget::SoundInputCompatibility(
-                PpcSoundInputCompatibilityOperation::OpenDevice,
-            )
-        }
+        ("InterfaceLib", "SPBCloseDevice") => PpcImportDispatcherTarget::SoundInputCompatibility(
+            PpcSoundInputCompatibilityOperation::CloseDevice,
+        ),
+        ("InterfaceLib", "SPBGetDeviceInfo") => PpcImportDispatcherTarget::SoundInputCompatibility(
+            PpcSoundInputCompatibilityOperation::GetDeviceInfo,
+        ),
+        ("InterfaceLib", "SPBOpenDevice") => PpcImportDispatcherTarget::SoundInputCompatibility(
+            PpcSoundInputCompatibilityOperation::OpenDevice,
+        ),
         ("InterfaceLib", "SPBRecord") => PpcImportDispatcherTarget::SoundInputCompatibility(
             PpcSoundInputCompatibilityOperation::Record,
         ),
-        ("InterfaceLib", "SPBSetDeviceInfo") => {
-            PpcImportDispatcherTarget::SoundInputCompatibility(
-                PpcSoundInputCompatibilityOperation::SetDeviceInfo,
-            )
-        }
-        ("InterfaceLib", "SPBStopRecording") => {
-            PpcImportDispatcherTarget::SoundInputCompatibility(
-                PpcSoundInputCompatibilityOperation::StopRecording,
-            )
-        }
+        ("InterfaceLib", "SPBSetDeviceInfo") => PpcImportDispatcherTarget::SoundInputCompatibility(
+            PpcSoundInputCompatibilityOperation::SetDeviceInfo,
+        ),
+        ("InterfaceLib", "SPBStopRecording") => PpcImportDispatcherTarget::SoundInputCompatibility(
+            PpcSoundInputCompatibilityOperation::StopRecording,
+        ),
         ("SpeechLib", "CountVoices") => PpcImportDispatcherTarget::SpeechCompatibility(
             PpcSpeechCompatibilityOperation::CountVoices,
         ),
-        ("SpeechLib", "DisposeSpeechChannel") => {
-            PpcImportDispatcherTarget::SpeechCompatibility(
-                PpcSpeechCompatibilityOperation::DisposeSpeechChannel,
-            )
-        }
+        ("SpeechLib", "DisposeSpeechChannel") => PpcImportDispatcherTarget::SpeechCompatibility(
+            PpcSpeechCompatibilityOperation::DisposeSpeechChannel,
+        ),
         ("SpeechLib", "GetIndVoice") => PpcImportDispatcherTarget::SpeechCompatibility(
             PpcSpeechCompatibilityOperation::GetIndVoice,
         ),
-        ("SpeechLib", "GetVoiceDescription") => {
-            PpcImportDispatcherTarget::SpeechCompatibility(
-                PpcSpeechCompatibilityOperation::GetVoiceDescription,
-            )
-        }
-        ("SpeechLib", "NewSpeechChannel") => {
-            PpcImportDispatcherTarget::SpeechCompatibility(
-                PpcSpeechCompatibilityOperation::NewSpeechChannel,
-            )
-        }
+        ("SpeechLib", "GetVoiceDescription") => PpcImportDispatcherTarget::SpeechCompatibility(
+            PpcSpeechCompatibilityOperation::GetVoiceDescription,
+        ),
+        ("SpeechLib", "NewSpeechChannel") => PpcImportDispatcherTarget::SpeechCompatibility(
+            PpcSpeechCompatibilityOperation::NewSpeechChannel,
+        ),
         ("SpeechLib", "SpeakString") => PpcImportDispatcherTarget::SpeechCompatibility(
             PpcSpeechCompatibilityOperation::SpeakString,
         ),
@@ -8991,41 +7403,29 @@ fn dispatcher_target_for_import(
         ("SpeechLib", "SpeechBusy") => PpcImportDispatcherTarget::SpeechCompatibility(
             PpcSpeechCompatibilityOperation::SpeechBusy,
         ),
-        ("QuickTimeLib", "GetMovieTimeBase") => {
-            PpcImportDispatcherTarget::QuickTimeCompatibility(
-                PpcQuickTimeCompatibilityOperation::GetMovieTimeBase,
-            )
-        }
-        ("QuickTimeLib", "GetMovieVolume") => {
-            PpcImportDispatcherTarget::QuickTimeCompatibility(
-                PpcQuickTimeCompatibilityOperation::GetMovieVolume,
-            )
-        }
+        ("QuickTimeLib", "GetMovieTimeBase") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMovieTimeBase,
+        ),
+        ("QuickTimeLib", "GetMovieVolume") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMovieVolume,
+        ),
         ("QuickTimeLib", "NewMovieFromDataFork") => {
             PpcImportDispatcherTarget::QuickTimeCompatibility(
                 PpcQuickTimeCompatibilityOperation::NewMovieFromDataFork,
             )
         }
-        ("QuickTimeLib", "PrerollMovie") => {
-            PpcImportDispatcherTarget::QuickTimeCompatibility(
-                PpcQuickTimeCompatibilityOperation::PrerollMovie,
-            )
-        }
-        ("QuickTimeLib", "SetMovieVolume") => {
-            PpcImportDispatcherTarget::QuickTimeCompatibility(
-                PpcQuickTimeCompatibilityOperation::SetMovieVolume,
-            )
-        }
-        ("QuickTimeLib", "SetTimeBaseFlags") => {
-            PpcImportDispatcherTarget::QuickTimeCompatibility(
-                PpcQuickTimeCompatibilityOperation::SetTimeBaseFlags,
-            )
-        }
-        ("QuickTimeLib", "UpdateMovie") => {
-            PpcImportDispatcherTarget::QuickTimeCompatibility(
-                PpcQuickTimeCompatibilityOperation::UpdateMovie,
-            )
-        }
+        ("QuickTimeLib", "PrerollMovie") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::PrerollMovie,
+        ),
+        ("QuickTimeLib", "SetMovieVolume") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetMovieVolume,
+        ),
+        ("QuickTimeLib", "SetTimeBaseFlags") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetTimeBaseFlags,
+        ),
+        ("QuickTimeLib", "UpdateMovie") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::UpdateMovie,
+        ),
         ("InputSprocketLib", "ISpDevices_ActivateClass") => {
             PpcImportDispatcherTarget::InputSprocketCompatibility(
                 PpcInputSprocketCompatibilityOperation::DevicesActivateClass,
@@ -9051,56 +7451,54 @@ fn dispatcher_target_for_import(
                 PpcInputSprocketCompatibilityOperation::ElementGetNextEvent,
             )
         }
-        ("InputSprocketLib", "ISpTickle") => {
-            PpcImportDispatcherTarget::InputSprocketCompatibility(
-                PpcInputSprocketCompatibilityOperation::Tickle,
-            )
+        ("InputSprocketLib", "ISpTickle") => PpcImportDispatcherTarget::InputSprocketCompatibility(
+            PpcInputSprocketCompatibilityOperation::Tickle,
+        ),
+        ("MathLib", "dec2num") => {
+            PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Dec2Num)
         }
-        ("MathLib", "dec2num") => PpcImportDispatcherTarget::MathCompatibility(
-            PpcMathCompatibilityOperation::Dec2Num,
-        ),
-        ("MathLib", "dec2str") => PpcImportDispatcherTarget::MathCompatibility(
-            PpcMathCompatibilityOperation::Dec2Str,
-        ),
+        ("MathLib", "dec2str") => {
+            PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Dec2Str)
+        }
         ("MathLib", "feclearexcept") => PpcImportDispatcherTarget::MathCompatibility(
             PpcMathCompatibilityOperation::FeClearExcept,
         ),
         ("MathLib", "fetestexcept") => PpcImportDispatcherTarget::MathCompatibility(
             PpcMathCompatibilityOperation::FeTestExcept,
         ),
-        ("MathLib", "floor") => PpcImportDispatcherTarget::MathCompatibility(
-            PpcMathCompatibilityOperation::Floor,
-        ),
-        ("MathLib", "ldexp") => PpcImportDispatcherTarget::MathCompatibility(
-            PpcMathCompatibilityOperation::Ldexp,
-        ),
-        ("MathLib", "ldtox80") => PpcImportDispatcherTarget::MathCompatibility(
-            PpcMathCompatibilityOperation::LdToX80,
-        ),
-        ("MathLib", "modf") => PpcImportDispatcherTarget::MathCompatibility(
-            PpcMathCompatibilityOperation::Modf,
-        ),
-        ("MathLib", "num2dec") => PpcImportDispatcherTarget::MathCompatibility(
-            PpcMathCompatibilityOperation::Num2Dec,
-        ),
-        ("MathLib", "str2dec") => PpcImportDispatcherTarget::MathCompatibility(
-            PpcMathCompatibilityOperation::Str2Dec,
-        ),
-        ("StdCLib", "qsort") => PpcImportDispatcherTarget::StdCCompatibility(
-            PpcStdCCompatibilityOperation::Qsort,
-        ),
-        ("StdCLib", "signal") => PpcImportDispatcherTarget::StdCCompatibility(
-            PpcStdCCompatibilityOperation::Signal,
-        ),
-        ("StdCLib", "sscanf") => PpcImportDispatcherTarget::StdCCompatibility(
-            PpcStdCCompatibilityOperation::Sscanf,
-        ),
-        ("StdCLib", "strftime") => PpcImportDispatcherTarget::StdCCompatibility(
-            PpcStdCCompatibilityOperation::Strftime,
-        ),
-        ("StdCLib", "vsprintf") => PpcImportDispatcherTarget::StdCCompatibility(
-            PpcStdCCompatibilityOperation::Vsprintf,
-        ),
+        ("MathLib", "floor") => {
+            PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Floor)
+        }
+        ("MathLib", "ldexp") => {
+            PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Ldexp)
+        }
+        ("MathLib", "ldtox80") => {
+            PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::LdToX80)
+        }
+        ("MathLib", "modf") => {
+            PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Modf)
+        }
+        ("MathLib", "num2dec") => {
+            PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Num2Dec)
+        }
+        ("MathLib", "str2dec") => {
+            PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Str2Dec)
+        }
+        ("StdCLib", "qsort") => {
+            PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::Qsort)
+        }
+        ("StdCLib", "signal") => {
+            PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::Signal)
+        }
+        ("StdCLib", "sscanf") => {
+            PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::Sscanf)
+        }
+        ("StdCLib", "strftime") => {
+            PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::Strftime)
+        }
+        ("StdCLib", "vsprintf") => {
+            PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::Vsprintf)
+        }
         ("ObjectSupportLib", "CreateObjSpecifier") => {
             PpcImportDispatcherTarget::ObjectSupportCompatibility
         }
@@ -9356,8 +7754,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         q3_error_state.clear();
     }
 
-    if let Some(action) = dispatch_qd3d::dispatch_q3_core_import(
-        dispatch_qd3d::PpcQ3CoreDispatchContext {
+    if let Some(action) =
+        dispatch_qd3d::dispatch_q3_core_import(dispatch_qd3d::PpcQ3CoreDispatchContext {
             target: &binding.dispatcher_target,
             cpu,
             memory,
@@ -9365,8 +7763,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             next_q3_object,
             q3_error_state,
             q3_lifecycle,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
 
@@ -9418,8 +7816,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         return Some(action);
     }
 
-    if let Some(action) = dispatch_qd3d::dispatch_q3_geometry_import(
-        dispatch_qd3d::PpcQ3GeometryDispatchContext {
+    if let Some(action) =
+        dispatch_qd3d::dispatch_q3_geometry_import(dispatch_qd3d::PpcQ3GeometryDispatchContext {
             target: &binding.dispatcher_target,
             cpu,
             process_memory_manager,
@@ -9459,13 +7857,13 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             heap_cursor,
             last_mem_error,
             gworlds,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
 
-    if let Some(action) = dispatch_qd3d::dispatch_q3_group_view_import(
-        dispatch_qd3d::PpcQ3GroupViewDispatchContext {
+    if let Some(action) =
+        dispatch_qd3d::dispatch_q3_group_view_import(dispatch_qd3d::PpcQ3GroupViewDispatchContext {
             target: &binding.dispatcher_target,
             cpu,
             memory,
@@ -9505,8 +7903,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             current_gworld: *current_gworld,
             q3_error_state,
             input_idle: input.is_idle(),
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
 
@@ -9529,8 +7927,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     }) {
         return Some(action);
     }
-    if let Some(action) = dispatch_files::dispatch_file_import(
-        dispatch_files::PpcFileDispatchContext {
+    if let Some(action) =
+        dispatch_files::dispatch_file_import(dispatch_files::PpcFileDispatchContext {
             binding,
             cpu,
             memory,
@@ -9557,8 +7955,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             working_directories,
             next_working_directory_ref_num,
             application_working_directory_ref_num,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
     if let Some(action) = dispatch_resources::dispatch_resource_import(
@@ -9600,8 +7998,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         return Some(action);
     }
 
-    if let Some(action) = dispatch_stdc::dispatch_stdc_import(
-        dispatch_stdc::PpcStdCDispatchContext {
+    if let Some(action) =
+        dispatch_stdc::dispatch_stdc_import(dispatch_stdc::PpcStdCDispatchContext {
             binding,
             cpu,
             memory,
@@ -9610,8 +8008,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             last_mem_error,
             stdc_qsort_stack,
             stdc_signal_state: &mut toolbox_startup.stdc_signal_state,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
     if let Some(action) = dispatch_core_foundation::dispatch_core_foundation_import(
@@ -9625,8 +8023,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     ) {
         return Some(action);
     }
-    if let Some(action) = dispatch_regions::dispatch_region_import(
-        dispatch_regions::PpcRegionDispatchContext {
+    if let Some(action) =
+        dispatch_regions::dispatch_region_import(dispatch_regions::PpcRegionDispatchContext {
             binding,
             cpu,
             memory,
@@ -9637,12 +8035,12 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             handles,
             current_gworld: *current_gworld,
             toolbox_startup,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
-    if let Some(action) = dispatch_polygons::dispatch_polygon_import(
-        dispatch_polygons::PpcPolygonDispatchContext {
+    if let Some(action) =
+        dispatch_polygons::dispatch_polygon_import(dispatch_polygons::PpcPolygonDispatchContext {
             binding,
             cpu,
             memory,
@@ -9656,8 +8054,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             quickdraw_fore_color,
             quickdraw_fore_indices,
             toolbox_startup,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
     if let Some(action) = dispatch_bit_transfers::dispatch_bit_transfer_import(
@@ -9721,8 +8119,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     ) {
         return Some(action);
     }
-    if let Some(action) = dispatch_palettes::dispatch_palette_import(
-        dispatch_palettes::PpcPaletteDispatchContext {
+    if let Some(action) =
+        dispatch_palettes::dispatch_palette_import(dispatch_palettes::PpcPaletteDispatchContext {
             binding,
             cpu,
             memory,
@@ -9735,12 +8133,12 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             event_queue,
             tick_count: *tick_count,
             input,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
-    if let Some(action) = dispatch_gworlds::dispatch_gworld_import(
-        dispatch_gworlds::PpcGWorldDispatchContext {
+    if let Some(action) =
+        dispatch_gworlds::dispatch_gworld_import(dispatch_gworlds::PpcGWorldDispatchContext {
             binding,
             cpu,
             memory,
@@ -9761,8 +8159,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             quickdraw_pen_h,
             quickdraw_pen_v,
             toolbox_startup,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
     if let Some(action) = dispatch_quickdraw::dispatch_quickdraw_import(
@@ -9793,8 +8191,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         return Some(action);
     }
 
-    if let Some(action) = dispatch_picture::dispatch_picture_import(
-        dispatch_picture::PpcPictureDispatchContext {
+    if let Some(action) =
+        dispatch_picture::dispatch_picture_import(dispatch_picture::PpcPictureDispatchContext {
             binding,
             cpu,
             memory,
@@ -9808,13 +8206,13 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             current_gworld: *current_gworld,
             screen_clut,
             color_manager_clut,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
 
-    if let Some(action) = dispatch_fonts::dispatch_font_import(
-        dispatch_fonts::PpcFontDispatchContext {
+    if let Some(action) =
+        dispatch_fonts::dispatch_font_import(dispatch_fonts::PpcFontDispatchContext {
             binding,
             cpu,
             memory,
@@ -9828,13 +8226,13 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             quickdraw_pen_h,
             quickdraw_pen_v,
             vfs_resources,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
 
-    if let Some(action) = dispatch_sound::dispatch_sound_import(
-        dispatch_sound::PpcSoundDispatchContext {
+    if let Some(action) =
+        dispatch_sound::dispatch_sound_import(dispatch_sound::PpcSoundDispatchContext {
             binding,
             cpu,
             memory,
@@ -9847,24 +8245,24 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             vfs_files,
             vfs_resources,
             sound,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
-    if let Some(action) = dispatch_event::dispatch_time_import(
-        dispatch_event::PpcTimeDispatchContext {
+    if let Some(action) =
+        dispatch_event::dispatch_time_import(dispatch_event::PpcTimeDispatchContext {
             target: &binding.dispatcher_target,
             cpu,
             memory,
             tick_count: *tick_count,
             cycles_per_tick,
             toolbox_startup,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
-    if let Some(action) = dispatch_event::dispatch_event_import(
-        dispatch_event::PpcEventDispatchContext {
+    if let Some(action) =
+        dispatch_event::dispatch_event_import(dispatch_event::PpcEventDispatchContext {
             binding,
             cpu,
             memory,
@@ -9878,8 +8276,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             event_queue,
             input,
             tick_count: *tick_count,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
     if let Some(action) = dispatch_low_memory::dispatch_low_memory_import(
@@ -9898,17 +8296,17 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
     {
         return Some(action);
     }
-    if let Some(action) = dispatch_toolbox::dispatch_toolbox_import(
-        dispatch_toolbox::PpcToolboxDispatchContext {
+    if let Some(action) =
+        dispatch_toolbox::dispatch_toolbox_import(dispatch_toolbox::PpcToolboxDispatchContext {
             binding,
             cpu,
             memory,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
-    if let Some(action) = dispatch_memory::dispatch_memory_import(
-        dispatch_memory::PpcMemoryDispatchContext {
+    if let Some(action) =
+        dispatch_memory::dispatch_memory_import(dispatch_memory::PpcMemoryDispatchContext {
             binding,
             cpu,
             memory,
@@ -9921,12 +8319,12 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             aliases,
             vfs_resources,
             toolbox_startup,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
-    if let Some(action) = dispatch_menu::dispatch_menu_import(
-        dispatch_menu::PpcMenuDispatchContext {
+    if let Some(action) =
+        dispatch_menu::dispatch_menu_import(dispatch_menu::PpcMenuDispatchContext {
             binding,
             cpu,
             memory,
@@ -9947,12 +8345,12 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             current_gdevice,
             event_queue,
             input,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
-    if let Some(action) = dispatch_threads::dispatch_thread_import(
-        dispatch_threads::PpcThreadDispatchContext {
+    if let Some(action) =
+        dispatch_threads::dispatch_thread_import(dispatch_threads::PpcThreadDispatchContext {
             binding,
             cpu,
             memory,
@@ -9961,12 +8359,12 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             heap_limit,
             last_mem_error,
             toolbox_startup,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
-    if let Some(action) = dispatch_textedit::dispatch_textedit_import(
-        dispatch_textedit::PpcTextEditDispatchContext {
+    if let Some(action) =
+        dispatch_textedit::dispatch_textedit_import(dispatch_textedit::PpcTextEditDispatchContext {
             binding,
             cpu,
             memory,
@@ -9987,8 +8385,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             gworlds,
             input,
             event_queue,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
     let screen_bits = ppc_screen_bits_addr(toolbox_startup.init_graf_global_ptr)
@@ -10054,8 +8452,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         return Some(action);
     }
 
-    if let Some(action) = dispatch_time::dispatch_time_import(
-        dispatch_time::PpcTimeDispatchContext {
+    if let Some(action) =
+        dispatch_time::dispatch_time_import(dispatch_time::PpcTimeDispatchContext {
             binding,
             cpu,
             memory,
@@ -10063,8 +8461,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             vbl_tasks,
             callback_scheduling,
             tick_count: *tick_count,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
 
@@ -10091,8 +8489,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         return Some(action);
     }
 
-    if let Some(action) = dispatch_control::dispatch_control_import(
-        dispatch_control::PpcControlDispatchContext {
+    if let Some(action) =
+        dispatch_control::dispatch_control_import(dispatch_control::PpcControlDispatchContext {
             binding,
             cpu,
             memory,
@@ -10110,13 +8508,13 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             vfs_resources,
             current_resource_refnum: *current_resource_refnum,
             last_resource_error,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
 
-    if let Some(action) = dispatch_list::dispatch_list_import(
-        dispatch_list::PpcListDispatchContext {
+    if let Some(action) =
+        dispatch_list::dispatch_list_import(dispatch_list::PpcListDispatchContext {
             binding,
             cpu,
             memory,
@@ -10131,8 +8529,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             vfs_resources,
             current_resource_refnum: *current_resource_refnum,
             tick_count: *tick_count,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
 
@@ -10165,8 +8563,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         return Some(action);
     }
 
-    if let Some(action) = dispatch_dialog::dispatch_dialog_import(
-        dispatch_dialog::PpcDialogDispatchContext {
+    if let Some(action) =
+        dispatch_dialog::dispatch_dialog_import(dispatch_dialog::PpcDialogDispatchContext {
             binding,
             cpu,
             memory,
@@ -10196,13 +8594,13 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             quickdraw_fore_color,
             quickdraw_back_color,
             quickdraw_fore_indices,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
 
-    if let Some(action) = dispatch_window::dispatch_window_import(
-        dispatch_window::PpcWindowDispatchContext {
+    if let Some(action) =
+        dispatch_window::dispatch_window_import(dispatch_window::PpcWindowDispatchContext {
             binding,
             cpu,
             memory,
@@ -10229,13 +8627,13 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             vfs_resources,
             current_resource_refnum: *current_resource_refnum,
             last_resource_error,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
 
-    if let Some(action) = dispatch_display::dispatch_display_import(
-        dispatch_display::PpcDisplayDispatchContext {
+    if let Some(action) =
+        dispatch_display::dispatch_display_import(dispatch_display::PpcDisplayDispatchContext {
             binding,
             cpu,
             memory,
@@ -10248,13 +8646,13 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             toolbox_startup,
             screen_clut,
             color_manager_clut,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
 
-    if let Some(action) = dispatch_devices::dispatch_device_import(
-        dispatch_devices::PpcDeviceDispatchContext {
+    if let Some(action) =
+        dispatch_devices::dispatch_device_import(dispatch_devices::PpcDeviceDispatchContext {
             binding,
             cpu,
             memory,
@@ -10262,30 +8660,30 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             screen_clut,
             display_gamma,
             toolbox_startup,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
 
-    if let Some(action) = dispatch_desk::dispatch_desk_import(
-        dispatch_desk::PpcDeskDispatchContext { binding },
-    ) {
+    if let Some(action) =
+        dispatch_desk::dispatch_desk_import(dispatch_desk::PpcDeskDispatchContext { binding })
+    {
         return Some(action);
     }
 
-    if let Some(action) = dispatch_gestalt::dispatch_gestalt_import(
-        dispatch_gestalt::PpcGestaltDispatchContext {
+    if let Some(action) =
+        dispatch_gestalt::dispatch_gestalt_import(dispatch_gestalt::PpcGestaltDispatchContext {
             binding,
             cpu,
             memory,
             toolbox_startup,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
 
-    if let Some(action) = dispatch_cursor::dispatch_cursor_import(
-        dispatch_cursor::PpcCursorDispatchContext {
+    if let Some(action) =
+        dispatch_cursor::dispatch_cursor_import(dispatch_cursor::PpcCursorDispatchContext {
             binding,
             cpu,
             memory,
@@ -10301,8 +8699,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             gworlds,
             current_gworld: *current_gworld,
             screen_clut,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
 
@@ -10323,8 +8721,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         return Some(action);
     }
 
-    if let Some(action) = dispatch_process::dispatch_process_import(
-        dispatch_process::PpcProcessDispatchContext {
+    if let Some(action) =
+        dispatch_process::dispatch_process_import(dispatch_process::PpcProcessDispatchContext {
             binding,
             cpu,
             memory,
@@ -10332,13 +8730,13 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             vfs_files,
             vfs_resource_files,
             launched_app_path,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
 
-    if let Some(action) = dispatch_scrap::dispatch_scrap_import(
-        dispatch_scrap::PpcScrapDispatchContext {
+    if let Some(action) =
+        dispatch_scrap::dispatch_scrap_import(dispatch_scrap::PpcScrapDispatchContext {
             binding,
             cpu,
             memory,
@@ -10348,8 +8746,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             last_mem_error,
             handles,
             scrap,
-        },
-    ) {
+        })
+    {
         return Some(action);
     }
 
@@ -10386,9 +8784,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             unreachable!("collection imports return through dispatch_collection_import")
         }
         PpcImportDispatcherTarget::InstallExceptionHandler => {
-            unreachable!(
-                "native exception imports return through dispatch_native_exception_import"
-            )
+            unreachable!("native exception imports return through dispatch_native_exception_import")
         }
         PpcImportDispatcherTarget::RegisterAppearanceClient
         | PpcImportDispatcherTarget::ActivateControl
@@ -11532,8 +9928,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::Q3ViewCancel => {
             unreachable!("QuickDraw 3D view imports return through typed dispatch")
         }
-        PpcImportDispatcherTarget::Q3ShaderSubmit
-        | PpcImportDispatcherTarget::Q3StyleSubmit => {
+        PpcImportDispatcherTarget::Q3ShaderSubmit | PpcImportDispatcherTarget::Q3StyleSubmit => {
             unreachable!("QuickDraw 3D submissions return through typed dispatch")
         }
         PpcImportDispatcherTarget::Q3BackfacingStyleSubmit
@@ -11559,9 +9954,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             Some(PpcImportAction::Return(PPC_QA_ENGINE))
         }
         PpcImportDispatcherTarget::QADeviceGetNextEngine => Some(PpcImportAction::Return(0)),
-        PpcImportDispatcherTarget::QAEngineGestalt => {
-            Some(PpcImportAction::Return(qd3d::ppc_qa_engine_gestalt(cpu, memory)))
-        }
+        PpcImportDispatcherTarget::QAEngineGestalt => Some(PpcImportAction::Return(
+            qd3d::ppc_qa_engine_gestalt(cpu, memory),
+        )),
         PpcImportDispatcherTarget::CloseComponent => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_close_component(cpu, quicktime),
         ))),
@@ -11658,23 +10053,25 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
                 toolbox_startup,
             ))
         }
-        PpcImportDispatcherTarget::SystemCompatibility(operation) => Some(dispatch_system::ppc_dispatch_system_compatibility(
-            operation,
-            cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            launched_app_path,
-        )),
-        PpcImportDispatcherTarget::AppleTalkCompatibility(operation) => {
-            Some(dispatch_appletalk::ppc_dispatch_appletalk_compatibility(operation, cpu, memory))
+        PpcImportDispatcherTarget::SystemCompatibility(operation) => {
+            Some(dispatch_system::ppc_dispatch_system_compatibility(
+                operation,
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                launched_app_path,
+            ))
         }
-        PpcImportDispatcherTarget::PrintingCompatibility(operation) => {
-            Some(dispatch_printing::ppc_dispatch_printing_compatibility(operation))
-        }
+        PpcImportDispatcherTarget::AppleTalkCompatibility(operation) => Some(
+            dispatch_appletalk::ppc_dispatch_appletalk_compatibility(operation, cpu, memory),
+        ),
+        PpcImportDispatcherTarget::PrintingCompatibility(operation) => Some(
+            dispatch_printing::ppc_dispatch_printing_compatibility(operation),
+        ),
         PpcImportDispatcherTarget::SlotCompatibility => {
             Some(ppc_dispatch_slot_compatibility(binding, cpu, memory))
         }
@@ -11714,7 +10111,9 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             dispatch_quicktime_compatibility(operation, cpu, memory, quicktime),
         ),
         PpcImportDispatcherTarget::InputSprocketCompatibility(_) => {
-            unreachable!("input sprocket compatibility imports return through dispatch_inputsprocket_import")
+            unreachable!(
+                "input sprocket compatibility imports return through dispatch_inputsprocket_import"
+            )
         }
         PpcImportDispatcherTarget::MathCompatibility(operation) => {
             Some(ppc_dispatch_math_compatibility(operation, cpu, memory))
@@ -11870,7 +10269,6 @@ fn ppc_math_fmod(cpu: &mut PpcCpu) {
     cpu.fpr[1] = (dividend % divisor).to_bits();
 }
 
-
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_object_support_compatibility(
     cpu: &mut PpcCpu,
@@ -11978,9 +10376,12 @@ fn dispatch_simple_hot_import_fast(
     microseconds: u64,
 ) -> Option<PpcImportAction> {
     match target {
-        PpcImportDispatcherTarget::Microseconds => {
-            Some(dispatch_microseconds_import(cpu, memory, microseconds, None))
-        }
+        PpcImportDispatcherTarget::Microseconds => Some(dispatch_microseconds_import(
+            cpu,
+            memory,
+            microseconds,
+            None,
+        )),
         PpcImportDispatcherTarget::AbsoluteToNanoseconds => {
             // PowerPC's struct-return ABI places the output pointer in r3 and
             // the 64-bit AbsoluteTime input in r4:r5. Our virtual absolute
@@ -12049,8 +10450,6 @@ fn ppc_string_to_num(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
         .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
     let _ = memory.write_u32_be(number_ptr, signed as u32);
 }
-
-
 
 pub(crate) fn ppc_rgb555_to_rgb16(pixel: u16) -> [u16; 3] {
     fn component(value: u16) -> u16 {
@@ -12427,7 +10826,8 @@ fn ppc_gestalt(
     if ppc_hle_trace_enabled() {
         eprintln!(
             "[PPC-TRACE] Gestalt({:?}) -> ${response:08X} err={err} lr=${:08X}",
-            ppc_res_type_text(selector), cpu.lr
+            ppc_res_type_text(selector),
+            cpu.lr
         );
     }
     err
@@ -12869,9 +11269,7 @@ fn ppc_live_trap_import_action(
         };
     }
 
-    let heap = process_memory_manager
-        .native_heap_state()
-        .ok_or(())?;
+    let heap = process_memory_manager.native_heap_state().ok_or(())?;
     if argument_count > 6 {
         return Err(());
     }
@@ -12952,7 +11350,10 @@ pub(super) fn ppc_write_rect(
     Some(())
 }
 
-pub(super) fn ppc_read_rect(memory: &mut PpcSectionMem, rect_ptr: u32) -> Option<(i16, i16, i16, i16)> {
+pub(super) fn ppc_read_rect(
+    memory: &mut PpcSectionMem,
+    rect_ptr: u32,
+) -> Option<(i16, i16, i16, i16)> {
     let top = memory.read_u16_be(rect_ptr)? as i16;
     let left = memory.read_u16_be(rect_ptr + 2)? as i16;
     let bottom = memory.read_u16_be(rect_ptr + 4)? as i16;
@@ -13271,7 +11672,6 @@ fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
         data.get(offset..offset + 4)?.try_into().ok()?,
     ))
 }
-
 
 #[cfg(test)]
 pub(crate) mod tests;
