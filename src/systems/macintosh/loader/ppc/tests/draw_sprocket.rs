@@ -427,6 +427,85 @@ fn draw_sprocket_context_serialization_rejects_bad_inputs_without_overwriting_st
 }
 
 #[test]
+fn draw_sprocket_get_clut_entries_reads_colors_set_for_a_range() {
+    assert_eq!(
+        dispatcher_target_for_import("DrawSprocketLib", "DSpContext_GetCLUTEntries"),
+        PpcImportDispatcherTarget::DSpContextGetClutEntries
+    );
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_GetCLUTEntries");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let base = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(base, vec![0; 40]);
+    for (offset, color) in [[0x1111, 0x2222, 0x3333], [0x4444, 0x5555, 0x6666]]
+        .into_iter()
+        .enumerate()
+    {
+        let entry = base + (offset as u32) * 8;
+        loaded.memory.write_u16_be(entry, 0xffff).unwrap();
+        for (component, value) in color.into_iter().enumerate() {
+            loaded
+                .memory
+                .write_u16_be(entry + 2 + (component as u32) * 2, value)
+                .unwrap();
+        }
+    }
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = base;
+    loaded.cpu.gpr[5] = 10;
+    loaded.cpu.gpr[6] = 2;
+    let mut screen_clut = [[0; 3]; 256];
+    assert_eq!(
+        ppc_dsp_context_set_clut_entries(&loaded.cpu, &mut loaded.memory, &mut screen_clut),
+        PPC_NO_ERR
+    );
+
+    let output = base + 16;
+    loaded.cpu.gpr[4] = output;
+    assert_eq!(
+        ppc_dsp_context_get_clut_entries(&loaded.cpu, &mut loaded.memory, &screen_clut),
+        PPC_NO_ERR
+    );
+    for (offset, color) in [[0x1111, 0x2222, 0x3333], [0x4444, 0x5555, 0x6666]]
+        .into_iter()
+        .enumerate()
+    {
+        let entry = output + (offset as u32) * 8;
+        assert_eq!(loaded.memory.read_u16_be(entry), Some(10 + offset as u16));
+        for (component, value) in color.into_iter().enumerate() {
+            assert_eq!(
+                loaded.memory.read_u16_be(entry + 2 + (component as u32) * 2),
+                Some(value)
+            );
+        }
+    }
+}
+
+#[test]
+fn draw_sprocket_get_clut_entries_rejects_invalid_ranges_and_short_buffers() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_GetCLUTEntries");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let output = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(output, vec![0xaa; 8]);
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = output;
+    loaded.cpu.gpr[5] = 255;
+    loaded.cpu.gpr[6] = 2;
+    let screen_clut = [[0; 3]; 256];
+    assert_eq!(
+        ppc_dsp_context_get_clut_entries(&loaded.cpu, &mut loaded.memory, &screen_clut),
+        PPC_PARAM_ERR
+    );
+    loaded.cpu.gpr[5] = 10;
+    assert_eq!(
+        ppc_dsp_context_get_clut_entries(&loaded.cpu, &mut loaded.memory, &screen_clut),
+        PPC_PARAM_ERR
+    );
+    for offset in 0..8 {
+        assert_eq!(loaded.memory.read_u8(output + offset), Some(0xaa));
+    }
+}
+
+#[test]
 fn find_best_context_on_display_id_selects_main_display_only() {
     let pef = synthetic_pef_with_library_import(
         b"DrawSprocketLib",

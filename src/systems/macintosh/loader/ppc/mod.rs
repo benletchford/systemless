@@ -1370,6 +1370,7 @@ pub enum PpcImportDispatcherTarget {
     DSpContextGetBackBuffer,
     DSpContextSwapBuffers,
     DSpContextSetClutEntries,
+    DSpContextGetClutEntries,
     DSpContextGetDisplayID,
     DSpContextGetAttributes,
     DSpContextGetFlattenedSize,
@@ -7341,6 +7342,9 @@ fn dispatcher_target_for_import(
         ("DrawSprocketLib", "DSpContext_SetCLUTEntries") => {
             PpcImportDispatcherTarget::DSpContextSetClutEntries
         }
+        ("DrawSprocketLib", "DSpContext_GetCLUTEntries") => {
+            PpcImportDispatcherTarget::DSpContextGetClutEntries
+        }
         ("DrawSprocketLib", "DSpContext_GetDisplayID") => {
             PpcImportDispatcherTarget::DSpContextGetDisplayID
         }
@@ -10592,6 +10596,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::DSpContextGetBackBuffer
         | PpcImportDispatcherTarget::DSpContextSwapBuffers
         | PpcImportDispatcherTarget::DSpContextSetClutEntries
+        | PpcImportDispatcherTarget::DSpContextGetClutEntries
         | PpcImportDispatcherTarget::DSpContextGetDisplayID
         | PpcImportDispatcherTarget::DSpContextGetAttributes
         | PpcImportDispatcherTarget::DSpContextGetFlattenedSize
