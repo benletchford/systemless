@@ -617,8 +617,12 @@ impl Machine {
         let presentation_trap_count = self.runner.dispatcher().trap_count;
         let mut presentation_grace_steps = 0usize;
         let presentation_grace_tick = effective_target.saturating_add(1);
+        // A retained UI loop already yields for presentation while it tracks
+        // input; its wait steps are not an unfinished drawing burst. MenuSelect
+        // retains control until mouse-up (Inside Macintosh Volume I, I-355).
         while m68k_presentation_grace_pending(
             self.runner.is_powerpc_app(),
+            self.runner.is_ui_tracking_active(),
             running,
             visual_steps,
             presentation_grace_steps,
@@ -1468,6 +1472,7 @@ fn browser_cpu_batch_instructions(powerpc: bool) -> usize {
 
 fn m68k_presentation_grace_pending(
     powerpc: bool,
+    ui_tracking: bool,
     running: bool,
     visual_steps: usize,
     grace_steps: usize,
@@ -1475,6 +1480,7 @@ fn m68k_presentation_grace_pending(
     current_trap_count: u64,
 ) -> bool {
     !powerpc
+        && !ui_tracking
         && running
         && visual_steps > 0
         && grace_steps < M68K_PRESENTATION_GRACE_INSTRUCTIONS
@@ -2039,10 +2045,20 @@ mod tests {
 
     #[test]
     fn presentation_grace_finishes_only_the_active_68k_drawing_burst() {
-        assert!(m68k_presentation_grace_pending(false, true, 1, 0, 10, 10));
-        assert!(!m68k_presentation_grace_pending(false, true, 1, 0, 10, 11));
-        assert!(!m68k_presentation_grace_pending(true, true, 1, 0, 10, 10));
+        assert!(m68k_presentation_grace_pending(
+            false, false, true, 1, 0, 10, 10
+        ));
         assert!(!m68k_presentation_grace_pending(
+            false, true, true, 1, 0, 10, 10
+        ));
+        assert!(!m68k_presentation_grace_pending(
+            false, false, true, 1, 0, 10, 11
+        ));
+        assert!(!m68k_presentation_grace_pending(
+            true, false, true, 1, 0, 10, 10
+        ));
+        assert!(!m68k_presentation_grace_pending(
+            false,
             false,
             true,
             1,
