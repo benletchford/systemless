@@ -26,6 +26,7 @@ struct PpcCfBundle {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PpcCfUrl {
     path: String,
+    is_directory: bool,
     retain_count: u32,
 }
 
@@ -42,6 +43,40 @@ impl PpcCfStringState {
     #[cfg(test)]
     pub(super) fn url_path(&self, reference: u32) -> Option<&str> {
         self.urls.get(&reference).map(|url| url.path.as_str())
+    }
+
+    #[cfg(test)]
+    pub(super) fn url_is_directory(&self, reference: u32) -> Option<bool> {
+        self.urls.get(&reference).map(|url| url.is_directory)
+    }
+
+    fn create_url(
+        &mut self,
+        path: String,
+        is_directory: bool,
+        process_memory_manager: &mut ProcessNativeMemoryManager,
+        memory: &mut PpcSectionMem,
+        heap_cursor: &mut u32,
+        last_mem_error: &mut i16,
+    ) -> u32 {
+        let reference = process_memory_manager.new_native_ptr(memory, CF_STRING_OBJECT_SIZE, true);
+        ppc_apply_process_native_allocator(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+        );
+        if reference != 0 {
+            self.urls.insert(
+                reference,
+                PpcCfUrl {
+                    path,
+                    is_directory,
+                    retain_count: 1,
+                },
+            );
+        }
+        reference
     }
 
     fn create(
@@ -512,23 +547,41 @@ pub(super) fn dispatch_core_foundation_import(
             }) {
                 return Some(PpcImportAction::Return(0));
             }
-            let reference =
-                process_memory_manager.new_native_ptr(memory, CF_STRING_OBJECT_SIZE, true);
-            ppc_apply_process_native_allocator(
+            let reference = state.create_url(
+                path,
+                true,
                 process_memory_manager,
                 memory,
                 heap_cursor,
                 last_mem_error,
             );
-            if reference != 0 {
-                state.urls.insert(
-                    reference,
-                    PpcCfUrl {
-                        path,
-                        retain_count: 1,
-                    },
-                );
-            }
+            Some(PpcImportAction::Return(reference))
+        }
+        PpcImportDispatcherTarget::CfUrlCreateCopyAppendingPathComponent => {
+            // CFURLCreateCopyAppendingPathComponent(allocator, url,
+            // pathComponent, isDirectory) returns an owned URL. Directory
+            // URLs retain their directory status for relative resolution.
+            // Apple Core Foundation CFURL Reference, Creating a CFURL.
+            let Some(base) = state.urls.get(&cpu.gpr[4]) else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let Some(component) = state.objects.get(&cpu.gpr[5]) else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let component = component.value.as_str();
+            let path = if component.is_empty() {
+                base.path.clone()
+            } else {
+                format!("{}/{}", base.path.trim_end_matches('/'), component)
+            };
+            let reference = state.create_url(
+                path,
+                cpu.gpr[6] != 0,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
             Some(PpcImportAction::Return(reference))
         }
         PpcImportDispatcherTarget::CfBundleGetBundleWithIdentifier => {
