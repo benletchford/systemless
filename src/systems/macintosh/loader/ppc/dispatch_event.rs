@@ -3,6 +3,12 @@
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcEventPollOperation {
+    GetNextEvent,
+    WaitNextEvent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PpcTickCountPollFingerprint {
     gpr: [u32; 32],
     fpr: [u64; 32],
@@ -297,9 +303,7 @@ pub(super) struct PpcTimeDispatchContext<'a> {
     pub(super) toolbox_startup: &'a mut PpcToolboxStartupState,
 }
 
-pub(super) fn dispatch_time_import(
-    context: PpcTimeDispatchContext<'_>,
-) -> Option<PpcImportAction> {
+pub(super) fn dispatch_time_import(context: PpcTimeDispatchContext<'_>) -> Option<PpcImportAction> {
     let PpcTimeDispatchContext {
         target,
         cpu,
@@ -561,9 +565,8 @@ pub(super) fn dispatch_event_import(
                     modifiers,
                 );
             }
-            let snapshot = ppc_event_probe_result(
-                has_event, what, message, when, where_v, where_h, modifiers,
-            );
+            let snapshot =
+                ppc_event_probe_result(has_event, what, message, when, where_v, where_h, modifiers);
             if os_only {
                 toolbox_startup.event_queue_probe.os_event_avail = Some(snapshot);
             } else {
@@ -598,7 +601,8 @@ pub(super) fn dispatch_event_import(
             Some(PpcImportAction::Return(u32::from(input.mouse_button)))
         }
         PpcImportDispatcherTarget::StillDown => {
-            toolbox_startup.last_still_down_result = Some(ppc_still_down_result(input, event_queue));
+            toolbox_startup.last_still_down_result =
+                Some(ppc_still_down_result(input, event_queue));
             Some(dispatch_still_down_import(cpu, input, event_queue, None))
         }
         PpcImportDispatcherTarget::WaitMouseUp => {

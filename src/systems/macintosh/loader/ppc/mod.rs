@@ -834,11 +834,8 @@ pub use dispatch_inputsprocket::PpcInputSprocketCompatibilityOperation;
 pub use dispatch_apple_events::PpcAppleEventCompatibilityOperation;
 
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PpcEventPollOperation {
-    GetNextEvent,
-    WaitNextEvent,
-}
+pub use dispatch_event::PpcEventPollOperation;
+
 
 
 pub use dispatch_collection::PpcCollectionOperation;
