@@ -708,7 +708,7 @@ fn host_pacing_override_preserves_powerpc_guest_profile_and_tick_visibility() {
         default_guest_state,
         (
             [(0, 0x0104), (0, 2), (0, 3), (0, 4), ((-5551i32) as u32, 0)],
-            [2, 20, 0x0810, 5],
+            [2, 20, 0x0900, 5],
             [1, 1],
             700,
         )
