@@ -1729,6 +1729,7 @@
             "",
             -1,
             dialog_ptr,
+            None,
         );
         assert_eq!(
             bus.read_byte(item_probe),
@@ -8921,7 +8922,7 @@
             bus.write_byte(screen_base + offset, 0);
         }
 
-        disp.redraw_standard_dialog_items(&mut bus, bounds, &items, 0, "", 0, dialog_ptr);
+        disp.redraw_standard_dialog_items(&mut bus, bounds, &items, 0, "", 0, dialog_ptr, None);
 
         assert_eq!(disp.dialog_control_values[&(dialog_ptr, 1)], 1);
         assert_eq!(bus.read_word(ctrl_ptr + 18), 1);
@@ -8958,7 +8959,7 @@
         for offset in 0..row_bytes * 342 {
             bus.write_byte(screen_base + offset, 0);
         }
-        disp.redraw_standard_dialog_items(&mut bus, bounds, &items, 1, "", 0, dialog_ptr);
+        disp.redraw_standard_dialog_items(&mut bus, bounds, &items, 1, "", 0, dialog_ptr, None);
         assert!(
             screen_pixel_is_set(&bus, screen_base, row_bytes, 56, 70),
             "retained redraw should restore the aDefItem outline"
@@ -13467,19 +13468,32 @@
         bus.write_byte(ditl_ptr + 14, 8);
         bus.write_byte(ditl_ptr + 15, 0);
 
-        let items = vec![DialogItem {
-            item_type: 8,
-            rect: (10, 10, 26, 140),
-            text: "A".to_string(),
-            resource_id: 0,
-            proc_ptr: 0,
-            sel_start: 0,
-            sel_end: 0,
-        }];
+        let items = vec![
+            DialogItem {
+                item_type: 8,
+                rect: (10, 10, 26, 140),
+                text: "A".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+            DialogItem {
+                item_type: 8,
+                rect: (30, 10, 46, 140),
+                text: "Other".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            },
+        ];
         disp.dialog_items.insert(dialog_ptr, items.clone());
         disp.dialog_item_handles
             .insert(text_handle, (dialog_ptr, 0));
         disp.draw_dialog(&mut bus, bounds, 2, "", &items, 1, "", 0, false, dialog_ptr);
+        let other_item_pixel = screen_base + 45 * row_bytes + 150;
+        bus.write_byte(other_item_pixel, 0x5a);
 
         let count_nonwhite = |bus: &MacMemoryBus| -> usize {
             let mut count = 0;
@@ -13509,6 +13523,11 @@
             "SetDialogItemText must draw the updated text item; before={} after={}",
             before,
             after
+        );
+        assert_eq!(
+            bus.read_byte(other_item_pixel),
+            0x5a,
+            "SetDialogItemText must leave other dialog items untouched"
         );
     }
 
