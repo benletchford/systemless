@@ -328,6 +328,97 @@ use super::*;
     }
 
     #[test]
+    fn copybits_arithmetic_modes_match_quickdraw_rgb_component_rules() {
+        // Imaging With QuickDraw (1994), pp. 4-38--4-40.
+        // addPin: sum, pinned at the OpColor maximum.
+        assert_eq!(
+            ppc_arithmetic_transfer_channel(33, 0xffff, 0xffff, 0x8000),
+            0x8000
+        );
+        // addOver: sum with overflow discarded.
+        assert_eq!(
+            ppc_arithmetic_transfer_channel(34, 0xffff, 0x0001, 0x8000),
+            0x0000
+        );
+        // subPin: source minus destination, floored at the OpColor minimum.
+        assert_eq!(
+            ppc_arithmetic_transfer_channel(35, 0x0000, 0x0001, 0x0000),
+            0x0000
+        );
+        assert_eq!(
+            ppc_arithmetic_transfer_channel(35, 0x8000, 0x0001, 0x4000),
+            0x7fff
+        );
+        // addMax / adMin: per-component maximum and minimum.
+        assert_eq!(
+            ppc_arithmetic_transfer_channel(37, 0x1000, 0x2000, 0),
+            0x2000
+        );
+        assert_eq!(
+            ppc_arithmetic_transfer_channel(39, 0x1000, 0x2000, 0),
+            0x1000
+        );
+        // subOver: difference with underflow wrapped back into 16 bits.
+        assert_eq!(
+            ppc_arithmetic_transfer_channel(38, 0x0000, 0x0001, 0),
+            0xffff
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_adds_direct_color_with_add_over() {
+        let pef = synthetic_pef_with_import(b"CopyBits");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x11680;
+        let src_pixels = scratch;
+        let dst_pixels = scratch + 4;
+        let src_pixmap = scratch + 8;
+        let dst_pixmap = scratch + 64;
+        let rect = scratch + 120;
+        loaded.memory.add_region(scratch, vec![0; 128]);
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            src_pixmap,
+            src_pixels,
+            2,
+            0,
+            0,
+            1,
+            1,
+            16,
+        )
+        .unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            dst_pixmap,
+            dst_pixels,
+            2,
+            0,
+            0,
+            1,
+            1,
+            16,
+        )
+        .unwrap();
+        loaded.memory.write_u16_be(src_pixels, 0x7c00).unwrap(); // full red
+        loaded.memory.write_u16_be(dst_pixels, 0x001f).unwrap(); // full blue
+        ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 1).unwrap();
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rect;
+        loaded.cpu.gpr[6] = rect;
+        loaded.cpu.gpr[7] = 34;
+        loaded.cpu.gpr[8] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        // addOver ignores OpColor and combines each RGB component.
+        assert_eq!(loaded.memory.read_u16_be(dst_pixels), Some(0x7c1f));
+    }
+
+    #[test]
     fn hle_import_runner_copybits_scales_transparent_bitmap_into_direct_color() {
         let pef = synthetic_pef_with_import(b"CopyBits");
         let mut loaded = load_pef_application(&pef).unwrap();

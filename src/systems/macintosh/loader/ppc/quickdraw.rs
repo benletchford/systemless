@@ -2691,6 +2691,28 @@ pub(crate) fn ppc_record_copy_bits(
     true
 }
 
+/// Applies one Color QuickDraw arithmetic transfer mode to a single RGB
+/// component. `op` is the corresponding component of the port's OpColor:
+/// the maximum allowable value for `addPin` and the minimum allowable value
+/// for `subPin`. Inside Macintosh: Imaging With QuickDraw (1994),
+/// pp. 4-38--4-40.
+pub(crate) fn ppc_arithmetic_transfer_channel(
+    mode: u16,
+    source: u16,
+    destination: u16,
+    op: u16,
+) -> u16 {
+    match mode {
+        33 => source.saturating_add(destination).min(op), // addPin
+        34 => source.wrapping_add(destination),           // addOver
+        35 => source.saturating_sub(destination).max(op), // subPin
+        37 => source.max(destination),                    // addMax
+        38 => source.wrapping_sub(destination),           // subOver
+        39 => source.min(destination),                    // adMin
+        _ => destination,
+    }
+}
+
 pub(crate) fn ppc_copy_bits(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
@@ -2715,7 +2737,9 @@ pub(crate) fn ppc_copy_bits(
     let mut trace_details = None;
     let copied = (|| {
         let mode = transfer_mode & 0x3f;
-        if !matches!(mode, 0 | 32 | 36) {
+        // 0 srcCopy, 32 blend, 33 addPin, 34 addOver, 35 subPin,
+        // 36 transparent, 37 addMax, 38 subOver, 39 adMin.
+        if !matches!(mode, 0 | 32..=39) {
             reason = "unsupported-mode";
             return None;
         }
@@ -3065,43 +3089,32 @@ pub(crate) fn ppc_copy_bits(
                 if transparent && src_pixel == transparent_back_pixel {
                     continue;
                 }
-                let pixel = if mode == 32 {
+                let pixel = if matches!(mode, 32 | 33 | 34 | 35 | 37 | 38 | 39) {
+                    // Color QuickDraw arithmetic modes convert both pixels to
+                    // their RGB components, combine each component, and assign
+                    // the destination the closest representable color.
+                    // Imaging With QuickDraw (1994), pp. 4-38--4-40.
                     let dst_pixel = ppc_read_pixmap_raw_pixel(memory, dst_bits, dst_x, dst_y)?;
-                    let (source_rgb, destination_rgb) = match src_bits.depth {
-                        1 | 2 | 4 | 8 => (
-                            src_clut.as_ref()?[src_pixel as usize],
-                            dst_clut.as_ref()?[dst_pixel as usize],
-                        ),
-                        16 => (
-                            ppc_rgb555_to_rgb16(src_pixel as u16),
-                            ppc_rgb555_to_rgb16(dst_pixel as u16),
-                        ),
-                        _ => return None,
-                    };
-                    let weights = [op_color.red, op_color.green, op_color.blue];
-                    let blended: [u16; 3] = std::array::from_fn(|channel| {
-                        let weight = u64::from(weights[channel]);
-                        ((u64::from(source_rgb[channel]) * weight
-                            + u64::from(destination_rgb[channel]) * (65_536 - weight))
-                            >> 16) as u16
+                    let source_rgb = ppc_pixmap_pixel_rgb(src_bits, src_pixel, src_clut.as_ref())?;
+                    let destination_rgb =
+                        ppc_pixmap_pixel_rgb(dst_bits, dst_pixel, dst_clut.as_ref())?;
+                    let op = [op_color.red, op_color.green, op_color.blue];
+                    let transformed: [u16; 3] = std::array::from_fn(|channel| {
+                        if mode == 32 {
+                            let weight = u64::from(op[channel]);
+                            ((u64::from(source_rgb[channel]) * weight
+                                + u64::from(destination_rgb[channel]) * (65_536 - weight))
+                                >> 16) as u16
+                        } else {
+                            ppc_arithmetic_transfer_channel(
+                                mode,
+                                source_rgb[channel],
+                                destination_rgb[channel],
+                                op[channel],
+                            )
+                        }
                     });
-                    match dst_bits.depth {
-                        depth @ (1 | 2 | 4 | 8) => u32::from(ppc_rgb_color_to_index_in_clut(
-                            PpcRgbColor {
-                                red: blended[0],
-                                green: blended[1],
-                                blue: blended[2],
-                            },
-                            dst_clut.as_ref()?,
-                            ppc_indexed_depth_entry_count(depth)?,
-                        )),
-                        16 => u32::from(ppc_rgb_color_to_rgb555(PpcRgbColor {
-                            red: blended[0],
-                            green: blended[1],
-                            blue: blended[2],
-                        })),
-                        _ => return None,
-                    }
+                    ppc_rgb_to_pixmap_pixel(dst_bits, transformed, dst_clut.as_ref())?
                 } else if transparent && src_bits.depth == 1 {
                     bitmap_fore_pixel
                 } else if src_bits.depth == 1 {
