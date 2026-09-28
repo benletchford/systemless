@@ -7051,7 +7051,11 @@ impl super::TrapDispatcher {
         let edit_item = tracking.edit_item;
         let dialog_ptr = tracking.dialog_ptr;
         let popup_draws = tracking.popup_draws.clone();
-        let rendered_pixels = tracking.rendered_pixels.clone();
+        // The old image is consumed by the restore below and replaced after
+        // drawing. Move it out instead of copying the entire dialog image.
+        let rendered_pixels = std::mem::take(
+            &mut self.dialog_tracking.as_mut().unwrap().rendered_pixels,
+        );
         if !rendered_pixels.is_empty() {
             self.restore_dialog_pixels(bus, bounds, &rendered_pixels);
         }
