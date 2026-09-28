@@ -268,6 +268,20 @@ pub(super) fn ppc_create_process_owned_ae_desc(
     PPC_NO_ERR
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcAppleEventCompatibilityOperation {
+    CountItems,
+    CreateAppleEvent,
+    CreateDesc,
+    DisposeDesc,
+    GetAttributePtr,
+    GetNthPtr,
+    GetParamDesc,
+    PutParamDesc,
+    PutParamPtr,
+    Send,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn ppc_dispatch_apple_event_compatibility(
     operation: PpcAppleEventCompatibilityOperation,
