@@ -2,16 +2,16 @@
 
 use super::*;
 use crate::dialog_manager::{
-    dialog_rect_to_global, hide_dialog_item_rect, is_dialog_item_rect_hidden, offset_ditl_bytes,
-    parse_ditl_items, position_dialog_bounds as unified_position_dialog_bounds,
-    rect_contains_point, show_dialog_item_rect, DialogItemRecord, DIALOG_ALERT_HIT_OFFSET,
-    DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET, DIALOG_EDIT_FIELD_OFFSET,
-    DIALOG_EDIT_OPEN_OFFSET, DIALOG_ITEMS_OFFSET, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX,
-    DIALOG_ITEM_DISABLED_FLAG, DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE,
-    DIALOG_ITEM_RADIO, DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT,
-    DIALOG_ITEM_USER_ITEM, DIALOG_RECORD_SIZE, DIALOG_RESOURCE_ID_OFFSET,
-    DIALOG_STANDARD_ALERT_OUTPUT_OFFSET, DIALOG_STANDARD_ALERT_STACK_OFFSET,
-    DIALOG_TEXT_HANDLE_OFFSET,
+    dialog_rect_to_global, dialog_target_for_event, dialog_text_rect, edit_text_frame_rect,
+    hide_dialog_item_rect, is_dialog_item_rect_hidden, offset_ditl_bytes, parse_ditl_items,
+    position_dialog_bounds as unified_position_dialog_bounds, rect_contains_point,
+    show_dialog_item_rect, DialogItemRecord, DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET,
+    DIALOG_DEFAULT_ITEM_OFFSET, DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET,
+    DIALOG_ITEMS_OFFSET, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX, DIALOG_ITEM_DISABLED_FLAG,
+    DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO,
+    DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT, DIALOG_ITEM_USER_ITEM,
+    DIALOG_RECORD_SIZE, DIALOG_RESOURCE_ID_OFFSET, DIALOG_STANDARD_ALERT_OUTPUT_OFFSET,
+    DIALOG_STANDARD_ALERT_STACK_OFFSET, DIALOG_TEXT_HANDLE_OFFSET,
 };
 use crate::trap::types::decode_mac_roman;
 
@@ -2464,18 +2464,21 @@ fn ppc_dialog_for_event(
     // Inside Macintosh Volume I (1985), pp. I-416--I-417: update and
     // activate events name their window in `message`; other dialog events
     // are routed to the frontmost visible dialog.
-    if matches!(what, 6 | 8)
-        && memory.read_u16_be(message.checked_add(PPC_CWINDOW_WINDOW_KIND_OFFSET)?)
-            == Some(crate::dialog_manager::DIALOG_WINDOW_KIND)
-    {
-        return Some(message);
-    }
-    gworlds.iter().rev().find_map(|record| {
+    let front_dialog = gworlds.iter().rev().find_map(|record| {
         (memory.read_u16_be(record.port.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET))
             == Some(crate::dialog_manager::DIALOG_WINDOW_KIND)
             && ppc_window_is_visible(memory, record.port))
         .then_some(record.port)
-    })
+    });
+    dialog_target_for_event(
+        what,
+        message,
+        |target| {
+            memory.read_u16_be(target.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET))
+                == Some(crate::dialog_manager::DIALOG_WINDOW_KIND)
+        },
+        front_dialog,
+    )
 }
 
 pub(super) fn ppc_dialog_global_bounds(
@@ -2957,12 +2960,7 @@ pub(super) fn ppc_draw_dialog(
                         rect,
                         ppc_theme_rgb(palette.window_background),
                     );
-                    let outer = (
-                        rect.0.saturating_sub(3),
-                        rect.1.saturating_sub(3),
-                        rect.2.saturating_add(3),
-                        rect.3.saturating_add(3),
-                    );
+                    let outer = edit_text_frame_rect(rect);
                     let _ = ppc_frame_front_rect(
                         memory,
                         front,
@@ -3015,7 +3013,7 @@ pub(super) fn ppc_draw_dialog(
                     item.item_type & !PPC_DIALOG_ITEM_DISABLED,
                     PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_EDIT_TEXT
                 ) {
-                    (rect.0, rect.1.saturating_add(1), rect.2, rect.3)
+                    dialog_text_rect(rect)
                 } else {
                     rect
                 };
