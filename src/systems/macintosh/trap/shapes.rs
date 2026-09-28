@@ -1667,6 +1667,11 @@ impl super::TrapDispatcher {
                 _ => (u32::from(r >> 8) << 16) | (u32::from(g >> 8) << 8) | u32::from(b >> 8),
             }
         };
+        // Color QuickDraw matches pixel-pattern colors against the destination
+        // device's inverse table (Imaging With QuickDraw 1994, pp. 4-82,
+        // 4-103). Cache only source indices actually drawn: the match remains
+        // fixed for this draw, while tiny rectangles avoid 256 unused lookups.
+        let mut raw_pixpat_destination_indices = [None; 256];
         for y in r.top..r.bottom {
             if y < clip_top || y >= clip_bottom {
                 continue;
@@ -1770,11 +1775,16 @@ impl super::TrapDispatcher {
                         (installed_raw_pixpat.as_ref(), indexed_clut.as_ref())
                     {
                         if let Some(source_index) = Self::raw_pixpat_index_at(bus, pixpat, y, x) {
-                            let rgb = pixpat.clut[usize::from(source_index)];
-                            bus.write_byte(
-                                addr,
-                                shape_palette_index_for_rgb(rgb, pixel_size, dst_clut),
-                            );
+                            let destination_index = raw_pixpat_destination_indices
+                                [usize::from(source_index)]
+                            .get_or_insert_with(|| {
+                                shape_palette_index_for_rgb(
+                                    pixpat.clut[usize::from(source_index)],
+                                    pixel_size,
+                                    dst_clut,
+                                )
+                            });
+                            bus.write_byte(addr, *destination_index);
                         }
                         continue;
                     }
