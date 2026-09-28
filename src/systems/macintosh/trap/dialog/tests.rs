@@ -10031,6 +10031,14 @@
             dialog_ptr,
             (20, 20, 21, 21),
         );
+        let untouched_index = (15 - bounds.0 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize
+            * snapshot_width
+            + (15 - bounds.1 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize;
+        assert_eq!(
+            disp.dialog_visible_snapshots[&dialog_ptr].pixels[untouched_index],
+            0x11,
+            "a bulk draw must preserve retained pixels outside its destination rectangle"
+        );
         bus.write_byte(probe, 0x00);
         disp.restore_visible_dialog_snapshots(&mut bus);
         assert_eq!(
@@ -10286,6 +10294,8 @@
         });
 
         let bulk_probe = screen_base + 15 * 64 + 15;
+        let outside_probe = screen_base + 19 * 64 + 19;
+        bus.write_byte(outside_probe, 0x66);
         bus.write_byte(bulk_probe, 0x44);
         disp.refresh_visible_dialog_snapshot_after_bulk_port_draw(
             &bus,
@@ -10295,6 +10305,14 @@
         assert!(
             !disp.dialog_tracking.as_ref().unwrap().rendered_pixels_final,
             "an intermediate bulk draw must not finalize an active filter callback"
+        );
+        let outside_index = (19 - bounds.0 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize
+            * snapshot_width
+            + (19 - bounds.1 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize;
+        assert_eq!(
+            disp.dialog_tracking.as_ref().unwrap().rendered_pixels[outside_index],
+            0,
+            "a bulk draw must not copy unrelated pixels into the modal snapshot"
         );
 
         let later_probe = screen_base + 16 * 64 + 16;

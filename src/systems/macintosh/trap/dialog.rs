@@ -7398,15 +7398,30 @@ impl super::TrapDispatcher {
             .as_ref()
             .filter(|tracking| tracking.dialog_ptr == port)
             .map(|tracking| (tracking.bounds, tracking.last_filter_event.is_some()));
-        self.refresh_visible_dialog_snapshot_for_port(bus, port);
+        self.refresh_visible_dialog_snapshot_region_for_port(bus, port, screen_rect);
         // ModalDialog's re-fire restores `rendered_pixels` over the dialog on
         // every call, so when the drawing target is the active modal dialog,
         // fold the fresh content into that snapshot too or the next re-fire
         // immediately erases it.
         if let Some((bounds, filter_capture_pending)) = modal_tracking {
-            let rendered = self.save_dialog_pixels(bus, bounds);
+            let initial_rendered = self
+                .dialog_tracking
+                .as_ref()
+                .filter(|tracking| tracking.rendered_pixels.is_empty())
+                .map(|_| self.save_dialog_pixels(bus, bounds));
+            let screen_params = self.get_screen_params();
             if let Some(tracking) = self.dialog_tracking.as_mut() {
-                tracking.rendered_pixels = rendered;
+                if let Some(rendered) = initial_rendered {
+                    tracking.rendered_pixels = rendered;
+                } else {
+                    Self::refresh_saved_pixel_buffer_after_screen_draw(
+                        bus,
+                        screen_params,
+                        bounds,
+                        screen_rect,
+                        &mut tracking.rendered_pixels,
+                    );
+                }
                 // A filter can perform several QuickDraw operations while it
                 // handles one event. A bulk operation such as drawing text is
                 // not necessarily its final output, so leave the snapshot
