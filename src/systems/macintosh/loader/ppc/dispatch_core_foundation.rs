@@ -16,11 +16,18 @@ struct PpcCfString {
     constant: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PpcCfBundle {
+    reference: u32,
+    retain_count: u32,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct PpcCfStringState {
     objects: BTreeMap<u32, PpcCfString>,
     constants: BTreeMap<Vec<u8>, u32>,
     loaded_bundles: BTreeMap<String, u32>,
+    main_bundle: Option<PpcCfBundle>,
 }
 
 impl PpcCfStringState {
@@ -130,6 +137,24 @@ fn decode_bytes(bytes: &[u8], encoding: u32) -> Option<String> {
     }
 }
 
+fn main_bundle_identifier(path: &str, files: &ProcessVfsFileRecords) -> Option<String> {
+    let (bundle_path, _) = path.split_once("/Contents/")?;
+    let info_path = format!("{bundle_path}/Contents/Info.plist");
+    let bytes = files
+        .iter()
+        .find(|file| file.path.eq_ignore_ascii_case(&info_path))?
+        .data
+        .as_ref();
+    let text = std::str::from_utf8(bytes).ok()?;
+    let key = text.find("<key>CFBundleIdentifier</key>")?;
+    let following = &text[key + "<key>CFBundleIdentifier</key>".len()..];
+    let start = following.find("<string>")? + "<string>".len();
+    let value = &following[start..];
+    let end = value.find("</string>")?;
+    let identifier = value[..end].trim();
+    (!identifier.is_empty() && !identifier.contains('&')).then(|| identifier.to_string())
+}
+
 fn encode_bytes(value: &str, encoding: u32) -> Option<Vec<u8>> {
     match encoding {
         CF_STRING_ENCODING_MAC_ROMAN => value
@@ -153,6 +178,8 @@ pub(super) fn dispatch_core_foundation_import(
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
     toolbox_startup: &mut PpcToolboxStartupState,
+    vfs_files: &ProcessVfsFileRecords,
+    launched_app_path: Option<&str>,
 ) -> Option<PpcImportAction> {
     let state = &mut toolbox_startup.cf_strings;
     match binding.dispatcher_target {
@@ -356,26 +383,76 @@ pub(super) fn dispatch_core_foundation_import(
             if let Some(object) = state.objects.get_mut(&cpu.gpr[3]) {
                 object.retain_count = object.retain_count.saturating_add(1);
                 Some(PpcImportAction::Return(cpu.gpr[3]))
+            } else if let Some(bundle) = state
+                .main_bundle
+                .as_mut()
+                .filter(|bundle| bundle.reference == cpu.gpr[3])
+            {
+                bundle.retain_count = bundle.retain_count.saturating_add(1);
+                Some(PpcImportAction::Return(bundle.reference))
             } else {
                 Some(PpcImportAction::Return(0))
             }
         }
         PpcImportDispatcherTarget::CfRelease => {
-            state.release(
-                cpu.gpr[3],
-                process_memory_manager,
-                memory,
-                heap_cursor,
-                last_mem_error,
-            );
+            if let Some(bundle) = state
+                .main_bundle
+                .as_mut()
+                .filter(|bundle| bundle.reference == cpu.gpr[3])
+            {
+                bundle.retain_count = bundle.retain_count.saturating_sub(1).max(1);
+            } else {
+                state.release(
+                    cpu.gpr[3],
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                );
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::CfGetRetainCount => Some(PpcImportAction::Return(
             state
                 .objects
                 .get(&cpu.gpr[3])
-                .map_or(0, |object| object.retain_count),
+                .map(|object| object.retain_count)
+                .or_else(|| {
+                    state
+                        .main_bundle
+                        .as_ref()
+                        .filter(|bundle| bundle.reference == cpu.gpr[3])
+                        .map(|bundle| bundle.retain_count)
+                })
+                .unwrap_or(0),
         )),
+        PpcImportDispatcherTarget::CfBundleGetMainBundle => {
+            if let Some(bundle) = &state.main_bundle {
+                return Some(PpcImportAction::Return(bundle.reference));
+            }
+            let Some(path) = launched_app_path.filter(|path| !path.is_empty()) else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let reference =
+                process_memory_manager.new_native_ptr(memory, CF_STRING_OBJECT_SIZE, true);
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            if reference == 0 {
+                return Some(PpcImportAction::Return(0));
+            }
+            if let Some(identifier) = main_bundle_identifier(path, vfs_files) {
+                state.loaded_bundles.insert(identifier, reference);
+            }
+            state.main_bundle = Some(PpcCfBundle {
+                reference,
+                retain_count: 1,
+            });
+            Some(PpcImportAction::Return(reference))
+        }
         PpcImportDispatcherTarget::CfBundleGetBundleWithIdentifier => {
             // CFBundleGetBundleWithIdentifier only searches bundle objects
             // already loaded into this process. A CFM import does not by

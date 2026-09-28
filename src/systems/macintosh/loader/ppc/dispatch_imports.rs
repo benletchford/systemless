@@ -522,6 +522,8 @@ pub(crate) fn dispatch_supported_import(
         heap_cursor,
         last_mem_error,
         toolbox_startup,
+        vfs_files,
+        launched_app_path,
     ) {
         return Some(action);
     }
@@ -2176,7 +2178,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CfRetain
         | PpcImportDispatcherTarget::CfRelease
         | PpcImportDispatcherTarget::CfGetRetainCount
-        | PpcImportDispatcherTarget::CfBundleGetBundleWithIdentifier => {
+        | PpcImportDispatcherTarget::CfBundleGetBundleWithIdentifier
+        | PpcImportDispatcherTarget::CfBundleGetMainBundle => {
             unreachable!("Core Foundation imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::GetCurrentProcess

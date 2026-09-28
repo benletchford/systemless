@@ -1,4 +1,92 @@
 use super::*;
+use crate::process_context::ProcessVfsFileRecord;
+
+#[test]
+fn carbon_main_bundle_is_stable_and_found_by_its_info_plist_identifier() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "CFBundleGetMainBundle"),
+        PpcImportDispatcherTarget::CfBundleGetMainBundle
+    );
+    let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+        b"CarbonLib",
+        b"CFBundleGetMainBundle",
+        0x82,
+        &[sm_index_reloc(0x30, 0)],
+    ));
+    let mut weak_loaded = load_pef_application(&pef).unwrap();
+    assert_ne!(weak_loaded.imports[0].address, 0);
+    assert_eq!(
+        weak_loaded.memory.read_u32_be(PPC_DATA_BASE),
+        Some(weak_loaded.imports[0].address)
+    );
+
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"CFBundleGetMainBundle")).unwrap();
+    loaded.set_launched_app_path("Demo.app/Contents/MacOSClassic/Demo");
+    loaded.seed_vfs_files_and_resources(
+        vec![ProcessVfsFileRecord {
+            path: "Demo.app/Contents/Info.plist".to_string(),
+            data: b"<plist><dict><key>CFBundleIdentifier</key><string>org.example.demo</string></dict></plist>".to_vec().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        }],
+        vec![],
+        vec![],
+    );
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfBundleGetMainBundle,
+    );
+    let bundle = loaded.cpu.gpr[3];
+    assert_ne!(bundle, 0);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfBundleGetMainBundle,
+    );
+    assert_eq!(loaded.cpu.gpr[3], bundle);
+
+    let source = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(source, vec![0; 64]);
+    loaded
+        .memory
+        .write_bytes(source, b"org.example.demo\0")
+        .unwrap();
+    loaded.cpu.gpr[3] = source;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfStringMakeConstantString,
+    );
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfBundleGetBundleWithIdentifier,
+    );
+    assert_eq!(loaded.cpu.gpr[3], bundle);
+
+    loaded.cpu.gpr[3] = bundle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfRetain);
+    assert_eq!(loaded.cpu.gpr[3], bundle);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfGetRetainCount);
+    assert_eq!(loaded.cpu.gpr[3], 2);
+    loaded.cpu.gpr[3] = bundle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfRelease);
+    loaded.cpu.gpr[3] = bundle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfGetRetainCount);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+}
+
+#[test]
+fn carbon_main_bundle_can_represent_an_unbundled_application() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"CFBundleGetMainBundle")).unwrap();
+    loaded.set_launched_app_path("Legacy App");
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfBundleGetMainBundle,
+    );
+    assert_ne!(loaded.cpu.gpr[3], 0);
+}
 
 #[test]
 fn carbon_cfbundle_lookup_returns_null_when_no_bundle_is_loaded() {
