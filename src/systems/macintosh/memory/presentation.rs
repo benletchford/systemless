@@ -4,11 +4,11 @@
 //! Frontends consume the presentation at its physical dimensions.
 mod compact;
 mod controls;
-mod resample;
 mod offscreen;
+mod resample;
 mod samples;
-use offscreen::OffscreenDetail;
 pub use compact::{CompactPresentation, CompactPresentationCache};
+use offscreen::OffscreenDetail;
 use samples::{ink_entry, ink_get, ink_remove, DetailSamples, TILE_SAMPLES};
 
 use super::page_index::PageIndex;
@@ -18,7 +18,10 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
 
-const _: () = assert!(TILE_SAMPLES <= u16::BITS as usize, "ink_mask holds one bit per sample");
+const _: () = assert!(
+    TILE_SAMPLES <= u16::BITS as usize,
+    "ink_mask holds one bit per sample"
+);
 
 /// `(offset % row_bytes, offset / row_bytes)` without a divide.
 /// `reciprocal` is `floor(2^32 / row_bytes)`, so for any 32-bit `offset` the
@@ -226,27 +229,7 @@ enum IndexedColor {
     Mix(Box<IndexedColor>, Box<IndexedColor>, u32),
 }
 
-impl Ink {
-    /// Whether `mapped` is this ink with every index passed through `map`.
-    fn eq_mapped(&self, mapped: &Ink, map: &impl Fn(u8) -> u8) -> bool {
-        map(self.foreground) == mapped.foreground
-            && self.alpha == mapped.alpha
-            && self.background.eq_mapped(&mapped.background, map)
-    }
-}
-
 impl IndexedColor {
-    /// Whether `mapped` is this colour with every index passed through `map`.
-    fn eq_mapped(&self, mapped: &Self, map: &impl Fn(u8) -> u8) -> bool {
-        match (self, mapped) {
-            (Self::Solid(index), Self::Solid(held)) => map(*index) == *held,
-            (Self::Mix(fg, bg, alpha), Self::Mix(held_fg, held_bg, held_alpha)) => {
-                alpha == held_alpha && fg.eq_mapped(held_fg, map) && bg.eq_mapped(held_bg, map)
-            }
-            _ => false,
-        }
-    }
-
     /// Whether `map` leaves every index in this colour unchanged.
     fn fixed_under(&self, map: &mut impl FnMut(u8) -> u8) -> bool {
         match self {
@@ -407,19 +390,26 @@ impl CopyMapCache {
 /// A content hash of a cell and the value it is copied as.
 fn detail_fingerprint(cell: &DetailCell, value: u8) -> u64 {
     fn mix(hash: u64, word: u64) -> u64 {
-        (hash ^ word).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(29)
+        (hash ^ word)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .rotate_left(29)
     }
     fn color(hash: u64, indexed: &IndexedColor) -> u64 {
         match indexed {
             IndexedColor::Solid(index) => mix(hash, u64::from(*index)),
-            IndexedColor::Mix(a, b, alpha) => color(color(mix(hash, 0x100 | u64::from(*alpha)), a), b),
+            IndexedColor::Mix(a, b, alpha) => {
+                color(color(mix(hash, 0x100 | u64::from(*alpha)), a), b)
+            }
         }
     }
     let mut hash = mix(u64::from(value), u64::from(cell.value));
     for (i, &index) in cell.indices.iter().enumerate() {
         hash = mix(hash, u64::from(index));
         if let Some(ink) = cell.ink.get(&i) {
-            hash = mix(hash, (i as u64) << 40 | u64::from(ink.foreground) << 32 | u64::from(ink.alpha));
+            hash = mix(
+                hash,
+                (i as u64) << 40 | u64::from(ink.foreground) << 32 | u64::from(ink.alpha),
+            );
             hash = color(hash, &ink.background);
         }
     }
@@ -824,7 +814,10 @@ impl Presentation {
             return true;
         }
         let per_row = screen_tiles_per_row(self.width);
-        let (t0, t1) = ((x0 / SCREEN_TILE) as usize, ((x1 - 1) / SCREEN_TILE) as usize);
+        let (t0, t1) = (
+            (x0 / SCREEN_TILE) as usize,
+            ((x1 - 1) / SCREEN_TILE) as usize,
+        );
         (y0..y1).all(|y| {
             let row = y as usize * per_row;
             self.tile_epochs[row + t0..=row + t1]
@@ -942,7 +935,8 @@ impl Presentation {
         self.offscreen_pages
             .mark(u64::from(address), u64::from(address) + 1);
         if fresh {
-            self.store_filter_new_pages.push(address >> STORE_FILTER_PAGE_SHIFT);
+            self.store_filter_new_pages
+                .push(address >> STORE_FILTER_PAGE_SHIFT);
             super::note_store_filter_event();
         }
     }
@@ -1325,7 +1319,9 @@ impl Presentation {
                 return;
             };
             for (key, cell) in self.offscreen.range(from, u64::from(to)) {
-                pixels.detail.insert(offset + (key - address) as usize, cell);
+                pixels
+                    .detail
+                    .insert(offset + (key - address) as usize, cell);
             }
         };
 
@@ -1810,9 +1806,10 @@ impl Presentation {
         }
         // The first `write` consumes a superseded store, and skips its byte
         // if it lies in the span.
-        let skipped = self.superseded_write.take().filter(|&skip| {
-            skip >= address && u64::from(skip) < end
-        });
+        let skipped = self
+            .superseded_write
+            .take()
+            .filter(|&skip| skip >= address && u64::from(skip) < end);
         if !self.may_have_offscreen_detail(address, end) {
             return true;
         }
@@ -1926,7 +1923,9 @@ impl Presentation {
 
     /// The first cell of a span within one screen row, if it is one.
     fn screen_row_span(&self, address: u32, len: usize) -> Option<usize> {
-        let last = u32::try_from(len.checked_sub(1)?).ok().and_then(|n| address.checked_add(n))?;
+        let last = u32::try_from(len.checked_sub(1)?)
+            .ok()
+            .and_then(|n| address.checked_add(n))?;
         let ((x, y), (_, last_y)) = (self.position(address)?, self.position(last)?);
         let end_x = x.checked_add(u32::try_from(len).ok()?)?;
         (y == last_y && end_x <= self.width).then_some((y * self.width + x) as usize)
@@ -1997,7 +1996,7 @@ impl Presentation {
     /// span or lies wholly off the screen, and no glyph capture, CPU drawing
     /// or recolor tracking, text erasing or text run is in progress. A
     /// screen destination also needs full-size cells.
-    pub(crate) fn can_paste_copied_row(&self, destination: u32, len: usize) -> bool {
+    fn can_paste_copied_row(&self, destination: u32, len: usize) -> bool {
         !self.cpu_drawing
             && self.cpu_recolor.is_none()
             && self.glyph.is_none()
@@ -2008,10 +2007,17 @@ impl Presentation {
 
     /// Whether every copied cell for a span of `len` bytes to `destination`
     /// fits it: a screen destination takes only full-size cells.
-    pub(crate) fn copied_cells_fit(&self, destination: u32, len: usize, cells: &[CopiedCell]) -> bool {
+    pub(crate) fn copied_cells_fit(
+        &self,
+        destination: u32,
+        len: usize,
+        cells: &[CopiedCell],
+    ) -> bool {
         let samples = self.scale * self.scale;
-        !matches!(self.detail_row_side(destination, len), Some(DetailRowSide::Screen(_)))
-            || cells.iter().all(|cell| u32::from(cell.len) == samples)
+        !matches!(
+            self.detail_row_side(destination, len),
+            Some(DetailRowSide::Screen(_))
+        ) || cells.iter().all(|cell| u32::from(cell.len) == samples)
     }
 
     /// Snapshot the retained detail of a row copy's source spans (address,
@@ -2089,7 +2095,7 @@ impl Presentation {
     /// `inks`) takes that cell as `put_detail` would, leaving an identical
     /// destination untouched; any other byte is a plain store, as `write`
     /// would make it. The cells' ink is moved out of `inks`.
-    pub(crate) fn paste_copied_row(
+    fn paste_copied_row(
         &mut self,
         destination: u32,
         values: &[u8],
@@ -2098,8 +2104,12 @@ impl Presentation {
         inks: &mut [(u8, Ink)],
     ) {
         match self.detail_row_side(destination, values.len()) {
-            Some(DetailRowSide::Screen(_)) => self.paste_screen_row(destination, values, first, cells, inks),
-            Some(DetailRowSide::Offscreen) => self.paste_offscreen_row(destination, values, first, cells, inks),
+            Some(DetailRowSide::Screen(_)) => {
+                self.paste_screen_row(destination, values, first, cells, inks)
+            }
+            Some(DetailRowSide::Offscreen) => {
+                self.paste_offscreen_row(destination, values, first, cells, inks)
+            }
             None => {}
         }
     }
@@ -2162,7 +2172,10 @@ impl Presentation {
             self.detail_cache.get_mut()[cell] = None;
             self.guest_values[cell] = u16::from(value);
             tile.indices[..samples].copy_from_slice(&copied.indices[..samples]);
-            for (rgb, &index) in tile.rgb[..samples].iter_mut().zip(&copied.indices[..samples]) {
+            for (rgb, &index) in tile.rgb[..samples]
+                .iter_mut()
+                .zip(&copied.indices[..samples])
+            {
                 *rgb = palette[index as usize];
             }
             held.clear();
@@ -2198,7 +2211,12 @@ impl Presentation {
             let (ink, rest) = std::mem::take(&mut inks).split_at_mut(usize::from(copied.inks));
             inks = rest;
             let value = values[copied.offset as usize - first];
-            if self.offscreen.store_parts(address, value, &copied.indices[..usize::from(copied.len)], ink) {
+            if self.offscreen.store_parts(
+                address,
+                value,
+                &copied.indices[..usize::from(copied.len)],
+                ink,
+            ) {
                 changed = true;
                 self.include_offscreen_address(address);
             }
@@ -2250,7 +2268,9 @@ impl Presentation {
             &self.direct_palettes[lane]
         };
         let color = palette[foreground as usize];
-        let (samples, cell_ink) = self.samples.get_mut_with_ink((py * self.width + px) as usize);
+        let (samples, cell_ink) = self
+            .samples
+            .get_mut_with_ink((py * self.width + px) as usize);
         for sy in 0..self.scale {
             for sx in 0..self.scale {
                 let gx =
@@ -2352,7 +2372,11 @@ impl Presentation {
                     cell,
                     (glyph, *h, *v),
                     scale,
-                    (x0.wrapping_add((i / lanes) as i16), y, foreground[i % lanes]),
+                    (
+                        x0.wrapping_add((i / lanes) as i16),
+                        y,
+                        foreground[i % lanes],
+                    ),
                     (in_text_run, run_ink, address + i as u32),
                 );
             },
@@ -2390,10 +2414,8 @@ fn paint_offscreen_glyph_cell(
 ) {
     for sy in 0..scale {
         for sx in 0..scale {
-            let gx =
-                (i32::from(x) - i32::from(h)) * scale as i32 + sx as i32 - glyph.left;
-            let gy =
-                (i32::from(y) - i32::from(v)) * scale as i32 + sy as i32 - glyph.top;
+            let gx = (i32::from(x) - i32::from(h)) * scale as i32 + sx as i32 - glyph.left;
+            let gy = (i32::from(y) - i32::from(v)) * scale as i32 + sy as i32 - glyph.top;
             if gx < 0 || gy < 0 || gx >= glyph.width || gy >= glyph.height {
                 continue;
             }
@@ -2514,7 +2536,8 @@ impl MacMemoryBus {
             }
             self.write_presented_ram(destination, &row);
             let end = (first + len) as u32;
-            let cell_end = next_cell + copied.cells[next_cell..].partition_point(|cell| cell.offset < end);
+            let cell_end =
+                next_cell + copied.cells[next_cell..].partition_point(|cell| cell.offset < end);
             let ink_end = next_ink
                 + copied.cells[next_cell..cell_end]
                     .iter()
@@ -2550,7 +2573,9 @@ impl MacMemoryBus {
         palette: Option<&[u8; 256]>,
     ) -> bool {
         if spans.is_empty()
-            || spans.iter().any(|&(_, offset, len)| len == 0 || offset + len > saved.len())
+            || spans
+                .iter()
+                .any(|&(_, offset, len)| len == 0 || offset + len > saved.len())
             || !self.presented_bytes_gates_open()
         {
             return false;
@@ -2565,15 +2590,27 @@ impl MacMemoryBus {
         if !eligible {
             return false;
         }
-        let Some(mut copied) = self.presentation.as_mut().map(|mut p| std::mem::take(&mut p.copied)) else {
+        let Some(mut copied) = self
+            .presentation
+            .as_mut()
+            .map(|mut p| std::mem::take(&mut p.copied))
+        else {
             return false;
         };
-        copied.capture_saved(spans.iter().map(|&(_, offset, len)| (offset, len)), saved, palette);
+        copied.capture_saved(
+            spans.iter().map(|&(_, offset, len)| (offset, len)),
+            saved,
+            palette,
+        );
         let fits = self.presentation.as_ref().is_some_and(|p| {
             let mut first = 0;
             spans.iter().all(|&(destination, _, len)| {
-                let from = copied.cells.partition_point(|cell| (cell.offset as usize) < first);
-                let to = copied.cells.partition_point(|cell| (cell.offset as usize) < first + len);
+                let from = copied
+                    .cells
+                    .partition_point(|cell| (cell.offset as usize) < first);
+                let to = copied
+                    .cells
+                    .partition_point(|cell| (cell.offset as usize) < first + len);
                 first += len;
                 p.copied_cells_fit(destination, len, &copied.cells[from..to])
             })
@@ -2590,7 +2627,14 @@ impl MacMemoryBus {
         for &(_, offset, len) in spans {
             values.extend_from_slice(&saved[offset..offset + len]);
         }
-        self.paste_copied_spans(spans.iter().map(|&(destination, _, len)| (destination, len)), &values, palette, copied);
+        self.paste_copied_spans(
+            spans
+                .iter()
+                .map(|&(destination, _, len)| (destination, len)),
+            &values,
+            palette,
+            copied,
+        );
         true
     }
 
@@ -2606,8 +2650,10 @@ impl MacMemoryBus {
         if row_len == 0 {
             return false;
         }
-        let spans: Vec<(u32, u32, usize)> =
-            rows.iter().map(|&(source, destination)| (source, destination, row_len)).collect();
+        let spans: Vec<(u32, u32, usize)> = rows
+            .iter()
+            .map(|&(source, destination)| (source, destination, row_len))
+            .collect();
         self.copy_detail_spans(&spans, pixels, palette)
     }
 
@@ -2641,13 +2687,28 @@ impl MacMemoryBus {
         if !eligible {
             return false;
         }
-        let Some(mut copied) = self.presentation.as_mut().map(|mut p| std::mem::take(&mut p.copied)) else {
+        let Some(mut copied) = self
+            .presentation
+            .as_mut()
+            .map(|mut p| std::mem::take(&mut p.copied))
+        else {
             return false;
         };
         if let Some(p) = self.presentation.as_ref() {
-            p.capture_copied_detail(spans.iter().map(|&(source, _, len)| (source, len)), palette, &mut copied);
+            p.capture_copied_detail(
+                spans.iter().map(|&(source, _, len)| (source, len)),
+                palette,
+                &mut copied,
+            );
         }
-        self.paste_copied_spans(spans.iter().map(|&(_, destination, len)| (destination, len)), pixels, palette, copied);
+        self.paste_copied_spans(
+            spans
+                .iter()
+                .map(|&(_, destination, len)| (destination, len)),
+            pixels,
+            palette,
+            copied,
+        );
         true
     }
 
@@ -2786,8 +2847,9 @@ impl MacMemoryBus {
             return;
         }
         let backgrounds = self.read_bytes(address, count * lanes);
-        let foreground: [u8; 4] =
-            std::array::from_fn(|lane| (foreground >> ((lanes.saturating_sub(1 + lane)) * 8)) as u8);
+        let foreground: [u8; 4] = std::array::from_fn(|lane| {
+            (foreground >> ((lanes.saturating_sub(1 + lane)) * 8)) as u8
+        });
         if let Some(mut p) = self.presentation.as_mut() {
             p.glyph_span(address, (x0, y), lanes, &foreground[..lanes], &backgrounds);
         }
@@ -2798,7 +2860,8 @@ impl MacMemoryBus {
         // The sparse range walk, not a `detail` query per byte: callers save
         // whole menu bars and window frames every frame, and only text cells
         // and retained glyphs carry detail.
-        self.presentation.capture_detail(&mut pixels, 0, address, len);
+        self.presentation
+            .capture_detail(&mut pixels, 0, address, len);
         pixels
     }
 
@@ -2998,7 +3061,8 @@ impl MacMemoryBus {
         // The range walk visits only screen cells holding text and the
         // offscreen cells in the span (row padding included), which is
         // exactly what a `detail` query per byte would find.
-        self.presentation.capture_detail(pixels, offset, address, len);
+        self.presentation
+            .capture_detail(pixels, offset, address, len);
     }
 
     pub(crate) fn restore_saved_pixels<T: Copy + Into<u16>>(
@@ -3050,7 +3114,11 @@ impl MacMemoryBus {
         }
         let plain_at = |i: usize| {
             let value = pixels[i].into() as u8;
-            pixels.detail.get(&i).filter(|cell| cell.value == value).is_none()
+            pixels
+                .detail
+                .get(&i)
+                .filter(|cell| cell.value == value)
+                .is_none()
         };
         let mut next = offset;
         for i in offset..end {
@@ -3065,7 +3133,10 @@ impl MacMemoryBus {
             if plain_at(i) {
                 next = (i..end).find(|&j| !plain_at(j)).unwrap_or(end);
                 if next - i > 1 {
-                    let run: Vec<u8> = pixels[i..next].iter().map(|value| (*value).into() as u8).collect();
+                    let run: Vec<u8> = pixels[i..next]
+                        .iter()
+                        .map(|value| (*value).into() as u8)
+                        .collect();
                     self.write_bytes(dst, &run);
                     continue;
                 }
@@ -3446,7 +3517,10 @@ impl MacMemoryBus {
         }
         if let Some((offscreen, glyph_count)) = retained {
             let addresses = offscreen.addresses();
-            presentation.offscreen_bounds = addresses.first().zip(addresses.last()).map(|(&first, &last)| (first, last));
+            presentation.offscreen_bounds = addresses
+                .first()
+                .zip(addresses.last())
+                .map(|(&first, &last)| (first, last));
             for &address in &addresses {
                 presentation
                     .offscreen_pages
@@ -3694,7 +3768,9 @@ mod tests {
     #[test]
     fn glyph_spans_match_the_per_pixel_calls() {
         let glyph = OutlineGlyph {
-            pixels: (0..40 * 6).map(|i| [0, 255, 64, 128, 0, 200, 255][i % 7]).collect(),
+            pixels: (0..40 * 6)
+                .map(|i| [0, 255, 64, 128, 0, 200, 255][i % 7])
+                .collect(),
             width: 40,
             height: 6,
             left: -1,
@@ -3736,7 +3812,9 @@ mod tests {
                     let mut per_pixel = setup(start, opaque);
                     let mut span = setup(start, opaque);
                     let count = 20;
-                    for (y, foreground) in [(1i16, 0x0A0B_0C0Du32), (1, 0x1112_1314), (2, 0x0A0B_0C0D)] {
+                    for (y, foreground) in
+                        [(1i16, 0x0A0B_0C0Du32), (1, 0x1112_1314), (2, 0x0A0B_0C0D)]
+                    {
                         for i in 0..count * lanes {
                             let lane = i % lanes;
                             per_pixel.outline_glyph_pixel(
@@ -3747,7 +3825,11 @@ mod tests {
                             );
                         }
                         span.outline_glyph_span(start, (3, y), count, lanes, foreground);
-                        assert_eq!(snapshot(&span), snapshot(&per_pixel), "lanes {lanes} opaque {opaque} start {start:#x} y {y}");
+                        assert_eq!(
+                            snapshot(&span),
+                            snapshot(&per_pixel),
+                            "lanes {lanes} opaque {opaque} start {start:#x} y {y}"
+                        );
                     }
                 }
             }
@@ -3781,7 +3863,11 @@ mod tests {
         assert_eq!(page_byte(&bus, 0x3_0000), 0);
         paint_detail(&mut bus, 0x3_0010);
         bus.store_filter_for_batch();
-        assert_ne!(page_byte(&bus, 0x3_0000), 0, "offscreen detail now lives here");
+        assert_ne!(
+            page_byte(&bus, 0x3_0000),
+            0,
+            "offscreen detail now lives here"
+        );
         // Other proven pages are untouched by an incremental change.
         bus.write_long(0x4_0000, 1);
         paint_detail(&mut bus, 0x3_0020);
@@ -3811,7 +3897,11 @@ mod tests {
         bus.store_filter_for_batch();
         assert_eq!(page_byte(&bus, 0x5_0000), 1);
         bus.write_long(0x5_0000, 2);
-        assert_eq!(page_byte(&bus, 0x5_0000), 2, "the page holds protected code");
+        assert_eq!(
+            page_byte(&bus, 0x5_0000),
+            2,
+            "the page holds protected code"
+        );
     }
 
     #[test]
@@ -3823,7 +3913,11 @@ mod tests {
         assert_eq!(bus.store_filter_byte(0), Some(1));
         let suspended = bus.suspend_write_probe().unwrap();
         bus.store_filter_for_batch();
-        assert_eq!(bus.store_filter_byte(0), Some(0), "suspended probes record nothing");
+        assert_eq!(
+            bus.store_filter_byte(0),
+            Some(0),
+            "suspended probes record nothing"
+        );
         bus.resume_write_probe(suspended);
         bus.store_filter_for_batch();
         assert_eq!(bus.store_filter_byte(0), Some(1));
@@ -3852,10 +3946,15 @@ mod tests {
         // before, after and between screen rows, captured over every span
         // that starts and ends around them.
         let mut bus = padded_bus(12, 8, 8, 2);
-        for address in [0x1000, 0x1003, 0x1009, 0x100b, 0x1025, 0x105f, 0x0ffd, 0x1060, 0x1063] {
+        for address in [
+            0x1000, 0x1003, 0x1009, 0x100b, 0x1025, 0x105f, 0x0ffd, 0x1060, 0x1063,
+        ] {
             paint_detail(&mut bus, address);
         }
-        let points = [0x0ff8u32, 0x0ffd, 0x0ffe, 0x1000, 0x1004, 0x1008, 0x100b, 0x100c, 0x1024, 0x1026, 0x105f, 0x1060, 0x1064];
+        let points = [
+            0x0ff8u32, 0x0ffd, 0x0ffe, 0x1000, 0x1004, 0x1008, 0x100b, 0x100c, 0x1024, 0x1026,
+            0x105f, 0x1060, 0x1064,
+        ];
         let mut compared = 0;
         for &start in &points {
             for &end in &points {
@@ -3915,7 +4014,9 @@ mod tests {
 
     #[test]
     fn divide_row_matches_hardware_division() {
-        for row_bytes in [1u32, 2, 3, 7, 8, 10, 63, 64, 640, 641, 832, 1024, 1920, 4095, 65535] {
+        for row_bytes in [
+            1u32, 2, 3, 7, 8, 10, 63, 64, 640, 641, 832, 1024, 1920, 4095, 65535,
+        ] {
             let reciprocal = (1u64 << 32) / u64::from(row_bytes);
             let offsets = (0u32..5000)
                 .chain((0..64).map(|k| u32::MAX - k))
@@ -3977,7 +4078,10 @@ mod tests {
                     }
                 }
                 let pixels = fast.save_pixel_bytes(source, len);
-                let context = format!("{destination:#x}+{len} detail={detail:?} palette={}", palette.is_some());
+                let context = format!(
+                    "{destination:#x}+{len} detail={detail:?} palette={}",
+                    palette.is_some()
+                );
                 let mut probe = setup();
                 for i in 0..len as u32 {
                     probe.write_byte(source + i, (i * 37 + 5) as u8);
@@ -3998,17 +4102,32 @@ mod tests {
                         palette.map_or(index, |table| table[index as usize])
                     });
                 }
-                assert_eq!(fast.read_bytes(destination, len), slow.read_bytes(destination, len), "{context}: RAM");
-                assert_eq!(fast.outline_presentation_rgb(), slow.outline_presentation_rgb(), "{context}: rendered");
+                assert_eq!(
+                    fast.read_bytes(destination, len),
+                    slow.read_bytes(destination, len),
+                    "{context}: RAM"
+                );
+                assert_eq!(
+                    fast.outline_presentation_rgb(),
+                    slow.outline_presentation_rgb(),
+                    "{context}: rendered"
+                );
                 let after_fast = fast.save_pixel_bytes(destination - 2, len + 4);
                 let after_slow = slow.save_pixel_bytes(destination - 2, len + 4);
-                assert_eq!(after_fast.values, after_slow.values, "{context}: snapshot values");
+                assert_eq!(
+                    after_fast.values, after_slow.values,
+                    "{context}: snapshot values"
+                );
                 let keys = |p: &SavedPixels| {
                     let mut k: Vec<_> = p.detail.iter().map(|(&i, c)| (i, (**c).clone())).collect();
                     k.sort_by_key(|(i, _)| *i);
                     k
                 };
-                assert_eq!(keys(&after_fast), keys(&after_slow), "{context}: snapshot detail");
+                assert_eq!(
+                    keys(&after_fast),
+                    keys(&after_slow),
+                    "{context}: snapshot detail"
+                );
             }
         }
     }
@@ -4024,7 +4143,9 @@ mod tests {
         for destination in [0x1000u32 + 10 * 2 + 1, 0x4_0000] {
             for prior in ["same text", "other text", "plain"] {
                 for palette in [None, Some(&inverted)] {
-                    let map = |index: u8| palette.map_or(index, |table: &[u8; 256]| table[index as usize]);
+                    let map = |index: u8| {
+                        palette.map_or(index, |table: &[u8; 256]| table[index as usize])
+                    };
                     let setup = || {
                         let mut bus = padded_bus(10, 8, 6, 2);
                         paint_detail(&mut bus, source);
@@ -4064,26 +4185,58 @@ mod tests {
                                 ink.foreground = map(ink.foreground);
                                 ink.background.map(&mut |index| map(index));
                             }
-                            full.presentation.as_mut().unwrap().put_detail(address, &cell);
+                            full.presentation
+                                .as_mut()
+                                .unwrap()
+                                .put_detail(address, &cell);
                         }
                     }
                     let context = format!("{destination:#x} {prior} palette={}", palette.is_some());
                     if prior == "same text" {
-                        assert_eq!(revision(&fast), fast_before, "{context}: presentation untouched");
-                        assert_ne!(revision(&full), full_before, "{context}: full store rebuilt");
+                        assert_eq!(
+                            revision(&fast),
+                            fast_before,
+                            "{context}: presentation untouched"
+                        );
+                        assert_ne!(
+                            revision(&full),
+                            full_before,
+                            "{context}: full store rebuilt"
+                        );
                     }
-                    assert_eq!(fast.read_bytes(destination, 3), full.read_bytes(destination, 3), "{context}: RAM");
-                    assert_eq!(fast.outline_presentation_rgb(), full.outline_presentation_rgb(), "{context}: rendered");
+                    assert_eq!(
+                        fast.read_bytes(destination, 3),
+                        full.read_bytes(destination, 3),
+                        "{context}: RAM"
+                    );
+                    assert_eq!(
+                        fast.outline_presentation_rgb(),
+                        full.outline_presentation_rgb(),
+                        "{context}: rendered"
+                    );
                     let after_fast = fast.save_pixel_bytes(destination - 1, 5);
                     let after_full = full.save_pixel_bytes(destination - 1, 5);
                     assert_eq!(after_fast, after_full, "{context}: snapshot");
-                    assert!(after_fast.has_detail_at(1) && after_fast.has_detail_at(2), "{context}: text kept");
+                    assert!(
+                        after_fast.has_detail_at(1) && after_fast.has_detail_at(2),
+                        "{context}: text kept"
+                    );
                     // A later plain store must still clear the copied text.
                     fast.write_byte(destination, 7);
                     full.write_byte(destination, 7);
-                    assert_eq!(fast.save_pixel_bytes(destination, 1), full.save_pixel_bytes(destination, 1));
-                    assert!(!fast.save_pixel_bytes(destination, 1).has_detail_at(0), "{context}: cleared");
-                    assert_eq!(fast.outline_presentation_rgb(), full.outline_presentation_rgb(), "{context}: cleared render");
+                    assert_eq!(
+                        fast.save_pixel_bytes(destination, 1),
+                        full.save_pixel_bytes(destination, 1)
+                    );
+                    assert!(
+                        !fast.save_pixel_bytes(destination, 1).has_detail_at(0),
+                        "{context}: cleared"
+                    );
+                    assert_eq!(
+                        fast.outline_presentation_rgb(),
+                        full.outline_presentation_rgb(),
+                        "{context}: cleared render"
+                    );
                 }
             }
         }
@@ -4109,16 +4262,30 @@ mod tests {
         let mut fast = setup();
         let mut slow = setup();
         let pixels = fast.save_pixel_bytes(source, 3);
-        assert_eq!(**pixels.detail.get(&0).unwrap(), **pixels.detail.get(&2).unwrap());
+        assert_eq!(
+            **pixels.detail.get(&0).unwrap(),
+            **pixels.detail.get(&2).unwrap()
+        );
         for (row, table) in [(1u32, &inverted), (2, &inverted), (3, &rotated)] {
             let destination = 0x1000 + 10 * row + 1;
-            fast.write_copy_pixels(destination, &pixels, 0, 3, Some(table)).expect("writable");
+            fast.write_copy_pixels(destination, &pixels, 0, 3, Some(table))
+                .expect("writable");
             for i in 0..3 {
-                slow.copy_saved_pixel(destination + i as u32, &pixels, i, |index| table[index as usize]);
+                slow.copy_saved_pixel(destination + i as u32, &pixels, i, |index| {
+                    table[index as usize]
+                });
             }
             let context = format!("row {row}");
-            assert_eq!(fast.read_bytes(destination, 3), slow.read_bytes(destination, 3), "{context}: RAM");
-            assert_eq!(fast.outline_presentation_rgb(), slow.outline_presentation_rgb(), "{context}: rendered");
+            assert_eq!(
+                fast.read_bytes(destination, 3),
+                slow.read_bytes(destination, 3),
+                "{context}: RAM"
+            );
+            assert_eq!(
+                fast.outline_presentation_rgb(),
+                slow.outline_presentation_rgb(),
+                "{context}: rendered"
+            );
             assert_eq!(
                 fast.save_pixel_bytes(destination, 3),
                 slow.save_pixel_bytes(destination, 3),
@@ -4127,8 +4294,17 @@ mod tests {
             // Equal source cells share one entry; a new table starts over.
             assert_eq!(fast.copy_map_cache.len, 1, "{context}: cache entries");
         }
-        let mapped = |bus: &MacMemoryBus, address| bus.save_pixel_bytes(address, 1).detail.get(&0).cloned().unwrap();
-        assert!(Arc::ptr_eq(&mapped(&fast, 0x1000 + 10 + 1), &mapped(&fast, 0x1000 + 10 + 3)));
+        let mapped = |bus: &MacMemoryBus, address| {
+            bus.save_pixel_bytes(address, 1)
+                .detail
+                .get(&0)
+                .cloned()
+                .unwrap()
+        };
+        assert!(Arc::ptr_eq(
+            &mapped(&fast, 0x1000 + 10 + 1),
+            &mapped(&fast, 0x1000 + 10 + 3)
+        ));
     }
 
     /// Copying rows of offscreen text to the screen straight from the chunk
@@ -4169,41 +4345,79 @@ mod tests {
                 let mut oracle = setup();
                 let context = format!("{prior} palette={}", palette.is_some());
                 assert!(
-                    (0..rows).all(|row| direct.presentation.as_ref().unwrap().can_copy_detail_row(
-                        source + row * 10,
-                        destination(row),
-                        row_len,
-                    )),
+                    (0..rows).all(
+                        |row| direct.presentation.as_ref().unwrap().can_copy_detail_row(
+                            source + row * 10,
+                            destination(row),
+                            row_len,
+                        )
+                    ),
                     "{context}: the direct path applies"
                 );
                 let copy = RowCopy {
                     mode: 0,
-                    source: BytePixmap { base: source, row_bytes: 10, depth: 8, bounds: [0, 0, 3, 8] },
-                    destination: BytePixmap { base: 0x1000, row_bytes: 10, depth: 8, bounds: [0, 0, 6, 8] },
+                    source: BytePixmap {
+                        base: source,
+                        row_bytes: 10,
+                        depth: 8,
+                        bounds: [0, 0, 3, 8],
+                    },
+                    destination: BytePixmap {
+                        base: 0x1000,
+                        row_bytes: 10,
+                        depth: 8,
+                        bounds: [0, 0, 6, 8],
+                    },
                     source_rect: [0, 0, 2, 6],
                     destination_rect: [1, 1, 3, 7],
                     clip: [0, 0, 6, 8],
                     palette,
                 };
-                assert_eq!(copy.execute(&mut direct), RowCopyOutcome::Completed, "{context}");
+                assert_eq!(
+                    copy.execute(&mut direct),
+                    RowCopyOutcome::Completed,
+                    "{context}"
+                );
                 // The per-pixel sequence `execute` used before the direct path.
                 let mut pixels = vec![0u8; row_len * rows as usize];
                 for row in 0..rows as usize {
                     oracle
-                        .read_copy_row(source + row as u32 * 10, &mut pixels[row * row_len..][..row_len])
+                        .read_copy_row(
+                            source + row as u32 * 10,
+                            &mut pixels[row * row_len..][..row_len],
+                        )
                         .unwrap();
                 }
                 let mut pixels: SavedPixels = pixels.into();
                 for row in 0..rows as usize {
-                    oracle.capture_copy_detail(source + row as u32 * 10, &mut pixels, row * row_len, row_len);
+                    oracle.capture_copy_detail(
+                        source + row as u32 * 10,
+                        &mut pixels,
+                        row * row_len,
+                        row_len,
+                    );
                 }
                 for row in 0..rows {
                     oracle
-                        .write_copy_pixels(destination(row), &pixels, row as usize * row_len, row_len, palette)
+                        .write_copy_pixels(
+                            destination(row),
+                            &pixels,
+                            row as usize * row_len,
+                            row_len,
+                            palette,
+                        )
                         .expect("writable");
                 }
-                assert_eq!(direct.read_bytes(0x1000, 60), oracle.read_bytes(0x1000, 60), "{context}: RAM");
-                assert_eq!(direct.outline_presentation_rgb(), oracle.outline_presentation_rgb(), "{context}: rendered");
+                assert_eq!(
+                    direct.read_bytes(0x1000, 60),
+                    oracle.read_bytes(0x1000, 60),
+                    "{context}: RAM"
+                );
+                assert_eq!(
+                    direct.outline_presentation_rgb(),
+                    oracle.outline_presentation_rgb(),
+                    "{context}: rendered"
+                );
                 for row in 0..6 {
                     assert_eq!(
                         direct.save_pixel_bytes(0x1000 + row * 10, 10),
@@ -4214,7 +4428,11 @@ mod tests {
                 // A later plain store still clears copied text on both.
                 direct.write_byte(destination(0) + 1, 5);
                 oracle.write_byte(destination(0) + 1, 5);
-                assert_eq!(direct.outline_presentation_rgb(), oracle.outline_presentation_rgb(), "{context}: after store");
+                assert_eq!(
+                    direct.outline_presentation_rgb(),
+                    oracle.outline_presentation_rgb(),
+                    "{context}: after store"
+                );
             }
         }
     }
@@ -4229,12 +4447,32 @@ mod tests {
         // (name, source row address, destination row address)
         type Row = fn(u32) -> u32;
         let cases: [(&str, Row, Row); 6] = [
-            ("offscreen to screen", |r| 0x3_0000 + r * 10, |r| 0x1000 + (2 + r) * 10 + 1),
-            ("screen down (overlap)", |r| 0x1000 + r * 10 + 1, |r| 0x1000 + (1 + r) * 10 + 2),
-            ("screen up (overlap)", |r| 0x1000 + (2 + r) * 10, |r| 0x1000 + (1 + r) * 10),
+            (
+                "offscreen to screen",
+                |r| 0x3_0000 + r * 10,
+                |r| 0x1000 + (2 + r) * 10 + 1,
+            ),
+            (
+                "screen down (overlap)",
+                |r| 0x1000 + r * 10 + 1,
+                |r| 0x1000 + (1 + r) * 10 + 2,
+            ),
+            (
+                "screen up (overlap)",
+                |r| 0x1000 + (2 + r) * 10,
+                |r| 0x1000 + (1 + r) * 10,
+            ),
             ("screen left", |r| 0x1000 + r * 10 + 2, |r| 0x1000 + r * 10),
-            ("offscreen to offscreen (overlap)", |r| 0x3_0000 + r * 10, |r| 0x3_0000 + (1 + r) * 10 + 1),
-            ("screen to offscreen", |r| 0x1000 + r * 10 + 1, |r| 0x3_0100 + r * 10),
+            (
+                "offscreen to offscreen (overlap)",
+                |r| 0x3_0000 + r * 10,
+                |r| 0x3_0000 + (1 + r) * 10 + 1,
+            ),
+            (
+                "screen to offscreen",
+                |r| 0x1000 + r * 10 + 1,
+                |r| 0x3_0100 + r * 10,
+            ),
         ];
         for (name, source, destination) in cases {
             for prior in ["plain", "text"] {
@@ -4264,22 +4502,35 @@ mod tests {
                     let context = format!("{name}, prior {prior}, palette {}", palette.is_some());
                     let mut direct = setup();
                     let mut oracle = setup();
-                    let pairs: Vec<(u32, u32)> = (0..rows).map(|row| (source(row), destination(row))).collect();
+                    let pairs: Vec<(u32, u32)> = (0..rows)
+                        .map(|row| (source(row), destination(row)))
+                        .collect();
                     let mut pixels = vec![0u8; row_len * rows as usize];
                     for (row, &(from, _)) in pairs.iter().enumerate() {
-                        oracle.read_copy_row(from, &mut pixels[row * row_len..][..row_len]).unwrap();
+                        oracle
+                            .read_copy_row(from, &mut pixels[row * row_len..][..row_len])
+                            .unwrap();
                     }
-                    assert!(direct.copy_detail_rows(&pairs, &pixels, row_len, palette), "{context}: applies");
+                    assert!(
+                        direct.copy_detail_rows(&pairs, &pixels, row_len, palette),
+                        "{context}: applies"
+                    );
                     // The per-pixel sequence `RowCopy::execute` falls back to.
                     let mut saved: SavedPixels = pixels.into();
                     for (row, &(from, _)) in pairs.iter().enumerate() {
                         oracle.capture_copy_detail(from, &mut saved, row * row_len, row_len);
                     }
                     for (row, &(_, to)) in pairs.iter().enumerate() {
-                        oracle.write_copy_pixels(to, &saved, row * row_len, row_len, palette).expect("writable");
+                        oracle
+                            .write_copy_pixels(to, &saved, row * row_len, row_len, palette)
+                            .expect("writable");
                     }
                     for base in [0x1000u32, 0x3_0000, 0x3_0100] {
-                        assert_eq!(direct.read_bytes(base, 60), oracle.read_bytes(base, 60), "{context}: RAM {base:#x}");
+                        assert_eq!(
+                            direct.read_bytes(base, 60),
+                            oracle.read_bytes(base, 60),
+                            "{context}: RAM {base:#x}"
+                        );
                         for row in 0..6 {
                             assert_eq!(
                                 direct.save_pixel_bytes(base + row * 10, 10),
@@ -4288,15 +4539,30 @@ mod tests {
                             );
                         }
                     }
-                    assert_eq!(direct.outline_presentation_rgb(), oracle.outline_presentation_rgb(), "{context}: rendered");
-                    assert!(direct.presentation.as_ref().unwrap().ink_mask_matches_ink(), "{context}: ink mask");
+                    assert_eq!(
+                        direct.outline_presentation_rgb(),
+                        oracle.outline_presentation_rgb(),
+                        "{context}: rendered"
+                    );
+                    assert!(
+                        direct.presentation.as_ref().unwrap().ink_mask_matches_ink(),
+                        "{context}: ink mask"
+                    );
                     // Later stores still clear copied text on both.
                     for to in [destination(0) + 1, destination(1) + 1] {
                         direct.write_byte(to, 5);
                         oracle.write_byte(to, 5);
                     }
-                    assert_eq!(direct.outline_presentation_rgb(), oracle.outline_presentation_rgb(), "{context}: after store");
-                    assert_eq!(direct.save_pixel_bytes(destination(0), 6), oracle.save_pixel_bytes(destination(0), 6), "{context}: after store detail");
+                    assert_eq!(
+                        direct.outline_presentation_rgb(),
+                        oracle.outline_presentation_rgb(),
+                        "{context}: after store"
+                    );
+                    assert_eq!(
+                        direct.save_pixel_bytes(destination(0), 6),
+                        oracle.save_pixel_bytes(destination(0), 6),
+                        "{context}: after store detail"
+                    );
                 }
             }
         }
@@ -4311,14 +4577,27 @@ mod tests {
                     bus.write_byte(0x3_0000 + row * 10 + x, (row + x) as u8);
                 }
             }
-            for address in [0x1000 + 12, 0x1000 + 15, 0x1000 + 31, 0x3_0000 + 2, 0x3_0000 + 13] {
+            for address in [
+                0x1000 + 12,
+                0x1000 + 15,
+                0x1000 + 31,
+                0x3_0000 + 2,
+                0x3_0000 + 13,
+            ] {
                 paint_detail(&mut bus, address);
             }
             bus
         };
         // (store kind, address, length): screen rows with and without text,
         // a span past a row's visible width, offscreen spans with text.
-        let spans = [(0x1000u32 + 10, 8usize), (0x1000 + 40, 8), (0x1000 + 14, 6), (0x1000 + 30, 3), (0x3_0000, 20), (0x3_0000 + 12, 3)];
+        let spans = [
+            (0x1000u32 + 10, 8usize),
+            (0x1000 + 40, 8),
+            (0x1000 + 14, 6),
+            (0x1000 + 30, 3),
+            (0x3_0000, 20),
+            (0x3_0000 + 12, 3),
+        ];
         for kind in ["write_bytes", "fill_bytes", "fill_zeros"] {
             for (address, len) in spans {
                 let mut bulk = setup();
@@ -4338,7 +4617,11 @@ mod tests {
                 }
                 let context = format!("{kind} at {address:#x} len {len}");
                 for base in [0x1000u32, 0x3_0000] {
-                    assert_eq!(bulk.read_bytes(base, 60), bytes.read_bytes(base, 60), "{context}: RAM");
+                    assert_eq!(
+                        bulk.read_bytes(base, 60),
+                        bytes.read_bytes(base, 60),
+                        "{context}: RAM"
+                    );
                     for row in 0..6 {
                         assert_eq!(
                             bulk.save_pixel_bytes(base + row * 10, 10),
@@ -4347,8 +4630,15 @@ mod tests {
                         );
                     }
                 }
-                assert_eq!(bulk.outline_presentation_rgb(), bytes.outline_presentation_rgb(), "{context}: rendered");
-                assert!(bulk.presentation.as_ref().unwrap().ink_mask_matches_ink(), "{context}: ink mask");
+                assert_eq!(
+                    bulk.outline_presentation_rgb(),
+                    bytes.outline_presentation_rgb(),
+                    "{context}: rendered"
+                );
+                assert!(
+                    bulk.presentation.as_ref().unwrap().ink_mask_matches_ink(),
+                    "{context}: ink mask"
+                );
             }
         }
     }
@@ -4368,7 +4658,7 @@ mod tests {
             bus
         };
         for (address, len) in [(0x1000u32 + 10, 8usize), (0x3_0000, 10)] {
-            let mut saver = setup();
+            let saver = setup();
             let saved = saver.save_pixel_bytes(address, len);
             // Change the span: new plain bytes, new text, cleared text.
             let disturb = |bus: &mut MacMemoryBus| {
@@ -4385,10 +4675,26 @@ mod tests {
                 bytes.restore_saved_pixels(address + i as u32, &saved, i, 1);
             }
             let context = format!("at {address:#x}");
-            assert_eq!(span.read_bytes(address, len), bytes.read_bytes(address, len), "{context}: RAM");
-            assert_eq!(span.save_pixel_bytes(address, len), bytes.save_pixel_bytes(address, len), "{context}: detail");
-            assert_eq!(span.save_pixel_bytes(address, len), saved, "{context}: restored");
-            assert_eq!(span.outline_presentation_rgb(), bytes.outline_presentation_rgb(), "{context}: rendered");
+            assert_eq!(
+                span.read_bytes(address, len),
+                bytes.read_bytes(address, len),
+                "{context}: RAM"
+            );
+            assert_eq!(
+                span.save_pixel_bytes(address, len),
+                bytes.save_pixel_bytes(address, len),
+                "{context}: detail"
+            );
+            assert_eq!(
+                span.save_pixel_bytes(address, len),
+                saved,
+                "{context}: restored"
+            );
+            assert_eq!(
+                span.outline_presentation_rgb(),
+                bytes.outline_presentation_rgb(),
+                "{context}: rendered"
+            );
         }
     }
 
@@ -4402,7 +4708,13 @@ mod tests {
                     bus.write_byte(0x3_0000 + row * 10 + x, (row * 3 + x) as u8);
                 }
             }
-            for address in [0x1000 + 11, 0x1000 + 13, 0x3_0000 + 2, 0x3_0000 + 5, 0x3_0000 + 12] {
+            for address in [
+                0x1000 + 11,
+                0x1000 + 13,
+                0x3_0000 + 2,
+                0x3_0000 + 5,
+                0x3_0000 + 12,
+            ] {
                 paint_detail(&mut bus, address);
             }
             bus
@@ -4410,7 +4722,12 @@ mod tests {
         // (source, destination, length): same screen row overlapping, an
         // offscreen overlap, offscreen to a screen row, and a span over two
         // screen rows (the byte copy).
-        for (src, dst, len) in [(0x1000u32 + 10, 0x1000 + 12, 6u32), (0x3_0000, 0x3_0003, 12), (0x3_0001, 0x1000 + 31, 6), (0x1000 + 5, 0x1000 + 25, 12)] {
+        for (src, dst, len) in [
+            (0x1000u32 + 10, 0x1000 + 12, 6u32),
+            (0x3_0000, 0x3_0003, 12),
+            (0x3_0001, 0x1000 + 31, 6),
+            (0x1000 + 5, 0x1000 + 25, 12),
+        ] {
             for map in [None, Some(&inverted)] {
                 let mut moved = setup();
                 let mut bytes = setup();
@@ -4426,7 +4743,11 @@ mod tests {
                 }
                 let context = format!("{src:#x} to {dst:#x} len {len} mapped {}", map.is_some());
                 for base in [0x1000u32, 0x3_0000] {
-                    assert_eq!(moved.read_bytes(base, 60), bytes.read_bytes(base, 60), "{context}: RAM");
+                    assert_eq!(
+                        moved.read_bytes(base, 60),
+                        bytes.read_bytes(base, 60),
+                        "{context}: RAM"
+                    );
                     for row in 0..6 {
                         assert_eq!(
                             moved.save_pixel_bytes(base + row * 10, 10),
@@ -4435,7 +4756,11 @@ mod tests {
                         );
                     }
                 }
-                assert_eq!(moved.outline_presentation_rgb(), bytes.outline_presentation_rgb(), "{context}: rendered");
+                assert_eq!(
+                    moved.outline_presentation_rgb(),
+                    bytes.outline_presentation_rgb(),
+                    "{context}: rendered"
+                );
             }
         }
     }
@@ -5774,7 +6099,13 @@ mod tests {
         // Restore blank pixels even where their guest byte matches a glyph's
         // empty logical cell: no stale subpixel ink may remain behind.
         bus.restore_saved_pixels(0x1000, &blank, 0, 8);
-        assert!(bus.presentation.as_ref().unwrap().ink_mask.iter().all(|&mask| mask == 0));
+        assert!(bus
+            .presentation
+            .as_ref()
+            .unwrap()
+            .ink_mask
+            .iter()
+            .all(|&mask| mask == 0));
         assert!(bus.presentation.as_ref().unwrap().ink_mask_matches_ink());
         assert!(bus
             .outline_presentation_rgb()
