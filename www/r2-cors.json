@@ -1,0 +1,11 @@
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": ["*"],
+        "methods": ["GET", "HEAD"]
+      },
+      "exposeHeaders": ["Content-Length"]
+    }
+  ]
+}
