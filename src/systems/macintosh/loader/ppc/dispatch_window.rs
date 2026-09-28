@@ -2030,8 +2030,14 @@ pub(super) fn ppc_size_window(
     let pixmap_handle = memory.read_u32_be(window_ptr.checked_add(2)?)?;
     let pixmap = memory.read_u32_be(pixmap_handle)?;
     let (pixel_top, pixel_left, _, _) = ppc_read_rect(memory, pixmap.checked_add(6)?)?;
-    let global_top = top.saturating_sub(pixel_top);
-    let global_left = left.saturating_sub(pixel_left);
+    // Window geometry lives in contRgn's global coordinates. A client can
+    // rebind the port PixMap to a display buffer before sizing the window.
+    // Macintosh Toolbox Essentials (1992), p. 4-66.
+    let (global_top, global_left) = memory
+        .read_u32_be(window_ptr.checked_add(PPC_CWINDOW_CONTENT_RGN_OFFSET)?)
+        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+        .map(|(global_top, global_left, _, _)| (global_top, global_left))
+        .unwrap_or((top.saturating_sub(pixel_top), left.saturating_sub(pixel_left)));
     let bottom = ppc_i32_to_i16_saturating(i32::from(top).saturating_add(height as i32));
     let right = ppc_i32_to_i16_saturating(i32::from(left).saturating_add(width as i32));
 
@@ -2525,6 +2531,15 @@ pub(super) fn ppc_window_global_content_bounds(
     gworlds: &[PpcGWorldRecord],
     window: u32,
 ) -> Option<(i16, i16, i16, i16)> {
+    // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 4-66:
+    // contRgn is defined in global coordinates. The port's PixMap may be
+    // rebound to a display surface without moving the window.
+    if let Some(bounds) = memory
+        .read_u32_be(window.checked_add(PPC_CWINDOW_CONTENT_RGN_OFFSET)?)
+        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+    {
+        return Some(bounds);
+    }
     let (port_top, port_left, port_bottom, port_right) =
         ppc_read_rect(memory, window.checked_add(16)?)?;
     let surface = ppc_live_quickdraw_surface(memory, gworlds, window)?;
