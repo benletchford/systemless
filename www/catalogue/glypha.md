@@ -12,9 +12,24 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
-  status: boots
+  status: playable
   verified:
+  - date: "2026-09-28"
+    tester: Catalogue maintainer
+    systemless_version: "0.66.0"
+    architecture: 68k
+    environment: >-
+      Release-mode Chrome check of the unchanged Glypha 3.0 archive. File >
+      Begin entered the animated arena; the configured A and S keys moved the
+      player bird left and right, and Space made it flap. The pale-cyan strip
+      ended at the left edge of the centered 512-by-342 game window and did not
+      cover playfield artwork. A 20-second pacing sample held about 60 host FPS
+      and 60 guest ticks per second, loaded the archive once, and produced no
+      console errors.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3185
   - date: "2026-09-23"
     tester: Catalogue maintainer
     systemless_version: "0.54.0"
@@ -80,5 +95,5 @@ higher position over enemies and collect their eggs before they hatch. John
 Calhoun's original monochrome game was built for the early Macintosh.
 
 This entry uses the original freely distributed shareware build, not its
-modern commercial remake. Systemless reaches the arena; browser launch
-awaits manual approval.
+modern commercial remake. Choose File > Begin to enter the arena; the default
+keyboard controls are A to move left, S to move right, and Space to flap.
