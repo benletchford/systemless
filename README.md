@@ -44,6 +44,15 @@ catalogue entries and optional plugin collections live in
 [`www/tools/catalogue/`](www/tools/catalogue/). See
 [`www/README.md`](www/README.md) for local browser and catalogue workflows.
 
+## Contributing
+
+Open an issue describing the change and how to reproduce or validate it, then
+submit a focused pull request from a `dev/<topic>` branch that links the issue.
+Runtime and Macintosh compatibility changes belong in `src/`; browser,
+catalogue, and website changes belong in `www/`. The website is developed in
+this repository, so website contributions use this repository's issues and
+pull requests too. Run the relevant checks for the area you change.
+
 ### Add to the catalogue
 
 Contribute through a pull request. Add a Markdown entry under `www/catalogue/`
