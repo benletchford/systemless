@@ -37,6 +37,23 @@ pub const DIALOG_ITEM_EDIT_TEXT: u8 = 16;
 pub const DIALOG_ITEM_ICON: u8 = 32;
 pub const DIALOG_ITEM_PICTURE: u8 = 64;
 
+/// Canonical Alert types. Inside Macintosh Volume I, p. I-417, and Appearance.h.
+pub const ALERT_TYPE_STOP: u16 = 0;
+pub const ALERT_TYPE_NOTE: u16 = 1;
+pub const ALERT_TYPE_CAUTION: u16 = 2;
+#[allow(dead_code)]
+pub const ALERT_TYPE_PLAIN: u16 = 3;
+
+/// Canonical Standard Alert button IDs. Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 6-110.
+#[allow(dead_code)]
+pub const ALERT_BUTTON_OK: i16 = 1;
+#[allow(dead_code)]
+pub const ALERT_BUTTON_CANCEL: i16 = 2;
+#[allow(dead_code)]
+pub const ALERT_BUTTON_OTHER: i16 = 3;
+#[allow(dead_code)]
+pub const ALERT_BUTTON_HELP: i16 = 4;
+
 /// Strongly typed Dialog Manager item kind.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -895,6 +912,48 @@ pub fn dialog_item_control_proc_id(item_type: u8) -> Option<i16> {
     }
 }
 
+/// Maps an alert type (Stop, Note, Caution, Plain) to standard icon resource ID (Stop=0, Note=1, Caution=2, Plain=None).
+#[allow(dead_code)]
+pub fn alert_icon_id(alert_type: u16) -> Option<i16> {
+    match alert_type {
+        ALERT_TYPE_STOP => Some(0),
+        ALERT_TYPE_NOTE => Some(1),
+        ALERT_TYPE_CAUTION => Some(2),
+        _ => None,
+    }
+}
+
+/// Computes the next AlertStage counter capped at 3, per Inside Macintosh Volume I, p. I-423.
+pub fn next_alert_stage(current_stage: u16) -> u16 {
+    ((current_stage as u32) + 1).min(3) as u16
+}
+
+/// Normalizes an edit text item selection range `(start_sel, end_sel)` against a given text length.
+///
+/// Inside Macintosh Volume I, p. I-414, and Macintosh Toolbox Essentials (1992), p. 6-132:
+/// - Special case: `(0, -1)` or `(0, 32767)` indicates "select all" (`0..text_len`).
+/// - Clamps start and end bounds to `0..=text_len`.
+/// - Normalizes reversed bounds (`start > end` -> swapped to `end..start`).
+pub fn normalize_dialog_item_selection(
+    start_sel: i16,
+    end_sel: i16,
+    text_len: usize,
+) -> (u16, u16) {
+    let text_len = text_len.min(i16::MAX as usize) as i16;
+    let (s, e) = if start_sel == 0 && (end_sel == -1 || end_sel == i16::MAX) {
+        (0, text_len)
+    } else {
+        let s = start_sel.clamp(0, text_len);
+        let e = end_sel.clamp(0, text_len);
+        if s <= e {
+            (s, e)
+        } else {
+            (e, s)
+        }
+    };
+    (s as u16, e as u16)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1500,5 +1559,46 @@ mod tests {
         assert_eq!(dialog_item_control_proc_id(DIALOG_ITEM_RADIO), Some(2));
         assert_eq!(dialog_item_control_proc_id(DIALOG_ITEM_STATIC_TEXT), None);
         assert_eq!(dialog_item_control_proc_id(DIALOG_ITEM_ICON), None);
+    }
+
+    #[test]
+    fn dialog_selection_normalization_and_alert_helpers() {
+        // Select all special cases: (0, -1) and (0, 32767)
+        assert_eq!(normalize_dialog_item_selection(0, -1, 10), (0, 10));
+        assert_eq!(normalize_dialog_item_selection(0, i16::MAX, 10), (0, 10));
+        assert_eq!(normalize_dialog_item_selection(0, -1, 0), (0, 0));
+
+        // Normal in-bounds range
+        assert_eq!(normalize_dialog_item_selection(2, 5, 10), (2, 5));
+        assert_eq!(normalize_dialog_item_selection(0, 0, 10), (0, 0));
+        assert_eq!(normalize_dialog_item_selection(10, 10, 10), (10, 10));
+
+        // Clamping out-of-bounds
+        assert_eq!(normalize_dialog_item_selection(-5, 20, 10), (0, 10));
+        assert_eq!(normalize_dialog_item_selection(15, 20, 10), (10, 10));
+
+        // Reversed bounds swapping
+        assert_eq!(normalize_dialog_item_selection(7, 3, 10), (3, 7));
+        assert_eq!(normalize_dialog_item_selection(12, -2, 10), (0, 10));
+
+        // Alert icon IDs
+        assert_eq!(alert_icon_id(ALERT_TYPE_STOP), Some(0));
+        assert_eq!(alert_icon_id(ALERT_TYPE_NOTE), Some(1));
+        assert_eq!(alert_icon_id(ALERT_TYPE_CAUTION), Some(2));
+        assert_eq!(alert_icon_id(ALERT_TYPE_PLAIN), None);
+        assert_eq!(alert_icon_id(999), None);
+
+        // Standard alert buttons
+        assert_eq!(ALERT_BUTTON_OK, 1);
+        assert_eq!(ALERT_BUTTON_CANCEL, 2);
+        assert_eq!(ALERT_BUTTON_OTHER, 3);
+        assert_eq!(ALERT_BUTTON_HELP, 4);
+
+        // Next alert stage capped at 3
+        assert_eq!(next_alert_stage(0), 1);
+        assert_eq!(next_alert_stage(1), 2);
+        assert_eq!(next_alert_stage(2), 3);
+        assert_eq!(next_alert_stage(3), 3);
+        assert_eq!(next_alert_stage(10), 3);
     }
 }

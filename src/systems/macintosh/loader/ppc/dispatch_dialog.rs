@@ -1355,7 +1355,11 @@ fn ppc_standard_alert_template(
         memory.read_u16_be(params + 22).ok_or(PPC_PARAM_ERR)?
     };
     let width = 440i16;
-    let text_left = if cpu.gpr[3] == 3 { 20 } else { 64 };
+    let text_left = if cpu.gpr[3] == crate::dialog_manager::ALERT_TYPE_PLAIN as u32 {
+        20
+    } else {
+        64
+    };
     let text_width = width - text_left - 20;
     let primary_height = (ppc_dialog_text_lines(&primary, text_width).len() as i16 * 16).max(16);
     let secondary_height = if secondary.is_empty() {
@@ -1413,11 +1417,11 @@ fn ppc_standard_alert_template(
         (28 + primary_height, text_left, text_bottom, width - 20),
         &secondary,
     );
-    if cpu.gpr[3] < 3 {
+    if let Some(icon_id) = crate::dialog_manager::alert_icon_id(cpu.gpr[3] as u16) {
         append(
             PPC_DIALOG_ITEM_ICON | PPC_DIALOG_ITEM_DISABLED,
             (20, 20, 52, 52),
-            &(cpu.gpr[3] as u16).to_be_bytes(),
+            &icon_id.to_be_bytes(),
         );
     }
     items[..2].copy_from_slice(&(count - 1).to_be_bytes());
@@ -2308,9 +2312,12 @@ fn ppc_select_dialog_item_text(
     };
     let length = memory
         .read_u16_be(te_ptr + PPC_TE_LENGTH_OFFSET)
-        .unwrap_or(0);
-    let start = selection_start.min(length);
-    let end = selection_end.min(length);
+        .unwrap_or(0) as usize;
+    let (start, end) = crate::dialog_manager::normalize_dialog_item_selection(
+        selection_start as i16,
+        selection_end as i16,
+        length,
+    );
     let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, start);
     let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, end);
     let _ = memory.write_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET, 1);
