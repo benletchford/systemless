@@ -2,6 +2,7 @@
 //!
 //! Inside Macintosh Volume I (1985), pp. I-399--I-434, and
 //! Inside Macintosh: Macintosh Toolbox Essentials (1992), pp. 6-1--6-179.
+use std::borrow::Cow;
 
 use crate::trap::types::decode_mac_roman;
 
@@ -481,6 +482,216 @@ pub fn offset_ditl_bytes(
     }
 }
 
+/// Parsed representation of a Macintosh dialog template (`DLOG` resource).
+///
+/// Inside Macintosh Volume I, pp. I-437--I-438;
+/// Macintosh Toolbox Essentials (1992), pp. 6-113--6-114, 6-148.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DialogTemplate {
+    pub bounds: (i16, i16, i16, i16),
+    pub proc_id: i16,
+    pub visible: bool,
+    pub go_away: bool,
+    pub ref_con: u32,
+    pub items_id: i16,
+    pub title: Vec<u8>,
+    pub position: u16,
+}
+
+impl DialogTemplate {
+    /// Decode the Pascal title bytes as a Mac Roman string.
+    pub fn title_string(&self) -> String {
+        decode_mac_roman(&self.title)
+    }
+}
+
+/// Parse a dialog template (`DLOG` resource) from compiled binary bytes.
+///
+/// Inside Macintosh Volume I, pp. I-437--I-438;
+/// Macintosh Toolbox Essentials (1992), pp. 6-113--6-114, 6-148.
+pub fn parse_dialog_template(bytes: &[u8]) -> Option<DialogTemplate> {
+    if bytes.len() < 20 {
+        return None;
+    }
+    let bounds = (
+        i16::from_be_bytes(bytes.get(0..2)?.try_into().ok()?),
+        i16::from_be_bytes(bytes.get(2..4)?.try_into().ok()?),
+        i16::from_be_bytes(bytes.get(4..6)?.try_into().ok()?),
+        i16::from_be_bytes(bytes.get(6..8)?.try_into().ok()?),
+    );
+    let proc_id = i16::from_be_bytes(bytes.get(8..10)?.try_into().ok()?);
+    let visible = *bytes.get(10)? != 0;
+    let go_away = bytes.get(12).copied().unwrap_or(0) != 0;
+    let ref_con = bytes
+        .get(14..18)
+        .and_then(|slice| slice.try_into().ok())
+        .map(u32::from_be_bytes)
+        .unwrap_or(0);
+    let items_id = i16::from_be_bytes(bytes.get(18..20)?.try_into().ok()?);
+    let title_len = usize::from(bytes.get(20).copied().unwrap_or(0));
+    let title_start = 21.min(bytes.len());
+    let title_end = 21usize.saturating_add(title_len).min(bytes.len());
+    let title = bytes.get(title_start..title_end).unwrap_or(&[]).to_vec();
+    let nominal_title_end = 21usize.saturating_add(title_len);
+    let position_offset = (nominal_title_end + 1) & !1;
+    let position = bytes
+        .get(position_offset..position_offset.saturating_add(2))
+        .and_then(|value| value.try_into().ok())
+        .map(u16::from_be_bytes)
+        .unwrap_or(0);
+
+    Some(DialogTemplate {
+        bounds,
+        proc_id,
+        visible,
+        go_away,
+        ref_con,
+        items_id,
+        title,
+        position,
+    })
+}
+
+/// Parsed representation of a Macintosh alert template (`ALRT` resource).
+///
+/// Inside Macintosh Volume I, pp. I-425--I-426;
+/// Macintosh Toolbox Essentials (1992), p. 6-150.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AlertTemplate {
+    pub bounds: (i16, i16, i16, i16),
+    pub items_id: i16,
+    pub stages: u16,
+    pub position: u16,
+}
+
+/// Parse an alert template (`ALRT` resource) from compiled binary bytes.
+///
+/// Inside Macintosh Volume I, pp. I-425--I-426;
+/// Macintosh Toolbox Essentials (1992), p. 6-150.
+pub fn parse_alert_template(bytes: &[u8]) -> Option<AlertTemplate> {
+    if bytes.len() < 8 {
+        return None;
+    }
+    let bounds = (
+        i16::from_be_bytes(bytes.get(0..2)?.try_into().ok()?),
+        i16::from_be_bytes(bytes.get(2..4)?.try_into().ok()?),
+        i16::from_be_bytes(bytes.get(4..6)?.try_into().ok()?),
+        i16::from_be_bytes(bytes.get(6..8)?.try_into().ok()?),
+    );
+    let items_id = bytes
+        .get(8..10)
+        .and_then(|slice| slice.try_into().ok())
+        .map(i16::from_be_bytes)
+        .unwrap_or(0);
+    let stages = bytes
+        .get(10..12)
+        .and_then(|slice| slice.try_into().ok())
+        .map(u16::from_be_bytes)
+        .unwrap_or(0);
+    let position = bytes
+        .get(12..14)
+        .and_then(|slice| slice.try_into().ok())
+        .map(u16::from_be_bytes)
+        .unwrap_or(0);
+
+    Some(AlertTemplate {
+        bounds,
+        items_id,
+        stages,
+        position,
+    })
+}
+
+/// Information about an alert stage extracted from an `ALRT` resource's stage word.
+///
+/// Inside Macintosh Volume I, pp. I-422--I-424;
+/// Macintosh Toolbox Essentials (1992), pp. 6-106, 6-150.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AlertStageInfo {
+    /// Zero-based stage index (0..=3), clamped from guest stage counter.
+    pub stage_index: u16,
+    /// The 4-bit nibble for this stage.
+    pub stage_nibble: u8,
+    /// Whether the alert window is drawn (bit 2 / 0x04 of the nibble).
+    pub box_drawn: bool,
+    /// The default button item index: 1 (OK) if bit 3 is 0, or 2 (Cancel) if bit 3 is 1.
+    pub default_item: i16,
+    /// Sound number (0..=3) from bits 0..=1.
+    pub sound_number: u8,
+}
+
+/// Decode alert stage parameters for the specified stage counter (0..=3).
+pub fn alert_stage_info(stages: u16, stage_counter: u16) -> AlertStageInfo {
+    let stage_index = stage_counter.min(3);
+    let stage_nibble = ((stages >> (stage_index * 4)) & 0x0F) as u8;
+    let box_drawn = (stage_nibble & 0x04) != 0;
+    let default_item = if (stage_nibble & 0x08) == 0 { 1 } else { 2 };
+    let sound_number = stage_nibble & 0x03;
+    AlertStageInfo {
+        stage_index,
+        stage_nibble,
+        box_drawn,
+        default_item,
+        sound_number,
+    }
+}
+
+/// Replace `^0`..`^3` placeholders in dialog text bytes with the corresponding ParamText slot contents.
+///
+/// Returns `Cow::Borrowed` when no `^` character is present, avoiding allocations.
+/// Inside Macintosh Volume I, p. I-422;
+/// Macintosh Toolbox Essentials (1992), pp. 6-129--6-130.
+pub fn apply_param_text<'a>(text: &'a [u8], slots: &[impl AsRef<[u8]>]) -> Cow<'a, [u8]> {
+    if !text.contains(&b'^') {
+        return Cow::Borrowed(text);
+    }
+    let mut expanded = Vec::with_capacity(text.len());
+    let mut offset = 0;
+    while offset < text.len() {
+        if text[offset] == b'^' {
+            if let Some(index) = text
+                .get(offset + 1)
+                .copied()
+                .filter(u8::is_ascii_digit)
+                .map(|b| usize::from(b - b'0'))
+                .filter(|&idx| idx < slots.len())
+            {
+                expanded.extend_from_slice(slots[index].as_ref());
+                offset += 2;
+                continue;
+            }
+        }
+        expanded.push(text[offset]);
+        offset += 1;
+    }
+    Cow::Owned(expanded)
+}
+
+/// String-oriented wrapper for `apply_param_text` operating on Mac Roman text strings.
+pub fn apply_param_text_str<'a, S: AsRef<[u8]>>(text: &'a str, slots: &[S]) -> Cow<'a, str> {
+    if !text.contains('^') {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '^' {
+            if let Some(&next) = chars.peek() {
+                if let Some(digit) = next.to_digit(10) {
+                    let idx = digit as usize;
+                    if idx < slots.len() {
+                        chars.next();
+                        out.push_str(&decode_mac_roman(slots[idx].as_ref()));
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push(ch);
+    }
+    Cow::Owned(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -683,5 +894,219 @@ mod tests {
         assert_eq!(i16::from_be_bytes([data[8], data[9]]), 30);
         assert_eq!(i16::from_be_bytes([data[10], data[11]]), 35);
         assert_eq!(i16::from_be_bytes([data[12], data[13]]), 50);
+    }
+
+    #[test]
+    fn dialog_template_parsing_and_positioning() {
+        // Classic 22-byte DLOG (empty title, no position word)
+        let mut dlog22 = Vec::new();
+        dlog22.extend_from_slice(&228i16.to_be_bytes()); // top
+        dlog22.extend_from_slice(&198i16.to_be_bytes()); // left
+        dlog22.extend_from_slice(&372i16.to_be_bytes()); // bottom
+        dlog22.extend_from_slice(&455i16.to_be_bytes()); // right
+        dlog22.extend_from_slice(&2i16.to_be_bytes()); // proc_id
+        dlog22.push(1); // visible
+        dlog22.push(0); // filler
+        dlog22.push(0); // go_away
+        dlog22.push(0); // filler
+        dlog22.extend_from_slice(&0u32.to_be_bytes()); // ref_con
+        dlog22.extend_from_slice(&1013i16.to_be_bytes()); // items_id
+        dlog22.push(0); // empty title length
+        dlog22.push(0); // padding
+
+        let template = parse_dialog_template(&dlog22).expect("valid 22-byte dlog");
+        assert_eq!(template.bounds, (228, 198, 372, 455));
+        assert_eq!(template.proc_id, 2);
+        assert!(template.visible);
+        assert!(!template.go_away);
+        assert_eq!(template.ref_con, 0);
+        assert_eq!(template.items_id, 1013);
+        assert_eq!(template.title, b"");
+        assert_eq!(template.title_string(), "");
+        assert_eq!(template.position, 0);
+
+        // 24-byte DLOG with position word 0x280A
+        let mut dlog24 = dlog22.clone();
+        dlog24.extend_from_slice(&0x280Au16.to_be_bytes());
+        let template = parse_dialog_template(&dlog24).expect("valid 24-byte dlog");
+        assert_eq!(template.position, 0x280A);
+
+        // DLOG with odd title ("Odd" -> 3 bytes, padded to 24, position at 24..26)
+        let mut dlog_odd = Vec::new();
+        dlog_odd.extend_from_slice(&10i16.to_be_bytes());
+        dlog_odd.extend_from_slice(&20i16.to_be_bytes());
+        dlog_odd.extend_from_slice(&110i16.to_be_bytes());
+        dlog_odd.extend_from_slice(&220i16.to_be_bytes());
+        dlog_odd.extend_from_slice(&1i16.to_be_bytes());
+        dlog_odd.push(1); // visible
+        dlog_odd.push(0);
+        dlog_odd.push(1); // go_away
+        dlog_odd.push(0);
+        dlog_odd.extend_from_slice(&42u32.to_be_bytes());
+        dlog_odd.extend_from_slice(&701i16.to_be_bytes());
+        dlog_odd.push(3); // title len
+        dlog_odd.extend_from_slice(b"Odd");
+        // title_end = 21 + 3 = 24 (even boundary), so position is at offset 24..26
+        dlog_odd.extend_from_slice(&0x300Au16.to_be_bytes());
+        let template = parse_dialog_template(&dlog_odd).expect("valid odd title dlog");
+        assert_eq!(template.title_string(), "Odd");
+        assert_eq!(template.items_id, 701);
+        assert_eq!(template.position, 0x300A);
+        assert!(template.go_away);
+
+        // DLOG with even title ("Even" -> 4 bytes, padded to 26, position at 26..28)
+        let mut dlog_even = Vec::new();
+        dlog_even.extend_from_slice(&11i16.to_be_bytes());
+        dlog_even.extend_from_slice(&21i16.to_be_bytes());
+        dlog_even.extend_from_slice(&111i16.to_be_bytes());
+        dlog_even.extend_from_slice(&221i16.to_be_bytes());
+        dlog_even.extend_from_slice(&1i16.to_be_bytes());
+        dlog_even.push(1);
+        dlog_even.push(0);
+        dlog_even.push(0);
+        dlog_even.push(0);
+        dlog_even.extend_from_slice(&0u32.to_be_bytes());
+        dlog_even.extend_from_slice(&702i16.to_be_bytes());
+        dlog_even.push(4); // title len
+        dlog_even.extend_from_slice(b"Even");
+        dlog_even.push(0); // alignment pad
+        dlog_even.extend_from_slice(&0x700Au16.to_be_bytes());
+        let template = parse_dialog_template(&dlog_even).expect("valid even title dlog");
+        assert_eq!(template.title_string(), "Even");
+        assert_eq!(template.items_id, 702);
+        assert_eq!(template.position, 0x700A);
+
+        // Truncated DLOG (< 20 bytes) returns None
+        assert!(parse_dialog_template(&[0u8; 19]).is_none());
+    }
+
+    #[test]
+    fn alert_template_parsing_and_stages() {
+        // Classic 12-byte ALRT
+        let mut alrt12 = Vec::new();
+        alrt12.extend_from_slice(&10i16.to_be_bytes());
+        alrt12.extend_from_slice(&20i16.to_be_bytes());
+        alrt12.extend_from_slice(&90i16.to_be_bytes());
+        alrt12.extend_from_slice(&220i16.to_be_bytes());
+        alrt12.extend_from_slice(&123i16.to_be_bytes()); // items_id
+        alrt12.extend_from_slice(&0x0008u16.to_be_bytes()); // stages
+
+        let alert = parse_alert_template(&alrt12).expect("valid 12-byte alrt");
+        assert_eq!(alert.bounds, (10, 20, 90, 220));
+        assert_eq!(alert.items_id, 123);
+        assert_eq!(alert.stages, 0x0008);
+        assert_eq!(alert.position, 0);
+
+        // 14-byte System 7 ALRT with position word 0xB00A
+        let mut alrt14 = Vec::new();
+        alrt14.extend_from_slice(&0i16.to_be_bytes());
+        alrt14.extend_from_slice(&0i16.to_be_bytes());
+        alrt14.extend_from_slice(&80i16.to_be_bytes());
+        alrt14.extend_from_slice(&200i16.to_be_bytes());
+        alrt14.extend_from_slice(&(-321i16).to_be_bytes()); // items_id
+        alrt14.extend_from_slice(&0xF721u16.to_be_bytes()); // stages
+        alrt14.extend_from_slice(&0xB00Au16.to_be_bytes()); // position
+
+        let alert = parse_alert_template(&alrt14).expect("valid 14-byte alrt");
+        assert_eq!(alert.items_id, -321);
+        assert_eq!(alert.stages, 0xF721);
+        assert_eq!(alert.position, 0xB00A);
+
+        // Alert stages evaluation: 0xF721
+        // Stage 0 (counter 0): nibble 1 (0b0001) -> box_drawn: false, default_item: 1, sound: 1
+        let s0 = alert_stage_info(0xF721, 0);
+        assert_eq!(s0.stage_index, 0);
+        assert_eq!(s0.stage_nibble, 1);
+        assert!(!s0.box_drawn);
+        assert_eq!(s0.default_item, 1);
+        assert_eq!(s0.sound_number, 1);
+
+        // Stage 1 (counter 1): nibble 2 (0b0010) -> box_drawn: false, default_item: 1, sound: 2
+        let s1 = alert_stage_info(0xF721, 1);
+        assert_eq!(s1.stage_index, 1);
+        assert_eq!(s1.stage_nibble, 2);
+        assert!(!s1.box_drawn);
+        assert_eq!(s1.default_item, 1);
+        assert_eq!(s1.sound_number, 2);
+
+        // Stage 2 (counter 2): nibble 7 (0b0111) -> box_drawn: true, default_item: 1, sound: 3
+        let s2 = alert_stage_info(0xF721, 2);
+        assert_eq!(s2.stage_index, 2);
+        assert_eq!(s2.stage_nibble, 7);
+        assert!(s2.box_drawn);
+        assert_eq!(s2.default_item, 1);
+        assert_eq!(s2.sound_number, 3);
+
+        // Stage 3 (counter 3): nibble 0xF (0b1111) -> box_drawn: true, default_item: 2 (boldItm set), sound: 3
+        let s3 = alert_stage_info(0xF721, 3);
+        assert_eq!(s3.stage_index, 3);
+        assert_eq!(s3.stage_nibble, 0xF);
+        assert!(s3.box_drawn);
+        assert_eq!(s3.default_item, 2);
+        assert_eq!(s3.sound_number, 3);
+
+        // Counter > 3 clamps to stage 3
+        let s_clamped = alert_stage_info(0xF721, 10);
+        assert_eq!(s_clamped, s3);
+
+        // Truncated ALRT (< 8 bytes) returns None
+        assert!(parse_alert_template(&[0u8; 7]).is_none());
+    }
+
+    #[test]
+    fn param_text_byte_and_str_substitution() {
+        let params: [Vec<u8>; 4] = [
+            b"first".to_vec(),
+            Vec::new(),
+            b"third".to_vec(),
+            b"fourth".to_vec(),
+        ];
+
+        // Byte substitution
+        assert_eq!(
+            apply_param_text(b"^0/^1/^2/^3", &params).as_ref(),
+            b"first//third/fourth"
+        );
+        assert_eq!(
+            apply_param_text(b"^^0 ^9 trailing^", &params).as_ref(),
+            b"^first ^9 trailing^"
+        );
+        assert!(matches!(
+            apply_param_text(b"plain", &params),
+            Cow::Borrowed(_)
+        ));
+
+        // String substitution
+        let str_params: [Vec<u8>; 4] = [
+            b"MS UserKey".to_vec(),
+            b"42".to_vec(),
+            Vec::new(),
+            Vec::new(),
+        ];
+
+        assert_eq!(
+            apply_param_text_str("Unable to open the \"^0\" file.", &str_params),
+            "Unable to open the \"MS UserKey\" file."
+        );
+        assert_eq!(apply_param_text_str("count: ^1", &str_params), "count: 42");
+        assert_eq!(
+            apply_param_text_str("plain text without placeholders", &str_params),
+            "plain text without placeholders"
+        );
+        assert_eq!(
+            apply_param_text_str("^0 ^1 ^2 ^3", &str_params),
+            "MS UserKey 42  "
+        );
+        assert_eq!(
+            apply_param_text_str("^A literal caret", &str_params),
+            "^A literal caret"
+        );
+        assert_eq!(apply_param_text_str("trailing^", &str_params), "trailing^");
+        assert_eq!(apply_param_text_str("^^0", &str_params), "^MS UserKey");
+        assert_eq!(
+            apply_param_text_str("^9 unknown slot", &str_params),
+            "^9 unknown slot"
+        );
+        assert_eq!(apply_param_text_str("", &str_params), "");
     }
 }

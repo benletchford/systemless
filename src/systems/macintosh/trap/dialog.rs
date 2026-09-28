@@ -3850,44 +3850,20 @@ impl super::TrapDispatcher {
         ptr: u32,
         data_len: u32,
     ) -> ((i16, i16, i16, i16), i16, bool, i16, String, u16) {
-        let top = bus.read_word(ptr) as i16;
-        let left = bus.read_word(ptr + 2) as i16;
-        let bottom = bus.read_word(ptr + 4) as i16;
-        let right = bus.read_word(ptr + 6) as i16;
-        let proc_id = bus.read_word(ptr + 8) as i16;
-        let visible = bus.read_byte(ptr + 10) != 0;
-        // +11: filler
-        // +12: goAwayFlag (1 byte)
-        // +13: filler
-        let _ref_con = bus.read_long(ptr + 14);
-        let items_id = bus.read_word(ptr + 18) as i16;
-        // +20: title as Pascal string
-        let title_len = bus.read_byte(ptr + 20) as usize;
-        let mut title_bytes = vec![0u8; title_len];
-        for (i, byte) in title_bytes.iter_mut().enumerate() {
-            *byte = bus.read_byte(ptr + 21 + i as u32);
-        }
-        let title = decode_mac_roman(&title_bytes);
-
-        // Read positioning constant after the title Pascal string.
-        // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126
-        // The position word follows the title, padded to an even boundary.
-        let title_end = 21 + title_len as u32;
-        let padded_end = (title_end + 1) & !1;
-        let position = if padded_end + 2 <= data_len {
-            bus.read_word(ptr + padded_end)
-        } else {
-            0
-        };
-
-        (
-            (top, left, bottom, right),
-            proc_id,
-            visible,
-            items_id,
-            title,
-            position,
-        )
+        let bytes = bus.read_bytes(ptr, data_len as usize);
+        crate::dialog_manager::parse_dialog_template(&bytes)
+            .map(|template| {
+                let title = template.title_string();
+                (
+                    template.bounds,
+                    template.proc_id,
+                    template.visible,
+                    template.items_id,
+                    title,
+                    template.position,
+                )
+            })
+            .unwrap_or(((0, 0, 0, 0), 0, false, 0, String::new(), 0))
     }
 
     /// Parse an ALRT resource from guest memory.
@@ -3899,35 +3875,17 @@ impl super::TrapDispatcher {
         ptr: u32,
         data_len: u32,
     ) -> ((i16, i16, i16, i16), i16, u16, u16) {
-        let bounds = if data_len >= 8 {
-            (
-                bus.read_word(ptr) as i16,
-                bus.read_word(ptr + 2) as i16,
-                bus.read_word(ptr + 4) as i16,
-                bus.read_word(ptr + 6) as i16,
-            )
-        } else {
-            (0, 0, 0, 0)
-        };
-        let items_id = if data_len >= 10 {
-            bus.read_word(ptr + 8) as i16
-        } else {
-            0
-        };
-        let stages = if data_len >= 12 {
-            bus.read_word(ptr + 10)
-        } else {
-            0
-        };
-        // System 7 compiled ALRT resources append the same positioning
-        // constants as DLOG resources after the 12-byte classic template.
-        // Macintosh Toolbox Essentials 1992, p. 6-150
-        let position = if data_len >= 14 {
-            bus.read_word(ptr + 12)
-        } else {
-            0
-        };
-        (bounds, items_id, stages, position)
+        let bytes = bus.read_bytes(ptr, data_len as usize);
+        crate::dialog_manager::parse_alert_template(&bytes)
+            .map(|template| {
+                (
+                    template.bounds,
+                    template.items_id,
+                    template.stages,
+                    template.position,
+                )
+            })
+            .unwrap_or(((0, 0, 0, 0), 0, 0, 0))
     }
 
     pub(crate) fn positioned_window_bounds(
@@ -4031,12 +3989,12 @@ impl super::TrapDispatcher {
     }
 
     fn alert_stage_default_item(stages: u16, stage_word: u16) -> (u32, u32, Option<i16>) {
-        let stage_idx = (stage_word as u32).min(3);
-        // Each stage occupies 4 bits, stage 1 in the low nibble.
-        let nibble = ((stages as u32) >> (stage_idx * 4)) & 0xF;
-        let box_drawn = (nibble & 0x04) != 0;
-        let default_item = if (nibble & 0x08) == 0 { 1 } else { 2 };
-        (stage_idx, nibble, box_drawn.then_some(default_item))
+        let info = crate::dialog_manager::alert_stage_info(stages, stage_word);
+        (
+            info.stage_index as u32,
+            info.stage_nibble as u32,
+            info.box_drawn.then_some(info.default_item),
+        )
     }
 
     fn begin_interactive_alert<C: CpuOps>(
@@ -8663,26 +8621,8 @@ impl super::TrapDispatcher {
         if !text.contains('^') {
             return std::borrow::Cow::Borrowed(text);
         }
-        let mut out = String::with_capacity(text.len());
-        let mut chars = text.chars().peekable();
-        while let Some(ch) = chars.next() {
-            if ch == '^' {
-                if let Some(&next) = chars.peek() {
-                    if let Some(idx) = next.to_digit(10) {
-                        let idx = idx as usize;
-                        if idx < self.param_text.len() {
-                            if let Some(slot) = self.param_text.slot(idx) {
-                                chars.next();
-                                out.push_str(&decode_mac_roman(&slot));
-                                continue;
-                            }
-                        }
-                    }
-                }
-            }
-            out.push(ch);
-        }
-        std::borrow::Cow::Owned(out)
+        let slots = self.param_text.snapshot();
+        crate::dialog_manager::apply_param_text_str(text, &slots)
     }
 
     fn static_text_bytes(&self, text: &str) -> Vec<u8> {

@@ -39,17 +39,7 @@ pub(super) const PPC_DIALOG_ITEM_EDIT_TEXT: u8 = DIALOG_ITEM_EDIT_TEXT;
 pub(super) const PPC_DIALOG_ITEM_ICON: u8 = DIALOG_ITEM_ICON;
 pub(super) const PPC_DIALOG_ITEM_PICTURE: u8 = DIALOG_ITEM_PICTURE;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct PpcDialogTemplate {
-    pub(super) bounds: (i16, i16, i16, i16),
-    pub(super) proc_id: i16,
-    pub(super) visible: bool,
-    pub(super) go_away: bool,
-    pub(super) ref_con: u32,
-    pub(super) items_id: i16,
-    pub(super) title: Vec<u8>,
-    pub(super) position: u16,
-}
+pub(super) type PpcDialogTemplate = crate::dialog_manager::DialogTemplate;
 
 pub(super) type PpcDialogItemView = DialogItemRecord;
 
@@ -878,27 +868,7 @@ pub(super) fn ppc_apply_param_text<'a>(
     text: &'a [u8],
     param_text: &[Vec<u8>; 4],
 ) -> std::borrow::Cow<'a, [u8]> {
-    if !text.contains(&b'^') {
-        return std::borrow::Cow::Borrowed(text);
-    }
-    let mut expanded = Vec::with_capacity(text.len());
-    let mut offset = 0;
-    while offset < text.len() {
-        if text[offset] == b'^' {
-            if let Some(index) = text
-                .get(offset + 1)
-                .and_then(|byte| byte.checked_sub(b'0'))
-                .filter(|index| usize::from(*index) < param_text.len())
-            {
-                expanded.extend_from_slice(&param_text[usize::from(index)]);
-                offset += 2;
-                continue;
-            }
-        }
-        expanded.push(text[offset]);
-        offset += 1;
-    }
-    std::borrow::Cow::Owned(expanded)
+    crate::dialog_manager::apply_param_text(text, param_text)
 }
 
 fn ppc_dialog_live_items(
@@ -1304,52 +1274,8 @@ fn ppc_dispatch_dialog_compatibility(
     }
 }
 
-fn ppc_dialog_be_i16(bytes: &[u8], offset: usize) -> Option<i16> {
-    Some(i16::from_be_bytes([
-        *bytes.get(offset)?,
-        *bytes.get(offset.checked_add(1)?)?,
-    ]))
-}
-
-fn ppc_dialog_be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_be_bytes([
-        *bytes.get(offset)?,
-        *bytes.get(offset.checked_add(1)?)?,
-        *bytes.get(offset.checked_add(2)?)?,
-        *bytes.get(offset.checked_add(3)?)?,
-    ]))
-}
-
 fn ppc_parse_dialog_template(bytes: &[u8]) -> Option<PpcDialogTemplate> {
-    // Macintosh Toolbox Essentials (1992), pp. 6-113--6-114: a DLOG
-    // contains the window rectangle, proc ID, visibility/go-away flags,
-    // refCon, DITL ID, Pascal title, and (on System 7) an optional
-    // positioning word after even-byte alignment.
-    let bounds = (
-        ppc_dialog_be_i16(bytes, 0)?,
-        ppc_dialog_be_i16(bytes, 2)?,
-        ppc_dialog_be_i16(bytes, 4)?,
-        ppc_dialog_be_i16(bytes, 6)?,
-    );
-    let title_len = usize::from(*bytes.get(20)?);
-    let title_end = 21usize.checked_add(title_len)?;
-    let title = bytes.get(21..title_end)?.to_vec();
-    let position_offset = (title_end + 1) & !1;
-    let position = bytes
-        .get(position_offset..position_offset.saturating_add(2))
-        .and_then(|value| value.try_into().ok())
-        .map(u16::from_be_bytes)
-        .unwrap_or(0);
-    Some(PpcDialogTemplate {
-        bounds,
-        proc_id: ppc_dialog_be_i16(bytes, 8)?,
-        visible: *bytes.get(10)? != 0,
-        go_away: *bytes.get(12)? != 0,
-        ref_con: ppc_dialog_be_u32(bytes, 14)?,
-        items_id: ppc_dialog_be_i16(bytes, 18)?,
-        title,
-        position,
-    })
+    crate::dialog_manager::parse_dialog_template(bytes)
 }
 
 fn ppc_parse_dialog_items(bytes: &[u8]) -> Option<Vec<PpcDialogItemView>> {
@@ -1560,36 +1486,29 @@ fn ppc_new_alert_dialog(
             *last_resource_error = PPC_PARAM_ERR;
             return 0;
         }
-        let bounds = (
-            i16::from_be_bytes([alert[0], alert[1]]),
-            i16::from_be_bytes([alert[2], alert[3]]),
-            i16::from_be_bytes([alert[4], alert[5]]),
-            i16::from_be_bytes([alert[6], alert[7]]),
-        );
-        let items_id = i16::from_be_bytes([alert[8], alert[9]]);
-        let stages = u16::from_be_bytes([alert[10], alert[11]]);
-        let position = alert
-            .get(12..14)
-            .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
-            .unwrap_or(0);
+        let Some(template) = crate::dialog_manager::parse_alert_template(alert) else {
+            *last_resource_error = PPC_PARAM_ERR;
+            return 0;
+        };
         let Some(ditl_index) = ppc_vfs_resource_index(
             vfs_resources,
             current_resource_refnum,
             u32::from_be_bytes(*b"DITL"),
-            items_id,
+            template.items_id,
             false,
         ) else {
             *last_resource_error = PPC_RES_NOT_FOUND_ERR;
             return 0;
         };
         let ditl_bytes = vfs_resources[ditl_index].data.clone();
+        let stage_info = crate::dialog_manager::alert_stage_info(template.stages, 0);
         (
-            bounds,
+            template.bounds,
             ditl_bytes,
-            if stages & 8 == 0 { 1 } else { 2 },
-            0,
-            position,
-            1,
+            stage_info.default_item as u16,
+            0u16,
+            template.position,
+            1u32,
         )
     };
     if ppc_parse_dialog_items(&ditl_bytes).is_none() {
