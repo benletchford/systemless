@@ -239,6 +239,7 @@ export function cancelSystemlessWorker(worker) {
 export function bootSystemlessWorker(worker, message, transfer, timeoutMs, onProgress) {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let timer;
     const finish = (callback, value) => {
       if (settled) return;
       settled = true;
@@ -249,10 +250,14 @@ export function bootSystemlessWorker(worker, message, transfer, timeoutMs, onPro
       worker.onmessageerror = null;
       callback(value);
     };
-    const timer = setTimeout(
-      () => finish(reject, new Error("Runtime worker startup timed out")),
-      timeoutMs,
-    );
+    const resetTimer = () => {
+      clearTimeout(timer);
+      timer = setTimeout(
+        () => finish(reject, new Error("Runtime worker startup timed out")),
+        timeoutMs,
+      );
+    };
+    resetTimer();
     workerBootCancellation.set(worker, () => finish(reject, new Error("Runtime worker startup cancelled")));
     worker.onmessage = (event) => {
       const data = event.data || {};
@@ -262,6 +267,7 @@ export function bootSystemlessWorker(worker, message, transfer, timeoutMs, onPro
       } else if (data.type === "ready") {
         finish(resolve, data);
       } else if (data.type === "progress") {
+        resetTimer();
         onProgress(data.progress);
       } else if (data.type === "error") {
         finish(reject, new Error(data.message || "Runtime worker startup failed"));

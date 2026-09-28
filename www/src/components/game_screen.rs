@@ -2491,7 +2491,7 @@ async fn boot_catalogue_worker(
         &worker,
         &message,
         &transfer,
-        15_000,
+        30_000,
         on_progress.as_ref().unchecked_ref(),
     ))
     .await
