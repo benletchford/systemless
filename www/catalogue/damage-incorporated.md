@@ -13,6 +13,7 @@ architectures:
 - ppc
 default_architecture: 68k
 category: FPS
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -23,6 +24,15 @@ compatibility:
     environment: Deterministic headless framebuffer run from the original BinHex archive
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/1981
+  - date: 2026-09-28
+    tester: Catalogue maintainer
+    systemless_version: 0.65.1
+    architecture: 68k
+    environment: >-
+      Release-mode Chrome browser preview with the exact checksum-matched hosted
+      BinHex demo; New, Done and Move It Out reached the first-person mission
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3198
 artifacts:
 - id: archive
   role: archive
@@ -90,6 +100,9 @@ the distance. The route looks simple until movement, ammunition and squad
 position all demand attention at once. The command console never lets the game
 become a solitary corridor shoot; even a quiet stretch is a chance to bring the
 team back together before the next door.
+
+To enter the first mission, choose New, finish the Operation: White Night
+briefing with Done, then accept the default fire team with Move It Out.
 
 ## Four demo missions
 
