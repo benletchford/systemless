@@ -432,6 +432,7 @@ const PPC_TYPE_TYPE: u32 = u32::from_be_bytes(*b"type");
 pub const PPC_BAD_FORMAT: i16 = -206;
 pub const PPC_CHANNEL_NOT_BUSY: i16 = -211;
 pub const PPC_GESTALT_UNDEF_SELECTOR_ERR: i16 = -5551;
+pub const PPC_GESTALT_DUP_SELECTOR_ERR: i16 = -5552;
 pub const PPC_FRAG_LIB_NOT_FOUND: i16 = -2804;
 pub const PPC_FRAG_FORMAT_UNKNOWN: i16 = -2806;
 pub const PPC_FRAG_HAD_UNRESOLVEDS: i16 = -2807;
@@ -941,6 +942,7 @@ pub enum PpcImportDispatcherTarget {
     DrawPicture,
     KillPicture,
     Gestalt,
+    NewGestaltValue,
     RegisterAppearanceClient,
     ActivateControl,
     DeactivateControl,
@@ -2584,6 +2586,7 @@ pub(crate) struct PpcAppleEventState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcToolboxStartupState {
+    gestalt_values: HashMap<u32, u32>,
     pub init_graf_count: u32,
     pub init_graf_global_ptr: u32,
     pub fonts_initialized: bool,
@@ -2658,6 +2661,7 @@ pub struct PpcToolboxStartupState {
 impl Default for PpcToolboxStartupState {
     fn default() -> Self {
         Self {
+            gestalt_values: HashMap::new(),
             init_graf_count: 0,
             init_graf_global_ptr: 0,
             fonts_initialized: false,
@@ -8395,6 +8399,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "DrawPicture") => PpcImportDispatcherTarget::DrawPicture,
         ("InterfaceLib", "KillPicture") => PpcImportDispatcherTarget::KillPicture,
         ("InterfaceLib", "Gestalt") => PpcImportDispatcherTarget::Gestalt,
+        ("InterfaceLib", "NewGestaltValue") => PpcImportDispatcherTarget::NewGestaltValue,
         // Universal Interfaces exposes Code Fragment Manager entry points
         // through several compatibility libraries across classic and Carbon
         // runtimes. Treat the library name as an export namespace alias; the
@@ -11163,6 +11168,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
             binding,
             cpu,
             memory,
+            toolbox_startup,
         },
     ) {
         return Some(action);
@@ -11949,7 +11955,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::PBStatus => {
             unreachable!("Device Manager imports return through dispatch_device_import")
         }
-        PpcImportDispatcherTarget::Gestalt => {
+        PpcImportDispatcherTarget::Gestalt | PpcImportDispatcherTarget::NewGestaltValue => {
             unreachable!("Gestalt imports return through dispatch_gestalt_import")
         }
         PpcImportDispatcherTarget::GetSharedLibrary
@@ -13275,14 +13281,24 @@ fn ppc_commit_picture_writes(
     true
 }
 
-fn ppc_gestalt(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+fn ppc_gestalt(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    toolbox_startup: &PpcToolboxStartupState,
+) -> i16 {
     let selector = cpu.gpr[3];
     let response_ptr = cpu.gpr[4];
     if response_ptr == 0 {
         return PPC_PARAM_ERR;
     }
 
-    let Some((response, err)) = ppc_gestalt_response(selector) else {
+    let Some((response, err)) = ppc_gestalt_response(selector).or_else(|| {
+        toolbox_startup
+            .gestalt_values
+            .get(&selector)
+            .copied()
+            .map(|value| (value, PPC_NO_ERR))
+    }) else {
         if ppc_hle_trace_enabled() {
             eprintln!(
                 "[PPC-TRACE] Gestalt({:?}) -> gestaltUndefSelectorErr",

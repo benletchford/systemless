@@ -1,6 +1,45 @@
 use super::*;
 
 #[test]
+fn new_gestalt_value_registers_selector_and_rejects_duplicates() {
+    let pef = synthetic_pef_with_import(b"NewGestaltValue");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let selector = u32::from_be_bytes(*b"HEAP");
+    let value = 0x1234_5678;
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::NewGestaltValue
+    );
+
+    loaded.cpu.gpr[3] = selector;
+    loaded.cpu.gpr[4] = value;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGestaltValue);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    let response_ptr = PPC_HEAP_BASE;
+    loaded.memory.add_region(response_ptr, vec![0; 4]);
+    loaded.cpu.gpr[3] = selector;
+    loaded.cpu.gpr[4] = response_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::Gestalt);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(response_ptr), Some(value));
+
+    loaded.cpu.gpr[3] = selector;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGestaltValue);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_GESTALT_DUP_SELECTOR_ERR));
+
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"sysv");
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGestaltValue);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_GESTALT_DUP_SELECTOR_ERR));
+
+    loaded.cpu.gpr[3] = selector;
+    loaded.cpu.gpr[4] = response_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::Gestalt);
+    assert_eq!(loaded.memory.read_u32_be(response_ptr), Some(value));
+}
+
+#[test]
 fn gestalt_logical_ram_matches_physical_ram_without_virtual_memory() {
     let pef = synthetic_pef_with_import(b"Gestalt");
     let mut loaded = load_pef_application(&pef).unwrap();
