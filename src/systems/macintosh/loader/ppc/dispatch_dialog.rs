@@ -792,11 +792,7 @@ fn ppc_release_dialog_storage(
 
         let items_ptr = memory.read_u32_be(items_handle).unwrap_or(0);
         for item in items {
-            let base_type = item.item_type & !PPC_DIALOG_ITEM_DISABLED;
-            if matches!(
-                base_type,
-                PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_EDIT_TEXT
-            ) {
+            if crate::dialog_manager::is_dialog_item_disposable_text(item.item_type) {
                 let _ = allocator.dispose_handle(
                     memory,
                     heap_cursor,
