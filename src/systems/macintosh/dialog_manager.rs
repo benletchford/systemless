@@ -765,9 +765,22 @@ pub const CHAR_PERIOD: u8 = b'.';
 /// Event modifier bit for Command key (`cmdKey`).
 pub const MODIFIER_CMD_KEY: u16 = 0x0100;
 
-/// Event `what` codes for keyboard input.
+/// Event `what` codes for Toolbox events.
+///
+/// Inside Macintosh Volume I (1985), pp. I-249--I-250;
+/// Macintosh Toolbox Essentials (1992), pp. 2-83--2-84.
+pub const EVENT_NULL: u16 = 0;
+pub const EVENT_MOUSE_DOWN: u16 = 1;
+#[allow(dead_code)]
+pub const EVENT_MOUSE_UP: u16 = 2;
 pub const EVENT_KEY_DOWN: u16 = 3;
+#[allow(dead_code)]
+pub const EVENT_KEY_UP: u16 = 4;
 pub const EVENT_AUTO_KEY: u16 = 5;
+pub const EVENT_UPDATE: u16 = 6;
+#[allow(dead_code)]
+pub const EVENT_DISK: u16 = 7;
+pub const EVENT_ACTIVATE: u16 = 8;
 
 /// Decision produced by standard modal dialog keyboard filtering.
 ///
@@ -1118,6 +1131,80 @@ where
         }
     }
     has_visible_item
+}
+
+/// Tests whether an event should be handled as part of an active modeless or movable modal dialog.
+///
+/// Inside Macintosh Volume I (1985), p. I-416;
+/// Macintosh Toolbox Essentials (1992), p. 6-138:
+/// - If there is no target dialog corresponding to the event, returns `false`.
+/// - For `updateEvt` (6) and `activateEvt` (8), returns `true` if `message == dialog_ptr`.
+/// - For `mouseDown` (1), returns `true` if the mouse point `(where_v, where_h)` falls within the dialog window bounds.
+/// - For all other event types directed to the dialog, returns `true`.
+pub fn is_dialog_event(
+    what: u16,
+    message: u32,
+    where_v: i16,
+    where_h: i16,
+    target_dialog: Option<u32>,
+    dialog_bounds: Option<(i16, i16, i16, i16)>,
+) -> bool {
+    let Some(dialog_ptr) = target_dialog else {
+        return false;
+    };
+    match what {
+        EVENT_UPDATE | EVENT_ACTIVATE => message == dialog_ptr,
+        EVENT_MOUSE_DOWN => {
+            dialog_bounds.is_some_and(|bounds| rect_contains_point(bounds, where_v, where_h))
+        }
+        _ => true,
+    }
+}
+
+/// Validates whether a character is an editable character accepted by dialog edit fields.
+///
+/// Macintosh Toolbox Essentials (1992), p. 6-139:
+/// Accepts backspace (0x08) and printable ASCII / Mac Roman characters (0x20..=0x7E).
+pub fn is_dialog_edit_text_character(character: u8) -> bool {
+    matches!(character, 0x08 | 0x20..=0x7E)
+}
+
+/// Calculates the updated text bytes and new insertion caret offset after processing a key press
+/// (such as backspace or printable character) against an existing text buffer and selection range.
+///
+/// Macintosh Toolbox Essentials (1992), pp. 2-83--2-88, 6-139.
+pub fn textedit_key_result(
+    existing: &[u8],
+    sel_start: usize,
+    sel_end: usize,
+    key: u8,
+) -> (Vec<u8>, usize) {
+    let text_len = existing.len();
+    let s = sel_start.min(text_len);
+    let e = sel_end.min(text_len);
+    let (s, e) = if s > e { (e, s) } else { (s, e) };
+
+    if key == 0x08 {
+        if s != e {
+            let mut merged = Vec::with_capacity(text_len - (e - s));
+            merged.extend_from_slice(&existing[..s]);
+            merged.extend_from_slice(&existing[e..]);
+            return (merged, s);
+        }
+        if s > 0 {
+            let mut merged = Vec::with_capacity(text_len - 1);
+            merged.extend_from_slice(&existing[..s - 1]);
+            merged.extend_from_slice(&existing[s..]);
+            return (merged, s - 1);
+        }
+        return (existing.to_vec(), s);
+    }
+
+    let mut merged = Vec::with_capacity(s + 1 + text_len.saturating_sub(e));
+    merged.extend_from_slice(&existing[..s]);
+    merged.push(key);
+    merged.extend_from_slice(&existing[e..]);
+    (merged, s + 1)
 }
 
 #[cfg(test)]
@@ -1933,5 +2020,159 @@ mod tests {
 
         let empty: Vec<(u8, (i16, i16, i16, i16))> = vec![];
         assert!(!is_dialog_game_managed(bounds, empty));
+    }
+
+    #[test]
+    fn dialog_event_classification_and_textedit_key_processing() {
+        let dialog = 0x2000;
+        let bounds = (50, 50, 200, 300);
+
+        // is_dialog_event tests
+        // None target dialog -> always false
+        assert!(!is_dialog_event(
+            EVENT_UPDATE,
+            dialog,
+            0,
+            0,
+            None,
+            Some(bounds)
+        ));
+        assert!(!is_dialog_event(
+            EVENT_MOUSE_DOWN,
+            0,
+            100,
+            100,
+            None,
+            Some(bounds)
+        ));
+
+        // updateEvt (6) & activateEvt (8) -> match message == dialog
+        assert!(is_dialog_event(
+            EVENT_UPDATE,
+            dialog,
+            0,
+            0,
+            Some(dialog),
+            Some(bounds)
+        ));
+        assert!(!is_dialog_event(
+            EVENT_UPDATE,
+            0x9999,
+            0,
+            0,
+            Some(dialog),
+            Some(bounds)
+        ));
+        assert!(is_dialog_event(
+            EVENT_ACTIVATE,
+            dialog,
+            0,
+            0,
+            Some(dialog),
+            Some(bounds)
+        ));
+        assert!(!is_dialog_event(
+            EVENT_ACTIVATE,
+            0x1111,
+            0,
+            0,
+            Some(dialog),
+            Some(bounds)
+        ));
+
+        // mouseDown (1) -> within bounds
+        assert!(is_dialog_event(
+            EVENT_MOUSE_DOWN,
+            0,
+            100,
+            100,
+            Some(dialog),
+            Some(bounds)
+        ));
+        assert!(!is_dialog_event(
+            EVENT_MOUSE_DOWN,
+            0,
+            10,
+            10,
+            Some(dialog),
+            Some(bounds)
+        ));
+        assert!(!is_dialog_event(
+            EVENT_MOUSE_DOWN,
+            0,
+            100,
+            100,
+            Some(dialog),
+            None
+        ));
+
+        // other events (keyDown, autoKey, null, etc.) -> true if target dialog present
+        assert!(is_dialog_event(
+            EVENT_KEY_DOWN,
+            b'a' as u32,
+            0,
+            0,
+            Some(dialog),
+            Some(bounds)
+        ));
+        assert!(is_dialog_event(
+            EVENT_AUTO_KEY,
+            b'a' as u32,
+            0,
+            0,
+            Some(dialog),
+            Some(bounds)
+        ));
+        assert!(is_dialog_event(
+            EVENT_NULL,
+            0,
+            0,
+            0,
+            Some(dialog),
+            Some(bounds)
+        ));
+
+        // is_dialog_edit_text_character tests
+        assert!(is_dialog_edit_text_character(0x08)); // backspace
+        assert!(is_dialog_edit_text_character(b' ')); // space (0x20)
+        assert!(is_dialog_edit_text_character(b'A'));
+        assert!(is_dialog_edit_text_character(b'~')); // 0x7E
+        assert!(!is_dialog_edit_text_character(0x00)); // null
+        assert!(!is_dialog_edit_text_character(0x0D)); // CR
+        assert!(!is_dialog_edit_text_character(0x1B)); // ESC
+        assert!(!is_dialog_edit_text_character(0x7F)); // DEL
+        assert!(!is_dialog_edit_text_character(0x80));
+
+        // textedit_key_result tests
+        let initial = b"Hello World";
+        // Insertion at caret (index 5)
+        let (res, caret) = textedit_key_result(initial, 5, 5, b',');
+        assert_eq!(res, b"Hello, World");
+        assert_eq!(caret, 6);
+
+        // Insertion replacing range [5, 11) (" World")
+        let (res, caret) = textedit_key_result(initial, 5, 11, b'!');
+        assert_eq!(res, b"Hello!");
+        assert_eq!(caret, 6);
+
+        // Insertion with reversed endpoints [11, 5)
+        let (res, caret) = textedit_key_result(initial, 11, 5, b'!');
+        assert_eq!(res, b"Hello!");
+        assert_eq!(caret, 6);
+
+        // Backspace at caret > 0
+        let (res, caret) = textedit_key_result(initial, 5, 5, 0x08);
+        assert_eq!(res, b"Hell World");
+        assert_eq!(caret, 4);
+
+        // Backspace deleting selection range [0, 5) ("Hello")
+        let (res, caret) = textedit_key_result(initial, 0, 5, 0x08);
+        assert_eq!(res, b" World");
+        assert_eq!(caret, 0);
+
+        // Backspace at caret 0 (noop)
+        let (res, caret) = textedit_key_result(initial, 0, 0, 0x08);
+        assert_eq!(res, b"Hello World");
+        assert_eq!(caret, 0);
     }
 }

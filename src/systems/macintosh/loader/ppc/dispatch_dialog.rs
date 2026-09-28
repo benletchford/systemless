@@ -914,23 +914,18 @@ fn ppc_dispatch_dialog_compatibility(
     let dialog = cpu.gpr[3];
     match operation {
         PpcDialogCompatibilityOperation::IsDialogEvent => {
-            let result = ppc_read_dialog_event(memory, cpu.gpr[3])
-                .and_then(|event| {
-                    let dialog = ppc_dialog_for_event(memory, gworlds, event.what, event.message)?;
-                    Some(match event.what {
-                        6 | 8 => event.message == dialog,
-                        1 => ppc_dialog_global_bounds(memory, gworlds, dialog).is_some_and(
-                            |bounds| {
-                                event.where_v >= bounds.0
-                                    && event.where_v < bounds.2
-                                    && event.where_h >= bounds.1
-                                    && event.where_h < bounds.3
-                            },
-                        ),
-                        _ => true,
-                    })
-                })
-                .unwrap_or(false);
+            let result = ppc_read_dialog_event(memory, cpu.gpr[3]).is_some_and(|event| {
+                let dialog = ppc_dialog_for_event(memory, gworlds, event.what, event.message);
+                let bounds = dialog.and_then(|d| ppc_dialog_global_bounds(memory, gworlds, d));
+                crate::dialog_manager::is_dialog_event(
+                    event.what,
+                    event.message,
+                    event.where_v,
+                    event.where_h,
+                    dialog,
+                    bounds,
+                )
+            });
             PpcImportAction::Return(u32::from(result))
         }
         PpcDialogCompatibilityOperation::DialogSelect => {
@@ -953,11 +948,15 @@ fn ppc_dispatch_dialog_compatibility(
             let Some(items) = ppc_dialog_items_for_dialog(memory, handles, dialog) else {
                 return PpcImportAction::Return(0);
             };
-            if matches!(event.what, 6 | 8) && dialog_out_ptr != 0 {
+            if matches!(
+                event.what,
+                crate::dialog_manager::EVENT_UPDATE | crate::dialog_manager::EVENT_ACTIVATE
+            ) && dialog_out_ptr != 0
+            {
                 let _ = memory.write_u32_be(dialog_out_ptr, dialog);
             }
             match event.what {
-                6 if event.message == dialog => {
+                crate::dialog_manager::EVENT_UPDATE if event.message == dialog => {
                     *current_gworld = dialog;
                     *current_gdevice =
                         ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
@@ -981,10 +980,12 @@ fn ppc_dispatch_dialog_compatibility(
                         PpcDialogCallbackCompletion::Return(0),
                     )
                 }
-                1 if event.where_v >= bounds.0
-                    && event.where_v < bounds.2
-                    && event.where_h >= bounds.1
-                    && event.where_h < bounds.3 =>
+                crate::dialog_manager::EVENT_MOUSE_DOWN
+                    if crate::dialog_manager::rect_contains_point(
+                        bounds,
+                        event.where_v,
+                        event.where_h,
+                    ) =>
                 {
                     let Some(hit) = ppc_dialog_item_at_global_point(
                         memory,
@@ -1042,7 +1043,7 @@ fn ppc_dispatch_dialog_compatibility(
                     }
                     PpcImportAction::Return(1)
                 }
-                3 | 5 => {
+                crate::dialog_manager::EVENT_KEY_DOWN | crate::dialog_manager::EVENT_AUTO_KEY => {
                     let te_handle = memory
                         .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
                         .unwrap_or(0);
@@ -1058,7 +1059,8 @@ fn ppc_dispatch_dialog_compatibility(
                                 item.item_type & !PPC_DIALOG_ITEM_DISABLED
                                     == PPC_DIALOG_ITEM_EDIT_TEXT
                             });
-                    if !editable || !matches!(character, 0x08 | 0x20..=0x7e) {
+                    if !editable || !crate::dialog_manager::is_dialog_edit_text_character(character)
+                    {
                         return PpcImportAction::Return(0);
                     }
                     let mut allocator = PpcProcessAllocatorView {
