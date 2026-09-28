@@ -10,8 +10,9 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
-  status: boots
+  status: playable
   verified:
   - date: "2026-09-23"
     tester: Catalogue maintainer
@@ -24,6 +25,16 @@ compatibility:
       approved.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/2499
+  - date: 2026-09-28
+    tester: Catalogue maintainer
+    systemless_version: 0.65.1
+    architecture: 68k
+    environment: >-
+      Release-mode Chrome browser preview using the exact checksum-matched hosted
+      StuffIt demo; two Return presses entered the colour board and Left/Right
+      moved the active piece in both directions
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3207
 artifacts:
 - id: archive
   role: archive
@@ -86,4 +97,5 @@ opens with illustrated instructions before letting the player start a game.
 This entry preserves Spectrum HoloByte's original promotional demo archive,
 not the commercial release. It contains separate black-and-white and colour
 applications; Systemless has been checked with the colour version. Browser
-launch awaits manual approval.
+launch is approved for the default 68K route. Press Return through the title
+and instructions to start, then use Left and Right to position the falling piece.
