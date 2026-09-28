@@ -12,9 +12,23 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
-  status: boots
+  status: playable
   verified:
+  - date: "2026-09-28"
+    tester: Catalogue maintainer
+    systemless_version: "0.66.0"
+    architecture: 68k
+    environment: >-
+      Release-mode Chrome check of the unchanged demo archive on public master.
+      Help > Suggest Move identified a free matching pair. Clicking the first
+      tile and double-clicking the second removed both, revealed tiles beneath,
+      and reduced the displayed count from 144 to 142. A separate 20-second
+      pacing check reached about 60 host FPS and 61 guest ticks per second;
+      the archive was requested once and no console errors appeared.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3227
   - date: "2026-09-23"
     tester: Catalogue maintainer
     systemless_version: "0.53.0"
@@ -88,5 +102,6 @@ moves. Its Macintosh demo presents the game's colourful tiles and full board.
 This is the original promotional demo, not the commercial game. The included
 read-me by author Brodie Lockard identifies it as a demo and describes the
 additional layouts, tile sets, music, variations and editing tools offered by
-the full release. Systemless loads the original 68K application and renders
-the tile board; browser play awaits manual approval.
+the full release. Systemless loads the original 68K application for browser
+play. Click an exposed tile, then double-click its matching exposed tile to
+remove the pair.
