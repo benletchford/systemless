@@ -9,10 +9,12 @@ use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::dialog_manager::{
     dialog_dbox_frame_rect, dialog_item_base_type, dialog_target_for_event, edit_text_frame_rect,
+    find_dialog_item_hit, global_to_dialog_local_point, is_dialog_item_control,
+    is_dialog_item_disabled, is_dialog_item_enabled, normalize_selection_bounds,
     rect_contains_point, DIALOG_DBOX_FRAME_MARGIN, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX,
-    DIALOG_ITEM_DISABLED_FLAG, DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE,
-    DIALOG_ITEM_RADIO, DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT,
-    DIALOG_ITEM_USER_ITEM, DIALOG_TEXT_LEFT_INSET,
+    DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO,
+    DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT, DIALOG_ITEM_USER_ITEM,
+    DIALOG_TEXT_LEFT_INSET,
 };
 use crate::display::CursorImage;
 use crate::memory::SavedPixels;
@@ -3214,11 +3216,8 @@ impl super::TrapDispatcher {
         let outline_hilite = self.te_feature_bit(te_handle, Self::TE_FEATURE_OUTLINE_HILITE);
         let sel_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
         let sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
-        let (selection_start, selection_end) = if sel_start <= sel_end {
-            (sel_start, sel_end)
-        } else {
-            (sel_end, sel_start)
-        };
+        let (selection_start, selection_end) =
+            normalize_selection_bounds(sel_start, sel_end, usize::MAX);
         if selection_start == selection_end {
             if te_active && caret_visible {
                 if let Some(&(line_start, line_end, line_top, line_bottom, line_x)) = visual_lines
@@ -4203,7 +4202,7 @@ impl super::TrapDispatcher {
                 }
                 let item = &items[(hit - 1) as usize];
                 let base_type = dialog_item_base_type(item.item_type);
-                let is_disabled = (item.item_type & DIALOG_ITEM_DISABLED_FLAG) != 0;
+                let is_disabled = is_dialog_item_disabled(item.item_type);
                 if is_disabled {
                     return;
                 }
@@ -4659,7 +4658,7 @@ impl super::TrapDispatcher {
                 .get((stored_edit_item - 1) as usize)
                 .is_some_and(|item| {
                     dialog_item_base_type(item.item_type) == DIALOG_ITEM_EDIT_TEXT
-                        && (item.item_type & DIALOG_ITEM_DISABLED_FLAG) == 0
+                        && is_dialog_item_enabled(item.item_type)
                 });
         let edit_item = if stored_is_valid {
             stored_edit_item
@@ -4668,7 +4667,7 @@ impl super::TrapDispatcher {
                 .iter()
                 .position(|item| {
                     dialog_item_base_type(item.item_type) == DIALOG_ITEM_EDIT_TEXT
-                        && (item.item_type & DIALOG_ITEM_DISABLED_FLAG) == 0
+                        && is_dialog_item_enabled(item.item_type)
                 })
                 .map(|idx| (idx + 1) as i16)
                 .unwrap_or(0)
@@ -4746,7 +4745,7 @@ impl super::TrapDispatcher {
             return false;
         };
         let base_type = dialog_item_base_type(item.item_type);
-        let is_disabled = (item.item_type & DIALOG_ITEM_DISABLED_FLAG) != 0;
+        let is_disabled = is_dialog_item_disabled(item.item_type);
         if base_type != DIALOG_ITEM_EDIT_TEXT || is_disabled {
             return false;
         }
@@ -4805,7 +4804,7 @@ impl super::TrapDispatcher {
             return false;
         };
         if dialog_item_base_type(item.item_type) != DIALOG_ITEM_EDIT_TEXT
-            || (item.item_type & DIALOG_ITEM_DISABLED_FLAG) != 0
+            || is_dialog_item_disabled(item.item_type)
         {
             return false;
         }
@@ -5800,7 +5799,7 @@ impl super::TrapDispatcher {
             .filter(|(i, it)| {
                 dialog_item_base_type(it.item_type) == DIALOG_ITEM_USER_ITEM
                     && (!skip_disabled_placeholders
-                        || (it.item_type & DIALOG_ITEM_DISABLED_FLAG) == 0
+                        || is_dialog_item_enabled(it.item_type)
                         || it.proc_ptr != 0)
                     && (!skip_popup_user_items
                         || !self
@@ -6442,7 +6441,7 @@ impl super::TrapDispatcher {
                 continue;
             }
 
-            let enabled = (item.item_type & DIALOG_ITEM_DISABLED_FLAG) == 0;
+            let enabled = is_dialog_item_enabled(item.item_type);
             match base_type {
                 // Static text (8)
                 DIALOG_ITEM_STATIC_TEXT => {
@@ -6558,7 +6557,7 @@ impl super::TrapDispatcher {
                 continue;
             }
 
-            let enabled = (item.item_type & DIALOG_ITEM_DISABLED_FLAG) == 0;
+            let enabled = is_dialog_item_enabled(item.item_type);
             if trace_items {
                 if let Some(ctrl_handle) = self.dialog_control_handle_for_item(dialog_ptr, item_num)
                 {
@@ -6795,7 +6794,7 @@ impl super::TrapDispatcher {
             {
                 continue;
             }
-            let enabled = (item.item_type & DIALOG_ITEM_DISABLED_FLAG) == 0;
+            let enabled = is_dialog_item_enabled(item.item_type);
             match base_type {
                 DIALOG_ITEM_BUTTON => self.draw_button_with_enabled(
                     bus,
@@ -9249,10 +9248,8 @@ impl super::TrapDispatcher {
         popup_original_rects: &std::collections::HashMap<(u32, i16), (i16, i16, i16, i16)>,
         dialog_ptr: u32,
     ) -> i16 {
-        let (top, left, _, _) = bounds;
-        let local_v = screen_v - top;
-        let local_h = screen_h - left;
-        for (i, item) in items.iter().enumerate() {
+        let (local_v, local_h) = global_to_dialog_local_point(bounds, screen_v, screen_h);
+        let candidate_rects = items.iter().enumerate().map(|(i, item)| {
             let item_no = (i + 1) as i16;
             // For popup userItems, use the original DITL rect (before SetDItem
             // narrowed it) so clicks on the full popup area register.
@@ -9260,8 +9257,7 @@ impl super::TrapDispatcher {
                 .get(&(dialog_ptr, item_no))
                 .copied()
                 .unwrap_or(item.rect);
-            let base_type = dialog_item_base_type(item.item_type);
-            if (DIALOG_ITEM_BUTTON..=DIALOG_ITEM_RESOURCE_CONTROL).contains(&base_type) {
+            if is_dialog_item_control(item.item_type) {
                 if let Some(ctrl_handle) = self.dialog_control_handle_for_item(dialog_ptr, item_no)
                 {
                     let ctrl_ptr = bus.read_long(ctrl_handle);
@@ -9275,11 +9271,10 @@ impl super::TrapDispatcher {
                     }
                 }
             }
-            if rect_contains_point(rect, local_v, local_h) {
-                return item_no;
-            }
-        }
-        0
+            (rect, item.item_type)
+        });
+        find_dialog_item_hit(candidate_rects, local_v, local_h, false, |_| true)
+            .map_or(0, |idx| (idx + 1) as i16)
     }
 
     fn dialog_button_hit_test(
@@ -9288,14 +9283,13 @@ impl super::TrapDispatcher {
         screen_v: i16,
         screen_h: i16,
     ) -> i16 {
+        let (local_v, local_h) = global_to_dialog_local_point(bounds, screen_v, screen_h);
         for (i, item) in items.iter().enumerate() {
             let base_type = dialog_item_base_type(item.item_type);
-            let is_disabled = (item.item_type & DIALOG_ITEM_DISABLED_FLAG) != 0;
-            if base_type != DIALOG_ITEM_BUTTON || is_disabled {
+            if base_type != DIALOG_ITEM_BUTTON || is_dialog_item_disabled(item.item_type) {
                 continue;
             }
-            let item_bounds = Self::dialog_item_screen_rect(bounds, item.rect);
-            if rect_contains_point(item_bounds, screen_v, screen_h) {
+            if rect_contains_point(item.rect, local_v, local_h) {
                 return (i + 1) as i16;
             }
         }
@@ -9309,7 +9303,7 @@ impl super::TrapDispatcher {
         item: &DialogItem,
     ) -> bool {
         let base_type = dialog_item_base_type(item.item_type);
-        let is_disabled = (item.item_type & DIALOG_ITEM_DISABLED_FLAG) != 0;
+        let is_disabled = is_dialog_item_disabled(item.item_type);
         base_type == DIALOG_ITEM_USER_ITEM
             && !is_disabled
             && item.proc_ptr == 0
@@ -9502,7 +9496,7 @@ impl super::TrapDispatcher {
 
         let item = &items[(hit - 1) as usize];
         let base_type = dialog_item_base_type(item.item_type);
-        let is_disabled = (item.item_type & DIALOG_ITEM_DISABLED_FLAG) != 0;
+        let is_disabled = is_dialog_item_disabled(item.item_type);
         if base_type != DIALOG_ITEM_BUTTON || is_disabled {
             return;
         }
@@ -10090,7 +10084,7 @@ impl super::TrapDispatcher {
 
                 let item = &items[(hit - 1) as usize];
                 let base_type = dialog_item_base_type(item.item_type);
-                let is_disabled = (item.item_type & DIALOG_ITEM_DISABLED_FLAG) != 0;
+                let is_disabled = is_dialog_item_disabled(item.item_type);
                 if base_type == DIALOG_ITEM_BUTTON && !is_disabled {
                     let rect = Self::dialog_item_screen_rect(bounds, item.rect);
                     let is_default = hit
@@ -10180,8 +10174,7 @@ impl super::TrapDispatcher {
         bounds: (i16, i16, i16, i16),
         rect: (i16, i16, i16, i16),
     ) -> (i16, i16, i16, i16) {
-        let (it, il, ib, ir) = rect;
-        (bounds.0 + it, bounds.1 + il, bounds.0 + ib, bounds.1 + ir)
+        crate::dialog_manager::dialog_rect_to_global(bounds, rect)
     }
 
     fn rects_intersect(a: (i16, i16, i16, i16), b: (i16, i16, i16, i16)) -> bool {
@@ -11161,7 +11154,7 @@ impl super::TrapDispatcher {
                                 );
                                 if hit > 0 {
                                     let item = &items[(hit - 1) as usize];
-                                    let is_disabled = (item.item_type & 0x80) != 0;
+                                    let is_disabled = is_dialog_item_disabled(item.item_type);
                                     trace_detail = format!(
                                         "bounds=({},{},{},{}) item_hit={} item_type=${:02X} disabled={} outcome={}",
                                         bounds.0,
@@ -11289,8 +11282,7 @@ impl super::TrapDispatcher {
                                     if let Some(item) = items.get((edit_item - 1) as usize) {
                                         let item_type = item.item_type;
                                         let base_type = dialog_item_base_type(item_type);
-                                        let is_disabled =
-                                            (item_type & DIALOG_ITEM_DISABLED_FLAG) != 0;
+                                        let is_disabled = is_dialog_item_disabled(item_type);
                                         trace_detail = format!(
                                             "bounds=({},{},{},{}) edit_item={} item_type=${:02X} disabled={} outcome={}",
                                             bounds.0,
@@ -11629,7 +11621,7 @@ impl super::TrapDispatcher {
                     if let Some(menu_id) = self.last_inserted_menu_id.take() {
                         let enabled_user_item = dialog_item_base_type(item.item_type)
                             == DIALOG_ITEM_USER_ITEM
-                            && (item.item_type & DIALOG_ITEM_DISABLED_FLAG) == 0;
+                            && is_dialog_item_enabled(item.item_type);
                         if enabled_user_item {
                             if item.proc_ptr != 0 {
                                 self.dialog_item_popup_menus
@@ -11758,7 +11750,7 @@ impl super::TrapDispatcher {
                 if let Some(pending) = self.pending_dialog_popup_menu {
                     if pending.dialog_ptr == dialog_ptr && pending.item_no == item_no {
                         if base_type == DIALOG_ITEM_USER_ITEM
-                            && (item_type & DIALOG_ITEM_DISABLED_FLAG) == 0
+                            && is_dialog_item_enabled(item_type)
                             && item_handle != 0
                         {
                             self.dialog_item_popup_menus
@@ -11774,9 +11766,9 @@ impl super::TrapDispatcher {
                     let key = (dialog_ptr, item_no);
                     let previous_base_type = dialog_item_base_type(previous_item.item_type);
                     let previous_enabled_user_item = previous_base_type == DIALOG_ITEM_USER_ITEM
-                        && (previous_item.item_type & DIALOG_ITEM_DISABLED_FLAG) == 0;
-                    let current_enabled_user_item = base_type == DIALOG_ITEM_USER_ITEM
-                        && (item_type & DIALOG_ITEM_DISABLED_FLAG) == 0;
+                        && is_dialog_item_enabled(previous_item.item_type);
+                    let current_enabled_user_item =
+                        base_type == DIALOG_ITEM_USER_ITEM && is_dialog_item_enabled(item_type);
                     let old_width = previous_item.rect.3 - previous_item.rect.1;
                     let old_height = previous_item.rect.2 - previous_item.rect.0;
                     let new_width = box_right - box_left;
@@ -12053,7 +12045,7 @@ impl super::TrapDispatcher {
                             if hit > 0
                                 && item_type.is_some_and(|ty| {
                                     dialog_item_base_type(ty) == DIALOG_ITEM_BUTTON
-                                        && (ty & DIALOG_ITEM_DISABLED_FLAG) == 0
+                                        && is_dialog_item_enabled(ty)
                                 })
                             {
                                 if let Some(item) = items.get((hit - 1) as usize) {
@@ -12083,7 +12075,7 @@ impl super::TrapDispatcher {
                             if hit > 0
                                 && item_type.is_some_and(|ty| {
                                     dialog_item_base_type(ty) == DIALOG_ITEM_BUTTON
-                                        && (ty & DIALOG_ITEM_DISABLED_FLAG) == 0
+                                        && is_dialog_item_enabled(ty)
                                 })
                             {
                                 self.pending_modal_button_dispose_dialog = Some(saved_dialog_ptr);
@@ -12213,7 +12205,7 @@ impl super::TrapDispatcher {
                                 .get(flash_item.saturating_sub(1) as usize)
                                 .filter(|item| {
                                     dialog_item_base_type(item.item_type) == DIALOG_ITEM_BUTTON
-                                        && (item.item_type & DIALOG_ITEM_DISABLED_FLAG) == 0
+                                        && is_dialog_item_enabled(item.item_type)
                                 })
                             {
                                 self.restore_dialog_button_normal_state(
@@ -12357,8 +12349,7 @@ impl super::TrapDispatcher {
                                 if hit > 0 {
                                     let item = &items_clone[(hit - 1) as usize];
                                     let base_type = dialog_item_base_type(item.item_type);
-                                    let is_disabled =
-                                        (item.item_type & DIALOG_ITEM_DISABLED_FLAG) != 0;
+                                    let is_disabled = is_dialog_item_disabled(item.item_type);
 
                                     if !is_disabled {
                                         match base_type {
@@ -12783,7 +12774,11 @@ impl super::TrapDispatcher {
                                                     .get((edit_item - 1) as usize)
                                                     .map(|item| item.item_type);
                                                 let enabled_edit_text = item_type
-                                                    .map(|ty| (ty & 0x7F) == 16 && (ty & 0x80) == 0)
+                                                    .map(|ty| {
+                                                        dialog_item_base_type(ty)
+                                                            == DIALOG_ITEM_EDIT_TEXT
+                                                            && is_dialog_item_enabled(ty)
+                                                    })
                                                     .unwrap_or(false);
                                                 let text_after = tracking.edit_text.clone();
                                                 text_trace = Some((
@@ -13131,7 +13126,7 @@ impl super::TrapDispatcher {
                                         bounds.1 + it_r,
                                     ),
                                     title: checked_text,
-                                    enabled: (item.item_type & 0x80) == 0,
+                                    enabled: is_dialog_item_enabled(item.item_type),
                                     pressed: false,
                                 })
                             })
@@ -14419,16 +14414,13 @@ impl super::TrapDispatcher {
                                 let te_ptr = Self::te_record_ptr(bus, te_handle);
                                 let text_len = Self::te_text_length(bus, te_handle);
                                 if te_ptr != 0 {
-                                    let mut sel_start =
+                                    let sel_start =
                                         bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
-                                    let mut sel_end =
+                                    let sel_end =
                                         bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
-                                    sel_start = sel_start.min(text_len);
-                                    sel_end = sel_end.min(text_len);
-                                    if sel_end < sel_start {
-                                        std::mem::swap(&mut sel_start, &mut sel_end);
-                                    }
-                                    sel_start
+                                    let (s, _) =
+                                        normalize_selection_bounds(sel_start, sel_end, text_len);
+                                    s
                                 } else {
                                     0
                                 }

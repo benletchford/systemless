@@ -477,7 +477,7 @@ pub struct DialogItem {
 
 impl From<crate::dialog_manager::DialogItemRecord> for DialogItem {
     fn from(record: crate::dialog_manager::DialogItemRecord) -> Self {
-        let base_type = record.item_type & !crate::dialog_manager::DIALOG_ITEM_DISABLED_FLAG;
+        let base_type = crate::dialog_manager::dialog_item_base_type(record.item_type);
         let text = match base_type {
             crate::dialog_manager::DIALOG_ITEM_BUTTON
             | crate::dialog_manager::DIALOG_ITEM_CHECKBOX

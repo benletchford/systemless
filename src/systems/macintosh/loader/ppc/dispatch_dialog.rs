@@ -3,17 +3,17 @@
 use super::*;
 use crate::dialog_manager::{
     dialog_item_base_type, dialog_rect_to_global, dialog_target_for_event, dialog_text_rect,
-    edit_text_frame_rect, hide_dialog_item_rect, is_dialog_item_rect_hidden, offset_ditl_bytes,
-    parse_ditl_items, position_dialog_bounds as unified_position_dialog_bounds,
-    rect_contains_point, show_dialog_item_rect, DialogItemRecord, DIALOG_ALERT_HIT_OFFSET,
-    DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET, DIALOG_EDIT_FIELD_OFFSET,
-    DIALOG_EDIT_OPEN_OFFSET, DIALOG_INITIAL_DEFAULT_ITEM, DIALOG_INITIAL_EDIT_FIELD,
-    DIALOG_INITIAL_EDIT_OPEN, DIALOG_ITEMS_OFFSET, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX,
-    DIALOG_ITEM_DISABLED_FLAG, DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE,
-    DIALOG_ITEM_RADIO, DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT,
-    DIALOG_ITEM_USER_ITEM, DIALOG_RECORD_SIZE, DIALOG_RESOURCE_ID_OFFSET,
-    DIALOG_STANDARD_ALERT_OUTPUT_OFFSET, DIALOG_STANDARD_ALERT_STACK_OFFSET,
-    DIALOG_TEXT_HANDLE_OFFSET,
+    edit_text_frame_rect, find_dialog_item_hit, global_to_dialog_local_point,
+    hide_dialog_item_rect, is_dialog_item_rect_hidden, offset_ditl_bytes, parse_ditl_items,
+    position_dialog_bounds as unified_position_dialog_bounds, show_dialog_item_rect,
+    DialogItemRecord, DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET,
+    DIALOG_DEFAULT_ITEM_OFFSET, DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET,
+    DIALOG_INITIAL_DEFAULT_ITEM, DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
+    DIALOG_ITEMS_OFFSET, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX, DIALOG_ITEM_DISABLED_FLAG,
+    DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO,
+    DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT, DIALOG_ITEM_USER_ITEM,
+    DIALOG_RECORD_SIZE, DIALOG_RESOURCE_ID_OFFSET, DIALOG_STANDARD_ALERT_OUTPUT_OFFSET,
+    DIALOG_STANDARD_ALERT_STACK_OFFSET, DIALOG_TEXT_HANDLE_OFFSET,
 };
 use crate::trap::types::decode_mac_roman;
 
@@ -3119,30 +3119,23 @@ fn ppc_dialog_item_at_global_point(
     // Dialog-owned control records keep contrlRect in dialog-local
     // coordinates, so the global point is rebased before asking the CDEF.
     // FindDialogItem already passes an empty origin and therefore stays local.
-    let local_v = where_v.saturating_sub(bounds.0);
-    let local_h = where_h.saturating_sub(bounds.1);
-    for (index, item) in items.iter().enumerate() {
-        if item.item_type & DIALOG_ITEM_DISABLED_FLAG != 0 {
-            continue;
-        }
-        let rect = ppc_dialog_rect_to_global(bounds, item.rect);
-        if !rect_contains_point(rect, where_v, where_h) {
-            continue;
-        }
-        if crate::dialog_manager::is_dialog_item_control(item.item_type)
-            && item.handle != 0
-            && controls.iter().any(|record| record.handle == item.handle)
-        {
-            if ppc_control_part_at_point(memory, controls, item.handle, local_v, local_h)
-                .is_some_and(|part| part != 0)
-            {
-                return u16::try_from(index + 1).ok();
+    let (local_v, local_h) = global_to_dialog_local_point(bounds, where_v, where_h);
+    let hit_idx = find_dialog_item_hit(
+        items.iter().map(|item| (item.rect, item.item_type)),
+        local_v,
+        local_h,
+        true,
+        |index| {
+            let item = &items[index];
+            if item.handle != 0 && controls.iter().any(|record| record.handle == item.handle) {
+                ppc_control_part_at_point(memory, controls, item.handle, local_v, local_h)
+                    .is_some_and(|part| part != 0)
+            } else {
+                true
             }
-            continue;
-        }
-        return u16::try_from(index + 1).ok();
-    }
-    None
+        },
+    )?;
+    u16::try_from(hit_idx + 1).ok()
 }
 
 #[allow(clippy::too_many_arguments)]

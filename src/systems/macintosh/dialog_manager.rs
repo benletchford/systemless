@@ -192,7 +192,12 @@ pub struct DialogItemRecord {
 impl DialogItemRecord {
     /// Whether the item is enabled for user interaction.
     pub fn is_enabled(&self) -> bool {
-        self.item_type & DIALOG_ITEM_DISABLED_FLAG == 0
+        is_dialog_item_enabled(self.item_type)
+    }
+
+    /// Whether the item is disabled for user interaction.
+    pub fn is_disabled(&self) -> bool {
+        is_dialog_item_disabled(self.item_type)
     }
 
     /// Strongly typed item kind.
@@ -284,7 +289,7 @@ pub fn ditl_item_record_len_at(bytes: &[u8], record_offset: usize) -> Option<usi
     }
     let item_type = *bytes.get(record_offset.checked_add(12)?)?;
     let data_len_byte = *bytes.get(record_offset.checked_add(13)?)?;
-    let base_type = item_type & !DIALOG_ITEM_DISABLED_FLAG;
+    let base_type = dialog_item_base_type(item_type);
     let payload_offset = record_offset.checked_add(14)?;
     let remaining = bytes.len().saturating_sub(payload_offset);
     let payload_len = ditl_item_payload_len(base_type, data_len_byte, remaining)?;
@@ -365,7 +370,7 @@ pub fn parse_ditl_items(bytes: &[u8]) -> Option<Vec<DialogItemRecord>> {
         };
         let item_type = bytes[offset + 12];
         let data_len_byte = bytes[offset + 13];
-        let base_type = item_type & !DIALOG_ITEM_DISABLED_FLAG;
+        let base_type = dialog_item_base_type(item_type);
         let payload_start = offset + 14;
         let remaining = bytes.len().saturating_sub(payload_start);
         let Some(payload_len) = ditl_item_payload_len(base_type, data_len_byte, remaining) else {
@@ -467,6 +472,33 @@ pub fn dialog_rect_to_local(
     )
 }
 
+/// Convert a global/screen point into dialog-local coordinates based on dialog bounds.
+#[inline]
+pub const fn global_to_dialog_local_point(
+    bounds: (i16, i16, i16, i16),
+    screen_v: i16,
+    screen_h: i16,
+) -> (i16, i16) {
+    (
+        screen_v.saturating_sub(bounds.0),
+        screen_h.saturating_sub(bounds.1),
+    )
+}
+
+/// Convert a dialog-local point into global/screen coordinates based on dialog bounds.
+#[allow(dead_code)]
+#[inline]
+pub const fn dialog_local_to_global_point(
+    bounds: (i16, i16, i16, i16),
+    local_v: i16,
+    local_h: i16,
+) -> (i16, i16) {
+    (
+        bounds.0.saturating_add(local_v),
+        bounds.1.saturating_add(local_h),
+    )
+}
+
 /// Whether a rectangle contains a point `(v, h)` (with half-open interval `top <= v < bottom` and `left <= h < right`).
 pub fn rect_contains_point(rect: (i16, i16, i16, i16), v: i16, h: i16) -> bool {
     v >= rect.0 && v < rect.2 && h >= rect.1 && h < rect.3
@@ -531,6 +563,24 @@ pub const fn dialog_item_base_type(raw_type: u8) -> u8 {
     raw_type & !DIALOG_ITEM_DISABLED_FLAG
 }
 
+/// Returns whether the dialog item has the disabled bit flag (`0x80`) set.
+///
+/// Inside Macintosh Volume I, p. I-427;
+/// Macintosh Toolbox Essentials (1992), p. 6-152.
+#[inline]
+pub const fn is_dialog_item_disabled(raw_type: u8) -> bool {
+    (raw_type & DIALOG_ITEM_DISABLED_FLAG) != 0
+}
+
+/// Returns whether the dialog item is enabled (disabled bit flag `0x80` not set).
+///
+/// Inside Macintosh Volume I, p. I-427;
+/// Macintosh Toolbox Essentials (1992), p. 6-152.
+#[inline]
+pub const fn is_dialog_item_enabled(raw_type: u8) -> bool {
+    (raw_type & DIALOG_ITEM_DISABLED_FLAG) == 0
+}
+
 /// Resolve the target dialog pointer for a Toolbox event.
 ///
 /// Inside Macintosh Volume I, pp. I-416--I-417:
@@ -593,7 +643,7 @@ pub fn dialog_item_enclosing_rect(
     item_type: u8,
     rect: (i16, i16, i16, i16),
 ) -> (i16, i16, i16, i16) {
-    let base_type = item_type & !DIALOG_ITEM_DISABLED_FLAG;
+    let base_type = dialog_item_base_type(item_type);
     match base_type {
         DIALOG_ITEM_EDIT_TEXT => (
             rect.0.saturating_sub(3),
@@ -620,6 +670,59 @@ pub fn find_dialog_item_at_local_point<'a>(
         }
     }
     None
+}
+
+/// Hit-tests a dialog-local point against dialog items, returning the 0-based index of the first matching item.
+///
+/// If `enabled_only` is true, disabled items (`is_dialog_item_disabled`) are skipped.
+/// For each item whose bounding rectangle contains `(local_v, local_h)`, `control_part_hit` is called
+/// if the item is a control (`is_dialog_item_control`). If `control_part_hit` returns `false`, the item
+/// is skipped (allowing clicks on inactive controls or transparent group box bodies to fall through).
+///
+/// Inside Macintosh Volume I, pp. I-416--I-418;
+/// Macintosh Toolbox Essentials (1992), pp. 6-125, 6-138--6-139.
+pub fn find_dialog_item_hit<I, F>(
+    items: I,
+    local_v: i16,
+    local_h: i16,
+    enabled_only: bool,
+    mut control_part_hit: F,
+) -> Option<usize>
+where
+    I: IntoIterator<Item = ((i16, i16, i16, i16), u8)>,
+    F: FnMut(usize) -> bool,
+{
+    for (idx, (rect, raw_type)) in items.into_iter().enumerate() {
+        if enabled_only && is_dialog_item_disabled(raw_type) {
+            continue;
+        }
+        if !rect_contains_point(rect, local_v, local_h) {
+            continue;
+        }
+        if is_dialog_item_control(raw_type) && !control_part_hit(idx) {
+            continue;
+        }
+        return Some(idx);
+    }
+    None
+}
+
+/// Hit-tests a global screen point against dialog items given the dialog window bounds.
+#[allow(dead_code)]
+pub fn find_dialog_item_at_global_point<I, F>(
+    bounds: (i16, i16, i16, i16),
+    screen_v: i16,
+    screen_h: i16,
+    items: I,
+    enabled_only: bool,
+    control_part_hit: F,
+) -> Option<usize>
+where
+    I: IntoIterator<Item = ((i16, i16, i16, i16), u8)>,
+    F: FnMut(usize) -> bool,
+{
+    let (local_v, local_h) = global_to_dialog_local_point(bounds, screen_v, screen_h);
+    find_dialog_item_hit(items, local_v, local_h, enabled_only, control_part_hit)
 }
 
 /// Offset the bounding rectangles of compiled DITL items directly within the raw binary buffer.
@@ -972,7 +1075,7 @@ pub fn find_next_edit_text_item(
     let start = current_edit_item_1_indexed;
     for offset in 0..types.len() {
         let idx = (start + offset) % types.len();
-        let base_type = types[idx] & !DIALOG_ITEM_DISABLED_FLAG;
+        let base_type = dialog_item_base_type(types[idx]);
         if base_type == DIALOG_ITEM_EDIT_TEXT {
             return Some(idx + 1);
         }
@@ -1066,7 +1169,7 @@ pub fn is_dialog_item_disposable_control(raw_type: u8) -> bool {
 /// - Checkbox (5) -> 1 (`checkBoxProc`)
 /// - Radio (6) -> 2 (`radioButProc`)
 pub fn dialog_item_control_proc_id(item_type: u8) -> Option<i16> {
-    match item_type & !DIALOG_ITEM_DISABLED_FLAG {
+    match dialog_item_base_type(item_type) {
         DIALOG_ITEM_BUTTON => Some(0),
         DIALOG_ITEM_CHECKBOX => Some(1),
         DIALOG_ITEM_RADIO => Some(2),
@@ -1090,6 +1193,20 @@ pub fn next_alert_stage(current_stage: u16) -> u16 {
     ((current_stage as u32) + 1).min(3) as u16
 }
 
+/// Normalizes an arbitrary text selection range `(start, end)` within `0..=max_len`.
+///
+/// Clamps both bounds to `max_len` and ensures `start <= end`.
+#[inline]
+pub fn normalize_selection_bounds(start: usize, end: usize, max_len: usize) -> (usize, usize) {
+    let s = start.min(max_len);
+    let e = end.min(max_len);
+    if s <= e {
+        (s, e)
+    } else {
+        (e, s)
+    }
+}
+
 /// Normalizes an edit text item selection range `(start_sel, end_sel)` against a given text length.
 ///
 /// Inside Macintosh Volume I, p. I-414, and Macintosh Toolbox Essentials (1992), p. 6-132:
@@ -1101,19 +1218,17 @@ pub fn normalize_dialog_item_selection(
     end_sel: i16,
     text_len: usize,
 ) -> (u16, u16) {
-    let text_len = text_len.min(i16::MAX as usize) as i16;
-    let (s, e) = if start_sel == 0 && (end_sel == -1 || end_sel == i16::MAX) {
-        (0, text_len)
+    let text_len = text_len.min(i16::MAX as usize);
+    if start_sel == 0 && (end_sel == -1 || end_sel == i16::MAX) {
+        (0, text_len as u16)
     } else {
-        let s = start_sel.clamp(0, text_len);
-        let e = end_sel.clamp(0, text_len);
-        if s <= e {
-            (s, e)
-        } else {
-            (e, s)
-        }
-    };
-    (s as u16, e as u16)
+        let (s, e) = normalize_selection_bounds(
+            start_sel.max(0) as usize,
+            end_sel.max(0) as usize,
+            text_len,
+        );
+        (s as u16, e as u16)
+    }
 }
 
 /// Computes the outer bounding rectangle and corner oval radius for drawing the standard 3px bold
@@ -1157,8 +1272,8 @@ where
         .into_iter()
         .enumerate()
         .find_map(|(idx, (raw_type, title))| {
-            let is_enabled_button = (raw_type & DIALOG_ITEM_DISABLED_FLAG == 0)
-                && (raw_type & !DIALOG_ITEM_DISABLED_FLAG == DIALOG_ITEM_BUTTON);
+            let is_enabled_button = is_dialog_item_enabled(raw_type)
+                && (dialog_item_base_type(raw_type) == DIALOG_ITEM_BUTTON);
             if is_enabled_button && is_dialog_cancel_button_title(title.as_ref()) {
                 u16::try_from(idx + 1).ok()
             } else {
@@ -1236,7 +1351,7 @@ where
             continue;
         }
         has_visible_item = true;
-        if (item_type & !DIALOG_ITEM_DISABLED_FLAG) != DIALOG_ITEM_USER_ITEM {
+        if dialog_item_base_type(item_type) != DIALOG_ITEM_USER_ITEM {
             return false;
         }
     }
@@ -2389,5 +2504,120 @@ mod tests {
         assert_eq!(DIALOG_STANDARD_ALERT_OUTPUT_OFFSET, 176);
         assert_eq!(DIALOG_STANDARD_ALERT_STACK_OFFSET, 180);
         assert_eq!(DIALOG_RECORD_SIZE, 256);
+    }
+
+    #[test]
+    fn dialog_item_disabled_and_enabled_predicates() {
+        assert!(is_dialog_item_enabled(DIALOG_ITEM_BUTTON));
+        assert!(is_dialog_item_enabled(DIALOG_ITEM_EDIT_TEXT));
+        assert!(is_dialog_item_enabled(DIALOG_ITEM_USER_ITEM));
+        assert!(!is_dialog_item_disabled(DIALOG_ITEM_BUTTON));
+        assert!(!is_dialog_item_disabled(DIALOG_ITEM_EDIT_TEXT));
+
+        let disabled_btn = DIALOG_ITEM_BUTTON | DIALOG_ITEM_DISABLED_FLAG;
+        assert!(is_dialog_item_disabled(disabled_btn));
+        assert!(!is_dialog_item_enabled(disabled_btn));
+
+        let disabled_text = DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_DISABLED_FLAG;
+        assert!(is_dialog_item_disabled(disabled_text));
+        assert!(!is_dialog_item_enabled(disabled_text));
+
+        let record_enabled = DialogItemRecord {
+            item_offset: 0,
+            item_type: DIALOG_ITEM_BUTTON,
+            rect: (10, 10, 30, 80),
+            handle: 0,
+            payload: vec![],
+        };
+        assert!(record_enabled.is_enabled());
+        assert!(!record_enabled.is_disabled());
+
+        let record_disabled = DialogItemRecord {
+            item_offset: 0,
+            item_type: disabled_btn,
+            rect: (10, 10, 30, 80),
+            handle: 0,
+            payload: vec![],
+        };
+        assert!(record_disabled.is_disabled());
+        assert!(!record_disabled.is_enabled());
+    }
+
+    #[test]
+    fn dialog_point_conversions_and_bounds() {
+        let bounds = (50, 100, 250, 300);
+        let screen_pt = (75, 160);
+        let local_pt = global_to_dialog_local_point(bounds, screen_pt.0, screen_pt.1);
+        assert_eq!(local_pt, (25, 60));
+
+        let converted_back = dialog_local_to_global_point(bounds, local_pt.0, local_pt.1);
+        assert_eq!(converted_back, screen_pt);
+
+        assert_eq!(
+            global_to_dialog_local_point((100, 100, 200, 200), i16::MIN, i16::MIN),
+            (i16::MIN, i16::MIN)
+        );
+        assert_eq!(
+            dialog_local_to_global_point((100, 100, 200, 200), i16::MAX, i16::MAX),
+            (i16::MAX, i16::MAX)
+        );
+    }
+
+    #[test]
+    fn dialog_item_hit_testing() {
+        assert_eq!(find_dialog_item_hit([], 10, 10, false, |_| true), None);
+
+        let items = [
+            // Item 0: disabled static text at (10, 10, 50, 100)
+            (
+                (10, 10, 50, 100),
+                DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_DISABLED_FLAG,
+            ),
+            // Item 1: enabled button at (20, 20, 40, 80)
+            ((20, 20, 40, 80), DIALOG_ITEM_BUTTON),
+            // Item 2: enabled resource control at (60, 10, 90, 100)
+            ((60, 10, 90, 100), DIALOG_ITEM_RESOURCE_CONTROL),
+        ];
+
+        // Unfiltered (FindDItem semantics): disabled item 0 wins at (25, 25)
+        assert_eq!(
+            find_dialog_item_hit(items, 25, 25, false, |_| true),
+            Some(0)
+        );
+
+        // Filtered enabled-only (DialogSelect / mouse tracking semantics):
+        // disabled item 0 is skipped, hitting enabled button item 1!
+        assert_eq!(find_dialog_item_hit(items, 25, 25, true, |_| true), Some(1));
+
+        // Point outside all items
+        assert_eq!(find_dialog_item_hit(items, 5, 5, true, |_| true), None);
+
+        // Control part filtering: control at index 2 queried
+        assert_eq!(
+            find_dialog_item_hit(items, 70, 50, true, |_idx| false),
+            None
+        );
+        assert_eq!(
+            find_dialog_item_hit(items, 70, 50, true, |idx| idx == 2),
+            Some(2)
+        );
+
+        // find_dialog_item_at_global_point coordinates test
+        let dialog_bounds = (100, 200, 300, 400);
+        assert_eq!(
+            find_dialog_item_at_global_point(dialog_bounds, 125, 225, items, true, |_| true,),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn normalize_selection_bounds_behavior() {
+        assert_eq!(normalize_selection_bounds(2, 5, 10), (2, 5));
+        assert_eq!(normalize_selection_bounds(5, 2, 10), (2, 5));
+        assert_eq!(normalize_selection_bounds(0, 0, 10), (0, 0));
+        assert_eq!(normalize_selection_bounds(10, 10, 10), (10, 10));
+        assert_eq!(normalize_selection_bounds(5, 20, 10), (5, 10));
+        assert_eq!(normalize_selection_bounds(25, 30, 10), (10, 10));
+        assert_eq!(normalize_selection_bounds(30, 5, 10), (5, 10));
     }
 }
