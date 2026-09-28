@@ -4017,7 +4017,10 @@ impl super::TrapDispatcher {
         if dialog_ptr == 0 {
             return false;
         }
-        bus.write_word(dialog_ptr + 168, default_item as u16);
+        bus.write_word(
+            dialog_ptr + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET,
+            default_item as u16,
+        );
 
         let saved_pixels = self
             .dialog_saved_pixels
@@ -4628,12 +4631,15 @@ impl super::TrapDispatcher {
         dialog_ptr: u32,
         items: &[DialogItem],
     ) -> (String, i16, i16) {
-        let default_item = match bus.read_word(dialog_ptr + 168) as i16 {
+        let default_item = match bus.read_word(
+            dialog_ptr + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET,
+        ) as i16 {
             value if value > 0 => value,
             _ => 1,
         };
 
-        let edit_field = bus.read_word(dialog_ptr + 164) as i16;
+        let edit_field =
+            bus.read_word(dialog_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET) as i16;
         let stored_edit_item = if edit_field >= 0 { edit_field + 1 } else { 0 };
         let stored_is_valid = stored_edit_item > 0
             && items
@@ -4703,32 +4709,7 @@ impl super::TrapDispatcher {
         sel_end: usize,
         key: u8,
     ) -> (Vec<u8>, usize) {
-        let text_len = existing.len();
-        let s = sel_start.min(text_len);
-        let e = sel_end.min(text_len);
-        let (s, e) = if s > e { (e, s) } else { (s, e) };
-
-        if key == 0x08 {
-            if s != e {
-                let mut merged = Vec::with_capacity(text_len - (e - s));
-                merged.extend_from_slice(&existing[..s]);
-                merged.extend_from_slice(&existing[e..]);
-                return (merged, s);
-            }
-            if s > 0 {
-                let mut merged = Vec::with_capacity(text_len - 1);
-                merged.extend_from_slice(&existing[..s - 1]);
-                merged.extend_from_slice(&existing[s..]);
-                return (merged, s - 1);
-            }
-            return (existing.to_vec(), s);
-        }
-
-        let mut merged = Vec::with_capacity(s + 1 + text_len.saturating_sub(e));
-        merged.extend_from_slice(&existing[..s]);
-        merged.push(key);
-        merged.extend_from_slice(&existing[e..]);
-        (merged, s + 1)
+        crate::dialog_manager::textedit_key_result(existing, sel_start, sel_end, key)
     }
 
     fn apply_dialog_select_key_to_edit_item(
@@ -4754,7 +4735,8 @@ impl super::TrapDispatcher {
         let item_handle = Self::dialog_item_handle(bus, dialog_ptr, edit_item);
         let existing = Self::text_item_bytes_from_handle_if_present(bus, item_handle)
             .unwrap_or_else(|| encode_mac_roman_lossy(&item.text));
-        let text_handle = bus.read_long(dialog_ptr + 160);
+        let text_handle =
+            bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
         let te_ptr = Self::te_record_ptr(bus, text_handle);
         let (sel_start, sel_end) = if te_ptr != 0 {
             (
@@ -4807,9 +4789,13 @@ impl super::TrapDispatcher {
             return false;
         }
 
-        bus.write_word(dialog_ptr + 164, (edit_item - 1) as u16);
+        bus.write_word(
+            dialog_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
+            (edit_item - 1) as u16,
+        );
 
-        let text_handle = bus.read_long(dialog_ptr + 160);
+        let text_handle =
+            bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
         let te_ptr = Self::te_record_ptr(bus, text_handle);
         if te_ptr == 0 {
             return true;
@@ -10090,7 +10076,10 @@ impl super::TrapDispatcher {
                 let is_disabled = (item.item_type & 0x80) != 0;
                 if base_type == 4 && !is_disabled {
                     let rect = Self::dialog_item_screen_rect(bounds, item.rect);
-                    let is_default = hit == bus.read_word(dialog_ptr + 168) as i16;
+                    let is_default = hit
+                        == bus.read_word(
+                            dialog_ptr + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET,
+                        ) as i16;
                     self.draw_dialog_button_highlight_state(
                         bus, rect, &item.text, is_default, true,
                     );
@@ -11057,19 +11046,15 @@ impl super::TrapDispatcher {
                 let (what, message, where_v, where_h, _modifiers) =
                     Self::read_guest_event_record(bus, event_ptr);
                 let target_dialog = self.dialog_from_window_event(what, message);
-                let result = if let Some(dialog_ptr) = target_dialog {
-                    match what {
-                        6 | 8 => message == dialog_ptr,
-                        1 => Self::dialog_contains_screen_point(
-                            Self::dialog_screen_bounds(bus, dialog_ptr),
-                            where_v,
-                            where_h,
-                        ),
-                        _ => true,
-                    }
-                } else {
-                    false
-                };
+                let dialog_bounds = target_dialog.map(|ptr| Self::dialog_screen_bounds(bus, ptr));
+                let result = crate::dialog_manager::is_dialog_event(
+                    what,
+                    message,
+                    where_v,
+                    where_h,
+                    target_dialog,
+                    dialog_bounds,
+                );
                 self.record_dialog_input_trace(
                     "A97F",
                     event_ptr,
@@ -11111,7 +11096,12 @@ impl super::TrapDispatcher {
                     // handling update and activate events even though the
                     // Boolean result is FALSE. Macintosh Toolbox Essentials
                     // (1992), pp. 6-139 through 6-141.
-                    if matches!(what, 6 | 8) && dialog_out_ptr != 0 {
+                    if matches!(
+                        what,
+                        crate::dialog_manager::EVENT_UPDATE
+                            | crate::dialog_manager::EVENT_ACTIVATE
+                    ) && dialog_out_ptr != 0
+                    {
                         bus.write_long(dialog_out_ptr, dialog_ptr);
                     }
                     let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
@@ -11122,7 +11112,7 @@ impl super::TrapDispatcher {
                     if let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() {
                         Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
                         match what {
-                            6 => {
+                            crate::dialog_manager::EVENT_UPDATE => {
                                 // MTE 1992 p. 6-141: DialogSelect wraps the
                                 // update redraw in BeginUpdate/EndUpdate,
                                 // calls DrawDialog, and returns FALSE.
@@ -11141,7 +11131,8 @@ impl super::TrapDispatcher {
                                     bounds.0, bounds.1, bounds.2, bounds.3
                                 );
                             }
-                            1 if Self::dialog_contains_screen_point(bounds, where_v, where_h) => {
+                            crate::dialog_manager::EVENT_MOUSE_DOWN
+                                if Self::dialog_contains_screen_point(bounds, where_v, where_h) => {
                                 let hit = self.dialog_item_hit_test(
                                     bus,
                                     &items,
@@ -11226,7 +11217,7 @@ impl super::TrapDispatcher {
                                     }
                                 }
                             }
-                            0 => {
+                            crate::dialog_manager::EVENT_NULL => {
                                 let (_edit_text, edit_item, _default_item) =
                                     Self::dialog_edit_state(bus, dialog_ptr, &items);
                                 trace_detail = format!(
@@ -11239,11 +11230,14 @@ impl super::TrapDispatcher {
                                     // editText item is present, letting TextEdit advance
                                     // the insertion-caret blink without changing text or
                                     // selection fields.
-                                    let text_handle = bus.read_long(dialog_ptr + 160);
+                                    let text_handle = bus.read_long(
+                                        dialog_ptr
+                                            + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET,
+                                    );
                                     self.textedit_idle(cpu, bus, text_handle);
                                 }
                             }
-                            1 => {
+                            crate::dialog_manager::EVENT_MOUSE_DOWN => {
                                 trace_detail = format!(
                                     "bounds=({},{},{},{}) item_hit=0 outcome=outside_dialog",
                                     bounds.0, bounds.1, bounds.2, bounds.3
@@ -11261,7 +11255,8 @@ impl super::TrapDispatcher {
                                     );
                                 }
                             }
-                            3 | 5 => {
+                            crate::dialog_manager::EVENT_KEY_DOWN
+                            | crate::dialog_manager::EVENT_AUTO_KEY => {
                                 let (_edit_text, edit_item, _default_item) =
                                     Self::dialog_edit_state(bus, dialog_ptr, &items);
                                 trace_detail = format!(
@@ -11293,19 +11288,23 @@ impl super::TrapDispatcher {
                                         );
                                         if base_type == 16 && !is_disabled {
                                             let char_code = (message & 0xFF) as u8;
-                                            // MTE 1992 p. 6-139: DialogSelect uses TextEdit
-                                            // to handle key-down and auto-key events in
-                                            // editable text items before reporting itemHit.
-                                            self.apply_dialog_select_key_to_edit_item(
-                                                bus, dialog_ptr, &mut items, edit_item, char_code,
-                                            );
-                                            if dialog_out_ptr != 0 {
-                                                bus.write_long(dialog_out_ptr, dialog_ptr);
+                                            if crate::dialog_manager::is_dialog_edit_text_character(
+                                                char_code,
+                                            ) {
+                                                // MTE 1992 p. 6-139: DialogSelect uses TextEdit
+                                                // to handle key-down and auto-key events in
+                                                // editable text items before reporting itemHit.
+                                                self.apply_dialog_select_key_to_edit_item(
+                                                    bus, dialog_ptr, &mut items, edit_item, char_code,
+                                                );
+                                                if dialog_out_ptr != 0 {
+                                                    bus.write_long(dialog_out_ptr, dialog_ptr);
+                                                }
+                                                if item_hit_ptr != 0 {
+                                                    bus.write_word(item_hit_ptr, edit_item as u16);
+                                                }
+                                                result = true;
                                             }
-                                            if item_hit_ptr != 0 {
-                                                bus.write_word(item_hit_ptr, edit_item as u16);
-                                            }
-                                            result = true;
                                         }
                                     }
                                 }
@@ -12682,7 +12681,11 @@ impl super::TrapDispatcher {
                                                 tracking.edit_text =
                                                     tracking.items[idx].text.clone();
                                                 tracking.edit_text_modified = false;
-                                                bus.write_word(dialog_ptr + 164, idx as u16);
+                                                bus.write_word(
+                                                    dialog_ptr
+                                                        + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
+                                                    idx as u16,
+                                                );
                                                 switched = true;
                                             }
                                         }
