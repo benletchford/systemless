@@ -584,8 +584,11 @@ pub(crate) struct CopiedCell {
     offset: u32,
     len: u8,
     indices: [u8; TILE_SAMPLES],
-    /// How many of `CopiedDetail::inks`, in order, belong to this cell.
+    /// How many of `CopiedDetail::inks`, in order, belong to this cell:
+    /// only a cell with blended (side-table) ink lists its ink there.
     inks: u8,
+    /// The cell's ink, mapped, when none of it is blended.
+    block: ink::CellInk,
 }
 
 /// The retained detail a row copy carries, reused between copies.
@@ -638,6 +641,7 @@ impl CopiedDetail {
                     len: cell.indices.len().min(TILE_SAMPLES) as u8,
                     indices,
                     inks: (self.inks.len() - first_ink) as u8,
+                    block: ink::CellInk::default(),
                 });
             }
             base += len;
@@ -2028,29 +2032,40 @@ impl Presentation {
         copied.cells.clear();
         copied.inks.clear();
         let map = |index: u8| table.map_or(index, |table| table[index as usize]);
-        let push = |copied: &mut CopiedDetail,
-                    offset: usize,
-                    indices: &[u8],
-                    inks: &mut dyn Iterator<Item = (usize, Ink)>| {
-            let mut mapped = [0u8; TILE_SAMPLES];
-            for (index, &source) in mapped.iter_mut().zip(indices) {
-                *index = map(source);
-            }
-            let first = copied.inks.len();
-            for (sample, mut ink) in inks {
-                if sample < indices.len() {
-                    ink.foreground = map(ink.foreground);
-                    ink.background.map(&mut |index| map(index));
-                    copied.inks.push((sample as u8, ink));
+        let push =
+            |copied: &mut CopiedDetail, offset: usize, indices: &[u8], ink: ink::InkView<'_>| {
+                let mut mapped = [0u8; TILE_SAMPLES];
+                match table {
+                    Some(table) => {
+                        for (index, &source) in mapped.iter_mut().zip(indices) {
+                            *index = table[source as usize];
+                        }
+                    }
+                    None => mapped[..indices.len()].copy_from_slice(indices),
                 }
-            }
-            copied.cells.push(CopiedCell {
-                offset: offset as u32,
-                len: indices.len() as u8,
-                indices: mapped,
-                inks: (copied.inks.len() - first) as u8,
-            });
-        };
+                let block = ink.block().within(indices.len());
+                let first = copied.inks.len();
+                let block = if block.has_complex() {
+                    // Blended ink keeps its full form, in the list.
+                    for (sample, mut ink) in ink.iter() {
+                        if sample < indices.len() {
+                            ink.foreground = map(ink.foreground);
+                            ink.background.map(&mut |index| map(index));
+                            copied.inks.push((sample as u8, ink));
+                        }
+                    }
+                    ink::CellInk::default()
+                } else {
+                    block.mapped(table)
+                };
+                copied.cells.push(CopiedCell {
+                    offset: offset as u32,
+                    len: indices.len() as u8,
+                    indices: mapped,
+                    inks: (copied.inks.len() - first) as u8,
+                    block,
+                });
+            };
         let samples = (self.scale * self.scale) as usize;
         let mut base = 0;
         for (source, row_len) in sources {
@@ -2063,14 +2078,14 @@ impl Presentation {
                                 copied,
                                 base + i,
                                 &self.samples.get(cell).indices[..samples],
-                                &mut self.samples.ink(cell).iter(),
+                                self.samples.ink(cell),
                             );
                         }
                     }
                 }
                 Some(DetailRowSide::Offscreen) => {
                     self.offscreen.visit_cells(source, row_len, |i, cell| {
-                        push(copied, base + i, cell.indices(), &mut cell.inks());
+                        push(copied, base + i, cell.indices(), cell.ink());
                     });
                 }
                 None => {}
@@ -2136,7 +2151,9 @@ impl Presentation {
             let (ink, rest) = std::mem::take(&mut inks).split_at_mut(usize::from(copied.inks));
             inks = rest;
             debug_assert_eq!(usize::from(copied.len), samples);
-            let mut mask = 0u16;
+            // Unblended ink travels as a packed block; blended ink as a list.
+            let listed = !ink.is_empty();
+            let mut mask = copied.block.mask();
             for (sample, _) in ink.iter() {
                 mask |= 1 << sample;
             }
@@ -2146,7 +2163,11 @@ impl Presentation {
                 && self.guest_values[cell] == u16::from(value)
                 && self.ink_mask[cell] == mask
                 && self.samples.get(cell).indices[..samples] == copied.indices[..samples]
-                && self.samples.ink(cell).eq_list(ink)
+                && if listed {
+                    self.samples.ink(cell).eq_list(ink)
+                } else {
+                    self.samples.ink(cell).block().same_as(&copied.block)
+                }
             {
                 continue;
             }
@@ -2168,10 +2189,17 @@ impl Presentation {
             {
                 *rgb = palette[index as usize];
             }
-            held.clear();
-            for (sample, ink) in ink.iter_mut() {
-                tile.rgb[usize::from(*sample)] = ink.rgb(palette);
-                held.set(usize::from(*sample), offscreen::take_ink(ink));
+            if listed {
+                held.clear();
+                for (sample, ink) in ink.iter_mut() {
+                    tile.rgb[usize::from(*sample)] = ink.rgb(palette);
+                    held.set(usize::from(*sample), offscreen::take_ink(ink));
+                }
+            } else {
+                held.assign(&copied.block);
+                for sample in copied.block.samples() {
+                    tile.rgb[sample] = copied.block.rgb(sample, palette);
+                }
             }
             self.ink_mask[cell] = mask;
         }
@@ -2201,12 +2229,14 @@ impl Presentation {
             let (ink, rest) = std::mem::take(&mut inks).split_at_mut(usize::from(copied.inks));
             inks = rest;
             let value = values[copied.offset as usize - first];
-            if self.offscreen.store_parts(
-                address,
-                value,
-                &copied.indices[..usize::from(copied.len)],
-                ink,
-            ) {
+            let indices = &copied.indices[..usize::from(copied.len)];
+            let stored = if ink.is_empty() {
+                self.offscreen
+                    .store_block(address, value, indices, &copied.block)
+            } else {
+                self.offscreen.store_parts(address, value, indices, ink)
+            };
+            if stored {
                 changed = true;
                 self.include_offscreen_address(address);
             }
@@ -4495,6 +4525,20 @@ mod tests {
                             paint_detail(&mut bus, source(row) + 1);
                             paint_detail(&mut bus, source(row) + 4 - row.min(2));
                         }
+                        // Text over text of another colour: blended ink.
+                        bus.presentation.as_mut().unwrap().glyph = Some((
+                            OutlineGlyph {
+                                pixels: vec![64, 255, 0, 128],
+                                width: 2,
+                                height: 2,
+                                left: 0,
+                                top: 0,
+                            },
+                            0,
+                            0,
+                        ));
+                        bus.outline_glyph_pixel(source(0) + 1, 0, 0, 9);
+                        bus.end_outline_glyph();
                         if prior == "text" {
                             paint_detail(&mut bus, destination(0) + 2);
                             paint_detail(&mut bus, destination(2) + 5);

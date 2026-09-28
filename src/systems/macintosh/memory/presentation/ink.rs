@@ -9,7 +9,7 @@
 //! mode combining two texts) is rare; such ink lives whole in a side table
 //! owned by the store, keyed by the cell's slot and sample.
 
-use super::{IndexedColor, Ink, TILE_SAMPLES};
+use super::{blend, IndexedColor, Ink, TILE_SAMPLES};
 use std::collections::HashMap;
 
 /// The ink of one sample: foreground, alpha and solid background indices,
@@ -68,6 +68,63 @@ impl CellInk {
     pub(super) fn is_empty(&self) -> bool {
         self.present == 0
     }
+
+    /// Whether any sample's ink lives in the side table.
+    pub(super) fn has_complex(&self) -> bool {
+        self.complex != 0
+    }
+
+    /// This block (which must hold no side-table ink) with every palette
+    /// index passed through `table`, as mapping each `Ink` would.
+    pub(super) fn mapped(&self, table: Option<&[u8; 256]>) -> Self {
+        debug_assert!(!self.has_complex());
+        let Some(table) = table else {
+            return *self;
+        };
+        let mut out = *self;
+        for sample in Bits(self.present) {
+            let packed = self.packed[sample].0;
+            out.packed[sample] = Packed(
+                (packed & 0xFF00)
+                    | u32::from(table[(packed & 0xFF) as usize])
+                    | u32::from(table[((packed >> 16) & 0xFF) as usize]) << 16,
+            );
+        }
+        out
+    }
+
+    /// This block with ink only on samples below `len`.
+    pub(super) fn within(&self, len: usize) -> Self {
+        let mut out = *self;
+        if len < TILE_SAMPLES {
+            out.present &= (1u16 << len) - 1;
+            out.complex &= out.present;
+        }
+        out
+    }
+
+    /// Whether two blocks without side-table ink hold the same ink.
+    pub(super) fn same_as(&self, other: &Self) -> bool {
+        !self.has_complex()
+            && !other.has_complex()
+            && self.present == other.present
+            && Bits(self.present).all(|sample| self.packed[sample] == other.packed[sample])
+    }
+
+    /// The colour of inked `sample` in a block without side-table ink.
+    pub(super) fn rgb(&self, sample: usize, palette: &[[u8; 3]; 256]) -> [u8; 3] {
+        let packed = self.packed[sample].0;
+        blend(
+            palette[(packed & 0xFF) as usize],
+            palette[((packed >> 16) & 0xFF) as usize],
+            (packed >> 8) & 0xFF,
+        )
+    }
+
+    /// Inked samples, lowest first.
+    pub(super) fn samples(&self) -> impl Iterator<Item = usize> {
+        Bits(self.present)
+    }
 }
 
 /// Read access to one cell's ink.
@@ -88,12 +145,14 @@ impl<'a> InkView<'a> {
     }
 
     /// Presence bits, one per sample.
+    #[cfg(test)]
     pub(super) fn mask(&self) -> u16 {
         self.cell.present
     }
 
-    pub(super) fn is_empty(&self) -> bool {
-        self.cell.present == 0
+    /// The packed block itself.
+    pub(super) fn block(&self) -> &'a CellInk {
+        self.cell
     }
 
     pub(super) fn len(&self) -> usize {
@@ -160,6 +219,13 @@ impl<'a> InkViewMut<'a> {
 
     pub(super) fn mask(&self) -> u16 {
         self.cell.present
+    }
+
+    /// Replace this cell's ink with `block`, which holds no side-table ink.
+    pub(super) fn assign(&mut self, block: &CellInk) {
+        debug_assert!(!block.has_complex());
+        self.clear();
+        *self.cell = *block;
     }
 
     /// Remove every sample's ink.
