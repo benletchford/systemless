@@ -778,6 +778,7 @@ impl super::TrapDispatcher {
                     &edit_text,
                     edit_item,
                     dialog_ptr,
+                    None,
                 );
             } else {
                 self.draw_dialog(
@@ -4359,6 +4360,7 @@ impl super::TrapDispatcher {
                     "",
                     0,
                     dialog_ptr,
+                    None,
                 );
                 let rendered = self.save_dialog_pixels(bus, bounds);
                 if let Some(tracking) = self.dialog_tracking.as_mut() {
@@ -5061,7 +5063,7 @@ impl super::TrapDispatcher {
         if vis_handle != 0 && Self::region_handle_rect(bus, vis_handle).is_none() {
             return;
         }
-        let Some(items) = self.dialog_items.get(&dialog_ptr).cloned() else {
+        let Some(items) = self.dialog_items.get(&dialog_ptr) else {
             return;
         };
         let Some(item) = items.get((item_no - 1) as usize) else {
@@ -5084,14 +5086,17 @@ impl super::TrapDispatcher {
         }
 
         let (edit_text, edit_item, default_item) = Self::dialog_edit_state(bus, dialog_ptr, &items);
+        // SetIText draws the specified text item, not the entire dialog.
+        // Inside Macintosh Volume I (1985), I-422.
         self.redraw_standard_dialog_items(
             bus,
             bounds,
-            &items,
+            items,
             default_item,
             &edit_text,
             edit_item,
             dialog_ptr,
+            Some(item_no),
         );
 
         if self.dialog_visible_snapshots.contains_key(&dialog_ptr) {
@@ -6956,6 +6961,7 @@ impl super::TrapDispatcher {
         edit_text: &str,
         edit_item: i16,
         dialog_ptr: u32,
+        only_item: Option<i16>,
     ) {
         let (top, left, bottom, right) = bounds;
         // Apply default chrome after restoring guest-owned pixels and
@@ -6964,6 +6970,9 @@ impl super::TrapDispatcher {
         let auto_default_outline = true;
         for (i, item) in items.iter().enumerate() {
             let item_num = (i + 1) as i16;
+            if only_item.is_some_and(|only| item_num != only) {
+                continue;
+            }
             let (it, il, ib, ir) = item.rect;
             let abs_top = top + it;
             let abs_left = left + il;
@@ -7240,6 +7249,7 @@ impl super::TrapDispatcher {
             &edit_text,
             edit_item,
             dialog_ptr,
+            None,
         );
         self.redraw_dialog_popup_controls(bus, &popup_draws);
         let rendered = self.save_dialog_pixels(bus, bounds);
@@ -7460,6 +7470,7 @@ impl super::TrapDispatcher {
                 &edit_text,
                 edit_item,
                 dialog_ptr,
+                None,
             );
         }
         self.redraw_dialog_popup_controls(bus, &popup_draws);
@@ -12102,6 +12113,7 @@ impl super::TrapDispatcher {
                                 &edit_text,
                                 edit_item,
                                 dialog_ptr,
+                                None,
                             );
                         }
                         self.redraw_dialog_popup_controls(bus, &popup_draws);
@@ -12484,6 +12496,7 @@ impl super::TrapDispatcher {
                                             &t.edit_text,
                                             t.edit_item,
                                             t.dialog_ptr,
+                                            None,
                                         );
                                     }
                                     let popup_draws = t.popup_draws.clone();
