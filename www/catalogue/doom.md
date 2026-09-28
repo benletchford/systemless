@@ -13,6 +13,7 @@ architectures:
 - ppc
 default_architecture: 68k
 category: FPS
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -30,6 +31,19 @@ compatibility:
     environment: Deterministic headless framebuffer run from the original BinHex archive
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/1983
+  - date: 2026-09-28
+    tester: Catalogue maintainer
+    systemless_version: 0.65.1
+    architecture: 68k
+    environment: >-
+      Release-mode Chrome 151 browser preview of the unchanged hosted archive.
+      Escape and Return started a fresh E1M1 game; holding I moved the player
+      into the next wall, and D fired the pistol with ammo falling from 49 to
+      47. A separate 20-second attract-mode pacing probe reached 56.0 host FPS
+      and 53.2 guest ticks per second, with one archive request and no console
+      errors. Active-gameplay pacing was not separately benchmarked.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3189
 artifacts:
 - id: archive
   role: archive
@@ -112,3 +126,6 @@ This is the 1995 Macintosh conversion by Lion Entertainment, not a browser
 remake and not the modern commercial edition. Its application contains both
 68k and PowerPC code. The catalogue starts with the 68k path, which reaches the
 game directly from the untouched shareware distribution.
+
+For the original Macintosh controls, press Escape for the game menu, use I to
+move forward, and press D to fire. Clicking the game also fires the pistol.
