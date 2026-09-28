@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -22,6 +23,15 @@ compatibility:
     environment: Deterministic headless framebuffer run from the original installer
     status: playable
     evidence: https://github.com/benletchford/systemless.org/issues/131
+  - date: 2026-09-28
+    tester: Catalogue maintainer
+    systemless_version: 0.65.1
+    architecture: 68k
+    environment: >-
+      Release-mode Chrome browser preview using the exact checksum-matched hosted
+      MacBinary installer on the default 68K route
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3195
 controls:
   mobile:
     buttons:
@@ -92,6 +102,9 @@ This is Maelstrom 1.4.3 in its original MacBinary installer. It remains sealed a
 ![Maelstrom gameplay](https://assets.systemless.org/catalogue/media/sha256/ef/ef2b0b08aee0d9911809da897400cacb77002810877349dbdff365066284796e.png)
 
 Maelstrom begins with the lovely economy of an arcade cabinet: one small ship, a screenful of rock, and nowhere to hide. The first wave leaves room to learn the ship's momentum. Later waves fill that quiet black field with splintered asteroids, enemy craft and bonus capsules until survival becomes a rhythm of thrust, turn, fire and last-second shielding.
+
+Choose “Not Yet” at the original shareware registration prompt, then press P to
+start. Space fires; the on-screen Fire, Shld and Go controls are also available.
 
 The details give it its own character. Rocks tumble rather than merely slide, the ship carries visible damage and every cleared wave grants only a short breath before the next arrives. High scores sit on the opening screen as both invitation and accusation.
 
