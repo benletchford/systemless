@@ -12,6 +12,10 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+launch_enabled: true
+runtime:
+  runtime_pacing:
+    cpu_mhz: 10
 compatibility:
   status: playable
   verified:
@@ -26,6 +30,17 @@ compatibility:
       Browser launch has not yet been verified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2861
+  - date: 2026-09-28
+    tester: Catalogue maintainer
+    systemless_version: 0.65.1
+    architecture: 68k
+    environment: >-
+      Release-mode Chrome 151 browser preview of the checksum-matched original
+      demo at the entry's 10 MHz pacing setting. Two standard startup samples
+      sustained about 60 host FPS and 60 guest ticks per second; a separate
+      interaction run reached turn one, hero hiring and production help.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3025
 artifacts:
 - id: archive
   role: archive
@@ -85,5 +100,6 @@ position. Cities and unit controls remain available for the next decision.
 This is Strategic Studies Group's original limited Macintosh demonstration,
 not the retail release. The included readme limits play to one world and 50
 turns; it also disables saving and loading. Systemless has passed a
-deterministic gameplay replay, but browser launch remains disabled until the
-local browser route is manually checked and approved.
+deterministic gameplay replay and an early-game browser interaction check.
+In the browser, dismiss the two introduction panels with Done, choose Begin
+Game, then click the turn banner to start giving orders.
