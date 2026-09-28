@@ -2339,7 +2339,8 @@ pub(crate) fn dispatcher_target_for_import(
         | ("InterfaceLib", "FlushCodeCache")
         | ("InterfaceLib", "FlushCodeCacheRange")
         | ("InterfaceLib", "FlushInstructionCache") => PpcImportDispatcherTarget::FlushCodeCache,
-        ("InterfaceLib", "MoreMasters") => PpcImportDispatcherTarget::MoreMasters,
+        ("InterfaceLib", "MoreMasters")
+        | ("InterfaceLib", "MoreMasterPointers") => PpcImportDispatcherTarget::MoreMasters,
         ("InterfaceLib", "GetApplLimit") => PpcImportDispatcherTarget::GetApplLimit,
         ("InterfaceLib", "SetApplLimit") => PpcImportDispatcherTarget::SetApplLimit,
         ("InterfaceLib", "CompactMem")
