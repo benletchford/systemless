@@ -1502,6 +1502,7 @@ pub enum PpcImportDispatcherTarget {
     SetOSTrapAddress,
     NSetTrapAddress,
     EqualString,
+    IUEqualPString,
     NumToString,
     StringToNum,
     Random,
@@ -9127,6 +9128,7 @@ fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "SVersion") => PpcImportDispatcherTarget::SVersion,
         ("InterfaceLib", "EqualString") => PpcImportDispatcherTarget::EqualString,
+        ("InterfaceLib", "IUEqualPString") => PpcImportDispatcherTarget::IUEqualPString,
         ("InterfaceLib", "NumToString") => PpcImportDispatcherTarget::NumToString,
         ("InterfaceLib", "StringToNum") => PpcImportDispatcherTarget::StringToNum,
         ("InterfaceLib", "Random") => PpcImportDispatcherTarget::Random,
@@ -12064,6 +12066,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::BitTst => {
             unreachable!("Toolbox Utilities imports return through dispatch_toolbox_import")
         }
+        PpcImportDispatcherTarget::IUEqualPString => None,
         PpcImportDispatcherTarget::TextWidth
         | PpcImportDispatcherTarget::TruncString
         | PpcImportDispatcherTarget::StringWidth

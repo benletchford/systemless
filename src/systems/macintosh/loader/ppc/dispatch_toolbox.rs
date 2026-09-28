@@ -38,6 +38,18 @@ pub(super) fn dispatch_toolbox_import(
         PpcImportDispatcherTarget::EqualString => {
             Some(PpcImportAction::Return(ppc_equal_string(cpu, memory)))
         }
+        PpcImportDispatcherTarget::IUEqualPString => {
+            // IdenticalString uses the current script's primary ordering when
+            // no explicit 'itl2' resource is supplied (Inside Macintosh: Text, 5-17).
+            if cpu.gpr[5] != 0 {
+                return None;
+            }
+            let left = ppc_read_pstring_bytes(memory, cpu.gpr[3])?;
+            let right = ppc_read_pstring_bytes(memory, cpu.gpr[4])?;
+            let primary = |byte| crate::trap::mac_roman_to_upper(byte, true);
+            let equal = left.into_iter().map(primary).eq(right.into_iter().map(primary));
+            Some(PpcImportAction::Return(u32::from(!equal)))
+        }
         PpcImportDispatcherTarget::NumToString => {
             let number = cpu.gpr[3] as i32;
             let string_ptr = cpu.gpr[4];
