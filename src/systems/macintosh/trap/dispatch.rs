@@ -2023,6 +2023,10 @@ pub struct TrapDispatcher {
     pub(crate) standard_file_put_tracking: Option<StandardFilePutTrackingState>,
     /// Active Standard File Package open dialog tracking state.
     pub(crate) standard_file_get_tracking: Option<StandardFileGetTrackingState>,
+    /// The screen mark taken when a Standard File dialog was last drawn. An
+    /// idle pass that consumed no event redraws the dialog only when the
+    /// screen under its frame changed since.
+    pub(crate) standard_file_drawn: Option<crate::memory::presentation::ScreenMark>,
     /// Bounds owned by retained host overlays in an attached CPU adapter.
     /// These surfaces draw directly into the framebuffer without WindowRecords.
     pub(crate) external_host_overlay_rects: Vec<(i16, i16, i16, i16)>,
@@ -3784,6 +3788,7 @@ impl TrapDispatcher {
             dialog_tracking: None,
             suspended_modal_dialogs: Vec::new(),
             standard_file_put_tracking: None,
+            standard_file_drawn: None,
             standard_file_get_tracking: None,
             external_host_overlay_rects: Vec::new(),
             dialog_items: HashMap::default(),

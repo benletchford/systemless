@@ -12787,6 +12787,73 @@
     // Pack3 / Standard File ($A9EA) — StandardPutFile selector $0005
     // IM:Files 1992 pp. 1-43 and 3-45: StandardPutFile presents the save
     // dialog and returns the user's chosen FSSpec after Save.
+    // Retained Standard File tracking re-enters on every frame. A pass that
+    // consumes no event leaves an intact dialog as it is, and repaints it
+    // when something drew over it or a key edited the name.
+    #[test]
+    fn standard_put_file_idle_pass_redraws_only_a_changed_dialog() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+        let palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.enable_outline_presentation(disp.screen_mode, palette, 4);
+        let sp = TEST_SP;
+        let reply_ptr = 0x3201C0u32;
+        let prompt_ptr = 0x320300u32;
+        let default_name_ptr = 0x320340u32;
+        disp.app_wd_refnum.with_mut(|app_ref_num| {
+            *app_ref_num = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        });
+        disp.yield_for_ui = true;
+        bus.write_pstring(prompt_ptr, b"Save as:");
+        bus.write_pstring(default_name_ptr, b"Untitled");
+        bus.write_word(sp, 0x0005); // StandardPutFile selector
+        bus.write_long(sp + 2, reply_ptr);
+        bus.write_long(sp + 6, default_name_ptr);
+        bus.write_long(sp + 10, prompt_ptr);
+        assert!(disp
+            .dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert!(disp.is_standard_file_put_tracking());
+        let (top, left, bottom, right) = disp.standard_file_put_tracking.as_ref().unwrap().bounds;
+        let frame = (top - 1, left - 1, right - left + 2, bottom - top + 2);
+        let screen = (0, 0, 800, 600);
+        let mut idle_pass = |disp: &mut TrapDispatcher, bus: &mut MacMemoryBus| {
+            assert!(disp.dispatch_toolbox(true, 0x1EA, &mut cpu, bus).unwrap().is_ok());
+            assert!(disp.is_standard_file_put_tracking());
+        };
+
+        idle_pass(&mut disp, &mut bus);
+        let drawn = bus.screen_mark().expect("presented screen");
+        let pixels = bus.save_pixel_bytes(screen_base, 800 * 600);
+        idle_pass(&mut disp, &mut bus);
+        assert!(
+            bus.screen_rect_unchanged_since(drawn, screen),
+            "an idle pass over an intact dialog draws nothing"
+        );
+
+        // Something draws over the dialog: the next idle pass repaints it.
+        let inside = screen_base + (top as u32 + 12) * 800 + left as u32 + 12;
+        let held = bus.read_byte(inside);
+        bus.write_byte(inside, held ^ 0xFF);
+        idle_pass(&mut disp, &mut bus);
+        assert_eq!(bus.save_pixel_bytes(screen_base, 800 * 600), pixels);
+
+        // A key edits the name: that pass redraws the dialog.
+        let before_key = bus.screen_mark().expect("presented screen");
+        disp.event_queue.push_back(QueuedEvent {
+            what: 3,
+            message: (u32::from(b'R') << 8) | u32::from(b'R'),
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        idle_pass(&mut disp, &mut bus);
+        assert!(!bus.screen_rect_unchanged_since(before_key, frame));
+    }
+
     #[test]
     fn standard_put_file_gui_tracking_accepts_typed_name_on_return() {
         let (mut disp, mut cpu, mut bus) = setup();

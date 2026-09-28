@@ -2339,6 +2339,7 @@ impl super::TrapDispatcher {
             left + sright,
         );
         self.draw_standard_file_get_list(bus, tracking);
+        self.standard_file_drawn = bus.screen_mark();
     }
 
     fn draw_standard_file_get_list(
@@ -2567,7 +2568,9 @@ impl super::TrapDispatcher {
         mut tracking: StandardFileGetTrackingState,
     ) {
         let mut action = None;
+        let mut consumed_event = false;
         while let Some(event) = self.event_queue.pop_front() {
+            consumed_event = true;
             match event.what {
                 1 => {
                     action = Self::standard_file_get_mouse_action(
@@ -2622,7 +2625,11 @@ impl super::TrapDispatcher {
                 self.finish_standard_file_get_tracking(cpu, bus, tracking, false);
             }
             None => {
-                self.draw_standard_file_get_dialog(bus, &tracking);
+                // Tracking re-enters every frame. With no event there is
+                // nothing new to draw unless something drew over the dialog.
+                if consumed_event || !self.standard_file_dialog_intact(bus, tracking.bounds) {
+                    self.draw_standard_file_get_dialog(bus, &tracking);
+                }
                 self.standard_file_get_tracking = Some(tracking);
             }
         }
@@ -2884,6 +2891,26 @@ impl super::TrapDispatcher {
             &location_label,
         );
         self.draw_standard_file_put_list(bus, tracking);
+        self.standard_file_drawn = bus.screen_mark();
+    }
+
+    /// Whether the Standard File dialog drawn last still stands untouched:
+    /// no screen write since its draw reached its frame, which extends one
+    /// pixel beyond `bounds` (see `active_host_overlay_rects`).
+    fn standard_file_dialog_intact(
+        &self,
+        bus: &MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+    ) -> bool {
+        let (top, left, bottom, right) = bounds;
+        let frame = (
+            top.saturating_sub(1),
+            left.saturating_sub(1),
+            right.saturating_sub(left).saturating_add(2),
+            bottom.saturating_sub(top).saturating_add(2),
+        );
+        self.standard_file_drawn
+            .is_some_and(|mark| bus.screen_rect_unchanged_since(mark, frame))
     }
 
     fn standard_file_put_visible_rows() -> usize {
@@ -3152,7 +3179,9 @@ impl super::TrapDispatcher {
         mut tracking: StandardFilePutTrackingState,
     ) {
         let mut action = None;
+        let mut consumed_event = false;
         while let Some(event) = self.event_queue.pop_front() {
+            consumed_event = true;
             match event.what {
                 1 => {
                     action = self.standard_file_put_mouse_action(
@@ -3223,7 +3252,11 @@ impl super::TrapDispatcher {
                 self.finish_standard_file_put_tracking(cpu, bus, tracking, false);
             }
             None => {
-                self.draw_standard_file_put_dialog(bus, &tracking);
+                // Tracking re-enters every frame. With no event there is
+                // nothing new to draw unless something drew over the dialog.
+                if consumed_event || !self.standard_file_dialog_intact(bus, tracking.bounds) {
+                    self.draw_standard_file_put_dialog(bus, &tracking);
+                }
                 self.standard_file_put_tracking = Some(tracking);
             }
         }
