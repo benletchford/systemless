@@ -330,11 +330,6 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                 let declared_rsrc_packed_len =
                     read_u32(record, 72, "packed resource length")? as usize;
                 let rsrc_unpacked_len = read_u32(record, 76, "resource length")? as usize;
-                let extended_unpacked_offset = if version == VISE_VERSION_EXTENDED_CATALOG {
-                    read_u32(record, 100, "unpacked payload offset")? as usize
-                } else {
-                    0
-                };
                 let name_len = record[118] as usize;
                 let mut file_type = [0; 4];
                 file_type.copy_from_slice(&record[40..44]);
@@ -351,15 +346,14 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                 }
                 let name = decode_catalog_name(data, &mut cursor, name_len, "file name")?;
                 let path = child_path(&dirs, parent, &name, "file")?;
-                // In classic VISE grouped records, multiple files and/or forks
-                // share a single compressed stream. Flag 0x10 at record offset 8
-                // marks grouped records in VISE 3.5; resource-only archives such
-                // as Gridz also use this layout for controls and graphics.
-                let is_grouped = version != VISE_VERSION_EXTENDED_CATALOG
-                    && ((record[8] & 0x10) != 0
-                        || (data_unpacked_len == 0
-                            && rsrc_unpacked_len != 0
-                            && declared_data_packed_len != 0));
+                // Grouped records share one compressed stream. Flag 0x10 also
+                // appears in extended catalogs, where fork offsets still refer
+                // to positions within that stream.
+                let is_grouped = (record[8] & 0x10) != 0
+                    || (version != VISE_VERSION_EXTENDED_CATALOG
+                        && data_unpacked_len == 0
+                        && rsrc_unpacked_len != 0
+                        && declared_data_packed_len != 0);
                 let (
                     data_packed_offset,
                     data_packed_len,
@@ -399,20 +393,13 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                         r_off,
                     )
                 } else {
-                    let data_unpacked_offset = if version == VISE_VERSION_EXTENDED_CATALOG
-                        && extended_unpacked_offset < data_unpacked_len
-                    {
-                        extended_unpacked_offset
-                    } else {
-                        0
-                    };
                     let rsrc_offset = packed_offset
                         .checked_add(declared_data_packed_len)
                         .ok_or_else(|| format!("{path} resource offset overflow"))?;
                     (
                         packed_offset,
                         declared_data_packed_len,
-                        data_unpacked_offset,
+                        0,
                         rsrc_offset,
                         declared_rsrc_packed_len,
                         0,
@@ -1232,7 +1219,9 @@ pub(crate) mod tests {
         file[68..72].copy_from_slice(&(data_fork.len() as u32).to_be_bytes());
         file[92..94].copy_from_slice(&1u16.to_be_bytes());
         file[96..100].copy_from_slice(&(payload_offset as u32).to_be_bytes());
-        file[100..104].copy_from_slice(&0xfffc_0000u32.to_be_bytes());
+        // Ungrouped records decode from byte zero even when this catalog
+        // metadata field is smaller than the decompressed data length.
+        file[100..104].copy_from_slice(&3u32.to_be_bytes());
         file[118] = 7;
         archive.extend_from_slice(&file);
         archive.extend_from_slice(&[0u8; VISE_EXTENDED_FILE_SUFFIX_LEN]);
@@ -1248,6 +1237,53 @@ pub(crate) mod tests {
             decode_vise_fork(entry.data_packed, entry.data_unpacked_len).unwrap(),
             data_fork
         );
+    }
+
+    #[test]
+    fn parses_grouped_extended_catalog_record() {
+        let data_fork = b"extended grouped data";
+        let resource_fork = b"extended grouped resources";
+        let shared = [data_fork.as_slice(), resource_fork.as_slice()].concat();
+        let packed = encode_vise_fork(&shared);
+        let catalog_offset = VISE_HEADER_LEN + packed.len();
+        let mut archive = vec![0u8; VISE_HEADER_LEN];
+        archive[..4].copy_from_slice(VISE_MAGIC);
+        archive[16..20].copy_from_slice(&VISE_VERSION_EXTENDED_CATALOG.to_be_bytes());
+        archive[36..40].copy_from_slice(&(catalog_offset as u32).to_be_bytes());
+        archive.extend_from_slice(&packed);
+
+        let mut catalog = [0u8; VISE_CATALOG_HEADER_LEN];
+        catalog[..4].copy_from_slice(VISE_CATALOG_MAGIC);
+        catalog[16..18].copy_from_slice(&1u16.to_be_bytes());
+        archive.extend_from_slice(&catalog);
+        let mut prefix = [0u8; VISE_EXTENDED_CATALOG_PREFIX_LEN];
+        prefix[..4].copy_from_slice(b"PACK");
+        archive.extend_from_slice(&prefix);
+        archive.extend_from_slice(b"FVCT");
+        let mut file = [0u8; VISE_FILE_RECORD_LEN];
+        file[8] = 0x10;
+        file[40..44].copy_from_slice(b"TEXT");
+        file[44..48].copy_from_slice(b"ttxt");
+        file[64..68].copy_from_slice(&(packed.len() as u32).to_be_bytes());
+        file[68..72].copy_from_slice(&(data_fork.len() as u32).to_be_bytes());
+        file[72..76].copy_from_slice(&(shared.len() as u32).to_be_bytes());
+        file[76..80].copy_from_slice(&(resource_fork.len() as u32).to_be_bytes());
+        file[96..100].copy_from_slice(&(VISE_HEADER_LEN as u32).to_be_bytes());
+        file[104..108].copy_from_slice(&(data_fork.len() as u32).to_be_bytes());
+        file[118] = 6;
+        archive.extend_from_slice(&file);
+        archive.extend_from_slice(&[0u8; VISE_EXTENDED_FILE_SUFFIX_LEN]);
+        archive.extend_from_slice(b"ReadMe");
+
+        let parsed = parse_vise(&archive).unwrap().unwrap();
+        let entry = &parsed.entries[0];
+        assert_eq!(entry.path, "ReadMe");
+        assert_eq!(entry.data_packed, packed);
+        assert_eq!(entry.rsrc_packed, packed);
+        assert_eq!(entry.rsrc_unpacked_offset, data_fork.len());
+        let decoded = decode_vise_fork(entry.data_packed, shared.len()).unwrap();
+        assert_eq!(&decoded[..data_fork.len()], data_fork);
+        assert_eq!(&decoded[entry.rsrc_unpacked_offset..], resource_fork);
     }
 
     #[test]
