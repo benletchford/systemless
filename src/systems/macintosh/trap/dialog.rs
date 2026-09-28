@@ -1,6 +1,5 @@
 //! Dialog Manager, Cursor Manager, and misc stub trap handlers.
 
-use crate::memory::SavedPixels;
 use super::dispatch::{
     selector_operation_route, DialogItem, DialogPopupDraw, DialogPopupTrackingState,
     DialogTrackingState, PendingDialogPopupMenu, PersistentDialogSnapshot, QueuedEvent,
@@ -9,6 +8,7 @@ use super::dispatch::{
 use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::display::CursorImage;
+use crate::memory::SavedPixels;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::get_font_face_scaled;
 use crate::quickdraw::text::get_font_metrics;
@@ -1752,10 +1752,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn te_null_style_resolved_style(
-        bus: &MacMemoryBus,
-        te_handle: u32,
-    ) -> Option<TeResolvedStyle> {
+    fn te_null_style_resolved_style(bus: &MacMemoryBus, te_handle: u32) -> Option<TeResolvedStyle> {
         let scrap_handle = Self::te_null_style_scrap_handle(bus, te_handle);
         let scrap_ptr = bus.read_long(scrap_handle);
         if scrap_ptr == 0 || bus.read_word(scrap_ptr + Self::SCRAP_N_STYLES_OFFSET) == 0 {
@@ -3250,7 +3247,12 @@ impl super::TrapDispatcher {
                     // line can be shorter than lineHeight. Painting its full
                     // caret leaves pixels outside the area erased next time.
                     if let Some((top, left, bottom, right)) = Self::rect_intersection(
-                        (line_top, caret_x, line_bottom, caret_x.saturating_add(caret_width)),
+                        (
+                            line_top,
+                            caret_x,
+                            line_bottom,
+                            caret_x.saturating_add(caret_width),
+                        ),
                         view_rect,
                     ) {
                         if !self.draw_theme_caret_clipped(
@@ -3271,7 +3273,12 @@ impl super::TrapDispatcher {
                             self.draw_rect(
                                 cpu,
                                 bus,
-                                &Rect { top, left, bottom, right },
+                                &Rect {
+                                    top,
+                                    left,
+                                    bottom,
+                                    right,
+                                },
                                 ShapeOp::Paint,
                             );
                         }
@@ -3534,17 +3541,7 @@ impl super::TrapDispatcher {
         bus.write_long(handle, ctrl_ptr);
         let title = encode_mac_roman_lossy(&item.text);
         self.initialize_control_record(
-            bus,
-            ctrl_ptr,
-            dialog_ptr,
-            item.rect,
-            &title,
-            true,
-            value,
-            0,
-            1,
-            proc_id,
-            0,
+            bus, ctrl_ptr, dialog_ptr, item.rect, &title, true, value, 0, 1, proc_id, 0,
         );
         self.control_manager.associate_handle(handle, ctrl_ptr);
         self.ensure_control_aux_record(bus, handle);
@@ -4107,11 +4104,7 @@ impl super::TrapDispatcher {
         cpu.write_reg(Register::A7, stack_after);
     }
 
-    fn handle_interactive_alert_refire<C: CpuOps>(
-        &mut self,
-        cpu: &mut C,
-        bus: &mut MacMemoryBus,
-    ) {
+    fn handle_interactive_alert_refire<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
         if self.dialog_tracking.is_none() {
             return;
         }
@@ -4310,12 +4303,8 @@ impl super::TrapDispatcher {
     }
 
     fn ditl_item_payload_len(base_type: u8, data_len_byte: u8, remaining: u32) -> Option<u32> {
-        crate::dialog_manager::ditl_item_payload_len(
-            base_type,
-            data_len_byte,
-            remaining as usize,
-        )
-        .map(|len| len as u32)
+        crate::dialog_manager::ditl_item_payload_len(base_type, data_len_byte, remaining as usize)
+            .map(|len| len as u32)
     }
 
     /// Re-read userItem proc pointers from the DITL data in guest memory.
@@ -5548,8 +5537,8 @@ impl super::TrapDispatcher {
             let saved_stride = (save_rect.3 - save_rect.1) as usize;
             let len = (right - left) as usize;
             for y in top..bottom {
-                let offset = (y - save_rect.0) as usize * saved_stride
-                    + (left - save_rect.1) as usize;
+                let offset =
+                    (y - save_rect.0) as usize * saved_stride + (left - save_rect.1) as usize;
                 if offset + len <= saved.len() {
                     bus.restore_saved_pixels(
                         base + y as u32 * row_bytes + left as u32,
@@ -6645,8 +6634,7 @@ impl super::TrapDispatcher {
                         self.dialog_control_handle_for_item(dialog_ptr, item_num)
                     {
                         let ctrl_ptr = bus.read_long(ctrl_handle);
-                        let proc_id_ctrl =
-                            self.control_manager.proc_id(ctrl_ptr);
+                        let proc_id_ctrl = self.control_manager.proc_id(ctrl_ptr);
                         let value = self
                             .dialog_control_values
                             .get(&(dialog_ptr, item_num))
@@ -6655,8 +6643,7 @@ impl super::TrapDispatcher {
                         let min = bus.read_word(ctrl_ptr + 20) as i16;
                         let max = bus.read_word(ctrl_ptr + 22) as i16;
                         let hilite = bus.read_byte(ctrl_ptr + 17);
-                        let title =
-                            decode_mac_roman(&Self::control_title_bytes(bus, ctrl_ptr));
+                        let title = decode_mac_roman(&Self::control_title_bytes(bus, ctrl_ptr));
 
                         match proc_id_ctrl {
                             0 => self.draw_button_with_enabled(
@@ -6856,8 +6843,7 @@ impl super::TrapDispatcher {
                         self.dialog_control_handle_for_item(dialog_ptr, item_num)
                     {
                         let ctrl_ptr = bus.read_long(ctrl_handle);
-                        let proc_id_ctrl =
-                            self.control_manager.proc_id(ctrl_ptr);
+                        let proc_id_ctrl = self.control_manager.proc_id(ctrl_ptr);
                         let value = self
                             .dialog_control_values
                             .get(&(dialog_ptr, item_num))
@@ -6866,8 +6852,7 @@ impl super::TrapDispatcher {
                         let min = bus.read_word(ctrl_ptr + 20) as i16;
                         let max = bus.read_word(ctrl_ptr + 22) as i16;
                         let hilite = bus.read_byte(ctrl_ptr + 17);
-                        let title =
-                            decode_mac_roman(&Self::control_title_bytes(bus, ctrl_ptr));
+                        let title = decode_mac_roman(&Self::control_title_bytes(bus, ctrl_ptr));
                         match proc_id_ctrl {
                             0 => self.draw_button_with_enabled(
                                 bus,
@@ -8418,7 +8403,6 @@ impl super::TrapDispatcher {
         self.draw_radio_state(bus, top, left, bottom, _right, title, selected, true, false);
     }
 
-
     fn draw_radio_with_enabled_and_inactive(
         &self,
         bus: &mut MacMemoryBus,
@@ -8744,8 +8728,7 @@ impl super::TrapDispatcher {
         text: &str,
         selected: bool,
     ) {
-        let selection_range =
-            selected.then_some((0, encode_mac_roman_lossy(text).len()));
+        let selection_range = selected.then_some((0, encode_mac_roman_lossy(text).len()));
         self.draw_edit_text_with_cursor(
             bus,
             top,
@@ -8857,13 +8840,7 @@ impl super::TrapDispatcher {
                         right
                     } else {
                         left + Self::TE_LINE_LEFT_INSET
-                            + self.te_measure_text_width(
-                                font_id,
-                                self.tx_size,
-                                &text_bytes,
-                                0,
-                                end,
-                            )
+                            + self.te_measure_text_width(font_id, self.tx_size, &text_bytes, 0, end)
                     };
                     if selection_left < selection_right && selection_top < selection_bottom {
                         if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
@@ -9405,8 +9382,7 @@ impl super::TrapDispatcher {
                 tracking,
                 self.input_state.mouse_position().0,
                 self.input_state.mouse_position().1,
-            )
-                > 0
+            ) > 0
     }
 
     fn read_guest_event_record(bus: &MacMemoryBus, event_ptr: u32) -> (u16, u32, i16, i16, u16) {
@@ -10173,7 +10149,9 @@ impl super::TrapDispatcher {
             .event_queue
             .iter()
             .position(|event| matches!(event.what, 1 | 2));
-        if let Some(idx) = next_mouse_event.filter(|idx| self.event_queue.get(*idx).is_some_and(|e| e.what == 2)) {
+        if let Some(idx) =
+            next_mouse_event.filter(|idx| self.event_queue.get(*idx).is_some_and(|e| e.what == 2))
+        {
             self.event_queue.remove(idx);
             true
         } else {
@@ -11533,11 +11511,7 @@ impl super::TrapDispatcher {
 
                 // Look up real item data
                 let found = self.dialog_items.get(&dialog_ptr).and_then(|items| {
-                    if item_no > 0 && (item_no as usize) <= items.len() {
-                        Some(&items[(item_no - 1) as usize])
-                    } else {
-                        None
-                    }
+                    crate::dialog_manager::get_item_at_1_indexed(items, item_no.max(0) as usize)
                 });
 
                 if let Some(item) = found {
@@ -11606,12 +11580,9 @@ impl super::TrapDispatcher {
                                 bus.write_byte(ctrl_rec + 41 + i as u32, ch);
                             }
                             // Map DITL item type to Control Manager procID
-                            let proc_id: i16 = match base_type {
-                                4 => 0, // btnCtrl → pushButProc
-                                5 => 1, // chkCtrl → checkBoxProc
-                                6 => 2, // radCtrl → radioButProc
-                                _ => 0,
-                            };
+                            let proc_id =
+                                crate::dialog_manager::dialog_item_control_proc_id(base_type)
+                                    .unwrap_or(0);
                             self.control_manager.set_proc_id(ctrl_rec, proc_id);
                             let handle = bus.alloc(4);
                             bus.write_long(handle, ctrl_rec);
@@ -11710,9 +11681,7 @@ impl super::TrapDispatcher {
                     .dialog_items
                     .get(&dialog_ptr)
                     .and_then(|items| {
-                        (item_no > 0)
-                            .then(|| items.get((item_no - 1) as usize))
-                            .flatten()
+                        crate::dialog_manager::get_item_at_1_indexed(items, item_no as usize)
                     })
                     .cloned();
                 if trace_dialog_items_enabled() {
@@ -11747,8 +11716,9 @@ impl super::TrapDispatcher {
                     bus.write_byte(item_handle_addr + 12, item_type);
                 }
                 if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
-                    if item_no > 0 && (item_no as usize) <= items.len() {
-                        let item = &mut items[(item_no - 1) as usize];
+                    if let Some(item) =
+                        crate::dialog_manager::get_item_at_1_indexed_mut(items, item_no as usize)
+                    {
                         item.item_type = item_type;
                         item.rect = (box_top, box_left, box_bottom, box_right);
                         if base_type == 0 {
@@ -14779,14 +14749,16 @@ impl super::TrapDispatcher {
                         selection_end = selection_end.min(text_len);
                         let runs = self.te_style_runs(bus, te_handle, text_len);
                         let first = if selection_start == selection_end {
-                            Self::te_null_style_resolved_style(bus, te_handle).unwrap_or_else(|| {
-                                Self::te_style_at_offset(
-                                    &runs,
-                                    selection_start
-                                        .saturating_sub(1)
-                                        .min(text_len.saturating_sub(1)),
-                                )
-                            })
+                            Self::te_null_style_resolved_style(bus, te_handle).unwrap_or_else(
+                                || {
+                                    Self::te_style_at_offset(
+                                        &runs,
+                                        selection_start
+                                            .saturating_sub(1)
+                                            .min(text_len.saturating_sub(1)),
+                                    )
+                                },
+                            )
                         } else {
                             Self::te_style_at_offset(&runs, selection_start)
                         };
@@ -15252,14 +15224,10 @@ impl super::TrapDispatcher {
                             &text_bytes,
                             box_width,
                             |_, byte| {
-                                crate::quickdraw::text::get_glyph(
-                                    font_id,
-                                    font_size,
-                                    byte as char,
-                                )
-                                .map_or(missing_advance, |(glyph, _)| {
-                                    glyph.advance as i16 + advance_extra
-                                })
+                                crate::quickdraw::text::get_glyph(font_id, font_size, byte as char)
+                                    .map_or(missing_advance, |(glyph, _)| {
+                                        glyph.advance as i16 + advance_extra
+                                    })
                             },
                         );
 
@@ -15445,7 +15413,6 @@ impl super::TrapDispatcher {
                 }
                 Ok(())
             }
-
 
             // TECopy ($A9D5)
             // PROCEDURE TECopy(hTE: TEHandle);
@@ -15798,7 +15765,10 @@ impl super::TrapDispatcher {
                 let mut redraw_item = None;
                 if dialog_ptr != 0 && item_no > 0 {
                     if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
-                        if let Some(item) = items.get_mut((item_no - 1) as usize) {
+                        if let Some(item) = crate::dialog_manager::get_item_at_1_indexed_mut(
+                            items,
+                            item_no as usize,
+                        ) {
                             if item.item_type & 0x7F == 16 {
                                 // IM:I I-414 special case: (0, -1)
                                 // means "select all" — normalize
@@ -16041,19 +16011,20 @@ impl super::TrapDispatcher {
                 if dialog_ptr != 0 && item_no > 0 {
                     let key = (dialog_ptr, item_no);
                     if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
-                        let idx = (item_no as usize).wrapping_sub(1);
-                        if idx < items.len() {
-                            let rect = items[idx].rect;
+                        if let Some(item) = crate::dialog_manager::get_item_at_1_indexed_mut(
+                            items,
+                            item_no as usize,
+                        ) {
+                            let rect = item.rect;
                             // MTE 1992, 6-123: already-hidden items (left > 8192) are a no-op.
                             if !crate::dialog_manager::is_dialog_item_rect_hidden(rect) {
                                 let enclosing = crate::dialog_manager::dialog_item_enclosing_rect(
-                                    items[idx].item_type,
+                                    item.item_type,
                                     rect,
                                 );
                                 self.hidden_dialog_item_rects.entry(key).or_insert(rect);
-                                items[idx].rect =
-                                    crate::dialog_manager::hide_dialog_item_rect(rect);
-                                updated_control_rect = Some(items[idx].rect);
+                                item.rect = crate::dialog_manager::hide_dialog_item_rect(rect);
+                                updated_control_rect = Some(item.rect);
                                 redraw_local_rect = Some(enclosing);
                             }
                         }
@@ -16105,22 +16076,22 @@ impl super::TrapDispatcher {
                 if dialog_ptr != 0 && item_no > 0 {
                     let key = (dialog_ptr, item_no);
                     if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
-                        let idx = (item_no as usize).wrapping_sub(1);
-                        if idx < items.len() {
-                            let rect = items[idx].rect;
+                        if let Some(item) = crate::dialog_manager::get_item_at_1_indexed_mut(
+                            items,
+                            item_no as usize,
+                        ) {
+                            let rect = item.rect;
                             // MTE 1992, 6-124: already-visible items (left < 8192) are a no-op.
                             if crate::dialog_manager::is_dialog_item_rect_hidden(rect) {
-                                let restored_rect = self
-                                    .hidden_dialog_item_rects
-                                    .remove(&key)
-                                    .unwrap_or_else(|| {
-                                        crate::dialog_manager::show_dialog_item_rect(rect)
-                                    });
+                                let restored_rect =
+                                    self.hidden_dialog_item_rects.remove(&key).unwrap_or_else(
+                                        || crate::dialog_manager::show_dialog_item_rect(rect),
+                                    );
                                 let enclosing = crate::dialog_manager::dialog_item_enclosing_rect(
-                                    items[idx].item_type,
+                                    item.item_type,
                                     restored_rect,
                                 );
-                                items[idx].rect = restored_rect;
+                                item.rect = restored_rect;
                                 updated_control_rect = Some(restored_rect);
                                 redraw_local_rect = Some(enclosing);
                             }
@@ -16283,13 +16254,14 @@ impl super::TrapDispatcher {
                 let mut redraw_text_item = None;
                 if text_str_ptr != 0 {
                     let bytes = bus.read_pstring(text_str_ptr);
+                    let bytes = crate::dialog_manager::clamp_dialog_item_text_bytes(&bytes);
                     let len = bytes.len();
-                    let text = decode_mac_roman(&bytes);
+                    let text = decode_mac_roman(bytes);
 
                     if item_handle != 0 {
                         let data_ptr = Self::ensure_text_handle_size(bus, item_handle, len);
                         if data_ptr != 0 {
-                            bus.write_bytes(data_ptr, &bytes);
+                            bus.write_bytes(data_ptr, bytes);
                         }
                     }
 
@@ -16309,8 +16281,10 @@ impl super::TrapDispatcher {
                             );
                         }
                         if let Some(items) = self.dialog_items.get_mut(&dlg_ptr) {
-                            if idx < items.len() {
-                                items[idx].text = text.clone();
+                            if let Some(item) =
+                                crate::dialog_manager::get_item_at_1_indexed_mut(items, idx + 1)
+                            {
+                                item.text = text.clone();
                             }
                         }
                         let mut refresh_tracking = false;
@@ -16369,9 +16343,10 @@ impl super::TrapDispatcher {
                             );
                         if current_edit_handle.is_some() {
                             let bytes = encode_mac_roman_lossy(&tracking.edit_text);
-                            let len = bytes.len().min(255);
-                            bus.write_byte(text_ptr, len as u8);
-                            for (i, byte) in bytes.iter().take(len).enumerate() {
+                            let (len, text) =
+                                crate::dialog_manager::encode_dialog_item_pstring(&bytes);
+                            bus.write_byte(text_ptr, len);
+                            for (i, byte) in text.iter().enumerate() {
                                 bus.write_byte(text_ptr + 1 + i as u32, *byte);
                             }
                             wrote = true;
@@ -16383,9 +16358,11 @@ impl super::TrapDispatcher {
                         if item_handle != 0 {
                             let master = bus.read_long(item_handle);
                             if master != 0 {
-                                let len = bus.get_alloc_size(master).unwrap_or(0).min(255) as usize;
-                                bus.write_byte(text_ptr, len as u8);
-                                for i in 0..len {
+                                let total_size = bus.get_alloc_size(master).unwrap_or(0) as usize;
+                                let len =
+                                    crate::dialog_manager::clamp_dialog_item_text_len(total_size);
+                                bus.write_byte(text_ptr, len);
+                                for i in 0..len as usize {
                                     bus.write_byte(
                                         text_ptr + 1 + i as u32,
                                         bus.read_byte(master + i as u32),

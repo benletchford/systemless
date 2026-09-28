@@ -130,6 +130,16 @@ impl DialogItemRecord {
         DialogItemKind::from_raw_type(self.item_type)
     }
 
+    /// Whether the item represents a button, checkbox, or radio control.
+    pub fn is_control(&self) -> bool {
+        is_dialog_item_control(self.item_type)
+    }
+
+    /// Whether the item represents static or editable text.
+    pub fn is_text(&self) -> bool {
+        is_dialog_item_text(self.item_type)
+    }
+
     /// Decoded Mac Roman text if the payload represents a Pascal string.
     pub fn text(&self) -> String {
         decode_mac_roman(&self.payload)
@@ -813,6 +823,78 @@ pub fn find_next_edit_text_in_items(
     )
 }
 
+/// Clamps a text length to 255 bytes (Pascal string maximum payload).
+pub fn clamp_dialog_item_text_len(len: usize) -> u8 {
+    len.min(255) as u8
+}
+
+/// Clamps a byte slice to at most 255 bytes (Pascal string maximum payload).
+pub fn clamp_dialog_item_text_bytes(text_bytes: &[u8]) -> &[u8] {
+    let len = text_bytes.len().min(255);
+    &text_bytes[..len]
+}
+
+/// Encodes raw text bytes into Pascal string format: `(length_byte, clamped_payload)`.
+pub fn encode_dialog_item_pstring(text_bytes: &[u8]) -> (u8, &[u8]) {
+    let clamped = clamp_dialog_item_text_bytes(text_bytes);
+    (clamped.len() as u8, clamped)
+}
+
+/// Decodes a Pascal string slice (where the first byte is length) into payload bytes.
+#[allow(dead_code)]
+pub fn decode_dialog_item_pstring(bytes: &[u8]) -> Option<&[u8]> {
+    let &len = bytes.first()?;
+    let end = 1 + len as usize;
+    if bytes.len() >= end {
+        Some(&bytes[1..end])
+    } else {
+        None
+    }
+}
+
+/// Retrieves a reference to an item from a 1-indexed slice (returns `None` if `item_number == 0` or out of bounds).
+pub fn get_item_at_1_indexed<T>(items: &[T], item_number_1_indexed: usize) -> Option<&T> {
+    item_number_1_indexed
+        .checked_sub(1)
+        .and_then(|idx| items.get(idx))
+}
+
+/// Retrieves a mutable reference to an item from a 1-indexed slice (returns `None` if `item_number == 0` or out of bounds).
+#[allow(dead_code)]
+pub fn get_item_at_1_indexed_mut<T>(
+    items: &mut [T],
+    item_number_1_indexed: usize,
+) -> Option<&mut T> {
+    item_number_1_indexed
+        .checked_sub(1)
+        .and_then(|idx| items.get_mut(idx))
+}
+
+/// Returns true if the raw item type represents a button, checkbox, radio button, or resource control.
+pub fn is_dialog_item_control(raw_type: u8) -> bool {
+    DialogItemKind::from_raw_type(raw_type).is_control()
+}
+
+/// Returns true if the raw item type represents static text or edit text.
+pub fn is_dialog_item_text(raw_type: u8) -> bool {
+    DialogItemKind::from_raw_type(raw_type).is_text()
+}
+
+/// Maps a dialog item type (with or without disabled bit) to its standard Control Manager procID.
+///
+/// Inside Macintosh Volume I, pp. I-410, I-421:
+/// - Button (4) -> 0 (`pushButProc`)
+/// - Checkbox (5) -> 1 (`checkBoxProc`)
+/// - Radio (6) -> 2 (`radioButProc`)
+pub fn dialog_item_control_proc_id(item_type: u8) -> Option<i16> {
+    match item_type & !DIALOG_ITEM_DISABLED_FLAG {
+        DIALOG_ITEM_BUTTON => Some(0),
+        DIALOG_ITEM_CHECKBOX => Some(1),
+        DIALOG_ITEM_RADIO => Some(2),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1349,5 +1431,74 @@ mod tests {
         ];
         assert_eq!(find_next_edit_text_in_items(&item_records, 0), Some(2));
         assert_eq!(find_next_edit_text_in_items(&item_records, 2), Some(2));
+    }
+
+    #[test]
+    fn dialog_item_text_and_query_operations() {
+        // Clamping length and bytes
+        assert_eq!(clamp_dialog_item_text_len(10), 10);
+        assert_eq!(clamp_dialog_item_text_len(300), 255);
+
+        let short_bytes = b"Hello world";
+        assert_eq!(clamp_dialog_item_text_bytes(short_bytes), short_bytes);
+        let long_bytes = vec![b'A'; 300];
+        let clamped = clamp_dialog_item_text_bytes(&long_bytes);
+        assert_eq!(clamped.len(), 255);
+        assert_eq!(clamped, &long_bytes[..255]);
+
+        // Pascal string encode & decode
+        let (len, text) = encode_dialog_item_pstring(b"Test");
+        assert_eq!(len, 4);
+        assert_eq!(text, b"Test");
+
+        let mut pstr = vec![4];
+        pstr.extend_from_slice(b"Test");
+        assert_eq!(decode_dialog_item_pstring(&pstr), Some(&b"Test"[..]));
+        assert_eq!(decode_dialog_item_pstring(&[]), None);
+        assert_eq!(decode_dialog_item_pstring(&[10, 1, 2]), None); // truncated
+
+        // 1-indexed lookups
+        let mut items = vec!["First", "Second", "Third"];
+        assert_eq!(get_item_at_1_indexed(&items, 0), None);
+        assert_eq!(get_item_at_1_indexed(&items, 1), Some(&"First"));
+        assert_eq!(get_item_at_1_indexed(&items, 2), Some(&"Second"));
+        assert_eq!(get_item_at_1_indexed(&items, 3), Some(&"Third"));
+        assert_eq!(get_item_at_1_indexed(&items, 4), None);
+
+        *get_item_at_1_indexed_mut(&mut items, 2).unwrap() = "Modified";
+        assert_eq!(items[1], "Modified");
+        assert_eq!(get_item_at_1_indexed_mut(&mut items, 0), None);
+        assert_eq!(get_item_at_1_indexed_mut(&mut items, 99), None);
+
+        // Control and text predicates
+        assert!(is_dialog_item_control(DIALOG_ITEM_BUTTON));
+        assert!(is_dialog_item_control(
+            DIALOG_ITEM_BUTTON | DIALOG_ITEM_DISABLED_FLAG
+        ));
+        assert!(is_dialog_item_control(DIALOG_ITEM_CHECKBOX));
+        assert!(is_dialog_item_control(DIALOG_ITEM_RADIO));
+        assert!(is_dialog_item_control(DIALOG_ITEM_RESOURCE_CONTROL));
+        assert!(!is_dialog_item_control(DIALOG_ITEM_STATIC_TEXT));
+        assert!(!is_dialog_item_control(DIALOG_ITEM_EDIT_TEXT));
+        assert!(!is_dialog_item_control(DIALOG_ITEM_ICON));
+
+        assert!(is_dialog_item_text(DIALOG_ITEM_STATIC_TEXT));
+        assert!(is_dialog_item_text(DIALOG_ITEM_EDIT_TEXT));
+        assert!(is_dialog_item_text(
+            DIALOG_ITEM_EDIT_TEXT | DIALOG_ITEM_DISABLED_FLAG
+        ));
+        assert!(!is_dialog_item_text(DIALOG_ITEM_BUTTON));
+        assert!(!is_dialog_item_text(DIALOG_ITEM_ICON));
+
+        // Control procIDs
+        assert_eq!(dialog_item_control_proc_id(DIALOG_ITEM_BUTTON), Some(0));
+        assert_eq!(
+            dialog_item_control_proc_id(DIALOG_ITEM_BUTTON | DIALOG_ITEM_DISABLED_FLAG),
+            Some(0)
+        );
+        assert_eq!(dialog_item_control_proc_id(DIALOG_ITEM_CHECKBOX), Some(1));
+        assert_eq!(dialog_item_control_proc_id(DIALOG_ITEM_RADIO), Some(2));
+        assert_eq!(dialog_item_control_proc_id(DIALOG_ITEM_STATIC_TEXT), None);
+        assert_eq!(dialog_item_control_proc_id(DIALOG_ITEM_ICON), None);
     }
 }

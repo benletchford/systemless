@@ -319,19 +319,9 @@ pub(super) fn dispatch_dialog_import(
             }
             let control = ppc_dialog_items_for_dialog(memory, handles, dialog)
                 .and_then(|items| {
-                    item_number
-                        .checked_sub(1)
-                        .and_then(|index| items.get(index).cloned())
+                    crate::dialog_manager::get_item_at_1_indexed(&items, item_number).cloned()
                 })
-                .filter(|item| {
-                    matches!(
-                        item.item_type & !PPC_DIALOG_ITEM_DISABLED,
-                        PPC_DIALOG_ITEM_BUTTON
-                            | PPC_DIALOG_ITEM_CHECKBOX
-                            | PPC_DIALOG_ITEM_RADIO
-                            | PPC_DIALOG_ITEM_RESOURCE_CONTROL
-                    )
-                })
+                .filter(|item| item.is_control())
                 .map(|item| item.handle)
                 .unwrap_or(0);
             let _ = memory.write_u32_be(control_out, control);
@@ -353,10 +343,10 @@ pub(super) fn dispatch_dialog_import(
             let text_out_ptr = cpu.gpr[4];
             if text_out_ptr != 0 {
                 let bytes = ppc_handle_bytes(memory, handles, item_handle).unwrap_or_default();
-                let len = bytes.len().min(255);
-                if ppc_memory_can_write_bytes(memory, text_out_ptr, len as u32 + 1) {
-                    let _ = memory.write_u8(text_out_ptr, len as u8);
-                    for (offset, byte) in bytes.iter().copied().take(len).enumerate() {
+                let (len, text) = crate::dialog_manager::encode_dialog_item_pstring(&bytes);
+                if ppc_memory_can_write_bytes(memory, text_out_ptr, u32::from(len) + 1) {
+                    let _ = memory.write_u8(text_out_ptr, len);
+                    for (offset, byte) in text.iter().copied().enumerate() {
                         let _ = memory.write_u8(text_out_ptr + 1 + offset as u32, byte);
                     }
                 }
@@ -371,10 +361,11 @@ pub(super) fn dispatch_dialog_import(
             let item_handle = cpu.gpr[3];
             let text_ptr = cpu.gpr[4];
             let text = ppc_read_pstring_bytes(memory, text_ptr).unwrap_or_default();
+            let text = crate::dialog_manager::clamp_dialog_item_text_bytes(&text);
             if ppc_hle_trace_enabled() {
                 eprintln!(
                     "[PPC-TRACE] SetDialogItemText handle=${item_handle:08X} text={:?}",
-                    decode_mac_roman(&text)
+                    decode_mac_roman(text)
                 );
             }
             let mut allocator = PpcProcessAllocatorView {
@@ -1918,11 +1909,8 @@ fn ppc_initialize_dialog_items(
         let mut missing_resource = false;
         let item_handle = match base_type {
             PPC_DIALOG_ITEM_BUTTON | PPC_DIALOG_ITEM_CHECKBOX | PPC_DIALOG_ITEM_RADIO => {
-                let proc_id = match base_type {
-                    PPC_DIALOG_ITEM_CHECKBOX => 1,
-                    PPC_DIALOG_ITEM_RADIO => 2,
-                    _ => 0,
-                };
+                let proc_id =
+                    crate::dialog_manager::dialog_item_control_proc_id(base_type).unwrap_or(0);
                 let mut allocator = PpcProcessAllocatorView {
                     memory_manager: process_memory_manager,
                 };
@@ -2346,9 +2334,7 @@ fn ppc_get_dialog_item(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, handles: &[
         .and_then(|items_handle| ppc_handle_bytes(memory, handles, items_handle))
         .and_then(|bytes| ppc_parse_dialog_items(&bytes))
         .and_then(|items| {
-            item_number
-                .checked_sub(1)
-                .and_then(|index| items.get(index).cloned())
+            crate::dialog_manager::get_item_at_1_indexed(&items, item_number).cloned()
         });
     let Some(item) = item else {
         if item_type_ptr != 0 {
@@ -2396,9 +2382,7 @@ fn ppc_set_dialog_item(cpu: &PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcH
     let Some(item) = ppc_handle_bytes(memory, handles, items_handle)
         .and_then(|bytes| ppc_parse_dialog_items(&bytes))
         .and_then(|items| {
-            item_number
-                .checked_sub(1)
-                .and_then(|index| items.get(index).cloned())
+            crate::dialog_manager::get_item_at_1_indexed(&items, item_number).cloned()
         })
     else {
         return;
