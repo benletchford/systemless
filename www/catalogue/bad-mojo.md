@@ -13,8 +13,9 @@ architectures:
 - ppc
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
-  status: boots
+  status: playable
   verified:
   - date: "2026-09-25"
     tester: Catalogue maintainer
@@ -35,9 +36,23 @@ compatibility:
       Chromium loaded the exact original demo archive through a local response
       intercept and started the Mac runtime without console errors. A 30-second pacing sample
       averaged 56 host FPS but only 25.6 guest ticks per second, below the 50-tick
-      browser-launch gate. Direct launch remains disabled.
+      browser-launch gate. Direct launch stayed disabled at that time.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/2814
+  - date: "2026-09-28"
+    tester: Catalogue maintainer
+    systemless_version: "0.66.0"
+    architecture: 68k
+    environment: >-
+      Release-mode browser check of the unchanged checksum-pinned promotional
+      demo after the generic counting-idle-loop fix in PR #2890. A standard
+      30-second pacing sample sustained about 60 host FPS and 61 guest ticks
+      per second at the normal 25 MHz setting, with healthy audio, one archive
+      request, and no console errors. Clicking Play Demo reached the first
+      roach scene; repeated Right and Up arrow inputs visibly changed the
+      roach's position and orientation.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2819
 artifacts:
 - id: archive
   role: archive
@@ -101,6 +116,7 @@ Explore a small part of *Bad Mojo* from a cockroach's point of view. The origina
 Macintosh demo introduces the setting, then offers **Play Demo** alongside its
 plot and trailer options. It is a limited promotional release, not the retail CD.
 
-The 68K run reaches the first scene in Systemless. Browser performance is still
-below the launch threshold, so direct launch remains disabled while
-[browser pacing is investigated](https://github.com/benletchford/systemless/issues/2819).
+The 68K demo reaches the first scene in the browser. Select **Play Demo** from
+the opening menu, then use the arrow keys to move the roach. The generic
+[idle-loop improvement](https://github.com/benletchford/systemless/pull/2890)
+allows the unchanged demo to meet the current browser pacing gate.
