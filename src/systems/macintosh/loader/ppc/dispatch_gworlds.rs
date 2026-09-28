@@ -115,6 +115,17 @@ pub(super) fn dispatch_gworld_import(
                     ppc_sync_gworld_pixel_state_mirror(gworlds, pixmap_handle, state);
                 }
             }
+            if ppc_hle_trace_enabled() {
+                eprintln!(
+                    "[PPC-TRACE] NewGWorld depth={} lr=${:08X} -> port=${:08X} heap=${:08X}..${:08X} err={}",
+                    cpu.gpr[4],
+                    cpu.lr,
+                    memory.read_u32_be(cpu.gpr[3]).unwrap_or(0),
+                    *heap_cursor,
+                    heap_limit,
+                    result
+                );
+            }
             // Imaging With QuickDraw (1994), pp. 6-20 and 6-24: QDError
             // reports NewGWorld and UpdateGWorld failures, and a successful
             // call clears the previous QuickDraw error.
@@ -163,6 +174,9 @@ pub(super) fn dispatch_gworld_import(
             // void DisposeGWorld(GWorldPtr offscreenGWorld);
             // Imaging With QuickDraw (1994), p. 6-25.
             let port = cpu.gpr[3];
+            if ppc_hle_trace_enabled() {
+                eprintln!("[PPC-TRACE] DisposeGWorld ${port:08X} lr=${:08X}", cpu.lr);
+            }
             let disposed = gworlds
                 .iter()
                 .find(|gworld| gworld.port != PPC_MAIN_GWORLD && gworld.port == port)
