@@ -508,6 +508,7 @@ impl super::TrapDispatcher {
     const TE_LINE_LEFT_INSET: i16 = DIALOG_TEXT_LEFT_INSET;
 
     const DBOX_FRAME_MARGIN: i16 = DIALOG_DBOX_FRAME_MARGIN;
+    #[cfg(test)]
     pub(crate) const EDIT_TEXT_FRAME_OUTSET: i16 = crate::dialog_manager::EDIT_TEXT_FRAME_OUTSET;
     const STANDARD_CONTROL_MARK_SIZE: i16 = 12;
     const STANDARD_CONTROL_MARK_LEFT_INSET: i16 = 2;
@@ -5168,13 +5169,16 @@ impl super::TrapDispatcher {
         );
         bus.write_word(
             dlg_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
-            0xFFFF,
-        ); // editField = -1
-        bus.write_word(dlg_ptr + crate::dialog_manager::DIALOG_EDIT_OPEN_OFFSET, 0); // editOpen
+            crate::dialog_manager::DIALOG_INITIAL_EDIT_FIELD as u16,
+        );
+        bus.write_word(
+            dlg_ptr + crate::dialog_manager::DIALOG_EDIT_OPEN_OFFSET,
+            crate::dialog_manager::DIALOG_INITIAL_EDIT_OPEN as u16,
+        );
         bus.write_word(
             dlg_ptr + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET,
-            1,
-        ); // aDefItem
+            crate::dialog_manager::DIALOG_INITIAL_DEFAULT_ITEM as u16,
+        );
 
         self.initialize_dialog_item_handles(bus, dlg_ptr, &items);
         self.dialog_items.insert(dlg_ptr, items.clone());

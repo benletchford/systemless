@@ -719,7 +719,9 @@ pub(super) fn dispatch_textedit_import(
         PpcImportDispatcherTarget::TECopy { cut, dialog } => {
             let te_handle = if dialog {
                 memory
-                    .read_u32_be(cpu.gpr[3].wrapping_add(PPC_DIALOG_TEXT_HANDLE_OFFSET))
+                    .read_u32_be(
+                        cpu.gpr[3].wrapping_add(crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET),
+                    )
                     .unwrap_or(0)
             } else {
                 cpu.gpr[3]
@@ -752,7 +754,9 @@ pub(super) fn dispatch_textedit_import(
         PpcImportDispatcherTarget::TEPaste { dialog } => {
             let te_handle = if dialog {
                 memory
-                    .read_u32_be(cpu.gpr[3].wrapping_add(PPC_DIALOG_TEXT_HANDLE_OFFSET))
+                    .read_u32_be(
+                        cpu.gpr[3].wrapping_add(crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET),
+                    )
                     .unwrap_or(0)
             } else {
                 cpu.gpr[3]

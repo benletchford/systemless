@@ -1644,7 +1644,7 @@ pub(super) fn ppc_draw_control_inner(
         && memory.read_u16_be(owner + PPC_CWINDOW_WINDOW_KIND_OFFSET) == Some(2)
         && ppc_dialog_items_for_dialog(memory, _handles, owner).is_some_and(|items| {
             let index = memory
-                .read_u16_be(owner + PPC_DIALOG_DEFAULT_ITEM_OFFSET)
+                .read_u16_be(owner + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET)
                 .unwrap_or(1);
             items
                 .get(usize::from(index.saturating_sub(1)))

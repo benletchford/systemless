@@ -19,6 +19,18 @@ pub const DIALOG_EDIT_OPEN_OFFSET: u32 = 166;
 pub const DIALOG_DEFAULT_ITEM_OFFSET: u32 = 168;
 pub const DIALOG_RESOURCE_ID_OFFSET: u32 = 170;
 
+/// Canonical initial value for `editField` in a newly created DialogRecord (-1 = no edit field active).
+/// Inside Macintosh Volume I, p. I-411.
+pub const DIALOG_INITIAL_EDIT_FIELD: i16 = -1;
+
+/// Canonical initial value for `editOpen` in a newly created DialogRecord (0 = closed).
+/// Inside Macintosh Volume I, p. I-411.
+pub const DIALOG_INITIAL_EDIT_OPEN: i16 = 0;
+
+/// Canonical initial value for `aDefItem` in a newly created DialogRecord (1 = item 1 is default button).
+/// Inside Macintosh Volume I, p. I-411.
+pub const DIALOG_INITIAL_DEFAULT_ITEM: i16 = 1;
+
 /// Host-private Dialog Manager state offsets following the documented DialogRecord.
 pub const DIALOG_CANCEL_ITEM_OFFSET: u32 = 172;
 pub const DIALOG_ALERT_HIT_OFFSET: u32 = 174;
@@ -2358,5 +2370,24 @@ mod tests {
             dialog_item_base_type(DIALOG_ITEM_PICTURE | DIALOG_ITEM_DISABLED_FLAG),
             DIALOG_ITEM_PICTURE
         );
+    }
+
+    #[test]
+    fn dialog_record_initial_state_and_offsets() {
+        assert_eq!(DIALOG_INITIAL_EDIT_FIELD, -1);
+        assert_eq!(DIALOG_INITIAL_EDIT_FIELD as u16, 0xFFFF);
+        assert_eq!(DIALOG_INITIAL_EDIT_OPEN, 0);
+        assert_eq!(DIALOG_INITIAL_DEFAULT_ITEM, 1);
+        assert_eq!(DIALOG_ITEMS_OFFSET, 156);
+        assert_eq!(DIALOG_TEXT_HANDLE_OFFSET, 160);
+        assert_eq!(DIALOG_EDIT_FIELD_OFFSET, 164);
+        assert_eq!(DIALOG_EDIT_OPEN_OFFSET, 166);
+        assert_eq!(DIALOG_DEFAULT_ITEM_OFFSET, 168);
+        assert_eq!(DIALOG_RESOURCE_ID_OFFSET, 170);
+        assert_eq!(DIALOG_CANCEL_ITEM_OFFSET, 172);
+        assert_eq!(DIALOG_ALERT_HIT_OFFSET, 174);
+        assert_eq!(DIALOG_STANDARD_ALERT_OUTPUT_OFFSET, 176);
+        assert_eq!(DIALOG_STANDARD_ALERT_STACK_OFFSET, 180);
+        assert_eq!(DIALOG_RECORD_SIZE, 256);
     }
 }
