@@ -12,8 +12,9 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
-  status: boots
+  status: playable
   verified:
   - date: "2026-09-23"
     tester: Catalogue maintainer
@@ -25,6 +26,16 @@ compatibility:
       presses. Browser interaction has not yet been approved.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/2502
+  - date: 2026-09-28
+    tester: Catalogue maintainer
+    systemless_version: 0.65.1
+    architecture: 68k
+    environment: >-
+      Release-mode Chrome browser preview using the exact checksum-matched hosted
+      StuffIt demo; two Return presses entered the board and Left/Right moved the
+      active falling letter across the well
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3212
 artifacts:
 - id: archive
   role: archive
@@ -80,5 +91,5 @@ as it descends, then spell words across the board to score points. This
 Macintosh demo shows the illustrated opening screens and a playable letter well.
 
 This entry uses the original promotional demo, not the commercial release.
-Systemless reaches live play with the 68K application; browser launch awaits
-manual approval.
+The default 68K browser route is approved for play. Press Return through the
+opening screens, then use Left and Right to position each falling letter.
