@@ -230,6 +230,7 @@ mod loaded_app_menu;
 mod loaded_app_resources;
 mod loaded_app_probes;
 mod loaded_app_mixed_mode;
+mod loaded_app_gateways;
 pub mod quicktime;
 pub mod sound;
 pub mod sprockets;
@@ -3103,62 +3104,6 @@ impl std::ops::Deref for PpcLoadedApp {
     }
 }
 
-#[cfg(test)]
-impl PpcLoadedApp {
-    fn push_test_vfs_file(&mut self, file: PpcVfsFileRecord) {
-        self.process_file_system
-            .with_mut(|file_system| file_system.vfs_files.push(file));
-    }
-
-    fn push_test_open_file(&mut self, file: PpcFileRecord) {
-        self.process_file_system
-            .with_mut(|file_system| file_system.files.push(file));
-    }
-
-    fn push_test_deleted_vfs_file_path(&mut self, path: String) {
-        self.process_file_system
-            .with_mut(|file_system| file_system.deleted_vfs_file_paths.push(path));
-    }
-
-    fn set_test_next_file_ref_num(&mut self, next_file_ref_num: i16) {
-        self.process_file_system.with_mut(|file_system| {
-            file_system.next_file_ref_num = next_file_ref_num;
-        });
-    }
-
-    pub(crate) fn with_test_vfs_file_mut<R>(
-        &mut self,
-        index: usize,
-        operation: impl FnOnce(&mut PpcVfsFileRecord) -> R,
-    ) -> Option<R> {
-        self.process_file_system
-            .with_mut(|file_system| file_system.vfs_files.get_mut(index).map(operation))
-    }
-
-    fn with_test_open_file_mut<R>(
-        &mut self,
-        index: usize,
-        operation: impl FnOnce(&mut PpcFileRecord) -> R,
-    ) -> Option<R> {
-        self.process_file_system
-            .with_mut(|file_system| file_system.files.with_record_mut(index, operation))
-    }
-
-    fn insert_test_stdio_stream(
-        &mut self,
-        address: u32,
-        stream: crate::process_context::ProcessStdioStreamRecord,
-    ) {
-        self.process_file_system
-            .with_mut(|file_system| file_system.stdio_streams.insert(address, stream));
-    }
-
-    fn publish_test_native_vfs_catalogue(&mut self) {
-        self.process_file_system
-            .with_mut(ProcessFileSystemState::publish_native_vfs_catalogue);
-    }
-}
-
 fn ppc_hle_import_trace_same_run(
     left: &PpcHleImportTraceEntry,
     right: &PpcHleImportTraceEntry,
@@ -3180,25 +3125,6 @@ fn push_ppc_hle_import_trace_entry(
 }
 
 impl PpcLoadedApp {
-    pub(crate) fn attach_trap_default_gateway(&mut self, trap_word: u16, gateway: u32) {
-        self.trap_default_gateways.insert(
-            crate::trap::manager::raw_trap_route(trap_word).canonical_word,
-            gateway,
-        );
-    }
-
-
-    pub(crate) fn cfm_symbol_bindings(
-        &mut self,
-    ) -> impl crate::cfm::CfmSymbolBindings + '_ {
-        PpcPersistedSymbolBindings::new(
-            &mut self.imports,
-            &mut self.import_count,
-            ppc_import_layout(),
-            &SystemlessPpcImportBindingPolicy,
-        )
-    }
-
     pub(crate) fn assert_cfm_execution_owner(&self, process_cfm: Option<&PpcCfmState>) {
         assert!(
             process_cfm.is_some() || self.cfm.is_some(),

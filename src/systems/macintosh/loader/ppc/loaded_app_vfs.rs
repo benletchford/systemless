@@ -266,3 +266,59 @@ impl PpcLoadedApp {
             })
     }
 }
+
+#[cfg(test)]
+impl PpcLoadedApp {
+    pub(crate) fn push_test_vfs_file(&mut self, file: PpcVfsFileRecord) {
+        self.process_file_system
+            .with_mut(|file_system| file_system.vfs_files.push(file));
+    }
+
+    pub(crate) fn push_test_open_file(&mut self, file: PpcFileRecord) {
+        self.process_file_system
+            .with_mut(|file_system| file_system.files.push(file));
+    }
+
+    pub(crate) fn push_test_deleted_vfs_file_path(&mut self, path: String) {
+        self.process_file_system
+            .with_mut(|file_system| file_system.deleted_vfs_file_paths.push(path));
+    }
+
+    pub(crate) fn set_test_next_file_ref_num(&mut self, next_file_ref_num: i16) {
+        self.process_file_system.with_mut(|file_system| {
+            file_system.next_file_ref_num = next_file_ref_num;
+        });
+    }
+
+    pub(crate) fn with_test_vfs_file_mut<R>(
+        &mut self,
+        index: usize,
+        operation: impl FnOnce(&mut PpcVfsFileRecord) -> R,
+    ) -> Option<R> {
+        self.process_file_system
+            .with_mut(|file_system| file_system.vfs_files.get_mut(index).map(operation))
+    }
+
+    pub(crate) fn with_test_open_file_mut<R>(
+        &mut self,
+        index: usize,
+        operation: impl FnOnce(&mut PpcFileRecord) -> R,
+    ) -> Option<R> {
+        self.process_file_system
+            .with_mut(|file_system| file_system.files.with_record_mut(index, operation))
+    }
+
+    pub(crate) fn insert_test_stdio_stream(
+        &mut self,
+        address: u32,
+        stream: crate::process_context::ProcessStdioStreamRecord,
+    ) {
+        self.process_file_system
+            .with_mut(|file_system| file_system.stdio_streams.insert(address, stream));
+    }
+
+    pub(crate) fn publish_test_native_vfs_catalogue(&mut self) {
+        self.process_file_system
+            .with_mut(ProcessFileSystemState::publish_native_vfs_catalogue);
+    }
+}
