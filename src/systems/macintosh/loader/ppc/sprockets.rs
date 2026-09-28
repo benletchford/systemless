@@ -1820,6 +1820,49 @@ pub(crate) fn ppc_dsp_context_set_clut_entries(
     PPC_NO_ERR
 }
 
+pub(crate) fn ppc_dsp_context_get_clut_entries(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    screen_clut: &[[u16; 3]; 256],
+) -> i16 {
+    // Apple Game Sprockets Guide (1996), Summary of DrawSprocket:
+    // OSStatus DSpContext_GetCLUTEntries(DSpContextReference, ColorSpec *, UInt16, UInt16).
+    if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
+        return error;
+    }
+    let entries_ptr = cpu.gpr[4];
+    let starting_entry = usize::from(cpu.gpr[5] as u16);
+    let entry_count = usize::from(cpu.gpr[6] as u16);
+    let Some(end_entry) = starting_entry.checked_add(entry_count) else {
+        return PPC_PARAM_ERR;
+    };
+    if end_entry > screen_clut.len() {
+        return PPC_PARAM_ERR;
+    }
+    let Some(byte_count) = entry_count.checked_mul(8) else {
+        return PPC_PARAM_ERR;
+    };
+    if byte_count != 0
+        && (entries_ptr == 0 || !ppc_memory_can_write_bytes(memory, entries_ptr, byte_count as u32))
+    {
+        return PPC_PARAM_ERR;
+    }
+    for offset in 0..entry_count {
+        let entry_ptr = entries_ptr + (offset as u32) * 8;
+        let [red, green, blue] = screen_clut[starting_entry + offset];
+        if memory
+            .write_u16_be(entry_ptr, (starting_entry + offset) as u16)
+            .is_none()
+            || memory.write_u16_be(entry_ptr + 2, red).is_none()
+            || memory.write_u16_be(entry_ptr + 4, green).is_none()
+            || memory.write_u16_be(entry_ptr + 6, blue).is_none()
+        {
+            return PPC_PARAM_ERR;
+        }
+    }
+    PPC_NO_ERR
+}
+
 pub(crate) fn ppc_i16_return_value(action: &PpcImportAction) -> Option<i16> {
     match *action {
         PpcImportAction::Return(value) => Some(value as i16),
@@ -1856,6 +1899,7 @@ pub(crate) fn ppc_draw_sprocket_action_name(target: &PpcImportDispatcherTarget) 
         PpcImportDispatcherTarget::DSpContextGetBackBuffer => Some("get_back_buffer"),
         PpcImportDispatcherTarget::DSpContextSwapBuffers => Some("swap_buffers"),
         PpcImportDispatcherTarget::DSpContextSetClutEntries => Some("set_clut_entries"),
+        PpcImportDispatcherTarget::DSpContextGetClutEntries => Some("get_clut_entries"),
         PpcImportDispatcherTarget::DSpContextGetDisplayID => Some("get_display_id"),
         PpcImportDispatcherTarget::DSpContextGetAttributes => Some("get_attributes"),
         PpcImportDispatcherTarget::DSpContextSetVblProc => Some("set_vbl_proc"),

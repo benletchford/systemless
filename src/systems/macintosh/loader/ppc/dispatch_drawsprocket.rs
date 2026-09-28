@@ -186,6 +186,9 @@ pub(super) fn dispatch_drawsprocket_import(
         PpcImportDispatcherTarget::DSpContextSetClutEntries => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_context_set_clut_entries(cpu, memory, screen_clut)),
         )),
+        PpcImportDispatcherTarget::DSpContextGetClutEntries => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_dsp_context_get_clut_entries(cpu, memory, screen_clut)),
+        )),
         PpcImportDispatcherTarget::DSpContextGetDisplayID => {
             let display_id_out_ptr = cpu.gpr[4];
             if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
