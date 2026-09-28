@@ -5162,7 +5162,10 @@ impl super::TrapDispatcher {
         // not the WDEF procID. Dialog boxes and alerts must use
         // dialogKind=2. The WDEF procID is retained in window_proc_ids.
         // Inside Macintosh Volume I, I-407..I-408, I-273; Volume VI, 11-42.
-        bus.write_word(dlg_ptr + 108, 2);
+        bus.write_word(
+            dlg_ptr + crate::dialog_manager::DIALOG_WINDOW_KIND_OFFSET,
+            crate::dialog_manager::DIALOG_WINDOW_KIND,
+        );
         bus.write_long(
             dlg_ptr + crate::dialog_manager::DIALOG_ITEMS_OFFSET,
             items_handle,
@@ -6321,7 +6324,10 @@ impl super::TrapDispatcher {
                     } else {
                         title.to_string()
                     };
-                    self.go_away_flag = dialog_ptr != 0 && bus.read_byte(dialog_ptr + 112) != 0;
+                    self.go_away_flag = dialog_ptr != 0
+                        && bus.read_byte(
+                            dialog_ptr + crate::dialog_manager::DIALOG_GO_AWAY_FLAG_OFFSET,
+                        ) != 0;
                     // DrawDialog has already painted the dialog content. The
                     // full WDEF draw path erases its structure region before
                     // drawing document/movable chrome, so use the chrome-only
@@ -8038,12 +8044,10 @@ impl super::TrapDispatcher {
             // Macintosh Toolbox Essentials 1992, Listing 6-17
             // references/executor/src/error/system_error.cpp
             if is_default {
-                let hilite_top = top - 4;
-                let hilite_left = left - 4;
-                let hilite_bottom = bottom + 4;
-                let hilite_right = right + 4;
-                let hilite_height = hilite_bottom - hilite_top;
-                let oval = (hilite_height / 2 - 4).max(4);
+                let ((hilite_top, hilite_left, hilite_bottom, hilite_right), oval) =
+                    crate::dialog_manager::default_button_outline_geometry((
+                        top, left, bottom, right,
+                    ));
                 self.fb_frame_round_rect(
                     bus,
                     hilite_top,
@@ -8052,7 +8056,7 @@ impl super::TrapDispatcher {
                     hilite_right,
                     oval,
                     oval,
-                    3,
+                    crate::dialog_manager::DEFAULT_BUTTON_OUTLINE_THICKNESS,
                 );
             }
         }
@@ -12922,7 +12926,13 @@ impl super::TrapDispatcher {
                             .dialog_cancel_items
                             .get(&dialog_ptr)
                             .copied()
-                            .unwrap_or(2);
+                            .unwrap_or_else(|| {
+                                crate::dialog_manager::find_dialog_cancel_item_index(
+                                    items.iter().map(|item| (item.item_type, &item.text)),
+                                )
+                                .map(|item| item as i16)
+                                .unwrap_or(crate::dialog_manager::ALERT_BUTTON_CANCEL)
+                            });
                         let edit_text_modified = edit_item > 0
                             && self
                                 .dialog_edit_text_modified_items
@@ -16416,7 +16426,7 @@ impl super::TrapDispatcher {
                     // existing NewCDialog path so the dialog is created
                     // without the Appearance theming, then drop the
                     // unused inFeatures word.
-                    0x0C => {
+                    crate::dialog_manager::DIALOG_DISPATCH_NEW_FEATURES_DIALOG => {
                         // Stack (low to high), 34 bytes of params + 4 result:
                         //   SP+0:  inFeatures(4)
                         //   SP+4:  inItems(4)
@@ -16522,7 +16532,7 @@ impl super::TrapDispatcher {
                     // NIL VAR ptr (the caller passed NULL for theProc)
                     // is a defensive no-op — the impl skips the write
                     // rather than dereffing NIL.
-                    0x03 => {
+                    crate::dialog_manager::DIALOG_DISPATCH_GET_STD_FILTER_PROC => {
                         let proc_ptr = bus.read_long(sp);
                         let shim = if self.dialog_std_filter_proc != 0 {
                             self.dialog_std_filter_proc
@@ -16569,7 +16579,7 @@ impl super::TrapDispatcher {
                     // mirror the value into DialogTrackingState
                     // .default_item so the active redraw path
                     // sees it without re-reading guest memory.
-                    0x04 => {
+                    crate::dialog_manager::DIALOG_DISPATCH_SET_DIALOG_DEFAULT_ITEM => {
                         let new_item = bus.read_word(sp) as i16;
                         let dialog_ptr = bus.read_long(sp + 2);
                         if dialog_ptr != 0 {
@@ -16601,7 +16611,7 @@ impl super::TrapDispatcher {
                     // active tracking state when ModalDialog is
                     // already running. NIL theDialog is a defensive
                     // no-op.
-                    0x05 => {
+                    crate::dialog_manager::DIALOG_DISPATCH_SET_DIALOG_CANCEL_ITEM => {
                         let new_item = bus.read_word(sp) as i16;
                         let dialog_ptr = bus.read_long(sp + 2);
                         if dialog_ptr != 0 {
@@ -16629,7 +16639,7 @@ impl super::TrapDispatcher {
                     // scripted event source), so the trap is a
                     // no-op noErr. Apps that defensively call this
                     // at dialog setup time get noErr and proceed.
-                    0x06 => {
+                    crate::dialog_manager::DIALOG_DISPATCH_SET_DIALOG_TRACKS_CURSOR => {
                         bus.write_word(sp + param_bytes, 0); // noErr
                         cpu.write_reg(Register::A7, sp + param_bytes);
                     }

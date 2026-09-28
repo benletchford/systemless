@@ -10,6 +10,8 @@ use crate::trap::types::decode_mac_roman;
 pub const DIALOG_RECORD_SIZE: u32 = 256;
 
 /// Canonical DialogRecord guest field offsets.
+pub const DIALOG_WINDOW_KIND_OFFSET: u32 = 108;
+pub const DIALOG_GO_AWAY_FLAG_OFFSET: u32 = 112;
 pub const DIALOG_ITEMS_OFFSET: u32 = 156;
 pub const DIALOG_TEXT_HANDLE_OFFSET: u32 = 160;
 pub const DIALOG_EDIT_FIELD_OFFSET: u32 = 164;
@@ -22,6 +24,27 @@ pub const DIALOG_CANCEL_ITEM_OFFSET: u32 = 172;
 pub const DIALOG_ALERT_HIT_OFFSET: u32 = 174;
 pub const DIALOG_STANDARD_ALERT_OUTPUT_OFFSET: u32 = 176;
 pub const DIALOG_STANDARD_ALERT_STACK_OFFSET: u32 = 180;
+
+/// Canonical Dialog window kind. Inside Macintosh Volume I, p. I-273.
+pub const DIALOG_WINDOW_KIND: u16 = 2;
+
+/// Canonical DialogDispatch ($AA68) routine selectors.
+/// Macintosh Toolbox Essentials (1992), pp. 6-162--6-167.
+#[allow(dead_code)]
+pub const DIALOG_DISPATCH_NEW_COLOR_DIALOG: u16 = 0x0000;
+pub const DIALOG_DISPATCH_GET_STD_FILTER_PROC: u16 = 0x0003;
+pub const DIALOG_DISPATCH_SET_DIALOG_DEFAULT_ITEM: u16 = 0x0004;
+pub const DIALOG_DISPATCH_SET_DIALOG_CANCEL_ITEM: u16 = 0x0005;
+pub const DIALOG_DISPATCH_SET_DIALOG_TRACKS_CURSOR: u16 = 0x0006;
+pub const DIALOG_DISPATCH_NEW_FEATURES_DIALOG: u16 = 0x000C;
+
+/// Standard default button outline thickness in pixels.
+/// Macintosh Toolbox Essentials (1992), Listing 6-17.
+pub const DEFAULT_BUTTON_OUTLINE_THICKNESS: i16 = 3;
+
+/// Standard default button outline outset padding in pixels.
+/// Macintosh Toolbox Essentials (1992), Listing 6-17.
+pub const DEFAULT_BUTTON_OUTLINE_INSET: i16 = 4;
 
 /// Item disable bit in the DITL item type byte.
 pub const DIALOG_ITEM_DISABLED_FLAG: u8 = 0x80;
@@ -964,6 +987,57 @@ pub fn normalize_dialog_item_selection(
     (s as u16, e as u16)
 }
 
+/// Computes the outer bounding rectangle and corner oval radius for drawing the standard 3px bold
+/// default button ring around a push button rectangle.
+///
+/// Macintosh Toolbox Essentials (1992), Listing 6-17:
+/// Outer rect is outset by 4 pixels in all dimensions; corner oval diameter is `max(4, height / 2 - 4)`.
+pub fn default_button_outline_geometry(
+    button_rect: (i16, i16, i16, i16),
+) -> ((i16, i16, i16, i16), i16) {
+    let outer = (
+        button_rect.0.saturating_sub(DEFAULT_BUTTON_OUTLINE_INSET),
+        button_rect.1.saturating_sub(DEFAULT_BUTTON_OUTLINE_INSET),
+        button_rect.2.saturating_add(DEFAULT_BUTTON_OUTLINE_INSET),
+        button_rect.3.saturating_add(DEFAULT_BUTTON_OUTLINE_INSET),
+    );
+    let height = outer.2.saturating_sub(outer.0);
+    let oval = (height / 2 - 4).max(4);
+    (outer, oval)
+}
+
+/// Returns true if the title matches "Cancel" (case-insensitive ASCII), which identifies
+/// the standard Cancel button in dialog boxes per Macintosh Toolbox Essentials (1992), p. 6-51.
+pub fn is_dialog_cancel_button_title(title: &[u8]) -> bool {
+    title.eq_ignore_ascii_case(b"cancel")
+}
+
+/// Returns true if the string title matches "Cancel" (case-insensitive ASCII).
+#[allow(dead_code)]
+pub fn is_dialog_cancel_button_title_str(title: &str) -> bool {
+    title.eq_ignore_ascii_case("cancel")
+}
+
+/// Finds the 1-indexed item number of an enabled PushButton with title "Cancel" (case-insensitive).
+pub fn find_dialog_cancel_item_index<I, T>(items: I) -> Option<u16>
+where
+    I: IntoIterator<Item = (u8, T)>,
+    T: AsRef<[u8]>,
+{
+    items
+        .into_iter()
+        .enumerate()
+        .find_map(|(idx, (raw_type, title))| {
+            let is_enabled_button = (raw_type & DIALOG_ITEM_DISABLED_FLAG == 0)
+                && (raw_type & !DIALOG_ITEM_DISABLED_FLAG == DIALOG_ITEM_BUTTON);
+            if is_enabled_button && is_dialog_cancel_button_title(title.as_ref()) {
+                u16::try_from(idx + 1).ok()
+            } else {
+                None
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1631,5 +1705,71 @@ mod tests {
         ));
         assert!(!is_dialog_item_disposable_control(DIALOG_ITEM_STATIC_TEXT));
         assert!(!is_dialog_item_disposable_control(DIALOG_ITEM_ICON));
+    }
+
+    #[test]
+    fn dialog_dispatch_button_geometry_and_cancel_detection() {
+        // DialogRecord chrome and window kind
+        assert_eq!(DIALOG_WINDOW_KIND_OFFSET, 108);
+        assert_eq!(DIALOG_WINDOW_KIND, 2);
+        assert_eq!(DIALOG_GO_AWAY_FLAG_OFFSET, 112);
+
+        // DialogDispatch selectors
+        assert_eq!(DIALOG_DISPATCH_NEW_COLOR_DIALOG, 0x0000);
+        assert_eq!(DIALOG_DISPATCH_GET_STD_FILTER_PROC, 0x0003);
+        assert_eq!(DIALOG_DISPATCH_SET_DIALOG_DEFAULT_ITEM, 0x0004);
+        assert_eq!(DIALOG_DISPATCH_SET_DIALOG_CANCEL_ITEM, 0x0005);
+        assert_eq!(DIALOG_DISPATCH_SET_DIALOG_TRACKS_CURSOR, 0x0006);
+        assert_eq!(DIALOG_DISPATCH_NEW_FEATURES_DIALOG, 0x000C);
+
+        // Default button outline geometry
+        assert_eq!(DEFAULT_BUTTON_OUTLINE_THICKNESS, 3);
+        assert_eq!(DEFAULT_BUTTON_OUTLINE_INSET, 4);
+
+        let button_rect = (50, 100, 70, 160);
+        let (outer, oval) = default_button_outline_geometry(button_rect);
+        assert_eq!(outer, (46, 96, 74, 164));
+        // height = 74 - 46 = 28; oval = max(4, 28/2 - 4) = 10
+        assert_eq!(oval, 10);
+
+        // Cancel button title predicates
+        assert!(is_dialog_cancel_button_title(b"Cancel"));
+        assert!(is_dialog_cancel_button_title(b"cancel"));
+        assert!(is_dialog_cancel_button_title(b"CANCEL"));
+        assert!(!is_dialog_cancel_button_title(b"OK"));
+        assert!(!is_dialog_cancel_button_title(b""));
+
+        assert!(is_dialog_cancel_button_title_str("Cancel"));
+        assert!(is_dialog_cancel_button_title_str("cancel"));
+        assert!(!is_dialog_cancel_button_title_str("Dismiss"));
+
+        // Cancel item search across items
+        let items: Vec<(u8, &str)> = vec![
+            (DIALOG_ITEM_BUTTON, "OK"),
+            (DIALOG_ITEM_BUTTON, "Cancel"),
+            (DIALOG_ITEM_STATIC_TEXT, "Cancel"),
+        ];
+        assert_eq!(
+            find_dialog_cancel_item_index(items.iter().copied()),
+            Some(2)
+        );
+
+        // Disabled cancel button is ignored
+        let items_disabled: Vec<(u8, &str)> = vec![
+            (DIALOG_ITEM_BUTTON, "OK"),
+            (DIALOG_ITEM_BUTTON | DIALOG_ITEM_DISABLED_FLAG, "Cancel"),
+        ];
+        assert_eq!(
+            find_dialog_cancel_item_index(items_disabled.iter().copied()),
+            None
+        );
+
+        // No cancel button present
+        let items_no_cancel: Vec<(u8, &str)> =
+            vec![(DIALOG_ITEM_BUTTON, "OK"), (DIALOG_ITEM_BUTTON, "Help")];
+        assert_eq!(
+            find_dialog_cancel_item_index(items_no_cancel.iter().copied()),
+            None
+        );
     }
 }

@@ -1829,7 +1829,10 @@ fn ppc_new_dialog(
     );
     if title_handle == 0
         || memory
-            .write_u16_be(dialog + PPC_CWINDOW_WINDOW_KIND_OFFSET, 2)
+            .write_u16_be(
+                dialog + PPC_CWINDOW_WINDOW_KIND_OFFSET,
+                crate::dialog_manager::DIALOG_WINDOW_KIND,
+            )
             .is_none()
         || memory.write_u32_be(dialog + 134, title_handle).is_none()
         || memory
@@ -2466,12 +2469,14 @@ fn ppc_dialog_for_event(
     // activate events name their window in `message`; other dialog events
     // are routed to the frontmost visible dialog.
     if matches!(what, 6 | 8)
-        && memory.read_u16_be(message.checked_add(PPC_CWINDOW_WINDOW_KIND_OFFSET)?) == Some(2)
+        && memory.read_u16_be(message.checked_add(PPC_CWINDOW_WINDOW_KIND_OFFSET)?)
+            == Some(crate::dialog_manager::DIALOG_WINDOW_KIND)
     {
         return Some(message);
     }
     gworlds.iter().rev().find_map(|record| {
-        (memory.read_u16_be(record.port.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET)) == Some(2)
+        (memory.read_u16_be(record.port.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET))
+            == Some(crate::dialog_manager::DIALOG_WINDOW_KIND)
             && ppc_window_is_visible(memory, record.port))
         .then_some(record.port)
     })
@@ -2933,19 +2938,14 @@ pub(super) fn ppc_draw_dialog(
                     && index + 1 == default_item
                     && ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7
                 {
-                    let outer = (
-                        rect.0.saturating_sub(4),
-                        rect.1.saturating_sub(4),
-                        rect.2.saturating_add(4),
-                        rect.3.saturating_add(4),
-                    );
-                    let oval = (outer.2.saturating_sub(outer.0) / 2 - 4).max(4);
+                    let (outer, oval) =
+                        crate::dialog_manager::default_button_outline_geometry(rect);
                     let _ = ppc_frame_front_round_rect(
                         memory,
                         front,
                         outer,
                         oval,
-                        3,
+                        crate::dialog_manager::DEFAULT_BUTTON_OUTLINE_THICKNESS,
                         ppc_theme_rgb(palette.frame_dark),
                     );
                 }
@@ -3128,14 +3128,8 @@ fn ppc_dialog_item_at_global_point(
         if !rect_contains_point(rect, where_v, where_h) {
             continue;
         }
-        let base_type = item.item_type & !PPC_DIALOG_ITEM_DISABLED;
-        if matches!(
-            base_type,
-            PPC_DIALOG_ITEM_BUTTON
-                | PPC_DIALOG_ITEM_CHECKBOX
-                | PPC_DIALOG_ITEM_RADIO
-                | PPC_DIALOG_ITEM_RESOURCE_CONTROL
-        ) && item.handle != 0
+        if crate::dialog_manager::is_dialog_item_control(item.item_type)
+            && item.handle != 0
             && controls.iter().any(|record| record.handle == item.handle)
         {
             if ppc_control_part_at_point(memory, controls, item.handle, local_v, local_h)
@@ -3224,17 +3218,11 @@ fn ppc_dialog_cancel_item(
     handles: &[PpcHandleRecord],
     items: &[PpcDialogItemView],
 ) -> Option<u16> {
-    items.iter().enumerate().find_map(|(index, item)| {
-        if item.item_type & PPC_DIALOG_ITEM_DISABLED != 0
-            || item.item_type & !PPC_DIALOG_ITEM_DISABLED != PPC_DIALOG_ITEM_BUTTON
-        {
-            return None;
-        }
-        let title = ppc_dialog_item_title(memory, handles, item);
-        title
-            .eq_ignore_ascii_case(b"cancel")
-            .then(|| u16::try_from(index + 1).unwrap_or(u16::MAX))
-    })
+    crate::dialog_manager::find_dialog_cancel_item_index(
+        items
+            .iter()
+            .map(|item| (item.item_type, ppc_dialog_item_title(memory, handles, item))),
+    )
 }
 
 fn ppc_modal_dialog(
