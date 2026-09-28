@@ -693,6 +693,18 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 aliases,
             ))))
         }
+        PpcImportDispatcherTarget::NewAliasMinimalFromFullPath => {
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_new_alias_minimal_from_full_path(
+                    cpu,
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    handles,
+                ),
+            )))
+        }
         _ => None,
     }
 }

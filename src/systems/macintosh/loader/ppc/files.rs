@@ -4864,6 +4864,92 @@ pub(super) fn ppc_new_alias(
     PPC_NO_ERR
 }
 
+pub(super) fn ppc_new_alias_minimal_from_full_path(
+    cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+) -> i16 {
+    // The PowerPC calling convention passes the signed 16-bit path length in
+    // r3, followed by the path and the optional AppleTalk names in r4-r6.
+    let path_len = cpu.gpr[3] as i16;
+    let path_ptr = cpu.gpr[4];
+    let alias_out_ptr = cpu.gpr[7];
+    if alias_out_ptr == 0 || !ppc_memory_can_write_bytes(memory, alias_out_ptr, 4) {
+        return PPC_PARAM_ERR;
+    }
+    let _ = memory.write_u32_be(alias_out_ptr, 0);
+    if path_len <= 0 || path_ptr == 0 {
+        return PPC_PARAM_ERR;
+    }
+    let Some(path) = ppc_memory_read_bytes(memory, path_ptr, path_len as u32) else {
+        return PPC_PARAM_ERR;
+    };
+    let Some(alias_data) = ppc_minimal_alias_record_from_full_path(&path) else {
+        return PPC_PARAM_ERR;
+    };
+    let handle = ppc_process_alloc_handle_with_bytes(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        handles,
+        &alias_data,
+    );
+    if handle == 0 {
+        *last_mem_error = PPC_MEM_FULL_ERR;
+        return PPC_MEM_FULL_ERR;
+    }
+    if memory.write_u32_be(alias_out_ptr, handle).is_none() {
+        return PPC_PARAM_ERR;
+    }
+    *last_mem_error = PPC_NO_ERR;
+    PPC_NO_ERR
+}
+
+pub(super) fn ppc_minimal_alias_record_from_full_path(path: &[u8]) -> Option<Vec<u8>> {
+    let padded_len = path.len().checked_add(1)? & !1;
+    let record_size = PPC_CLASSIC_ALIAS_RECORD_HEADER_SIZE
+        .checked_add(4)?
+        .checked_add(padded_len)?
+        .checked_add(4)?;
+    let record_size = u16::try_from(record_size).ok()?;
+    let path_len = u16::try_from(path.len()).ok()?;
+    let mut bytes = vec![0; usize::from(record_size)];
+    bytes[4..6].copy_from_slice(&record_size.to_be_bytes());
+    bytes[6..8].copy_from_slice(&PPC_CLASSIC_ALIAS_RECORD_VERSION.to_be_bytes());
+    bytes[PPC_CLASSIC_ALIAS_DIR_ID_OFFSET..PPC_CLASSIC_ALIAS_DIR_ID_OFFSET + 4]
+        .copy_from_slice(&u32::MAX.to_be_bytes());
+
+    let mut components = path.split(|byte| *byte == b':').filter(|part| !part.is_empty());
+    if let Some(volume_name) = components.next() {
+        ppc_write_alias_pstring(
+            &mut bytes,
+            PPC_CLASSIC_ALIAS_VOLUME_NAME_OFFSET,
+            27,
+            &volume_name[..volume_name.len().min(27)],
+        )?;
+    }
+    if let Some(file_name) = path.rsplit(|byte| *byte == b':').find(|part| !part.is_empty()) {
+        ppc_write_alias_pstring(
+            &mut bytes,
+            PPC_CLASSIC_ALIAS_FILE_NAME_OFFSET,
+            63,
+            &file_name[..file_name.len().min(63)],
+        )?;
+    }
+
+    let tag = PPC_CLASSIC_ALIAS_RECORD_HEADER_SIZE;
+    bytes[tag..tag + 2].copy_from_slice(&PPC_CLASSIC_ALIAS_FULL_PATH_TAG.to_be_bytes());
+    bytes[tag + 2..tag + 4].copy_from_slice(&path_len.to_be_bytes());
+    bytes[tag + 4..tag + 4 + path.len()].copy_from_slice(path);
+    let end = tag + 4 + padded_len;
+    bytes[end..end + 2].copy_from_slice(&PPC_CLASSIC_ALIAS_END_TAG.to_be_bytes());
+    Some(bytes)
+}
+
 pub(super) fn ppc_write_fsspec_parts(
     memory: &mut PpcSectionMem,
     spec_ptr: u32,
