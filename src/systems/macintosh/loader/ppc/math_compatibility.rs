@@ -53,16 +53,23 @@ pub enum PpcMath64Operation {
 
 pub(super) fn ppc_decimal_read(memory: &mut PpcSectionMem, decimal: u32) -> Option<f64> {
     let negative = memory.read_u8(decimal)? != 0;
-    let exponent = memory.read_u16_be(decimal + 2)? as i16;
-    let length = usize::from(memory.read_u8(decimal + 4)?).min(36);
-    let digits = (0..length)
-        .map(|offset| memory.read_u8(decimal + 5 + offset as u32))
-        .collect::<Option<Vec<_>>>()?;
-    let digits = std::str::from_utf8(&digits).ok()?;
-    let mut value = match digits {
-        "NAN" => f64::NAN,
-        "INF" => f64::INFINITY,
-        _ => digits.parse::<f64>().ok()? * 10f64.powi(i32::from(exponent)),
+    let exponent = memory.read_u16_be(decimal.checked_add(2)?)? as i16;
+    let length = usize::from(memory.read_u8(decimal.checked_add(4)?)?);
+    if !(1..=36).contains(&length) {
+        return None;
+    }
+    let digits = ppc_memory_read_bytes(memory, decimal.checked_add(5)?, length as u32)?;
+    let mut value = match digits[0] {
+        b'0' => 0.0,
+        b'N' => f64::NAN,
+        b'I' => f64::INFINITY,
+        _ => {
+            let digits = std::str::from_utf8(&digits).ok()?;
+            if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
+            format!("{digits}e{exponent}").parse::<f64>().ok()?
+        }
     };
     if negative {
         value = -value;

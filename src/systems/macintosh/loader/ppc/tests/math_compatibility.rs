@@ -610,6 +610,45 @@ fn hle_import_runner_handles_mathlib_dtox80() {
 }
 
 #[test]
+fn carbon_dec2num_reads_powerpc_decimal_record_and_returns_in_fpr1() {
+    for (sign, exponent, digits, expected) in [
+        (0u8, 3i16, b"208".as_slice(), 208_000.0f64),
+        (1, -3, b"85".as_slice(), -0.085),
+        (0, 0, b"0913".as_slice(), 0.0),
+        (1, 0, b"0".as_slice(), -0.0),
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            b"CarbonLib", b"dec2num",
+        ))
+        .unwrap();
+        let decimal = PPC_HEAP_BASE + 0x100;
+        loaded.memory.write_u8(decimal, sign).unwrap();
+        loaded.memory.write_u16_be(decimal + 2, exponent as u16).unwrap();
+        loaded.memory.write_u8(decimal + 4, digits.len() as u8).unwrap();
+        loaded.memory.write_bytes(decimal + 5, digits).unwrap();
+        loaded.cpu.gpr[3] = decimal;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], decimal);
+        assert_eq!(loaded.cpu.fpr[1], expected.to_bits());
+    }
+}
+
+#[test]
+fn powerpc_decimal_read_handles_special_values_and_rejects_oversized_significands() {
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(0x1000, vec![0; 42]);
+    memory.write_u8(0x1004, 3).unwrap();
+    memory.write_bytes(0x1005, b"INF").unwrap();
+    assert_eq!(ppc_decimal_read(&mut memory, 0x1000), Some(f64::INFINITY));
+    memory.write_bytes(0x1005, b"NAN").unwrap();
+    assert!(ppc_decimal_read(&mut memory, 0x1000).unwrap().is_nan());
+    memory.write_u8(0x1004, 37).unwrap();
+    assert_eq!(ppc_decimal_read(&mut memory, 0x1000), None);
+}
+
+#[test]
 fn import_bindings_classify_mathlib_imports() {
     assert_eq!(
         dispatcher_target_for_import("MathLib", "ceil"),

@@ -1946,6 +1946,9 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Nan)
         }
         ("MathLib", "dtox80") => PpcImportDispatcherTarget::MathDtox80,
+        ("InterfaceLib", "dec2num") => {
+            PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Dec2Num)
+        }
         ("Math64Lib", "LongDoubleToSInt64") => {
             PpcImportDispatcherTarget::Math64(PpcMath64Operation::LongDoubleToSInt64)
         }
