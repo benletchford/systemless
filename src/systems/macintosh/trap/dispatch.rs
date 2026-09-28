@@ -475,6 +475,40 @@ pub struct DialogItem {
     pub sel_end: i16,
 }
 
+impl From<crate::dialog_manager::DialogItemRecord> for DialogItem {
+    fn from(record: crate::dialog_manager::DialogItemRecord) -> Self {
+        let base_type = record.item_type & !crate::dialog_manager::DIALOG_ITEM_DISABLED_FLAG;
+        let text = match base_type {
+            crate::dialog_manager::DIALOG_ITEM_BUTTON
+            | crate::dialog_manager::DIALOG_ITEM_CHECKBOX
+            | crate::dialog_manager::DIALOG_ITEM_RADIO
+            | crate::dialog_manager::DIALOG_ITEM_STATIC_TEXT
+            | crate::dialog_manager::DIALOG_ITEM_EDIT_TEXT => record.text(),
+            _ => String::new(),
+        };
+        let resource_id = match base_type {
+            crate::dialog_manager::DIALOG_ITEM_RESOURCE_CONTROL
+            | crate::dialog_manager::DIALOG_ITEM_ICON
+            | crate::dialog_manager::DIALOG_ITEM_PICTURE => record.resource_id().unwrap_or(0),
+            _ => 0,
+        };
+        let proc_ptr = if base_type == crate::dialog_manager::DIALOG_ITEM_USER_ITEM {
+            record.handle
+        } else {
+            0
+        };
+        Self {
+            item_type: record.item_type,
+            rect: record.rect,
+            text,
+            resource_id,
+            proc_ptr,
+            sel_start: 0,
+            sel_end: 0,
+        }
+    }
+}
+
 /// Candidate popup-menu association observed while a dialog is being
 /// initialized. Some apps create custom popup controls by inserting a MENU,
 /// querying a userItem with GetDItem, then installing a userItem draw proc via

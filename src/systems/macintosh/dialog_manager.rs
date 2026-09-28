@@ -156,6 +156,78 @@ fn read_be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_be_bytes([slice[0], slice[1], slice[2], slice[3]]))
 }
 
+/// Calculate the payload length for a DITL item.
+///
+/// Inside Macintosh Volume I, pp. I-404--I-405, I-427;
+/// Macintosh Toolbox Essentials (1992), p. 6-153.
+pub fn ditl_item_payload_len(base_type: u8, data_len_byte: u8, remaining: usize) -> Option<usize> {
+    match base_type {
+        // icon (32), picture (64), resCtrl (7): 2-byte resource ID.
+        // IM:I I-427 describes the byte after itmtype as length=2; MTE 1992
+        // p. 6-153 documents the same compiled records as a reserved byte plus
+        // the two-byte resource ID. Accept both conventions.
+        DIALOG_ITEM_RESOURCE_CONTROL | DIALOG_ITEM_ICON | DIALOG_ITEM_PICTURE => {
+            if remaining < 2 {
+                return None;
+            }
+            if data_len_byte >= 2 {
+                Some(usize::from(data_len_byte))
+            } else {
+                Some(2)
+            }
+        }
+        _ => Some(usize::from(data_len_byte)),
+    }
+}
+
+/// Calculate the total byte length of a compiled DITL item record at `record_offset`,
+/// including its 14-byte header and padded payload.
+pub fn ditl_item_record_len_at(bytes: &[u8], record_offset: usize) -> Option<usize> {
+    if record_offset.checked_add(14)? > bytes.len() {
+        return None;
+    }
+    let item_type = *bytes.get(record_offset.checked_add(12)?)?;
+    let data_len_byte = *bytes.get(record_offset.checked_add(13)?)?;
+    let base_type = item_type & !DIALOG_ITEM_DISABLED_FLAG;
+    let payload_offset = record_offset.checked_add(14)?;
+    let remaining = bytes.len().saturating_sub(payload_offset);
+    let payload_len = ditl_item_payload_len(base_type, data_len_byte, remaining)?;
+    let padded = (payload_len + 1) & !1;
+    if padded > remaining {
+        return None;
+    }
+    Some(14 + padded)
+}
+
+/// Calculate the total used bytes of compiled DITL data up to the last item.
+pub fn ditl_total_used_len(bytes: &[u8]) -> usize {
+    if bytes.len() < 2 {
+        return bytes.len();
+    }
+    let Some(count_minus_one) = read_be_i16(bytes, 0) else {
+        return bytes.len();
+    };
+    let count = if count_minus_one < 0 {
+        0
+    } else {
+        match usize::try_from(count_minus_one)
+            .ok()
+            .and_then(|c| c.checked_add(1))
+        {
+            Some(c) => c,
+            None => return bytes.len(),
+        }
+    };
+    let mut offset = 2usize;
+    for _ in 0..count {
+        let Some(record_len) = ditl_item_record_len_at(bytes, offset) else {
+            break;
+        };
+        offset = offset.saturating_add(record_len);
+    }
+    offset
+}
+
 /// Parse raw DITL resource bytes into a list of parsed dialog item records.
 ///
 /// Macintosh Toolbox Essentials (1992), pp. 6-120--6-121.
@@ -164,23 +236,50 @@ pub fn parse_ditl_items(bytes: &[u8]) -> Option<Vec<DialogItemRecord>> {
     let count = if count_minus_one < 0 {
         0
     } else {
-        usize::try_from(count_minus_one).ok()?.checked_add(1)?
+        match usize::try_from(count_minus_one)
+            .ok()
+            .and_then(|c| c.checked_add(1))
+        {
+            Some(c) => c,
+            None => return None,
+        }
     };
 
     let mut offset = 2usize;
     let mut items = Vec::with_capacity(count);
 
     for _ in 0..count {
-        let handle = read_be_u32(bytes, offset)?;
-        let top = read_be_i16(bytes, offset.checked_add(4)?)?;
-        let left = read_be_i16(bytes, offset.checked_add(6)?)?;
-        let bottom = read_be_i16(bytes, offset.checked_add(8)?)?;
-        let right = read_be_i16(bytes, offset.checked_add(10)?)?;
-        let item_type = *bytes.get(offset.checked_add(12)?)?;
-        let payload_len = usize::from(*bytes.get(offset.checked_add(13)?)?);
-        let payload_start = offset.checked_add(14)?;
-        let payload_end = payload_start.checked_add(payload_len)?;
-        let payload = bytes.get(payload_start..payload_end)?.to_vec();
+        if offset + 14 > bytes.len() {
+            break;
+        }
+        let Some(handle) = read_be_u32(bytes, offset) else {
+            break;
+        };
+        let Some(top) = read_be_i16(bytes, offset + 4) else {
+            break;
+        };
+        let Some(left) = read_be_i16(bytes, offset + 6) else {
+            break;
+        };
+        let Some(bottom) = read_be_i16(bytes, offset + 8) else {
+            break;
+        };
+        let Some(right) = read_be_i16(bytes, offset + 10) else {
+            break;
+        };
+        let item_type = bytes[offset + 12];
+        let data_len_byte = bytes[offset + 13];
+        let base_type = item_type & !DIALOG_ITEM_DISABLED_FLAG;
+        let payload_start = offset + 14;
+        let remaining = bytes.len().saturating_sub(payload_start);
+        let Some(payload_len) = ditl_item_payload_len(base_type, data_len_byte, remaining) else {
+            break;
+        };
+        let padded = (payload_len + 1) & !1;
+        if padded > remaining {
+            break;
+        }
+        let payload = bytes[payload_start..payload_start + payload_len].to_vec();
 
         items.push(DialogItemRecord {
             item_offset: offset,
@@ -190,8 +289,7 @@ pub fn parse_ditl_items(bytes: &[u8]) -> Option<Vec<DialogItemRecord>> {
             payload,
         });
 
-        // Advance past data, padded to 2-byte word boundary.
-        offset = (payload_end + 1) & !1;
+        offset = payload_start + padded;
     }
 
     Some(items)
@@ -288,5 +386,66 @@ mod tests {
         // Non-centered flag leaves bounds unchanged
         let uncentered = position_dialog_bounds(bounds, 0x0000, 640, 480);
         assert_eq!(uncentered, bounds);
+    }
+
+    #[test]
+    fn parse_ditl_items_empty_and_truncated() {
+        let mut empty_data = Vec::new();
+        empty_data.extend_from_slice(&(-1i16).to_be_bytes());
+        let empty_items = parse_ditl_items(&empty_data).expect("valid empty DITL");
+        assert!(empty_items.is_empty());
+        assert_eq!(ditl_total_used_len(&empty_data), 2);
+
+        // Truncated item: count 2, first valid button, second item truncated
+        let mut data = Vec::new();
+        data.extend_from_slice(&1i16.to_be_bytes()); // count-1 = 1 (2 items)
+                                                     // Item 1: Button "OK"
+        data.extend_from_slice(&0u32.to_be_bytes());
+        data.extend_from_slice(&[0, 1, 0, 2, 0, 11, 0, 42]);
+        data.push(DIALOG_ITEM_BUTTON);
+        data.push(2);
+        data.extend_from_slice(b"OK");
+        // Item 2: StatText declaring 6 bytes, but only 3 provided
+        data.extend_from_slice(&0u32.to_be_bytes());
+        data.extend_from_slice(&[0, 12, 0, 2, 0, 22, 0, 72]);
+        data.push(DIALOG_ITEM_STATIC_TEXT);
+        data.push(6);
+        data.extend_from_slice(b"Bad");
+
+        let items = parse_ditl_items(&data).expect("parses valid items before truncated one");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].text(), "OK");
+    }
+
+    #[test]
+    fn parse_ditl_items_resource_ids_and_record_lengths() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&1i16.to_be_bytes()); // 2 items
+                                                     // Item 1: resCtrl (7) with reserved byte 0 followed by 128
+        data.extend_from_slice(&0u32.to_be_bytes());
+        data.extend_from_slice(&[0, 1, 0, 2, 0, 11, 0, 42]);
+        data.push(DIALOG_ITEM_RESOURCE_CONTROL);
+        data.push(0); // reserved byte per MTE
+        data.extend_from_slice(&128i16.to_be_bytes());
+
+        // Item 2: icon (32) with length byte 2 followed by -42
+        data.extend_from_slice(&0u32.to_be_bytes());
+        data.extend_from_slice(&[0, 12, 0, 2, 0, 28, 0, 34]);
+        data.push(DIALOG_ITEM_ICON);
+        data.push(2); // length byte 2 per IM:I
+        data.extend_from_slice(&(-42i16).to_be_bytes());
+
+        let len1 = ditl_item_record_len_at(&data, 2).expect("record 1 len");
+        assert_eq!(len1, 16);
+        let len2 = ditl_item_record_len_at(&data, 2 + len1).expect("record 2 len");
+        assert_eq!(len2, 16);
+        assert_eq!(ditl_total_used_len(&data), 2 + len1 + len2);
+
+        let items = parse_ditl_items(&data).expect("valid items");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].kind(), DialogItemKind::ResourceControl);
+        assert_eq!(items[0].resource_id(), Some(128));
+        assert_eq!(items[1].kind(), DialogItemKind::Icon);
+        assert_eq!(items[1].resource_id(), Some(-42));
     }
 }
