@@ -29,5 +29,6 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: r2 bucket cors set ${{ secrets.R2_BUCKET }} --file www/r2-cors.json
+          wranglerVersion: 4.142.0
+          command: r2 bucket cors set ${{ secrets.R2_BUCKET }} --file www/r2-cors.json --force
           postCommands: r2 bucket cors list ${{ secrets.R2_BUCKET }}
