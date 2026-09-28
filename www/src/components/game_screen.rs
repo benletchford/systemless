@@ -1532,6 +1532,14 @@ fn js_error_string(context: &str, value: JsValue) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn worker_boot_deadline_scales_for_large_archives() {
+        assert_eq!(super::worker_boot_timeout_ms(0), 30_000);
+        assert_eq!(super::worker_boot_timeout_ms(1024 * 1024), 31_000);
+        assert_eq!(super::worker_boot_timeout_ms(129_335_704), 154_000);
+        assert_eq!(super::worker_boot_timeout_ms(usize::MAX), 180_000);
+    }
+
+    #[test]
     fn issue_actions_share_one_information_tab() {
         assert_eq!(
             super::GAME_INFO_TABS,
@@ -2409,6 +2417,20 @@ impl WorkerRuntime {
     }
 }
 
+fn worker_boot_timeout_ms(total_bytes: usize) -> u32 {
+    const MIB: usize = 1024 * 1024;
+    // Large archives can spend over a minute loading executable data without
+    // reporting progress. Keep a finite deadline, scaled to the data supplied.
+    let extra_seconds = total_bytes.saturating_add(MIB - 1) / MIB;
+    30_000u32
+        .saturating_add(
+            u32::try_from(extra_seconds)
+                .unwrap_or(u32::MAX)
+                .saturating_mul(1_000),
+        )
+        .min(180_000)
+}
+
 async fn boot_catalogue_worker(
     game_bytes: &[u8],
     plugin_files: &[PluginFile],
@@ -2471,8 +2493,10 @@ async fn boot_catalogue_worker(
     let transfer = Array::new();
     transfer.push(bytes.buffer().as_ref());
     let plugin_forks = Array::new();
+    let mut total_bytes = game_bytes.len();
     for plugin in plugin_files {
         for fork in [&plugin.file.data_fork, &plugin.file.resource_fork] {
+            total_bytes = total_bytes.saturating_add(fork.len());
             let bytes = Uint8Array::from(fork.as_slice());
             plugin_forks.push(bytes.buffer().as_ref());
             transfer.push(bytes.buffer().as_ref());
@@ -2491,7 +2515,7 @@ async fn boot_catalogue_worker(
         &worker,
         &message,
         &transfer,
-        30_000,
+        worker_boot_timeout_ms(total_bytes),
         on_progress.as_ref().unchecked_ref(),
     ))
     .await
