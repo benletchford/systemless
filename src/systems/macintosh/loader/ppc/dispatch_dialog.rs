@@ -3,9 +3,10 @@
 use super::*;
 use crate::dialog_manager::{
     dialog_item_base_type, dialog_rect_to_global, dialog_target_for_event, dialog_text_rect,
-    edit_text_frame_rect, find_dialog_item_hit, global_to_dialog_local_point,
-    hide_dialog_item_rect, is_dialog_item_rect_hidden, offset_ditl_bytes, parse_ditl_items,
-    position_dialog_bounds as unified_position_dialog_bounds, show_dialog_item_rect,
+    edit_text_frame_rect, extract_dialog_item_text_bytes, find_dialog_item_hit,
+    global_to_dialog_local_point, hide_dialog_item_rect, is_dialog_item_rect_hidden,
+    offset_ditl_bytes, parse_ditl_items, position_dialog_bounds as unified_position_dialog_bounds,
+    prepare_get_dialog_item_text, prepare_set_dialog_item_text, show_dialog_item_rect,
     DialogItemRecord, DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET,
     DIALOG_DEFAULT_ITEM_OFFSET, DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET,
     DIALOG_INITIAL_DEFAULT_ITEM, DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -352,7 +353,7 @@ pub(super) fn dispatch_dialog_import(
             let text_out_ptr = cpu.gpr[4];
             if text_out_ptr != 0 {
                 let bytes = ppc_handle_bytes(memory, handles, item_handle).unwrap_or_default();
-                let (len, text) = crate::dialog_manager::encode_dialog_item_pstring(&bytes);
+                let (len, text) = prepare_get_dialog_item_text(&bytes);
                 if ppc_memory_can_write_bytes(memory, text_out_ptr, u32::from(len) + 1) {
                     let _ = memory.write_u8(text_out_ptr, len);
                     for (offset, byte) in text.iter().copied().enumerate() {
@@ -369,12 +370,12 @@ pub(super) fn dispatch_dialog_import(
             // dialog/window rendering path; preserve this routine's void ABI.
             let item_handle = cpu.gpr[3];
             let text_ptr = cpu.gpr[4];
-            let text = ppc_read_pstring_bytes(memory, text_ptr).unwrap_or_default();
-            let text = crate::dialog_manager::clamp_dialog_item_text_bytes(&text);
+            let raw_text = ppc_read_pstring_bytes(memory, text_ptr).unwrap_or_default();
+            let (text, decoded) = prepare_set_dialog_item_text(&raw_text);
             if ppc_hle_trace_enabled() {
                 eprintln!(
                     "[PPC-TRACE] SetDialogItemText handle=${item_handle:08X} text={:?}",
-                    decode_mac_roman(text)
+                    decoded
                 );
             }
             let mut allocator = PpcProcessAllocatorView {
@@ -2883,9 +2884,10 @@ fn ppc_dialog_item_title(
             .read_u32_be(item.handle)
             .filter(|ptr| *ptr != 0)
             .and_then(|ptr| ppc_read_pstring_bytes(memory, ptr + PPC_CONTROL_TITLE_OFFSET))
-            .unwrap_or_default();
+            .unwrap_or_else(|| item.payload.clone());
     }
-    ppc_handle_bytes(memory, handles, item.handle).unwrap_or_else(|| item.payload.clone())
+    let handle_bytes = ppc_handle_bytes(memory, handles, item.handle);
+    extract_dialog_item_text_bytes(base_type, handle_bytes.as_deref(), &item.payload).to_vec()
 }
 
 pub(super) fn ppc_draw_dialog(
