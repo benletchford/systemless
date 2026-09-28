@@ -39,3 +39,114 @@ pub(super) fn dispatch_gestalt_import(
         _ => None,
     }
 }
+
+fn ppc_gestalt(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    toolbox_startup: &PpcToolboxStartupState,
+) -> i16 {
+    let selector = cpu.gpr[3];
+    let response_ptr = cpu.gpr[4];
+    if response_ptr == 0 {
+        return PPC_PARAM_ERR;
+    }
+
+    let Some((response, err)) = ppc_gestalt_response(selector).or_else(|| {
+        toolbox_startup
+            .gestalt_values
+            .get(&selector)
+            .copied()
+            .map(|value| (value, PPC_NO_ERR))
+    }) else {
+        if ppc_hle_trace_enabled() {
+            eprintln!(
+                "[PPC-TRACE] Gestalt({:?}) -> gestaltUndefSelectorErr",
+                ppc_res_type_text(selector)
+            );
+        }
+        if memory.write_u32_be(response_ptr, 0).is_none() {
+            return PPC_PARAM_ERR;
+        }
+        return PPC_GESTALT_UNDEF_SELECTOR_ERR;
+    };
+    if memory.write_u32_be(response_ptr, response).is_none() {
+        return PPC_PARAM_ERR;
+    }
+    if ppc_hle_trace_enabled() {
+        eprintln!(
+            "[PPC-TRACE] Gestalt({:?}) -> ${response:08X} err={err} lr=${:08X}",
+            ppc_res_type_text(selector),
+            cpu.lr
+        );
+    }
+    err
+}
+
+fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
+    match &selector.to_be_bytes() {
+        b"vers" => Some((0x0001, PPC_NO_ERR)),
+        b"sysv" => Some((u32::from(POWERPC_SYSTEM_VERSION_BCD), PPC_NO_ERR)),
+        b"cbon" => Some((u32::from(POWERPC_CARBON_VERSION_BCD), PPC_NO_ERR)),
+        b"ostt" => Some((crate::trap::dispatch::OS_TRAP_TABLE_BASE, PPC_NO_ERR)),
+        b"tbtt" => Some((crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE, PPC_NO_ERR)),
+        b"evnt" => Some((0x0001, PPC_NO_ERR)),
+        b"cput" => Some((
+            REFERENCE_POWERPC_EXECUTION_CAPABILITIES.native_cpu_type,
+            PPC_NO_ERR,
+        )),
+        b"sysa" => REFERENCE_POWERPC_EXECUTION_CAPABILITIES
+            .system_architecture
+            .map(|architecture| (architecture, PPC_NO_ERR)),
+        b"proc" => Some((
+            REFERENCE_POWERPC_EXECUTION_CAPABILITIES.processor_type,
+            PPC_NO_ERR,
+        )),
+        b"mach" => Some((
+            u32::from(REFERENCE_MACHINE_PROFILE.gestalt_machine_type),
+            PPC_NO_ERR,
+        )),
+        // Match the 68K toolbox profile: System 7 Color QuickDraw 1.3.
+        // Reporting only the original 32-Bit QuickDraw release makes native
+        // PPC applications select obsolete monochrome-GWorld fallbacks.
+        b"qd  " => Some((0x0230, PPC_NO_ERR)),
+        b"qdrw" => Some((0x000F, PPC_NO_ERR)),
+        b"ram " => Some((REFERENCE_MACHINE_PROFILE.ram_size_bytes, PPC_NO_ERR)),
+        // With virtual memory disabled, logical and physical RAM are equal.
+        b"lram" => Some((REFERENCE_MACHINE_PROFILE.ram_size_bytes, PPC_NO_ERR)),
+        b"fpu " => Some((
+            REFERENCE_POWERPC_EXECUTION_CAPABILITIES.fpu_type,
+            PPC_NO_ERR,
+        )),
+        b"mmu " => Some((
+            REFERENCE_POWERPC_EXECUTION_CAPABILITIES.mmu_type,
+            PPC_NO_ERR,
+        )),
+        b"snd " => Some((0x1CFB, PPC_NO_ERR)),
+        b"tmgr" => Some((2, PPC_NO_ERR)),
+        // Thread Manager (1999), p. 19: bits 0 and 2 advertise the manager
+        // and its PowerPC ThreadsLib. Exact stack-size matching (bit 1)
+        // remains unavailable.
+        b"thds" => Some((0b101, PPC_NO_ERR)),
+        b"dplv" => Some((0x0002_0006, PPC_NO_ERR)),
+        b"dply" => Some((0x0000_0007, PPC_NO_ERR)),
+        b"alis" => Some((1, PPC_NO_ERR)),
+        b"fs  " => Some(((1 << 0) | (1 << 1), PPC_NO_ERR)),
+        b"fold" => Some((1, PPC_NO_ERR)),
+        b"qtim" => Some((PPC_QUICKTIME_VERSION, PPC_NO_ERR)),
+        b"drag" => Some((0, PPC_NO_ERR)),
+        b"os  " => Some((0x00FF, PPC_NO_ERR)),
+        b"powr" => Some((0, PPC_NO_ERR)),
+        b"appr" => Some((1, PPC_NO_ERR)),
+        b"addr" => Some((0b111, PPC_NO_ERR)),
+        b"sdev" => Some((0, PPC_NO_ERR)),
+        b"stdf" => Some((1, PPC_NO_ERR)),
+        b"help" => Some((1, PPC_NO_ERR)),
+        b"vm  " => Some((0, PPC_NO_ERR)),
+        b"cfrg" => Some((1, PPC_NO_ERR)),
+        b"mixd" => Some((1, PPC_NO_ERR)),
+        b"qd3d" => Some((1, PPC_NO_ERR)),
+        b"q3v " => Some((PPC_QD3D_VERSION, PPC_NO_ERR)),
+        b"a/ux" => Some((0, PPC_GESTALT_UNDEF_SELECTOR_ERR)),
+        _ => None,
+    }
+}
