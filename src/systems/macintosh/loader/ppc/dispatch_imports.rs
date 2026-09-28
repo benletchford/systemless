@@ -1387,6 +1387,10 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("menu imports return through dispatch_menu_import")
         }
         PpcImportDispatcherTarget::GetCurrentThread
+        | PpcImportDispatcherTarget::MpCreateSemaphore
+        | PpcImportDispatcherTarget::MpDeleteSemaphore
+        | PpcImportDispatcherTarget::MpSignalSemaphore
+        | PpcImportDispatcherTarget::MpWaitOnSemaphore
         | PpcImportDispatcherTarget::NewThreadEntryUPP
         | PpcImportDispatcherTarget::DisposeThreadEntryUPP
         | PpcImportDispatcherTarget::NewThreadTerminationUPP
