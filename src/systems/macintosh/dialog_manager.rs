@@ -142,6 +142,21 @@ impl DialogItemRecord {
             None
         }
     }
+
+    /// Whether the item rectangle is moved off-screen via `HideDialogItem`.
+    pub fn is_hidden(&self) -> bool {
+        is_dialog_item_rect_hidden(self.rect)
+    }
+
+    /// Offset the item display rectangle by `(v_delta, h_delta)`.
+    pub fn offset_rect(&mut self, v_delta: i16, h_delta: i16) {
+        self.rect = offset_rect(self.rect, v_delta, h_delta);
+    }
+
+    /// Calculate the enclosing rectangle for invalidation and redrawing.
+    pub fn enclosing_rect(&self) -> (i16, i16, i16, i16) {
+        dialog_item_enclosing_rect(self.item_type, self.rect)
+    }
 }
 
 #[inline]
@@ -323,6 +338,149 @@ pub fn position_dialog_bounds(
     )
 }
 
+/// Standard coordinate offset applied to move a dialog item off-screen when hidden.
+///
+/// Inside Macintosh Volume IV, p. IV-59;
+/// Macintosh Toolbox Essentials (1992), pp. 6-123--6-124.
+pub const DIALOG_ITEM_HIDDEN_OFFSET: i16 = 16384;
+
+/// Horizontal threshold coordinate distinguishing on-screen dialog items from hidden ones.
+///
+/// Macintosh Toolbox Essentials (1992), pp. 6-123--6-124.
+pub const DIALOG_ITEM_HIDDEN_THRESHOLD: i16 = 8192;
+
+/// Offset a rectangle by `(v_delta, h_delta)` using saturating arithmetic.
+pub fn offset_rect(rect: (i16, i16, i16, i16), v_delta: i16, h_delta: i16) -> (i16, i16, i16, i16) {
+    (
+        rect.0.saturating_add(v_delta),
+        rect.1.saturating_add(h_delta),
+        rect.2.saturating_add(v_delta),
+        rect.3.saturating_add(h_delta),
+    )
+}
+
+/// Convert a dialog-local rectangle into global/screen coordinates based on dialog bounds.
+pub fn dialog_rect_to_global(
+    bounds: (i16, i16, i16, i16),
+    rect: (i16, i16, i16, i16),
+) -> (i16, i16, i16, i16) {
+    (
+        bounds.0.saturating_add(rect.0),
+        bounds.1.saturating_add(rect.1),
+        bounds.0.saturating_add(rect.2),
+        bounds.1.saturating_add(rect.3),
+    )
+}
+
+/// Convert a global/screen rectangle into dialog-local coordinates based on dialog bounds.
+#[allow(dead_code)]
+pub fn dialog_rect_to_local(
+    bounds: (i16, i16, i16, i16),
+    rect: (i16, i16, i16, i16),
+) -> (i16, i16, i16, i16) {
+    (
+        rect.0.saturating_sub(bounds.0),
+        rect.1.saturating_sub(bounds.1),
+        rect.2.saturating_sub(bounds.0),
+        rect.3.saturating_sub(bounds.1),
+    )
+}
+
+/// Whether a rectangle contains a point `(v, h)` (with half-open interval `top <= v < bottom` and `left <= h < right`).
+pub fn rect_contains_point(rect: (i16, i16, i16, i16), v: i16, h: i16) -> bool {
+    v >= rect.0 && v < rect.2 && h >= rect.1 && h < rect.3
+}
+
+/// Determine whether a dialog item rectangle is hidden off-screen.
+///
+/// Macintosh Toolbox Essentials (1992), pp. 6-123--6-124.
+pub fn is_dialog_item_rect_hidden(rect: (i16, i16, i16, i16)) -> bool {
+    rect.1 > DIALOG_ITEM_HIDDEN_THRESHOLD
+}
+
+/// Calculate the hidden offscreen rectangle for a dialog item (+16384 on left and right).
+pub fn hide_dialog_item_rect(rect: (i16, i16, i16, i16)) -> (i16, i16, i16, i16) {
+    (
+        rect.0,
+        rect.1.wrapping_add(DIALOG_ITEM_HIDDEN_OFFSET),
+        rect.2,
+        rect.3.wrapping_add(DIALOG_ITEM_HIDDEN_OFFSET),
+    )
+}
+
+/// Calculate the restored onscreen rectangle for a hidden dialog item (-16384 on left and right).
+pub fn show_dialog_item_rect(rect: (i16, i16, i16, i16)) -> (i16, i16, i16, i16) {
+    (
+        rect.0,
+        rect.1.wrapping_sub(DIALOG_ITEM_HIDDEN_OFFSET),
+        rect.2,
+        rect.3.wrapping_sub(DIALOG_ITEM_HIDDEN_OFFSET),
+    )
+}
+
+/// Calculate the enclosing rectangle for a dialog item for erasure and invalidation.
+///
+/// Inside Macintosh Volume IV, p. IV-59 notes that Dialog Manager drawing can extend
+/// outside an editText item's display rectangle by 3 pixels.
+pub fn dialog_item_enclosing_rect(
+    item_type: u8,
+    rect: (i16, i16, i16, i16),
+) -> (i16, i16, i16, i16) {
+    let base_type = item_type & !DIALOG_ITEM_DISABLED_FLAG;
+    match base_type {
+        DIALOG_ITEM_EDIT_TEXT => (
+            rect.0.saturating_sub(3),
+            rect.1.saturating_sub(3),
+            rect.2.saturating_add(3),
+            rect.3.saturating_add(3),
+        ),
+        _ => rect,
+    }
+}
+
+/// Find the 0-based index of the first item whose rectangle contains the dialog-local point.
+///
+/// Inside Macintosh Volume IV, p. IV-60;
+/// Macintosh Toolbox Essentials (1992), p. 6-125.
+pub fn find_dialog_item_at_local_point<'a>(
+    rects: impl IntoIterator<Item = &'a (i16, i16, i16, i16)>,
+    pt_v: i16,
+    pt_h: i16,
+) -> Option<usize> {
+    for (idx, &rect) in rects.into_iter().enumerate() {
+        if rect_contains_point(rect, pt_v, pt_h) {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+/// Offset the bounding rectangles of compiled DITL items directly within the raw binary buffer.
+pub fn offset_ditl_bytes(
+    bytes: &mut [u8],
+    item_offsets: impl IntoIterator<Item = usize>,
+    dv: i16,
+    dh: i16,
+) {
+    if dv == 0 && dh == 0 {
+        return;
+    }
+    for item_offset in item_offsets {
+        for (coordinate_offset, delta) in [(4usize, dv), (6, dh), (8, dv), (10, dh)] {
+            let Some(start) = item_offset.checked_add(coordinate_offset) else {
+                continue;
+            };
+            let Some(pair) = bytes.get(start..start.saturating_add(2)) else {
+                continue;
+            };
+            let value = i16::from_be_bytes([pair[0], pair[1]]).saturating_add(delta);
+            if let Some(destination) = bytes.get_mut(start..start.saturating_add(2)) {
+                destination.copy_from_slice(&value.to_be_bytes());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +605,83 @@ mod tests {
         assert_eq!(items[0].resource_id(), Some(128));
         assert_eq!(items[1].kind(), DialogItemKind::Icon);
         assert_eq!(items[1].resource_id(), Some(-42));
+    }
+
+    #[test]
+    fn dialog_item_rect_geometry_and_visibility() {
+        let initial_rect = (10, 20, 30, 80);
+        let offset = offset_rect(initial_rect, 5, -10);
+        assert_eq!(offset, (15, 10, 35, 70));
+
+        let bounds = (100, 200, 300, 500);
+        let global = dialog_rect_to_global(bounds, initial_rect);
+        assert_eq!(global, (110, 220, 130, 280));
+        let local = dialog_rect_to_local(bounds, global);
+        assert_eq!(local, initial_rect);
+
+        assert!(!is_dialog_item_rect_hidden(initial_rect));
+        let hidden = hide_dialog_item_rect(initial_rect);
+        assert_eq!(hidden, (10, 16404, 30, 16464));
+        assert!(is_dialog_item_rect_hidden(hidden));
+        let shown = show_dialog_item_rect(hidden);
+        assert_eq!(shown, initial_rect);
+
+        // Enclosing rect: standard controls match exactly; editText extends 3px on all sides
+        assert_eq!(
+            dialog_item_enclosing_rect(DIALOG_ITEM_BUTTON, initial_rect),
+            initial_rect
+        );
+        assert_eq!(
+            dialog_item_enclosing_rect(DIALOG_ITEM_EDIT_TEXT, initial_rect),
+            (7, 17, 33, 83)
+        );
+
+        // DialogItemRecord helpers
+        let mut record = DialogItemRecord {
+            item_offset: 2,
+            item_type: DIALOG_ITEM_EDIT_TEXT,
+            rect: initial_rect,
+            handle: 0,
+            payload: vec![],
+        };
+        assert!(!record.is_hidden());
+        assert_eq!(record.enclosing_rect(), (7, 17, 33, 83));
+        record.offset_rect(10, 20);
+        assert_eq!(record.rect, (20, 40, 40, 100));
+    }
+
+    #[test]
+    fn dialog_item_point_hit_testing_and_ditl_byte_offsetting() {
+        let rect1 = (10, 20, 30, 50);
+        let rect2 = (30, 20, 50, 50);
+        let rects = [rect1, rect2];
+
+        // rect_contains_point is half-open: [top, bottom) and [left, right)
+        assert!(rect_contains_point(rect1, 10, 20));
+        assert!(rect_contains_point(rect1, 29, 49));
+        assert!(!rect_contains_point(rect1, 30, 20));
+        assert!(!rect_contains_point(rect1, 10, 50));
+
+        // find_dialog_item_at_local_point
+        assert_eq!(find_dialog_item_at_local_point(&rects, 15, 25), Some(0));
+        assert_eq!(find_dialog_item_at_local_point(&rects, 35, 25), Some(1));
+        assert_eq!(find_dialog_item_at_local_point(&rects, 5, 5), None);
+
+        // offset_ditl_bytes
+        let mut data = Vec::new();
+        data.extend_from_slice(&0i16.to_be_bytes()); // 1 item
+        data.extend_from_slice(&0u32.to_be_bytes()); // handle at 2
+        data.extend_from_slice(&10i16.to_be_bytes()); // top at 6
+        data.extend_from_slice(&20i16.to_be_bytes()); // left at 8
+        data.extend_from_slice(&30i16.to_be_bytes()); // bottom at 10
+        data.extend_from_slice(&40i16.to_be_bytes()); // right at 12
+        data.push(DIALOG_ITEM_BUTTON);
+        data.push(0);
+
+        offset_ditl_bytes(&mut data, [2], 5, 10);
+        assert_eq!(i16::from_be_bytes([data[6], data[7]]), 15);
+        assert_eq!(i16::from_be_bytes([data[8], data[9]]), 30);
+        assert_eq!(i16::from_be_bytes([data[10], data[11]]), 35);
+        assert_eq!(i16::from_be_bytes([data[12], data[13]]), 50);
     }
 }

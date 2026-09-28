@@ -3617,12 +3617,7 @@ impl super::TrapDispatcher {
     }
 
     fn offset_dialog_item_rect(item: &mut DialogItem, v_delta: i16, h_delta: i16) {
-        item.rect = (
-            item.rect.0.saturating_add(v_delta),
-            item.rect.1.saturating_add(h_delta),
-            item.rect.2.saturating_add(v_delta),
-            item.rect.3.saturating_add(h_delta),
-        );
+        item.rect = crate::dialog_manager::offset_rect(item.rect, v_delta, h_delta);
     }
 
     fn erase_retained_dialog_items_after_ditl_shorten(
@@ -6047,18 +6042,6 @@ impl super::TrapDispatcher {
             right,
             pixel_index,
         );
-    }
-
-    fn dialog_item_enclosing_local_rect(
-        item_type: u8,
-        rect: (i16, i16, i16, i16),
-    ) -> (i16, i16, i16, i16) {
-        match item_type & 0x7F {
-            // IM:IV IV-59 notes that Dialog Manager drawing can extend
-            // outside an editText item's display rectangle by 3 pixels.
-            16 => (rect.0 - 3, rect.1 - 3, rect.2 + 3, rect.3 + 3),
-            _ => rect,
-        }
     }
 
     fn erase_dialog_item_enclosing_rect(
@@ -16121,14 +16104,14 @@ impl super::TrapDispatcher {
                         if idx < items.len() {
                             let rect = items[idx].rect;
                             // MTE 1992, 6-123: already-hidden items (left > 8192) are a no-op.
-                            if rect.1 < 8192 {
-                                let enclosing = Self::dialog_item_enclosing_local_rect(
+                            if !crate::dialog_manager::is_dialog_item_rect_hidden(rect) {
+                                let enclosing = crate::dialog_manager::dialog_item_enclosing_rect(
                                     items[idx].item_type,
                                     rect,
                                 );
                                 self.hidden_dialog_item_rects.entry(key).or_insert(rect);
-                                items[idx].rect.1 = rect.1.wrapping_add(16384);
-                                items[idx].rect.3 = rect.3.wrapping_add(16384);
+                                items[idx].rect =
+                                    crate::dialog_manager::hide_dialog_item_rect(rect);
                                 updated_control_rect = Some(items[idx].rect);
                                 redraw_local_rect = Some(enclosing);
                             }
@@ -16185,20 +16168,14 @@ impl super::TrapDispatcher {
                         if idx < items.len() {
                             let rect = items[idx].rect;
                             // MTE 1992, 6-124: already-visible items (left < 8192) are a no-op.
-                            if rect.1 > 8192 {
-                                let restored_rect = if let Some(orig_rect) =
-                                    self.hidden_dialog_item_rects.remove(&key)
-                                {
-                                    orig_rect
-                                } else {
-                                    (
-                                        rect.0,
-                                        rect.1.wrapping_sub(16384),
-                                        rect.2,
-                                        rect.3.wrapping_sub(16384),
-                                    )
-                                };
-                                let enclosing = Self::dialog_item_enclosing_local_rect(
+                            if crate::dialog_manager::is_dialog_item_rect_hidden(rect) {
+                                let restored_rect = self
+                                    .hidden_dialog_item_rects
+                                    .remove(&key)
+                                    .unwrap_or_else(|| {
+                                        crate::dialog_manager::show_dialog_item_rect(rect)
+                                    });
+                                let enclosing = crate::dialog_manager::dialog_item_enclosing_rect(
                                     items[idx].item_type,
                                     restored_rect,
                                 );
@@ -16264,15 +16241,12 @@ impl super::TrapDispatcher {
                 let result: i16 = if dialog_ptr == 0 {
                     -1
                 } else if let Some(items) = self.dialog_items.get(&dialog_ptr) {
-                    let mut hit: i16 = -1;
-                    for (idx, item) in items.iter().enumerate() {
-                        let (top, left, bottom, right) = item.rect;
-                        if pt_v >= top && pt_v < bottom && pt_h >= left && pt_h < right {
-                            hit = idx as i16;
-                            break;
-                        }
-                    }
-                    hit
+                    crate::dialog_manager::find_dialog_item_at_local_point(
+                        items.iter().map(|item| &item.rect),
+                        pt_v,
+                        pt_h,
+                    )
+                    .map_or(-1, |idx| idx as i16)
                 } else {
                     -1
                 };
