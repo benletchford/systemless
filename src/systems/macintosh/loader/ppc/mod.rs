@@ -1156,6 +1156,8 @@ pub enum PpcImportDispatcherTarget {
     LMGetMenuFlash,
     LMGetPaintWhite,
     LMGetSysMap,
+    LMGetCurApRefNum,
+    GetVCBQHdr,
     LMGetSysEvtMask,
     LMSetSysEvtMask,
     LMGetDefltStack,
@@ -7633,6 +7635,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "LMGetMenuFlash") => PpcImportDispatcherTarget::LMGetMenuFlash,
         ("InterfaceLib", "LMGetPaintWhite") => PpcImportDispatcherTarget::LMGetPaintWhite,
         ("InterfaceLib", "LMGetSysMap") => PpcImportDispatcherTarget::LMGetSysMap,
+        ("InterfaceLib", "LMGetCurApRefNum") => PpcImportDispatcherTarget::LMGetCurApRefNum,
+        ("InterfaceLib", "GetVCBQHdr") => PpcImportDispatcherTarget::GetVCBQHdr,
         ("InterfaceLib", "LMGetSysEvtMask") => PpcImportDispatcherTarget::LMGetSysEvtMask,
         ("InterfaceLib", "LMSetSysEvtMask") => PpcImportDispatcherTarget::LMSetSysEvtMask,
         ("InterfaceLib", "LMGetDefltStack") => PpcImportDispatcherTarget::LMGetDefltStack,
@@ -11762,6 +11766,8 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::LMGetMenuFlash
         | PpcImportDispatcherTarget::LMGetPaintWhite
         | PpcImportDispatcherTarget::LMGetSysMap
+        | PpcImportDispatcherTarget::LMGetCurApRefNum
+        | PpcImportDispatcherTarget::GetVCBQHdr
         | PpcImportDispatcherTarget::LMGetSysEvtMask
         | PpcImportDispatcherTarget::LMSetSysEvtMask
         | PpcImportDispatcherTarget::LMGetDefltStack

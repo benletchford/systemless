@@ -44,6 +44,22 @@ pub(super) fn dispatch_low_memory_import(
             // refnum 0 as its system/application fallback map.
             Some(PpcImportAction::Return(ppc_i16_result(0)))
         }
+        PpcImportDispatcherTarget::LMGetCurApRefNum => {
+            // Inside Macintosh Volume II (1985), II-58: CurApRefNum is the
+            // reference number of the current application's resource file.
+            Some(PpcImportAction::Return(ppc_i16_result(
+                memory
+                    .read_u16_be(crate::memory::globals::addr::CUR_APREF_NUM)
+                    .unwrap_or(0) as i16,
+            )))
+        }
+        PpcImportDispatcherTarget::GetVCBQHdr => {
+            // Inside Macintosh Volume II (1985), II-126: GetVCBQHdr returns
+            // a pointer to the volume-control-block queue header.
+            Some(PpcImportAction::Return(
+                crate::memory::globals::addr::VCB_Q_HDR,
+            ))
+        }
         PpcImportDispatcherTarget::LMGetSysEvtMask => Some(PpcImportAction::Return(
             u32::from(memory.read_u16_be(crate::memory::globals::addr::SYS_EVT_MASK)
                 .unwrap_or(crate::memory::globals::DEFAULT_SYS_EVT_MASK)),

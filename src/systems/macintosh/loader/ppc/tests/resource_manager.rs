@@ -228,6 +228,42 @@ fn hle_import_runner_lm_get_sys_map_returns_the_hle_fallback_refnum() {
 }
 
 #[test]
+fn hle_import_runner_lm_get_cur_ap_ref_num_reads_signed_low_memory_word() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LMGetCurApRefNum"),
+        PpcImportDispatcherTarget::LMGetCurApRefNum
+    );
+    let pef = synthetic_pef_with_import(b"LMGetCurApRefNum");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded
+        .memory
+        .write_u16_be(crate::memory::globals::addr::CUR_APREF_NUM, 0xfffe)
+        .unwrap();
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-2));
+}
+
+#[test]
+fn hle_import_runner_get_vcbq_hdr_returns_low_memory_queue_address() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetVCBQHdr"),
+        PpcImportDispatcherTarget::GetVCBQHdr
+    );
+    let pef = synthetic_pef_with_import(b"GetVCBQHdr");
+    let mut loaded = load_pef_application(&pef).unwrap();
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], crate::memory::globals::addr::VCB_Q_HDR);
+}
+
+#[test]
 fn hle_import_runner_reports_resource_autoload_state() {
     let pef = synthetic_pef_with_import(b"LMGetResLoad");
     let mut loaded = load_pef_application(&pef).unwrap();
