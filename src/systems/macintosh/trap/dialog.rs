@@ -10918,7 +10918,7 @@ impl super::TrapDispatcher {
                     // says Alert returns -1 when boxDrwn is clear.
                     // Increment AlertStage, capped at 3, so the
                     // next call uses the next stage's nibble.
-                    let next_stage = ((stage_word as u32) + 1).min(3) as u16;
+                    let next_stage = crate::dialog_manager::next_alert_stage(stage_word);
                     bus.write_word(crate::memory::globals::addr::ALERT_STAGE, next_stage);
                     // ANumber records the resource ID of the last
                     // alert that occurred (IM:I I-423). Apps that
@@ -15770,45 +15770,30 @@ impl super::TrapDispatcher {
                             item_no as usize,
                         ) {
                             if item.item_type & 0x7F == 16 {
-                                // IM:I I-414 special case: (0, -1)
-                                // means "select all" — normalize
-                                // to (0, text.len()).
-                                let text_len = encode_mac_roman_lossy(&item.text)
-                                    .len()
-                                    .min(i16::MAX as usize)
-                                    as i16;
-                                let (s, e) = if start_sel == 0 && end_sel == -1 {
-                                    (0, text_len)
-                                } else {
-                                    // Clamp to text bounds.
-                                    let s = start_sel.max(0).min(text_len);
-                                    let e = end_sel.max(0).min(text_len);
-                                    // Swap if reversed (defensive
-                                    // — real Mac also normalizes).
-                                    if s <= e {
-                                        (s, e)
-                                    } else {
-                                        (e, s)
-                                    }
-                                };
-                                item.sel_start = s;
-                                item.sel_end = e;
-                                bus.write_word(dialog_ptr + 164, (item_no - 1) as u16);
+                                let text_len = encode_mac_roman_lossy(&item.text).len();
+                                let (s, e) = crate::dialog_manager::normalize_dialog_item_selection(
+                                    start_sel, end_sel, text_len,
+                                );
+                                item.sel_start = s as i16;
+                                item.sel_end = e as i16;
+                                bus.write_word(
+                                    dialog_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
+                                    (item_no - 1) as u16,
+                                );
                                 // Mirror selStart/selEnd into the TERecord so
                                 // callers that read (**textH).selStart via the
                                 // canonical DialogRecord layout can verify the
                                 // selection (IM:I I-382, I-414).
                                 // textH is a TEHandle at dialog_ptr+160
                                 // (IM:I I-411 DialogRecord layout).
-                                let text_h_handle = bus.read_long(dialog_ptr + 160);
+                                let text_h_handle = bus.read_long(
+                                    dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET,
+                                );
                                 if text_h_handle != 0 {
                                     let te_ptr = bus.read_long(text_h_handle);
                                     if te_ptr != 0 {
-                                        bus.write_word(
-                                            te_ptr + Self::TE_SEL_START_OFFSET,
-                                            s as u16,
-                                        );
-                                        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, e as u16);
+                                        bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, s);
+                                        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, e);
                                     }
                                 }
                                 redraw_item = Some((dialog_ptr, item_no));
@@ -16568,10 +16553,10 @@ impl super::TrapDispatcher {
                         let new_item = bus.read_word(sp) as i16;
                         let dialog_ptr = bus.read_long(sp + 2);
                         if dialog_ptr != 0 {
-                            // DialogRecord.aDefItem is at offset 168
-                            // per the existing GetNewDialog impl
-                            // (dialog.rs:1961 writes "aDefItem" here).
-                            bus.write_word(dialog_ptr + 168, new_item as u16);
+                            bus.write_word(
+                                dialog_ptr + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET,
+                                new_item as u16,
+                            );
                             // Mirror into active tracking state if
                             // this dialog is currently being tracked.
                             if let Some(tracking) = self.dialog_tracking.as_mut() {
