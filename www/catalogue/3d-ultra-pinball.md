@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -26,6 +27,21 @@ compatibility:
       BasiliskII. Browser launch remains unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3041
+  - date: "2026-09-29"
+    tester: Catalogue maintainer
+    systemless_version: 93b8621b88cb99c210abf8f73bdff21b9f9e1059
+    architecture: 68k
+    environment: >-
+      Release-mode Chrome/Canvas2D preview of the unchanged, checksum-matched
+      original demo at the default 25 MHz setting. The live Outpost table loaded.
+      Real browser Down Arrow input charged and released the plunger; the ball
+      appeared in the launch lane and the remaining-ball indicators changed.
+      Holding Control and Shift visibly changed the flipper poses. An 82-second
+      interaction sample held about 59.9 host frames and 60.9 guest ticks per
+      second, with no console errors and a worst runtime frame of 23.2 ms.
+      A separate 60-second startup/table sample also passed.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3342
 artifacts:
 - id: archive
   role: archive
@@ -90,5 +106,5 @@ targets, and animated score display remain active during play.
 
 This is the original Macintosh promotional demo, not the retail release.
 The same gameplay sequence reached the table and exercised its controls in
-Systemless and BasiliskII; pixel-perfect parity is not claimed. Browser launch
-remains disabled until manual testing and approval.
+Systemless and BasiliskII; pixel-perfect parity is not claimed. The 68K browser
+launch was enabled after the live table and controls passed a release-mode check.
