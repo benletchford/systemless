@@ -12,8 +12,9 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
-  status: boots
+  status: playable
   verified:
   - date: "2026-09-23"
     tester: Catalogue maintainer
@@ -26,6 +27,20 @@ compatibility:
       yet been approved.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/2504
+  - date: "2026-09-28"
+    tester: Catalogue maintainer
+    systemless_version: "0.65.1"
+    architecture: 68k
+    environment: >-
+      Release-mode browser check of the unchanged checksum-pinned shareware
+      archive. The registration reminder was dismissed with Not Yet, New Game
+      opened the full board, mouse aiming moved the launcher, and a click fired
+      one Snood; the used counter increased from zero to one. Independent
+      standard 20- and 30-second pacing samples sustained about 60 host FPS
+      and 60-61 guest ticks per second, above the 50-tick gate, with healthy
+      audio, one archive request, and no console errors.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3224
 artifacts:
 - id: archive
   role: archive
@@ -86,4 +101,5 @@ several difficulty levels and a registration reminder.
 
 This is an unchanged original shareware package, including its read-me and
 registration files, not a registered retail copy. Systemless reaches a live
-game board; browser launch awaits manual approval.
+game board in the browser: choose Not Yet at the registration reminder, then
+New Game. Move the pointer to aim and click to launch a Snood.
