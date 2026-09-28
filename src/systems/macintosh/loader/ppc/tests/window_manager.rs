@@ -134,6 +134,41 @@ fn find_window_routes_active_draw_sprocket_display_clicks_to_content() {
 }
 
 #[test]
+fn find_window_uses_global_content_region_after_window_pixmap_rebind() {
+    let pef = synthetic_pef_with_import(b"FindWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1100;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    let window = create_test_cwindow(
+        &mut loaded,
+        scratch,
+        (178, 253, 421, 547),
+        1,
+        true,
+        u32::MAX,
+    );
+    let pixmap_handle = loaded.memory.read_u32_be(window + 2).unwrap();
+    let pixmap = loaded.memory.read_u32_be(pixmap_handle).unwrap();
+    ppc_write_rect(&mut loaded.memory, pixmap + 6, 0, 0, 600, 800).unwrap();
+    let mut size_cpu = loaded.cpu.clone();
+    size_cpu.gpr[3] = window;
+    size_cpu.gpr[4] = 294;
+    size_cpu.gpr[5] = 243;
+    assert_eq!(
+        ppc_size_window(&size_cpu, &mut loaded.memory, &mut loaded.gworlds),
+        Some(())
+    );
+    loaded.draw_sprocket.active_context = Some(PPC_DSP_CONTEXT);
+    loaded.cpu.gpr[3] = (307 << 16) | 412;
+    loaded.cpu.gpr[4] = scratch + 16;
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FindWindow);
+
+    assert_eq!(loaded.cpu.gpr[3], 3);
+    assert_eq!(loaded.memory.read_u32_be(scratch + 16), Some(window));
+}
+
+#[test]
 fn find_window_uses_visible_front_to_back_window_geometry_not_the_current_port() {
     let pef = synthetic_pef_with_import(b"FindWindow");
     let mut loaded = load_pef_application(&pef).unwrap();
