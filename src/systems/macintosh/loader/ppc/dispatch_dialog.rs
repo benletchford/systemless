@@ -2,42 +2,51 @@
 
 use super::*;
 use crate::dialog_manager::{
-    dialog_rect_to_global, dialog_target_for_event, dialog_text_rect, edit_text_frame_rect,
-    hide_dialog_item_rect, is_dialog_item_rect_hidden, offset_ditl_bytes, parse_ditl_items,
-    position_dialog_bounds as unified_position_dialog_bounds, rect_contains_point,
-    show_dialog_item_rect, DialogItemRecord, DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET,
-    DIALOG_DEFAULT_ITEM_OFFSET, DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET,
-    DIALOG_ITEMS_OFFSET, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX, DIALOG_ITEM_DISABLED_FLAG,
-    DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO,
-    DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT, DIALOG_ITEM_USER_ITEM,
-    DIALOG_RECORD_SIZE, DIALOG_RESOURCE_ID_OFFSET, DIALOG_STANDARD_ALERT_OUTPUT_OFFSET,
-    DIALOG_STANDARD_ALERT_STACK_OFFSET, DIALOG_TEXT_HANDLE_OFFSET,
+    dialog_item_base_type, dialog_rect_to_global, dialog_target_for_event, dialog_text_rect,
+    edit_text_frame_rect, hide_dialog_item_rect, is_dialog_item_rect_hidden, offset_ditl_bytes,
+    parse_ditl_items, position_dialog_bounds as unified_position_dialog_bounds,
+    rect_contains_point, show_dialog_item_rect, DialogItemRecord, DIALOG_ALERT_HIT_OFFSET,
+    DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET, DIALOG_EDIT_FIELD_OFFSET,
+    DIALOG_EDIT_OPEN_OFFSET, DIALOG_INITIAL_DEFAULT_ITEM, DIALOG_INITIAL_EDIT_FIELD,
+    DIALOG_INITIAL_EDIT_OPEN, DIALOG_ITEMS_OFFSET, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX,
+    DIALOG_ITEM_DISABLED_FLAG, DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE,
+    DIALOG_ITEM_RADIO, DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT,
+    DIALOG_ITEM_USER_ITEM, DIALOG_RECORD_SIZE, DIALOG_RESOURCE_ID_OFFSET,
+    DIALOG_STANDARD_ALERT_OUTPUT_OFFSET, DIALOG_STANDARD_ALERT_STACK_OFFSET,
+    DIALOG_TEXT_HANDLE_OFFSET,
 };
 use crate::trap::types::decode_mac_roman;
 
+#[cfg(test)]
 pub(super) const PPC_DIALOG_RECORD_SIZE: u32 = DIALOG_RECORD_SIZE;
+#[cfg(test)]
 pub(super) const PPC_DIALOG_ITEMS_OFFSET: u32 = DIALOG_ITEMS_OFFSET;
+#[cfg(test)]
 pub(super) const PPC_DIALOG_TEXT_HANDLE_OFFSET: u32 = DIALOG_TEXT_HANDLE_OFFSET;
+#[cfg(test)]
 pub(super) const PPC_DIALOG_EDIT_FIELD_OFFSET: u32 = DIALOG_EDIT_FIELD_OFFSET;
+#[cfg(test)]
 pub(super) const PPC_DIALOG_EDIT_OPEN_OFFSET: u32 = DIALOG_EDIT_OPEN_OFFSET;
+#[cfg(test)]
 pub(super) const PPC_DIALOG_DEFAULT_ITEM_OFFSET: u32 = DIALOG_DEFAULT_ITEM_OFFSET;
+#[cfg(test)]
 pub(super) const PPC_DIALOG_RESOURCE_ID_OFFSET: u32 = DIALOG_RESOURCE_ID_OFFSET;
-// Host-private Dialog Manager state follows the documented DialogRecord. The
-// System 7 cancel-item API has no canonical public record field.
-pub(super) const PPC_DIALOG_CANCEL_ITEM_HLE_OFFSET: u32 = DIALOG_CANCEL_ITEM_OFFSET;
-pub(super) const PPC_DIALOG_ALERT_HIT_HLE_OFFSET: u32 = DIALOG_ALERT_HIT_OFFSET;
-const PPC_DIALOG_STANDARD_ALERT_OUTPUT_HLE_OFFSET: u32 = DIALOG_STANDARD_ALERT_OUTPUT_OFFSET;
-const PPC_DIALOG_STANDARD_ALERT_STACK_HLE_OFFSET: u32 = DIALOG_STANDARD_ALERT_STACK_OFFSET;
+#[cfg(test)]
 pub(super) const PPC_DIALOG_ITEM_DISABLED: u8 = DIALOG_ITEM_DISABLED_FLAG;
+#[cfg(test)]
 pub(super) const PPC_DIALOG_ITEM_USER_ITEM: u8 = DIALOG_ITEM_USER_ITEM;
+#[cfg(test)]
 pub(super) const PPC_DIALOG_ITEM_BUTTON: u8 = DIALOG_ITEM_BUTTON;
+#[cfg(test)]
 pub(super) const PPC_DIALOG_ITEM_CHECKBOX: u8 = DIALOG_ITEM_CHECKBOX;
-pub(super) const PPC_DIALOG_ITEM_RADIO: u8 = DIALOG_ITEM_RADIO;
+#[cfg(test)]
 pub(super) const PPC_DIALOG_ITEM_RESOURCE_CONTROL: u8 = DIALOG_ITEM_RESOURCE_CONTROL;
+#[cfg(test)]
 pub(super) const PPC_DIALOG_ITEM_STATIC_TEXT: u8 = DIALOG_ITEM_STATIC_TEXT;
+#[cfg(test)]
 pub(super) const PPC_DIALOG_ITEM_EDIT_TEXT: u8 = DIALOG_ITEM_EDIT_TEXT;
+#[cfg(test)]
 pub(super) const PPC_DIALOG_ITEM_ICON: u8 = DIALOG_ITEM_ICON;
-pub(super) const PPC_DIALOG_ITEM_PICTURE: u8 = DIALOG_ITEM_PICTURE;
 
 pub(super) type PpcDialogTemplate = crate::dialog_manager::DialogTemplate;
 
@@ -262,7 +271,7 @@ pub(super) fn dispatch_dialog_import(
                 toolbox_startup.dispose_dialog_count.saturating_add(1);
             toolbox_startup.last_disposed_dialog = window;
             let items_handle = memory
-                .read_u32_be(window.wrapping_add(PPC_DIALOG_ITEMS_OFFSET))
+                .read_u32_be(window.wrapping_add(DIALOG_ITEMS_OFFSET))
                 .unwrap_or(0);
             let items = ppc_dialog_items_for_dialog(memory, handles, window).unwrap_or_default();
             ppc_close_window(
@@ -396,7 +405,7 @@ pub(super) fn dispatch_dialog_import(
             let item = cpu.gpr[4] as u16;
             let result = if dialog != 0
                 && memory
-                    .write_u16_be(dialog + PPC_DIALOG_DEFAULT_ITEM_OFFSET, item)
+                    .write_u16_be(dialog + DIALOG_DEFAULT_ITEM_OFFSET, item)
                     .is_some()
             {
                 PPC_NO_ERR
@@ -413,7 +422,7 @@ pub(super) fn dispatch_dialog_import(
             let item = cpu.gpr[4] as u16;
             let result = if dialog != 0
                 && memory
-                    .write_u16_be(dialog + PPC_DIALOG_CANCEL_ITEM_HLE_OFFSET, item)
+                    .write_u16_be(dialog + DIALOG_CANCEL_ITEM_OFFSET, item)
                     .is_some()
             {
                 PPC_NO_ERR
@@ -552,17 +561,16 @@ pub(super) fn dispatch_dialog_import(
             }
             let mut dialog = gworlds.iter().rev().find_map(|record| {
                 let matches_call = if standard {
-                    memory.read_u32_be(record.port + PPC_DIALOG_STANDARD_ALERT_OUTPUT_HLE_OFFSET)
+                    memory.read_u32_be(record.port + DIALOG_STANDARD_ALERT_OUTPUT_OFFSET)
                         == Some(output)
-                        && memory
-                            .read_u32_be(record.port + PPC_DIALOG_STANDARD_ALERT_STACK_HLE_OFFSET)
+                        && memory.read_u32_be(record.port + DIALOG_STANDARD_ALERT_STACK_OFFSET)
                             == Some(cpu.gpr[1])
                 } else {
                     memory
-                        .read_u32_be(record.port + PPC_DIALOG_STANDARD_ALERT_OUTPUT_HLE_OFFSET)
+                        .read_u32_be(record.port + DIALOG_STANDARD_ALERT_OUTPUT_OFFSET)
                         .unwrap_or(0)
                         == 0
-                        && memory.read_u16_be(record.port + PPC_DIALOG_RESOURCE_ID_OFFSET)
+                        && memory.read_u16_be(record.port + DIALOG_RESOURCE_ID_OFFSET)
                             == Some(alert_id as u16)
                 };
                 (memory.read_u16_be(record.port + PPC_CWINDOW_WINDOW_KIND_OFFSET) == Some(2)
@@ -622,7 +630,7 @@ pub(super) fn dispatch_dialog_import(
                     memory.read_u32_be(cpu.gpr[6] + 2).unwrap_or(0)
                 };
             }
-            modal_cpu.gpr[4] = dialog + PPC_DIALOG_ALERT_HIT_HLE_OFFSET;
+            modal_cpu.gpr[4] = dialog + DIALOG_ALERT_HIT_OFFSET;
             let action = ppc_modal_dialog(
                 &mut modal_cpu,
                 process_memory_manager,
@@ -646,10 +654,10 @@ pub(super) fn dispatch_dialog_import(
             );
             if matches!(action, PpcImportAction::ReturnPreserve) {
                 let hit = memory
-                    .read_u16_be(dialog + PPC_DIALOG_ALERT_HIT_HLE_OFFSET)
+                    .read_u16_be(dialog + DIALOG_ALERT_HIT_OFFSET)
                     .unwrap_or(1);
                 let items_handle = memory
-                    .read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET)
+                    .read_u32_be(dialog + DIALOG_ITEMS_OFFSET)
                     .unwrap_or(0);
                 let items =
                     ppc_dialog_items_for_dialog(memory, handles, dialog).unwrap_or_default();
@@ -755,7 +763,7 @@ fn ppc_release_dialog_storage(
     // detach that handle before disposing the TERec and then release each
     // manager-created text item exactly once.
     let te_handle = memory
-        .read_u32_be(dialog.wrapping_add(PPC_DIALOG_TEXT_HANDLE_OFFSET))
+        .read_u32_be(dialog.wrapping_add(DIALOG_TEXT_HANDLE_OFFSET))
         .unwrap_or(0);
     if let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) {
         let _ = memory.write_u32_be(te_ptr + PPC_TE_HTEXT_OFFSET, 0);
@@ -818,9 +826,15 @@ fn ppc_release_dialog_storage(
         }
     }
 
-    let _ = memory.write_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET, 0);
-    let _ = memory.write_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET, u16::MAX);
-    let _ = memory.write_u16_be(dialog + PPC_DIALOG_EDIT_OPEN_OFFSET, 0);
+    let _ = memory.write_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET, 0);
+    let _ = memory.write_u16_be(
+        dialog + DIALOG_EDIT_FIELD_OFFSET,
+        DIALOG_INITIAL_EDIT_FIELD as u16,
+    );
+    let _ = memory.write_u16_be(
+        dialog + DIALOG_EDIT_OPEN_OFFSET,
+        DIALOG_INITIAL_EDIT_OPEN as u16,
+    );
     if dispose_record {
         let _ = process_memory_manager.dispose_native_ptr(dialog);
         ppc_apply_process_native_allocator(
@@ -863,7 +877,7 @@ fn ppc_dialog_live_items(
     handles: &[PpcHandleRecord],
     dialog: u32,
 ) -> Option<(u32, u32, Vec<u8>, Vec<PpcDialogItemView>)> {
-    let handle = memory.read_u32_be(dialog.checked_add(PPC_DIALOG_ITEMS_OFFSET)?)?;
+    let handle = memory.read_u32_be(dialog.checked_add(DIALOG_ITEMS_OFFSET)?)?;
     let ptr = memory.read_u32_be(handle)?;
     let bytes = ppc_handle_bytes(memory, handles, handle)?;
     let items = ppc_parse_dialog_items(&bytes)?;
@@ -1006,11 +1020,11 @@ fn ppc_dispatch_dialog_compatibility(
                     if items
                         .get(usize::from(hit).saturating_sub(1))
                         .is_some_and(|item| {
-                            item.item_type & !PPC_DIALOG_ITEM_DISABLED == PPC_DIALOG_ITEM_EDIT_TEXT
+                            dialog_item_base_type(item.item_type) == DIALOG_ITEM_EDIT_TEXT
                         })
                     {
                         let te_handle = memory
-                            .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+                            .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
                             .unwrap_or(0);
                         ppc_te_click(
                             memory,
@@ -1022,9 +1036,7 @@ fn ppc_dispatch_dialog_compatibility(
                             event.when,
                         );
                     } else if let Some(item) = items.get(usize::from(hit).saturating_sub(1)) {
-                        if item.item_type & !PPC_DIALOG_ITEM_DISABLED
-                            == PPC_DIALOG_ITEM_RESOURCE_CONTROL
-                        {
+                        if dialog_item_base_type(item.item_type) == DIALOG_ITEM_RESOURCE_CONTROL {
                             // DialogSelect tracks controls before reporting the item hit.
                             // In particular, a scroll bar's live value must change before
                             // the caller reads it to scroll the associated text.
@@ -1045,10 +1057,10 @@ fn ppc_dispatch_dialog_compatibility(
                 }
                 crate::dialog_manager::EVENT_KEY_DOWN | crate::dialog_manager::EVENT_AUTO_KEY => {
                     let te_handle = memory
-                        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+                        .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
                         .unwrap_or(0);
                     let edit_item = memory
-                        .read_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET)
+                        .read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
                         .unwrap_or(u16::MAX)
                         .saturating_add(1);
                     let character = event.message as u8;
@@ -1056,8 +1068,7 @@ fn ppc_dispatch_dialog_compatibility(
                         && items
                             .get(usize::from(edit_item).saturating_sub(1))
                             .is_some_and(|item| {
-                                item.item_type & !PPC_DIALOG_ITEM_DISABLED
-                                    == PPC_DIALOG_ITEM_EDIT_TEXT
+                                dialog_item_base_type(item.item_type) == DIALOG_ITEM_EDIT_TEXT
                             });
                     if !editable || !crate::dialog_manager::is_dialog_edit_text_character(character)
                     {
@@ -1382,7 +1393,7 @@ fn ppc_standard_alert_template(
         if label.is_empty() {
             // Keep standard button IDs stable when optional buttons are absent.
             append(
-                PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_DISABLED,
+                DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_DISABLED_FLAG,
                 (0, 0, 0, 0),
                 &[],
             );
@@ -1392,7 +1403,7 @@ fn ppc_standard_alert_template(
                     .saturating_add(24)
                     .max(60);
             append(
-                PPC_DIALOG_ITEM_BUTTON,
+                DIALOG_ITEM_BUTTON,
                 (button_top, right - button_width, button_top + 20, right),
                 label,
             );
@@ -1400,18 +1411,18 @@ fn ppc_standard_alert_template(
         }
     }
     append(
-        PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_DISABLED,
+        DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_DISABLED_FLAG,
         (20, text_left, 20 + primary_height, width - 20),
         &primary,
     );
     append(
-        PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_DISABLED,
+        DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_DISABLED_FLAG,
         (28 + primary_height, text_left, text_bottom, width - 20),
         &secondary,
     );
     if let Some(icon_id) = crate::dialog_manager::alert_icon_id(cpu.gpr[3] as u16) {
         append(
-            PPC_DIALOG_ITEM_ICON | PPC_DIALOG_ITEM_DISABLED,
+            DIALOG_ITEM_ICON | DIALOG_ITEM_DISABLED_FLAG,
             (20, 20, 52, 52),
             &icon_id.to_be_bytes(),
         );
@@ -1575,19 +1586,13 @@ fn ppc_new_alert_dialog(
         dialog
     };
     if dialog != 0 {
-        let _ = memory.write_u16_be(dialog + PPC_DIALOG_RESOURCE_ID_OFFSET, alert_id as u16);
-        let _ = memory.write_u16_be(dialog + PPC_DIALOG_DEFAULT_ITEM_OFFSET, default_item);
-        let _ = memory.write_u16_be(dialog + PPC_DIALOG_ALERT_HIT_HLE_OFFSET, 0);
-        let _ = memory.write_u16_be(dialog + PPC_DIALOG_CANCEL_ITEM_HLE_OFFSET, cancel_item);
+        let _ = memory.write_u16_be(dialog + DIALOG_RESOURCE_ID_OFFSET, alert_id as u16);
+        let _ = memory.write_u16_be(dialog + DIALOG_DEFAULT_ITEM_OFFSET, default_item);
+        let _ = memory.write_u16_be(dialog + DIALOG_ALERT_HIT_OFFSET, 0);
+        let _ = memory.write_u16_be(dialog + DIALOG_CANCEL_ITEM_OFFSET, cancel_item);
         if standard {
-            let _ = memory.write_u32_be(
-                dialog + PPC_DIALOG_STANDARD_ALERT_OUTPUT_HLE_OFFSET,
-                cpu.gpr[7],
-            );
-            let _ = memory.write_u32_be(
-                dialog + PPC_DIALOG_STANDARD_ALERT_STACK_HLE_OFFSET,
-                cpu.gpr[1],
-            );
+            let _ = memory.write_u32_be(dialog + DIALOG_STANDARD_ALERT_OUTPUT_OFFSET, cpu.gpr[7]);
+            let _ = memory.write_u32_be(dialog + DIALOG_STANDARD_ALERT_STACK_OFFSET, cpu.gpr[1]);
         }
         *last_resource_error = PPC_NO_ERR;
     }
@@ -1725,7 +1730,7 @@ fn ppc_get_new_dialog(
         dialog
     };
     if dialog != 0 {
-        let _ = memory.write_u16_be(dialog + PPC_DIALOG_RESOURCE_ID_OFFSET, dialog_id as u16);
+        let _ = memory.write_u16_be(dialog + DIALOG_RESOURCE_ID_OFFSET, dialog_id as u16);
         *last_resource_error = PPC_NO_ERR;
     }
     dialog
@@ -1761,7 +1766,7 @@ fn ppc_new_dialog(
     }
 
     let storage = if requested_storage == 0 {
-        let storage = process_memory_manager.new_native_ptr(memory, PPC_DIALOG_RECORD_SIZE, true);
+        let storage = process_memory_manager.new_native_ptr(memory, DIALOG_RECORD_SIZE, true);
         ppc_apply_process_native_allocator(
             process_memory_manager,
             memory,
@@ -1769,8 +1774,8 @@ fn ppc_new_dialog(
             last_mem_error,
         );
         storage
-    } else if ppc_memory_can_write_bytes(memory, requested_storage, PPC_DIALOG_RECORD_SIZE) {
-        let _ = memory.write_bytes(requested_storage, &vec![0; PPC_DIALOG_RECORD_SIZE as usize]);
+    } else if ppc_memory_can_write_bytes(memory, requested_storage, DIALOG_RECORD_SIZE) {
+        let _ = memory.write_bytes(requested_storage, &vec![0; DIALOG_RECORD_SIZE as usize]);
         requested_storage
     } else {
         0
@@ -1832,19 +1837,28 @@ fn ppc_new_dialog(
             .is_none()
         || memory.write_u32_be(dialog + 134, title_handle).is_none()
         || memory
-            .write_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET, items)
+            .write_u32_be(dialog + DIALOG_ITEMS_OFFSET, items)
             .is_none()
         || memory
-            .write_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET, 0)
+            .write_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET, 0)
             .is_none()
         || memory
-            .write_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET, u16::MAX)
+            .write_u16_be(
+                dialog + DIALOG_EDIT_FIELD_OFFSET,
+                DIALOG_INITIAL_EDIT_FIELD as u16,
+            )
             .is_none()
         || memory
-            .write_u16_be(dialog + PPC_DIALOG_EDIT_OPEN_OFFSET, 0)
+            .write_u16_be(
+                dialog + DIALOG_EDIT_OPEN_OFFSET,
+                DIALOG_INITIAL_EDIT_OPEN as u16,
+            )
             .is_none()
         || memory
-            .write_u16_be(dialog + PPC_DIALOG_DEFAULT_ITEM_OFFSET, 1)
+            .write_u16_be(
+                dialog + DIALOG_DEFAULT_ITEM_OFFSET,
+                DIALOG_INITIAL_DEFAULT_ITEM as u16,
+            )
             .is_none()
     {
         *last_mem_error = if title_handle == 0 {
@@ -1880,7 +1894,7 @@ fn ppc_initialize_dialog_items(
 ) -> bool {
     let param_text = param_text.snapshot();
     let Some(items_handle) = memory
-        .read_u32_be(dialog.wrapping_add(PPC_DIALOG_ITEMS_OFFSET))
+        .read_u32_be(dialog.wrapping_add(DIALOG_ITEMS_OFFSET))
         .filter(|handle| *handle != 0)
     else {
         return true;
@@ -1904,10 +1918,10 @@ fn ppc_initialize_dialog_items(
     // for buttons, checkboxes, radio buttons, and resource-defined controls.
     let mut first_edit = None;
     for (item_index, item) in items.into_iter().enumerate() {
-        let base_type = item.item_type & !PPC_DIALOG_ITEM_DISABLED;
+        let base_type = dialog_item_base_type(item.item_type);
         let mut missing_resource = false;
         let item_handle = match base_type {
-            PPC_DIALOG_ITEM_BUTTON | PPC_DIALOG_ITEM_CHECKBOX | PPC_DIALOG_ITEM_RADIO => {
+            DIALOG_ITEM_BUTTON | DIALOG_ITEM_CHECKBOX | DIALOG_ITEM_RADIO => {
                 let proc_id =
                     crate::dialog_manager::dialog_item_control_proc_id(base_type).unwrap_or(0);
                 let mut allocator = PpcProcessAllocatorView {
@@ -1932,7 +1946,7 @@ fn ppc_initialize_dialog_items(
                     0,
                 )
             }
-            PPC_DIALOG_ITEM_RESOURCE_CONTROL => {
+            DIALOG_ITEM_RESOURCE_CONTROL => {
                 let resource_id = item
                     .payload
                     .get(..2)
@@ -1979,7 +1993,7 @@ fn ppc_initialize_dialog_items(
                     0
                 }
             }
-            PPC_DIALOG_ITEM_STATIC_TEXT => {
+            DIALOG_ITEM_STATIC_TEXT => {
                 // Macintosh Toolbox Essentials (1992), pp. 6-129--6-130:
                 // ParamText replaces ^0..^3 in static-text items of every
                 // subsequently created dialog or alert.
@@ -1993,7 +2007,7 @@ fn ppc_initialize_dialog_items(
                     &text,
                 )
             }
-            PPC_DIALOG_ITEM_EDIT_TEXT => ppc_process_alloc_handle_with_bytes(
+            DIALOG_ITEM_EDIT_TEXT => ppc_process_alloc_handle_with_bytes(
                 process_memory_manager,
                 memory,
                 heap_cursor,
@@ -2001,14 +2015,14 @@ fn ppc_initialize_dialog_items(
                 handles,
                 &item.payload,
             ),
-            PPC_DIALOG_ITEM_ICON | PPC_DIALOG_ITEM_PICTURE => {
+            DIALOG_ITEM_ICON | DIALOG_ITEM_PICTURE => {
                 let resource_id = item
                     .payload
                     .get(..2)
                     .and_then(|bytes| bytes.try_into().ok())
                     .map(i16::from_be_bytes)
                     .unwrap_or(0);
-                let resource_type = if base_type == PPC_DIALOG_ITEM_ICON {
+                let resource_type = if base_type == DIALOG_ITEM_ICON {
                     u32::from_be_bytes(*b"ICON")
                 } else {
                     u32::from_be_bytes(*b"PICT")
@@ -2044,14 +2058,14 @@ fn ppc_initialize_dialog_items(
             && !missing_resource
             && matches!(
                 base_type,
-                PPC_DIALOG_ITEM_BUTTON
-                    | PPC_DIALOG_ITEM_CHECKBOX
-                    | PPC_DIALOG_ITEM_RADIO
-                    | PPC_DIALOG_ITEM_RESOURCE_CONTROL
-                    | PPC_DIALOG_ITEM_STATIC_TEXT
-                    | PPC_DIALOG_ITEM_EDIT_TEXT
-                    | PPC_DIALOG_ITEM_ICON
-                    | PPC_DIALOG_ITEM_PICTURE
+                DIALOG_ITEM_BUTTON
+                    | DIALOG_ITEM_CHECKBOX
+                    | DIALOG_ITEM_RADIO
+                    | DIALOG_ITEM_RESOURCE_CONTROL
+                    | DIALOG_ITEM_STATIC_TEXT
+                    | DIALOG_ITEM_EDIT_TEXT
+                    | DIALOG_ITEM_ICON
+                    | DIALOG_ITEM_PICTURE
             )
         {
             if *last_mem_error == PPC_NO_ERR && *last_resource_error == PPC_NO_ERR {
@@ -2059,7 +2073,7 @@ fn ppc_initialize_dialog_items(
             }
             return false;
         }
-        if base_type == PPC_DIALOG_ITEM_RESOURCE_CONTROL {
+        if base_type == DIALOG_ITEM_RESOURCE_CONTROL {
             ppc_initialize_popup_control(
                 memory,
                 controls,
@@ -2075,7 +2089,7 @@ fn ppc_initialize_dialog_items(
             *last_mem_error = PPC_PARAM_ERR;
             return false;
         }
-        if base_type == PPC_DIALOG_ITEM_EDIT_TEXT && first_edit.is_none() {
+        if base_type == DIALOG_ITEM_EDIT_TEXT && first_edit.is_none() {
             first_edit = Some((item_index, item_handle, item.rect));
         }
     }
@@ -2105,16 +2119,16 @@ fn ppc_initialize_dialog_items(
         );
         if te_handle == 0
             || memory
-                .write_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET, te_handle)
+                .write_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET, te_handle)
                 .is_none()
             || memory
                 .write_u16_be(
-                    dialog + PPC_DIALOG_EDIT_FIELD_OFFSET,
+                    dialog + DIALOG_EDIT_FIELD_OFFSET,
                     item_index.min(i16::MAX as usize) as u16,
                 )
                 .is_none()
             || memory
-                .write_u16_be(dialog + PPC_DIALOG_EDIT_OPEN_OFFSET, 1)
+                .write_u16_be(dialog + DIALOG_EDIT_OPEN_OFFSET, 1)
                 .is_none()
         {
             *last_mem_error = PPC_MEM_FULL_ERR;
@@ -2250,15 +2264,15 @@ fn ppc_select_dialog_item_text(
     };
     let Some(item) = ppc_dialog_items_for_dialog(memory, handles, dialog)
         .and_then(|items| items.get(item_index).cloned())
-        .filter(|item| item.item_type & !PPC_DIALOG_ITEM_DISABLED == PPC_DIALOG_ITEM_EDIT_TEXT)
+        .filter(|item| dialog_item_base_type(item.item_type) == DIALOG_ITEM_EDIT_TEXT)
     else {
         return;
     };
     let current_field = memory
-        .read_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET)
+        .read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
         .unwrap_or(u16::MAX) as usize;
     let mut te_handle = memory
-        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+        .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
         .unwrap_or(0);
     if current_field != item_index || ppc_te_record_ptr(memory, te_handle).is_none() {
         if let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) {
@@ -2295,12 +2309,12 @@ fn ppc_select_dialog_item_text(
         if te_handle == 0 {
             return;
         }
-        let _ = memory.write_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET, te_handle);
+        let _ = memory.write_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET, te_handle);
         let _ = memory.write_u16_be(
-            dialog + PPC_DIALOG_EDIT_FIELD_OFFSET,
+            dialog + DIALOG_EDIT_FIELD_OFFSET,
             item_index.min(i16::MAX as usize) as u16,
         );
-        let _ = memory.write_u16_be(dialog + PPC_DIALOG_EDIT_OPEN_OFFSET, 1);
+        let _ = memory.write_u16_be(dialog + DIALOG_EDIT_OPEN_OFFSET, 1);
     }
     let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
         return;
@@ -2332,7 +2346,7 @@ fn ppc_get_dialog_item(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, handles: &[
         return;
     }
     let item = memory
-        .read_u32_be(dialog.wrapping_add(PPC_DIALOG_ITEMS_OFFSET))
+        .read_u32_be(dialog.wrapping_add(DIALOG_ITEMS_OFFSET))
         .and_then(|items_handle| ppc_handle_bytes(memory, handles, items_handle))
         .and_then(|bytes| ppc_parse_dialog_items(&bytes))
         .and_then(|items| {
@@ -2374,8 +2388,7 @@ fn ppc_set_dialog_item(cpu: &PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcH
     let item_type = cpu.gpr[5] as u16;
     let item_handle = cpu.gpr[6];
     let rect_ptr = cpu.gpr[7];
-    let Some(items_handle) = memory.read_u32_be(dialog.wrapping_add(PPC_DIALOG_ITEMS_OFFSET))
-    else {
+    let Some(items_handle) = memory.read_u32_be(dialog.wrapping_add(DIALOG_ITEMS_OFFSET)) else {
         return;
     };
     let Some(items_ptr) = memory.read_u32_be(items_handle).filter(|ptr| *ptr != 0) else {
@@ -2405,7 +2418,7 @@ pub(super) fn ppc_dialog_items_for_dialog(
     handles: &[PpcHandleRecord],
     dialog: u32,
 ) -> Option<Vec<PpcDialogItemView>> {
-    let items_handle = memory.read_u32_be(dialog.checked_add(PPC_DIALOG_ITEMS_OFFSET)?)?;
+    let items_handle = memory.read_u32_be(dialog.checked_add(DIALOG_ITEMS_OFFSET)?)?;
     let bytes = ppc_handle_bytes(memory, handles, items_handle)?;
     ppc_parse_dialog_items(&bytes)
 }
@@ -2446,7 +2459,7 @@ pub(super) fn ppc_standard_filter_proc(cpu: &PpcCpu, memory: &mut PpcSectionMem)
         return 0;
     }
     let Some(default_item) = dialog
-        .checked_add(PPC_DIALOG_DEFAULT_ITEM_OFFSET)
+        .checked_add(DIALOG_DEFAULT_ITEM_OFFSET)
         .and_then(|address| memory.read_u16_be(address))
         .filter(|item| *item != 0)
     else {
@@ -2515,9 +2528,7 @@ fn ppc_dialog_draw_callbacks(
         .iter()
         .enumerate()
         .filter_map(|(index, item)| {
-            if item.item_type & !PPC_DIALOG_ITEM_DISABLED != PPC_DIALOG_ITEM_USER_ITEM
-                || item.handle == 0
-            {
+            if dialog_item_base_type(item.item_type) != DIALOG_ITEM_USER_ITEM || item.handle == 0 {
                 return None;
             }
             if !crate::dialog_manager::dialog_item_intersects_bounds(bounds, item.rect) {
@@ -2863,10 +2874,10 @@ fn ppc_dialog_item_title(
     handles: &[PpcHandleRecord],
     item: &PpcDialogItemView,
 ) -> Vec<u8> {
-    let base_type = item.item_type & !PPC_DIALOG_ITEM_DISABLED;
+    let base_type = dialog_item_base_type(item.item_type);
     if matches!(
         base_type,
-        PPC_DIALOG_ITEM_BUTTON | PPC_DIALOG_ITEM_CHECKBOX | PPC_DIALOG_ITEM_RADIO
+        DIALOG_ITEM_BUTTON | DIALOG_ITEM_CHECKBOX | DIALOG_ITEM_RADIO
     ) {
         return memory
             .read_u32_be(item.handle)
@@ -2902,7 +2913,7 @@ pub(super) fn ppc_draw_dialog(
     // outside those items. Window creation supplies the initial background.
     let palette = ppc_ui_theme(gworlds).provider().palette();
     let default_item = memory
-        .read_u16_be(dialog.wrapping_add(PPC_DIALOG_DEFAULT_ITEM_OFFSET))
+        .read_u16_be(dialog.wrapping_add(DIALOG_DEFAULT_ITEM_OFFSET))
         .unwrap_or(1) as usize;
     for (index, item) in items.iter().enumerate() {
         // Imaging With QuickDraw (1994), pp. 2-20--2-21: drawing is clipped
@@ -2914,8 +2925,9 @@ pub(super) fn ppc_draw_dialog(
             continue;
         }
         let rect = ppc_dialog_rect_to_global(bounds, item.rect);
-        match item.item_type & !PPC_DIALOG_ITEM_DISABLED {
-            PPC_DIALOG_ITEM_BUTTON | PPC_DIALOG_ITEM_CHECKBOX | PPC_DIALOG_ITEM_RADIO => {
+        let base_type = dialog_item_base_type(item.item_type);
+        match base_type {
+            DIALOG_ITEM_BUTTON | DIALOG_ITEM_CHECKBOX | DIALOG_ITEM_RADIO => {
                 // Macintosh Toolbox Essentials (1992), pp. 5-4--5-6 and
                 // 6-26--6-42: DITL buttons, checkboxes, and radio buttons are
                 // live Control Manager controls. Draw the materialized record
@@ -2931,7 +2943,7 @@ pub(super) fn ppc_draw_dialog(
                     item.handle,
                     true,
                 );
-                if (item.item_type & !PPC_DIALOG_ITEM_DISABLED) == PPC_DIALOG_ITEM_BUTTON
+                if base_type == DIALOG_ITEM_BUTTON
                     && index + 1 == default_item
                     && ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7
                 {
@@ -2947,9 +2959,9 @@ pub(super) fn ppc_draw_dialog(
                     );
                 }
             }
-            PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_EDIT_TEXT => {
+            DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_EDIT_TEXT => {
                 let text = ppc_dialog_item_title(memory, handles, item);
-                if (item.item_type & !PPC_DIALOG_ITEM_DISABLED) == PPC_DIALOG_ITEM_EDIT_TEXT {
+                if base_type == DIALOG_ITEM_EDIT_TEXT {
                     // Text (1993), p. 2-88: TEUpdate redraws within the view
                     // rectangle. Clear this manager-owned edit item before
                     // repainting so focus changes cannot retain a previous
@@ -2969,14 +2981,13 @@ pub(super) fn ppc_draw_dialog(
                         1,
                     );
                 }
-                let selected = if (item.item_type & !PPC_DIALOG_ITEM_DISABLED)
-                    == PPC_DIALOG_ITEM_EDIT_TEXT
+                let selected = if base_type == DIALOG_ITEM_EDIT_TEXT
                     && memory
-                        .read_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET)
+                        .read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
                         .is_some_and(|field| usize::from(field) == index)
                 {
                     memory
-                        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+                        .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
                         .and_then(|handle| ppc_te_record_ptr(memory, handle))
                         .is_some_and(|te_ptr| {
                             memory
@@ -3009,14 +3020,12 @@ pub(super) fn ppc_draw_dialog(
                         );
                     }
                 }
-                let text_rect = if matches!(
-                    item.item_type & !PPC_DIALOG_ITEM_DISABLED,
-                    PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_EDIT_TEXT
-                ) {
-                    dialog_text_rect(rect)
-                } else {
-                    rect
-                };
+                let text_rect =
+                    if matches!(base_type, DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_EDIT_TEXT) {
+                        dialog_text_rect(rect)
+                    } else {
+                        rect
+                    };
                 ppc_draw_dialog_text(
                     memory,
                     gworlds,
@@ -3029,7 +3038,7 @@ pub(super) fn ppc_draw_dialog(
                     },
                 );
             }
-            PPC_DIALOG_ITEM_PICTURE => {
+            DIALOG_ITEM_PICTURE => {
                 if let Some(bytes) = ppc_handle_bytes(memory, handles, item.handle) {
                     let _ = ppc_draw_pict_bytes_to_16bpp(
                         memory,
@@ -3042,11 +3051,11 @@ pub(super) fn ppc_draw_dialog(
                     );
                 }
             }
-            PPC_DIALOG_ITEM_ICON => {
+            DIALOG_ITEM_ICON => {
                 let _ =
                     ppc_frame_front_rect(memory, front, rect, ppc_theme_rgb(palette.frame_dark), 1);
             }
-            PPC_DIALOG_ITEM_RESOURCE_CONTROL => {
+            DIALOG_ITEM_RESOURCE_CONTROL => {
                 let _ = ppc_draw_control_inner(
                     memory,
                     handles,
@@ -3113,7 +3122,7 @@ fn ppc_dialog_item_at_global_point(
     let local_v = where_v.saturating_sub(bounds.0);
     let local_h = where_h.saturating_sub(bounds.1);
     for (index, item) in items.iter().enumerate() {
-        if item.item_type & PPC_DIALOG_ITEM_DISABLED != 0 {
+        if item.item_type & DIALOG_ITEM_DISABLED_FLAG != 0 {
             continue;
         }
         let rect = ppc_dialog_rect_to_global(bounds, item.rect);
@@ -3282,10 +3291,10 @@ fn ppc_modal_dialog(
                 event.where_h,
             )?;
             let item = items.get(usize::from(hit).checked_sub(1)?)?;
-            if item.item_type & !PPC_DIALOG_ITEM_DISABLED == PPC_DIALOG_ITEM_EDIT_TEXT {
+            if dialog_item_base_type(item.item_type) == DIALOG_ITEM_EDIT_TEXT {
                 let item_index = usize::from(hit).saturating_sub(1);
                 let current_field = memory
-                    .read_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET)
+                    .read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
                     .unwrap_or(u16::MAX) as usize;
                 if current_field != item_index {
                     let mut allocator = PpcProcessAllocatorView {
@@ -3320,7 +3329,7 @@ fn ppc_modal_dialog(
                     );
                 }
                 let te_handle = memory
-                    .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+                    .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
                     .unwrap_or(0);
                 ppc_te_click(
                     memory,
@@ -3334,7 +3343,7 @@ fn ppc_modal_dialog(
                 handled_edit_event = true;
                 None
             } else {
-                if item.item_type & !PPC_DIALOG_ITEM_DISABLED == PPC_DIALOG_ITEM_RESOURCE_CONTROL
+                if dialog_item_base_type(item.item_type) == DIALOG_ITEM_RESOURCE_CONTROL
                     && ppc_track_dialog_popup(
                         memory,
                         controls,
@@ -3368,16 +3377,16 @@ fn ppc_modal_dialog(
                 || matches!(key_code, PPC_KEY_RETURN | PPC_KEY_NUMPAD_ENTER)
             {
                 memory
-                    .read_u16_be(dialog + PPC_DIALOG_DEFAULT_ITEM_OFFSET)
+                    .read_u16_be(dialog + DIALOG_DEFAULT_ITEM_OFFSET)
                     .filter(|item| *item != 0)
             } else if character == 0x1b || key_code == PPC_KEY_ESCAPE {
                 memory
-                    .read_u16_be(dialog + PPC_DIALOG_CANCEL_ITEM_HLE_OFFSET)
+                    .read_u16_be(dialog + DIALOG_CANCEL_ITEM_OFFSET)
                     .filter(|item| *item != 0)
                     .or_else(|| ppc_dialog_cancel_item(memory, handles, &items))
             } else if character.eq_ignore_ascii_case(&b'a') && event.modifiers & 0x0100 != 0 {
                 let te_handle = memory
-                    .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+                    .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
                     .unwrap_or(0);
                 if let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) {
                     let length = memory
@@ -3390,7 +3399,7 @@ fn ppc_modal_dialog(
                 None
             } else if matches!(character, 0x08 | 0x20..=0x7e) {
                 let te_handle = memory
-                    .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+                    .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
                     .unwrap_or(0);
                 let mut allocator = PpcProcessAllocatorView {
                     memory_manager: process_memory_manager,
@@ -3468,7 +3477,7 @@ fn ppc_modal_dialog(
     } else {
         if handled_edit_event && ppc_hle_trace_enabled() {
             let text = memory
-                .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+                .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
                 .and_then(|handle| ppc_te_text_bytes(memory, handles, handle))
                 .unwrap_or_default();
             eprintln!(
