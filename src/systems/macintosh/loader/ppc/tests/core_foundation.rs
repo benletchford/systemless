@@ -2,6 +2,122 @@ use super::*;
 use crate::process_context::ProcessVfsFileRecord;
 
 #[test]
+fn carbon_cfurl_appends_independently_owned_file_and_directory_components() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "CFURLCreateCopyAppendingPathComponent"),
+        PpcImportDispatcherTarget::CfUrlCreateCopyAppendingPathComponent
+    );
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(
+        b"CFURLCreateCopyAppendingPathComponent",
+    ))
+    .unwrap();
+    loaded.set_launched_app_path("Demo.app/Contents/MacOSClassic/Demo");
+    loaded.seed_vfs_files_and_resources(
+        vec![ProcessVfsFileRecord {
+            path: "Demo.app/Contents/Frameworks/Plugin.bundle/Contents/Info.plist".to_string(),
+            data: b"<plist/>".to_vec().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        }],
+        vec![],
+        vec![],
+    );
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfBundleGetMainBundle,
+    );
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfBundleCopyPrivateFrameworksUrl,
+    );
+    let base = loaded.cpu.gpr[3];
+    assert_ne!(base, 0);
+
+    let source = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(source, vec![0; 64]);
+    loaded
+        .memory
+        .write_bytes(source, b"Plugin.bundle\0")
+        .unwrap();
+    loaded.cpu.gpr[3] = source;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfStringMakeConstantString,
+    );
+    let component = loaded.cpu.gpr[3];
+
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = base;
+    loaded.cpu.gpr[5] = component;
+    loaded.cpu.gpr[6] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfUrlCreateCopyAppendingPathComponent,
+    );
+    let directory = loaded.cpu.gpr[3];
+    assert_ne!(directory, base);
+    assert_eq!(
+        loaded.toolbox_startup.cf_strings.url_path(directory),
+        Some("Demo.app/Contents/Frameworks/Plugin.bundle")
+    );
+    assert_eq!(
+        loaded
+            .toolbox_startup
+            .cf_strings
+            .url_is_directory(directory),
+        Some(true)
+    );
+
+    loaded.memory.write_bytes(source, b"Info.plist\0").unwrap();
+    loaded.cpu.gpr[3] = source;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfStringMakeConstantString,
+    );
+    let file_component = loaded.cpu.gpr[3];
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = directory;
+    loaded.cpu.gpr[5] = file_component;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfUrlCreateCopyAppendingPathComponent,
+    );
+    let file = loaded.cpu.gpr[3];
+    assert_eq!(
+        loaded.toolbox_startup.cf_strings.url_path(file),
+        Some("Demo.app/Contents/Frameworks/Plugin.bundle/Info.plist")
+    );
+    assert_eq!(
+        loaded.toolbox_startup.cf_strings.url_is_directory(file),
+        Some(false)
+    );
+    loaded.cpu.gpr[3] = base;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfRelease);
+    assert_eq!(
+        loaded.toolbox_startup.cf_strings.url_path(file),
+        Some("Demo.app/Contents/Frameworks/Plugin.bundle/Info.plist")
+    );
+}
+
+#[test]
+fn carbon_cfurl_append_rejects_unknown_url_or_string() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(
+        b"CFURLCreateCopyAppendingPathComponent",
+    ))
+    .unwrap();
+    loaded.cpu.gpr[4] = 0x1234;
+    loaded.cpu.gpr[5] = 0x5678;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfUrlCreateCopyAppendingPathComponent,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
 fn carbon_private_frameworks_url_is_owned_and_uses_bundle_directory() {
     assert_eq!(
         dispatcher_target_for_import("CarbonLib", "CFBundleCopyPrivateFrameworksURL"),
