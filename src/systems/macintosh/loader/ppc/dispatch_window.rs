@@ -2660,6 +2660,7 @@ pub enum PpcLegacyWindowOperation {
     GrowWindow,
     HighlightWindow,
     NewWindow,
+    RepositionWindow,
     SendBehind,
     SetWindowTitle,
     TrackBox,
@@ -2867,6 +2868,66 @@ pub(super) fn ppc_dispatch_legacy_window(
                 heap_limit,
                 last_mem_error,
                 handles,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcLegacyWindowOperation::RepositionWindow => {
+            // Apple, Handling Carbon Windows and Controls, "Window and Control
+            // Tasks": RepositionWindow accepts a WindowPositionMethod.
+            // kWindowCenterOnMainScreen is 1.
+            let window = cpu.gpr[3];
+            if cpu.gpr[5] != 1 {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let Some(content) = ppc_window_global_content_bounds(memory, gworlds, window) else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let Some(structure) = ppc_window_global_structure_bounds(memory, gworlds, window)
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let menu_height = i32::from(memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20));
+            let screen_width = ppc_main_screen_width() as i32;
+            let screen_height = ppc_main_screen_height() as i32;
+            let structure_width = i32::from(structure.3) - i32::from(structure.1);
+            let structure_height = i32::from(structure.2) - i32::from(structure.0);
+            let centered_left = (screen_width - structure_width) / 2;
+            let centered_top = menu_height + (screen_height - menu_height - structure_height) / 2;
+            let new_left = ppc_i32_to_i16_saturating(
+                i32::from(content.1) + centered_left - i32::from(structure.1),
+            );
+            let new_top = ppc_i32_to_i16_saturating(
+                i32::from(content.0) + centered_top - i32::from(structure.0),
+            );
+            let was_visible = ppc_window_is_visible(memory, window);
+            let mut move_cpu = cpu.clone();
+            move_cpu.gpr[4] = new_left as u16 as u32;
+            move_cpu.gpr[5] = new_top as u16 as u32;
+            if ppc_move_window(&move_cpu, memory, gworlds).is_none() {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            ppc_recalculate_window_vis_regions(
+                process_memory_manager,
+                memory,
+                window_list,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+            );
+            let next_structure = ppc_window_global_structure_bounds(memory, gworlds, window);
+            ppc_repaint_window_geometry_transition(
+                memory,
+                gworlds,
+                window_list,
+                window,
+                was_visible,
+                Some(structure),
+                next_structure,
+                toolbox_startup.host_menu_bar_hidden,
+                event_queue,
+                when,
+                input,
             );
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }

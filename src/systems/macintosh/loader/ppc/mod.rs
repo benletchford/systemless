@@ -13102,6 +13102,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "NewWindow") => PpcImportDispatcherTarget::LegacyWindow(
             PpcLegacyWindowOperation::NewWindow,
         ),
+        ("InterfaceLib", "RepositionWindow") => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::RepositionWindow,
+        ),
         ("InterfaceLib", "SendBehind") => PpcImportDispatcherTarget::LegacyWindow(
             PpcLegacyWindowOperation::SendBehind,
         ),

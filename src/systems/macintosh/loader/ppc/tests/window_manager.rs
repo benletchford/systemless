@@ -356,6 +356,69 @@ fn carbon_create_new_window_returns_hidden_document_window() {
 }
 
 #[test]
+fn carbon_reposition_window_centers_hidden_window_on_main_screen() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "RepositionWindow"),
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RepositionWindow)
+    );
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewWindow")).unwrap();
+    let scratch = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        16,
+        true,
+    );
+    let window = create_test_cwindow(
+        &mut loaded,
+        scratch,
+        (40, 50, 240, 350),
+        0,
+        false,
+        u32::MAX,
+    );
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 1; // kWindowCenterOnMainScreen
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RepositionWindow),
+    );
+
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let structure =
+        ppc_window_global_structure_bounds(&mut loaded.memory, &loaded.gworlds, window).unwrap();
+    let menu_height = i32::from(loaded.memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap());
+    assert!(
+        (i32::from(structure.1) + i32::from(structure.3) - ppc_main_screen_width() as i32).abs()
+            <= 1
+    );
+    assert!(
+        (i32::from(structure.0) + i32::from(structure.2)
+            - menu_height
+            - ppc_main_screen_height() as i32)
+            .abs()
+            <= 1
+    );
+    assert_eq!(
+        loaded.memory.read_u8(window + PPC_CWINDOW_VISIBLE_OFFSET),
+        Some(0)
+    );
+
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[5] = u32::MAX;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RepositionWindow),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(
+        ppc_window_global_structure_bounds(&mut loaded.memory, &loaded.gworlds, window),
+        Some(structure)
+    );
+}
+
+#[test]
 fn window_resource_parameters_preserve_compiled_bounds_and_title() {
     let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
     let mut wind = Vec::new();
