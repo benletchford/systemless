@@ -343,6 +343,11 @@ Desktop saves are stored next to the launched archive under
 `/Games/.systemless/saves/EV Override 1.0.1/`. The store preserves Mac data and
 resource forks and is kept separate from the original archive.
 
+System Folder preferences are persisted with the saves, under
+`System Folder/Preferences/` inside the save directory. Pass
+`--reset-preferences` to delete them before launch, for example when a game
+wrote bad preferences while hitting an emulation bug.
+
 ## Library Use
 
 Programmatic loading goes through `MacintoshSession`:
@@ -392,9 +397,9 @@ flush one final scan on shutdown
 
 Record the archive fingerprints before importing stored saves. That lets the
 frontend avoid copying packaged game files into the save store and persist only
-new or changed user-save files. Save-file filtering is frontend policy; common
-filters exclude System Folder preferences, temporary items, Trash, and desktop
-database files.
+new or changed user-save files. Save-file filtering is frontend policy; the
+desktop runner excludes temporary items, Trash, and desktop database files, but
+keeps System Folder preferences.
 
 The built-in desktop runner uses this API and stores snapshots next to the
 launched archive under `.systemless/saves/<archive-name>/`.

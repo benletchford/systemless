@@ -299,6 +299,10 @@ struct Cli {
     #[arg(long, value_name = "N", value_parser = parse_display_scale)]
     display_scale: Option<u32>,
 
+    /// Delete this game's persisted System Folder preferences before launch
+    #[arg(long)]
+    reset_preferences: bool,
+
     /// Guest chrome theme
     #[arg(
         long,
@@ -3614,6 +3618,17 @@ fn main() {
     if !game_path.exists() {
         eprintln!("Error: Game file not found: {}", game_path.display());
         std::process::exit(1);
+    }
+
+    if cli.reset_preferences {
+        match DesktopSaveStore::reset_preferences(&game_path) {
+            Ok(0) => eprintln!("[SYSTEMLESS] No persisted preferences to reset"),
+            Ok(_) => eprintln!("[SYSTEMLESS] Reset persisted System Folder preferences"),
+            Err(err) => {
+                eprintln!("Error: Could not reset preferences: {}", err);
+                std::process::exit(1);
+            }
+        }
     }
 
     #[cfg(target_os = "macos")]

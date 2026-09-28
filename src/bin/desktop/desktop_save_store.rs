@@ -89,6 +89,20 @@ impl DesktopSaveStore {
         }
     }
 
+    /// Delete the persisted System Folder preferences for this archive, so
+    /// preferences written under an emulation bug don't outlive its fix.
+    pub fn reset_preferences(game_path: &Path) -> io::Result<usize> {
+        let root = save_root_for_game_path(game_path);
+        let mut removed = 0;
+        for system in matching_child_dirs(&root, "system folder")? {
+            for prefs in matching_child_dirs(&system, "preferences")? {
+                fs::remove_dir_all(&prefs)?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -393,7 +407,6 @@ fn is_user_save_path(path: &str) -> bool {
 
     let lower = normalized.to_ascii_lowercase();
     if lower.starts_with("__rsrc__/")
-        || lower.starts_with("system folder/preferences/")
         || lower.starts_with("system folder/temporary items/")
         || lower.starts_with("temporary items/")
         || lower.starts_with("trash/")
@@ -401,8 +414,31 @@ fn is_user_save_path(path: &str) -> bool {
         return false;
     }
 
+    // System Folder preferences are persisted: some games (Deimos Rising)
+    // quit after their first-run settings panel and only get further once
+    // they find their preferences on the next launch.
     let name = lower.rsplit('/').next().unwrap_or(lower.as_str());
     !matches!(name, "desktop db" | "desktop df" | "thevolume")
+}
+
+// Guest paths keep the application's own casing, so match the System Folder
+// and Preferences components case-insensitively like the save filter does.
+fn matching_child_dirs(dir: &Path, lower_name: &str) -> io::Result<Vec<PathBuf>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_type()?.is_dir()
+            && entry.file_name().to_string_lossy().to_ascii_lowercase() == lower_name
+        {
+            out.push(entry.path());
+        }
+    }
+    Ok(out)
 }
 
 fn encode_host_component(component: &str) -> String {
@@ -521,12 +557,41 @@ mod tests {
     }
 
     #[test]
+    fn reset_preferences_removes_only_system_folder_preferences() {
+        let base = std::env::temp_dir().join(format!(
+            "systemless-reset-prefs-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        let game_path = base.join("Deimos Rising.sit");
+        let root = save_root_for_game_path(&game_path);
+        let store = DesktopSaveStore {
+            root: root.clone(),
+            archive_vfs_stats: HashMap::new(),
+            last_vfs_fingerprints: HashMap::new(),
+            persisted_save_paths: HashSet::new(),
+            save_scan_frame: 0,
+        };
+        store
+            .persist_save_file(&snapshot("System Folder/Preferences/Deimos Prefs"))
+            .unwrap();
+        store.persist_save_file(&snapshot("Pilots/Rick Hardslab")).unwrap();
+
+        assert_eq!(DesktopSaveStore::reset_preferences(&game_path).unwrap(), 1);
+        let loaded = load_saved_files_from_root(&root).unwrap();
+        assert_eq!(loaded, vec![snapshot("Pilots/Rick Hardslab")]);
+        assert_eq!(DesktopSaveStore::reset_preferences(&game_path).unwrap(), 0);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn user_save_filter_skips_system_support_files() {
         assert!(is_user_save_path("Pilots/Rick Hardslab"));
         assert!(is_user_save_path("Games/My Saved Game"));
 
         assert!(!is_user_save_path(""));
-        assert!(!is_user_save_path(
+        assert!(is_user_save_path(
             "System Folder/Preferences/EV Override License"
         ));
         assert!(!is_user_save_path("Temporary Items/scratch"));
