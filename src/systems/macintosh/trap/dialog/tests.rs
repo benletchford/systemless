@@ -10209,7 +10209,7 @@
         );
         bus.write_byte(animation_probe, 0);
         bus.write_byte(scene_outside_user, 0);
-        disp.refresh_dialog_tracking_snapshot(&mut bus);
+        disp.refresh_dialog_tracking_snapshot(&mut bus, None);
         assert_eq!(bus.read_byte(animation_probe), 0x93);
         assert_eq!(bus.read_byte(scene_outside_user), 0x62);
     }
@@ -13528,6 +13528,25 @@
             bus.read_byte(other_item_pixel),
             0x5a,
             "SetDialogItemText must leave other dialog items untouched"
+        );
+
+        // Modal tracking retains a full-dialog image. Updating one text item
+        // must not redraw (and thereby erase pixels in) another item.
+        let mut tracking = dialog_tracking_state_for_test(dialog_ptr);
+        tracking.bounds = bounds;
+        tracking.items = disp.dialog_items.get(&dialog_ptr).unwrap().clone();
+        tracking.rendered_pixels = disp.save_dialog_pixels(&bus, bounds);
+        disp.dialog_tracking = Some(tracking);
+        let second_text = b"MMMMMMMM";
+        bus.write_byte(pstr, second_text.len() as u8);
+        bus.write_bytes(pstr + 1, second_text);
+        cpu.write_reg(Register::A7, TEST_SP);
+        let result = disp.dispatch_dialog(true, 0x18F, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_byte(other_item_pixel),
+            0x5a,
+            "tracked SetDialogItemText must leave other item pixels untouched"
         );
     }
 
