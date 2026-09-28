@@ -500,6 +500,11 @@ impl PpcLoadedApp {
                     unsupported_import_index = Some(index);
                     return PpcImportAction::Halt;
                 }
+                if index == PPC_STD_FILTER_IMPORT_INDEX {
+                    // The standard filter declines events it does not handle;
+                    // ModalDialog applies its default event handling.
+                    return PpcImportAction::Return(0);
+                }
                 last_import_index = Some(index);
                 // A Mixed Mode callback can advance process time while the
                 // native slice is suspended. Refresh the whole-tick baseline

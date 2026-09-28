@@ -446,6 +446,23 @@ pub(super) fn dispatch_dialog_import(
             // handle; ModalDialog then performs its default event handling.
             Some(PpcImportAction::Return(0))
         }
+        PpcImportDispatcherTarget::GetStdFilterProc => {
+            // Apple Dialog Manager Reference (2007), p. 38:
+            // OSErr GetStdFilterProc(ModalFilterUPP *theProc).
+            let out_proc = cpu.gpr[3];
+            if out_proc == 0 || !ppc_memory_can_write_bytes(memory, out_proc, 4) {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let result = if memory
+                .write_u32_be(out_proc, PPC_STD_FILTER_TVECTOR)
+                .is_some()
+            {
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::DrawDialog => {
             if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
                 return Some(action);

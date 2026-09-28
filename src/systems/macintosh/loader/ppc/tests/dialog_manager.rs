@@ -1452,6 +1452,10 @@ fn import_bindings_classify_dialog_imports() {
         PpcImportDispatcherTarget::StdFilterProc
     );
     assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetStdFilterProc"),
+        PpcImportDispatcherTarget::GetStdFilterProc
+    );
+    assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "ModalDialog"),
         PpcImportDispatcherTarget::ModalDialog
     );
@@ -1489,6 +1493,45 @@ fn import_bindings_classify_dialog_imports() {
             PpcImportDispatcherTarget::DialogCompatibility(operation),
         );
     }
+}
+
+#[test]
+fn get_std_filter_proc_returns_a_guest_callable_standard_filter() {
+    let pef = synthetic_pef_with_import(b"GetStdFilterProc");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let output = PPC_DATA_BASE + 0x5000;
+    loaded.memory.add_region(output, vec![0; 4]);
+    loaded.cpu.gpr[3] = output;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(output), Some(PPC_STD_FILTER_TVECTOR));
+    let callback_pc = PPC_IMPORT_TRAP_BASE + PPC_STD_FILTER_IMPORT_INDEX * 4;
+    assert_eq!(loaded.memory.read_u32_be(PPC_STD_FILTER_TVECTOR), Some(callback_pc));
+    assert_eq!(loaded.memory.read_u32_be(PPC_STD_FILTER_TVECTOR + 4), Some(0));
+
+    loaded.cpu.pc = callback_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0xdead_beef;
+    let callback = loaded.run_with_hle_imports(64);
+    assert_eq!(callback.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn get_std_filter_proc_rejects_unwritable_output() {
+    let pef = synthetic_pef_with_import(b"GetStdFilterProc");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 0;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
 }
 
 #[test]

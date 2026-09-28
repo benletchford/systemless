@@ -473,12 +473,15 @@ const PPC_PICT_INFO_SIZE: u32 = 104;
 const PPC_CFM_MAIN_STUB_COUNT: u32 = 256;
 const PPC_IMPORT_CAPACITY: u32 = 4096;
 // The final mapped traps are reserved for guest-call and thread returns and
-// does not reduce the 4,096 application/CFM binding capacity.
-const PPC_IMPORT_SLOT_COUNT: u32 = PPC_IMPORT_CAPACITY + 2;
+// the Dialog Manager's guest-callable standard filter procedure. They do not
+// reduce the 4,096 application/CFM binding capacity.
+const PPC_IMPORT_SLOT_COUNT: u32 = PPC_IMPORT_CAPACITY + 3;
 const PPC_THREAD_RETURN_IMPORT_INDEX: u32 = PPC_IMPORT_CAPACITY + 1;
 pub(super) const PPC_THREAD_RETURN_PC: u32 =
     PPC_IMPORT_TRAP_BASE + PPC_THREAD_RETURN_IMPORT_INDEX * 4;
 const PPC_GUEST_CALL_RETURN_IMPORT_INDEX: u32 = PPC_IMPORT_CAPACITY;
+const PPC_STD_FILTER_IMPORT_INDEX: u32 = PPC_IMPORT_CAPACITY + 2;
+const PPC_STD_FILTER_TVECTOR: u32 = PPC_IMPORT_TVECTOR_BASE + PPC_STD_FILTER_IMPORT_INDEX * 8;
 const PPC_FIRST_CFM_CONNECTION_ID: u32 = 1;
 const PPC_CFM_FIND_LIB: u32 = 2;
 const PPC_CFM_LOAD_LIB: u32 = 1;
@@ -1392,6 +1395,7 @@ pub enum PpcImportDispatcherTarget {
     SetDialogCancelItem,
     SetDialogTracksCursor,
     StdFilterProc,
+    GetStdFilterProc,
     DrawDialog,
     DrawControls,
     ModalDialog,
@@ -6353,6 +6357,7 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::SetDialogTracksCursor
         }
         ("InterfaceLib", "StdFilterProc") => PpcImportDispatcherTarget::StdFilterProc,
+        ("InterfaceLib", "GetStdFilterProc") => PpcImportDispatcherTarget::GetStdFilterProc,
         ("InterfaceLib", "DrawDialog") => PpcImportDispatcherTarget::DrawDialog,
         ("InterfaceLib", "DrawControls") => PpcImportDispatcherTarget::DrawControls,
         ("InterfaceLib", "ModalDialog") => PpcImportDispatcherTarget::ModalDialog,
@@ -9531,6 +9536,7 @@ fn dispatch_supported_import(context: PpcDispatchContext<'_>) -> Option<PpcImpor
         | PpcImportDispatcherTarget::SetDialogCancelItem
         | PpcImportDispatcherTarget::SetDialogTracksCursor
         | PpcImportDispatcherTarget::StdFilterProc
+        | PpcImportDispatcherTarget::GetStdFilterProc
         | PpcImportDispatcherTarget::DrawDialog
         | PpcImportDispatcherTarget::ModalDialog => {
             unreachable!("dialog imports return through dispatch_dialog_import")
