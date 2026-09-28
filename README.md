@@ -28,6 +28,18 @@ image, a System installation, or hardware emulation. On macOS, classic
 applications keep their own identity: guest menus appear in the native menu bar,
 while the guest application name and icon integrate with the Dock.
 
+## Contributing
+
+Start with the [contribution guide](CONTRIBUTING.md). Open a public issue for a
+bug fix, make your change in this repository, and submit a pull request. For a
+game catalogue entry, follow the [catalogue guide](www/README.md#contribute-a-catalogue-entry)
+and use `www/catalogue/incoming/<entry-id>/` for small staged assets.
+
+You do not need to configure Cloudflare R2 or upload assets yourself. The
+incoming workflow processes eligible catalogue PRs using repository secrets;
+maintainers handle asset promotion for fork PRs. Keep new games disabled for
+launch until browser testing is approved.
+
 ## Try it in your browser
 
 | [Marathon](https://systemless.org/marathon) | [Escape Velocity](https://systemless.org/escape-velocity) |
