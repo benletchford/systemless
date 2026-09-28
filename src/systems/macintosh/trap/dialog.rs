@@ -4233,14 +4233,16 @@ impl super::TrapDispatcher {
                     .as_ref()
                     .map(|tracking| (tracking.default_item, tracking.cancel_item))
                     .unwrap_or((0, 0));
-                let key_code = (event.message >> 8) as u16;
-                let char_code = (event.message & 0xFF) as u8;
-                let hit = if char_code == b'\r' || char_code == 0x03 {
-                    default_item
-                } else if char_code == 0x1B || key_code == 0x35 {
-                    cancel_item
-                } else {
-                    0
+                let hit = match crate::dialog_manager::evaluate_modal_dialog_key(
+                    event.what,
+                    event.message,
+                    event.modifiers,
+                ) {
+                    crate::dialog_manager::DialogFilterDecision::TriggerDefaultButton => {
+                        default_item
+                    }
+                    crate::dialog_manager::DialogFilterDecision::TriggerCancelButton => cancel_item,
+                    _ => 0,
                 };
                 if hit > 0 {
                     self.finish_interactive_alert(cpu, bus, hit);
@@ -4634,13 +4636,13 @@ impl super::TrapDispatcher {
         dialog_ptr: u32,
         items: &[DialogItem],
     ) -> (String, i16, i16) {
-        let default_item = match bus
-            .read_word(dialog_ptr + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET)
-            as i16
-        {
-            value if value > 0 => value,
-            _ => 1,
-        };
+        let default_item = crate::dialog_manager::resolve_dialog_default_item(
+            Some(
+                bus.read_word(dialog_ptr + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET)
+                    as i16,
+            ),
+            items.len(),
+        );
 
         let edit_field =
             bus.read_word(dialog_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET) as i16;
@@ -12667,7 +12669,10 @@ impl super::TrapDispatcher {
                                                             cancel,
                                                             item.rect,
                                                             item.text.clone(),
-                                                            cancel == tracking.default_item,
+                                                            crate::dialog_manager::is_dialog_default_button(
+                                                                cancel,
+                                                                tracking.default_item,
+                                                            ),
                                                         )
                                                     })
                                             });
@@ -12925,17 +12930,11 @@ impl super::TrapDispatcher {
 
                         let (edit_text, edit_item, default_item) =
                             Self::dialog_edit_state(bus, dialog_ptr, &items);
-                        let cancel_item = self
-                            .dialog_cancel_items
-                            .get(&dialog_ptr)
-                            .copied()
-                            .unwrap_or_else(|| {
-                                crate::dialog_manager::find_dialog_cancel_item_index(
-                                    items.iter().map(|item| (item.item_type, &item.text)),
-                                )
-                                .map(|item| item as i16)
-                                .unwrap_or(crate::dialog_manager::ALERT_BUTTON_CANCEL)
-                            });
+                        let cancel_item =
+                            crate::dialog_manager::resolve_modal_dialog_cancel_item(
+                                self.dialog_cancel_items.get(&dialog_ptr).copied(),
+                                items.iter().map(|item| (item.item_type, &item.text)),
+                            );
                         let edit_text_modified = edit_item > 0
                             && self
                                 .dialog_edit_text_modified_items
