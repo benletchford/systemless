@@ -2181,7 +2181,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CfBundleGetBundleWithIdentifier
         | PpcImportDispatcherTarget::CfBundleGetMainBundle
         | PpcImportDispatcherTarget::CfBundleCopyPrivateFrameworksUrl
-        | PpcImportDispatcherTarget::CfUrlCreateCopyAppendingPathComponent => {
+        | PpcImportDispatcherTarget::CfUrlCreateCopyAppendingPathComponent
+        | PpcImportDispatcherTarget::CfBundleCreate => {
             unreachable!("Core Foundation imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::GetCurrentProcess
