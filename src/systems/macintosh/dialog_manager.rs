@@ -46,6 +46,12 @@ pub const DEFAULT_BUTTON_OUTLINE_THICKNESS: i16 = 3;
 /// Macintosh Toolbox Essentials (1992), Listing 6-17.
 pub const DEFAULT_BUTTON_OUTLINE_INSET: i16 = 4;
 
+/// Canonical AppendDITL placement methods.
+/// Macintosh Toolbox Essentials (1992), pp. 6-108, 6-153.
+pub const APPEND_DITL_OVERLAY: i16 = 0;
+pub const APPEND_DITL_RIGHT: i16 = 1;
+pub const APPEND_DITL_BOTTOM: i16 = 2;
+
 /// Item disable bit in the DITL item type byte.
 pub const DIALOG_ITEM_DISABLED_FLAG: u8 = 0x80;
 
@@ -1038,6 +1044,82 @@ where
         })
 }
 
+/// Computes the `(dv, dh)` translation offset for items being appended to a dialog via `AppendDITL`.
+///
+/// Macintosh Toolbox Essentials (1992), pp. 6-108, 6-153:
+/// - `overlayDITL` (0): (0, 0)
+/// - `appendDITLRight` (1): (0, dialog_width)
+/// - `appendDITLBottom` (2): (dialog_height, 0)
+/// - negative `item_no` (< 0): offset relative to the upper-left of item `-method` (1-indexed).
+pub fn append_ditl_offset_delta<F>(
+    method: i16,
+    dialog_height: i16,
+    dialog_width: i16,
+    item_origin_lookup: F,
+) -> (i16, i16)
+where
+    F: FnOnce(usize) -> Option<(i16, i16)>,
+{
+    match method {
+        APPEND_DITL_OVERLAY => (0, 0),
+        APPEND_DITL_RIGHT => (0, dialog_width),
+        APPEND_DITL_BOTTOM => (dialog_height, 0),
+        relative_item if relative_item < 0 => {
+            let item_no = usize::from(relative_item.unsigned_abs());
+            item_origin_lookup(item_no).unwrap_or((0, 0))
+        }
+        _ => (0, 0),
+    }
+}
+
+/// Calculates the number of retained items and the new DITL count-minus-one header word
+/// after removing `remove_count` items from a dialog with `current_count` items.
+///
+/// Macintosh Toolbox Essentials (1992), p. 6-154:
+/// - If `remove_count >= current_count`, all items are removed (0 retained, header word is -1 / 0xFFFF).
+/// - Otherwise, `retained = current_count - remove_count`, and header word is `(retained - 1) as i16`.
+pub fn shorten_ditl_counts(current_count: usize, remove_count: usize) -> (usize, i16) {
+    let remove = remove_count.min(current_count);
+    let retained = current_count.saturating_sub(remove);
+    let count_minus_one = if retained == 0 {
+        -1
+    } else {
+        retained.saturating_sub(1).min(i16::MAX as usize) as i16
+    };
+    (retained, count_minus_one)
+}
+
+/// Returns true if two rectangles intersect.
+pub fn rects_intersect(a: (i16, i16, i16, i16), b: (i16, i16, i16, i16)) -> bool {
+    a.0 < b.2 && a.2 > b.0 && a.1 < b.3 && a.3 > b.1
+}
+
+/// Returns true if a dialog item's local rectangle intersects the dialog global bounds.
+pub fn dialog_item_intersects_bounds(
+    bounds: (i16, i16, i16, i16),
+    item_rect: (i16, i16, i16, i16),
+) -> bool {
+    rects_intersect(dialog_rect_to_global(bounds, item_rect), bounds)
+}
+
+/// Checks whether an in-bounds dialog is game-managed (all items intersecting bounds are user items).
+pub fn is_dialog_game_managed<I>(bounds: (i16, i16, i16, i16), items: I) -> bool
+where
+    I: IntoIterator<Item = (u8, (i16, i16, i16, i16))>,
+{
+    let mut has_visible_item = false;
+    for (item_type, item_rect) in items {
+        if !dialog_item_intersects_bounds(bounds, item_rect) {
+            continue;
+        }
+        has_visible_item = true;
+        if (item_type & !DIALOG_ITEM_DISABLED_FLAG) != DIALOG_ITEM_USER_ITEM {
+            return false;
+        }
+    }
+    has_visible_item
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1771,5 +1853,85 @@ mod tests {
             find_dialog_cancel_item_index(items_no_cancel.iter().copied()),
             None
         );
+    }
+
+    #[test]
+    fn append_and_shorten_ditl_operations_and_game_managed_check() {
+        // AppendDITL constants
+        assert_eq!(APPEND_DITL_OVERLAY, 0);
+        assert_eq!(APPEND_DITL_RIGHT, 1);
+        assert_eq!(APPEND_DITL_BOTTOM, 2);
+
+        // append_ditl_offset_delta tests
+        let height = 200;
+        let width = 300;
+        let item_origins = [(20, 30), (50, 60)];
+
+        assert_eq!(
+            append_ditl_offset_delta(APPEND_DITL_OVERLAY, height, width, |_| None),
+            (0, 0)
+        );
+        assert_eq!(
+            append_ditl_offset_delta(APPEND_DITL_RIGHT, height, width, |_| None),
+            (0, 300)
+        );
+        assert_eq!(
+            append_ditl_offset_delta(APPEND_DITL_BOTTOM, height, width, |_| None),
+            (200, 0)
+        );
+        assert_eq!(
+            append_ditl_offset_delta(-1, height, width, |idx| item_origins.get(idx - 1).copied()),
+            (20, 30)
+        );
+        assert_eq!(
+            append_ditl_offset_delta(-2, height, width, |idx| item_origins.get(idx - 1).copied()),
+            (50, 60)
+        );
+        assert_eq!(
+            append_ditl_offset_delta(-3, height, width, |idx| item_origins.get(idx - 1).copied()),
+            (0, 0)
+        );
+
+        // shorten_ditl_counts tests
+        assert_eq!(shorten_ditl_counts(10, 3), (7, 6));
+        assert_eq!(shorten_ditl_counts(5, 5), (0, -1));
+        assert_eq!(shorten_ditl_counts(5, 10), (0, -1));
+        assert_eq!(shorten_ditl_counts(0, 2), (0, -1));
+
+        // rects_intersect tests
+        let r1 = (10, 10, 50, 50);
+        let r2 = (20, 20, 60, 60);
+        let r3 = (60, 60, 100, 100);
+        let r4 = (50, 50, 100, 100);
+        assert!(rects_intersect(r1, r2));
+        assert!(!rects_intersect(r1, r3));
+        assert!(!rects_intersect(r1, r4)); // Touching edge only
+
+        // dialog_item_intersects_bounds tests
+        let bounds = (100, 100, 300, 400);
+        assert!(dialog_item_intersects_bounds(bounds, (10, 10, 50, 50)));
+        assert!(!dialog_item_intersects_bounds(bounds, (300, 10, 350, 50)));
+
+        // is_dialog_game_managed tests
+        let all_user = vec![
+            (DIALOG_ITEM_USER_ITEM, (10, 10, 50, 50)),
+            (DIALOG_ITEM_USER_ITEM, (60, 60, 100, 100)),
+        ];
+        assert!(is_dialog_game_managed(bounds, all_user));
+
+        let with_button = vec![
+            (DIALOG_ITEM_USER_ITEM, (10, 10, 50, 50)),
+            (DIALOG_ITEM_BUTTON, (60, 60, 100, 100)),
+        ];
+        assert!(!is_dialog_game_managed(bounds, with_button));
+
+        let button_offscreen = vec![
+            (DIALOG_ITEM_USER_ITEM, (10, 10, 50, 50)),
+            (DIALOG_ITEM_BUTTON, (300, 300, 350, 350)),
+        ];
+        assert!(is_dialog_game_managed(bounds, button_offscreen));
+
+        let empty: Vec<(u8, (i16, i16, i16, i16))> = vec![];
+        assert!(!is_dialog_game_managed(bounds, empty));
     }
 }
