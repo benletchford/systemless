@@ -10,8 +10,9 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Simulation
+launch_enabled: true
 compatibility:
-  status: boots
+  status: playable
   verified:
   - date: "2026-09-23"
     tester: Catalogue maintainer
@@ -24,6 +25,19 @@ compatibility:
       Systemless and browser launch has not been approved.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/2492
+  - date: "2026-09-28"
+    tester: Catalogue maintainer
+    systemless_version: 0.66.0 + local CopyPixMap fix
+    architecture: 68k
+    environment: >-
+      Release-mode Chrome check of the unchanged checksum-pinned promotional demo.
+      The 16-colour alert displayed its text and buttons; clicking Switch to 16 colors
+      opened the demo menu, and Instant Action entered the F-16 cockpit. The demo's
+      documented J left-steer key visibly banked the outside view. A standard 20-second
+      pacing sample at 25 MHz sustained about 59 host FPS and 60 guest ticks per second
+      at the modal alert, with one archive request and no console errors.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2491
 artifacts:
 - id: archive
   role: archive
@@ -90,7 +104,6 @@ full campaign.
 ## The original demo
 
 This is Spectrum HoloByte's promotional Falcon MC demo, not the copy-protected
-retail game. Systemless reaches the cockpit after the demo's 16-colour prompt,
-but that prompt does not yet draw its text or buttons correctly. Browser launch
-therefore remains disabled while the [alert-rendering issue](https://github.com/benletchford/systemless/issues/2491)
-is tracked.
+retail game. The 16-colour prompt is visible and lets you switch modes before
+entering the sample Instant Action mission. Use Controls on the menu to see the
+demo's flight keys.

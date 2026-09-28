@@ -12984,26 +12984,10 @@ impl super::TrapDispatcher {
             }
 
             // CopyPixMap ($AA05)
-            // PROCEDURE CopyPixMap(srcPM, dstPM: PixMapHandle);
-            // Inside Macintosh Volume V, V-57
-            //
-            // "The CopyPixMap procedure copies the source PixMap
-            //  structure to the destination PixMap structure. CopyPixMap
-            //  does not copy the data referenced by the source pixel
-            //  map's baseAddr field; it only copies the field itself,
-            //  not the data it points to."
-            //
-            // PixMap is a 50-byte record (IM:V V-37): baseAddr(4),
-            // rowBytes(2), bounds(8), pmVersion(2), packType(2),
-            // packSize(4), hRes(4), vRes(4), pixelType(2), pixelSize(2),
-            // cmpCount(2), cmpSize(2), planeBytes(4), pmTable(4),
-            // pmReserved(4) = 50 bytes total.
-            //
-            // Stack: SP+0=dstPM(4), SP+4=srcPM(4). Pops 8.
-            //
-            // Regression coverage:
-            //   copypixmap_copies_50_byte_pixmap_record_into_dst
-            // CopyPixMap ($AA05): Copies 50-byte PixMap record from src to dst handle; per IM:V V-57
+            // Copies the 50-byte PixMap record and color-table contents, leaving
+            // the destination with its own color table; baseAddr's image is not copied.
+            // PROCEDURE CopyPixMap (srcPM,dstPM: PixMapHandle);
+            // Imaging With QuickDraw 1994, p. 4-86; Inside Macintosh V, V-57
             (true, 0x205) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dst_handle = bus.read_long(sp);
@@ -13012,9 +12996,39 @@ impl super::TrapDispatcher {
                 if src_handle != 0 && dst_handle != 0 {
                     let dst_ptr = bus.read_long(dst_handle);
                     let src_ptr = bus.read_long(src_handle);
-                    if src_ptr != 0 && dst_ptr != 0 {
+                    if src_ptr != 0 && dst_ptr != 0 && src_ptr != dst_ptr {
+                        let src_ctab_handle = bus.read_long(src_ptr + 42);
+                        let dst_ctab_handle = bus.read_long(dst_ptr + 42);
+                        let src_ctab_ptr = bus.read_long(src_ctab_handle);
+                        let copied_ctab_handle = if let Some(size) =
+                            bus.get_alloc_size(src_ctab_ptr).filter(|size| *size >= 8)
+                        {
+                            let bytes = bus.read_bytes(src_ctab_ptr, size as usize);
+                            let dst_ctab_ptr = bus.read_long(dst_ctab_handle);
+                            if dst_ctab_handle != src_ctab_handle
+                                && bus.get_alloc_size(dst_ctab_handle) == Some(4)
+                                && dst_ctab_ptr != src_ctab_ptr
+                                && bus.get_alloc_size(dst_ctab_ptr).is_some()
+                            {
+                                let new_ptr =
+                                    self.resize_handle_allocation(bus, dst_ctab_handle, size);
+                                if new_ptr != 0 {
+                                    bus.write_bytes(new_ptr, &bytes);
+                                    Some(dst_ctab_handle)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                Self::clone_memory_handle(bus, src_ctab_handle)
+                            }
+                        } else {
+                            None
+                        };
                         for i in 0..50u32 {
                             bus.write_byte(dst_ptr + i, bus.read_byte(src_ptr + i));
+                        }
+                        if let Some(ctab_handle) = copied_ctab_handle {
+                            bus.write_long(dst_ptr + 42, ctab_handle);
                         }
                     }
                 }

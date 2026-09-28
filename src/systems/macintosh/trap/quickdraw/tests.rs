@@ -3367,6 +3367,52 @@
     }
 
     #[test]
+    fn copypixmap_copies_color_table_without_aliasing_source() {
+        // CopyPixMap gives the destination its own color table (Imaging With
+        // QuickDraw 1994, p. 4-86). Disposing its table must not free the
+        // screen device's table when the source is the device PixMap.
+        let (mut d, mut cpu, mut bus) = setup();
+        let src_pm = bus.alloc(50);
+        let dst_pm = bus.alloc(50);
+        let src_handle = bus.alloc(4);
+        let dst_handle = bus.alloc(4);
+        bus.write_long(src_handle, src_pm);
+        bus.write_long(dst_handle, dst_pm);
+
+        let src_ctab = bus.alloc(24);
+        let src_ctab_handle = bus.alloc(4);
+        bus.write_long(src_ctab_handle, src_ctab);
+        bus.write_long(src_ctab, 8);
+        bus.write_word(src_ctab + 4, 0x8000);
+        bus.write_word(src_ctab + 6, 1);
+        bus.write_word(src_ctab + 10, 0xFFFF);
+        bus.write_word(src_ctab + 12, 0xFFFF);
+        bus.write_word(src_ctab + 14, 0xFFFF);
+        bus.write_word(src_ctab + 16, 1);
+        bus.write_long(src_pm + 42, src_ctab_handle);
+
+        let dst_ctab = bus.alloc(16);
+        let dst_ctab_handle = bus.alloc(4);
+        bus.write_long(dst_ctab_handle, dst_ctab);
+        bus.write_long(dst_pm + 42, dst_ctab_handle);
+
+        bus.write_long(TEST_SP, dst_handle);
+        bus.write_long(TEST_SP + 4, src_handle);
+        assert!(d.dispatch_quickdraw(true, 0x205, &mut cpu, &mut bus).unwrap().is_ok());
+
+        assert_eq!(bus.read_long(dst_pm + 42), dst_ctab_handle);
+        let copied = bus.read_long(dst_ctab_handle);
+        assert_ne!(copied, src_ctab);
+        assert_eq!(bus.read_bytes(copied, 24), bus.read_bytes(src_ctab, 24));
+        bus.write_word(copied + 10, 0);
+        assert_eq!(bus.read_word(src_ctab + 10), 0xFFFF);
+        bus.free(copied);
+        bus.free(dst_ctab_handle);
+        assert_eq!(bus.get_alloc_size(src_ctab), Some(24));
+        assert_eq!(bus.read_long(src_ctab_handle), src_ctab);
+    }
+
+    #[test]
     fn test_clip_rect() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let rect_ptr = 0x300000u32;
