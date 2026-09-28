@@ -181,6 +181,29 @@ impl DialogItemKind {
                 | Self::RadioButton
         )
     }
+
+    /// Whether this item references an external resource (resource control, icon, or picture).
+    pub const fn is_resource(self) -> bool {
+        matches!(self, Self::ResourceControl | Self::Icon | Self::Picture)
+    }
+
+    /// The 4-byte Mac OS resource type associated with this dialog item kind (`b"CNTL"`, `b"ICON"`, or `b"PICT"`).
+    pub const fn resource_type(self) -> Option<[u8; 4]> {
+        match self {
+            Self::ResourceControl => Some(*b"CNTL"),
+            Self::Icon => Some(*b"ICON"),
+            Self::Picture => Some(*b"PICT"),
+            _ => None,
+        }
+    }
+
+    /// The 4-byte Mac OS resource type associated with this dialog item kind as a big-endian `u32`.
+    pub const fn resource_type_u32(self) -> Option<u32> {
+        match self.resource_type() {
+            Some(bytes) => Some(u32::from_be_bytes(bytes)),
+            None => None,
+        }
+    }
 }
 
 /// Parsed Dialog Item List (DITL) entry.
@@ -248,9 +271,24 @@ impl DialogItemRecord {
             .unwrap_or_default()
     }
 
-    /// 16-bit resource ID if the item references a resource (ICON, PICT, CNTL).
+    /// Whether the item references an external resource (resource control, icon, or picture).
+    pub fn is_resource(&self) -> bool {
+        is_dialog_item_resource(self.item_type)
+    }
+
+    /// 4-byte Mac OS resource type if the item references a resource (`b"CNTL"`, `b"ICON"`, or `b"PICT"`).
+    pub fn resource_type(&self) -> Option<[u8; 4]> {
+        dialog_item_resource_type(self.item_type)
+    }
+
+    /// 4-byte Mac OS resource type as `u32` if the item references a resource.
+    pub fn resource_type_u32(&self) -> Option<u32> {
+        dialog_item_resource_type_u32(self.item_type)
+    }
+
+    /// 16-bit resource ID if the item references a resource (CNTL, ICON, PICT).
     pub fn resource_id(&self) -> Option<i16> {
-        if self.payload.len() >= 2 {
+        if self.is_resource() && self.payload.len() >= 2 {
             Some(i16::from_be_bytes([self.payload[0], self.payload[1]]))
         } else {
             None
@@ -290,22 +328,21 @@ fn read_be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
 /// Inside Macintosh Volume I, pp. I-404--I-405, I-427;
 /// Macintosh Toolbox Essentials (1992), p. 6-153.
 pub fn ditl_item_payload_len(base_type: u8, data_len_byte: u8, remaining: usize) -> Option<usize> {
-    match base_type {
+    if is_dialog_item_resource(base_type) {
         // icon (32), picture (64), resCtrl (7): 2-byte resource ID.
         // IM:I I-427 describes the byte after itmtype as length=2; MTE 1992
         // p. 6-153 documents the same compiled records as a reserved byte plus
         // the two-byte resource ID. Accept both conventions.
-        DIALOG_ITEM_RESOURCE_CONTROL | DIALOG_ITEM_ICON | DIALOG_ITEM_PICTURE => {
-            if remaining < 2 {
-                return None;
-            }
-            if data_len_byte >= 2 {
-                Some(usize::from(data_len_byte))
-            } else {
-                Some(2)
-            }
+        if remaining < 2 {
+            return None;
         }
-        _ => Some(usize::from(data_len_byte)),
+        if data_len_byte >= 2 {
+            Some(usize::from(data_len_byte))
+        } else {
+            Some(2)
+        }
+    } else {
+        Some(usize::from(data_len_byte))
     }
 }
 
@@ -1249,27 +1286,77 @@ pub fn get_item_at_1_indexed_mut<T>(
 }
 
 /// Returns true if the raw item type represents a button, checkbox, radio button, or resource control.
-pub fn is_dialog_item_control(raw_type: u8) -> bool {
+pub const fn is_dialog_item_control(raw_type: u8) -> bool {
     DialogItemKind::from_raw_type(raw_type).is_control()
 }
 
 /// Returns true if the raw item type represents static text or edit text.
-pub fn is_dialog_item_text(raw_type: u8) -> bool {
+pub const fn is_dialog_item_text(raw_type: u8) -> bool {
     DialogItemKind::from_raw_type(raw_type).is_text()
 }
 
 /// Returns true if the raw item type represents static text, edit text, or a titled control.
-pub fn is_dialog_item_text_or_title(raw_type: u8) -> bool {
+pub const fn is_dialog_item_text_or_title(raw_type: u8) -> bool {
     DialogItemKind::from_raw_type(raw_type).has_text_or_title()
 }
 
+/// Returns true if the raw item type references an external resource (resource control, icon, or picture).
+pub const fn is_dialog_item_resource(raw_type: u8) -> bool {
+    DialogItemKind::from_raw_type(raw_type).is_resource()
+}
+
+/// Returns the 4-byte Mac OS resource type associated with a dialog item (`b"CNTL"`, `b"ICON"`, or `b"PICT"`).
+pub const fn dialog_item_resource_type(raw_type: u8) -> Option<[u8; 4]> {
+    DialogItemKind::from_raw_type(raw_type).resource_type()
+}
+
+/// Returns the 4-byte Mac OS resource type associated with a dialog item as a big-endian `u32`.
+pub const fn dialog_item_resource_type_u32(raw_type: u8) -> Option<u32> {
+    DialogItemKind::from_raw_type(raw_type).resource_type_u32()
+}
+
+/// Standard Macintosh Dialog icon size (32x32 pixels, `ICON` / `cicn`).
+pub const DIALOG_ICON_SIZE: i16 = 32;
+
+/// Small Macintosh Dialog icon size (16x16 pixels, `SICN`).
+#[allow(dead_code)]
+pub const DIALOG_SMALL_ICON_SIZE: i16 = 16;
+
+/// Centers an icon of dimensions `(icon_width, icon_height)` within `item_rect` `(top, left, bottom, right)`.
+///
+/// If `item_rect` is larger than the icon, the icon is centered horizontally and vertically.
+/// If `item_rect` is identical in size, `item_rect` is returned.
+#[allow(dead_code)]
+#[inline]
+pub const fn dialog_icon_rect(
+    item_rect: (i16, i16, i16, i16),
+    icon_width: i16,
+    icon_height: i16,
+) -> (i16, i16, i16, i16) {
+    let (top, left, bottom, right) = item_rect;
+    let rect_w = right - left;
+    let rect_h = bottom - top;
+    let offset_x = (rect_w - icon_width) / 2;
+    let offset_y = (rect_h - icon_height) / 2;
+    let start_x = left + offset_x;
+    let start_y = top + offset_y;
+    (start_y, start_x, start_y + icon_height, start_x + icon_width)
+}
+
+/// Centers a standard 32x32 icon (`DIALOG_ICON_SIZE`) within `item_rect`.
+#[allow(dead_code)]
+#[inline]
+pub const fn dialog_standard_icon_rect(item_rect: (i16, i16, i16, i16)) -> (i16, i16, i16, i16) {
+    dialog_icon_rect(item_rect, DIALOG_ICON_SIZE, DIALOG_ICON_SIZE)
+}
+
 /// Returns true if the raw item type represents static or editable text requiring handle disposal.
-pub fn is_dialog_item_disposable_text(raw_type: u8) -> bool {
+pub const fn is_dialog_item_disposable_text(raw_type: u8) -> bool {
     is_dialog_item_text(raw_type)
 }
 
 /// Returns true if the raw item type represents a button, checkbox, radio, or resource control requiring control record disposal.
-pub fn is_dialog_item_disposable_control(raw_type: u8) -> bool {
+pub const fn is_dialog_item_disposable_control(raw_type: u8) -> bool {
     is_dialog_item_control(raw_type)
 }
 
@@ -2228,6 +2315,168 @@ mod tests {
         assert_eq!(dialog_item_control_proc_id(DIALOG_ITEM_RADIO), Some(2));
         assert_eq!(dialog_item_control_proc_id(DIALOG_ITEM_STATIC_TEXT), None);
         assert_eq!(dialog_item_control_proc_id(DIALOG_ITEM_ICON), None);
+    }
+
+    #[test]
+    fn dialog_item_resource_mapping_and_geometry() {
+        // Classification
+        assert!(is_dialog_item_resource(DIALOG_ITEM_RESOURCE_CONTROL));
+        assert!(is_dialog_item_resource(DIALOG_ITEM_ICON));
+        assert!(is_dialog_item_resource(DIALOG_ITEM_PICTURE));
+        assert!(is_dialog_item_resource(
+            DIALOG_ITEM_RESOURCE_CONTROL | DIALOG_ITEM_DISABLED_FLAG
+        ));
+        assert!(is_dialog_item_resource(
+            DIALOG_ITEM_ICON | DIALOG_ITEM_DISABLED_FLAG
+        ));
+        assert!(is_dialog_item_resource(
+            DIALOG_ITEM_PICTURE | DIALOG_ITEM_DISABLED_FLAG
+        ));
+
+        assert!(!is_dialog_item_resource(DIALOG_ITEM_USER_ITEM));
+        assert!(!is_dialog_item_resource(DIALOG_ITEM_BUTTON));
+        assert!(!is_dialog_item_resource(DIALOG_ITEM_CHECKBOX));
+        assert!(!is_dialog_item_resource(DIALOG_ITEM_RADIO));
+        assert!(!is_dialog_item_resource(DIALOG_ITEM_STATIC_TEXT));
+        assert!(!is_dialog_item_resource(DIALOG_ITEM_EDIT_TEXT));
+        assert!(!is_dialog_item_resource(99));
+
+        // Resource type 4-character codes
+        assert_eq!(
+            dialog_item_resource_type(DIALOG_ITEM_RESOURCE_CONTROL),
+            Some(*b"CNTL")
+        );
+        assert_eq!(
+            dialog_item_resource_type(DIALOG_ITEM_RESOURCE_CONTROL | DIALOG_ITEM_DISABLED_FLAG),
+            Some(*b"CNTL")
+        );
+        assert_eq!(dialog_item_resource_type(DIALOG_ITEM_ICON), Some(*b"ICON"));
+        assert_eq!(
+            dialog_item_resource_type(DIALOG_ITEM_ICON | DIALOG_ITEM_DISABLED_FLAG),
+            Some(*b"ICON")
+        );
+        assert_eq!(
+            dialog_item_resource_type(DIALOG_ITEM_PICTURE),
+            Some(*b"PICT")
+        );
+        assert_eq!(
+            dialog_item_resource_type(DIALOG_ITEM_PICTURE | DIALOG_ITEM_DISABLED_FLAG),
+            Some(*b"PICT")
+        );
+        assert_eq!(dialog_item_resource_type(DIALOG_ITEM_STATIC_TEXT), None);
+        assert_eq!(dialog_item_resource_type(DIALOG_ITEM_BUTTON), None);
+
+        // Resource type as u32
+        assert_eq!(
+            dialog_item_resource_type_u32(DIALOG_ITEM_RESOURCE_CONTROL),
+            Some(u32::from_be_bytes(*b"CNTL"))
+        );
+        assert_eq!(
+            dialog_item_resource_type_u32(DIALOG_ITEM_ICON),
+            Some(u32::from_be_bytes(*b"ICON"))
+        );
+        assert_eq!(
+            dialog_item_resource_type_u32(DIALOG_ITEM_PICTURE),
+            Some(u32::from_be_bytes(*b"PICT"))
+        );
+        assert_eq!(
+            dialog_item_resource_type_u32(DIALOG_ITEM_STATIC_TEXT),
+            None
+        );
+
+        // DialogItemRecord resource queries and guarded ID decoding
+        let res_control_record = DialogItemRecord {
+            item_offset: 0,
+            item_type: DIALOG_ITEM_RESOURCE_CONTROL,
+            rect: (10, 10, 30, 80),
+            handle: 0,
+            payload: 128i16.to_be_bytes().to_vec(),
+        };
+        assert!(res_control_record.is_resource());
+        assert_eq!(res_control_record.resource_type(), Some(*b"CNTL"));
+        assert_eq!(
+            res_control_record.resource_type_u32(),
+            Some(u32::from_be_bytes(*b"CNTL"))
+        );
+        assert_eq!(res_control_record.resource_id(), Some(128));
+
+        let icon_record = DialogItemRecord {
+            item_offset: 16,
+            item_type: DIALOG_ITEM_ICON | DIALOG_ITEM_DISABLED_FLAG,
+            rect: (20, 20, 52, 52),
+            handle: 0,
+            payload: (-42i16).to_be_bytes().to_vec(),
+        };
+        assert!(icon_record.is_resource());
+        assert_eq!(icon_record.resource_type(), Some(*b"ICON"));
+        assert_eq!(
+            icon_record.resource_type_u32(),
+            Some(u32::from_be_bytes(*b"ICON"))
+        );
+        assert_eq!(icon_record.resource_id(), Some(-42));
+
+        let pict_record = DialogItemRecord {
+            item_offset: 32,
+            item_type: DIALOG_ITEM_PICTURE,
+            rect: (0, 0, 100, 100),
+            handle: 0,
+            payload: 1024i16.to_be_bytes().to_vec(),
+        };
+        assert!(pict_record.is_resource());
+        assert_eq!(pict_record.resource_type(), Some(*b"PICT"));
+        assert_eq!(
+            pict_record.resource_type_u32(),
+            Some(u32::from_be_bytes(*b"PICT"))
+        );
+        assert_eq!(pict_record.resource_id(), Some(1024));
+
+        // Short payload on resource item returns None
+        let short_icon_record = DialogItemRecord {
+            item_offset: 48,
+            item_type: DIALOG_ITEM_ICON,
+            rect: (0, 0, 32, 32),
+            handle: 0,
+            payload: vec![1],
+        };
+        assert!(short_icon_record.is_resource());
+        assert_eq!(short_icon_record.resource_id(), None);
+
+        // Text item with 2+ bytes must NOT return a resource ID
+        let text_record = DialogItemRecord {
+            item_offset: 64,
+            item_type: DIALOG_ITEM_STATIC_TEXT,
+            rect: (0, 0, 16, 100),
+            handle: 0,
+            payload: b"OK".to_vec(),
+        };
+        assert!(!text_record.is_resource());
+        assert_eq!(text_record.resource_type(), None);
+        assert_eq!(text_record.resource_type_u32(), None);
+        assert_eq!(text_record.resource_id(), None);
+
+        // Icon geometry and centering
+        assert_eq!(DIALOG_ICON_SIZE, 32);
+        assert_eq!(DIALOG_SMALL_ICON_SIZE, 16);
+
+        // Standard 32x32 in exactly 32x32 rect -> unchanged
+        assert_eq!(
+            dialog_standard_icon_rect((10, 20, 42, 52)),
+            (10, 20, 42, 52)
+        );
+        // Centered within larger rect (40x50)
+        assert_eq!(
+            dialog_standard_icon_rect((0, 0, 40, 50)),
+            (4, 9, 36, 41)
+        );
+        // Small icon (16x16) centered within 20x20 rect
+        assert_eq!(
+            dialog_icon_rect(
+                (10, 10, 30, 30),
+                DIALOG_SMALL_ICON_SIZE,
+                DIALOG_SMALL_ICON_SIZE
+            ),
+            (12, 12, 28, 28)
+        );
     }
 
     #[test]

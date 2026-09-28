@@ -8,9 +8,10 @@ use super::dispatch::{
 use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::dialog_manager::{
-    dialog_dbox_frame_rect, dialog_item_base_type, dialog_target_for_event, edit_text_frame_rect,
-    find_dialog_item_hit, global_to_dialog_local_point, is_dialog_item_control,
-    is_dialog_item_disabled, is_dialog_item_enabled, is_dialog_item_text,
+    dialog_dbox_frame_rect, dialog_item_base_type, dialog_item_resource_type,
+    dialog_target_for_event, edit_text_frame_rect, find_dialog_item_hit,
+    global_to_dialog_local_point, is_dialog_item_control, is_dialog_item_disabled,
+    is_dialog_item_enabled, is_dialog_item_resource, is_dialog_item_text,
     normalize_selection_bounds, prepare_get_dialog_item_text, prepare_set_dialog_item_text,
     rect_contains_point, DIALOG_DBOX_FRAME_MARGIN, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX,
     DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO,
@@ -416,14 +417,6 @@ impl super::TrapDispatcher {
         Some((handle, ptr))
     }
 
-    fn dialog_item_resource_type(item_type: u8) -> Option<[u8; 4]> {
-        match dialog_item_base_type(item_type) {
-            DIALOG_ITEM_RESOURCE_CONTROL => Some(*b"CNTL"),
-            DIALOG_ITEM_ICON => Some(*b"ICON"),
-            DIALOG_ITEM_PICTURE => Some(*b"PICT"),
-            _ => None,
-        }
-    }
 
     fn cascade_dialog_resource_purgeability(
         &mut self,
@@ -468,7 +461,7 @@ impl super::TrapDispatcher {
         let ditl_len = bus.get_alloc_size(ditl_ptr).unwrap_or(0);
         let items = Self::parse_ditl(bus, ditl_ptr, ditl_len);
         for item in items {
-            if let Some(res_type) = Self::dialog_item_resource_type(item.item_type) {
+            if let Some(res_type) = dialog_item_resource_type(item.item_type) {
                 self.prepare_dialog_resource_handle(
                     bus,
                     res_type,
@@ -4478,14 +4471,12 @@ impl super::TrapDispatcher {
             let base_type = dialog_item_base_type(item_type);
             handles.push((base_type, item_handle));
 
-            let payload_len = match base_type {
-                DIALOG_ITEM_USER_ITEM => 0,
-                DIALOG_ITEM_RESOURCE_CONTROL | DIALOG_ITEM_ICON | DIALOG_ITEM_PICTURE
-                    if data_len_byte < 2 =>
-                {
-                    2
-                }
-                _ => u32::from(data_len_byte),
+            let payload_len = if base_type == DIALOG_ITEM_USER_ITEM {
+                0
+            } else if is_dialog_item_resource(base_type) && data_len_byte < 2 {
+                2
+            } else {
+                u32::from(data_len_byte)
             };
             let padded = (payload_len + 1) & !1;
             if padded > data_len.saturating_sub(offset) {

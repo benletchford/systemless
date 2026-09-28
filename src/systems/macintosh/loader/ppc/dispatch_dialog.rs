@@ -2,13 +2,14 @@
 
 use super::*;
 use crate::dialog_manager::{
-    dialog_item_base_type, dialog_rect_to_global, dialog_target_for_event, dialog_text_rect,
-    edit_text_frame_rect, extract_dialog_item_text_bytes, find_dialog_item_hit,
-    global_to_dialog_local_point, hide_dialog_item_rect, is_dialog_item_rect_hidden,
-    offset_ditl_bytes, parse_ditl_items, position_dialog_bounds as unified_position_dialog_bounds,
-    prepare_get_dialog_item_text, prepare_set_dialog_item_text, show_dialog_item_rect,
-    DialogItemRecord, DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET,
-    DIALOG_DEFAULT_ITEM_OFFSET, DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET,
+    dialog_item_base_type, dialog_item_resource_type_u32, dialog_rect_to_global,
+    dialog_target_for_event, dialog_text_rect, edit_text_frame_rect,
+    extract_dialog_item_text_bytes, find_dialog_item_hit, global_to_dialog_local_point,
+    hide_dialog_item_rect, is_dialog_item_rect_hidden, offset_ditl_bytes, parse_ditl_items,
+    position_dialog_bounds as unified_position_dialog_bounds, prepare_get_dialog_item_text,
+    prepare_set_dialog_item_text, show_dialog_item_rect, DialogItemRecord,
+    DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
+    DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_DEFAULT_ITEM, DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
     DIALOG_ITEMS_OFFSET, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX, DIALOG_ITEM_DISABLED_FLAG,
     DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO,
@@ -1424,7 +1425,7 @@ fn ppc_standard_alert_template(
     if let Some(icon_id) = crate::dialog_manager::alert_icon_id(cpu.gpr[3] as u16) {
         append(
             DIALOG_ITEM_ICON | DIALOG_ITEM_DISABLED_FLAG,
-            (20, 20, 52, 52),
+            (20, 20, 20 + DIALOG_ICON_SIZE, 20 + DIALOG_ICON_SIZE),
             &icon_id.to_be_bytes(),
         );
     }
@@ -1948,16 +1949,12 @@ fn ppc_initialize_dialog_items(
                 )
             }
             DIALOG_ITEM_RESOURCE_CONTROL => {
-                let resource_id = item
-                    .payload
-                    .get(..2)
-                    .and_then(|bytes| bytes.try_into().ok())
-                    .map(i16::from_be_bytes)
-                    .unwrap_or(0);
+                let resource_id = item.resource_id().unwrap_or(0);
+                let resource_type = dialog_item_resource_type_u32(base_type).unwrap_or(0);
                 if let Some(index) = ppc_vfs_resource_index(
                     vfs_resources,
                     current_resource_refnum,
-                    u32::from_be_bytes(*b"CNTL"),
+                    resource_type,
                     resource_id,
                     false,
                 ) {
@@ -2017,17 +2014,8 @@ fn ppc_initialize_dialog_items(
                 &item.payload,
             ),
             DIALOG_ITEM_ICON | DIALOG_ITEM_PICTURE => {
-                let resource_id = item
-                    .payload
-                    .get(..2)
-                    .and_then(|bytes| bytes.try_into().ok())
-                    .map(i16::from_be_bytes)
-                    .unwrap_or(0);
-                let resource_type = if base_type == DIALOG_ITEM_ICON {
-                    u32::from_be_bytes(*b"ICON")
-                } else {
-                    u32::from_be_bytes(*b"PICT")
-                };
+                let resource_id = item.resource_id().unwrap_or(0);
+                let resource_type = dialog_item_resource_type_u32(base_type).unwrap_or(0);
                 if let Some(index) = ppc_vfs_resource_index(
                     vfs_resources,
                     current_resource_refnum,

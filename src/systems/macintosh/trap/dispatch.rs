@@ -479,12 +479,7 @@ impl From<crate::dialog_manager::DialogItemRecord> for DialogItem {
     fn from(record: crate::dialog_manager::DialogItemRecord) -> Self {
         let base_type = crate::dialog_manager::dialog_item_base_type(record.item_type);
         let text = record.text();
-        let resource_id = match base_type {
-            crate::dialog_manager::DIALOG_ITEM_RESOURCE_CONTROL
-            | crate::dialog_manager::DIALOG_ITEM_ICON
-            | crate::dialog_manager::DIALOG_ITEM_PICTURE => record.resource_id().unwrap_or(0),
-            _ => 0,
-        };
+        let resource_id = record.resource_id().unwrap_or(0);
         let proc_ptr = if base_type == crate::dialog_manager::DIALOG_ITEM_USER_ITEM {
             record.handle
         } else {
