@@ -1,31 +1,41 @@
 //! Typed Dialog Manager dispatch for PowerPC imports.
 
 use super::*;
+use crate::dialog_manager::{
+    parse_ditl_items, position_dialog_bounds as unified_position_dialog_bounds, DialogItemRecord,
+    DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
+    DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ITEMS_OFFSET, DIALOG_ITEM_BUTTON,
+    DIALOG_ITEM_CHECKBOX, DIALOG_ITEM_DISABLED_FLAG, DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON,
+    DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO, DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT,
+    DIALOG_ITEM_USER_ITEM, DIALOG_RECORD_SIZE, DIALOG_RESOURCE_ID_OFFSET,
+    DIALOG_STANDARD_ALERT_OUTPUT_OFFSET, DIALOG_STANDARD_ALERT_STACK_OFFSET,
+    DIALOG_TEXT_HANDLE_OFFSET,
+};
 use crate::trap::types::decode_mac_roman;
 
-pub(super) const PPC_DIALOG_RECORD_SIZE: u32 = 256;
-pub(super) const PPC_DIALOG_ITEMS_OFFSET: u32 = 156;
-pub(super) const PPC_DIALOG_TEXT_HANDLE_OFFSET: u32 = 160;
-pub(super) const PPC_DIALOG_EDIT_FIELD_OFFSET: u32 = 164;
-pub(super) const PPC_DIALOG_EDIT_OPEN_OFFSET: u32 = 166;
-pub(super) const PPC_DIALOG_DEFAULT_ITEM_OFFSET: u32 = 168;
-pub(super) const PPC_DIALOG_RESOURCE_ID_OFFSET: u32 = 170;
+pub(super) const PPC_DIALOG_RECORD_SIZE: u32 = DIALOG_RECORD_SIZE;
+pub(super) const PPC_DIALOG_ITEMS_OFFSET: u32 = DIALOG_ITEMS_OFFSET;
+pub(super) const PPC_DIALOG_TEXT_HANDLE_OFFSET: u32 = DIALOG_TEXT_HANDLE_OFFSET;
+pub(super) const PPC_DIALOG_EDIT_FIELD_OFFSET: u32 = DIALOG_EDIT_FIELD_OFFSET;
+pub(super) const PPC_DIALOG_EDIT_OPEN_OFFSET: u32 = DIALOG_EDIT_OPEN_OFFSET;
+pub(super) const PPC_DIALOG_DEFAULT_ITEM_OFFSET: u32 = DIALOG_DEFAULT_ITEM_OFFSET;
+pub(super) const PPC_DIALOG_RESOURCE_ID_OFFSET: u32 = DIALOG_RESOURCE_ID_OFFSET;
 // Host-private Dialog Manager state follows the documented DialogRecord. The
 // System 7 cancel-item API has no canonical public record field.
-pub(super) const PPC_DIALOG_CANCEL_ITEM_HLE_OFFSET: u32 = 172;
-pub(super) const PPC_DIALOG_ALERT_HIT_HLE_OFFSET: u32 = 174;
-const PPC_DIALOG_STANDARD_ALERT_OUTPUT_HLE_OFFSET: u32 = 176;
-const PPC_DIALOG_STANDARD_ALERT_STACK_HLE_OFFSET: u32 = 180;
-pub(super) const PPC_DIALOG_ITEM_DISABLED: u8 = 0x80;
-pub(super) const PPC_DIALOG_ITEM_USER_ITEM: u8 = 0;
-pub(super) const PPC_DIALOG_ITEM_BUTTON: u8 = 4;
-pub(super) const PPC_DIALOG_ITEM_CHECKBOX: u8 = 5;
-pub(super) const PPC_DIALOG_ITEM_RADIO: u8 = 6;
-pub(super) const PPC_DIALOG_ITEM_RESOURCE_CONTROL: u8 = 7;
-pub(super) const PPC_DIALOG_ITEM_STATIC_TEXT: u8 = 8;
-pub(super) const PPC_DIALOG_ITEM_EDIT_TEXT: u8 = 16;
-pub(super) const PPC_DIALOG_ITEM_ICON: u8 = 32;
-pub(super) const PPC_DIALOG_ITEM_PICTURE: u8 = 64;
+pub(super) const PPC_DIALOG_CANCEL_ITEM_HLE_OFFSET: u32 = DIALOG_CANCEL_ITEM_OFFSET;
+pub(super) const PPC_DIALOG_ALERT_HIT_HLE_OFFSET: u32 = DIALOG_ALERT_HIT_OFFSET;
+const PPC_DIALOG_STANDARD_ALERT_OUTPUT_HLE_OFFSET: u32 = DIALOG_STANDARD_ALERT_OUTPUT_OFFSET;
+const PPC_DIALOG_STANDARD_ALERT_STACK_HLE_OFFSET: u32 = DIALOG_STANDARD_ALERT_STACK_OFFSET;
+pub(super) const PPC_DIALOG_ITEM_DISABLED: u8 = DIALOG_ITEM_DISABLED_FLAG;
+pub(super) const PPC_DIALOG_ITEM_USER_ITEM: u8 = DIALOG_ITEM_USER_ITEM;
+pub(super) const PPC_DIALOG_ITEM_BUTTON: u8 = DIALOG_ITEM_BUTTON;
+pub(super) const PPC_DIALOG_ITEM_CHECKBOX: u8 = DIALOG_ITEM_CHECKBOX;
+pub(super) const PPC_DIALOG_ITEM_RADIO: u8 = DIALOG_ITEM_RADIO;
+pub(super) const PPC_DIALOG_ITEM_RESOURCE_CONTROL: u8 = DIALOG_ITEM_RESOURCE_CONTROL;
+pub(super) const PPC_DIALOG_ITEM_STATIC_TEXT: u8 = DIALOG_ITEM_STATIC_TEXT;
+pub(super) const PPC_DIALOG_ITEM_EDIT_TEXT: u8 = DIALOG_ITEM_EDIT_TEXT;
+pub(super) const PPC_DIALOG_ITEM_ICON: u8 = DIALOG_ITEM_ICON;
+pub(super) const PPC_DIALOG_ITEM_PICTURE: u8 = DIALOG_ITEM_PICTURE;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PpcDialogTemplate {
@@ -39,14 +49,7 @@ pub(super) struct PpcDialogTemplate {
     pub(super) position: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct PpcDialogItemView {
-    pub(super) item_offset: usize,
-    pub(super) item_type: u8,
-    pub(super) rect: (i16, i16, i16, i16),
-    pub(super) handle: u32,
-    pub(super) payload: Vec<u8>,
-}
+pub(super) type PpcDialogItemView = DialogItemRecord;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PpcDialogCallbackCompletion {
@@ -441,9 +444,9 @@ pub(super) fn dispatch_dialog_import(
             // Cursor tracking is performed by the host UI when applicable.
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
-        PpcImportDispatcherTarget::StdFilterProc => {
-            Some(PpcImportAction::Return(ppc_standard_filter_proc(cpu, memory)))
-        }
+        PpcImportDispatcherTarget::StdFilterProc => Some(PpcImportAction::Return(
+            ppc_standard_filter_proc(cpu, memory),
+        )),
         PpcImportDispatcherTarget::GetStdFilterProc => {
             // Apple Dialog Manager Reference (2007), p. 38:
             // OSErr GetStdFilterProc(ModalFilterUPP *theProc).
@@ -1360,37 +1363,7 @@ fn ppc_parse_dialog_template(bytes: &[u8]) -> Option<PpcDialogTemplate> {
 }
 
 fn ppc_parse_dialog_items(bytes: &[u8]) -> Option<Vec<PpcDialogItemView>> {
-    // Macintosh Toolbox Essentials (1992), pp. 6-120--6-121: DITL starts
-    // with countMinusOne. Each even-aligned item has a four-byte handle,
-    // Rect, type byte, length byte, and length bytes of item data.
-    let count_minus_one = ppc_dialog_be_i16(bytes, 0)?;
-    let count = if count_minus_one < 0 {
-        0
-    } else {
-        usize::try_from(count_minus_one).ok()?.checked_add(1)?
-    };
-    let mut offset = 2usize;
-    let mut items = Vec::with_capacity(count);
-    for _ in 0..count {
-        let item_type = *bytes.get(offset.checked_add(12)?)?;
-        let payload_len = usize::from(*bytes.get(offset.checked_add(13)?)?);
-        let payload_start = offset.checked_add(14)?;
-        let payload_end = payload_start.checked_add(payload_len)?;
-        items.push(PpcDialogItemView {
-            item_offset: offset,
-            item_type,
-            rect: (
-                ppc_dialog_be_i16(bytes, offset.checked_add(4)?)?,
-                ppc_dialog_be_i16(bytes, offset.checked_add(6)?)?,
-                ppc_dialog_be_i16(bytes, offset.checked_add(8)?)?,
-                ppc_dialog_be_i16(bytes, offset.checked_add(10)?)?,
-            ),
-            handle: ppc_dialog_be_u32(bytes, offset)?,
-            payload: bytes.get(payload_start..payload_end)?.to_vec(),
-        });
-        offset = (payload_end + 1) & !1;
-    }
-    Some(items)
+    parse_ditl_items(bytes)
 }
 
 fn ppc_position_dialog_bounds(
@@ -1398,26 +1371,10 @@ fn ppc_position_dialog_bounds(
     position: u16,
     gworlds: &[PpcGWorldRecord],
 ) -> (i16, i16, i16, i16) {
-    let centered = matches!(
-        position,
-        0x280a | 0x300a | 0x380a | 0xa80a | 0xb00a | 0xb80a
-    );
-    if !centered {
-        return bounds;
-    }
     let screen = gworlds.iter().find(|record| record.port == PPC_MAIN_GWORLD);
     let screen_width = screen.map_or(ppc_main_screen_width(), |record| record.width) as i32;
     let screen_height = screen.map_or(ppc_main_screen_height(), |record| record.height) as i32;
-    let height = i32::from(bounds.2) - i32::from(bounds.0);
-    let width = i32::from(bounds.3) - i32::from(bounds.1);
-    let top = (screen_height - height).max(0) / 2;
-    let left = (screen_width - width).max(0) / 2;
-    (
-        ppc_i32_to_i16_saturating(top),
-        ppc_i32_to_i16_saturating(left),
-        ppc_i32_to_i16_saturating(top + height),
-        ppc_i32_to_i16_saturating(left + width),
-    )
+    unified_position_dialog_bounds(bounds, position, screen_width, screen_height)
 }
 
 type PpcAlertTemplate = ((i16, i16, i16, i16), Vec<u8>, u16, u16, u16, u32);
@@ -2593,8 +2550,7 @@ pub(super) fn ppc_standard_filter_proc(cpu: &PpcCpu, memory: &mut PpcSectionMem)
     }
     let character = event.message as u8;
     let key_code = (event.message >> 8) as u8;
-    if !matches!(character, b'\r' | 3)
-        && !matches!(key_code, PPC_KEY_RETURN | PPC_KEY_NUMPAD_ENTER)
+    if !matches!(character, b'\r' | 3) && !matches!(key_code, PPC_KEY_RETURN | PPC_KEY_NUMPAD_ENTER)
     {
         return 0;
     }
@@ -3293,9 +3249,7 @@ fn ppc_dialog_item_at_global_point(
                 | PPC_DIALOG_ITEM_RADIO
                 | PPC_DIALOG_ITEM_RESOURCE_CONTROL
         ) && item.handle != 0
-            && controls
-                .iter()
-                .any(|record| record.handle == item.handle)
+            && controls.iter().any(|record| record.handle == item.handle)
         {
             if ppc_control_part_at_point(memory, controls, item.handle, local_v, local_h)
                 .is_some_and(|part| part != 0)
