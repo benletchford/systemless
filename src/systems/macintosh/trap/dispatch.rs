@@ -5685,14 +5685,14 @@ impl TrapDispatcher {
         let (_, _, screen_width, screen_height, _) = self.screen_mode;
         let screen_width = screen_width.min(i16::MAX as u16) as i16;
         let screen_height = screen_height.min(i16::MAX as u16) as i16;
-        !(rect.src_top == rect.dst_top
-            && rect.src_left == rect.dst_left
-            && rect.src_bottom == rect.dst_bottom
-            && rect.src_right == rect.dst_right
-            && rect.dst_top <= 0
-            && rect.dst_left <= 0
-            && rect.dst_bottom >= screen_height
-            && rect.dst_right >= screen_width)
+        // A blit covering the whole display does not imply source-space
+        // pointer input: fullscreen UI can draw scaled pixels while tracking
+        // the mouse in screen coordinates. An inset playfield has an actual
+        // screen-space offset for the frontend to undo.
+        rect.dst_top > 0
+            || rect.dst_left > 0
+            || rect.dst_bottom < screen_height
+            || rect.dst_right < screen_width
     }
 
     /// Current cursor bitmap + mask + hotspot, as installed by

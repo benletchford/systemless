@@ -2479,6 +2479,26 @@
     }
 
     #[test]
+    fn fullscreen_input_transform_rejects_scaled_fullscreen_blit() {
+        let mut disp = TrapDispatcher::new();
+        disp.screen_mode = (0, 1000, 800, 600, 8);
+        disp.fullscreen_locked = true;
+        disp.cursor_state.set_level_for_test(-1);
+        disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
+            src_top: 0,
+            src_left: 0,
+            src_bottom: 480,
+            src_right: 640,
+            dst_top: 0,
+            dst_left: 0,
+            dst_bottom: 600,
+            dst_right: 800,
+        });
+
+        assert_eq!(disp.fullscreen_input_transform(), None);
+    }
+
+    #[test]
     fn fullscreen_input_transform_rejects_invalid_copybits_rect() {
         let mut disp = TrapDispatcher::new();
         disp.screen_mode = (0, 1000, 800, 600, 8);
