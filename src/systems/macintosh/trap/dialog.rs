@@ -11,8 +11,8 @@ use crate::dialog_manager::{
     dialog_dbox_frame_rect, dialog_item_base_type, dialog_item_resource_type,
     dialog_target_for_event, edit_text_frame_rect, evaluate_alert_invocation,
     evaluate_close_dialog, evaluate_dispose_dialog, evaluate_error_sound,
-    evaluate_find_dialog_item, evaluate_get_dialog_item, evaluate_get_std_filter_proc,
-    evaluate_select_dialog_item_text, evaluate_set_dialog_cancel_item_parameters,
+    evaluate_find_dialog_item, evaluate_get_dialog_item, evaluate_get_std_filter_proc_parameters,
+    evaluate_select_dialog_item_text_parameters, evaluate_set_dialog_cancel_item_parameters,
     evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_tracks_cursor_parameters,
     find_dialog_item_hit, global_to_dialog_local_point, is_dialog_item_button,
     is_dialog_item_control, is_dialog_item_disabled, is_dialog_item_edit_text,
@@ -15864,24 +15864,24 @@ impl super::TrapDispatcher {
                 let item_no = bus.read_word(sp + 4) as i16;
                 let dialog_ptr = bus.read_long(sp + 6);
                 let mut redraw_item = None;
-                if dialog_ptr != 0 && item_no > 0 {
-                    if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
+                if let Some(params) = (item_no > 0).then(|| {
+                    evaluate_select_dialog_item_text_parameters(
+                        dialog_ptr,
+                        item_no as usize,
+                        start_sel,
+                        end_sel,
+                    )
+                }).flatten() {
+                    if let Some(items) = self.dialog_items.get_mut(&params.dialog_ptr()) {
                         if let Some(item) = crate::dialog_manager::get_item_at_1_indexed_mut(
                             items,
-                            item_no as usize,
+                            params.item_number(),
                         ) {
                             let text_len = encode_mac_roman_lossy(&item.text).len();
-                            if let Some(eval) = evaluate_select_dialog_item_text(
-                                dialog_ptr,
-                                item_no as usize,
-                                item.is_edit_text(),
-                                start_sel,
-                                end_sel,
-                                text_len,
-                            ) {
+                            if let Some(eval) = params.evaluate_selection(item.is_edit_text(), text_len) {
                                 item.select_text(eval.sel_start, eval.sel_end);
                                 bus.write_word(
-                                    dialog_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
+                                    params.dialog_ptr() + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
                                     eval.edit_field,
                                 );
                                 // Mirror selStart/selEnd into the TERecord so
@@ -15891,7 +15891,7 @@ impl super::TrapDispatcher {
                                 // textH is a TEHandle at dialog_ptr+160
                                 // (IM:I I-411 DialogRecord layout).
                                 let text_h_handle = bus.read_long(
-                                    dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET,
+                                    params.dialog_ptr() + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET,
                                 );
                                 if text_h_handle != 0 {
                                     let te_ptr = bus.read_long(text_h_handle);
@@ -15900,7 +15900,7 @@ impl super::TrapDispatcher {
                                         bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, eval.sel_end);
                                     }
                                 }
-                                redraw_item = Some((dialog_ptr, item_no));
+                                redraw_item = Some((params.dialog_ptr(), params.item_no()));
                             }
                         }
                     }
@@ -16673,8 +16673,9 @@ impl super::TrapDispatcher {
                     // rather than dereffing NIL.
                     crate::dialog_manager::DIALOG_DISPATCH_GET_STD_FILTER_PROC => {
                         let proc_ptr = bus.read_long(sp);
-                        let result = evaluate_get_std_filter_proc(proc_ptr, proc_ptr != 0);
-                        if result.is_ok() {
+                        let result =
+                            evaluate_get_std_filter_proc_parameters(proc_ptr, proc_ptr != 0);
+                        if let Ok(params) = result {
                             let shim = if self.dialog_std_filter_proc != 0 {
                                 self.dialog_std_filter_proc
                             } else {
@@ -16696,9 +16697,12 @@ impl super::TrapDispatcher {
                                 self.dialog_std_filter_proc = shim;
                                 shim
                             };
-                            bus.write_long(proc_ptr, shim);
+                            bus.write_long(params.out_proc(), shim);
                         }
-                        let os_err = result.unwrap_or(0);
+                        let os_err = match result {
+                            Ok(_) => crate::dialog_manager::DIALOG_NO_ERR,
+                            Err(err) => err,
+                        };
                         bus.write_word(sp + param_bytes, os_err as u16);
                         cpu.write_reg(Register::A7, sp + param_bytes);
                     }

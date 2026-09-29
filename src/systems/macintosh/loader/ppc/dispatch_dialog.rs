@@ -6,12 +6,13 @@ use crate::dialog_manager::{
     dialog_target_for_event, dialog_text_rect, edit_text_frame_rect,
     evaluate_close_or_dispose_dialog, evaluate_count_ditl, evaluate_count_ditl_query,
     evaluate_dialog_select, evaluate_find_dialog_item, evaluate_get_dialog_item,
-    evaluate_get_dialog_item_as_control, evaluate_get_std_filter_proc, evaluate_hide_dialog_item,
-    evaluate_select_dialog_item_text, evaluate_set_dialog_cancel_item_parameters,
+    evaluate_get_dialog_item_as_control, evaluate_get_std_filter_proc_parameters, evaluate_hide_dialog_item,
+    evaluate_select_dialog_item_text_parameters, evaluate_set_dialog_cancel_item_parameters,
     evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_tracks_cursor_parameters,
     evaluate_show_dialog_item,
     extract_dialog_item_text_bytes, find_dialog_item_hit, global_to_dialog_local_point, offset_ditl_bytes, parse_ditl_items,
     position_dialog_bounds as unified_position_dialog_bounds, DialogItemHeader, DialogItemRecord,
+    SelectDialogItemTextParameters,
     evaluate_get_dialog_item_text, evaluate_set_dialog_item_text,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
@@ -478,15 +479,18 @@ pub(super) fn dispatch_dialog_import(
             // OSErr GetStdFilterProc(ModalFilterUPP *theProc).
             let out_proc = cpu.gpr[3];
             let can_write = ppc_memory_can_write_bytes(memory, out_proc, 4);
-            let result = evaluate_get_std_filter_proc(out_proc, can_write);
-            let os_err = if result.is_ok()
-                && memory
-                    .write_u32_be(out_proc, PPC_STD_FILTER_TVECTOR)
-                    .is_some()
-            {
-                PPC_NO_ERR
-            } else {
-                result.err().unwrap_or(PPC_PARAM_ERR)
+            let os_err = match evaluate_get_std_filter_proc_parameters(out_proc, can_write) {
+                Ok(params) => {
+                    if memory
+                        .write_u32_be(params.out_proc(), PPC_STD_FILTER_TVECTOR)
+                        .is_some()
+                    {
+                        PPC_NO_ERR
+                    } else {
+                        PPC_PARAM_ERR
+                    }
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(os_err)))
         }
@@ -547,26 +551,30 @@ pub(super) fn dispatch_dialog_import(
             current_resource_refnum,
         )),
         PpcImportDispatcherTarget::SelectDialogItemText => {
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            ppc_select_dialog_item_text(
-                Some(&mut allocator),
-                None,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
+            if let Some(params) = evaluate_select_dialog_item_text_parameters(
                 cpu.gpr[3],
                 cpu.gpr[4] as u16 as usize,
-                cpu.gpr[5] as u16,
-                cpu.gpr[6] as u16,
-                tick_count,
-                quickdraw_text_mode,
-                quickdraw_text_size,
-                *quickdraw_fore_color,
-            );
+                cpu.gpr[5] as u16 as i16,
+                cpu.gpr[6] as u16 as i16,
+            ) {
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                ppc_select_dialog_item_text(
+                    Some(&mut allocator),
+                    None,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    params,
+                    tick_count,
+                    quickdraw_text_mode,
+                    quickdraw_text_size,
+                    *quickdraw_fore_color,
+                );
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ParamText => {
@@ -2342,29 +2350,26 @@ fn ppc_select_dialog_item_text(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    dialog: u32,
-    item_number: usize,
-    selection_start: u16,
-    selection_end: u16,
+    params: SelectDialogItemTextParameters,
     tick_count: u32,
     text_mode: i16,
     text_size: i16,
     fore_color: PpcRgbColor,
 ) {
-    let Some(item_index) = item_number.checked_sub(1) else {
+    let Some(item_index) = params.item_index() else {
         return;
     };
-    let Some(item) = ppc_dialog_items_for_dialog(memory, handles, dialog)
+    let Some(item) = ppc_dialog_items_for_dialog(memory, handles, params.dialog_ptr())
         .and_then(|items| items.get(item_index).cloned())
         .filter(|item| item.is_edit_text())
     else {
         return;
     };
     let current_field = memory
-        .read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
+        .read_u16_be(params.dialog_ptr() + DIALOG_EDIT_FIELD_OFFSET)
         .unwrap_or(u16::MAX) as usize;
     let mut te_handle = memory
-        .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
+        .read_u32_be(params.dialog_ptr() + DIALOG_TEXT_HANDLE_OFFSET)
         .unwrap_or(0);
     if current_field != item_index || ppc_te_record_ptr(memory, te_handle).is_none() {
         if let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) {
@@ -2390,7 +2395,7 @@ fn ppc_select_dialog_item_text(
             heap_limit,
             last_mem_error,
             handles,
-            dialog,
+            params.dialog_ptr(),
             item.handle,
             item.rect,
             tick_count,
@@ -2401,12 +2406,12 @@ fn ppc_select_dialog_item_text(
         if te_handle == 0 {
             return;
         }
-        let _ = memory.write_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET, te_handle);
+        let _ = memory.write_u32_be(params.dialog_ptr() + DIALOG_TEXT_HANDLE_OFFSET, te_handle);
         let _ = memory.write_u16_be(
-            dialog + DIALOG_EDIT_FIELD_OFFSET,
+            params.dialog_ptr() + DIALOG_EDIT_FIELD_OFFSET,
             item_index.min(i16::MAX as usize) as u16,
         );
-        let _ = memory.write_u16_be(dialog + DIALOG_EDIT_OPEN_OFFSET, 1);
+        let _ = memory.write_u16_be(params.dialog_ptr() + DIALOG_EDIT_OPEN_OFFSET, 1);
     }
     let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
         return;
@@ -2414,17 +2419,10 @@ fn ppc_select_dialog_item_text(
     let length = memory
         .read_u16_be(te_ptr + PPC_TE_LENGTH_OFFSET)
         .unwrap_or(0) as usize;
-    let Some(eval) = evaluate_select_dialog_item_text(
-        dialog,
-        item_number,
-        item.is_edit_text(),
-        selection_start as i16,
-        selection_end as i16,
-        length,
-    ) else {
+    let Some(eval) = params.evaluate_selection(item.is_edit_text(), length) else {
         return;
     };
-    let _ = memory.write_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET, eval.edit_field);
+    let _ = memory.write_u16_be(params.dialog_ptr() + DIALOG_EDIT_FIELD_OFFSET, eval.edit_field);
     let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, eval.sel_start);
     let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, eval.sel_end);
     let _ = memory.write_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET, 1);
@@ -3405,10 +3403,12 @@ fn ppc_modal_dialog(
                         heap_limit,
                         last_mem_error,
                         handles,
-                        dialog,
-                        usize::from(hit),
-                        0,
-                        i16::MAX as u16,
+                        SelectDialogItemTextParameters::new(
+                            dialog,
+                            usize::from(hit),
+                            0,
+                            i16::MAX,
+                        ),
                         event.when,
                         PPC_QD_TEXT_MODE_SRC_OR,
                         PPC_QD_TEXT_SIZE_SYSTEM,

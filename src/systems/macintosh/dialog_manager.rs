@@ -1780,16 +1780,52 @@ pub fn evaluate_set_dialog_tracks_cursor_parameters(
     Ok(SetDialogTracksCursorParameters::new(dialog_ptr, tracks))
 }
 
+/// Evaluated parameters for a `GetStdFilterProc` request.
+///
+/// Macintosh Toolbox Essentials (1992), p. 6-163; Apple Dialog Manager Reference (2007), p. 38:
+/// `FUNCTION GetStdFilterProc(VAR theProc: ModalFilterUPP): OSErr;`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GetStdFilterProcParameters {
+    out_proc: u32,
+}
+
+impl GetStdFilterProcParameters {
+    #[inline]
+    #[must_use]
+    pub const fn new(out_proc: u32) -> Self {
+        Self { out_proc }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn out_proc(&self) -> u32 {
+        self.out_proc
+    }
+}
+
+/// Evaluates `GetStdFilterProc` output pointer validation.
+///
+/// Macintosh Toolbox Essentials (1992), p. 6-163; Apple Dialog Manager Reference (2007), p. 38.
+/// Returns `Ok(GetStdFilterProcParameters)` if `out_proc != 0` and `can_write` is true, or `Err(DIALOG_PARAM_ERR)` otherwise.
+pub fn evaluate_get_std_filter_proc_parameters(
+    out_proc: u32,
+    can_write: bool,
+) -> Result<GetStdFilterProcParameters, i16> {
+    if out_proc == 0 || !can_write {
+        Err(DIALOG_PARAM_ERR)
+    } else {
+        Ok(GetStdFilterProcParameters::new(out_proc))
+    }
+}
+
 /// Evaluates `GetStdFilterProc` output pointer validation.
 ///
 /// Macintosh Toolbox Essentials (1992), p. 6-163; Apple Dialog Manager Reference (2007), p. 38.
 /// Returns `Ok(DIALOG_NO_ERR)` if `out_proc != 0` and `can_write` is true, or `Err(DIALOG_PARAM_ERR)` otherwise.
+#[allow(dead_code)]
+#[inline]
 pub fn evaluate_get_std_filter_proc(out_proc: u32, can_write: bool) -> Result<i16, i16> {
-    if out_proc == 0 || !can_write {
-        Err(DIALOG_PARAM_ERR)
-    } else {
-        Ok(DIALOG_NO_ERR)
-    }
+    evaluate_get_std_filter_proc_parameters(out_proc, can_write).map(|_| DIALOG_NO_ERR)
 }
 
 /// The evaluated query parameters for a `CountDITL` / `CountDitl` operation.
@@ -3149,6 +3185,121 @@ impl SelectDialogItemTextEvaluation {
     pub fn selection_range(&self) -> (u16, u16) {
         (self.sel_start, self.sel_end)
     }
+}
+
+/// Canonical evaluated parameters for a `SelectDialogItemText` / `SelIText` request.
+///
+/// Inside Macintosh Volume I, p. I-422;
+/// Macintosh Toolbox Essentials (1992), pp. 6-131--6-132:
+/// `PROCEDURE SelectDialogItemText(theDialog: DialogPtr; itemNo: INTEGER; strtSel, endSel: INTEGER);`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SelectDialogItemTextParameters {
+    dialog_ptr: u32,
+    item_number: usize,
+    selection_start: i16,
+    selection_end: i16,
+}
+
+impl SelectDialogItemTextParameters {
+    /// Constructs a new `SelectDialogItemTextParameters` instance.
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        dialog_ptr: u32,
+        item_number: usize,
+        selection_start: i16,
+        selection_end: i16,
+    ) -> Self {
+        Self {
+            dialog_ptr,
+            item_number,
+            selection_start,
+            selection_end,
+        }
+    }
+
+    /// Target dialog pointer.
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// 1-based dialog item number.
+    #[inline]
+    #[must_use]
+    pub const fn item_number(&self) -> usize {
+        self.item_number
+    }
+
+    /// 1-based dialog item number as signed 16-bit integer.
+    #[allow(dead_code)]
+    #[inline]
+    #[must_use]
+    pub const fn item_no(&self) -> i16 {
+        self.item_number as i16
+    }
+
+    /// 0-based item index (`item_number - 1`).
+    #[inline]
+    #[must_use]
+    pub const fn item_index(&self) -> Option<usize> {
+        self.item_number.checked_sub(1)
+    }
+
+    /// Selection start offset.
+    #[allow(dead_code)]
+    #[inline]
+    #[must_use]
+    pub const fn selection_start(&self) -> i16 {
+        self.selection_start
+    }
+
+    /// Selection end offset.
+    #[allow(dead_code)]
+    #[inline]
+    #[must_use]
+    pub const fn selection_end(&self) -> i16 {
+        self.selection_end
+    }
+
+    /// Evaluates the selection bounds and active edit field against item text characteristics.
+    /// Returns `None` if `!is_edit_text`.
+    pub fn evaluate_selection(
+        &self,
+        is_edit_text: bool,
+        text_len: usize,
+    ) -> Option<SelectDialogItemTextEvaluation> {
+        evaluate_select_dialog_item_text(
+            self.dialog_ptr,
+            self.item_number,
+            is_edit_text,
+            self.selection_start,
+            self.selection_end,
+            text_len,
+        )
+    }
+}
+
+/// Evaluates and validates input parameters for `SelectDialogItemText` / `SelIText`.
+///
+/// Returns `None` if `dialog_ptr == 0` or `item_number == 0`.
+#[inline]
+pub const fn evaluate_select_dialog_item_text_parameters(
+    dialog_ptr: u32,
+    item_number: usize,
+    selection_start: i16,
+    selection_end: i16,
+) -> Option<SelectDialogItemTextParameters> {
+    if dialog_ptr == 0 || item_number == 0 {
+        return None;
+    }
+    Some(SelectDialogItemTextParameters::new(
+        dialog_ptr,
+        item_number,
+        selection_start,
+        selection_end,
+    ))
 }
 
 /// Evaluates selecting an editable text item in a dialog, returning the normalized selection
@@ -7209,5 +7360,69 @@ mod tests {
         assert!(direct_tracks.tracks());
         assert!(!direct_tracks.tracks_all_dialogs());
     }
-}
 
+    #[test]
+    fn get_std_filter_proc_and_select_dialog_item_text_evaluation() {
+        // evaluate_get_std_filter_proc_parameters
+        assert_eq!(
+            evaluate_get_std_filter_proc_parameters(0, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_std_filter_proc_parameters(0x2000, false),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_std_filter_proc_parameters(0, false),
+            Err(DIALOG_PARAM_ERR)
+        );
+
+        let filter_params = evaluate_get_std_filter_proc_parameters(0x2000, true)
+            .expect("valid filter proc pointer should evaluate");
+        assert_eq!(filter_params.out_proc(), 0x2000);
+
+        let filter_direct = GetStdFilterProcParameters::new(0x3000);
+        assert_eq!(filter_direct.out_proc(), 0x3000);
+
+        // evaluate_select_dialog_item_text_parameters
+        assert_eq!(
+            evaluate_select_dialog_item_text_parameters(0, 1, 0, 5),
+            None
+        );
+        assert_eq!(
+            evaluate_select_dialog_item_text_parameters(0x1000, 0, 0, 5),
+            None
+        );
+
+        let sel_params = evaluate_select_dialog_item_text_parameters(0x1000, 2, 3, 8)
+            .expect("valid select text params should evaluate");
+        assert_eq!(sel_params.dialog_ptr(), 0x1000);
+        assert_eq!(sel_params.item_number(), 2);
+        assert_eq!(sel_params.item_no(), 2);
+        assert_eq!(sel_params.item_index(), Some(1));
+        assert_eq!(sel_params.selection_start(), 3);
+        assert_eq!(sel_params.selection_end(), 8);
+
+        // evaluate_selection
+        assert_eq!(sel_params.evaluate_selection(false, 10), None);
+        let eval = sel_params
+            .evaluate_selection(true, 10)
+            .expect("edit text selection should evaluate");
+        assert_eq!(eval.edit_field, 1);
+        assert_eq!(eval.sel_start, 3);
+        assert_eq!(eval.sel_end, 8);
+
+        let direct_sel = SelectDialogItemTextParameters::new(0x2000, 3, 0, -1);
+        assert_eq!(direct_sel.dialog_ptr(), 0x2000);
+        assert_eq!(direct_sel.item_number(), 3);
+        assert_eq!(direct_sel.item_index(), Some(2));
+        assert_eq!(direct_sel.selection_start(), 0);
+        assert_eq!(direct_sel.selection_end(), -1);
+        let direct_eval = direct_sel
+            .evaluate_selection(true, 15)
+            .expect("select all should evaluate");
+        assert_eq!(direct_eval.edit_field, 2);
+        assert_eq!(direct_eval.sel_start, 0);
+        assert_eq!(direct_eval.sel_end, 15);
+    }
+}
