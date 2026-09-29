@@ -10601,12 +10601,13 @@ impl super::TrapDispatcher {
             (true, 0x17B) => {
                 let sp = cpu.read_reg(Register::A7);
                 let resume_proc = bus.read_long(sp);
+                let eval = crate::dialog_manager::evaluate_init_dialogs(resume_proc);
                 use crate::memory::globals::addr;
-                bus.write_long(addr::RESUME_PROC, resume_proc);
-                bus.write_long(addr::DA_BEEPER, 0);
-                bus.write_word(addr::ALERT_STAGE, 0);
+                bus.write_long(addr::RESUME_PROC, eval.resume_proc());
+                bus.write_long(addr::DA_BEEPER, eval.da_beeper());
+                bus.write_word(addr::ALERT_STAGE, eval.initial_alert_stage() as u16);
                 // Zero the 4-handle DAStrings array (16 bytes).
-                for i in 0..4u32 {
+                for i in 0..eval.da_strings_count() as u32 {
                     bus.write_long(addr::DA_STRINGS + i * 4, 0);
                 }
                 cpu.write_reg(Register::A7, sp + 4);
@@ -11460,29 +11461,40 @@ impl super::TrapDispatcher {
                 // on NIL would erase ^N output that an earlier ParamText
                 // had legitimately staged.
                 let offsets: [u32; 4] = [12, 8, 4, 0];
+                let mut sources: [Option<Vec<u8>>; crate::dialog_manager::PARAM_TEXT_SLOT_COUNT] =
+                    [None, None, None, None];
                 for (i, &off) in offsets.iter().enumerate() {
                     let ptr = bus.read_long(sp + off);
-                    if ptr == 0 {
-                        continue;
+                    if ptr != 0 {
+                        sources[i] = Some(bus.read_pstring(ptr));
                     }
-                    let s = bus.read_pstring(ptr);
-                    self.param_text.set_slot(i, s.clone());
-                    // Write to DAStrings low-memory global ($0AA0 + i*4).
-                    // The ROM stores each param string as a StringHandle at
-                    // *(StringHandle*)($0AA0 + i*4).
-                    // Inside Macintosh Volume I, I-422 (DAStrings global).
-                    use crate::memory::globals::addr;
-                    let data_len = 1u32 + s.len() as u32;
-                    let data_ptr = bus.alloc(data_len);
-                    if data_ptr != 0 {
-                        bus.write_byte(data_ptr, s.len() as u8);
-                        for (j, &b) in s.iter().enumerate() {
-                            bus.write_byte(data_ptr + 1 + j as u32, b);
-                        }
-                        let handle = bus.alloc(4);
-                        if handle != 0 {
-                            bus.write_long(handle, data_ptr);
-                            bus.write_long(addr::DA_STRINGS + i as u32 * 4, handle);
+                }
+                let eval = crate::dialog_manager::evaluate_param_text([
+                    sources[0].as_deref(),
+                    sources[1].as_deref(),
+                    sources[2].as_deref(),
+                    sources[3].as_deref(),
+                ]);
+                for i in 0..crate::dialog_manager::PARAM_TEXT_SLOT_COUNT {
+                    if let Some(s) = eval.slot(i) {
+                        self.param_text.set_slot(i, s.to_vec());
+                        // Write to DAStrings low-memory global ($0AA0 + i*4).
+                        // The ROM stores each param string as a StringHandle at
+                        // *(StringHandle*)($0AA0 + i*4).
+                        // Inside Macintosh Volume I, I-422 (DAStrings global).
+                        use crate::memory::globals::addr;
+                        let data_len = 1u32 + s.len() as u32;
+                        let data_ptr = bus.alloc(data_len);
+                        if data_ptr != 0 {
+                            bus.write_byte(data_ptr, s.len() as u8);
+                            for (j, &b) in s.iter().enumerate() {
+                                bus.write_byte(data_ptr + 1 + j as u32, b);
+                            }
+                            let handle = bus.alloc(4);
+                            if handle != 0 {
+                                bus.write_long(handle, data_ptr);
+                                bus.write_long(addr::DA_STRINGS + i as u32 * 4, handle);
+                            }
                         }
                     }
                 }

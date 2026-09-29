@@ -1426,6 +1426,133 @@ pub fn apply_param_text_str<'a, S: AsRef<[u8]>>(text: &'a str, slots: &[S]) -> C
     Cow::Owned(out)
 }
 
+/// The number of parameter text slots supported by `ParamText` (^0..^3).
+pub const PARAM_TEXT_SLOT_COUNT: usize = 4;
+
+/// The evaluated outcome of a `ParamText` invocation.
+///
+/// Inside Macintosh Volume I, p. I-422;
+/// Macintosh Toolbox Essentials (1992), pp. 6-129--6-130:
+/// `PROCEDURE ParamText(param0, param1, param2, param3: Str255);`
+/// Passing NIL (or `None`) for any parameter leaves that slot's previous value unchanged.
+/// Non-NIL parameters provide a replacement string (clamped to at most 255 bytes).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ParamTextEvaluation {
+    slots: [Option<Vec<u8>>; PARAM_TEXT_SLOT_COUNT],
+}
+
+impl ParamTextEvaluation {
+    /// Constructs a new evaluation with the given optional slot byte replacements.
+    pub const fn new(slots: [Option<Vec<u8>>; PARAM_TEXT_SLOT_COUNT]) -> Self {
+        Self { slots }
+    }
+
+    /// Accesses the optional replacement bytes for the given 0-indexed slot.
+    pub fn slot(&self, index: usize) -> Option<&[u8]> {
+        self.slots.get(index).and_then(|opt| opt.as_deref())
+    }
+
+    /// Whether the specified slot has a replacement value in this invocation.
+    #[allow(dead_code)]
+    pub fn has_update(&self, index: usize) -> bool {
+        self.slots.get(index).is_some_and(Option::is_some)
+    }
+
+    /// Applies non-`None` replacement slots in-place into an existing 4-slot array.
+    pub fn apply_to(&self, target: &mut [Vec<u8>; PARAM_TEXT_SLOT_COUNT]) {
+        for (index, slot_opt) in self.slots.iter().enumerate() {
+            if let Some(bytes) = slot_opt {
+                target[index] = bytes.clone();
+            }
+        }
+    }
+
+    /// Returns a new 4-slot array with non-`None` replacement slots merged into `current`.
+    #[allow(dead_code)]
+    pub fn merged_with(
+        &self,
+        current: &[Vec<u8>; PARAM_TEXT_SLOT_COUNT],
+    ) -> [Vec<u8>; PARAM_TEXT_SLOT_COUNT] {
+        let mut result = current.clone();
+        self.apply_to(&mut result);
+        result
+    }
+
+    /// Decodes all four current or updated slots as Mac OS Roman strings for debugging or tracing.
+    pub fn decoded_strings(
+        &self,
+        current: &[Vec<u8>; PARAM_TEXT_SLOT_COUNT],
+    ) -> [String; PARAM_TEXT_SLOT_COUNT] {
+        let merged = self.merged_with(current);
+        [
+            decode_mac_roman(&merged[0]),
+            decode_mac_roman(&merged[1]),
+            decode_mac_roman(&merged[2]),
+            decode_mac_roman(&merged[3]),
+        ]
+    }
+}
+
+/// Evaluates `ParamText` arguments from 4 optional byte slices.
+///
+/// Any `Some(bytes)` argument is clamped to at most 255 bytes (Pascal string capacity limit).
+/// Any `None` argument indicates a NIL pointer, preserving the slot's existing value.
+pub fn evaluate_param_text(
+    slots: [Option<&[u8]>; PARAM_TEXT_SLOT_COUNT],
+) -> ParamTextEvaluation {
+    let mut evaluated = [None, None, None, None];
+    for (i, opt) in slots.into_iter().enumerate() {
+        if let Some(bytes) = opt {
+            let clamped = if bytes.len() > 255 {
+                bytes[..255].to_vec()
+            } else {
+                bytes.to_vec()
+            };
+            evaluated[i] = Some(clamped);
+        }
+    }
+    ParamTextEvaluation::new(evaluated)
+}
+
+/// The evaluated outcome of an `InitDialogs` invocation.
+///
+/// Inside Macintosh Volume I, p. I-411:
+/// `PROCEDURE InitDialogs(resumeProc: ProcPtr);`
+/// Initializes the Dialog Manager. Saves the application resume procedure (if non-null),
+/// resets the sound beeper procedure to default (NIL), resets the alert stage count to 0
+/// (so the next alert begins at stage 1), and clears the four `DAStrings` `ParamText` handles.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InitDialogsEvaluation {
+    resume_proc: u32,
+}
+
+impl InitDialogsEvaluation {
+    /// The guest procedure pointer to invoke on system error resume, or 0 if none.
+    pub const fn resume_proc(&self) -> u32 {
+        self.resume_proc
+    }
+
+    /// The initial alert stage count written to low memory (`ACount` / `AlertStage` at `$0A9A`), which is 0.
+    pub const fn initial_alert_stage(&self) -> i16 {
+        0
+    }
+
+    /// The initial sound beeper procedure pointer (`DABeeper` at `$0A9C`), which is 0 (default sound).
+    pub const fn da_beeper(&self) -> u32 {
+        0
+    }
+
+    /// The number of `ParamText` handle slots in `DAStrings` (`$0AA0..$0AAF`) cleared on initialization (4).
+    pub const fn da_strings_count(&self) -> usize {
+        PARAM_TEXT_SLOT_COUNT
+    }
+}
+
+/// Evaluates an `InitDialogs` invocation with the given `resumeProc` pointer.
+pub const fn evaluate_init_dialogs(resume_proc: u32) -> InitDialogsEvaluation {
+    InitDialogsEvaluation { resume_proc }
+}
+
 /// Canonical Macintosh key codes for modal dialog navigation.
 pub const KEY_RETURN: u8 = 0x24;
 pub const KEY_NUMPAD_ENTER: u8 = 0x4C;
@@ -5332,6 +5459,78 @@ mod tests {
         };
         icon_record.set_text("NotText");
         assert_eq!(icon_record.payload, vec![0, 128]);
+    }
+
+    #[test]
+    fn param_text_and_init_dialogs_evaluation() {
+        // InitDialogs evaluation
+        let init_null = evaluate_init_dialogs(0);
+        assert_eq!(init_null.resume_proc(), 0);
+        assert_eq!(init_null.initial_alert_stage(), 0);
+        assert_eq!(init_null.da_beeper(), 0);
+        assert_eq!(init_null.da_strings_count(), 4);
+
+        let init_custom = evaluate_init_dialogs(0x0012_3456);
+        assert_eq!(init_custom.resume_proc(), 0x0012_3456);
+        assert_eq!(init_custom.initial_alert_stage(), 0);
+        assert_eq!(init_custom.da_beeper(), 0);
+        assert_eq!(init_custom.da_strings_count(), 4);
+
+        // ParamText evaluation: all NIL
+        let all_nil = evaluate_param_text([None, None, None, None]);
+        for i in 0..4 {
+            assert!(!all_nil.has_update(i));
+            assert_eq!(all_nil.slot(i), None);
+        }
+        let initial_slots = [
+            b"apple".to_vec(),
+            b"banana".to_vec(),
+            b"cherry".to_vec(),
+            b"date".to_vec(),
+        ];
+        assert_eq!(all_nil.merged_with(&initial_slots), initial_slots);
+        let mut target = initial_slots.clone();
+        all_nil.apply_to(&mut target);
+        assert_eq!(target, initial_slots);
+
+        // ParamText evaluation: selective update
+        let selective = evaluate_param_text([Some(b"avocado"), None, Some(b"cantaloupe"), None]);
+        assert!(selective.has_update(0));
+        assert!(!selective.has_update(1));
+        assert!(selective.has_update(2));
+        assert!(!selective.has_update(3));
+        assert_eq!(selective.slot(0), Some(b"avocado".as_slice()));
+        assert_eq!(selective.slot(1), None);
+        assert_eq!(selective.slot(2), Some(b"cantaloupe".as_slice()));
+        assert_eq!(selective.slot(3), None);
+
+        let merged = selective.merged_with(&initial_slots);
+        assert_eq!(merged[0], b"avocado");
+        assert_eq!(merged[1], b"banana");
+        assert_eq!(merged[2], b"cantaloupe");
+        assert_eq!(merged[3], b"date");
+
+        let mut target = initial_slots.clone();
+        selective.apply_to(&mut target);
+        assert_eq!(target, merged);
+
+        // Decoded strings
+        let decoded = selective.decoded_strings(&initial_slots);
+        assert_eq!(
+            decoded,
+            [
+                "avocado".to_string(),
+                "banana".to_string(),
+                "cantaloupe".to_string(),
+                "date".to_string()
+            ]
+        );
+
+        // Clamping to 255 bytes
+        let long_bytes = vec![b'X'; 300];
+        let clamped = evaluate_param_text([Some(&long_bytes), None, None, None]);
+        assert_eq!(clamped.slot(0).unwrap().len(), 255);
+        assert_eq!(clamped.slot(0).unwrap(), &vec![b'X'; 255][..]);
     }
 }
 
