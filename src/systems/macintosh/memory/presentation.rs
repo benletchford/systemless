@@ -51,9 +51,29 @@ fn next_store_filter_identity() -> u64 {
 }
 /// Width in pixels of a screen change-tracking tile.
 const SCREEN_TILE: u32 = 16;
+/// Shortest plain run `paste_plain_screen_run` compares and stores in bulk.
+const PLAIN_RUN_MIN: usize = 8;
 
 fn screen_tiles_per_row(width: u32) -> usize {
     width.div_ceil(SCREEN_TILE) as usize
+}
+
+/// Offset of the first cell a plain store must touch: one whose value differs
+/// or that holds text. Scans a chunk at a time with a branch-free test.
+fn first_plain_store(held: &[u16], text: &[bool], values: &[u8]) -> Option<usize> {
+    const CHUNK: usize = 16;
+    let needs = |((&held, &text), &value): ((&u16, &bool), &u8)| text | (held != u16::from(value));
+    let chunks = held
+        .chunks(CHUNK)
+        .zip(text.chunks(CHUNK))
+        .zip(values.chunks(CHUNK));
+    for (index, ((held, text), values)) in chunks.enumerate() {
+        let cells = || held.iter().zip(text).zip(values);
+        if cells().fold(false, |any, cell| any | needs(cell)) {
+            return cells().position(needs).map(|offset| index * CHUNK + offset);
+        }
+    }
+    None
 }
 
 fn next_presentation_identity() -> u64 {
@@ -899,6 +919,17 @@ impl Presentation {
         let tile = y as usize * screen_tiles_per_row(self.width) + (x / SCREEN_TILE) as usize;
         if let Some(epoch) = self.tile_epochs.get_mut(tile) {
             *epoch = self.screen_epoch;
+        }
+    }
+
+    /// `touch_screen` for every cell from `x_first` to `x_last` of row `y`,
+    /// with one epoch for the span.
+    fn touch_screen_span(&mut self, x_first: u32, x_last: u32, y: u32) {
+        self.screen_epoch += 1;
+        let row = y as usize * screen_tiles_per_row(self.width);
+        let tiles = row + (x_first / SCREEN_TILE) as usize..=row + (x_last / SCREEN_TILE) as usize;
+        if let Some(epochs) = self.tile_epochs.get_mut(tiles) {
+            epochs.fill(self.screen_epoch);
         }
     }
 
@@ -2289,21 +2320,29 @@ impl Presentation {
         let samples = (self.scale * self.scale) as usize;
         let mut cells = cells.iter().peekable();
         let mut inks = inks;
-        for (i, &value) in values.iter().enumerate() {
+        let mut i = 0;
+        while i < values.len() {
+            // The bytes up to the next copied cell carry no text: store them
+            // a run at a time.
+            let run_end = cells.peek().map_or(values.len(), |copied| {
+                (copied.offset as usize)
+                    .saturating_sub(first)
+                    .clamp(i, values.len())
+            });
+            if i < run_end {
+                self.paste_plain_screen_run(x0 + i as u32, y, &values[i..run_end]);
+                i = run_end;
+                continue;
+            }
+            let value = values[i];
             let x = x0 + i as u32;
             let cell = (y * self.width + x) as usize;
             let Some(copied) = cells.next_if(|copied| copied.offset as usize == first + i) else {
-                if self.guest_values[cell] == u16::from(value) && !self.text_cells[cell] {
-                    continue;
-                }
-                self.touch_screen(x, y);
-                self.changed(true);
-                self.guest_values[cell] = u16::from(value);
-                if self.text_cells[cell] {
-                    self.clear_text_cell(cell, x, value);
-                }
+                self.paste_plain_screen_run(x, y, &values[i..=i]);
+                i += 1;
                 continue;
             };
+            i += 1;
             let (ink, rest) = std::mem::take(&mut inks).split_at_mut(usize::from(copied.inks));
             inks = rest;
             debug_assert_eq!(usize::from(copied.len), samples);
@@ -2358,6 +2397,60 @@ impl Presentation {
                 }
             }
             self.ink_mask[cell] = mask;
+        }
+    }
+
+    /// Store plain bytes onto one screen row exactly as a store per byte
+    /// would: an unchanged plain cell stays put, a changed one takes its value,
+    /// and a text cell is cleared to plain. One pass finds the first byte with
+    /// work to do, so a run over an unchanged destination ends there. From that
+    /// byte on, a long run without text cells, the usual case for sprites and
+    /// chrome, is recorded with one change and one touch of the tiles between
+    /// its first and last changed byte (a tile in between counts as changed,
+    /// which only makes an unchanged-since check more conservative).
+    fn paste_plain_screen_run(&mut self, x0: u32, y: u32, values: &[u8]) {
+        let start = (y * self.width + x0) as usize;
+        let end = start + values.len();
+        // Short runs (the gaps between glyph cells in a line of text) cost
+        // less a byte at a time than the run setup below.
+        let first = if values.len() < PLAIN_RUN_MIN {
+            0
+        } else {
+            let held = &self.guest_values[start..end];
+            let Some(first) = first_plain_store(held, &self.text_cells[start..end], values) else {
+                return;
+            };
+            first
+        };
+        let values = &values[first..];
+        let (x0, start) = (x0 + first as u32, start + first);
+        if values.len() < PLAIN_RUN_MIN || self.text_cells[start..end].iter().any(|&text| text) {
+            for (i, &value) in values.iter().enumerate() {
+                let cell = start + i;
+                if self.guest_values[cell] == u16::from(value) && !self.text_cells[cell] {
+                    continue;
+                }
+                let x = x0 + i as u32;
+                self.touch_screen(x, y);
+                self.changed(true);
+                self.guest_values[cell] = u16::from(value);
+                if self.text_cells[cell] {
+                    self.clear_text_cell(cell, x, value);
+                }
+            }
+            return;
+        }
+        // No text from here on, and the first byte differs.
+        let held = &self.guest_values[start..end];
+        let differs = |(&held, &value): (&u16, &u8)| held != u16::from(value);
+        let last = values.len() - 1 - held.iter().zip(values).rev().position(differs).unwrap_or(0);
+        self.changed(true);
+        self.touch_screen_span(x0, x0 + last as u32, y);
+        for (held, &value) in self.guest_values[start..=start + last]
+            .iter_mut()
+            .zip(&values[..=last])
+        {
+            *held = u16::from(value);
         }
     }
 
@@ -4412,6 +4505,155 @@ mod tests {
     /// store leaves exactly what capturing each source row and copying it a
     /// pixel at a time leaves, whatever the destination held and with or
     /// without a colour table.
+    #[test]
+    fn plain_row_paste_marks_only_changed_rows() {
+        let mut bus = bus();
+        let source = 0x8000;
+        bus.write_bytes(source, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        let pixels = bus.read_bytes(source, 8);
+        let before = bus.screen_mark().expect("presented screen");
+        assert!(bus.copy_detail_rows(&[(source, 0x1000 + 8)], &pixels, 8, None));
+        assert_eq!(bus.read_bytes(0x1000 + 8, 8), pixels);
+        assert!(
+            !bus.screen_rect_unchanged_since(before, (1, 0, 8, 1)),
+            "the pasted row reports a change"
+        );
+        assert!(
+            bus.screen_rect_unchanged_since(before, (0, 0, 8, 1)),
+            "the row above does not"
+        );
+        let again = bus.screen_mark().expect("presented screen");
+        assert!(bus.copy_detail_rows(&[(source, 0x1000 + 8)], &pixels, 8, None));
+        assert!(
+            bus.screen_rect_unchanged_since(again, (1, 0, 8, 1)),
+            "pasting the same bytes changes nothing"
+        );
+    }
+
+    #[test]
+    fn long_plain_runs_copy_to_the_screen_like_the_per_pixel_copy() {
+        use crate::copy_bits::{BytePixmap, CopyBitsMemory, RowCopy, RowCopyOutcome};
+        let inverted: [u8; 256] = std::array::from_fn(|i| (255 - i) as u8);
+        let source = 0x3_0000u32;
+        let (row_len, rows) = (32usize, 2u32);
+        let destination = |row: u32| 0x1000 + (1 + row) * 40 + 4;
+        // Source text at columns 10 and 25 splits each row into plain runs of
+        // 10, 14 and 6 bytes: two take the bulk path, one the byte path.
+        for prior in ["plain", "text in a long run", "same bytes", "same bytes, then text"] {
+            for palette in [None, Some(&inverted)] {
+                let setup = || {
+                    let mut bus = padded_bus(40, 40, 4, 2);
+                    for row in 0..rows {
+                        for i in 0..row_len as u32 {
+                            bus.write_byte(source + row * 40 + i, (row * 11 + i * 5) as u8);
+                        }
+                        paint_detail(&mut bus, source + row * 40 + 10);
+                        paint_detail(&mut bus, source + row * 40 + 25);
+                    }
+                    match prior {
+                        "text in a long run" => paint_detail(&mut bus, destination(0) + 17),
+                        "same bytes" | "same bytes, then text" => {
+                            if prior == "same bytes, then text" {
+                                // The text cell below keeps the byte the copy
+                                // stores, so only its text marks it for work.
+                                let zero = palette.map_or(0, |_| 255);
+                                bus.write_byte(source + 20, zero);
+                            }
+                            for row in 0..rows {
+                                let pixels = bus.read_bytes(source + row * 40, row_len);
+                                let mapped: Vec<u8> = pixels
+                                    .iter()
+                                    .map(|&v| palette.map_or(v, |table| table[v as usize]))
+                                    .collect();
+                                bus.write_bytes(destination(row), &mapped);
+                            }
+                            if prior == "same bytes, then text" {
+                                // Text partway along the 14-byte run, after
+                                // bytes that already match.
+                                paint_detail(&mut bus, destination(0) + 20);
+                            }
+                        }
+                        _ => {}
+                    }
+                    bus
+                };
+                let mut direct = setup();
+                let mut oracle = setup();
+                let context = format!("{prior} palette={}", palette.is_some());
+                let copy = RowCopy {
+                    mode: 0,
+                    source: BytePixmap {
+                        base: source,
+                        row_bytes: 40,
+                        depth: 8,
+                        bounds: [0, 0, 3, 40],
+                    },
+                    destination: BytePixmap {
+                        base: 0x1000,
+                        row_bytes: 40,
+                        depth: 8,
+                        bounds: [0, 0, 4, 40],
+                    },
+                    source_rect: [0, 0, 2, 32],
+                    destination_rect: [1, 4, 3, 36],
+                    clip: [0, 0, 4, 40],
+                    palette,
+                };
+                assert_eq!(
+                    copy.execute(&mut direct),
+                    RowCopyOutcome::Completed,
+                    "{context}"
+                );
+                let mut pixels = vec![0u8; row_len * rows as usize];
+                for row in 0..rows as usize {
+                    oracle
+                        .read_copy_row(
+                            source + row as u32 * 40,
+                            &mut pixels[row * row_len..][..row_len],
+                        )
+                        .unwrap();
+                }
+                let mut pixels: SavedPixels = pixels.into();
+                for row in 0..rows as usize {
+                    oracle.capture_copy_detail(
+                        source + row as u32 * 40,
+                        &mut pixels,
+                        row * row_len,
+                        row_len,
+                    );
+                }
+                for row in 0..rows {
+                    oracle
+                        .write_copy_pixels(
+                            destination(row),
+                            &pixels,
+                            row as usize * row_len,
+                            row_len,
+                            palette,
+                        )
+                        .expect("writable");
+                }
+                assert_eq!(
+                    direct.read_bytes(0x1000, 160),
+                    oracle.read_bytes(0x1000, 160),
+                    "{context}: RAM"
+                );
+                assert_eq!(
+                    direct.outline_presentation_rgb(),
+                    oracle.outline_presentation_rgb(),
+                    "{context}: rendered"
+                );
+                for row in 0..4 {
+                    assert_eq!(
+                        direct.save_pixel_bytes(0x1000 + row * 40, 40),
+                        oracle.save_pixel_bytes(0x1000 + row * 40, 40),
+                        "{context}: snapshot row {row}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn offscreen_rows_copy_to_the_screen_like_the_per_pixel_copy() {
         use crate::copy_bits::{BytePixmap, CopyBitsMemory, RowCopy, RowCopyOutcome};
