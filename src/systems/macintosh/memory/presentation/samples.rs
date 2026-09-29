@@ -1,10 +1,11 @@
 //! Retained subpixel storage. Plain guest pixels have no tile; their palette
 //! index already lives in guest_values. Stable slabs avoid copying all existing
 //! text samples when a new dialog needs more detail. Freed tiles are reused.
-//! Each tile slot also owns its cell's partial-coverage ink, a short list
-//! sorted by sample, so text copies and redraws touch the tile's own list
-//! instead of a screen-wide map.
+//! Each tile slot also owns its cell's partial-coverage ink, a fixed block
+//! of packed ink in a flat array beside the tiles, so text copies and redraws
+//! touch the slot's own ink without a map lookup or a heap list per cell.
 
+use super::ink::{CellInk, ComplexInk, InkView, InkViewMut};
 use super::Ink;
 
 const NO_TILE: u32 = u32::MAX;
@@ -19,46 +20,14 @@ pub(super) struct SampleTile {
     pub(super) indices: [u8; TILE_SAMPLES],
 }
 
-/// A cell's ink as `(sample, ink)`, sorted by sample.
-pub(super) type InkList = Vec<(u8, Ink)>;
-
 pub(super) struct DetailSamples {
     slots: Vec<u32>,
     slabs: Vec<Box<[SampleTile]>>,
-    /// Ink per tile slot. A released slot's list is emptied, keeping its
-    /// capacity for the next cell.
-    inks: Vec<InkList>,
+    /// Ink per tile slot. A released slot's ink is cleared.
+    inks: Vec<CellInk>,
+    /// Ink that does not pack (a blended background), by (slot, sample).
+    complex: ComplexInk,
     free: Vec<u32>,
-}
-
-/// The ink of `sample` in `list`.
-#[inline]
-pub(super) fn ink_get(list: &[(u8, Ink)], sample: usize) -> Option<&Ink> {
-    list.iter().find(|(held, _)| usize::from(*held) == sample).map(|(_, ink)| ink)
-}
-
-/// Remove the ink of `sample` from `list`, if any.
-#[inline]
-pub(super) fn ink_remove(list: &mut InkList, sample: usize) {
-    if let Some(at) = list.iter().position(|(held, _)| usize::from(*held) == sample) {
-        list.remove(at);
-    }
-}
-
-/// The ink of `sample` in `list`, inserting `ink()` in order when absent.
-pub(super) fn ink_entry(list: &mut InkList, sample: usize, ink: impl FnOnce() -> Ink) -> &mut Ink {
-    let at = match list.iter().position(|(held, _)| usize::from(*held) >= sample) {
-        Some(at) if usize::from(list[at].0) == sample => at,
-        Some(at) => {
-            list.insert(at, (sample as u8, ink()));
-            at
-        }
-        None => {
-            list.push((sample as u8, ink()));
-            list.len() - 1
-        }
-    };
-    &mut list[at].1
 }
 
 impl DetailSamples {
@@ -67,6 +36,7 @@ impl DetailSamples {
             slots: vec![NO_TILE; cells],
             slabs: Vec::new(),
             inks: Vec::new(),
+            complex: ComplexInk::new(),
             free: Vec::new(),
         }
     }
@@ -89,25 +59,26 @@ impl DetailSamples {
 
     /// The cell's ink; empty when it has no tile.
     #[inline]
-    pub(super) fn ink(&self, cell: usize) -> &[(u8, Ink)] {
+    pub(super) fn ink(&self, cell: usize) -> InkView<'_> {
+        static EMPTY: CellInk = CellInk::EMPTY;
         match self.slots[cell] {
-            NO_TILE => &[],
-            slot => &self.inks[slot as usize],
+            NO_TILE => InkView::new(&EMPTY, &self.complex, NO_TILE),
+            slot => InkView::new(&self.inks[slot as usize], &self.complex, slot),
         }
     }
 
     /// The tile of a cell that has one, and its ink.
     #[inline]
-    pub(super) fn get_mut_with_ink(&mut self, cell: usize) -> (&mut SampleTile, &mut InkList) {
+    pub(super) fn get_mut_with_ink(&mut self, cell: usize) -> (&mut SampleTile, InkViewMut<'_>) {
         let slot = self.slots[cell] as usize;
         (
             &mut self.slabs[slot / SLAB_TILES][slot % SLAB_TILES],
-            &mut self.inks[slot],
+            InkViewMut::new(&mut self.inks[slot], &mut self.complex, slot as u32),
         )
     }
 
     /// The cell's tile and ink, first giving it a tile (with no ink).
-    pub(super) fn ensure_with_ink(&mut self, cell: usize) -> (&mut SampleTile, &mut InkList) {
+    pub(super) fn ensure_with_ink(&mut self, cell: usize) -> (&mut SampleTile, InkViewMut<'_>) {
         if self.slots[cell] == NO_TILE {
             if self.free.is_empty() {
                 self.grow();
@@ -118,16 +89,16 @@ impl DetailSamples {
     }
 
     /// Visit every held ink sample with its tile. Walks the tile slots, not
-    /// the screen: a released slot's list is empty, so this costs the text
-    /// the screen holds rather than its size.
+    /// the screen: a released slot has no ink, so this costs the text the
+    /// screen holds rather than its size.
     pub(super) fn for_each_ink_mut(&mut self, mut visit: impl FnMut(&mut SampleTile, usize, &Ink)) {
         for (slot, ink) in self.inks.iter().enumerate() {
             if ink.is_empty() {
                 continue;
             }
             let tile = &mut self.slabs[slot / SLAB_TILES][slot % SLAB_TILES];
-            for (sample, held) in ink {
-                visit(tile, usize::from(*sample), held);
+            for (sample, held) in InkView::new(ink, &self.complex, slot as u32).iter() {
+                visit(tile, sample, &held);
             }
         }
     }
@@ -141,7 +112,7 @@ impl DetailSamples {
         self.free.reserve(start + SLAB_TILES);
         self.slabs
             .push(vec![SampleTile::default(); SLAB_TILES].into_boxed_slice());
-        self.inks.resize_with(start + SLAB_TILES, Vec::new);
+        self.inks.resize(start + SLAB_TILES, CellInk::default());
         self.free
             .extend((start as u32..(start + SLAB_TILES) as u32).rev());
     }
@@ -149,7 +120,7 @@ impl DetailSamples {
     pub(super) fn release(&mut self, cell: usize) {
         let slot = std::mem::replace(&mut self.slots[cell], NO_TILE);
         if slot != NO_TILE {
-            self.inks[slot as usize].clear();
+            InkViewMut::new(&mut self.inks[slot as usize], &mut self.complex, slot).clear();
             self.free.push(slot);
         }
     }
@@ -163,7 +134,7 @@ impl DetailSamples {
                 .iter()
                 .map(|slab| std::mem::size_of_val(&**slab))
                 .sum::<usize>()
-            + self.inks.capacity() * std::mem::size_of::<InkList>()
+            + self.inks.capacity() * std::mem::size_of::<CellInk>()
             + self.free.capacity() * std::mem::size_of::<u32>()
     }
 }
