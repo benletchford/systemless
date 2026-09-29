@@ -2388,14 +2388,17 @@ fn ppc_get_dialog_item(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, handles: &[
     let item_type_ptr = cpu.gpr[5];
     let item_handle_ptr = cpu.gpr[6];
     let item_rect_ptr = cpu.gpr[7];
+    let Some(query) = crate::dialog_manager::evaluate_get_dialog_item_query(dialog, item_number) else {
+        return;
+    };
     if !ppc_optional_output_can_write(memory, item_type_ptr, 2)
         || !ppc_optional_output_can_write(memory, item_handle_ptr, 4)
         || !ppc_optional_output_can_write(memory, item_rect_ptr, 8)
     {
         return;
     }
-    let header = ppc_dialog_items_for_dialog(memory, handles, dialog)
-        .map(|items| evaluate_get_dialog_item(&items, item_number, |item| item.header()))
+    let header = ppc_dialog_items_for_dialog(memory, handles, query.dialog_ptr())
+        .map(|items| evaluate_get_dialog_item(&items, query.item_number(), |item| item.header()))
         .unwrap_or(DialogItemHeader::ZERO);
 
     if item_type_ptr != 0 {
@@ -2422,7 +2425,19 @@ fn ppc_set_dialog_item(cpu: &PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcH
     let item_type = cpu.gpr[5] as u16;
     let item_handle = cpu.gpr[6];
     let rect_ptr = cpu.gpr[7];
-    let Some(items_handle) = memory.read_u32_be(dialog.wrapping_add(DIALOG_ITEMS_OFFSET)) else {
+    let Some(rect) = ppc_read_rect(memory, rect_ptr) else {
+        return;
+    };
+    let Some(params) = crate::dialog_manager::evaluate_set_dialog_item_parameters(
+        dialog,
+        item_number,
+        item_type,
+        item_handle,
+        rect,
+    ) else {
+        return;
+    };
+    let Some(items_handle) = memory.read_u32_be(params.dialog_ptr().wrapping_add(DIALOG_ITEMS_OFFSET)) else {
         return;
     };
     let Some(items_ptr) = memory.read_u32_be(items_handle).filter(|ptr| *ptr != 0) else {
@@ -2431,20 +2446,24 @@ fn ppc_set_dialog_item(cpu: &PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcH
     let Some(item) = ppc_handle_bytes(memory, handles, items_handle)
         .and_then(|bytes| ppc_parse_dialog_items(&bytes))
         .and_then(|items| {
-            crate::dialog_manager::get_item_at_1_indexed(&items, item_number).cloned()
+            crate::dialog_manager::get_item_at_1_indexed(&items, params.item_number()).cloned()
         })
     else {
         return;
     };
     let item_addr = items_ptr.wrapping_add(item.item_offset as u32);
-    let Some(rect) = ppc_read_rect(memory, rect_ptr) else {
-        return;
-    };
     // Macintosh Toolbox Essentials (1992), pp. 6-120--6-123: mutate the
     // live DITL item's handle, Rect, and type in place without drawing it.
-    let _ = memory.write_u32_be(item_addr, item_handle);
-    let _ = ppc_write_rect(memory, item_addr + 4, rect.0, rect.1, rect.2, rect.3);
-    let _ = memory.write_u8(item_addr + 12, item_type as u8);
+    let _ = memory.write_u32_be(item_addr + crate::dialog_manager::DITL_ITEM_HANDLE_OFFSET, params.item_handle());
+    let _ = ppc_write_rect(
+        memory,
+        item_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET,
+        params.rect().0,
+        params.rect().1,
+        params.rect().2,
+        params.rect().3,
+    );
+    let _ = memory.write_u8(item_addr + crate::dialog_manager::DITL_ITEM_TYPE_OFFSET, params.item_type());
 }
 
 pub(super) fn ppc_dialog_items_for_dialog(
