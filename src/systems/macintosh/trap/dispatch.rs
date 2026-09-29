@@ -475,12 +475,83 @@ pub struct DialogItem {
     pub sel_end: i16,
 }
 
+impl DialogItem {
+    /// Returns the base item type without the disabled bit flag (0x80).
+    pub fn base_type(&self) -> u8 {
+        crate::dialog_manager::dialog_item_base_type(self.item_type)
+    }
+
+    /// Whether the item is enabled for interaction.
+    pub fn is_enabled(&self) -> bool {
+        crate::dialog_manager::is_dialog_item_enabled(self.item_type)
+    }
+
+    /// Whether the item is disabled for interaction.
+    pub fn is_disabled(&self) -> bool {
+        crate::dialog_manager::is_dialog_item_disabled(self.item_type)
+    }
+
+    /// Whether the item represents an application user item (`userItem`, 0).
+    pub fn is_user_item(&self) -> bool {
+        crate::dialog_manager::is_dialog_item_user_item(self.item_type)
+    }
+
+    /// Whether the item represents a standard pushbutton (`ctrlItem + btnCtrl`, 4).
+    pub fn is_button(&self) -> bool {
+        crate::dialog_manager::is_dialog_item_button(self.item_type)
+    }
+
+    /// Whether the item represents a checkbox control (`ctrlItem + chkCtrl`, 5).
+    pub fn is_checkbox(&self) -> bool {
+        crate::dialog_manager::is_dialog_item_checkbox(self.item_type)
+    }
+
+    /// Whether the item represents a radio button control (`ctrlItem + radCtrl`, 6).
+    pub fn is_radio(&self) -> bool {
+        crate::dialog_manager::is_dialog_item_radio(self.item_type)
+    }
+
+    /// Whether the item represents a resource-defined control (`ctrlItem + resCtrl`, 7).
+    pub fn is_resource_control(&self) -> bool {
+        crate::dialog_manager::is_dialog_item_resource_control(self.item_type)
+    }
+
+    /// Whether the item represents a button, checkbox, radio, or resource control.
+    pub fn is_control(&self) -> bool {
+        crate::dialog_manager::is_dialog_item_control(self.item_type)
+    }
+
+    /// Whether the item represents non-editable static text (`statText`, 8).
+    pub fn is_static_text(&self) -> bool {
+        crate::dialog_manager::is_dialog_item_static_text(self.item_type)
+    }
+
+    /// Whether the item represents editable text (`editText`, 16).
+    pub fn is_edit_text(&self) -> bool {
+        crate::dialog_manager::is_dialog_item_edit_text(self.item_type)
+    }
+
+    /// Whether the item represents static or editable text.
+    pub fn is_text(&self) -> bool {
+        crate::dialog_manager::is_dialog_item_text(self.item_type)
+    }
+
+    /// Whether the item represents a standard icon (`iconItem`, 32).
+    pub fn is_icon(&self) -> bool {
+        crate::dialog_manager::is_dialog_item_icon(self.item_type)
+    }
+
+    /// Whether the item represents a QuickDraw picture (`picItem`, 64).
+    pub fn is_picture(&self) -> bool {
+        crate::dialog_manager::is_dialog_item_picture(self.item_type)
+    }
+}
+
 impl From<crate::dialog_manager::DialogItemRecord> for DialogItem {
     fn from(record: crate::dialog_manager::DialogItemRecord) -> Self {
-        let base_type = crate::dialog_manager::dialog_item_base_type(record.item_type);
         let text = record.text();
         let resource_id = record.resource_id().unwrap_or(0);
-        let proc_ptr = if base_type == crate::dialog_manager::DIALOG_ITEM_USER_ITEM {
+        let proc_ptr = if record.is_user_item() {
             record.handle
         } else {
             0

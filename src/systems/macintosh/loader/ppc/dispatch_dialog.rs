@@ -964,15 +964,49 @@ fn ppc_dispatch_dialog_compatibility(
             let Some(items) = ppc_dialog_items_for_dialog(memory, handles, dialog) else {
                 return PpcImportAction::Return(0);
             };
-            if matches!(
+
+            let active_edit = {
+                let edit_field = memory
+                    .read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
+                    .unwrap_or(u16::MAX);
+                if edit_field != u16::MAX {
+                    let edit_item = (edit_field as i16).saturating_add(1);
+                    items
+                        .get(usize::from(edit_item as u16).saturating_sub(1))
+                        .map(|item| (edit_item, item.item_type))
+                } else {
+                    None
+                }
+            };
+
+            let action = crate::dialog_manager::evaluate_dialog_select(
                 event.what,
-                crate::dialog_manager::EVENT_UPDATE | crate::dialog_manager::EVENT_ACTIVATE
-            ) && dialog_out_ptr != 0
-            {
+                event.message,
+                event.where_v,
+                event.where_h,
+                Some(dialog),
+                Some(bounds),
+                active_edit,
+                |v, h| {
+                    ppc_dialog_item_at_global_point(memory, controls, &items, bounds, v, h)
+                        .and_then(|hit| {
+                            let idx = usize::from(hit).saturating_sub(1);
+                            items.get(idx).map(|item| (hit as i16, item.item_type))
+                        })
+                },
+            );
+
+            if action.should_set_dialog_ptr() && dialog_out_ptr != 0 {
                 let _ = memory.write_u32_be(dialog_out_ptr, dialog);
             }
-            match event.what {
-                crate::dialog_manager::EVENT_UPDATE if event.message == dialog => {
+            if let Some(hit) = action.item_hit() {
+                if item_hit_ptr != 0 {
+                    let _ = memory.write_u16_be(item_hit_ptr, hit as u16);
+                }
+            }
+
+            match action {
+                crate::dialog_manager::DialogSelectAction::Update { .. } => {
                     *current_gworld = dialog;
                     *current_gdevice =
                         ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
@@ -996,35 +1030,13 @@ fn ppc_dispatch_dialog_compatibility(
                         PpcDialogCallbackCompletion::Return(0),
                     )
                 }
-                crate::dialog_manager::EVENT_MOUSE_DOWN
-                    if crate::dialog_manager::rect_contains_point(
-                        bounds,
-                        event.where_v,
-                        event.where_h,
-                    ) =>
-                {
-                    let Some(hit) = ppc_dialog_item_at_global_point(
-                        memory,
-                        controls,
-                        &items,
-                        bounds,
-                        event.where_v,
-                        event.where_h,
-                    ) else {
-                        return PpcImportAction::Return(0);
-                    };
-                    if dialog_out_ptr != 0 {
-                        let _ = memory.write_u32_be(dialog_out_ptr, dialog);
-                    }
-                    if item_hit_ptr != 0 {
-                        let _ = memory.write_u16_be(item_hit_ptr, hit);
-                    }
-                    if items
-                        .get(usize::from(hit).saturating_sub(1))
-                        .is_some_and(|item| {
-                            dialog_item_base_type(item.item_type) == DIALOG_ITEM_EDIT_TEXT
-                        })
-                    {
+                crate::dialog_manager::DialogSelectAction::ItemHit {
+                    item_no,
+                    is_edit_text,
+                    is_resource_control,
+                    ..
+                } => {
+                    if is_edit_text {
                         let te_handle = memory
                             .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
                             .unwrap_or(0);
@@ -1037,11 +1049,10 @@ fn ppc_dispatch_dialog_compatibility(
                             event.modifiers & 0x0200 != 0,
                             event.when,
                         );
-                    } else if let Some(item) = items.get(usize::from(hit).saturating_sub(1)) {
-                        if dialog_item_base_type(item.item_type) == DIALOG_ITEM_RESOURCE_CONTROL {
-                            // DialogSelect tracks controls before reporting the item hit.
-                            // In particular, a scroll bar's live value must change before
-                            // the caller reads it to scroll the associated text.
+                    } else if is_resource_control {
+                        if let Some(item) =
+                            items.get(usize::from(item_no as u16).saturating_sub(1))
+                        {
                             let _ = ppc_track_scroll_control_value(
                                 memory,
                                 handles,
@@ -1057,25 +1068,12 @@ fn ppc_dispatch_dialog_compatibility(
                     }
                     PpcImportAction::Return(1)
                 }
-                crate::dialog_manager::EVENT_KEY_DOWN | crate::dialog_manager::EVENT_AUTO_KEY => {
+                crate::dialog_manager::DialogSelectAction::KeyStroke {
+                    character, ..
+                } => {
                     let te_handle = memory
                         .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
                         .unwrap_or(0);
-                    let edit_item = memory
-                        .read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
-                        .unwrap_or(u16::MAX)
-                        .saturating_add(1);
-                    let character = event.message as u8;
-                    let editable = edit_item != 0
-                        && items
-                            .get(usize::from(edit_item).saturating_sub(1))
-                            .is_some_and(|item| {
-                                dialog_item_base_type(item.item_type) == DIALOG_ITEM_EDIT_TEXT
-                            });
-                    if !editable || !crate::dialog_manager::is_dialog_edit_text_character(character)
-                    {
-                        return PpcImportAction::Return(0);
-                    }
                     let mut allocator = PpcProcessAllocatorView {
                         memory_manager: process_memory_manager,
                     };
@@ -1092,12 +1090,6 @@ fn ppc_dispatch_dialog_compatibility(
                     *last_mem_error = result;
                     if *last_mem_error != PPC_NO_ERR {
                         return PpcImportAction::Return(0);
-                    }
-                    if dialog_out_ptr != 0 {
-                        let _ = memory.write_u32_be(dialog_out_ptr, dialog);
-                    }
-                    if item_hit_ptr != 0 {
-                        let _ = memory.write_u16_be(item_hit_ptr, edit_item);
                     }
                     PpcImportAction::Return(1)
                 }
@@ -2253,7 +2245,7 @@ fn ppc_select_dialog_item_text(
     };
     let Some(item) = ppc_dialog_items_for_dialog(memory, handles, dialog)
         .and_then(|items| items.get(item_index).cloned())
-        .filter(|item| dialog_item_base_type(item.item_type) == DIALOG_ITEM_EDIT_TEXT)
+        .filter(|item| item.is_edit_text())
     else {
         return;
     };
@@ -3277,7 +3269,7 @@ fn ppc_modal_dialog(
                 event.where_h,
             )?;
             let item = items.get(usize::from(hit).checked_sub(1)?)?;
-            if dialog_item_base_type(item.item_type) == DIALOG_ITEM_EDIT_TEXT {
+            if item.is_edit_text() {
                 let item_index = usize::from(hit).saturating_sub(1);
                 let current_field = memory
                     .read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
@@ -3329,7 +3321,7 @@ fn ppc_modal_dialog(
                 handled_edit_event = true;
                 None
             } else {
-                if dialog_item_base_type(item.item_type) == DIALOG_ITEM_RESOURCE_CONTROL
+                if item.is_resource_control()
                     && ppc_track_dialog_popup(
                         memory,
                         controls,
