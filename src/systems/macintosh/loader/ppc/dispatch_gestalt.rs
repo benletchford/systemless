@@ -101,6 +101,11 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
             REFERENCE_POWERPC_EXECUTION_CAPABILITIES.processor_type,
             PPC_NO_ERR,
         )),
+        // Apple Gestalt Manager: gestaltPowerPCProcessorFeatures ('ppcf')
+        // reports optional CPU instruction sets as feature bits. Keep the
+        // emulated processor's optional feature mask empty until each
+        // instruction set is verified in the PowerPC interpreter.
+        b"ppcf" => Some((0, PPC_NO_ERR)),
         b"mach" => Some((
             u32::from(REFERENCE_MACHINE_PROFILE.gestalt_machine_type),
             PPC_NO_ERR,
