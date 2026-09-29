@@ -3112,6 +3112,82 @@ pub fn apply_param_text_str<'a, S: AsRef<[u8]>>(text: &'a str, slots: &[S]) -> C
 /// The number of parameter text slots supported by `ParamText` (^0..^3).
 pub const PARAM_TEXT_SLOT_COUNT: usize = 4;
 
+/// Canonical evaluated parameters for `ParamText`.
+///
+/// Inside Macintosh Volume I, p. I-422;
+/// Macintosh Toolbox Essentials (1992), pp. 6-129--6-130:
+/// `PROCEDURE ParamText(param0, param1, param2, param3: Str255);`
+/// Passing NIL (0) for any parameter leaves that slot's previous value unchanged.
+/// Non-NIL parameters point to a Pascal string in guest memory.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ParamTextParameters {
+    param_ptrs: [u32; PARAM_TEXT_SLOT_COUNT],
+}
+
+#[allow(dead_code)]
+impl ParamTextParameters {
+    /// Constructs a new `ParamTextParameters` with 4 parameter string pointers.
+    #[inline]
+    pub const fn new(param0: u32, param1: u32, param2: u32, param3: u32) -> Self {
+        Self {
+            param_ptrs: [param0, param1, param2, param3],
+        }
+    }
+
+    /// Pointer for param0 (`^0`).
+    #[inline]
+    pub const fn param0(&self) -> u32 {
+        self.param_ptrs[0]
+    }
+
+    /// Pointer for param1 (`^1`).
+    #[inline]
+    pub const fn param1(&self) -> u32 {
+        self.param_ptrs[1]
+    }
+
+    /// Pointer for param2 (`^2`).
+    #[inline]
+    pub const fn param2(&self) -> u32 {
+        self.param_ptrs[2]
+    }
+
+    /// Pointer for param3 (`^3`).
+    #[inline]
+    pub const fn param3(&self) -> u32 {
+        self.param_ptrs[3]
+    }
+
+    /// Pointer for the specified 0-indexed parameter slot (`0..3`).
+    #[inline]
+    pub fn param(&self, index: usize) -> u32 {
+        self.param_ptrs.get(index).copied().unwrap_or(0)
+    }
+
+    /// All 4 parameter pointers as a fixed-size array reference.
+    #[inline]
+    pub const fn param_ptrs(&self) -> &[u32; PARAM_TEXT_SLOT_COUNT] {
+        &self.param_ptrs
+    }
+
+    /// Whether the specified slot has a non-NIL pointer.
+    #[inline]
+    pub fn has_param(&self, index: usize) -> bool {
+        self.param(index) != 0
+    }
+}
+
+/// Evaluates and validates input parameters for `ParamText`.
+#[inline]
+pub const fn evaluate_param_text_parameters(
+    param0: u32,
+    param1: u32,
+    param2: u32,
+    param3: u32,
+) -> ParamTextParameters {
+    ParamTextParameters::new(param0, param1, param2, param3)
+}
+
 /// The evaluated outcome of a `ParamText` invocation.
 ///
 /// Inside Macintosh Volume I, p. I-422;
@@ -7844,6 +7920,28 @@ mod tests {
         let clamped = evaluate_param_text([Some(&long_bytes), None, None, None]);
         assert_eq!(clamped.slot(0).unwrap().len(), 255);
         assert_eq!(clamped.slot(0).unwrap(), &vec![b'X'; 255][..]);
+
+        // ParamTextParameters evaluation
+        let params = evaluate_param_text_parameters(0x1000, 0, 0x2000, 0x3000);
+        assert_eq!(params.param0(), 0x1000);
+        assert_eq!(params.param1(), 0);
+        assert_eq!(params.param2(), 0x2000);
+        assert_eq!(params.param3(), 0x3000);
+        assert_eq!(params.param(0), 0x1000);
+        assert_eq!(params.param(1), 0);
+        assert_eq!(params.param(2), 0x2000);
+        assert_eq!(params.param(3), 0x3000);
+        assert_eq!(params.param(4), 0);
+        assert!(params.has_param(0));
+        assert!(!params.has_param(1));
+        assert!(params.has_param(2));
+        assert!(params.has_param(3));
+        assert!(!params.has_param(4));
+        assert_eq!(params.param_ptrs(), &[0x1000, 0, 0x2000, 0x3000]);
+        assert_eq!(
+            params,
+            ParamTextParameters::new(0x1000, 0, 0x2000, 0x3000)
+        );
     }
 
     #[test]

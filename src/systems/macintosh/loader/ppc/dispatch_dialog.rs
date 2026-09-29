@@ -18,9 +18,9 @@ use crate::dialog_manager::{
     evaluate_alert_parameters,
     extract_dialog_item_text_bytes, find_dialog_item_hit, global_to_dialog_local_point, offset_ditl_bytes, parse_ditl_items,
     position_dialog_bounds as unified_position_dialog_bounds, DialogItemHeader, DialogItemRecord,
-    GetNewDialogParameters, SelectDialogItemTextParameters,
+    GetNewDialogParameters, ParamTextParameters, SelectDialogItemTextParameters,
     evaluate_get_dialog_item_text, evaluate_get_dialog_item_text_parameters,
-    evaluate_set_dialog_item_text, evaluate_set_dialog_item_text_parameters,
+    evaluate_param_text_parameters, evaluate_set_dialog_item_text, evaluate_set_dialog_item_text_parameters,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -612,7 +612,13 @@ pub(super) fn dispatch_dialog_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ParamText => {
-            param_text.with_mut(|slots| ppc_param_text(cpu, memory, slots));
+            let params = evaluate_param_text_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4],
+                cpu.gpr[5],
+                cpu.gpr[6],
+            );
+            param_text.with_mut(|slots| ppc_param_text(memory, &params, slots));
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::AlertReturnDefault(kind) => {
@@ -1058,11 +1064,15 @@ fn ppc_release_dialog_storage(
     }
 }
 
-fn ppc_param_text(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, param_text: &mut [Vec<u8>; 4]) {
+fn ppc_param_text(
+    memory: &mut PpcSectionMem,
+    params: &ParamTextParameters,
+    param_text: &mut [Vec<u8>; 4],
+) {
     let mut storage: [Option<Vec<u8>>; crate::dialog_manager::PARAM_TEXT_SLOT_COUNT] =
         [None, None, None, None];
     for (index, slot_storage) in storage.iter_mut().enumerate() {
-        let ptr = cpu.gpr[3 + index];
+        let ptr = params.param(index);
         if ptr != 0 {
             if let Some(bytes) = ppc_read_pstring_bytes(memory, ptr) {
                 *slot_storage = Some(bytes);

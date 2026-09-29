@@ -18,6 +18,7 @@ use crate::dialog_manager::{
     evaluate_get_dialog_item_as_control_parameters, evaluate_get_dialog_item_parameters,
     evaluate_get_new_dialog_parameters,
     evaluate_get_std_filter_proc_parameters, evaluate_modal_dialog_parameters,
+    evaluate_param_text_parameters,
     evaluate_select_dialog_item_text_parameters, evaluate_set_dialog_cancel_item_parameters,
     evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_item_parameters,
     evaluate_set_dialog_tracks_cursor_parameters, evaluate_update_dialog_parameters,
@@ -11494,16 +11495,16 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let trap_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
                 // Stack layout (top-down): SP+0:param3, +4:param2, +8:param1, +12:param0.
-                // Per Inside Macintosh Volume I, I-422, passing NIL for any
-                // parameter leaves that slot's previous value unchanged —
-                // it's a "set this slot, leave others alone" idiom. Clearing
-                // on NIL would erase ^N output that an earlier ParamText
-                // had legitimately staged.
-                let offsets: [u32; 4] = [12, 8, 4, 0];
+                let param3 = bus.read_long(sp);
+                let param2 = bus.read_long(sp + 4);
+                let param1 = bus.read_long(sp + 8);
+                let param0 = bus.read_long(sp + 12);
+                cpu.write_reg(Register::A7, sp + 16);
+                let params = evaluate_param_text_parameters(param0, param1, param2, param3);
                 let mut sources: [Option<Vec<u8>>; crate::dialog_manager::PARAM_TEXT_SLOT_COUNT] =
                     [None, None, None, None];
-                for (i, &off) in offsets.iter().enumerate() {
-                    let ptr = bus.read_long(sp + off);
+                for i in 0..crate::dialog_manager::PARAM_TEXT_SLOT_COUNT {
+                    let ptr = params.param(i);
                     if ptr != 0 {
                         sources[i] = Some(bus.read_pstring(ptr));
                     }
@@ -11545,7 +11546,6 @@ impl super::TrapDispatcher {
                     String::from_utf8_lossy(&self.param_text.slot(2).unwrap_or_default()),
                     String::from_utf8_lossy(&self.param_text.slot(3).unwrap_or_default()),
                 );
-                cpu.write_reg(Register::A7, sp + 16);
                 Ok(())
             }
 
