@@ -10,8 +10,8 @@ use crate::dialog_manager::{
     evaluate_select_dialog_item_text, evaluate_set_dialog_cancel_item,
     evaluate_set_dialog_default_item, evaluate_set_dialog_tracks_cursor, evaluate_show_dialog_item,
     extract_dialog_item_text_bytes, find_dialog_item_hit, global_to_dialog_local_point, offset_ditl_bytes, parse_ditl_items,
-    position_dialog_bounds as unified_position_dialog_bounds, prepare_get_dialog_item_text,
-    prepare_set_dialog_item_text, DialogItemHeader, DialogItemRecord,
+    position_dialog_bounds as unified_position_dialog_bounds, DialogItemHeader, DialogItemRecord,
+    evaluate_get_dialog_item_text, evaluate_set_dialog_item_text,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_DEFAULT_ITEM, DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -359,13 +359,12 @@ pub(super) fn dispatch_dialog_import(
             // handle in its Str255 output parameter.
             let item_handle = cpu.gpr[3];
             let text_out_ptr = cpu.gpr[4];
-            if text_out_ptr != 0 {
-                let bytes = ppc_handle_bytes(memory, handles, item_handle).unwrap_or_default();
-                let (len, text) = prepare_get_dialog_item_text(&bytes);
-                if ppc_memory_can_write_bytes(memory, text_out_ptr, u32::from(len) + 1) {
-                    let _ = memory.write_u8(text_out_ptr, len);
-                    for (offset, byte) in text.iter().copied().enumerate() {
-                        let _ = memory.write_u8(text_out_ptr + 1 + offset as u32, byte);
+            let bytes = ppc_handle_bytes(memory, handles, item_handle).unwrap_or_default();
+            if let Some(eval) = evaluate_get_dialog_item_text(item_handle, text_out_ptr, &bytes) {
+                if ppc_memory_can_write_bytes(memory, eval.text_out_ptr, u32::from(eval.len) + 1) {
+                    let _ = memory.write_u8(eval.text_out_ptr, eval.len);
+                    for (offset, byte) in eval.text.iter().copied().enumerate() {
+                        let _ = memory.write_u8(eval.text_out_ptr + 1 + offset as u32, byte);
                     }
                 }
             }
@@ -379,29 +378,31 @@ pub(super) fn dispatch_dialog_import(
             let item_handle = cpu.gpr[3];
             let text_ptr = cpu.gpr[4];
             let raw_text = ppc_read_pstring_bytes(memory, text_ptr).unwrap_or_default();
-            let (text, decoded) = prepare_set_dialog_item_text(&raw_text);
-            if ppc_hle_trace_enabled() {
-                eprintln!(
-                    "[PPC-TRACE] SetDialogItemText handle=${item_handle:08X} text={:?}",
-                    decoded
+            if let Some(eval) = evaluate_set_dialog_item_text(item_handle, text_ptr, &raw_text) {
+                if ppc_hle_trace_enabled() {
+                    eprintln!(
+                        "[PPC-TRACE] SetDialogItemText handle=${:08X} text={:?}",
+                        eval.item_handle,
+                        eval.text
+                    );
+                }
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                let result = allocator.resize_handle(
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    handles,
+                    eval.item_handle,
+                    eval.byte_len() as u32,
                 );
-            }
-            let mut allocator = PpcProcessAllocatorView {
-                memory_manager: process_memory_manager,
-            };
-            let result = allocator.resize_handle(
-                memory,
-                heap_cursor,
-                last_mem_error,
-                handles,
-                item_handle,
-                text.len() as u32,
-            );
-            *last_mem_error = result;
-            if *last_mem_error == PPC_NO_ERR {
-                if let Some(ptr) = memory.read_u32_be(item_handle) {
-                    for (offset, byte) in text.iter().copied().enumerate() {
-                        let _ = memory.write_u8(ptr + offset as u32, byte);
+                *last_mem_error = result;
+                if *last_mem_error == PPC_NO_ERR {
+                    if let Some(ptr) = memory.read_u32_be(eval.item_handle) {
+                        for (offset, byte) in eval.bytes.iter().copied().enumerate() {
+                            let _ = memory.write_u8(ptr + offset as u32, byte);
+                        }
                     }
                 }
             }

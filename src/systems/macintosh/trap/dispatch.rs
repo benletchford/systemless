@@ -541,6 +541,11 @@ impl DialogItem {
         crate::dialog_manager::is_dialog_item_text(self.item_type)
     }
 
+    /// Sets the text content of this dialog item.
+    pub fn set_text(&mut self, text: &str) {
+        self.text = text.to_string();
+    }
+
     /// Whether the item represents a standard icon (`iconItem`, 32).
     pub fn is_icon(&self) -> bool {
         crate::dialog_manager::is_dialog_item_icon(self.item_type)
