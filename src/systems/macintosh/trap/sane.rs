@@ -1096,6 +1096,30 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    fn pack4_and_pack5_complete_through_full_dispatch() {
+        // Full dispatch routes Pack4 and Pack5 straight to the SANE adapter;
+        // the adapter-registry check in `dispatch_inner` confirms it is the
+        // declared one, and the results match the direct calls.
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.write_fp_extended(&mut bus, DST_ADDR, 3.0);
+        disp.write_fp_extended(&mut bus, SRC_ADDR, 2.0);
+        bus.write_word(TEST_SP, 0x0000); // FADD
+        bus.write_long(TEST_SP + 2, DST_ADDR);
+        bus.write_long(TEST_SP + 6, SRC_ADDR);
+        assert!(disp.dispatch(0xA9EB, &mut cpu, &mut bus).is_ok());
+        assert_eq!(disp.read_fp_extended(&bus, DST_ADDR), 5.0);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.write_fp_extended(&mut bus, DST_ADDR, 0.0);
+        bus.write_word(TEST_SP, 0x0008); // FEXPX (e^x)
+        bus.write_long(TEST_SP + 2, DST_ADDR);
+        assert!(disp.dispatch(0xA9EC, &mut cpu, &mut bus).is_ok());
+        assert_eq!(disp.read_fp_extended(&bus, DST_ADDR), 1.0);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+    }
+
+    #[test]
     fn test_fadd() {
         let (result, new_sp, _) = run_fp68k_two_addr(0x0000, 3.0, 2.0);
         assert!((result - 5.0).abs() < 1e-10, "expected 5.0, got {}", result);
