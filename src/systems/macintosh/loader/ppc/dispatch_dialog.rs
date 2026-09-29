@@ -7,8 +7,9 @@ use crate::dialog_manager::{
     evaluate_close_or_dispose_dialog, evaluate_count_ditl,
     evaluate_dialog_select, evaluate_find_dialog_item, evaluate_get_dialog_item,
     evaluate_get_dialog_item_as_control, evaluate_get_std_filter_proc, evaluate_hide_dialog_item,
-    evaluate_select_dialog_item_text, evaluate_set_dialog_cancel_item,
-    evaluate_set_dialog_default_item, evaluate_set_dialog_tracks_cursor, evaluate_show_dialog_item,
+    evaluate_select_dialog_item_text, evaluate_set_dialog_cancel_item_parameters,
+    evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_tracks_cursor,
+    evaluate_show_dialog_item,
     extract_dialog_item_text_bytes, find_dialog_item_hit, global_to_dialog_local_point, offset_ditl_bytes, parse_ditl_items,
     position_dialog_bounds as unified_position_dialog_bounds, DialogItemHeader, DialogItemRecord,
     evaluate_get_dialog_item_text, evaluate_set_dialog_item_text,
@@ -414,15 +415,22 @@ pub(super) fn dispatch_dialog_import(
             // Return activates and reports an OSErr.
             let dialog = cpu.gpr[3];
             let item = cpu.gpr[4] as u16 as i16;
-            let result = evaluate_set_dialog_default_item(dialog, item);
-            let os_err = if result.is_ok()
-                && memory
-                    .write_u16_be(dialog + DIALOG_DEFAULT_ITEM_OFFSET, item as u16)
-                    .is_some()
-            {
-                PPC_NO_ERR
-            } else {
-                result.err().unwrap_or(PPC_PARAM_ERR)
+            let result = evaluate_set_dialog_default_item_parameters(dialog, item);
+            let os_err = match result {
+                Ok(params) => {
+                    if memory
+                        .write_u16_be(
+                            params.dialog_ptr() + DIALOG_DEFAULT_ITEM_OFFSET,
+                            params.item_no() as u16,
+                        )
+                        .is_some()
+                    {
+                        PPC_NO_ERR
+                    } else {
+                        PPC_PARAM_ERR
+                    }
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(os_err)))
         }
@@ -432,15 +440,22 @@ pub(super) fn dispatch_dialog_import(
             // DialogRecord field. Keep it in the HLE tail of our allocation.
             let dialog = cpu.gpr[3];
             let item = cpu.gpr[4] as u16 as i16;
-            let result = evaluate_set_dialog_cancel_item(dialog, item);
-            let os_err = if result.is_ok()
-                && memory
-                    .write_u16_be(dialog + DIALOG_CANCEL_ITEM_OFFSET, item as u16)
-                    .is_some()
-            {
-                PPC_NO_ERR
-            } else {
-                result.err().unwrap_or(PPC_PARAM_ERR)
+            let result = evaluate_set_dialog_cancel_item_parameters(dialog, item);
+            let os_err = match result {
+                Ok(params) => {
+                    if memory
+                        .write_u16_be(
+                            params.dialog_ptr() + DIALOG_CANCEL_ITEM_OFFSET,
+                            params.item_no() as u16,
+                        )
+                        .is_some()
+                    {
+                        PPC_NO_ERR
+                    } else {
+                        PPC_PARAM_ERR
+                    }
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(os_err)))
         }

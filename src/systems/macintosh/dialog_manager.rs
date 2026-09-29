@@ -1628,27 +1628,99 @@ pub fn evaluate_get_dialog_item_as_control(
     }
 }
 
-/// Evaluates `SetDialogDefaultItem` parameter validity.
+/// Evaluated parameters for a `SetDialogDefaultItem` request.
 ///
-/// Macintosh Toolbox Essentials (1992), p. 6-164.
-/// Returns `Ok(DIALOG_NO_ERR)` if `dialog_ptr != 0`, or `Err(DIALOG_PARAM_ERR)` otherwise.
-pub fn evaluate_set_dialog_default_item(dialog_ptr: u32, _new_item: i16) -> Result<i16, i16> {
-    if dialog_ptr == 0 {
-        Err(DIALOG_PARAM_ERR)
-    } else {
-        Ok(DIALOG_NO_ERR)
+/// Macintosh Toolbox Essentials (1992), p. 6-164:
+/// `FUNCTION SetDialogDefaultItem(theDialog: DialogPtr; newItem: INTEGER): OSErr;`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SetDialogDefaultItemParameters {
+    dialog_ptr: u32,
+    item_no: i16,
+}
+
+impl SetDialogDefaultItemParameters {
+    #[inline]
+    #[must_use]
+    pub const fn new(dialog_ptr: u32, item_no: i16) -> Self {
+        Self {
+            dialog_ptr,
+            item_no,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn item_no(&self) -> i16 {
+        self.item_no
     }
 }
 
-/// Evaluates `SetDialogCancelItem` parameter validity.
+/// Evaluated parameters for a `SetDialogCancelItem` request.
 ///
-/// Macintosh Toolbox Essentials (1992), p. 6-165.
-/// Returns `Ok(DIALOG_NO_ERR)` if `dialog_ptr != 0`, or `Err(DIALOG_PARAM_ERR)` otherwise.
-pub fn evaluate_set_dialog_cancel_item(dialog_ptr: u32, _new_item: i16) -> Result<i16, i16> {
+/// Macintosh Toolbox Essentials (1992), p. 6-165:
+/// `FUNCTION SetDialogCancelItem(theDialog: DialogPtr; newItem: INTEGER): OSErr;`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SetDialogCancelItemParameters {
+    dialog_ptr: u32,
+    item_no: i16,
+}
+
+impl SetDialogCancelItemParameters {
+    #[inline]
+    #[must_use]
+    pub const fn new(dialog_ptr: u32, item_no: i16) -> Self {
+        Self {
+            dialog_ptr,
+            item_no,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn item_no(&self) -> i16 {
+        self.item_no
+    }
+}
+
+/// Evaluates `SetDialogDefaultItem` parameters.
+///
+/// Macintosh Toolbox Essentials (1992), p. 6-164.
+/// Returns `Ok(SetDialogDefaultItemParameters)` if `dialog_ptr != 0`, or `Err(DIALOG_PARAM_ERR)` otherwise.
+pub fn evaluate_set_dialog_default_item_parameters(
+    dialog_ptr: u32,
+    new_item: i16,
+) -> Result<SetDialogDefaultItemParameters, i16> {
     if dialog_ptr == 0 {
         Err(DIALOG_PARAM_ERR)
     } else {
-        Ok(DIALOG_NO_ERR)
+        Ok(SetDialogDefaultItemParameters::new(dialog_ptr, new_item))
+    }
+}
+
+/// Evaluates `SetDialogCancelItem` parameters.
+///
+/// Macintosh Toolbox Essentials (1992), p. 6-165.
+/// Returns `Ok(SetDialogCancelItemParameters)` if `dialog_ptr != 0`, or `Err(DIALOG_PARAM_ERR)` otherwise.
+pub fn evaluate_set_dialog_cancel_item_parameters(
+    dialog_ptr: u32,
+    new_item: i16,
+) -> Result<SetDialogCancelItemParameters, i16> {
+    if dialog_ptr == 0 {
+        Err(DIALOG_PARAM_ERR)
+    } else {
+        Ok(SetDialogCancelItemParameters::new(dialog_ptr, new_item))
     }
 }
 
@@ -6185,15 +6257,21 @@ mod tests {
 
     #[test]
     fn dialog_dispatch_extension_routines_and_count_ditl_evaluation() {
-        // evaluate_set_dialog_default_item
-        assert_eq!(evaluate_set_dialog_default_item(0x1000, 1), Ok(DIALOG_NO_ERR));
-        assert_eq!(evaluate_set_dialog_default_item(0x1000, -1), Ok(DIALOG_NO_ERR));
-        assert_eq!(evaluate_set_dialog_default_item(0, 1), Err(DIALOG_PARAM_ERR));
+        // evaluate_set_dialog_default_item_parameters
+        assert!(evaluate_set_dialog_default_item_parameters(0x1000, 1).is_ok());
+        assert!(evaluate_set_dialog_default_item_parameters(0x1000, -1).is_ok());
+        assert_eq!(
+            evaluate_set_dialog_default_item_parameters(0, 1),
+            Err(DIALOG_PARAM_ERR)
+        );
 
-        // evaluate_set_dialog_cancel_item
-        assert_eq!(evaluate_set_dialog_cancel_item(0x1000, 2), Ok(DIALOG_NO_ERR));
-        assert_eq!(evaluate_set_dialog_cancel_item(0x1000, 0), Ok(DIALOG_NO_ERR));
-        assert_eq!(evaluate_set_dialog_cancel_item(0, 2), Err(DIALOG_PARAM_ERR));
+        // evaluate_set_dialog_cancel_item_parameters
+        assert!(evaluate_set_dialog_cancel_item_parameters(0x1000, 2).is_ok());
+        assert!(evaluate_set_dialog_cancel_item_parameters(0x1000, 0).is_ok());
+        assert_eq!(
+            evaluate_set_dialog_cancel_item_parameters(0, 2),
+            Err(DIALOG_PARAM_ERR)
+        );
 
         // evaluate_set_dialog_tracks_cursor
         assert_eq!(evaluate_set_dialog_tracks_cursor(0x1000, true), Ok(DIALOG_NO_ERR));
@@ -6975,6 +7053,49 @@ mod tests {
         assert_eq!(select_direct.item_hit_ptr(), 0);
         assert!(select_direct.has_dialog_out());
         assert!(!select_direct.has_item_hit_out());
+    }
+
+    #[test]
+    fn set_dialog_default_and_cancel_item_parameters_evaluation() {
+        // evaluate_set_dialog_default_item_parameters
+        assert_eq!(
+            evaluate_set_dialog_default_item_parameters(0, 1),
+            Err(DIALOG_PARAM_ERR)
+        );
+
+        let default_params = evaluate_set_dialog_default_item_parameters(0x0004_1234, 1)
+            .expect("valid default item parameters should evaluate");
+        assert_eq!(default_params.dialog_ptr(), 0x0004_1234);
+        assert_eq!(default_params.item_no(), 1);
+
+        let default_negative = evaluate_set_dialog_default_item_parameters(0x0004_1234, -1)
+            .expect("valid negative default item should evaluate");
+        assert_eq!(default_negative.dialog_ptr(), 0x0004_1234);
+        assert_eq!(default_negative.item_no(), -1);
+
+        let default_direct = SetDialogDefaultItemParameters::new(0x0005_2345, 3);
+        assert_eq!(default_direct.dialog_ptr(), 0x0005_2345);
+        assert_eq!(default_direct.item_no(), 3);
+
+        // evaluate_set_dialog_cancel_item_parameters
+        assert_eq!(
+            evaluate_set_dialog_cancel_item_parameters(0, 2),
+            Err(DIALOG_PARAM_ERR)
+        );
+
+        let cancel_params = evaluate_set_dialog_cancel_item_parameters(0x0006_3456, 2)
+            .expect("valid cancel item parameters should evaluate");
+        assert_eq!(cancel_params.dialog_ptr(), 0x0006_3456);
+        assert_eq!(cancel_params.item_no(), 2);
+
+        let cancel_zero = evaluate_set_dialog_cancel_item_parameters(0x0006_3456, 0)
+            .expect("valid zero cancel item should evaluate");
+        assert_eq!(cancel_zero.dialog_ptr(), 0x0006_3456);
+        assert_eq!(cancel_zero.item_no(), 0);
+
+        let cancel_direct = SetDialogCancelItemParameters::new(0x0007_4567, 4);
+        assert_eq!(cancel_direct.dialog_ptr(), 0x0007_4567);
+        assert_eq!(cancel_direct.item_no(), 4);
     }
 }
 
