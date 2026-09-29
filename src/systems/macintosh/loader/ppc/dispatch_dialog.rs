@@ -23,6 +23,7 @@ use crate::dialog_manager::{
     evaluate_alert_dialog_record_init, evaluate_find_dialog_item_parameters_packed,
     evaluate_get_dialog_item_text, evaluate_get_dialog_item_text_parameters,
     evaluate_param_text_parameters, evaluate_set_dialog_item_text, evaluate_set_dialog_item_text_parameters,
+    evaluate_std_filter_proc, evaluate_std_filter_proc_event, evaluate_std_filter_proc_parameters,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -2737,27 +2738,39 @@ fn ppc_read_dialog_event(memory: &mut PpcSectionMem, event_ptr: u32) -> Option<P
 }
 
 pub(super) fn ppc_standard_filter_proc(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> u32 {
-    // Inside Macintosh Volume I (1985), p. I-415: the standard filter returns
-    // TRUE and sets itemHit to the default item for Return or Enter.
+    // Inside Macintosh Volume I (1985), p. I-415;
+    // Macintosh Toolbox Essentials (1992), p. 6-144;
+    // Apple Dialog Manager Reference (2007), p. 43:
+    // the standard filter returns TRUE and sets itemHit to the default item for Return or Enter.
     let dialog = cpu.gpr[3];
     let event_ptr = cpu.gpr[4];
     let item_hit_ptr = cpu.gpr[5];
-    let Some(event) = ppc_read_dialog_event(memory, event_ptr) else {
+    let Some(params) = evaluate_std_filter_proc_parameters(dialog, event_ptr, item_hit_ptr) else {
         return 0;
     };
-    if crate::dialog_manager::evaluate_modal_dialog_key(event.what, event.message, event.modifiers)
-        != crate::dialog_manager::DialogFilterDecision::TriggerDefaultButton
-    {
+    let Some(event) = ppc_read_dialog_event(memory, params.event_ptr()) else {
         return 0;
-    }
-    let Some(default_item) = dialog
+    };
+    let default_item = params
+        .dialog_ptr()
         .checked_add(DIALOG_DEFAULT_ITEM_OFFSET)
         .and_then(|address| memory.read_u16_be(address))
-        .filter(|item| *item != 0)
-    else {
-        return 0;
-    };
-    u32::from(memory.write_u16_be(item_hit_ptr, default_item).is_some())
+        .map(|item| item as i16);
+    let eval = evaluate_std_filter_proc_event(
+        event.what,
+        event.message,
+        event.modifiers,
+        default_item,
+    );
+    if let Some(item_hit) = eval.item_hit() {
+        if memory
+            .write_u16_be(params.item_hit_ptr(), item_hit as u16)
+            .is_none()
+        {
+            return 0;
+        }
+    }
+    eval.boolean_result()
 }
 
 fn ppc_dialog_for_event(
@@ -3668,10 +3681,12 @@ fn ppc_modal_dialog(
                 event.message,
                 event.modifiers,
             );
-            if decision == crate::dialog_manager::DialogFilterDecision::TriggerDefaultButton {
-                memory
-                    .read_u16_be(dialog + DIALOG_DEFAULT_ITEM_OFFSET)
-                    .filter(|item| *item != 0)
+            let default_item = memory
+                .read_u16_be(dialog + DIALOG_DEFAULT_ITEM_OFFSET)
+                .map(|item| item as i16);
+            let filter_eval = evaluate_std_filter_proc(decision, default_item);
+            if let Some(item_hit) = filter_eval.item_hit() {
+                Some(item_hit as u16)
             } else if decision == crate::dialog_manager::DialogFilterDecision::TriggerCancelButton {
                 let configured_cancel = memory
                     .read_u16_be(dialog + DIALOG_CANCEL_ITEM_OFFSET)

@@ -3655,6 +3655,174 @@ pub fn evaluate_modal_dialog_key(
     }
 }
 
+/// Evaluated parameters for a `StdFilterProc` invocation.
+///
+/// Inside Macintosh Volume I (1985), p. I-415;
+/// Macintosh Toolbox Essentials (1992), p. 6-144;
+/// Apple Dialog Manager Reference (2007), p. 43:
+/// `FUNCTION StdFilterProc (theDialog: DialogPtr; VAR theEvent: EventRecord; VAR itemHit: INTEGER): BOOLEAN;`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StdFilterProcParameters {
+    dialog_ptr: u32,
+    event_ptr: u32,
+    item_hit_ptr: u32,
+}
+
+impl StdFilterProcParameters {
+    /// Constructs a new `StdFilterProcParameters` instance.
+    #[inline]
+    #[must_use]
+    pub const fn new(dialog_ptr: u32, event_ptr: u32, item_hit_ptr: u32) -> Self {
+        Self {
+            dialog_ptr,
+            event_ptr,
+            item_hit_ptr,
+        }
+    }
+
+    /// Guest pointer to the target `DialogRecord`.
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// Guest pointer to the incoming `EventRecord`.
+    #[inline]
+    #[must_use]
+    pub const fn event_ptr(&self) -> u32 {
+        self.event_ptr
+    }
+
+    /// Guest pointer to the output `itemHit` variable.
+    #[inline]
+    #[must_use]
+    pub const fn item_hit_ptr(&self) -> u32 {
+        self.item_hit_ptr
+    }
+}
+
+/// Evaluates and validates input parameters for a `StdFilterProc` invocation.
+///
+/// Inside Macintosh Volume I (1985), p. I-415;
+/// Macintosh Toolbox Essentials (1992), p. 6-144;
+/// Apple Dialog Manager Reference (2007), p. 43.
+/// Returns `None` if `dialog_ptr == 0`, `event_ptr == 0`, or `item_hit_ptr == 0`.
+#[inline]
+pub const fn evaluate_std_filter_proc_parameters(
+    dialog_ptr: u32,
+    event_ptr: u32,
+    item_hit_ptr: u32,
+) -> Option<StdFilterProcParameters> {
+    if dialog_ptr == 0 || event_ptr == 0 || item_hit_ptr == 0 {
+        None
+    } else {
+        Some(StdFilterProcParameters::new(
+            dialog_ptr,
+            event_ptr,
+            item_hit_ptr,
+        ))
+    }
+}
+
+/// Canonical evaluation result for `StdFilterProc`.
+///
+/// Inside Macintosh Volume I (1985), p. I-415;
+/// Macintosh Toolbox Essentials (1992), p. 6-144;
+/// Apple Dialog Manager Reference (2007), p. 43:
+/// `StdFilterProc` returns `TRUE` if the user presses Return or Enter and the dialog
+/// box contains an enabled default button, returning that item number in `itemHit`.
+/// Otherwise, returns `FALSE`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StdFilterProcEvaluation {
+    handled: bool,
+    item_hit: Option<i16>,
+}
+
+impl StdFilterProcEvaluation {
+    /// Result indicating the event was not handled by the standard filter procedure.
+    #[inline]
+    #[must_use]
+    pub const fn unhandled() -> Self {
+        Self {
+            handled: false,
+            item_hit: None,
+        }
+    }
+
+    /// Result indicating the event was handled by triggering the default button.
+    #[inline]
+    #[must_use]
+    pub const fn handled(item_hit: i16) -> Self {
+        Self {
+            handled: true,
+            item_hit: Some(item_hit),
+        }
+    }
+
+    /// Returns `true` if the event was handled by the standard filter procedure.
+    #[allow(dead_code)]
+    #[inline]
+    #[must_use]
+    pub const fn is_handled(&self) -> bool {
+        self.handled
+    }
+
+    /// The item number hit if handled, or `None` if unhandled.
+    #[inline]
+    #[must_use]
+    pub const fn item_hit(&self) -> Option<i16> {
+        self.item_hit
+    }
+
+    /// Returns the boolean result as a 32-bit integer (1 for `TRUE`, 0 for `FALSE`).
+    #[inline]
+    #[must_use]
+    pub const fn boolean_result(&self) -> u32 {
+        if self.handled {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+/// Evaluates `StdFilterProc` event handling given a filter decision and default item number.
+///
+/// Inside Macintosh Volume I (1985), p. I-415;
+/// Macintosh Toolbox Essentials (1992), p. 6-144;
+/// Apple Dialog Manager Reference (2007), p. 43:
+/// Returns handled if `decision` is `DialogFilterDecision::TriggerDefaultButton`
+/// and `default_item` contains a valid 1-indexed item number (> 0).
+#[inline]
+pub fn evaluate_std_filter_proc(
+    decision: DialogFilterDecision,
+    default_item: Option<i16>,
+) -> StdFilterProcEvaluation {
+    if decision == DialogFilterDecision::TriggerDefaultButton {
+        if let Some(item) = default_item.filter(|&item| item > 0) {
+            return StdFilterProcEvaluation::handled(item);
+        }
+    }
+    StdFilterProcEvaluation::unhandled()
+}
+
+/// Evaluates `StdFilterProc` for a given raw event and default item number.
+///
+/// Inside Macintosh Volume I (1985), p. I-415;
+/// Macintosh Toolbox Essentials (1992), p. 6-144;
+/// Apple Dialog Manager Reference (2007), p. 43.
+#[inline]
+pub fn evaluate_std_filter_proc_event(
+    event_what: u16,
+    message: u32,
+    modifiers: u16,
+    default_item: Option<i16>,
+) -> StdFilterProcEvaluation {
+    let decision = evaluate_modal_dialog_key(event_what, message, modifiers);
+    evaluate_std_filter_proc(decision, default_item)
+}
+
 /// Find the next `editText` item in item-list order, wrapping cyclically.
 ///
 /// Takes an iterator of item types (raw `u8`) and the current 1-indexed
@@ -9058,6 +9226,103 @@ mod tests {
         assert_eq!(direct.filter_proc(), 0x4000);
         assert!(direct.has_filter_proc());
         assert_eq!(direct.kind(), AlertKind::Stop);
+    }
+
+    #[test]
+    fn std_filter_proc_parameter_and_event_evaluation() {
+        // evaluate_std_filter_proc_parameters validation
+        assert_eq!(evaluate_std_filter_proc_parameters(0, 0x1000, 0x2000), None);
+        assert_eq!(evaluate_std_filter_proc_parameters(0x3000, 0, 0x2000), None);
+        assert_eq!(evaluate_std_filter_proc_parameters(0x3000, 0x1000, 0), None);
+
+        let params = evaluate_std_filter_proc_parameters(0x3000, 0x1000, 0x2000).unwrap();
+        assert_eq!(params.dialog_ptr(), 0x3000);
+        assert_eq!(params.event_ptr(), 0x1000);
+        assert_eq!(params.item_hit_ptr(), 0x2000);
+
+        let direct = StdFilterProcParameters::new(0x4000, 0x5000, 0x6000);
+        assert_eq!(direct.dialog_ptr(), 0x4000);
+        assert_eq!(direct.event_ptr(), 0x5000);
+        assert_eq!(direct.item_hit_ptr(), 0x6000);
+
+        // StdFilterProcEvaluation accessors
+        let unhandled = StdFilterProcEvaluation::unhandled();
+        assert!(!unhandled.is_handled());
+        assert_eq!(unhandled.item_hit(), None);
+        assert_eq!(unhandled.boolean_result(), 0);
+
+        let handled = StdFilterProcEvaluation::handled(1);
+        assert!(handled.is_handled());
+        assert_eq!(handled.item_hit(), Some(1));
+        assert_eq!(handled.boolean_result(), 1);
+
+        // evaluate_std_filter_proc decision evaluation
+        assert_eq!(
+            evaluate_std_filter_proc(DialogFilterDecision::TriggerDefaultButton, Some(1)),
+            StdFilterProcEvaluation::handled(1)
+        );
+        assert_eq!(
+            evaluate_std_filter_proc(DialogFilterDecision::TriggerDefaultButton, Some(2)),
+            StdFilterProcEvaluation::handled(2)
+        );
+        assert_eq!(
+            evaluate_std_filter_proc(DialogFilterDecision::TriggerDefaultButton, Some(0)),
+            StdFilterProcEvaluation::unhandled()
+        );
+        assert_eq!(
+            evaluate_std_filter_proc(DialogFilterDecision::TriggerDefaultButton, Some(-1)),
+            StdFilterProcEvaluation::unhandled()
+        );
+        assert_eq!(
+            evaluate_std_filter_proc(DialogFilterDecision::TriggerDefaultButton, None),
+            StdFilterProcEvaluation::unhandled()
+        );
+        assert_eq!(
+            evaluate_std_filter_proc(DialogFilterDecision::TriggerCancelButton, Some(1)),
+            StdFilterProcEvaluation::unhandled()
+        );
+        assert_eq!(
+            evaluate_std_filter_proc(DialogFilterDecision::AdvanceEditTextFocus, Some(1)),
+            StdFilterProcEvaluation::unhandled()
+        );
+        assert_eq!(
+            evaluate_std_filter_proc(DialogFilterDecision::Unhandled, Some(1)),
+            StdFilterProcEvaluation::unhandled()
+        );
+
+        // evaluate_std_filter_proc_event event evaluation
+        let return_msg = (u32::from(KEY_RETURN) << 8) | u32::from(CHAR_RETURN);
+        let eval_return = evaluate_std_filter_proc_event(EVENT_KEY_DOWN, return_msg, 0, Some(2));
+        assert!(eval_return.is_handled());
+        assert_eq!(eval_return.item_hit(), Some(2));
+        assert_eq!(eval_return.boolean_result(), 1);
+
+        let eval_return_auto = evaluate_std_filter_proc_event(EVENT_AUTO_KEY, return_msg, 0, Some(3));
+        assert!(eval_return_auto.is_handled());
+        assert_eq!(eval_return_auto.item_hit(), Some(3));
+        assert_eq!(eval_return_auto.boolean_result(), 1);
+
+        let enter_msg = (u32::from(KEY_NUMPAD_ENTER) << 8) | u32::from(CHAR_ENTER);
+        let eval_enter = evaluate_std_filter_proc_event(EVENT_KEY_DOWN, enter_msg, 0, Some(1));
+        assert!(eval_enter.is_handled());
+        assert_eq!(eval_enter.item_hit(), Some(1));
+        assert_eq!(eval_enter.boolean_result(), 1);
+
+        let esc_msg = (u32::from(KEY_ESCAPE) << 8) | u32::from(CHAR_ESCAPE);
+        let eval_esc = evaluate_std_filter_proc_event(EVENT_KEY_DOWN, esc_msg, 0, Some(1));
+        assert!(!eval_esc.is_handled());
+        assert_eq!(eval_esc.item_hit(), None);
+        assert_eq!(eval_esc.boolean_result(), 0);
+
+        let eval_no_default = evaluate_std_filter_proc_event(EVENT_KEY_DOWN, return_msg, 0, None);
+        assert!(!eval_no_default.is_handled());
+        assert_eq!(eval_no_default.item_hit(), None);
+        assert_eq!(eval_no_default.boolean_result(), 0);
+
+        let eval_mouse = evaluate_std_filter_proc_event(1, return_msg, 0, Some(1));
+        assert!(!eval_mouse.is_handled());
+        assert_eq!(eval_mouse.item_hit(), None);
+        assert_eq!(eval_mouse.boolean_result(), 0);
     }
 }
 
