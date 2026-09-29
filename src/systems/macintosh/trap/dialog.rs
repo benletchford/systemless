@@ -24,7 +24,8 @@ use crate::dialog_manager::{
     is_dialog_item_control, is_dialog_item_disabled, is_dialog_item_edit_text,
     is_dialog_item_enabled, is_dialog_item_resource, is_dialog_item_text,
     normalize_selection_bounds, evaluate_get_dialog_item_text,
-    evaluate_set_dialog_item_text, rect_contains_point, DialogItemHeader,
+    evaluate_get_dialog_item_text_parameters, evaluate_set_dialog_item_text,
+    evaluate_set_dialog_item_text_parameters, rect_contains_point, DialogItemHeader,
     DIALOG_DBOX_FRAME_MARGIN, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX,
     DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO,
     DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT, DIALOG_ITEM_USER_ITEM,
@@ -16410,14 +16411,17 @@ impl super::TrapDispatcher {
                 let item_handle = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
 
-                let raw_bytes = if text_str_ptr != 0 {
-                    bus.read_pstring(text_str_ptr)
-                } else {
-                    Vec::new()
-                };
-                let Some(eval) = evaluate_set_dialog_item_text(
+                let Some(params) = evaluate_set_dialog_item_text_parameters(
                     item_handle,
                     text_str_ptr,
+                ) else {
+                    return Some(Ok(()));
+                };
+
+                let raw_bytes = bus.read_pstring(params.text_ptr());
+                let Some(eval) = evaluate_set_dialog_item_text(
+                    params.item_handle(),
+                    params.text_ptr(),
                     &raw_bytes,
                 ) else {
                     return Some(Ok(()));
@@ -16495,15 +16499,19 @@ impl super::TrapDispatcher {
                 let item_handle = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
 
-                if text_ptr == 0 {
+                let Some(params) = evaluate_get_dialog_item_text_parameters(
+                    item_handle,
+                    text_ptr,
+                    true,
+                ) else {
                     return Some(Ok(()));
-                }
+                };
 
                 // If dialog tracking is active, return the current edit text
                 let mut wrote = false;
                 if let Some(ref tracking) = self.dialog_tracking {
                     let current_edit_handle =
-                        self.dialog_item_handles.get(&item_handle).copied().filter(
+                        self.dialog_item_handles.get(&params.item_handle()).copied().filter(
                             |(dlg_ptr, idx)| {
                                 *dlg_ptr == tracking.dialog_ptr
                                     && (*idx as i16 + 1) == tracking.edit_item
@@ -16512,8 +16520,8 @@ impl super::TrapDispatcher {
                     if current_edit_handle.is_some() {
                         let bytes = encode_mac_roman_lossy(&tracking.edit_text);
                         if let Some(eval) = evaluate_get_dialog_item_text(
-                            item_handle,
-                            text_ptr,
+                            params.item_handle(),
+                            params.text_out_ptr(),
                             &bytes,
                         ) {
                             bus.write_byte(eval.text_out_ptr, eval.len);
@@ -16527,14 +16535,14 @@ impl super::TrapDispatcher {
                 if !wrote {
                     // Text item handles store raw bytes, not a Pascal-length byte.
                     // Inside Macintosh Volume I, I-422; Executor dialManip.cpp
-                    if item_handle != 0 {
-                        let master = bus.read_long(item_handle);
+                    if params.has_handle() {
+                        let master = bus.read_long(params.item_handle());
                         if master != 0 {
                             let total_size = bus.get_alloc_size(master).unwrap_or(0) as usize;
                             let raw_bytes = bus.read_bytes(master, total_size);
                             if let Some(eval) = evaluate_get_dialog_item_text(
-                                item_handle,
-                                text_ptr,
+                                params.item_handle(),
+                                params.text_out_ptr(),
                                 &raw_bytes,
                             ) {
                                 bus.write_byte(eval.text_out_ptr, eval.len);
@@ -16546,7 +16554,7 @@ impl super::TrapDispatcher {
                         }
                     }
                     if !wrote {
-                        bus.write_byte(text_ptr, 0);
+                        bus.write_byte(params.text_out_ptr(), 0);
                     }
                 }
                 Ok(())
