@@ -545,6 +545,29 @@ impl DialogItem {
     pub fn is_picture(&self) -> bool {
         crate::dialog_manager::is_dialog_item_picture(self.item_type)
     }
+
+    /// Whether the item rectangle is moved off-screen via `HideDialogItem`.
+    pub fn is_hidden(&self) -> bool {
+        crate::dialog_manager::is_dialog_item_rect_hidden(self.rect)
+    }
+
+    /// Calculate the enclosing rectangle for invalidation and redrawing.
+    pub fn enclosing_rect(&self) -> (i16, i16, i16, i16) {
+        crate::dialog_manager::dialog_item_enclosing_rect(self.item_type, self.rect)
+    }
+
+    /// Evaluates hiding this item, returning the visibility change if it is currently visible.
+    pub fn evaluate_hide(&self) -> Option<crate::dialog_manager::DialogItemVisibilityChange> {
+        crate::dialog_manager::evaluate_hide_dialog_item(self.item_type, self.rect)
+    }
+
+    /// Evaluates restoring this item, returning the visibility change if it is currently hidden.
+    pub fn evaluate_show(
+        &self,
+        original_rect: Option<(i16, i16, i16, i16)>,
+    ) -> Option<crate::dialog_manager::DialogItemVisibilityChange> {
+        crate::dialog_manager::evaluate_show_dialog_item(self.item_type, self.rect, original_rect)
+    }
 }
 
 impl From<crate::dialog_manager::DialogItemRecord> for DialogItem {

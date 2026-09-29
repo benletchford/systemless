@@ -399,6 +399,19 @@ impl DialogItemRecord {
     pub fn enclosing_rect(&self) -> (i16, i16, i16, i16) {
         dialog_item_enclosing_rect(self.item_type, self.rect)
     }
+
+    /// Evaluates hiding this item, returning the visibility change if it is currently visible.
+    pub fn evaluate_hide(&self) -> Option<DialogItemVisibilityChange> {
+        evaluate_hide_dialog_item(self.item_type, self.rect)
+    }
+
+    /// Evaluates restoring this item, returning the visibility change if it is currently hidden.
+    pub fn evaluate_show(
+        &self,
+        original_rect: Option<(i16, i16, i16, i16)>,
+    ) -> Option<DialogItemVisibilityChange> {
+        evaluate_show_dialog_item(self.item_type, self.rect, original_rect)
+    }
 }
 
 #[inline]
@@ -810,10 +823,69 @@ pub fn dialog_item_enclosing_rect(
     }
 }
 
+/// The resulting geometry changes when a dialog item's visibility state transitions
+/// via `HideDialogItem` or `ShowDialogItem`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DialogItemVisibilityChange {
+    /// The updated display rectangle for the item (`item.rect`).
+    pub new_rect: (i16, i16, i16, i16),
+    /// The local rectangle requiring invalidation and/or background erasure.
+    pub enclosing_rect: (i16, i16, i16, i16),
+}
+
+/// Evaluates whether a dialog item should be hidden, and calculates its new offscreen
+/// display rectangle and local invalidation/erasure rectangle.
+///
+/// Macintosh Toolbox Essentials (1992), p. 6-123:
+/// If the item's display rectangle is already offscreen (`left > 8192`), returns `None`.
+/// Otherwise, offsets the left and right coordinates by `+16384` and returns the
+/// new display rectangle and the enclosing rectangle of the original visible item.
+pub fn evaluate_hide_dialog_item(
+    item_type: u8,
+    current_rect: (i16, i16, i16, i16),
+) -> Option<DialogItemVisibilityChange> {
+    if is_dialog_item_rect_hidden(current_rect) {
+        None
+    } else {
+        Some(DialogItemVisibilityChange {
+            new_rect: hide_dialog_item_rect(current_rect),
+            enclosing_rect: dialog_item_enclosing_rect(item_type, current_rect),
+        })
+    }
+}
+
+/// Evaluates whether a hidden dialog item should be made visible again, and calculates
+/// its restored onscreen display rectangle and local invalidation rectangle.
+///
+/// Macintosh Toolbox Essentials (1992), p. 6-124:
+/// If the item's display rectangle is already visible (`left <= 8192`), returns `None`.
+/// Otherwise, restores the original rectangle (using `original_rect` if provided and visible,
+/// or subtracting 16384 from left and right) and returns the restored display rectangle
+/// and its enclosing rectangle.
+pub fn evaluate_show_dialog_item(
+    item_type: u8,
+    current_rect: (i16, i16, i16, i16),
+    original_rect: Option<(i16, i16, i16, i16)>,
+) -> Option<DialogItemVisibilityChange> {
+    if !is_dialog_item_rect_hidden(current_rect) {
+        None
+    } else {
+        let restored_rect = match original_rect {
+            Some(orig) if !is_dialog_item_rect_hidden(orig) => orig,
+            _ => show_dialog_item_rect(current_rect),
+        };
+        Some(DialogItemVisibilityChange {
+            new_rect: restored_rect,
+            enclosing_rect: dialog_item_enclosing_rect(item_type, restored_rect),
+        })
+    }
+}
+
 /// Find the 0-based index of the first item whose rectangle contains the dialog-local point.
 ///
 /// Inside Macintosh Volume IV, p. IV-60;
 /// Macintosh Toolbox Essentials (1992), p. 6-125.
+#[allow(dead_code)]
 pub fn find_dialog_item_at_local_point<'a>(
     rects: impl IntoIterator<Item = &'a (i16, i16, i16, i16)>,
     pt_v: i16,
@@ -825,6 +897,39 @@ pub fn find_dialog_item_at_local_point<'a>(
         }
     }
     None
+}
+
+/// Evaluates a `FindDItem` / `FindDialogItem` query against dialog items, returning the 0-indexed item number
+/// of the first matching item, or -1 if no item contains the point.
+///
+/// Inside Macintosh Volume IV, p. IV-60 and Macintosh Toolbox Essentials (1992), p. 6-125:
+/// Returns the 0-indexed item number of the first item (whether enabled or disabled) containing
+/// the point (in dialog-local coordinates), or -1 if none match. Hidden items (left > 8192)
+/// naturally fail the hit test.
+/// For control items, `control_part_hit` is called to allow transparent group box bodies
+/// or inactive controls to fall through to enclosed items.
+pub fn evaluate_find_dialog_item<I, F>(
+    items: I,
+    local_v: i16,
+    local_h: i16,
+    control_part_hit: F,
+) -> i16
+where
+    I: IntoIterator<Item = ((i16, i16, i16, i16), u8)>,
+    F: FnMut(usize) -> bool,
+{
+    find_dialog_item_hit(items, local_v, local_h, false, control_part_hit)
+        .map_or(-1, |idx| idx as i16)
+}
+
+/// Evaluates a `FindDItem` / `FindDialogItem` query against simple bounding rectangles,
+/// returning the 0-indexed item number or -1 if no item contains the point.
+#[allow(dead_code)]
+pub fn evaluate_find_dialog_item_rects<'a, I>(rects: I, local_v: i16, local_h: i16) -> i16
+where
+    I: IntoIterator<Item = &'a (i16, i16, i16, i16)>,
+{
+    find_dialog_item_at_local_point(rects, local_v, local_h).map_or(-1, |idx| idx as i16)
 }
 
 /// Hit-tests a dialog-local point against dialog items, returning the 0-based index of the first matching item.
@@ -4044,6 +4149,149 @@ mod tests {
             ),
             DialogSelectAction::NoAction
         );
+    }
+
+    #[test]
+    fn dialog_item_visibility_transitions_and_find_dialog_item() {
+        let visible_btn_rect = (10, 20, 30, 80);
+        let hidden_btn_rect = (
+            10,
+            20 + DIALOG_ITEM_HIDDEN_OFFSET,
+            30,
+            80 + DIALOG_ITEM_HIDDEN_OFFSET,
+        );
+        let visible_edit_rect = (40, 50, 60, 150);
+        let hidden_edit_rect = (
+            40,
+            50 + DIALOG_ITEM_HIDDEN_OFFSET,
+            60,
+            150 + DIALOG_ITEM_HIDDEN_OFFSET,
+        );
+
+        // evaluate_hide_dialog_item on visible button
+        let hide_btn = evaluate_hide_dialog_item(DIALOG_ITEM_BUTTON, visible_btn_rect);
+        assert_eq!(
+            hide_btn,
+            Some(DialogItemVisibilityChange {
+                new_rect: hidden_btn_rect,
+                enclosing_rect: visible_btn_rect,
+            })
+        );
+        // evaluate_hide_dialog_item on already-hidden button -> None
+        assert_eq!(
+            evaluate_hide_dialog_item(DIALOG_ITEM_BUTTON, hidden_btn_rect),
+            None
+        );
+
+        // evaluate_hide_dialog_item on visible edit text (outset 3px enclosing)
+        let hide_edit = evaluate_hide_dialog_item(DIALOG_ITEM_EDIT_TEXT, visible_edit_rect);
+        assert_eq!(
+            hide_edit,
+            Some(DialogItemVisibilityChange {
+                new_rect: hidden_edit_rect,
+                enclosing_rect: (37, 47, 63, 153),
+            })
+        );
+
+        // evaluate_show_dialog_item on already-visible button -> None
+        assert_eq!(
+            evaluate_show_dialog_item(DIALOG_ITEM_BUTTON, visible_btn_rect, None),
+            None
+        );
+
+        // evaluate_show_dialog_item on hidden button without original_rect
+        let show_btn = evaluate_show_dialog_item(DIALOG_ITEM_BUTTON, hidden_btn_rect, None);
+        assert_eq!(
+            show_btn,
+            Some(DialogItemVisibilityChange {
+                new_rect: visible_btn_rect,
+                enclosing_rect: visible_btn_rect,
+            })
+        );
+
+        // evaluate_show_dialog_item on hidden button with original_rect
+        let show_btn_orig = evaluate_show_dialog_item(
+            DIALOG_ITEM_BUTTON,
+            hidden_btn_rect,
+            Some(visible_btn_rect),
+        );
+        assert_eq!(
+            show_btn_orig,
+            Some(DialogItemVisibilityChange {
+                new_rect: visible_btn_rect,
+                enclosing_rect: visible_btn_rect,
+            })
+        );
+
+        // evaluate_show_dialog_item on hidden edit text (outset 3px enclosing)
+        let show_edit = evaluate_show_dialog_item(DIALOG_ITEM_EDIT_TEXT, hidden_edit_rect, None);
+        assert_eq!(
+            show_edit,
+            Some(DialogItemVisibilityChange {
+                new_rect: visible_edit_rect,
+                enclosing_rect: (37, 47, 63, 153),
+            })
+        );
+
+        // DialogItemRecord method delegation
+        let btn_record = DialogItemRecord {
+            item_offset: 0,
+            item_type: DIALOG_ITEM_BUTTON,
+            rect: visible_btn_rect,
+            handle: 0,
+            payload: Vec::new(),
+        };
+        assert!(!btn_record.is_hidden());
+        assert_eq!(btn_record.evaluate_hide(), hide_btn);
+        assert_eq!(btn_record.evaluate_show(None), None);
+
+        let mut hidden_record = btn_record;
+        hidden_record.rect = hidden_btn_rect;
+        assert!(hidden_record.is_hidden());
+        assert_eq!(hidden_record.evaluate_hide(), None);
+        assert_eq!(hidden_record.evaluate_show(None), show_btn);
+
+        // evaluate_find_dialog_item_rects
+        let rects = [
+            (10, 10, 40, 60),       // Item 0: button
+            (50, 10, 70, 100),      // Item 1: disabled static text
+            (10, 16404, 30, 16464), // Item 2: hidden item
+        ];
+        // Point in item 0
+        assert_eq!(evaluate_find_dialog_item_rects(&rects, 25, 25), 0);
+        // Point in disabled item 1 (FindDItem includes disabled items per IM:IV-60!)
+        assert_eq!(evaluate_find_dialog_item_rects(&rects, 60, 25), 1);
+        // Point in item 2's visible coordinates (20, 20) hits item 0, not hidden item 2
+        assert_eq!(evaluate_find_dialog_item_rects(&rects, 20, 20), 0);
+        // Point outside all items
+        assert_eq!(evaluate_find_dialog_item_rects(&rects, 200, 200), -1);
+        // Empty item list
+        let empty: [(i16, i16, i16, i16); 0] = [];
+        assert_eq!(evaluate_find_dialog_item_rects(&empty, 10, 10), -1);
+
+        // evaluate_find_dialog_item with control_part_hit and fall-through
+        let ditl_items = [
+            // Item 0: Group box control around item 1
+            ((10, 10, 150, 250), DIALOG_ITEM_RESOURCE_CONTROL),
+            // Item 1: Button inside group box
+            ((40, 30, 60, 110), DIALOG_ITEM_BUTTON),
+            // Item 2: Disabled static text
+            ((160, 10, 180, 100), DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_DISABLED_FLAG),
+        ];
+        let hit_test = |v, h| {
+            evaluate_find_dialog_item(ditl_items, v, h, |idx| {
+                // Group box body returns false (kControlNoPart)
+                idx != 0
+            })
+        };
+        // Point inside button: falls through group box body to button (item 1)
+        assert_eq!(hit_test(50, 70), 1);
+        // Point inside group box body only: falls through and hits nothing (-1)
+        assert_eq!(hit_test(120, 200), -1);
+        // Point inside disabled static text: returns item 2 (disabled items returned)
+        assert_eq!(hit_test(170, 50), 2);
+        // Point outside all items
+        assert_eq!(hit_test(300, 300), -1);
     }
 }
 
