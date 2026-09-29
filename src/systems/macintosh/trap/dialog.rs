@@ -10,13 +10,13 @@ use crate::cpu::{CpuOps, Register};
 use crate::dialog_manager::{
     dialog_dbox_frame_rect, dialog_item_base_type, dialog_item_resource_type,
     dialog_target_for_event, edit_text_frame_rect, find_dialog_item_hit,
-    global_to_dialog_local_point, is_dialog_item_control, is_dialog_item_disabled,
-    is_dialog_item_enabled, is_dialog_item_resource, is_dialog_item_text,
-    normalize_selection_bounds, prepare_get_dialog_item_text, prepare_set_dialog_item_text,
-    rect_contains_point, DIALOG_DBOX_FRAME_MARGIN, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX,
-    DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO,
-    DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT, DIALOG_ITEM_USER_ITEM,
-    DIALOG_TEXT_LEFT_INSET,
+    global_to_dialog_local_point, is_dialog_item_button, is_dialog_item_control,
+    is_dialog_item_disabled, is_dialog_item_edit_text, is_dialog_item_enabled,
+    is_dialog_item_resource, is_dialog_item_text, normalize_selection_bounds,
+    prepare_get_dialog_item_text, prepare_set_dialog_item_text, rect_contains_point,
+    DIALOG_DBOX_FRAME_MARGIN, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX, DIALOG_ITEM_EDIT_TEXT,
+    DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO, DIALOG_ITEM_RESOURCE_CONTROL,
+    DIALOG_ITEM_STATIC_TEXT, DIALOG_ITEM_USER_ITEM, DIALOG_TEXT_LEFT_INSET,
 };
 use crate::display::CursorImage;
 use crate::memory::SavedPixels;
@@ -745,8 +745,7 @@ impl super::TrapDispatcher {
             return None;
         };
         if items.iter().any(|item| {
-            dialog_item_base_type(item.item_type) == DIALOG_ITEM_USER_ITEM
-                && item.proc_ptr == proc_ptr
+            item.is_user_item() && item.proc_ptr == proc_ptr
         }) {
             Some(front)
         } else {
@@ -921,7 +920,7 @@ impl super::TrapDispatcher {
         });
         for (i, item) in items.iter().enumerate() {
             let item_rect = Self::dialog_item_screen_rect(bounds, item.rect);
-            if dialog_item_base_type(item.item_type) == DIALOG_ITEM_USER_ITEM
+            if item.is_user_item()
                 && item.proc_ptr != 0
                 && Self::rects_intersect(item_rect, bounds)
                 && effective_update_rect
@@ -4651,8 +4650,7 @@ impl super::TrapDispatcher {
             && items
                 .get((stored_edit_item - 1) as usize)
                 .is_some_and(|item| {
-                    dialog_item_base_type(item.item_type) == DIALOG_ITEM_EDIT_TEXT
-                        && is_dialog_item_enabled(item.item_type)
+                    item.is_edit_text() && item.is_enabled()
                 });
         let edit_item = if stored_is_valid {
             stored_edit_item
@@ -4660,8 +4658,7 @@ impl super::TrapDispatcher {
             items
                 .iter()
                 .position(|item| {
-                    dialog_item_base_type(item.item_type) == DIALOG_ITEM_EDIT_TEXT
-                        && is_dialog_item_enabled(item.item_type)
+                    item.is_edit_text() && item.is_enabled()
                 })
                 .map(|idx| (idx + 1) as i16)
                 .unwrap_or(0)
@@ -4691,7 +4688,7 @@ impl super::TrapDispatcher {
             return;
         }
         if let Some(item) = tracking.items.get_mut((edit_item - 1) as usize) {
-            if dialog_item_base_type(item.item_type) == DIALOG_ITEM_EDIT_TEXT {
+            if item.is_edit_text() {
                 item.text = tracking.edit_text.clone();
             }
         }
@@ -4707,7 +4704,7 @@ impl super::TrapDispatcher {
             return;
         }
         if let Some(item) = tracking.items.get_mut((edit_item - 1) as usize) {
-            if dialog_item_base_type(item.item_type) == DIALOG_ITEM_EDIT_TEXT {
+            if item.is_edit_text() {
                 let text_len = encode_mac_roman_lossy(&tracking.edit_text).len();
                 item.sel_start = sel_start.min(text_len).min(i16::MAX as usize) as i16;
                 item.sel_end = sel_end.min(text_len).min(i16::MAX as usize) as i16;
@@ -5791,7 +5788,7 @@ impl super::TrapDispatcher {
             .iter()
             .enumerate()
             .filter(|(i, it)| {
-                dialog_item_base_type(it.item_type) == DIALOG_ITEM_USER_ITEM
+                it.is_user_item()
                     && (!skip_disabled_placeholders
                         || is_dialog_item_enabled(it.item_type)
                         || it.proc_ptr != 0)
@@ -5876,9 +5873,7 @@ impl super::TrapDispatcher {
         // items. DrawDialog must still render those items (MTE 1992, 6-142).
         if !skip_pictures && !user_item_backups.is_empty() {
             for item in items {
-                if dialog_item_base_type(item.item_type) == DIALOG_ITEM_PICTURE
-                    && item.resource_id != 0
-                {
+                if item.is_picture() && item.resource_id != 0 {
                     self.draw_dialog_picture_item(bus, bounds, item, dialog_ptr);
                 }
             }
@@ -9463,7 +9458,7 @@ impl super::TrapDispatcher {
         let Some((dialog_ptr, bounds)) = self.front_app_owned_modal_dialog(bus) else {
             return;
         };
-        if !Self::dialog_contains_screen_point(bounds, event.where_v, event.where_h) {
+        if !rect_contains_point(bounds, event.where_v, event.where_h) {
             return;
         }
 
@@ -9489,9 +9484,7 @@ impl super::TrapDispatcher {
         }
 
         let item = &items[(hit - 1) as usize];
-        let base_type = dialog_item_base_type(item.item_type);
-        let is_disabled = is_dialog_item_disabled(item.item_type);
-        if base_type != DIALOG_ITEM_BUTTON || is_disabled {
+        if !item.is_button() || item.is_disabled() {
             return;
         }
 
@@ -9544,14 +9537,6 @@ impl super::TrapDispatcher {
             |ptr| self.dialog_items.contains_key(&ptr),
             self.front_dialog_ptr(),
         )
-    }
-
-    fn dialog_contains_screen_point(bounds: (i16, i16, i16, i16), v: i16, h: i16) -> bool {
-        rect_contains_point(bounds, v, h)
-    }
-
-    fn point_in_screen_rect(v: i16, h: i16, rect: (i16, i16, i16, i16)) -> bool {
-        rect_contains_point(rect, v, h)
     }
 
     fn close_dialog_window<C: CpuOps>(
@@ -10026,7 +10011,7 @@ impl super::TrapDispatcher {
                     return false;
                 };
 
-                if !Self::dialog_contains_screen_point(bounds, event.where_v, event.where_h) {
+                if !rect_contains_point(bounds, event.where_v, event.where_h) {
                     // Modal dialogs own the mouse while visible. A real Dialog
                     // Manager click outside the box beeps and does not pass
                     // through to windows behind it.
@@ -10127,7 +10112,7 @@ impl super::TrapDispatcher {
                         );
                     }
                     if self.front_window == click.dialog_ptr
-                        && Self::point_in_screen_rect(event.where_v, event.where_h, rect)
+                        && rect_contains_point(rect, event.where_v, event.where_h)
                     {
                         self.close_dialog_window(bus, cpu, click.dialog_ptr, true);
                         self.capture_gui_frame(
@@ -11096,17 +11081,6 @@ impl super::TrapDispatcher {
 
                 let target_dialog = self.dialog_from_window_event(what, message);
                 if let Some(dialog_ptr) = target_dialog {
-                    // System 7 leaves the affected dialog in theDialog while
-                    // handling update and activate events even though the
-                    // Boolean result is FALSE. Macintosh Toolbox Essentials
-                    // (1992), pp. 6-139 through 6-141.
-                    if matches!(
-                        what,
-                        crate::dialog_manager::EVENT_UPDATE | crate::dialog_manager::EVENT_ACTIVATE
-                    ) && dialog_out_ptr != 0
-                    {
-                        bus.write_long(dialog_out_ptr, dialog_ptr);
-                    }
                     let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
                     trace_detail = format!(
                         "bounds=({},{},{},{}) outcome=no_item",
@@ -11114,11 +11088,56 @@ impl super::TrapDispatcher {
                     );
                     if let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() {
                         Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
-                        match what {
-                            crate::dialog_manager::EVENT_UPDATE => {
-                                // MTE 1992 p. 6-141: DialogSelect wraps the
-                                // update redraw in BeginUpdate/EndUpdate,
-                                // calls DrawDialog, and returns FALSE.
+
+                        let active_edit = {
+                            let (_edit_text, edit_item, _default_item) =
+                                Self::dialog_edit_state(bus, dialog_ptr, &items);
+                            if edit_item > 0 {
+                                items
+                                    .get((edit_item - 1) as usize)
+                                    .map(|it| (edit_item, it.item_type))
+                            } else {
+                                None
+                            }
+                        };
+
+                        let action = crate::dialog_manager::evaluate_dialog_select(
+                            what,
+                            message,
+                            where_v,
+                            where_h,
+                            Some(dialog_ptr),
+                            Some(bounds),
+                            active_edit,
+                            |v, h| {
+                                let hit = self.dialog_item_hit_test(
+                                    bus,
+                                    &items,
+                                    bounds,
+                                    v,
+                                    h,
+                                    &self.dialog_popup_original_rects,
+                                    dialog_ptr,
+                                );
+                                if hit > 0 {
+                                    items.get((hit - 1) as usize).map(|it| (hit, it.item_type))
+                                } else {
+                                    None
+                                }
+                            },
+                        );
+
+                        if action.should_set_dialog_ptr() && dialog_out_ptr != 0 {
+                            bus.write_long(dialog_out_ptr, dialog_ptr);
+                        }
+                        if let Some(hit) = action.item_hit() {
+                            if item_hit_ptr != 0 {
+                                bus.write_word(item_hit_ptr, hit as u16);
+                            }
+                        }
+
+                        match action {
+                            crate::dialog_manager::DialogSelectAction::Update { .. } => {
                                 let update_rect =
                                     Self::region_handle_rect(bus, bus.read_long(dialog_ptr + 122));
                                 self.begin_update_window(bus, dialog_ptr);
@@ -11134,123 +11153,28 @@ impl super::TrapDispatcher {
                                     bounds.0, bounds.1, bounds.2, bounds.3
                                 );
                             }
-                            crate::dialog_manager::EVENT_MOUSE_DOWN
-                                if Self::dialog_contains_screen_point(bounds, where_v, where_h) =>
-                            {
-                                let hit = self.dialog_item_hit_test(
-                                    bus,
-                                    &items,
-                                    bounds,
-                                    where_v,
-                                    where_h,
-                                    &self.dialog_popup_original_rects,
-                                    dialog_ptr,
-                                );
-                                if hit > 0 {
-                                    let item = &items[(hit - 1) as usize];
-                                    let is_disabled = is_dialog_item_disabled(item.item_type);
-                                    trace_detail = format!(
-                                        "bounds=({},{},{},{}) item_hit={} item_type=${:02X} disabled={} outcome={}",
-                                        bounds.0,
-                                        bounds.1,
-                                        bounds.2,
-                                        bounds.3,
-                                        hit,
-                                        item.item_type,
-                                        if is_disabled { "true" } else { "false" },
-                                        if is_disabled {
-                                            "disabled_item"
-                                        } else {
-                                            "enabled_item"
-                                        },
-                                    );
-                                    if trace_dialog_items_enabled() {
-                                        eprintln!(
-                                            "[DIALOG-SELECT] mouseDown dialog=${:08X} where=({},{}) bounds=({},{},{},{}) hit={} type=${:02X} disabled={}",
-                                            dialog_ptr,
-                                            where_v,
-                                            where_h,
-                                            bounds.0,
-                                            bounds.1,
-                                            bounds.2,
-                                            bounds.3,
-                                            hit,
-                                            item.item_type,
-                                            is_disabled,
-                                        );
-                                    }
-                                    if !is_disabled {
-                                        self.cancel_app_owned_modal_dialog_button_tracking(
-                                            bus, dialog_ptr,
-                                        );
-                                        if dialog_item_base_type(item.item_type)
-                                            == DIALOG_ITEM_EDIT_TEXT
-                                        {
-                                            // MTE 1992 p. 6-139 / IM:I I-417:
-                                            // mouseDown in an enabled editText item makes
-                                            // that item the active edit field before
-                                            // reporting the item hit. TEClick's pixel-to-
-                                            // caret mapping remains the documented HLE
-                                            // compromise in the TEClick trap.
-                                            self.activate_dialog_edit_item(
-                                                bus, cpu, dialog_ptr, &items, hit,
-                                            );
-                                        }
-                                        if dialog_out_ptr != 0 {
-                                            bus.write_long(dialog_out_ptr, dialog_ptr);
-                                        }
-                                        if item_hit_ptr != 0 {
-                                            bus.write_word(item_hit_ptr, hit as u16);
-                                        }
-                                        result = true;
-                                    }
-                                } else {
-                                    trace_detail = format!(
-                                        "bounds=({},{},{},{}) item_hit=0 outcome=no_item",
-                                        bounds.0, bounds.1, bounds.2, bounds.3
-                                    );
-                                    if trace_dialog_items_enabled() {
-                                        eprintln!(
-                                            "[DIALOG-SELECT] mouseDown dialog=${:08X} where=({},{}) bounds=({},{},{},{}) hit=0",
-                                            dialog_ptr,
-                                            where_v,
-                                            where_h,
-                                            bounds.0,
-                                            bounds.1,
-                                            bounds.2,
-                                            bounds.3,
-                                        );
-                                    }
-                                }
-                            }
-                            crate::dialog_manager::EVENT_NULL => {
-                                let (_edit_text, edit_item, _default_item) =
-                                    Self::dialog_edit_state(bus, dialog_ptr, &items);
+                            crate::dialog_manager::DialogSelectAction::Idle { edit_item, .. } => {
                                 trace_detail = format!(
                                     "bounds=({},{},{},{}) edit_item={} outcome=teidle",
                                     bounds.0, bounds.1, bounds.2, bounds.3, edit_item
                                 );
-                                if edit_item > 0 {
-                                    // MTE 1992 p. 6-139 / IM:I I-417:
-                                    // DialogSelect calls TEIdle for null events when an
-                                    // editText item is present, letting TextEdit advance
-                                    // the insertion-caret blink without changing text or
-                                    // selection fields.
-                                    let text_handle = bus.read_long(
-                                        dialog_ptr
-                                            + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET,
-                                    );
-                                    self.textedit_idle(cpu, bus, text_handle);
-                                }
-                            }
-                            crate::dialog_manager::EVENT_MOUSE_DOWN => {
-                                trace_detail = format!(
-                                    "bounds=({},{},{},{}) item_hit=0 outcome=outside_dialog",
-                                    bounds.0, bounds.1, bounds.2, bounds.3
+                                let text_handle = bus.read_long(
+                                    dialog_ptr
+                                        + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET,
                                 );
+                                self.textedit_idle(cpu, bus, text_handle);
+                            }
+                            crate::dialog_manager::DialogSelectAction::ItemHit {
+                                item_no,
+                                is_edit_text,
+                                ..
+                            } => {
+                                let item_type = items
+                                    .get((item_no - 1) as usize)
+                                    .map_or(0, |it| it.item_type);
                                 if trace_dialog_items_enabled() {
                                     eprintln!(
-                                        "[DIALOG-SELECT] mouseDown dialog=${:08X} where=({},{}) outside bounds=({},{},{},{})",
+                                        "[DIALOG-SELECT] mouseDown dialog=${:08X} where=({},{}) bounds=({},{},{},{}) hit={} type=${:02X} disabled=false",
                                         dialog_ptr,
                                         where_v,
                                         where_h,
@@ -11258,62 +11182,127 @@ impl super::TrapDispatcher {
                                         bounds.1,
                                         bounds.2,
                                         bounds.3,
+                                        item_no,
+                                        item_type,
                                     );
                                 }
-                            }
-                            crate::dialog_manager::EVENT_KEY_DOWN
-                            | crate::dialog_manager::EVENT_AUTO_KEY => {
-                                let (_edit_text, edit_item, _default_item) =
-                                    Self::dialog_edit_state(bus, dialog_ptr, &items);
-                                trace_detail = format!(
-                                    "bounds=({},{},{},{}) edit_item={} outcome=no_enabled_edittext",
-                                    bounds.0, bounds.1, bounds.2, bounds.3, edit_item
+                                self.cancel_app_owned_modal_dialog_button_tracking(
+                                    bus, dialog_ptr,
                                 );
-                                if edit_item > 0 {
-                                    // IM:I I-417: keyDown/autoKey dialog handling applies to
-                                    // editable text items. If no enabled editText item is
-                                    // active, DialogSelect returns FALSE.
-                                    if let Some(item) = items.get((edit_item - 1) as usize) {
-                                        let item_type = item.item_type;
-                                        let base_type = dialog_item_base_type(item_type);
-                                        let is_disabled = is_dialog_item_disabled(item_type);
+                                if is_edit_text {
+                                    self.activate_dialog_edit_item(
+                                        bus, cpu, dialog_ptr, &items, item_no,
+                                    );
+                                }
+                                trace_detail = format!(
+                                    "bounds=({},{},{},{}) item_hit={} item_type=${:02X} disabled=false outcome=enabled_item",
+                                    bounds.0, bounds.1, bounds.2, bounds.3, item_no, item_type
+                                );
+                                result = true;
+                            }
+                            crate::dialog_manager::DialogSelectAction::DisabledItemHit {
+                                item_no,
+                                ..
+                            } => {
+                                let item_type = items
+                                    .get((item_no - 1) as usize)
+                                    .map_or(0, |it| it.item_type);
+                                if trace_dialog_items_enabled() {
+                                    eprintln!(
+                                        "[DIALOG-SELECT] mouseDown dialog=${:08X} where=({},{}) bounds=({},{},{},{}) hit={} type=${:02X} disabled=true",
+                                        dialog_ptr,
+                                        where_v,
+                                        where_h,
+                                        bounds.0,
+                                        bounds.1,
+                                        bounds.2,
+                                        bounds.3,
+                                        item_no,
+                                        item_type,
+                                    );
+                                }
+                                trace_detail = format!(
+                                    "bounds=({},{},{},{}) item_hit={} item_type=${:02X} disabled=true outcome=disabled_item",
+                                    bounds.0, bounds.1, bounds.2, bounds.3, item_no, item_type
+                                );
+                            }
+                            crate::dialog_manager::DialogSelectAction::KeyStroke {
+                                edit_item,
+                                character,
+                                ..
+                            } => {
+                                let item_type = items
+                                    .get((edit_item - 1) as usize)
+                                    .map_or(0, |it| it.item_type);
+                                trace_detail = format!(
+                                    "bounds=({},{},{},{}) edit_item={} item_type=${:02X} disabled=false outcome=enabled_edittext",
+                                    bounds.0, bounds.1, bounds.2, bounds.3, edit_item, item_type
+                                );
+                                self.apply_dialog_select_key_to_edit_item(
+                                    bus, dialog_ptr, &mut items, edit_item, character,
+                                );
+                                result = true;
+                            }
+                            crate::dialog_manager::DialogSelectAction::NoAction => {
+                                if what == crate::dialog_manager::EVENT_MOUSE_DOWN {
+                                    if !rect_contains_point(bounds, where_v, where_h) {
                                         trace_detail = format!(
-                                            "bounds=({},{},{},{}) edit_item={} item_type=${:02X} disabled={} outcome={}",
-                                            bounds.0,
-                                            bounds.1,
-                                            bounds.2,
-                                            bounds.3,
-                                            edit_item,
-                                            item_type,
-                                            if is_disabled { "true" } else { "false" },
-                                            if base_type == DIALOG_ITEM_EDIT_TEXT && !is_disabled {
-                                                "enabled_edittext"
-                                            } else {
-                                                "no_enabled_edittext"
-                                            },
+                                            "bounds=({},{},{},{}) item_hit=0 outcome=outside_dialog",
+                                            bounds.0, bounds.1, bounds.2, bounds.3
                                         );
-                                        if base_type == DIALOG_ITEM_EDIT_TEXT && !is_disabled {
-                                            let char_code = (message & 0xFF) as u8;
-                                            if crate::dialog_manager::is_dialog_edit_text_character(
-                                                char_code,
-                                            ) {
-                                                // MTE 1992 p. 6-139: DialogSelect uses TextEdit
-                                                // to handle key-down and auto-key events in
-                                                // editable text items before reporting itemHit.
-                                                self.apply_dialog_select_key_to_edit_item(
-                                                    bus, dialog_ptr, &mut items, edit_item,
-                                                    char_code,
-                                                );
-                                                if dialog_out_ptr != 0 {
-                                                    bus.write_long(dialog_out_ptr, dialog_ptr);
-                                                }
-                                                if item_hit_ptr != 0 {
-                                                    bus.write_word(item_hit_ptr, edit_item as u16);
-                                                }
-                                                result = true;
-                                            }
+                                        if trace_dialog_items_enabled() {
+                                            eprintln!(
+                                                "[DIALOG-SELECT] mouseDown dialog=${:08X} where=({},{}) outside bounds=({},{},{},{})",
+                                                dialog_ptr,
+                                                where_v,
+                                                where_h,
+                                                bounds.0,
+                                                bounds.1,
+                                                bounds.2,
+                                                bounds.3,
+                                            );
+                                        }
+                                    } else {
+                                        trace_detail = format!(
+                                            "bounds=({},{},{},{}) item_hit=0 outcome=no_item",
+                                            bounds.0, bounds.1, bounds.2, bounds.3
+                                        );
+                                        if trace_dialog_items_enabled() {
+                                            eprintln!(
+                                                "[DIALOG-SELECT] mouseDown dialog=${:08X} where=({},{}) bounds=({},{},{},{}) hit=0",
+                                                dialog_ptr,
+                                                where_v,
+                                                where_h,
+                                                bounds.0,
+                                                bounds.1,
+                                                bounds.2,
+                                                bounds.3,
+                                            );
                                         }
                                     }
+                                } else if matches!(
+                                    what,
+                                    crate::dialog_manager::EVENT_KEY_DOWN
+                                        | crate::dialog_manager::EVENT_AUTO_KEY
+                                ) {
+                                    let edit_item = active_edit.map_or(0, |(item, _)| item);
+                                    let item_type = active_edit.map_or(0, |(_, ty)| ty);
+                                    let is_disabled = is_dialog_item_disabled(item_type);
+                                    trace_detail = format!(
+                                        "bounds=({},{},{},{}) edit_item={} item_type=${:02X} disabled={} outcome={}",
+                                        bounds.0,
+                                        bounds.1,
+                                        bounds.2,
+                                        bounds.3,
+                                        edit_item,
+                                        item_type,
+                                        if is_disabled { "true" } else { "false" },
+                                        if is_dialog_item_edit_text(item_type) && !is_disabled {
+                                            "enabled_edittext"
+                                        } else {
+                                            "no_enabled_edittext"
+                                        },
+                                    );
                                 }
                             }
                             _ => {}
@@ -11518,9 +11507,7 @@ impl super::TrapDispatcher {
                 });
 
                 if let Some(item) = found {
-                    if trace_dialog_items_enabled()
-                        && dialog_item_base_type(item.item_type) == DIALOG_ITEM_USER_ITEM
-                    {
+                    if trace_dialog_items_enabled() && item.is_user_item() {
                         eprintln!(
                             "[DIALOG-ITEM] GetDItem pc=${:08X} dialog=${:08X} item={} type={} proc=${:08X} out_type=${:08X} out_item=${:08X} out_box=${:08X} rect=({},{},{},{})",
                             cpu.read_reg(Register::PC),
@@ -12034,8 +12021,7 @@ impl super::TrapDispatcher {
                             );
                             if hit > 0
                                 && item_type.is_some_and(|ty| {
-                                    dialog_item_base_type(ty) == DIALOG_ITEM_BUTTON
-                                        && is_dialog_item_enabled(ty)
+                                    is_dialog_item_button(ty) && is_dialog_item_enabled(ty)
                                 })
                             {
                                 if let Some(item) = items.get((hit - 1) as usize) {
@@ -12064,8 +12050,7 @@ impl super::TrapDispatcher {
                                 .insert(saved_dialog_ptr, saved.saved_pixels);
                             if hit > 0
                                 && item_type.is_some_and(|ty| {
-                                    dialog_item_base_type(ty) == DIALOG_ITEM_BUTTON
-                                        && is_dialog_item_enabled(ty)
+                                    is_dialog_item_button(ty) && is_dialog_item_enabled(ty)
                                 })
                             {
                                 self.pending_modal_button_dispose_dialog = Some(saved_dialog_ptr);
@@ -12193,10 +12178,7 @@ impl super::TrapDispatcher {
                             if let Some(item) = saved
                                 .items
                                 .get(flash_item.saturating_sub(1) as usize)
-                                .filter(|item| {
-                                    dialog_item_base_type(item.item_type) == DIALOG_ITEM_BUTTON
-                                        && is_dialog_item_enabled(item.item_type)
-                                })
+                                .filter(|item| item.is_button() && item.is_enabled())
                             {
                                 self.restore_dialog_button_normal_state(
                                     bus,
@@ -12953,7 +12935,7 @@ impl super::TrapDispatcher {
                                     item.rect.0, item.rect.1, item.rect.2, item.rect.3,
                                     item.text,
                                 );
-                                if dialog_item_base_type(item.item_type) == DIALOG_ITEM_USER_ITEM {
+                                if item.is_user_item() {
                                     eprintln!(
                                         "[DIALOG-PROC] dialog=${:08X} item={} type={} proc=${:08X}",
                                         dialog_ptr,
@@ -13033,7 +13015,7 @@ impl super::TrapDispatcher {
                             .enumerate()
                             .filter(|(i, item)| {
                                 let item_no = (*i + 1) as i16;
-                                dialog_item_base_type(item.item_type) == DIALOG_ITEM_USER_ITEM
+                                item.is_user_item()
                                     && !self
                                         .dialog_item_popup_menus
                                         .contains_key(&(dialog_ptr, item_no))
@@ -15798,7 +15780,7 @@ impl super::TrapDispatcher {
                             items,
                             item_no as usize,
                         ) {
-                            if dialog_item_base_type(item.item_type) == DIALOG_ITEM_EDIT_TEXT {
+                            if item.is_edit_text() {
                                 let text_len = encode_mac_roman_lossy(&item.text).len();
                                 let (s, e) = crate::dialog_manager::normalize_dialog_item_selection(
                                     start_sel, end_sel, text_len,

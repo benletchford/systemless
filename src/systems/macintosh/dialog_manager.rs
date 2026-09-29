@@ -165,6 +165,51 @@ impl DialogItemKind {
         )
     }
 
+    /// Whether this item represents an application user item (`userItem`, 0).
+    pub const fn is_user_item(self) -> bool {
+        matches!(self, Self::UserItem)
+    }
+
+    /// Whether this item represents a standard pushbutton (`ctrlItem + btnCtrl`, 4).
+    pub const fn is_button(self) -> bool {
+        matches!(self, Self::Button)
+    }
+
+    /// Whether this item represents a checkbox control (`ctrlItem + chkCtrl`, 5).
+    pub const fn is_checkbox(self) -> bool {
+        matches!(self, Self::Checkbox)
+    }
+
+    /// Whether this item represents a radio button control (`ctrlItem + radCtrl`, 6).
+    pub const fn is_radio(self) -> bool {
+        matches!(self, Self::RadioButton)
+    }
+
+    /// Whether this item represents a resource-defined control (`ctrlItem + resCtrl`, 7).
+    pub const fn is_resource_control(self) -> bool {
+        matches!(self, Self::ResourceControl)
+    }
+
+    /// Whether this item represents non-editable static text (`statText`, 8).
+    pub const fn is_static_text(self) -> bool {
+        matches!(self, Self::StaticText)
+    }
+
+    /// Whether this item represents editable text (`editText`, 16).
+    pub const fn is_edit_text(self) -> bool {
+        matches!(self, Self::EditText)
+    }
+
+    /// Whether this item represents a standard icon (`iconItem`, 32).
+    pub const fn is_icon(self) -> bool {
+        matches!(self, Self::Icon)
+    }
+
+    /// Whether this item represents a QuickDraw picture (`picItem`, 64).
+    pub const fn is_picture(self) -> bool {
+        matches!(self, Self::Picture)
+    }
+
     /// Whether this item contains text payload (static or editable).
     pub const fn is_text(self) -> bool {
         matches!(self, Self::StaticText | Self::EditText)
@@ -243,6 +288,51 @@ impl DialogItemRecord {
     /// Whether the item represents a button, checkbox, or radio control.
     pub fn is_control(&self) -> bool {
         is_dialog_item_control(self.item_type)
+    }
+
+    /// Whether the item represents an application user item (`userItem`, 0).
+    pub fn is_user_item(&self) -> bool {
+        is_dialog_item_user_item(self.item_type)
+    }
+
+    /// Whether the item represents a standard pushbutton (`ctrlItem + btnCtrl`, 4).
+    pub fn is_button(&self) -> bool {
+        is_dialog_item_button(self.item_type)
+    }
+
+    /// Whether the item represents a checkbox control (`ctrlItem + chkCtrl`, 5).
+    pub fn is_checkbox(&self) -> bool {
+        is_dialog_item_checkbox(self.item_type)
+    }
+
+    /// Whether the item represents a radio button control (`ctrlItem + radCtrl`, 6).
+    pub fn is_radio(&self) -> bool {
+        is_dialog_item_radio(self.item_type)
+    }
+
+    /// Whether the item represents a resource-defined control (`ctrlItem + resCtrl`, 7).
+    pub fn is_resource_control(&self) -> bool {
+        is_dialog_item_resource_control(self.item_type)
+    }
+
+    /// Whether the item represents non-editable static text (`statText`, 8).
+    pub fn is_static_text(&self) -> bool {
+        is_dialog_item_static_text(self.item_type)
+    }
+
+    /// Whether the item represents editable text (`editText`, 16).
+    pub fn is_edit_text(&self) -> bool {
+        is_dialog_item_edit_text(self.item_type)
+    }
+
+    /// Whether the item represents a standard icon (`iconItem`, 32).
+    pub fn is_icon(&self) -> bool {
+        is_dialog_item_icon(self.item_type)
+    }
+
+    /// Whether the item represents a QuickDraw picture (`picItem`, 64).
+    pub fn is_picture(&self) -> bool {
+        is_dialog_item_picture(self.item_type)
     }
 
     /// Whether the item represents static or editable text.
@@ -708,15 +798,15 @@ pub fn dialog_item_enclosing_rect(
     item_type: u8,
     rect: (i16, i16, i16, i16),
 ) -> (i16, i16, i16, i16) {
-    let base_type = dialog_item_base_type(item_type);
-    match base_type {
-        DIALOG_ITEM_EDIT_TEXT => (
+    if is_dialog_item_edit_text(item_type) {
+        (
             rect.0.saturating_sub(3),
             rect.1.saturating_sub(3),
             rect.2.saturating_add(3),
             rect.3.saturating_add(3),
-        ),
-        _ => rect,
+        )
+    } else {
+        rect
     }
 }
 
@@ -1290,6 +1380,51 @@ pub const fn is_dialog_item_control(raw_type: u8) -> bool {
     DialogItemKind::from_raw_type(raw_type).is_control()
 }
 
+/// Returns true if the raw item type represents an application user item (`userItem`, 0).
+pub const fn is_dialog_item_user_item(raw_type: u8) -> bool {
+    DialogItemKind::from_raw_type(raw_type).is_user_item()
+}
+
+/// Returns true if the raw item type represents a standard pushbutton (`ctrlItem + btnCtrl`, 4).
+pub const fn is_dialog_item_button(raw_type: u8) -> bool {
+    DialogItemKind::from_raw_type(raw_type).is_button()
+}
+
+/// Returns true if the raw item type represents a checkbox control (`ctrlItem + chkCtrl`, 5).
+pub const fn is_dialog_item_checkbox(raw_type: u8) -> bool {
+    DialogItemKind::from_raw_type(raw_type).is_checkbox()
+}
+
+/// Returns true if the raw item type represents a radio button control (`ctrlItem + radCtrl`, 6).
+pub const fn is_dialog_item_radio(raw_type: u8) -> bool {
+    DialogItemKind::from_raw_type(raw_type).is_radio()
+}
+
+/// Returns true if the raw item type represents a resource-defined control (`ctrlItem + resCtrl`, 7).
+pub const fn is_dialog_item_resource_control(raw_type: u8) -> bool {
+    DialogItemKind::from_raw_type(raw_type).is_resource_control()
+}
+
+/// Returns true if the raw item type represents non-editable static text (`statText`, 8).
+pub const fn is_dialog_item_static_text(raw_type: u8) -> bool {
+    DialogItemKind::from_raw_type(raw_type).is_static_text()
+}
+
+/// Returns true if the raw item type represents editable text (`editText`, 16).
+pub const fn is_dialog_item_edit_text(raw_type: u8) -> bool {
+    DialogItemKind::from_raw_type(raw_type).is_edit_text()
+}
+
+/// Returns true if the raw item type represents a standard icon (`iconItem`, 32).
+pub const fn is_dialog_item_icon(raw_type: u8) -> bool {
+    DialogItemKind::from_raw_type(raw_type).is_icon()
+}
+
+/// Returns true if the raw item type represents a QuickDraw picture (`picItem`, 64).
+pub const fn is_dialog_item_picture(raw_type: u8) -> bool {
+    DialogItemKind::from_raw_type(raw_type).is_picture()
+}
+
 /// Returns true if the raw item type represents static text or edit text.
 pub const fn is_dialog_item_text(raw_type: u8) -> bool {
     DialogItemKind::from_raw_type(raw_type).is_text()
@@ -1470,8 +1605,8 @@ where
         .into_iter()
         .enumerate()
         .find_map(|(idx, (raw_type, title))| {
-            let is_enabled_button = is_dialog_item_enabled(raw_type)
-                && (dialog_item_base_type(raw_type) == DIALOG_ITEM_BUTTON);
+            let is_enabled_button =
+                is_dialog_item_enabled(raw_type) && is_dialog_item_button(raw_type);
             if is_enabled_button && is_dialog_cancel_button_title(title.as_ref()) {
                 u16::try_from(idx + 1).ok()
             } else {
@@ -1620,7 +1755,7 @@ where
             continue;
         }
         has_visible_item = true;
-        if dialog_item_base_type(item_type) != DIALOG_ITEM_USER_ITEM {
+        if !is_dialog_item_user_item(item_type) {
             return false;
         }
     }
@@ -1661,6 +1796,197 @@ pub fn is_dialog_event(
 /// Accepts backspace (0x08) and printable ASCII / Mac Roman characters (0x20..=0x7E).
 pub fn is_dialog_edit_text_character(character: u8) -> bool {
     matches!(character, 0x08 | 0x20..=0x7E)
+}
+
+/// Describes the action that the host environment must take in response to a `DialogSelect` event.
+///
+/// Inside Macintosh Volume I, pp. I-417--I-418;
+/// Macintosh Toolbox Essentials (1992), pp. 6-139--6-141.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DialogSelectAction {
+    /// The event is not targeted at an active dialog, fell outside the dialog window,
+    /// or was otherwise ignored by the Dialog Manager.
+    ///
+    /// Corresponds to `DialogSelect` returning `FALSE` (0).
+    NoAction,
+
+    /// An update event (`updateEvt`) targeted at `dialog`.
+    ///
+    /// The caller must redraw the dialog window contents.
+    /// `theDialog` out-pointer is written with `dialog`.
+    /// Returns `FALSE` (0).
+    Update { dialog: u32 },
+
+    /// An activate event (`activateEvt`) targeted at `dialog`.
+    ///
+    /// `theDialog` out-pointer is written with `dialog`.
+    /// Returns `FALSE` (0).
+    Activate { dialog: u32 },
+
+    /// A null event (`nullEvent`) targeted at `dialog` while an editable text item is active.
+    ///
+    /// The caller must call `TEIdle` on the dialog's TextEdit record to blink the insertion caret.
+    /// Returns `FALSE` (0).
+    Idle { dialog: u32, edit_item: i16 },
+
+    /// A mouse-down event (`mouseDown`) hit an enabled dialog item.
+    ///
+    /// The caller must:
+    /// - If `is_edit_text`: activate or focus the edit field (e.g. `TEClick`).
+    /// - If `is_resource_control`: track the control (e.g. scroll bar tracking).
+    /// - Write `theDialog = dialog` and `itemHit = item_no`.
+    /// Returns `TRUE` (1).
+    ItemHit {
+        dialog: u32,
+        item_no: i16,
+        is_edit_text: bool,
+        is_resource_control: bool,
+    },
+
+    /// A mouse-down event (`mouseDown`) hit a disabled dialog item.
+    ///
+    /// Does not activate or return the item.
+    /// Returns `FALSE` (0).
+    DisabledItemHit { dialog: u32, item_no: i16 },
+
+    /// A key-down or auto-key event directed to an active enabled editable text field.
+    ///
+    /// The caller must process the character via TextEdit (e.g. `TEKey`) and write:
+    /// - `theDialog = dialog` and `itemHit = edit_item`.
+    /// Returns `TRUE` (1).
+    KeyStroke {
+        dialog: u32,
+        edit_item: i16,
+        character: u8,
+    },
+}
+
+#[allow(dead_code)]
+impl DialogSelectAction {
+    /// Whether this action represents a handled event that causes `DialogSelect` to return `TRUE` (1).
+    #[inline]
+    pub const fn is_handled(self) -> bool {
+        matches!(self, Self::ItemHit { .. } | Self::KeyStroke { .. })
+    }
+
+    /// Whether this action sets `theDialog` output pointer if one was provided.
+    #[inline]
+    pub const fn should_set_dialog_ptr(self) -> bool {
+        matches!(
+            self,
+            Self::Update { .. }
+                | Self::Activate { .. }
+                | Self::ItemHit { .. }
+                | Self::KeyStroke { .. }
+        )
+    }
+
+    /// The target dialog pointer if this action affects a dialog box.
+    #[inline]
+    pub const fn target_dialog(self) -> Option<u32> {
+        match self {
+            Self::NoAction => None,
+            Self::Update { dialog }
+            | Self::Activate { dialog }
+            | Self::Idle { dialog, .. }
+            | Self::ItemHit { dialog, .. }
+            | Self::DisabledItemHit { dialog, .. }
+            | Self::KeyStroke { dialog, .. } => Some(dialog),
+        }
+    }
+
+    /// The affected 1-indexed item number if this action reports an item hit (`ItemHit` or `KeyStroke`).
+    #[inline]
+    pub const fn item_hit(self) -> Option<i16> {
+        match self {
+            Self::ItemHit { item_no, .. } => Some(item_no),
+            Self::KeyStroke { edit_item, .. } => Some(edit_item),
+            _ => None,
+        }
+    }
+}
+
+/// Evaluates an event record within the context of `DialogSelect`.
+///
+/// Macintosh Toolbox Essentials (1992), pp. 6-139--6-141:
+/// - Update and activate events route to the named window (if it is a dialog).
+/// - Null events advance the insertion-caret blink in active editable text fields via `Idle`.
+/// - Mouse-down events inside the dialog bounds are hit-tested against dialog items.
+/// - Key-down and auto-key events are forwarded to the active editable text field.
+pub fn evaluate_dialog_select<F>(
+    what: u16,
+    message: u32,
+    where_v: i16,
+    where_h: i16,
+    target_dialog: Option<u32>,
+    dialog_bounds: Option<(i16, i16, i16, i16)>,
+    active_edit_item: Option<(i16, u8)>,
+    hit_test: F,
+) -> DialogSelectAction
+where
+    F: FnOnce(i16, i16) -> Option<(i16, u8)>,
+{
+    let Some(dialog) = target_dialog else {
+        return DialogSelectAction::NoAction;
+    };
+
+    match what {
+        EVENT_UPDATE if message == dialog => DialogSelectAction::Update { dialog },
+        EVENT_ACTIVATE if message == dialog => DialogSelectAction::Activate { dialog },
+        EVENT_NULL => {
+            if let Some((edit_item, raw_type)) = active_edit_item {
+                if edit_item > 0
+                    && is_dialog_item_enabled(raw_type)
+                    && is_dialog_item_edit_text(raw_type)
+                {
+                    return DialogSelectAction::Idle { dialog, edit_item };
+                }
+            }
+            DialogSelectAction::NoAction
+        }
+        EVENT_MOUSE_DOWN => {
+            let Some(bounds) = dialog_bounds else {
+                return DialogSelectAction::NoAction;
+            };
+            if !rect_contains_point(bounds, where_v, where_h) {
+                return DialogSelectAction::NoAction;
+            }
+            if let Some((item_no, raw_type)) = hit_test(where_v, where_h) {
+                if item_no > 0 {
+                    if is_dialog_item_enabled(raw_type) {
+                        return DialogSelectAction::ItemHit {
+                            dialog,
+                            item_no,
+                            is_edit_text: is_dialog_item_edit_text(raw_type),
+                            is_resource_control: is_dialog_item_resource_control(raw_type),
+                        };
+                    } else {
+                        return DialogSelectAction::DisabledItemHit { dialog, item_no };
+                    }
+                }
+            }
+            DialogSelectAction::NoAction
+        }
+        EVENT_KEY_DOWN | EVENT_AUTO_KEY => {
+            if let Some((edit_item, raw_type)) = active_edit_item {
+                if edit_item > 0
+                    && is_dialog_item_enabled(raw_type)
+                    && is_dialog_item_edit_text(raw_type)
+                {
+                    let character = (message & 0xFF) as u8;
+                    if is_dialog_edit_text_character(character) {
+                        return DialogSelectAction::KeyStroke {
+                            dialog,
+                            edit_item,
+                            character,
+                        };
+                    }
+                }
+            }
+            DialogSelectAction::NoAction
+        }
+        _ => DialogSelectAction::NoAction,
+    }
 }
 
 /// Calculates the updated text bytes and new insertion caret offset after processing a key press
@@ -3180,4 +3506,544 @@ mod tests {
         assert_eq!(normalize_selection_bounds(25, 30, 10), (10, 10));
         assert_eq!(normalize_selection_bounds(30, 5, 10), (5, 10));
     }
+
+    #[test]
+    fn item_kind_predicates_and_record_methods() {
+        let test_cases: [(
+            u8,
+            DialogItemKind,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+            bool,
+        ); 9] = [
+            // (raw, kind, is_user, is_btn, is_chk, is_rad, is_res_ctrl, is_ctrl, is_stat, is_edit, is_text, is_icon, is_pict)
+            (
+                DIALOG_ITEM_USER_ITEM,
+                DialogItemKind::UserItem,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            (
+                DIALOG_ITEM_BUTTON,
+                DialogItemKind::Button,
+                false,
+                true,
+                false,
+                false,
+                false,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            (
+                DIALOG_ITEM_CHECKBOX,
+                DialogItemKind::Checkbox,
+                false,
+                false,
+                true,
+                false,
+                false,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            (
+                DIALOG_ITEM_RADIO,
+                DialogItemKind::RadioButton,
+                false,
+                false,
+                false,
+                true,
+                false,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            (
+                DIALOG_ITEM_RESOURCE_CONTROL,
+                DialogItemKind::ResourceControl,
+                false,
+                false,
+                false,
+                false,
+                true,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+            ),
+            (
+                DIALOG_ITEM_STATIC_TEXT,
+                DialogItemKind::StaticText,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                true,
+                false,
+                true,
+                false,
+                false,
+            ),
+            (
+                DIALOG_ITEM_EDIT_TEXT,
+                DialogItemKind::EditText,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                true,
+                true,
+                false,
+                false,
+            ),
+            (
+                DIALOG_ITEM_ICON,
+                DialogItemKind::Icon,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                true,
+                false,
+            ),
+            (
+                DIALOG_ITEM_PICTURE,
+                DialogItemKind::Picture,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                true,
+            ),
+        ];
+
+        for (
+            raw,
+            kind,
+            is_user,
+            is_btn,
+            is_chk,
+            is_rad,
+            is_res_ctrl,
+            is_ctrl,
+            is_stat,
+            is_edit,
+            is_text,
+            is_icon,
+            is_pict,
+        ) in test_cases
+        {
+            for flag in [0, DIALOG_ITEM_DISABLED_FLAG] {
+                let r = raw | flag;
+                assert_eq!(is_dialog_item_user_item(r), is_user);
+                assert_eq!(is_dialog_item_button(r), is_btn);
+                assert_eq!(is_dialog_item_checkbox(r), is_chk);
+                assert_eq!(is_dialog_item_radio(r), is_rad);
+                assert_eq!(is_dialog_item_resource_control(r), is_res_ctrl);
+                assert_eq!(is_dialog_item_control(r), is_ctrl);
+                assert_eq!(is_dialog_item_static_text(r), is_stat);
+                assert_eq!(is_dialog_item_edit_text(r), is_edit);
+                assert_eq!(is_dialog_item_text(r), is_text);
+                assert_eq!(is_dialog_item_icon(r), is_icon);
+                assert_eq!(is_dialog_item_picture(r), is_pict);
+
+                let record = DialogItemRecord {
+                    item_offset: 0,
+                    item_type: r,
+                    rect: (0, 0, 10, 10),
+                    handle: 0,
+                    payload: Vec::new(),
+                };
+                assert_eq!(record.is_user_item(), is_user);
+                assert_eq!(record.is_button(), is_btn);
+                assert_eq!(record.is_checkbox(), is_chk);
+                assert_eq!(record.is_radio(), is_rad);
+                assert_eq!(record.is_resource_control(), is_res_ctrl);
+                assert_eq!(record.is_control(), is_ctrl);
+                assert_eq!(record.is_static_text(), is_stat);
+                assert_eq!(record.is_edit_text(), is_edit);
+                assert_eq!(record.is_text(), is_text);
+                assert_eq!(record.is_icon(), is_icon);
+                assert_eq!(record.is_picture(), is_pict);
+            }
+
+            assert_eq!(kind.is_user_item(), is_user);
+            assert_eq!(kind.is_button(), is_btn);
+            assert_eq!(kind.is_checkbox(), is_chk);
+            assert_eq!(kind.is_radio(), is_rad);
+            assert_eq!(kind.is_resource_control(), is_res_ctrl);
+            assert_eq!(kind.is_control(), is_ctrl);
+            assert_eq!(kind.is_static_text(), is_stat);
+            assert_eq!(kind.is_edit_text(), is_edit);
+            assert_eq!(kind.is_text(), is_text);
+            assert_eq!(kind.is_icon(), is_icon);
+            assert_eq!(kind.is_picture(), is_pict);
+        }
+    }
+
+    #[test]
+    fn dialog_select_action_and_evaluation() {
+        let dialog = 0x2000;
+        let bounds = (10, 20, 110, 120);
+
+        // Action properties
+        let no_act = DialogSelectAction::NoAction;
+        assert!(!no_act.is_handled());
+        assert!(!no_act.should_set_dialog_ptr());
+        assert_eq!(no_act.target_dialog(), None);
+        assert_eq!(no_act.item_hit(), None);
+
+        let update_act = DialogSelectAction::Update { dialog };
+        assert!(!update_act.is_handled());
+        assert!(update_act.should_set_dialog_ptr());
+        assert_eq!(update_act.target_dialog(), Some(dialog));
+        assert_eq!(update_act.item_hit(), None);
+
+        let activate_act = DialogSelectAction::Activate { dialog };
+        assert!(!activate_act.is_handled());
+        assert!(activate_act.should_set_dialog_ptr());
+        assert_eq!(activate_act.target_dialog(), Some(dialog));
+        assert_eq!(activate_act.item_hit(), None);
+
+        let idle_act = DialogSelectAction::Idle {
+            dialog,
+            edit_item: 1,
+        };
+        assert!(!idle_act.is_handled());
+        assert!(!idle_act.should_set_dialog_ptr());
+        assert_eq!(idle_act.target_dialog(), Some(dialog));
+        assert_eq!(idle_act.item_hit(), None);
+
+        let hit_act = DialogSelectAction::ItemHit {
+            dialog,
+            item_no: 3,
+            is_edit_text: false,
+            is_resource_control: false,
+        };
+        assert!(hit_act.is_handled());
+        assert!(hit_act.should_set_dialog_ptr());
+        assert_eq!(hit_act.target_dialog(), Some(dialog));
+        assert_eq!(hit_act.item_hit(), Some(3));
+
+        let dis_act = DialogSelectAction::DisabledItemHit {
+            dialog,
+            item_no: 4,
+        };
+        assert!(!dis_act.is_handled());
+        assert!(!dis_act.should_set_dialog_ptr());
+        assert_eq!(dis_act.target_dialog(), Some(dialog));
+        assert_eq!(dis_act.item_hit(), None);
+
+        let key_act = DialogSelectAction::KeyStroke {
+            dialog,
+            edit_item: 2,
+            character: b'Z',
+        };
+        assert!(key_act.is_handled());
+        assert!(key_act.should_set_dialog_ptr());
+        assert_eq!(key_act.target_dialog(), Some(dialog));
+        assert_eq!(key_act.item_hit(), Some(2));
+
+        // evaluate_dialog_select: No target dialog
+        assert_eq!(
+            evaluate_dialog_select(
+                EVENT_NULL,
+                0,
+                0,
+                0,
+                None,
+                Some(bounds),
+                None,
+                |_, _| None,
+            ),
+            DialogSelectAction::NoAction
+        );
+
+        // evaluate_dialog_select: Update event
+        assert_eq!(
+            evaluate_dialog_select(
+                EVENT_UPDATE,
+                dialog,
+                0,
+                0,
+                Some(dialog),
+                Some(bounds),
+                None,
+                |_, _| None,
+            ),
+            DialogSelectAction::Update { dialog }
+        );
+        // Update for different window
+        assert_eq!(
+            evaluate_dialog_select(
+                EVENT_UPDATE,
+                0x9999,
+                0,
+                0,
+                Some(dialog),
+                Some(bounds),
+                None,
+                |_, _| None,
+            ),
+            DialogSelectAction::NoAction
+        );
+
+        // evaluate_dialog_select: Activate event
+        assert_eq!(
+            evaluate_dialog_select(
+                EVENT_ACTIVATE,
+                dialog,
+                0,
+                0,
+                Some(dialog),
+                Some(bounds),
+                None,
+                |_, _| None,
+            ),
+            DialogSelectAction::Activate { dialog }
+        );
+
+        // evaluate_dialog_select: Null event with active edit text
+        assert_eq!(
+            evaluate_dialog_select(
+                EVENT_NULL,
+                0,
+                0,
+                0,
+                Some(dialog),
+                Some(bounds),
+                Some((2, DIALOG_ITEM_EDIT_TEXT)),
+                |_, _| None,
+            ),
+            DialogSelectAction::Idle {
+                dialog,
+                edit_item: 2
+            }
+        );
+        // Null event with active edit text disabled
+        assert_eq!(
+            evaluate_dialog_select(
+                EVENT_NULL,
+                0,
+                0,
+                0,
+                Some(dialog),
+                Some(bounds),
+                Some((2, DIALOG_ITEM_EDIT_TEXT | DIALOG_ITEM_DISABLED_FLAG)),
+                |_, _| None,
+            ),
+            DialogSelectAction::NoAction
+        );
+        // Null event with active non-edit text (e.g. button)
+        assert_eq!(
+            evaluate_dialog_select(
+                EVENT_NULL,
+                0,
+                0,
+                0,
+                Some(dialog),
+                Some(bounds),
+                Some((1, DIALOG_ITEM_BUTTON)),
+                |_, _| None,
+            ),
+            DialogSelectAction::NoAction
+        );
+
+        // evaluate_dialog_select: Mouse down
+        // Mouse down outside bounds
+        assert_eq!(
+            evaluate_dialog_select(
+                EVENT_MOUSE_DOWN,
+                0,
+                5,
+                5,
+                Some(dialog),
+                Some(bounds),
+                None,
+                |_, _| Some((1, DIALOG_ITEM_BUTTON)),
+            ),
+            DialogSelectAction::NoAction
+        );
+        // Mouse down inside bounds, hitting enabled button
+        assert_eq!(
+            evaluate_dialog_select(
+                EVENT_MOUSE_DOWN,
+                0,
+                50,
+                50,
+                Some(dialog),
+                Some(bounds),
+                None,
+                |_, _| Some((1, DIALOG_ITEM_BUTTON)),
+            ),
+            DialogSelectAction::ItemHit {
+                dialog,
+                item_no: 1,
+                is_edit_text: false,
+                is_resource_control: false,
+            }
+        );
+        // Mouse down inside bounds, hitting enabled edit text
+        assert_eq!(
+            evaluate_dialog_select(
+                EVENT_MOUSE_DOWN,
+                0,
+                50,
+                50,
+                Some(dialog),
+                Some(bounds),
+                None,
+                |_, _| Some((2, DIALOG_ITEM_EDIT_TEXT)),
+            ),
+            DialogSelectAction::ItemHit {
+                dialog,
+                item_no: 2,
+                is_edit_text: true,
+                is_resource_control: false,
+            }
+        );
+        // Mouse down inside bounds, hitting enabled res control
+        assert_eq!(
+            evaluate_dialog_select(
+                EVENT_MOUSE_DOWN,
+                0,
+                50,
+                50,
+                Some(dialog),
+                Some(bounds),
+                None,
+                |_, _| Some((3, DIALOG_ITEM_RESOURCE_CONTROL)),
+            ),
+            DialogSelectAction::ItemHit {
+                dialog,
+                item_no: 3,
+                is_edit_text: false,
+                is_resource_control: true,
+            }
+        );
+        // Mouse down inside bounds, hitting disabled item
+        assert_eq!(
+            evaluate_dialog_select(
+                EVENT_MOUSE_DOWN,
+                0,
+                50,
+                50,
+                Some(dialog),
+                Some(bounds),
+                None,
+                |_, _| Some((4, DIALOG_ITEM_BUTTON | DIALOG_ITEM_DISABLED_FLAG)),
+            ),
+            DialogSelectAction::DisabledItemHit { dialog, item_no: 4 }
+        );
+        // Mouse down inside bounds, no item hit
+        assert_eq!(
+            evaluate_dialog_select(
+                EVENT_MOUSE_DOWN,
+                0,
+                50,
+                50,
+                Some(dialog),
+                Some(bounds),
+                None,
+                |_, _| None,
+            ),
+            DialogSelectAction::NoAction
+        );
+
+        // evaluate_dialog_select: KeyDown / AutoKey
+        assert_eq!(
+            evaluate_dialog_select(
+                EVENT_KEY_DOWN,
+                b'A' as u32,
+                0,
+                0,
+                Some(dialog),
+                Some(bounds),
+                Some((2, DIALOG_ITEM_EDIT_TEXT)),
+                |_, _| None,
+            ),
+            DialogSelectAction::KeyStroke {
+                dialog,
+                edit_item: 2,
+                character: b'A',
+            }
+        );
+        assert_eq!(
+            evaluate_dialog_select(
+                EVENT_AUTO_KEY,
+                0x08,
+                0,
+                0,
+                Some(dialog),
+                Some(bounds),
+                Some((2, DIALOG_ITEM_EDIT_TEXT)),
+                |_, _| None,
+            ),
+            DialogSelectAction::KeyStroke {
+                dialog,
+                edit_item: 2,
+                character: 0x08,
+            }
+        );
+        // KeyDown when no active edit text
+        assert_eq!(
+            evaluate_dialog_select(
+                EVENT_KEY_DOWN,
+                b'A' as u32,
+                0,
+                0,
+                Some(dialog),
+                Some(bounds),
+                None,
+                |_, _| None,
+            ),
+            DialogSelectAction::NoAction
+        );
+    }
 }
+
