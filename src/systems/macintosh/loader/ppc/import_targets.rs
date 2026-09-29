@@ -1059,6 +1059,7 @@ pub enum PpcImportDispatcherTarget {
     QtLoadMovieIntoRam,
     QtCloseMovieFile,
     CloseComponent,
+    NewOTNotifyUPP,
     NewRoutineDescriptor,
     NewIOCompletionUPP,
     DisposeIOCompletionUPP,
@@ -3388,6 +3389,9 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "PurgeMem") => PpcImportDispatcherTarget::PurgeMem,
         ("InterfaceLib", "PurgeMemSys") => PpcImportDispatcherTarget::PurgeMemSys,
+        ("Apple;Carbon;Networking" | "OpenTransportLib", "NewOTNotifyUPP") => {
+            PpcImportDispatcherTarget::NewOTNotifyUPP
+        }
         ("InterfaceLib", "ReleaseResource") => PpcImportDispatcherTarget::ReleaseResource,
         ("InterfaceLib", "DetachResource") => PpcImportDispatcherTarget::DetachResource,
         ("InterfaceLib", "ReadPartialResource") => PpcImportDispatcherTarget::ReadPartialResource,

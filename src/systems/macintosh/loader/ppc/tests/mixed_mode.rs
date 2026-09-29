@@ -311,6 +311,46 @@ fn import_bindings_classify_mixed_mode_imports() {
 }
 
 #[test]
+fn open_transport_notify_upp_preserves_powerpc_callback() {
+    assert_eq!(
+        dispatcher_target_for_import("Apple;Carbon;Networking", "NewOTNotifyUPP"),
+        PpcImportDispatcherTarget::NewOTNotifyUPP
+    );
+    assert_eq!(
+        dispatcher_target_for_import("OpenTransportLib", "NewOTNotifyUPP"),
+        PpcImportDispatcherTarget::NewOTNotifyUPP
+    );
+
+    let bindings = PpcImportBindingPlan::prepare(
+        vec![PefResolvedImport {
+            library_index: 0,
+            symbol_index: 0,
+            library_name: "Apple;Carbon;Networking".to_string(),
+            symbol_name: "NewOTNotifyUPP".to_string(),
+            class: 2,
+            weak: true,
+        }],
+        1,
+        0,
+        ppc_import_layout(),
+        &SystemlessPpcImportBindingPolicy,
+    )
+    .unwrap()
+    .into_initial_bindings();
+    assert_eq!(bindings[0].address, PPC_IMPORT_TVECTOR_BASE);
+    assert_eq!(
+        bindings[0].dispatcher_target,
+        PpcImportDispatcherTarget::NewOTNotifyUPP
+    );
+
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewOTNotifyUPP")).unwrap();
+    let callback = PPC_DATA_BASE + 0x1000;
+    loaded.cpu.gpr[3] = callback;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewOTNotifyUPP);
+    assert_eq!(loaded.cpu.gpr[3], callback);
+}
+
+#[test]
 fn carbon_io_completion_upp_uses_a_releasable_ppc_descriptor() {
     assert_eq!(
         dispatcher_target_for_import("CarbonLib", "NewIOCompletionUPP"),
