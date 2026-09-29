@@ -1557,6 +1557,84 @@ fn get_std_filter_proc_rejects_unwritable_output() {
 }
 
 #[test]
+fn std_filter_proc_dispatches_with_canonical_evaluation() {
+    let pef = synthetic_pef_with_import(b"StdFilterProc");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let dialog = PPC_DATA_BASE + 0x5100;
+    let event = PPC_DATA_BASE + 0x5300;
+    let item_hit = PPC_DATA_BASE + 0x5400;
+    loaded.memory.add_region(dialog, vec![0; PPC_DIALOG_RECORD_SIZE as usize]);
+    loaded.memory.add_region(event, vec![0; 16]);
+    loaded.memory.add_region(item_hit, vec![0; 2]);
+
+    let app_code_pc = loaded.cpu.pc;
+
+    // 1. NIL parameters reject
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = event;
+    loaded.cpu.gpr[5] = item_hit;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = item_hit;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = event;
+    loaded.cpu.gpr[5] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 2. Return key with no default item (default_item == 0) returns FALSE (0)
+    loaded.memory.write_u16_be(dialog + PPC_DIALOG_DEFAULT_ITEM_OFFSET, 0).unwrap();
+    loaded.memory.write_u16_be(event, 3).unwrap(); // keyDown
+    loaded.memory.write_u32_be(event + 2, b'\r' as u32).unwrap();
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = event;
+    loaded.cpu.gpr[5] = item_hit;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 3. Return key with default item (e.g. 2) returns TRUE (1) and sets itemHit
+    loaded.memory.write_u16_be(dialog + PPC_DIALOG_DEFAULT_ITEM_OFFSET, 2).unwrap();
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = event;
+    loaded.cpu.gpr[5] = item_hit;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    assert_eq!(loaded.memory.read_u16_be(item_hit), Some(2));
+
+    // 4. Other key (e.g. Escape) returns FALSE (0)
+    loaded.memory.write_u32_be(event + 2, 0x1B).unwrap();
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = event;
+    loaded.cpu.gpr[5] = item_hit;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
 fn find_dialog_item_falls_through_group_boxes_to_enclosed_controls() {
     let pef = synthetic_pef_with_import(b"GetNewDialog");
     let mut loaded = load_pef_application(&pef).unwrap();
