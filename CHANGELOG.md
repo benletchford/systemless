@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.70.0](https://github.com/benletchford/systemless/compare/v0.69.0...v0.70.0) (2026-09-29)
+
+
+### Features
+
+* **ppc:** support Color QuickDraw arithmetic CopyBits modes ([#3420](https://github.com/benletchford/systemless/issues/3420)) ([3bde953](https://github.com/benletchford/systemless/commit/3bde95369cc1a55a61c1e79651f2aeedea66cdcc))
+* **vise:** parse 0x80010304 catalogs ([#3441](https://github.com/benletchford/systemless/issues/3441)) ([801c6d4](https://github.com/benletchford/systemless/commit/801c6d41caa4696b34583f59f3cb97b35f886ddb))
+
+
+### Bug Fixes
+
+* **gestalt:** report Appearance Manager version ([#3452](https://github.com/benletchford/systemless/issues/3452)) ([90e72db](https://github.com/benletchford/systemless/commit/90e72db17a4a2859770c333e26fa37a831b960f8))
+* **memory:** return disposed handle data to the shared native free list ([#3448](https://github.com/benletchford/systemless/issues/3448)) ([90b24b2](https://github.com/benletchford/systemless/commit/90b24b2beeeaaa979b2e8b7dd9b20e01f023b50b))
+* **pict:** resolve colors through the standard CLUT on 16-bit destinations ([#3421](https://github.com/benletchford/systemless/issues/3421)) ([22a5a7c](https://github.com/benletchford/systemless/commit/22a5a7c6d770aedb3991641dbcbc7bc11088c627))
+* **ppc:** return NIL from GetPicture for a missing PICT ([#3422](https://github.com/benletchford/systemless/issues/3422)) ([498039d](https://github.com/benletchford/systemless/commit/498039da597454e4fa34efaf86ee1bbbd03b8a28))
+
+
+### Performance Improvements
+
+* **quickdraw:** compare the kiosk letterbox key before scanning the CLUT ([#3428](https://github.com/benletchford/systemless/issues/3428)) ([80ef39e](https://github.com/benletchford/systemless/commit/80ef39efa45d61bb2cd0b19268774a6f3bbd8eff))
+* **trap:** dispatch SANE traps straight to the SANE adapter ([#3427](https://github.com/benletchford/systemless/issues/3427)) ([736fc5f](https://github.com/benletchford/systemless/commit/736fc5ff012802e2a5c0c07c2614b501d98164d9))
+
+
+### Code Refactoring
+
+* **dialog:** centralize AppendDITL and ShortenDITL evaluation ([#3450](https://github.com/benletchford/systemless/issues/3450)) ([db83fe4](https://github.com/benletchford/systemless/commit/db83fe4ea6f92cd8a5bbf0bc9c1f3e3ae44670de))
+* **dialog:** centralize HideDialogItem and ShowDialogItem evaluation ([#3443](https://github.com/benletchford/systemless/issues/3443)) ([d3fe327](https://github.com/benletchford/systemless/commit/d3fe327db3a87b5361056f5be1aaa131b11bd976))
+
 ## [0.69.0](https://github.com/benletchford/systemless/compare/v0.68.0...v0.69.0) (2026-09-29)
 
 
