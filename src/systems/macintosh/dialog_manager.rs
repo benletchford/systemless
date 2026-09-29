@@ -2144,6 +2144,104 @@ pub fn write_ditl_item_header_bytes(
     true
 }
 
+/// Target action for dialog template purgeability operations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DialogTemplatePurgeabilityAction {
+    /// Make already-loaded resources purgeable (`FreeDialog` / `FreeAlert`).
+    MakePurgeable,
+    /// Load resources if missing and make them unpurgeable (`CouldDialog` / `CouldAlert`).
+    MakeUnpurgeableLoadIfMissing,
+}
+
+/// Evaluated query for a dialog or alert template purgeability operation.
+///
+/// Inside Macintosh Volume I, pp. I-415, I-420.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DialogTemplatePurgeabilityQuery {
+    template_type: [u8; 4],
+    template_id: i16,
+    action: DialogTemplatePurgeabilityAction,
+}
+
+impl DialogTemplatePurgeabilityQuery {
+    /// Constructs a new `DialogTemplatePurgeabilityQuery`.
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        template_type: [u8; 4],
+        template_id: i16,
+        action: DialogTemplatePurgeabilityAction,
+    ) -> Self {
+        Self {
+            template_type,
+            template_id,
+            action,
+        }
+    }
+
+    /// Four-character resource type code (`DLOG` or `ALRT`).
+    #[inline]
+    #[must_use]
+    pub const fn template_type(&self) -> [u8; 4] {
+        self.template_type
+    }
+
+    /// Template resource ID.
+    #[inline]
+    #[must_use]
+    pub const fn template_id(&self) -> i16 {
+        self.template_id
+    }
+
+    /// The requested purgeability action.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn action(&self) -> DialogTemplatePurgeabilityAction {
+        self.action
+    }
+
+    /// Whether missing resources should be loaded.
+    #[inline]
+    #[must_use]
+    pub const fn load_if_missing(&self) -> bool {
+        matches!(
+            self.action,
+            DialogTemplatePurgeabilityAction::MakeUnpurgeableLoadIfMissing
+        )
+    }
+
+    /// Whether resources should be marked purgeable.
+    #[inline]
+    #[must_use]
+    pub const fn purgeable(&self) -> bool {
+        matches!(
+            self.action,
+            DialogTemplatePurgeabilityAction::MakePurgeable
+        )
+    }
+}
+
+/// Evaluates and validates input parameters for a dialog or alert template purgeability request.
+///
+/// Inside Macintosh Volume I, pp. I-415, I-420.
+#[inline]
+pub fn evaluate_dialog_template_purgeability_query(
+    template_type: [u8; 4],
+    template_id: i16,
+    load_if_missing: bool,
+    purgeable: bool,
+) -> DialogTemplatePurgeabilityQuery {
+    let action = if purgeable {
+        DialogTemplatePurgeabilityAction::MakePurgeable
+    } else if load_if_missing {
+        DialogTemplatePurgeabilityAction::MakeUnpurgeableLoadIfMissing
+    } else {
+        DialogTemplatePurgeabilityAction::MakePurgeable
+    };
+    DialogTemplatePurgeabilityQuery::new(template_type, template_id, action)
+}
+
 /// Parsed representation of a Macintosh dialog template (`DLOG` resource).
 ///
 /// Inside Macintosh Volume I, pp. I-437--I-438;
@@ -2544,6 +2642,128 @@ pub fn evaluate_alert_invocation(
 #[inline]
 pub const fn evaluate_error_sound(sound_proc: u32) -> ErrorSoundEvaluation {
     ErrorSoundEvaluation::new(sound_proc)
+}
+
+/// Evaluated parameters for a `StandardAlert` or alert compatibility invocation.
+///
+/// Apple Dialog Manager Reference, pp. 65, 75–76, 82–83.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StandardAlertParameters {
+    alert_type: i16,
+    error_ptr: u32,
+    explanation_ptr: u32,
+    alert_param_ptr: u32,
+    item_hit_out_ptr: u32,
+    is_standard: bool,
+}
+
+impl StandardAlertParameters {
+    /// Constructs a new `StandardAlertParameters`.
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        alert_type: i16,
+        error_ptr: u32,
+        explanation_ptr: u32,
+        alert_param_ptr: u32,
+        item_hit_out_ptr: u32,
+        is_standard: bool,
+    ) -> Self {
+        Self {
+            alert_type,
+            error_ptr,
+            explanation_ptr,
+            alert_param_ptr,
+            item_hit_out_ptr,
+            is_standard,
+        }
+    }
+
+    /// Alert type or template resource ID.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn alert_type(&self) -> i16 {
+        self.alert_type
+    }
+
+    /// Alert template resource ID (alias for `alert_type`).
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn alert_id(&self) -> i16 {
+        self.alert_type
+    }
+
+    /// Pointer to Pascal error message string.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn error_ptr(&self) -> u32 {
+        self.error_ptr
+    }
+
+    /// Pointer to Pascal explanation string.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn explanation_ptr(&self) -> u32 {
+        self.explanation_ptr
+    }
+
+    /// Pointer to `AlertStdAlertParamRec` parameter block.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn alert_param_ptr(&self) -> u32 {
+        self.alert_param_ptr
+    }
+
+    /// Pointer to output variable receiving the item hit.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn item_hit_out_ptr(&self) -> u32 {
+        self.item_hit_out_ptr
+    }
+
+    /// Whether this is a `StandardAlert` call (true) or classic `Alert` compatibility call (false).
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn is_standard(&self) -> bool {
+        self.is_standard
+    }
+}
+
+/// Evaluates and validates input parameters for a `StandardAlert` or alert compatibility invocation.
+///
+/// If `is_standard` is true, `item_hit_out_ptr` must be non-null and writable (`can_write` must be true),
+/// returning `Err(DIALOG_PARAM_ERR)` otherwise.
+///
+/// Apple Dialog Manager Reference, pp. 65, 75–76, 82–83.
+#[inline]
+pub fn evaluate_standard_alert_parameters(
+    alert_type: i16,
+    error_ptr: u32,
+    explanation_ptr: u32,
+    alert_param_ptr: u32,
+    item_hit_out_ptr: u32,
+    is_standard: bool,
+    can_write: bool,
+) -> Result<StandardAlertParameters, i16> {
+    if is_standard && (item_hit_out_ptr == 0 || !can_write) {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    let effective_output = if is_standard { item_hit_out_ptr } else { 0 };
+    Ok(StandardAlertParameters::new(
+        alert_type,
+        error_ptr,
+        explanation_ptr,
+        alert_param_ptr,
+        effective_output,
+        is_standard,
+    ))
 }
 
 /// Replace `^0`..`^3` placeholders in dialog text bytes with the corresponding ParamText slot contents.
@@ -7721,6 +7941,108 @@ mod tests {
         assert_eq!(direct_modal.filter_proc(), 0x3000);
         assert!(direct_modal.has_filter_proc());
         assert_eq!(direct_modal.item_hit_ptr(), 0x4000);
+    }
+
+    #[test]
+    fn dialog_template_purgeability_and_standard_alert_evaluation() {
+        // DialogTemplatePurgeabilityQuery evaluation
+        let could_dlog = evaluate_dialog_template_purgeability_query(*b"DLOG", 128, true, false);
+        assert_eq!(could_dlog.template_type(), *b"DLOG");
+        assert_eq!(could_dlog.template_id(), 128);
+        assert_eq!(
+            could_dlog.action(),
+            DialogTemplatePurgeabilityAction::MakeUnpurgeableLoadIfMissing
+        );
+        assert!(could_dlog.load_if_missing());
+        assert!(!could_dlog.purgeable());
+
+        let free_dlog = evaluate_dialog_template_purgeability_query(*b"DLOG", 128, false, true);
+        assert_eq!(free_dlog.template_type(), *b"DLOG");
+        assert_eq!(free_dlog.template_id(), 128);
+        assert_eq!(
+            free_dlog.action(),
+            DialogTemplatePurgeabilityAction::MakePurgeable
+        );
+        assert!(!free_dlog.load_if_missing());
+        assert!(free_dlog.purgeable());
+
+        let could_alrt = evaluate_dialog_template_purgeability_query(*b"ALRT", 256, true, false);
+        assert_eq!(could_alrt.template_type(), *b"ALRT");
+        assert_eq!(could_alrt.template_id(), 256);
+        assert_eq!(
+            could_alrt.action(),
+            DialogTemplatePurgeabilityAction::MakeUnpurgeableLoadIfMissing
+        );
+        assert!(could_alrt.load_if_missing());
+        assert!(!could_alrt.purgeable());
+
+        let free_alrt = evaluate_dialog_template_purgeability_query(*b"ALRT", 256, false, true);
+        assert_eq!(free_alrt.template_type(), *b"ALRT");
+        assert_eq!(free_alrt.template_id(), 256);
+        assert_eq!(
+            free_alrt.action(),
+            DialogTemplatePurgeabilityAction::MakePurgeable
+        );
+        assert!(!free_alrt.load_if_missing());
+        assert!(free_alrt.purgeable());
+
+        // StandardAlertParameters evaluation
+        // StandardAlert: requires valid writable item_hit_out_ptr
+        assert_eq!(
+            evaluate_standard_alert_parameters(0, 0x1000, 0x2000, 0x3000, 0, true, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_standard_alert_parameters(0, 0x1000, 0x2000, 0x3000, 0x4000, true, false),
+            Err(DIALOG_PARAM_ERR)
+        );
+
+        let std_params = evaluate_standard_alert_parameters(
+            1,
+            0x1000,
+            0x2000,
+            0x3000,
+            0x4000,
+            true,
+            true,
+        )
+        .unwrap();
+        assert_eq!(std_params.alert_type(), 1);
+        assert_eq!(std_params.alert_id(), 1);
+        assert_eq!(std_params.error_ptr(), 0x1000);
+        assert_eq!(std_params.explanation_ptr(), 0x2000);
+        assert_eq!(std_params.alert_param_ptr(), 0x3000);
+        assert_eq!(std_params.item_hit_out_ptr(), 0x4000);
+        assert!(std_params.is_standard());
+
+        // Direct constructor
+        let direct_std = StandardAlertParameters::new(2, 0x10, 0x20, 0x30, 0x40, true);
+        assert_eq!(direct_std.alert_type(), 2);
+        assert_eq!(direct_std.alert_id(), 2);
+        assert_eq!(direct_std.error_ptr(), 0x10);
+        assert_eq!(direct_std.explanation_ptr(), 0x20);
+        assert_eq!(direct_std.alert_param_ptr(), 0x30);
+        assert_eq!(direct_std.item_hit_out_ptr(), 0x40);
+        assert!(direct_std.is_standard());
+
+        // Classic Alert compatibility: does not require item_hit_out_ptr or write permission
+        let alert_compat = evaluate_standard_alert_parameters(
+            128,
+            0,
+            0,
+            0,
+            0,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(alert_compat.alert_type(), 128);
+        assert_eq!(alert_compat.alert_id(), 128);
+        assert_eq!(alert_compat.error_ptr(), 0);
+        assert_eq!(alert_compat.explanation_ptr(), 0);
+        assert_eq!(alert_compat.alert_param_ptr(), 0);
+        assert_eq!(alert_compat.item_hit_out_ptr(), 0);
+        assert!(!alert_compat.is_standard());
     }
 }
 

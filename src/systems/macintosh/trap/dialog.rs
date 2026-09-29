@@ -10,7 +10,8 @@ use crate::cpu::{CpuOps, Register};
 use crate::dialog_manager::{
     dialog_dbox_frame_rect, dialog_item_base_type, dialog_item_resource_type,
     dialog_target_for_event, edit_text_frame_rect, evaluate_alert_invocation,
-    evaluate_close_dialog, evaluate_dispose_dialog, evaluate_error_sound,
+    evaluate_close_dialog, evaluate_dialog_template_purgeability_query, evaluate_dispose_dialog,
+    evaluate_error_sound,
     evaluate_find_dialog_item, evaluate_get_dialog_item, evaluate_get_dialog_item_as_control,
     evaluate_get_dialog_item_as_control_parameters, evaluate_get_new_dialog_parameters,
     evaluate_get_std_filter_proc_parameters, evaluate_modal_dialog_parameters,
@@ -16087,16 +16088,20 @@ impl super::TrapDispatcher {
             (true, 0x179) | (true, 0x17A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dialog_id = bus.read_word(sp) as i16;
-                let load_if_missing = trap_num == 0x179;
-                let purgeable = trap_num == 0x17A;
-                self.cascade_dialog_resource_purgeability(
-                    bus,
+                let query = evaluate_dialog_template_purgeability_query(
                     *b"DLOG",
                     dialog_id,
-                    purgeable,
-                    load_if_missing,
+                    trap_num == 0x179,
+                    trap_num == 0x17A,
                 );
-                let res_err = self.dialog_template_res_err(dialog_id);
+                self.cascade_dialog_resource_purgeability(
+                    bus,
+                    query.template_type(),
+                    query.template_id(),
+                    query.purgeable(),
+                    query.load_if_missing(),
+                );
+                let res_err = self.dialog_template_res_err(query.template_id());
                 bus.write_word(0x0A60, res_err as u16);
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
@@ -16318,14 +16323,18 @@ impl super::TrapDispatcher {
             (true, 0x189) | (true, 0x18A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let alert_id = bus.read_word(sp) as i16;
-                let load_if_missing = trap_num == 0x189;
-                let purgeable = trap_num == 0x18A;
-                self.cascade_dialog_resource_purgeability(
-                    bus,
+                let query = evaluate_dialog_template_purgeability_query(
                     *b"ALRT",
                     alert_id,
-                    purgeable,
-                    load_if_missing,
+                    trap_num == 0x189,
+                    trap_num == 0x18A,
+                );
+                self.cascade_dialog_resource_purgeability(
+                    bus,
+                    query.template_type(),
+                    query.template_id(),
+                    query.purgeable(),
+                    query.load_if_missing(),
                 );
                 bus.write_word(0x0A60, 0);
                 cpu.write_reg(Register::A7, sp + 2);
