@@ -5,9 +5,11 @@
 //! the destination hierarchy, Finder type/creator, and compressed data and
 //! resource fork locations.
 
+use std::borrow::Cow;
 use std::io::Read;
 
 use flate2::read::DeflateDecoder;
+use flate2::{Decompress, FlushDecompress, Status};
 
 use crate::trap::types::decode_mac_roman;
 
@@ -19,11 +21,14 @@ const VISE_VERSION_35: u32 = 0x8001_0201;
 const VISE_VERSION_35_LITE: u32 = 0x8001_0202;
 const VISE_VERSION_36_LITE: u32 = 0x8001_0300;
 const VISE_VERSION_EXTENDED_CATALOG: u32 = 0x8001_0307;
+const VISE_VERSION_PACKED_CATALOG: u32 = 0x8001_0308;
 const VISE_DIRECTORY_RECORD_LEN: usize = 78;
 const VISE_FILE_RECORD_LEN: usize = 120;
 const VISE_EXTENDED_CATALOG_PREFIX_LEN: usize = 80;
 const VISE_EXTENDED_DIRECTORY_SUFFIX_LEN: usize = 66;
 const VISE_EXTENDED_FILE_SUFFIX_LEN: usize = 62;
+const VISE_PACKED_DIRECTORY_SUFFIX_LEN: usize = 70;
+const VISE_PACKED_FILE_SUFFIX_LEN: usize = 66;
 
 // Installer VISE 3 archive layout and transform reference:
 // ScummVM `common/compression/vise.cpp`, GPL-3.0-or-later, as of
@@ -238,6 +243,7 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
             | VISE_VERSION_35_LITE
             | VISE_VERSION_36_LITE
             | VISE_VERSION_EXTENDED_CATALOG
+            | VISE_VERSION_PACKED_CATALOG
     ) {
         return Err(format!("unsupported archive version 0x{version:08X}"));
     }
@@ -255,8 +261,12 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
         ));
     }
     let entry_count = read_u16(catalog, 16, "catalog entry count")? as usize;
+    let extended_catalog = matches!(
+        version,
+        VISE_VERSION_EXTENDED_CATALOG | VISE_VERSION_PACKED_CATALOG
+    );
     let mut cursor = catalog_offset + VISE_CATALOG_HEADER_LEN;
-    if version == VISE_VERSION_EXTENDED_CATALOG {
+    if extended_catalog {
         let prefix = range(
             data,
             cursor,
@@ -268,11 +278,53 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
         }
         cursor += VISE_EXTENDED_CATALOG_PREFIX_LEN;
     }
+    let catalog_records: Cow<'_, [u8]> = if version == VISE_VERSION_PACKED_CATALOG {
+        let packed_len = read_u32(catalog, 4, "packed catalog length")? as usize;
+        let packed = range(data, cursor, packed_len, "packed catalog records")?;
+        let mut swapped = packed.to_vec();
+        for pair in swapped.chunks_exact_mut(2) {
+            pair.swap(0, 1);
+        }
+        // The 0x80010308 catalog stores the same DVCT/FVCT records as the
+        // extended layout in a word-swapped, raw DEFLATE stream. Bound output
+        // by the largest possible record and Pascal name for each entry.
+        let max_len = entry_count
+            .checked_mul(4 + VISE_FILE_RECORD_LEN + VISE_PACKED_FILE_SUFFIX_LEN + 255)
+            .ok_or_else(|| "packed catalog size overflow".to_string())?;
+        let mut decoded = vec![0; max_len + 1];
+        let mut decompressor = Decompress::new(false);
+        let status = decompressor
+            .decompress(&swapped, &mut decoded, FlushDecompress::Finish)
+            .map_err(|error| format!("packed catalog decompression failed: {error}"))?;
+        if decompressor.total_out() as usize > max_len {
+            return Err("packed catalog exceeds its entry limit".to_string());
+        }
+        if status != Status::StreamEnd {
+            return Err("packed catalog has an incomplete DEFLATE stream".to_string());
+        }
+        if swapped[decompressor.total_in() as usize..]
+            .iter()
+            .any(|byte| *byte != 0)
+        {
+            return Err("packed catalog has nonzero trailing data".to_string());
+        }
+        decoded.truncate(decompressor.total_out() as usize);
+        cursor = 0;
+        Cow::Owned(decoded)
+    } else {
+        Cow::Borrowed(data)
+    };
+    let catalog_data = catalog_records.as_ref();
     let mut dirs = Vec::<ViseDirectory>::new();
     let mut entries = Vec::<ViseEntry<'_>>::new();
 
     for index in 0..entry_count {
-        let magic = range(data, cursor, 4, &format!("catalog entry {index} magic"))?;
+        let magic = range(
+            catalog_data,
+            cursor,
+            4,
+            &format!("catalog entry {index} magic"),
+        )?;
         cursor += 4;
         if &magic[1..4] != b"VCT" {
             return Err(format!(
@@ -284,7 +336,7 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
         match magic[0] {
             b'D' => {
                 let record = range(
-                    data,
+                    catalog_data,
                     cursor,
                     VISE_DIRECTORY_RECORD_LEN,
                     &format!("directory {index} record"),
@@ -293,24 +345,30 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                 let parent = read_u16(record, 68, "directory parent")? as usize;
                 let name_len = record[76] as usize;
                 if version == VISE_VERSION_36_LITE {
-                    range(data, cursor, 6, "VISE 3.6 directory extension")?;
+                    range(catalog_data, cursor, 6, "VISE 3.6 directory extension")?;
                     cursor += 6;
-                } else if version == VISE_VERSION_EXTENDED_CATALOG {
+                } else if extended_catalog {
+                    let suffix_len = if version == VISE_VERSION_PACKED_CATALOG {
+                        VISE_PACKED_DIRECTORY_SUFFIX_LEN
+                    } else {
+                        VISE_EXTENDED_DIRECTORY_SUFFIX_LEN
+                    };
                     range(
-                        data,
+                        catalog_data,
                         cursor,
-                        VISE_EXTENDED_DIRECTORY_SUFFIX_LEN,
+                        suffix_len,
                         "extended directory suffix",
                     )?;
-                    cursor += VISE_EXTENDED_DIRECTORY_SUFFIX_LEN;
+                    cursor += suffix_len;
                 }
-                let name = decode_catalog_name(data, &mut cursor, name_len, "directory name")?;
+                let name =
+                    decode_catalog_name(catalog_data, &mut cursor, name_len, "directory name")?;
                 let path = child_path(&dirs, parent, &name, "directory")?;
                 dirs.push(ViseDirectory { path });
             }
             b'F' => {
                 let record = range(
-                    data,
+                    catalog_data,
                     cursor,
                     VISE_FILE_RECORD_LEN,
                     &format!("file {index} record"),
@@ -335,22 +393,22 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                 file_type.copy_from_slice(&record[40..44]);
                 let mut creator = [0; 4];
                 creator.copy_from_slice(&record[44..48]);
-                if version == VISE_VERSION_EXTENDED_CATALOG {
-                    range(
-                        data,
-                        cursor,
-                        VISE_EXTENDED_FILE_SUFFIX_LEN,
-                        "extended file suffix",
-                    )?;
-                    cursor += VISE_EXTENDED_FILE_SUFFIX_LEN;
+                if extended_catalog {
+                    let suffix_len = if version == VISE_VERSION_PACKED_CATALOG {
+                        VISE_PACKED_FILE_SUFFIX_LEN
+                    } else {
+                        VISE_EXTENDED_FILE_SUFFIX_LEN
+                    };
+                    range(catalog_data, cursor, suffix_len, "extended file suffix")?;
+                    cursor += suffix_len;
                 }
-                let name = decode_catalog_name(data, &mut cursor, name_len, "file name")?;
+                let name = decode_catalog_name(catalog_data, &mut cursor, name_len, "file name")?;
                 let path = child_path(&dirs, parent, &name, "file")?;
                 // Grouped records share one compressed stream. Flag 0x10 also
                 // appears in extended catalogs, where fork offsets still refer
                 // to positions within that stream.
                 let is_grouped = (record[8] & 0x10) != 0
-                    || (version != VISE_VERSION_EXTENDED_CATALOG
+                    || (!extended_catalog
                         && data_unpacked_len == 0
                         && rsrc_unpacked_len != 0
                         && declared_data_packed_len != 0);
@@ -454,6 +512,13 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                 ));
             }
         }
+    }
+
+    if version == VISE_VERSION_PACKED_CATALOG
+        && cursor != catalog_data.len()
+        && !catalog_data[cursor..].starts_with(b"PACK")
+    {
+        return Err("packed catalog has an unexpected trailer".to_string());
     }
 
     Ok(ViseArchive {
@@ -1428,5 +1493,76 @@ pub(crate) mod tests {
             "unsafe VISE file component \"..\""
         );
         assert!(validate_component("Volume:Game", "file").is_err());
+    }
+
+    #[test]
+    fn parses_packed_extended_catalog_and_bounds_decompression() {
+        let game_data = b"PowerPC application payload";
+        let packed_game = encode_vise_fork(game_data);
+        let payload_offset = VISE_HEADER_LEN;
+        let catalog_offset = payload_offset + packed_game.len();
+        let mut archive = vec![0u8; VISE_HEADER_LEN];
+        archive[0..4].copy_from_slice(VISE_MAGIC);
+        archive[16..20].copy_from_slice(&VISE_VERSION_PACKED_CATALOG.to_be_bytes());
+        archive[36..40].copy_from_slice(&(catalog_offset as u32).to_be_bytes());
+        archive.extend_from_slice(&packed_game);
+
+        let mut records = Vec::new();
+        records.extend_from_slice(b"DVCT");
+        let mut directory = [0u8; VISE_DIRECTORY_RECORD_LEN];
+        directory[76] = 4;
+        records.extend_from_slice(&directory);
+        records.extend_from_slice(&[0u8; VISE_PACKED_DIRECTORY_SUFFIX_LEN]);
+        records.extend_from_slice(b"Game");
+
+        records.extend_from_slice(b"FVCT");
+        let mut file = [0u8; VISE_FILE_RECORD_LEN];
+        file[40..44].copy_from_slice(b"APPL");
+        file[44..48].copy_from_slice(b"TEST");
+        file[64..68].copy_from_slice(&(packed_game.len() as u32).to_be_bytes());
+        file[68..72].copy_from_slice(&(game_data.len() as u32).to_be_bytes());
+        file[92..94].copy_from_slice(&1u16.to_be_bytes());
+        file[96..100].copy_from_slice(&(payload_offset as u32).to_be_bytes());
+        file[118] = 7;
+        records.extend_from_slice(&file);
+        records.extend_from_slice(&[0u8; VISE_PACKED_FILE_SUFFIX_LEN]);
+        records.extend_from_slice(b"Runtime");
+        records.extend_from_slice(b"PACK");
+
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&records).unwrap();
+        let mut packed_records = encoder.finish().unwrap();
+        for pair in packed_records.chunks_exact_mut(2) {
+            pair.swap(0, 1);
+        }
+        let mut catalog = [0u8; VISE_CATALOG_HEADER_LEN];
+        catalog[0..4].copy_from_slice(VISE_CATALOG_MAGIC);
+        catalog[4..8].copy_from_slice(&(packed_records.len() as u32).to_be_bytes());
+        catalog[16..18].copy_from_slice(&2u16.to_be_bytes());
+        archive.extend_from_slice(&catalog);
+        let mut prefix = [0u8; VISE_EXTENDED_CATALOG_PREFIX_LEN];
+        prefix[0..4].copy_from_slice(b"PACK");
+        archive.extend_from_slice(&prefix);
+        archive.extend_from_slice(&packed_records);
+
+        let parsed = parse_vise(&archive).unwrap().unwrap();
+        assert_eq!(parsed.dirs, ["Game"]);
+        assert_eq!(parsed.entries.len(), 1);
+        let entry = &parsed.entries[0];
+        assert_eq!(entry.path, "Game/Runtime");
+        assert_eq!(entry.file_type, *b"APPL");
+        assert_eq!(
+            decode_vise_fork(entry.data_packed, game_data.len()).unwrap(),
+            game_data
+        );
+
+        let mut excessive = archive.clone();
+        excessive[catalog_offset + 16..catalog_offset + 18].copy_from_slice(&0u16.to_be_bytes());
+        assert!(parse_vise(&excessive).unwrap().is_err());
+
+        let mut truncated = archive;
+        truncated[catalog_offset + 4..catalog_offset + 8]
+            .copy_from_slice(&((packed_records.len() - 2) as u32).to_be_bytes());
+        assert!(parse_vise(&truncated).unwrap().is_err());
     }
 }
