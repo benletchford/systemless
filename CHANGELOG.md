@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.70.1](https://github.com/benletchford/systemless/compare/v0.70.0...v0.70.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* bind Open Transport notifier UPP construction ([#3457](https://github.com/benletchford/systemless/issues/3457)) ([084cf05](https://github.com/benletchford/systemless/commit/084cf05995ca4514e70bc60dc40ff034a4191c18))
+* **ppc:** keep code fragment storage out of the SIZE partition ([#3449](https://github.com/benletchford/systemless/issues/3449)) ([aeee1ef](https://github.com/benletchford/systemless/commit/aeee1ef91fafdaafe84c9ff6a8f627fc71ba90e3))
+
+
+### Performance Improvements
+
+* **presentation:** paste plain screen runs in one pass ([#3467](https://github.com/benletchford/systemless/issues/3467)) ([11414e4](https://github.com/benletchford/systemless/commit/11414e41f57fd9e2810e04397f32f034239ed8db))
+* **text:** read glyph coverage a row slice at a time ([#3483](https://github.com/benletchford/systemless/issues/3483)) ([df616f0](https://github.com/benletchford/systemless/commit/df616f0b34cc92258b4cf46dea996362627df1ba))
+* **text:** skip blank offscreen glyph cells that nothing stores to ([#3479](https://github.com/benletchford/systemless/issues/3479)) ([ca3640e](https://github.com/benletchford/systemless/commit/ca3640eed17ea49314981db9e4059685c7a7380a))
+
+
+### Code Refactoring
+
+* **dialog:** centralize Alert family parameter evaluation ([#3476](https://github.com/benletchford/systemless/issues/3476)) ([8e7f90d](https://github.com/benletchford/systemless/commit/8e7f90dc84043ecc055b8e7fb72e06d3d99b6dc0))
+* **dialog:** centralize alert stage tracking and invocation evaluation ([#3504](https://github.com/benletchford/systemless/issues/3504)) ([263881b](https://github.com/benletchford/systemless/commit/263881bd93ea9d9d618ff14203ae5af3695050c7))
+* **dialog:** centralize CountDITL and SetDialogTracksCursor evaluation ([#3463](https://github.com/benletchford/systemless/issues/3463)) ([fe0bc14](https://github.com/benletchford/systemless/commit/fe0bc14714c8fd305e67c1dfbc9db68f2b213e13))
+* **dialog:** centralize CountDitl parameter evaluation ([#3492](https://github.com/benletchford/systemless/issues/3492)) ([265f181](https://github.com/benletchford/systemless/commit/265f181cd481d1e80475bcd6f8cf9769406802bb))
+* **dialog:** centralize default button outline evaluation ([#3500](https://github.com/benletchford/systemless/issues/3500)) ([e784e32](https://github.com/benletchford/systemless/commit/e784e32b5d1c19cea0df50031874288c1d2725c1))
+* **dialog:** centralize dialog and alert resource purgeability evaluation ([#3510](https://github.com/benletchford/systemless/issues/3510)) ([0323375](https://github.com/benletchford/systemless/commit/0323375ae9c33ff1b8f27f8ebb06ddc9b485897d))
+* **dialog:** centralize dialog cancel item resolution ([#3502](https://github.com/benletchford/systemless/issues/3502)) ([bd00bfd](https://github.com/benletchford/systemless/commit/bd00bfd29487974c56fb9d43ae6e3b49dd70706c))
+* **dialog:** centralize dialog teardown and redraw parameter evaluation ([#3481](https://github.com/benletchford/systemless/issues/3481)) ([e2361f9](https://github.com/benletchford/systemless/commit/e2361f95a26088518de73aca3f0c420f6c01b3d6))
+* **dialog:** centralize dialog template purgeability and StandardAlert evaluation ([#3472](https://github.com/benletchford/systemless/issues/3472)) ([1c63983](https://github.com/benletchford/systemless/commit/1c63983bd4ec30fa2667138ef6f339dc801e3414))
+* **dialog:** centralize dialog template purgeability parameter evaluation ([#3494](https://github.com/benletchford/systemless/issues/3494)) ([4acd6b7](https://github.com/benletchford/systemless/commit/4acd6b7f4b08ec183e7c4d1d58fbee8d78c129c8))
+* **dialog:** centralize error sound and dabeeper evaluation ([#3506](https://github.com/benletchford/systemless/issues/3506)) ([e585284](https://github.com/benletchford/systemless/commit/e585284cd23cf18fb87f576527be3883559358c6))
+* **dialog:** centralize FindDialogItem parameter evaluation ([#3486](https://github.com/benletchford/systemless/issues/3486)) ([f66c226](https://github.com/benletchford/systemless/commit/f66c226c3b36c434062369f5e5128e3867276134))
+* **dialog:** centralize get dialog default and cancel item evaluation ([#3508](https://github.com/benletchford/systemless/issues/3508)) ([5750180](https://github.com/benletchford/systemless/commit/5750180ce7f3d12cc125bfa811ed033217576e95))
+* **dialog:** centralize GetDialogItem and SetDialogItem parameter evaluation ([#3474](https://github.com/benletchford/systemless/issues/3474)) ([468eb83](https://github.com/benletchford/systemless/commit/468eb838af42e3dc14b073dd63493f3812c5f699))
+* **dialog:** centralize GetDialogItemAsControl and ModalDialog evaluation ([#3470](https://github.com/benletchford/systemless/issues/3470)) ([fbc961e](https://github.com/benletchford/systemless/commit/fbc961e581d6e571431f38469de7efe141a2290a))
+* **dialog:** centralize GetDialogItemText and SetDialogItemText parameter evaluation ([#3478](https://github.com/benletchford/systemless/issues/3478)) ([961f508](https://github.com/benletchford/systemless/commit/961f508d767eb4c5c4a00e9742ccc4eb7565863d))
+* **dialog:** centralize GetNewDialog parameter evaluation ([#3468](https://github.com/benletchford/systemless/issues/3468)) ([17cb8ac](https://github.com/benletchford/systemless/commit/17cb8acfbd2a4d2bbfcfebbb11f523e4da51bc2e))
+* **dialog:** centralize GetStdFilterProc and SelectDialogItemText evaluation ([#3465](https://github.com/benletchford/systemless/issues/3465)) ([cb91f75](https://github.com/benletchford/systemless/commit/cb91f7515486a62e90006aff6de4ffac9d833d45))
+* **dialog:** centralize HideDialogItem and ShowDialogItem parameter evaluation ([#3488](https://github.com/benletchford/systemless/issues/3488)) ([9812321](https://github.com/benletchford/systemless/commit/9812321d7a6b46a3fd4a14425514ba52cc3eac77))
+* **dialog:** centralize IsDialogEvent and DialogSelect evaluation ([#3454](https://github.com/benletchford/systemless/issues/3454)) ([9118f17](https://github.com/benletchford/systemless/commit/9118f17df5b61a6e41287f3418704d23e8e97dad))
+* **dialog:** centralize IsDialogEvent parameter evaluation ([#3490](https://github.com/benletchford/systemless/issues/3490)) ([b05ac1c](https://github.com/benletchford/systemless/commit/b05ac1c469e38e24ab347038a20e794178366656))
+* **dialog:** centralize MoveDialogItem and SizeDialogItem evaluation ([#3512](https://github.com/benletchford/systemless/issues/3512)) ([1b848b3](https://github.com/benletchford/systemless/commit/1b848b328a2b976f2368d058699f45fae2d282fc))
+* **dialog:** centralize ParamText parameter evaluation ([#3484](https://github.com/benletchford/systemless/issues/3484)) ([81fdf82](https://github.com/benletchford/systemless/commit/81fdf82aad354ba5016e502c3c4fee465b2f61e2))
+* **dialog:** centralize SetDialogDefaultItem and SetDialogCancelItem evaluation ([#3460](https://github.com/benletchford/systemless/issues/3460)) ([92d1130](https://github.com/benletchford/systemless/commit/92d113065bc6e7e32c9f239ccf5718b46be86228))
+* **dialog:** centralize StdFilterProc parameter evaluation ([#3498](https://github.com/benletchford/systemless/issues/3498)) ([bb5906b](https://github.com/benletchford/systemless/commit/bb5906bf9c88b7b7cfdff9cd4b0a031879d1155c))
+* **dialog:** consolidate alert dialog record initialization and cancel item tracking ([#3496](https://github.com/benletchford/systemless/issues/3496)) ([9939ac9](https://github.com/benletchford/systemless/commit/9939ac921194752347c33d9161cad6d226c8f2ba))
+
 ## [0.70.0](https://github.com/benletchford/systemless/compare/v0.69.0...v0.70.0) (2026-09-29)
 
 
