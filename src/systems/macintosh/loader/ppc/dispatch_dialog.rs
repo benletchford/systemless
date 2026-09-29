@@ -162,6 +162,12 @@ pub(super) fn dispatch_dialog_import(
             let eval = crate::dialog_manager::evaluate_init_dialogs(cpu.gpr[3]);
             toolbox_startup.dialogs_initialized = true;
             toolbox_startup.dialog_resume_proc = eval.resume_proc();
+            let _ = memory.write_u32_be(crate::memory::globals::addr::RESUME_PROC, eval.resume_proc());
+            let _ = memory.write_u32_be(crate::memory::globals::addr::DA_BEEPER, eval.da_beeper());
+            let _ = memory.write_u16_be(crate::memory::globals::addr::ALERT_STAGE, eval.initial_alert_stage() as u16);
+            for i in 0..eval.da_strings_count() as u32 {
+                let _ = memory.write_u32_be(crate::memory::globals::addr::DA_STRINGS + i * 4, 0);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetNewDialog => {
@@ -1766,6 +1772,26 @@ fn ppc_new_alert_dialog(
             *last_resource_error = PPC_PARAM_ERR;
             return 0;
         };
+        let current_stage = memory
+            .read_u16_be(crate::memory::globals::addr::ALERT_STAGE)
+            .unwrap_or(crate::dialog_manager::INITIAL_ALERT_STAGE);
+        let eval = crate::dialog_manager::evaluate_alert_invocation(
+            alert_id,
+            template.stages,
+            current_stage,
+        );
+        let _ = memory.write_u16_be(
+            crate::memory::globals::addr::ALERT_STAGE,
+            eval.next_stage(),
+        );
+        let _ = memory.write_u16_be(
+            crate::memory::globals::addr::ANUMBER,
+            eval.anumber(),
+        );
+        let Some(default_item) = eval.default_item() else {
+            *last_resource_error = PPC_NO_ERR;
+            return 0;
+        };
         let Some(ditl_index) = ppc_vfs_resource_index(
             vfs_resources,
             current_resource_refnum,
@@ -1777,11 +1803,10 @@ fn ppc_new_alert_dialog(
             return 0;
         };
         let ditl_bytes = vfs_resources[ditl_index].data.clone();
-        let stage_eval = crate::dialog_manager::evaluate_alert_stage(template.stages, 0);
         (
             template.bounds,
             ditl_bytes,
-            stage_eval.default_item() as u16,
+            default_item as u16,
             0u16,
             template.position,
             1u32,

@@ -167,7 +167,7 @@ fn hle_alert_materializes_expanded_param_text() {
         alert[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
     }
     alert[8..10].copy_from_slice(&alert_id.to_be_bytes());
-    alert[10..12].copy_from_slice(&0x8888u16.to_be_bytes());
+    alert[10..12].copy_from_slice(&0xCCCCu16.to_be_bytes());
 
     let mut ditl = vec![0; 34];
     ditl[0..2].copy_from_slice(&1i16.to_be_bytes());
@@ -233,6 +233,14 @@ fn hle_alert_materializes_expanded_param_text() {
         ),
         Some(b"Configured for this display".to_vec()),
         "ParamText applies when the alert is created"
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(crate::memory::globals::addr::ALERT_STAGE),
+        Some(1)
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(crate::memory::globals::addr::ANUMBER),
+        Some(alert_id as u16)
     );
 }
 
