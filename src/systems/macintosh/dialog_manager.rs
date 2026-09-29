@@ -3072,6 +3072,9 @@ pub struct ErrorSoundEvaluation {
     sound_proc: u32,
 }
 
+/// Canonical alias for error sound parameter evaluation.
+pub type ErrorSoundParameters = ErrorSoundEvaluation;
+
 #[allow(dead_code)]
 impl ErrorSoundEvaluation {
     /// Creates a new error sound evaluation.
@@ -3129,6 +3132,14 @@ pub fn evaluate_alert_invocation(
 #[inline]
 pub const fn evaluate_error_sound(sound_proc: u32) -> ErrorSoundEvaluation {
     ErrorSoundEvaluation::new(sound_proc)
+}
+
+/// Evaluates `ErrorSound` ($A98C / InterfaceLib) parameter.
+///
+/// Inside Macintosh Volume I, p. I-411.
+#[inline]
+pub const fn evaluate_error_sound_parameters(sound_proc: u32) -> ErrorSoundParameters {
+    evaluate_error_sound(sound_proc)
 }
 
 /// Evaluated parameters for a `StandardAlert` or alert compatibility invocation.
@@ -8753,14 +8764,23 @@ mod tests {
         assert!(inv_suppressed.has_sound());
         assert_eq!(inv_suppressed.suppressed_result(), -1);
 
-        // ErrorSoundEvaluation
+        // ErrorSoundEvaluation / ErrorSoundParameters
         let err_sound = evaluate_error_sound(0x00AB_CDEF);
         assert_eq!(err_sound.sound_proc(), 0x00AB_CDEF);
         assert!(!err_sound.is_silent());
 
+        let err_param: ErrorSoundParameters = evaluate_error_sound_parameters(0x00AB_CDEF);
+        assert_eq!(err_param, err_sound);
+        assert_eq!(err_param.sound_proc(), 0x00AB_CDEF);
+        assert!(!err_param.is_silent());
+
         let err_silent = evaluate_error_sound(0);
         assert_eq!(err_silent.sound_proc(), 0);
         assert!(err_silent.is_silent());
+
+        let err_silent_param = evaluate_error_sound_parameters(0);
+        assert_eq!(err_silent_param, err_silent);
+        assert!(err_silent_param.is_silent());
 
         // ResetAlertStage evaluation
         assert_eq!(INITIAL_ALERT_STAGE, 0);

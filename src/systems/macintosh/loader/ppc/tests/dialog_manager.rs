@@ -1897,3 +1897,129 @@ fn alert_stage_progression_suppression_and_anumber_recording() {
     let dialog = *loaded.current_gworld;
     assert!(ppc_window_is_visible(&mut loaded.memory, dialog));
 }
+
+#[test]
+fn error_sound_dispatches_with_canonical_evaluation() {
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"ErrorSound");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    use crate::memory::globals::addr;
+
+    let app_code_pc = loaded.cpu.pc;
+    loaded
+        .memory
+        .write_u32_be(addr::DA_BEEPER, 0xDEAD_BEEF)
+        .unwrap();
+
+    // 1. ErrorSound with custom procedure pointer
+    loaded.cpu.gpr[3] = 0x00AB_CDEF;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.memory.read_u32_be(addr::DA_BEEPER),
+        Some(0x00AB_CDEF)
+    );
+
+    // 2. ErrorSound with NIL (silence)
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.memory.read_u32_be(addr::DA_BEEPER), Some(0));
+}
+
+#[test]
+fn lm_dabeeper_accessors_manage_da_beeper_global() {
+    use crate::memory::globals::addr;
+
+    // LMSetDABeeper
+    let pef_set = synthetic_pef_with_library_import(b"InterfaceLib", b"LMSetDABeeper");
+    let mut loaded_set = load_pef_application(&pef_set).unwrap();
+    loaded_set.cpu.gpr[3] = 0x0012_3456;
+    let probe = loaded_set.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded_set.memory.read_u32_be(addr::DA_BEEPER),
+        Some(0x0012_3456)
+    );
+
+    // LMGetDABeeper
+    let pef_get = synthetic_pef_with_library_import(b"InterfaceLib", b"LMGetDABeeper");
+    let mut loaded_get = load_pef_application(&pef_get).unwrap();
+    loaded_get
+        .memory
+        .write_u32_be(addr::DA_BEEPER, 0x0012_3456)
+        .unwrap();
+    let probe = loaded_get.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_get.cpu.gpr[3], 0x0012_3456);
+}
+
+#[test]
+fn lm_acount_and_anumber_accessors_manage_dialog_globals() {
+    use crate::memory::globals::addr;
+
+    // LMSetACount and LMGetACount
+    let pef_set_acount = synthetic_pef_with_library_import(b"InterfaceLib", b"LMSetACount");
+    let mut loaded_set_acount = load_pef_application(&pef_set_acount).unwrap();
+    loaded_set_acount.cpu.gpr[3] = 2;
+    let probe = loaded_set_acount.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded_set_acount.memory.read_u16_be(addr::ALERT_STAGE),
+        Some(2)
+    );
+
+    let pef_get_acount = synthetic_pef_with_library_import(b"InterfaceLib", b"LMGetACount");
+    let mut loaded_get_acount = load_pef_application(&pef_get_acount).unwrap();
+    loaded_get_acount
+        .memory
+        .write_u16_be(addr::ALERT_STAGE, 3)
+        .unwrap();
+    let probe = loaded_get_acount.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_get_acount.cpu.gpr[3], 3);
+
+    // LMSetANumber and LMGetANumber
+    let pef_set_anumber = synthetic_pef_with_library_import(b"InterfaceLib", b"LMSetANumber");
+    let mut loaded_set_anumber = load_pef_application(&pef_set_anumber).unwrap();
+    loaded_set_anumber.cpu.gpr[3] = 128;
+    let probe = loaded_set_anumber.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded_set_anumber.memory.read_u16_be(addr::ANUMBER),
+        Some(128)
+    );
+
+    let pef_get_anumber = synthetic_pef_with_library_import(b"InterfaceLib", b"LMGetANumber");
+    let mut loaded_get_anumber = load_pef_application(&pef_get_anumber).unwrap();
+    loaded_get_anumber
+        .memory
+        .write_u16_be(addr::ANUMBER, 256)
+        .unwrap();
+    let probe = loaded_get_anumber.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_get_anumber.cpu.gpr[3], 256);
+}
+
+#[test]
+fn lm_dlgfont_accessors_manage_dlg_font_global() {
+    use crate::memory::globals::addr;
+
+    let pef_set = synthetic_pef_with_library_import(b"InterfaceLib", b"LMSetDlgFont");
+    let mut loaded_set = load_pef_application(&pef_set).unwrap();
+    loaded_set.cpu.gpr[3] = 4;
+    let probe = loaded_set.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_set.memory.read_u16_be(addr::DLG_FONT), Some(4));
+
+    let pef_get = synthetic_pef_with_library_import(b"InterfaceLib", b"LMGetDlgFont");
+    let mut loaded_get = load_pef_application(&pef_get).unwrap();
+    loaded_get
+        .memory
+        .write_u16_be(addr::DLG_FONT, 7)
+        .unwrap();
+    let probe = loaded_get.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_get.cpu.gpr[3], 7);
+}
