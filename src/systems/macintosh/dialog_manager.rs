@@ -88,11 +88,141 @@ impl DialogRecordInitEvaluation {
     pub const fn default_item(&self) -> i16 {
         DIALOG_INITIAL_DEFAULT_ITEM
     }
+
+    /// The initial cancel item number (0 = none set).
+    #[allow(dead_code)]
+    pub const fn cancel_item(&self) -> i16 {
+        0
+    }
+
+    /// The initial alert hit index (0 = none).
+    #[allow(dead_code)]
+    pub const fn alert_hit(&self) -> i16 {
+        0
+    }
+
+    /// The initial resource ID (0 = none).
+    #[allow(dead_code)]
+    pub const fn resource_id(&self) -> i16 {
+        0
+    }
 }
 
 /// Evaluates the initial `DialogRecord` fields for a dialog with the given item list handle.
 pub const fn evaluate_dialog_record_init(items_handle: u32) -> DialogRecordInitEvaluation {
     DialogRecordInitEvaluation::new(items_handle)
+}
+
+/// Canonical evaluated initial fields for an alert's underlying `DialogRecord`.
+///
+/// Inside Macintosh Volume I, pp. I-424--I-425:
+/// Alerts construct an underlying `DialogRecord` with standard window kind (`dialogKind` = 2),
+/// items handle, resource ID, default item, and cancel item tracking.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AlertDialogRecordInitEvaluation {
+    items_handle: u32,
+    alert_id: i16,
+    default_item: i16,
+    cancel_item: i16,
+}
+
+impl AlertDialogRecordInitEvaluation {
+    /// Constructs initial alert DialogRecord evaluation.
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        items_handle: u32,
+        alert_id: i16,
+        default_item: i16,
+        cancel_item: i16,
+    ) -> Self {
+        Self {
+            items_handle,
+            alert_id,
+            default_item,
+            cancel_item,
+        }
+    }
+
+    /// The window kind word (`dialogKind` = 2).
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn window_kind(&self) -> u16 {
+        DIALOG_WINDOW_KIND
+    }
+
+    /// The item list handle.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn items_handle(&self) -> u32 {
+        self.items_handle
+    }
+
+    /// The initial text handle (NIL = 0).
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn text_handle(&self) -> u32 {
+        0
+    }
+
+    /// The initial edit field index (-1 = no edit field active).
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn edit_field(&self) -> i16 {
+        DIALOG_INITIAL_EDIT_FIELD
+    }
+
+    /// The initial edit open flag (0 = closed).
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn edit_open(&self) -> i16 {
+        DIALOG_INITIAL_EDIT_OPEN
+    }
+
+    /// The alert resource ID.
+    #[inline]
+    #[must_use]
+    pub const fn alert_id(&self) -> i16 {
+        self.alert_id
+    }
+
+    /// The default button item number.
+    #[inline]
+    #[must_use]
+    pub const fn default_item(&self) -> i16 {
+        self.default_item
+    }
+
+    /// The initial alert hit index (0 = none yet).
+    #[inline]
+    #[must_use]
+    pub const fn alert_hit(&self) -> i16 {
+        0
+    }
+
+    /// The cancel button item number.
+    #[inline]
+    #[must_use]
+    pub const fn cancel_item(&self) -> i16 {
+        self.cancel_item
+    }
+}
+
+/// Evaluates initial `DialogRecord` fields for an alert dialog.
+#[inline]
+#[must_use]
+pub const fn evaluate_alert_dialog_record_init(
+    items_handle: u32,
+    alert_id: i16,
+    default_item: i16,
+    cancel_item: i16,
+) -> AlertDialogRecordInitEvaluation {
+    AlertDialogRecordInitEvaluation::new(items_handle, alert_id, default_item, cancel_item)
 }
 
 /// Dialog record storage allocation policy.
@@ -8016,6 +8146,25 @@ mod tests {
         assert_eq!(init.edit_field(), -1);
         assert_eq!(init.edit_open(), 0);
         assert_eq!(init.default_item(), 1);
+        assert_eq!(init.cancel_item(), 0);
+        assert_eq!(init.alert_hit(), 0);
+        assert_eq!(init.resource_id(), 0);
+
+        // AlertDialogRecordInitEvaluation
+        let alert_init = evaluate_alert_dialog_record_init(0x9876_5432, 128, 1, 2);
+        assert_eq!(alert_init.window_kind(), 2);
+        assert_eq!(alert_init.items_handle(), 0x9876_5432);
+        assert_eq!(alert_init.text_handle(), 0);
+        assert_eq!(alert_init.edit_field(), -1);
+        assert_eq!(alert_init.edit_open(), 0);
+        assert_eq!(alert_init.alert_id(), 128);
+        assert_eq!(alert_init.default_item(), 1);
+        assert_eq!(alert_init.cancel_item(), 2);
+        assert_eq!(alert_init.alert_hit(), 0);
+        assert_eq!(
+            alert_init,
+            AlertDialogRecordInitEvaluation::new(0x9876_5432, 128, 1, 2)
+        );
 
         // FindDialogItemParameters: null dialog pointer returns None
         assert_eq!(evaluate_find_dialog_item_parameters(0, 10, 20), None);

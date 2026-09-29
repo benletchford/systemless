@@ -4025,10 +4025,37 @@ impl super::TrapDispatcher {
         if dialog_ptr == 0 {
             return false;
         }
+        let cancel_item = crate::dialog_manager::resolve_dialog_cancel_item(
+            None,
+            items.iter().map(|item| (item.item_type, &item.text)),
+        );
+        let init = crate::dialog_manager::evaluate_alert_dialog_record_init(
+            items_handle,
+            alert_id,
+            default_item,
+            cancel_item,
+        );
         bus.write_word(
             dialog_ptr + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET,
-            default_item as u16,
+            init.default_item() as u16,
         );
+        if bus.get_alloc_size(dialog_ptr).unwrap_or(0)
+            >= crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET + 2
+        {
+            bus.write_word(
+                dialog_ptr + crate::dialog_manager::DIALOG_RESOURCE_ID_OFFSET,
+                init.alert_id() as u16,
+            );
+            bus.write_word(
+                dialog_ptr + crate::dialog_manager::DIALOG_ALERT_HIT_OFFSET,
+                init.alert_hit() as u16,
+            );
+            bus.write_word(
+                dialog_ptr + crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET,
+                init.cancel_item() as u16,
+            );
+        }
+        self.dialog_cancel_items.insert(dialog_ptr, init.cancel_item());
 
         let saved_pixels = self
             .dialog_saved_pixels
@@ -4044,8 +4071,8 @@ impl super::TrapDispatcher {
             title: String::new(),
             proc_id: 1,
             items,
-            default_item,
-            cancel_item: 0,
+            default_item: init.default_item(),
+            cancel_item: init.cancel_item(),
             edit_text: String::new(),
             edit_item: 0,
             saved_pixels,
@@ -13028,7 +13055,23 @@ impl super::TrapDispatcher {
                             Self::dialog_edit_state(bus, dialog_ptr, &items);
                         let cancel_item =
                             crate::dialog_manager::resolve_modal_dialog_cancel_item(
-                                self.dialog_cancel_items.get(&dialog_ptr).copied(),
+                                self.dialog_cancel_items.get(&dialog_ptr).copied().or_else(|| {
+                                    if bus.get_alloc_size(dialog_ptr).unwrap_or(0)
+                                        >= crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET + 2
+                                    {
+                                        let raw = bus.read_word(
+                                            dialog_ptr
+                                                + crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET,
+                                        ) as i16;
+                                        if raw != 0 {
+                                            Some(raw)
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                }),
                                 items.iter().map(|item| (item.item_type, &item.text)),
                             );
                         let edit_text_modified = edit_item > 0
@@ -16798,6 +16841,15 @@ impl super::TrapDispatcher {
                                     if tracking.dialog_ptr == params.dialog_ptr() {
                                         tracking.cancel_item = params.item_no();
                                     }
+                                }
+                                if bus.get_alloc_size(params.dialog_ptr()).unwrap_or(0)
+                                    >= crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET + 2
+                                {
+                                    bus.write_word(
+                                        params.dialog_ptr()
+                                            + crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET,
+                                        params.item_no() as u16,
+                                    );
                                 }
                                 crate::dialog_manager::DIALOG_NO_ERR
                             }
