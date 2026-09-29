@@ -472,6 +472,17 @@ pub fn draw_picture(
     if pic_ptr == 0 {
         return (false, None);
     }
+    // A 16-bit destination has no CLUT: `write_pixel` resolves the indices
+    // this renderer tracks (FgColor/BkColor, monochrome bits, shapes)
+    // through the standard 8-bit table. Resolve colors to indices in that
+    // same table, or a live application CLUT whose black sits elsewhere
+    // turns a 1-bit mask's black into a non-zero direct pixel.
+    let device_clut = if screen_mode.4 == 16 {
+        STANDARD_MAC_8BPP_CLUT
+            .get_or_init(crate::trap::dispatch::TrapDispatcher::standard_mac_8bpp_clut)
+    } else {
+        device_clut
+    };
 
     if is_raw_quilt_frame(bus, pic_ptr) {
         let ok = draw_raw_quilt_frame(
