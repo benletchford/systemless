@@ -12,6 +12,7 @@ architectures:
 - ppc
 default_architecture: ppc
 category: Role-Playing
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -23,7 +24,7 @@ compatibility:
       Deterministic native replay of the unchanged Macintosh shareware archive. The
       EULA, Options, title menu, Barbarian selection, and character naming lead to the
       starting camp with its HUD. Clicking open ground moves the Barbarian and scrolls
-      the camp. Browser launch has not yet been verified.
+      the camp. This checkpoint covered native play only.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2851
   - date: "2026-09-26"
@@ -33,8 +34,21 @@ compatibility:
     environment: >-
       Optimized local browser preview reaches the license screen. A startup sample
       measured approximately 21 guest ticks per second. Browser gameplay and acceptable
-      gameplay speed remain unverified; launch stays disabled.
+      gameplay speed were still unverified at this checkpoint.
     status: boots
+    evidence: https://github.com/benletchford/systemless/issues/2878
+  - date: "2026-09-29"
+    tester: Catalogue maintainer
+    systemless_version: 79fe12926926cad1aa979de17e09f0e4b29affee
+    architecture: ppc
+    environment: >-
+      Optimized local Chrome preview on Apple M1 with the unchanged archive.
+      The browser advances through character creation and loading to the camp.
+      A ground click moves the Barbarian and scrolls the camera while the HUD
+      remains intact. Camp speed measured about 29 to 33 guest ticks per second
+      against the original 60-tick clock, so this game runs slowly on the tested
+      computer.
+    status: playable
     evidence: https://github.com/benletchford/systemless/issues/2878
 runtime:
   application_partition_size: 134217728
@@ -95,7 +109,7 @@ references:
 
 This is Blizzard's original version 1.04 Macintosh shareware demo, with its
 game data and license preserved in the archive. The original PowerPC game
-reaches the starting camp in Systemless. Browser launch remains disabled
-until browser performance passes review.
+reaches the starting camp in Systemless. It also runs in the browser, though
+it may play slowly on some computers.
 
 ![A Barbarian in Diablo II's starting camp, running in Systemless](https://assets.systemless.org/catalogue/media/sha256/68/68386702029f4bad70439a64c19ad0c7a861118381e0fa01cf3a464c465e7d90.png)
