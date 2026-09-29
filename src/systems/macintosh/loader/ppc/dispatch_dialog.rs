@@ -5,8 +5,8 @@ use crate::dialog_manager::{
     dialog_item_base_type, dialog_item_resource_type_u32, dialog_rect_to_global,
     dialog_target_for_event, dialog_text_rect, edit_text_frame_rect,
     evaluate_count_ditl, evaluate_count_ditl_query,
-    evaluate_dialog_select, evaluate_dialog_teardown_parameters,
-    evaluate_draw_dialog_parameters,
+    evaluate_dialog_item_visibility_parameters, evaluate_dialog_select,
+    evaluate_dialog_teardown_parameters, evaluate_draw_dialog_parameters,
     evaluate_find_dialog_item, evaluate_get_dialog_item,
     evaluate_get_dialog_item_as_control, evaluate_get_dialog_item_as_control_parameters,
     evaluate_get_dialog_item_parameters, evaluate_get_new_dialog_parameters,
@@ -1375,14 +1375,14 @@ fn ppc_dispatch_dialog_compatibility(
         PpcDialogCompatibilityOperation::HideDialogItem
         | PpcDialogCompatibilityOperation::ShowDialogItem => {
             let item_number = cpu.gpr[4] as u16 as usize;
-            if let Some(query) =
-                crate::dialog_manager::evaluate_dialog_item_visibility_query(dialog, item_number)
+            if let Some(params) =
+                evaluate_dialog_item_visibility_parameters(dialog, item_number)
             {
                 if let Some((_handle, ptr, _bytes, items)) =
-                    ppc_dialog_live_items(memory, handles, query.dialog_ptr())
+                    ppc_dialog_live_items(memory, handles, params.dialog_ptr())
                 {
                     if let Some(item) =
-                        crate::dialog_manager::get_item_at_1_indexed(&items, query.item_number())
+                        crate::dialog_manager::get_item_at_1_indexed(&items, params.item_number())
                     {
                         let hide = operation == PpcDialogCompatibilityOperation::HideDialogItem;
                         let change = if hide {

@@ -1241,19 +1241,19 @@ impl DialogItemVisibilityChange {
     }
 }
 
-/// Canonical evaluated query for `HideDialogItem` and `ShowDialogItem`.
+/// Canonical evaluated parameters for `HideDialogItem` and `ShowDialogItem`.
 ///
 /// Inside Macintosh Volume IV, p. IV-59;
 /// Macintosh Toolbox Essentials (1992), pp. 6-123--6-124.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DialogItemVisibilityQuery {
+pub struct DialogItemVisibilityParameters {
     dialog_ptr: u32,
     item_number: usize,
 }
 
 #[allow(dead_code)]
-impl DialogItemVisibilityQuery {
-    /// Constructs a new `DialogItemVisibilityQuery`.
+impl DialogItemVisibilityParameters {
+    /// Constructs a new `DialogItemVisibilityParameters`.
     #[inline]
     pub const fn new(dialog_ptr: u32, item_number: usize) -> Self {
         Self {
@@ -1279,23 +1279,44 @@ impl DialogItemVisibilityQuery {
     pub const fn item_no(&self) -> i16 {
         self.item_number as i16
     }
+
+    /// The 0-based dialog item index, or `None` if item number is 0.
+    #[inline]
+    pub const fn item_index(&self) -> Option<usize> {
+        self.item_number.checked_sub(1)
+    }
 }
 
 /// Evaluates and validates input parameters for `HideDialogItem` and `ShowDialogItem`.
 ///
 /// Returns `None` if `dialog_ptr == 0` or `item_number == 0`.
 #[inline]
-pub const fn evaluate_dialog_item_visibility_query(
+pub const fn evaluate_dialog_item_visibility_parameters(
     dialog_ptr: u32,
     item_number: usize,
-) -> Option<DialogItemVisibilityQuery> {
+) -> Option<DialogItemVisibilityParameters> {
     if dialog_ptr == 0 || item_number == 0 {
         return None;
     }
-    Some(DialogItemVisibilityQuery {
+    Some(DialogItemVisibilityParameters {
         dialog_ptr,
         item_number,
     })
+}
+
+/// Evaluates and validates input parameters for `HideDialogItem` and `ShowDialogItem`
+/// from signed 16-bit item number.
+///
+/// Returns `None` if `dialog_ptr == 0` or `item_no <= 0`.
+#[inline]
+pub const fn evaluate_dialog_item_visibility_parameters_signed(
+    dialog_ptr: u32,
+    item_no: i16,
+) -> Option<DialogItemVisibilityParameters> {
+    if item_no <= 0 {
+        return None;
+    }
+    evaluate_dialog_item_visibility_parameters(dialog_ptr, item_no as usize)
 }
 
 /// Evaluates whether a dialog item should be hidden, and calculates its new offscreen
@@ -8234,16 +8255,29 @@ mod tests {
     }
 
     #[test]
-    fn dialog_item_visibility_query_and_evaluation() {
-        // evaluate_dialog_item_visibility_query
-        assert_eq!(evaluate_dialog_item_visibility_query(0, 1), None);
-        assert_eq!(evaluate_dialog_item_visibility_query(0x1000, 0), None);
+    fn dialog_item_visibility_parameters_and_evaluation() {
+        // evaluate_dialog_item_visibility_parameters
+        assert_eq!(evaluate_dialog_item_visibility_parameters(0, 1), None);
+        assert_eq!(evaluate_dialog_item_visibility_parameters(0x1000, 0), None);
+        assert_eq!(evaluate_dialog_item_visibility_parameters_signed(0, 1), None);
+        assert_eq!(evaluate_dialog_item_visibility_parameters_signed(0x1000, 0), None);
+        assert_eq!(evaluate_dialog_item_visibility_parameters_signed(0x1000, -1), None);
 
-        let query = evaluate_dialog_item_visibility_query(0x0003_4560, 4)
-            .expect("valid visibility query should succeed");
-        assert_eq!(query.dialog_ptr(), 0x0003_4560);
-        assert_eq!(query.item_number(), 4);
-        assert_eq!(query.item_no(), 4);
+        let params = evaluate_dialog_item_visibility_parameters(0x0003_4560, 4)
+            .expect("valid visibility parameters should succeed");
+        assert_eq!(params.dialog_ptr(), 0x0003_4560);
+        assert_eq!(params.item_number(), 4);
+        assert_eq!(params.item_no(), 4);
+        assert_eq!(params.item_index(), Some(3));
+
+        let params_signed = evaluate_dialog_item_visibility_parameters_signed(0x0003_4560, 4)
+            .expect("valid signed visibility parameters should succeed");
+        assert_eq!(params_signed, params);
+
+        let constructed = DialogItemVisibilityParameters::new(0x0003_4560, 4);
+        assert_eq!(constructed, params);
+        let zero_idx = DialogItemVisibilityParameters::new(0x1000, 0);
+        assert_eq!(zero_idx.item_index(), None);
 
         // evaluate_hide_dialog_item and accessors
         let visible_rect = (20, 30, 40, 80);
