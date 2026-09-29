@@ -3,9 +3,11 @@
 use super::*;
 use crate::dialog_manager::{
     dialog_item_base_type, dialog_item_resource_type_u32, dialog_rect_to_global,
-    dialog_target_for_event, dialog_text_rect, edit_text_frame_rect, evaluate_dialog_select,
-    evaluate_find_dialog_item, evaluate_get_dialog_item, evaluate_get_dialog_item_as_control,
-    evaluate_hide_dialog_item, evaluate_show_dialog_item, extract_dialog_item_text_bytes,
+    dialog_target_for_event, dialog_text_rect, edit_text_frame_rect, evaluate_count_ditl,
+    evaluate_dialog_select, evaluate_find_dialog_item, evaluate_get_dialog_item,
+    evaluate_get_dialog_item_as_control, evaluate_get_std_filter_proc, evaluate_hide_dialog_item,
+    evaluate_set_dialog_cancel_item, evaluate_set_dialog_default_item,
+    evaluate_set_dialog_tracks_cursor, evaluate_show_dialog_item, extract_dialog_item_text_bytes,
     find_dialog_item_hit, global_to_dialog_local_point, offset_ditl_bytes, parse_ditl_items,
     position_dialog_bounds as unified_position_dialog_bounds, prepare_get_dialog_item_text,
     prepare_set_dialog_item_text, DialogItemHeader, DialogItemRecord,
@@ -405,39 +407,44 @@ pub(super) fn dispatch_dialog_import(
             // Appearance Manager 1.0 SetDialogDefaultItem records which item
             // Return activates and reports an OSErr.
             let dialog = cpu.gpr[3];
-            let item = cpu.gpr[4] as u16;
-            let result = if dialog != 0
+            let item = cpu.gpr[4] as u16 as i16;
+            let result = evaluate_set_dialog_default_item(dialog, item);
+            let os_err = if result.is_ok()
                 && memory
-                    .write_u16_be(dialog + DIALOG_DEFAULT_ITEM_OFFSET, item)
+                    .write_u16_be(dialog + DIALOG_DEFAULT_ITEM_OFFSET, item as u16)
                     .is_some()
             {
                 PPC_NO_ERR
             } else {
-                PPC_PARAM_ERR
+                result.err().unwrap_or(PPC_PARAM_ERR)
             };
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
+            Some(PpcImportAction::Return(ppc_i16_result(os_err)))
         }
         PpcImportDispatcherTarget::SetDialogCancelItem => {
             // Macintosh Toolbox Essentials (1992), p. 6-165: the System 7
             // cancel item is Dialog Manager state rather than a public
             // DialogRecord field. Keep it in the HLE tail of our allocation.
             let dialog = cpu.gpr[3];
-            let item = cpu.gpr[4] as u16;
-            let result = if dialog != 0
+            let item = cpu.gpr[4] as u16 as i16;
+            let result = evaluate_set_dialog_cancel_item(dialog, item);
+            let os_err = if result.is_ok()
                 && memory
-                    .write_u16_be(dialog + DIALOG_CANCEL_ITEM_OFFSET, item)
+                    .write_u16_be(dialog + DIALOG_CANCEL_ITEM_OFFSET, item as u16)
                     .is_some()
             {
                 PPC_NO_ERR
             } else {
-                PPC_PARAM_ERR
+                result.err().unwrap_or(PPC_PARAM_ERR)
             };
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
+            Some(PpcImportAction::Return(ppc_i16_result(os_err)))
         }
         PpcImportDispatcherTarget::SetDialogTracksCursor => {
             // SetDialogTracksCursor (DialogPtr, Boolean) returns OSErr.
             // Cursor tracking is performed by the host UI when applicable.
-            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+            let dialog = cpu.gpr[3];
+            let tracks = cpu.gpr[4] != 0;
+            let os_err = evaluate_set_dialog_tracks_cursor(dialog, tracks).unwrap_or_else(|e| e);
+            Some(PpcImportAction::Return(ppc_i16_result(os_err)))
         }
         PpcImportDispatcherTarget::StdFilterProc => Some(PpcImportAction::Return(
             ppc_standard_filter_proc(cpu, memory),
@@ -446,18 +453,18 @@ pub(super) fn dispatch_dialog_import(
             // Apple Dialog Manager Reference (2007), p. 38:
             // OSErr GetStdFilterProc(ModalFilterUPP *theProc).
             let out_proc = cpu.gpr[3];
-            if out_proc == 0 || !ppc_memory_can_write_bytes(memory, out_proc, 4) {
-                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
-            }
-            let result = if memory
-                .write_u32_be(out_proc, PPC_STD_FILTER_TVECTOR)
-                .is_some()
+            let can_write = ppc_memory_can_write_bytes(memory, out_proc, 4);
+            let result = evaluate_get_std_filter_proc(out_proc, can_write);
+            let os_err = if result.is_ok()
+                && memory
+                    .write_u32_be(out_proc, PPC_STD_FILTER_TVECTOR)
+                    .is_some()
             {
                 PPC_NO_ERR
             } else {
-                PPC_PARAM_ERR
+                result.err().unwrap_or(PPC_PARAM_ERR)
             };
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
+            Some(PpcImportAction::Return(ppc_i16_result(os_err)))
         }
         PpcImportDispatcherTarget::DrawDialog => {
             if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
@@ -1097,11 +1104,11 @@ fn ppc_dispatch_dialog_compatibility(
                 _ => PpcImportAction::Return(0),
             }
         }
-        PpcDialogCompatibilityOperation::CountDitl => PpcImportAction::Return(
-            ppc_dialog_items_for_dialog(memory, handles, dialog)
-                .and_then(|items| u32::try_from(items.len()).ok())
-                .unwrap_or(0),
-        ),
+        PpcDialogCompatibilityOperation::CountDitl => {
+            let items = ppc_dialog_items_for_dialog(memory, handles, dialog);
+            let count = evaluate_count_ditl(None, items.map_or(0, |i| i.len()));
+            PpcImportAction::Return(u32::from(count))
+        }
         PpcDialogCompatibilityOperation::FindDialogItem => {
             let point = cpu.gpr[4];
             let v = (point >> 16) as u16 as i16;

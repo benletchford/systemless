@@ -10,14 +10,16 @@ use crate::cpu::{CpuOps, Register};
 use crate::dialog_manager::{
     dialog_dbox_frame_rect, dialog_item_base_type, dialog_item_resource_type,
     dialog_target_for_event, edit_text_frame_rect, evaluate_find_dialog_item,
-    evaluate_get_dialog_item, find_dialog_item_hit, global_to_dialog_local_point,
-    is_dialog_item_button, is_dialog_item_control, is_dialog_item_disabled,
-    is_dialog_item_edit_text, is_dialog_item_enabled, is_dialog_item_resource,
-    is_dialog_item_text, normalize_selection_bounds, prepare_get_dialog_item_text,
-    prepare_set_dialog_item_text, rect_contains_point, DialogItemHeader,
-    DIALOG_DBOX_FRAME_MARGIN, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX, DIALOG_ITEM_EDIT_TEXT,
-    DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO, DIALOG_ITEM_RESOURCE_CONTROL,
-    DIALOG_ITEM_STATIC_TEXT, DIALOG_ITEM_USER_ITEM, DIALOG_TEXT_LEFT_INSET,
+    evaluate_get_dialog_item, evaluate_get_std_filter_proc, evaluate_set_dialog_cancel_item,
+    evaluate_set_dialog_default_item, evaluate_set_dialog_tracks_cursor, find_dialog_item_hit,
+    global_to_dialog_local_point, is_dialog_item_button, is_dialog_item_control,
+    is_dialog_item_disabled, is_dialog_item_edit_text, is_dialog_item_enabled,
+    is_dialog_item_resource, is_dialog_item_text, normalize_selection_bounds,
+    prepare_get_dialog_item_text, prepare_set_dialog_item_text, rect_contains_point,
+    DialogItemHeader, DIALOG_DBOX_FRAME_MARGIN, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX,
+    DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO,
+    DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT, DIALOG_ITEM_USER_ITEM,
+    DIALOG_TEXT_LEFT_INSET,
 };
 use crate::display::CursorImage;
 use crate::memory::SavedPixels;
@@ -16504,32 +16506,33 @@ impl super::TrapDispatcher {
                     // rather than dereffing NIL.
                     crate::dialog_manager::DIALOG_DISPATCH_GET_STD_FILTER_PROC => {
                         let proc_ptr = bus.read_long(sp);
-                        let shim = if self.dialog_std_filter_proc != 0 {
-                            self.dialog_std_filter_proc
-                        } else {
-                            let shim = bus.alloc(16);
-                            bus.write_word(shim, 0x4EF9); // JMP abs.L shimBody
-                            bus.write_long(shim + 2, shim + 6);
-                            // Pascal FUNCTION ModalFilterProc(dialog, event, itemHit): Boolean
-                            // entry stack layout:
-                            //   +0  return address
-                            //   +4  itemHit ptr
-                            //   +8  EventRecord ptr
-                            //   +12 DialogPtr
-                            //   +16 Boolean result slot
-                            bus.write_word(shim + 6, 0x7000); // MOVEQ #0, D0
-                            bus.write_word(shim + 8, 0x426F); // CLR.W 16(SP)
-                            bus.write_word(shim + 10, 0x0010);
-                            bus.write_word(shim + 12, 0x4E74); // RTD #12
-                            bus.write_word(shim + 14, 0x000C);
-                            self.dialog_std_filter_proc = shim;
-                            shim
-                        };
-                        if proc_ptr != 0 {
+                        let result = evaluate_get_std_filter_proc(proc_ptr, proc_ptr != 0);
+                        if result.is_ok() {
+                            let shim = if self.dialog_std_filter_proc != 0 {
+                                self.dialog_std_filter_proc
+                            } else {
+                                let shim = bus.alloc(16);
+                                bus.write_word(shim, 0x4EF9); // JMP abs.L shimBody
+                                bus.write_long(shim + 2, shim + 6);
+                                // Pascal FUNCTION ModalFilterProc(dialog, event, itemHit): Boolean
+                                // entry stack layout:
+                                //   +0  return address
+                                //   +4  itemHit ptr
+                                //   +8  EventRecord ptr
+                                //   +12 DialogPtr
+                                //   +16 Boolean result slot
+                                bus.write_word(shim + 6, 0x7000); // MOVEQ #0, D0
+                                bus.write_word(shim + 8, 0x426F); // CLR.W 16(SP)
+                                bus.write_word(shim + 10, 0x0010);
+                                bus.write_word(shim + 12, 0x4E74); // RTD #12
+                                bus.write_word(shim + 14, 0x000C);
+                                self.dialog_std_filter_proc = shim;
+                                shim
+                            };
                             bus.write_long(proc_ptr, shim);
                         }
-                        // pop params; leave result in place
-                        bus.write_word(sp + param_bytes, 0); // noErr
+                        let os_err = result.unwrap_or(0);
+                        bus.write_word(sp + param_bytes, os_err as u16);
                         cpu.write_reg(Register::A7, sp + param_bytes);
                     }
                     // SetDialogDefaultItem (selector 4, param_bytes=6)
@@ -16552,7 +16555,8 @@ impl super::TrapDispatcher {
                     crate::dialog_manager::DIALOG_DISPATCH_SET_DIALOG_DEFAULT_ITEM => {
                         let new_item = bus.read_word(sp) as i16;
                         let dialog_ptr = bus.read_long(sp + 2);
-                        if dialog_ptr != 0 {
+                        let result = evaluate_set_dialog_default_item(dialog_ptr, new_item);
+                        if result.is_ok() {
                             bus.write_word(
                                 dialog_ptr + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET,
                                 new_item as u16,
@@ -16565,7 +16569,8 @@ impl super::TrapDispatcher {
                                 }
                             }
                         }
-                        bus.write_word(sp + param_bytes, 0); // noErr
+                        let os_err = result.unwrap_or(0);
+                        bus.write_word(sp + param_bytes, os_err as u16);
                         cpu.write_reg(Register::A7, sp + param_bytes);
                     }
                     // SetDialogCancelItem (selector 5, param_bytes=6)
@@ -16584,7 +16589,8 @@ impl super::TrapDispatcher {
                     crate::dialog_manager::DIALOG_DISPATCH_SET_DIALOG_CANCEL_ITEM => {
                         let new_item = bus.read_word(sp) as i16;
                         let dialog_ptr = bus.read_long(sp + 2);
-                        if dialog_ptr != 0 {
+                        let result = evaluate_set_dialog_cancel_item(dialog_ptr, new_item);
+                        if result.is_ok() {
                             self.dialog_cancel_items.insert(dialog_ptr, new_item);
                             if let Some(tracking) = self.dialog_tracking.as_mut() {
                                 if tracking.dialog_ptr == dialog_ptr {
@@ -16592,7 +16598,8 @@ impl super::TrapDispatcher {
                                 }
                             }
                         }
-                        bus.write_word(sp + param_bytes, 0); // noErr
+                        let os_err = result.unwrap_or(0);
+                        bus.write_word(sp + param_bytes, os_err as u16);
                         cpu.write_reg(Register::A7, sp + param_bytes);
                     }
                     // SetDialogTracksCursor (selector 6, param_bytes=6)
@@ -16610,7 +16617,11 @@ impl super::TrapDispatcher {
                     // no-op noErr. Apps that defensively call this
                     // at dialog setup time get noErr and proceed.
                     crate::dialog_manager::DIALOG_DISPATCH_SET_DIALOG_TRACKS_CURSOR => {
-                        bus.write_word(sp + param_bytes, 0); // noErr
+                        let tracks = bus.read_byte(sp) != 0;
+                        let dialog_ptr = bus.read_long(sp + 2);
+                        let os_err = evaluate_set_dialog_tracks_cursor(dialog_ptr, tracks)
+                            .unwrap_or_else(|e| e);
+                        bus.write_word(sp + param_bytes, os_err as u16);
                         cpu.write_reg(Register::A7, sp + param_bytes);
                     }
                     _ => {

@@ -3627,23 +3627,6 @@ impl super::TrapDispatcher {
             // SELECTOR(selector: INTEGER; parameters: selector-specific);
             // Inside Macintosh Volume VI (1991), Appendix C, p. C-4.
             (false, 0x8B) => {
-                fn count_dialog_items(bus: &MacMemoryBus, dialog_ptr: u32) -> u16 {
-                    if dialog_ptr == 0 {
-                        return 0;
-                    }
-
-                    let items_handle = bus
-                        .read_long(dialog_ptr + crate::dialog_manager::DIALOG_ITEMS_OFFSET);
-                    if items_handle != 0 {
-                        let ditl_ptr = bus.read_long(items_handle);
-                        if ditl_ptr != 0 {
-                            return bus.read_word(ditl_ptr).wrapping_add(1);
-                        }
-                    }
-
-                    0
-                }
-
                 let sp = cpu.read_reg(Register::A7);
                 let selector_stack = bus.read_word(sp + 4);
                 let selector_d0 = cpu.read_reg(Register::D0) as u16;
@@ -3671,14 +3654,28 @@ impl super::TrapDispatcher {
                     // Inside Macintosh: Macintosh Toolbox Essentials (1992), pp. 6-128 to 6-129.
                     (0x0403, _) | (_, 0x0403) => {
                         let dialog_ptr = bus.read_long(sp + 6);
-                        let mut count = count_dialog_items(bus, dialog_ptr);
-                        if count == 0 {
-                            count = self
-                                .dialog_items
-                                .get(&dialog_ptr)
-                                .map(|items| items.len() as u16)
-                                .unwrap_or(0);
-                        }
+                        let ditl_word = if dialog_ptr != 0 {
+                            let items_handle = bus
+                                .read_long(dialog_ptr + crate::dialog_manager::DIALOG_ITEMS_OFFSET);
+                            if items_handle != 0 {
+                                let ditl_ptr = bus.read_long(items_handle);
+                                if ditl_ptr != 0 {
+                                    Some(bus.read_word(ditl_ptr))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        let tracked_count = self
+                            .dialog_items
+                            .get(&dialog_ptr)
+                            .map_or(0, |items| items.len());
+                        let count =
+                            crate::dialog_manager::evaluate_count_ditl(ditl_word, tracked_count);
 
                         cpu.write_reg(Register::D0, count as u32);
                     }

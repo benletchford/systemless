@@ -50,6 +50,10 @@ pub const DIALOG_DISPATCH_SET_DIALOG_CANCEL_ITEM: u16 = 0x0005;
 pub const DIALOG_DISPATCH_SET_DIALOG_TRACKS_CURSOR: u16 = 0x0006;
 pub const DIALOG_DISPATCH_NEW_FEATURES_DIALOG: u16 = 0x000C;
 
+/// Standard Mac OS result codes used by Dialog Manager extension routines.
+pub const DIALOG_NO_ERR: i16 = 0;
+pub const DIALOG_PARAM_ERR: i16 = -50;
+
 /// Standard default button outline thickness in pixels.
 /// Macintosh Toolbox Essentials (1992), Listing 6-17.
 pub const DEFAULT_BUTTON_OUTLINE_THICKNESS: i16 = 3;
@@ -1005,8 +1009,68 @@ pub fn evaluate_get_dialog_item_as_control(
     if is_dialog_item_control(item_type) && handle != 0 {
         Ok(handle)
     } else {
-        Err(-50)
+        Err(DIALOG_PARAM_ERR)
     }
+}
+
+/// Evaluates `SetDialogDefaultItem` parameter validity.
+///
+/// Macintosh Toolbox Essentials (1992), p. 6-164.
+/// Returns `Ok(DIALOG_NO_ERR)` if `dialog_ptr != 0`, or `Err(DIALOG_PARAM_ERR)` otherwise.
+pub fn evaluate_set_dialog_default_item(dialog_ptr: u32, _new_item: i16) -> Result<i16, i16> {
+    if dialog_ptr == 0 {
+        Err(DIALOG_PARAM_ERR)
+    } else {
+        Ok(DIALOG_NO_ERR)
+    }
+}
+
+/// Evaluates `SetDialogCancelItem` parameter validity.
+///
+/// Macintosh Toolbox Essentials (1992), p. 6-165.
+/// Returns `Ok(DIALOG_NO_ERR)` if `dialog_ptr != 0`, or `Err(DIALOG_PARAM_ERR)` otherwise.
+pub fn evaluate_set_dialog_cancel_item(dialog_ptr: u32, _new_item: i16) -> Result<i16, i16> {
+    if dialog_ptr == 0 {
+        Err(DIALOG_PARAM_ERR)
+    } else {
+        Ok(DIALOG_NO_ERR)
+    }
+}
+
+/// Evaluates `SetDialogTracksCursor` parameter validity.
+///
+/// Macintosh Toolbox Essentials (1992), p. 6-166.
+/// Passing `NIL` (0) for `theDialog` sets tracking for all dialogs.
+/// Returns `Ok(DIALOG_NO_ERR)`.
+pub fn evaluate_set_dialog_tracks_cursor(_dialog_ptr: u32, _tracks: bool) -> Result<i16, i16> {
+    Ok(DIALOG_NO_ERR)
+}
+
+/// Evaluates `GetStdFilterProc` output pointer validation.
+///
+/// Macintosh Toolbox Essentials (1992), p. 6-163; Apple Dialog Manager Reference (2007), p. 38.
+/// Returns `Ok(DIALOG_NO_ERR)` if `out_proc != 0` and `can_write` is true, or `Err(DIALOG_PARAM_ERR)` otherwise.
+pub fn evaluate_get_std_filter_proc(out_proc: u32, can_write: bool) -> Result<i16, i16> {
+    if out_proc == 0 || !can_write {
+        Err(DIALOG_PARAM_ERR)
+    } else {
+        Ok(DIALOG_NO_ERR)
+    }
+}
+
+/// Evaluates the total number of items in a dialog.
+///
+/// Inside Macintosh: Macintosh Toolbox Essentials (1992), pp. 6-128--6-129.
+/// Uses the DITL header count word (where `count = word.wrapping_add(1)`) if present
+/// and non-zero; otherwise falls back to `record_count`.
+pub fn evaluate_count_ditl(ditl_count_word: Option<u16>, record_count: usize) -> u16 {
+    if let Some(word) = ditl_count_word {
+        let count = word.wrapping_add(1);
+        if count != 0 {
+            return count;
+        }
+    }
+    record_count.min(u16::MAX as usize) as u16
 }
 
 /// Hit-tests a dialog-local point against dialog items, returning the 0-based index of the first matching item.
@@ -4516,6 +4580,41 @@ mod tests {
             (0, 0, 0, 0),
             0
         ));
+    }
+
+    #[test]
+    fn dialog_dispatch_extension_routines_and_count_ditl_evaluation() {
+        // evaluate_set_dialog_default_item
+        assert_eq!(evaluate_set_dialog_default_item(0x1000, 1), Ok(DIALOG_NO_ERR));
+        assert_eq!(evaluate_set_dialog_default_item(0x1000, -1), Ok(DIALOG_NO_ERR));
+        assert_eq!(evaluate_set_dialog_default_item(0, 1), Err(DIALOG_PARAM_ERR));
+
+        // evaluate_set_dialog_cancel_item
+        assert_eq!(evaluate_set_dialog_cancel_item(0x1000, 2), Ok(DIALOG_NO_ERR));
+        assert_eq!(evaluate_set_dialog_cancel_item(0x1000, 0), Ok(DIALOG_NO_ERR));
+        assert_eq!(evaluate_set_dialog_cancel_item(0, 2), Err(DIALOG_PARAM_ERR));
+
+        // evaluate_set_dialog_tracks_cursor
+        assert_eq!(evaluate_set_dialog_tracks_cursor(0x1000, true), Ok(DIALOG_NO_ERR));
+        assert_eq!(evaluate_set_dialog_tracks_cursor(0, false), Ok(DIALOG_NO_ERR));
+
+        // evaluate_get_std_filter_proc
+        assert_eq!(evaluate_get_std_filter_proc(0x2000, true), Ok(DIALOG_NO_ERR));
+        assert_eq!(evaluate_get_std_filter_proc(0, true), Err(DIALOG_PARAM_ERR));
+        assert_eq!(evaluate_get_std_filter_proc(0x2000, false), Err(DIALOG_PARAM_ERR));
+        assert_eq!(evaluate_get_std_filter_proc(0, false), Err(DIALOG_PARAM_ERR));
+
+        // evaluate_count_ditl
+        // Header count word present: count = word + 1
+        assert_eq!(evaluate_count_ditl(Some(0), 10), 1);
+        assert_eq!(evaluate_count_ditl(Some(1), 10), 2);
+        assert_eq!(evaluate_count_ditl(Some(4), 0), 5);
+        // Header count word is 0xFFFF (-1), meaning 0 items: falls back to record_count
+        assert_eq!(evaluate_count_ditl(Some(u16::MAX), 0), 0);
+        assert_eq!(evaluate_count_ditl(Some(u16::MAX), 3), 3);
+        // Header count word is None: falls back to record_count
+        assert_eq!(evaluate_count_ditl(None, 0), 0);
+        assert_eq!(evaluate_count_ditl(None, 7), 7);
     }
 }
 
