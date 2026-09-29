@@ -95,6 +95,218 @@ pub const fn evaluate_dialog_record_init(items_handle: u32) -> DialogRecordInitE
     DialogRecordInitEvaluation::new(items_handle)
 }
 
+/// Dialog record storage allocation policy.
+///
+/// Inside Macintosh Volume I, pp. I-412, I-424:
+/// If `dStorage` is NIL (0), the Dialog Manager allocates the storage for the `DialogRecord`.
+/// If `dStorage` is non-NIL, it is a caller-supplied pointer to storage for the dialog record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DialogStoragePolicy {
+    /// Dialog Manager allocates storage dynamically from the heap.
+    AllocateNew,
+    /// Storage is caller-supplied at the given guest memory pointer.
+    CallerSupplied(u32),
+}
+
+#[allow(dead_code)]
+impl DialogStoragePolicy {
+    /// Returns true if caller supplied storage.
+    #[inline]
+    pub const fn is_caller_supplied(&self) -> bool {
+        matches!(self, Self::CallerSupplied(_))
+    }
+
+    /// Returns true if Dialog Manager needs to allocate new storage.
+    #[inline]
+    pub const fn is_allocate_new(&self) -> bool {
+        matches!(self, Self::AllocateNew)
+    }
+
+    /// Returns the caller-supplied storage pointer, or None if newly allocated.
+    #[inline]
+    pub const fn caller_storage(&self) -> Option<u32> {
+        match self {
+            Self::CallerSupplied(ptr) => Some(*ptr),
+            Self::AllocateNew => None,
+        }
+    }
+}
+
+/// Evaluates the storage allocation policy for a dialog record.
+///
+/// When `storage` is 0 (NIL), returns `DialogStoragePolicy::AllocateNew`.
+/// When non-zero, returns `DialogStoragePolicy::CallerSupplied(storage)`.
+#[inline]
+pub const fn evaluate_dialog_storage_policy(storage: u32) -> DialogStoragePolicy {
+    if storage != 0 {
+        DialogStoragePolicy::CallerSupplied(storage)
+    } else {
+        DialogStoragePolicy::AllocateNew
+    }
+}
+
+/// Canonical validated parameters for `NewDialog`, `NewCDialog`, and `NewFeaturesDialog`.
+///
+/// Inside Macintosh Volume I, p. I-412, Volume V, p. V-243, and
+/// Mac Toolbox: Appearance Manager (1997).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NewDialogParameters {
+    storage: u32,
+    bounds_ptr: u32,
+    title_ptr: u32,
+    visible: bool,
+    proc_id: i16,
+    behind: u32,
+    go_away: bool,
+    ref_con: u32,
+    items: u32,
+    is_color: bool,
+}
+
+#[allow(dead_code)]
+impl NewDialogParameters {
+    /// Creates a new evaluated dialog parameters structure.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    pub const fn new(
+        storage: u32,
+        bounds_ptr: u32,
+        title_ptr: u32,
+        visible: bool,
+        proc_id: i16,
+        behind: u32,
+        go_away: bool,
+        ref_con: u32,
+        items: u32,
+        is_color: bool,
+    ) -> Self {
+        Self {
+            storage,
+            bounds_ptr,
+            title_ptr,
+            visible,
+            proc_id,
+            behind,
+            go_away,
+            ref_con,
+            items,
+            is_color,
+        }
+    }
+
+    /// The raw storage pointer passed by the caller (0 = allocate).
+    #[inline]
+    pub const fn storage(&self) -> u32 {
+        self.storage
+    }
+
+    /// The dialog storage allocation policy.
+    #[inline]
+    pub const fn storage_policy(&self) -> DialogStoragePolicy {
+        evaluate_dialog_storage_policy(self.storage)
+    }
+
+    /// The pointer to the bounds rectangle in guest memory.
+    #[inline]
+    pub const fn bounds_ptr(&self) -> u32 {
+        self.bounds_ptr
+    }
+
+    /// The pointer to the Pascal title string in guest memory.
+    #[inline]
+    pub const fn title_ptr(&self) -> u32 {
+        self.title_ptr
+    }
+
+    /// Whether the dialog should be initially visible.
+    #[inline]
+    pub const fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    /// The window definition procedure ID (`procID`).
+    #[inline]
+    pub const fn proc_id(&self) -> i16 {
+        self.proc_id
+    }
+
+    /// The window placement pointer (`behind`: -1 = in front, 0 = in back, or WindowPtr).
+    #[inline]
+    pub const fn behind(&self) -> u32 {
+        self.behind
+    }
+
+    /// Whether the dialog window includes a close/go-away box.
+    #[inline]
+    pub const fn go_away(&self) -> bool {
+        self.go_away
+    }
+
+    /// The dialog reference constant (`refCon`).
+    #[inline]
+    pub const fn ref_con(&self) -> u32 {
+        self.ref_con
+    }
+
+    /// The handle to the dialog item list (DITL) resource or data in guest memory.
+    #[inline]
+    pub const fn items(&self) -> u32 {
+        self.items
+    }
+
+    /// Whether the dialog opts into color GrafPort representation (`NewCDialog` / `NewFeaturesDialog`).
+    #[inline]
+    pub const fn is_color(&self) -> bool {
+        self.is_color
+    }
+
+    /// Returns true if caller supplied a non-null title pointer.
+    #[inline]
+    pub const fn has_title(&self) -> bool {
+        self.title_ptr != 0
+    }
+
+    /// Returns true if caller supplied a non-null items list handle.
+    #[inline]
+    pub const fn has_items(&self) -> bool {
+        self.items != 0
+    }
+}
+
+/// Evaluates and validates creation parameters for `NewDialog` / `NewCDialog`.
+///
+/// Returns `Err(DIALOG_PARAM_ERR)` (-50) if `bounds_ptr == 0`, otherwise returns `Ok(NewDialogParameters)`.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub const fn evaluate_new_dialog_parameters(
+    storage: u32,
+    bounds_ptr: u32,
+    title_ptr: u32,
+    visible: bool,
+    proc_id: i16,
+    behind: u32,
+    go_away: bool,
+    ref_con: u32,
+    items: u32,
+    is_color: bool,
+) -> Result<NewDialogParameters, i16> {
+    if bounds_ptr == 0 {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    Ok(NewDialogParameters {
+        storage,
+        bounds_ptr,
+        title_ptr,
+        visible,
+        proc_id,
+        behind,
+        go_away,
+        ref_con,
+        items,
+        is_color,
+    })
+}
+
 /// Canonical DialogDispatch ($AA68) routine selectors.
 /// Macintosh Toolbox Essentials (1992), pp. 6-162--6-167.
 #[allow(dead_code)]
@@ -6046,6 +6258,84 @@ mod tests {
         let err_silent = evaluate_error_sound(0);
         assert_eq!(err_silent.sound_proc(), 0);
         assert!(err_silent.is_silent());
+    }
+
+    #[test]
+    fn new_dialog_parameters_and_storage_policy_evaluation() {
+        // Storage policy
+        let alloc_policy = evaluate_dialog_storage_policy(0);
+        assert_eq!(alloc_policy, DialogStoragePolicy::AllocateNew);
+        assert!(!alloc_policy.is_caller_supplied());
+        assert!(alloc_policy.is_allocate_new());
+        assert_eq!(alloc_policy.caller_storage(), None);
+
+        let caller_policy = evaluate_dialog_storage_policy(0x0012_3456);
+        assert_eq!(caller_policy, DialogStoragePolicy::CallerSupplied(0x0012_3456));
+        assert!(caller_policy.is_caller_supplied());
+        assert!(!caller_policy.is_allocate_new());
+        assert_eq!(caller_policy.caller_storage(), Some(0x0012_3456));
+
+        // Parameter evaluation: null bounds_ptr fails with DIALOG_PARAM_ERR (-50)
+        let err = evaluate_new_dialog_parameters(
+            0, 0, 0x1000, true, 1, 0xFFFF_FFFF, false, 0x2000, 0x3000, false,
+        );
+        assert_eq!(err, Err(DIALOG_PARAM_ERR));
+
+        // Parameter evaluation: valid bounds_ptr succeeds with complete parameter extraction
+        let params = evaluate_new_dialog_parameters(
+            0x0001_0000,
+            0x0002_0000,
+            0x0003_0000,
+            true,
+            16,
+            0xFFFF_FFFF,
+            true,
+            0xCAFE_BABE,
+            0x0004_0000,
+            true,
+        )
+        .expect("valid bounds should succeed");
+
+        assert_eq!(params.storage(), 0x0001_0000);
+        assert_eq!(params.storage_policy(), DialogStoragePolicy::CallerSupplied(0x0001_0000));
+        assert_eq!(params.bounds_ptr(), 0x0002_0000);
+        assert_eq!(params.title_ptr(), 0x0003_0000);
+        assert!(params.is_visible());
+        assert_eq!(params.proc_id(), 16);
+        assert_eq!(params.behind(), 0xFFFF_FFFF);
+        assert!(params.go_away());
+        assert_eq!(params.ref_con(), 0xCAFE_BABE);
+        assert_eq!(params.items(), 0x0004_0000);
+        assert!(params.is_color());
+        assert!(params.has_title());
+        assert!(params.has_items());
+
+        // Zero title and items handles
+        let minimal_params = evaluate_new_dialog_parameters(
+            0,
+            0x0002_0000,
+            0,
+            false,
+            0,
+            0,
+            false,
+            0,
+            0,
+            false,
+        )
+        .expect("minimal parameters should succeed");
+
+        assert_eq!(minimal_params.storage(), 0);
+        assert_eq!(minimal_params.storage_policy(), DialogStoragePolicy::AllocateNew);
+        assert!(!minimal_params.is_visible());
+        assert_eq!(minimal_params.proc_id(), 0);
+        assert_eq!(minimal_params.behind(), 0);
+        assert!(!minimal_params.go_away());
+        assert_eq!(minimal_params.ref_con(), 0);
+        assert_eq!(minimal_params.items(), 0);
+        assert!(!minimal_params.is_color());
+        assert!(!minimal_params.has_title());
+        assert!(!minimal_params.has_items());
     }
 }
 
