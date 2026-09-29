@@ -1,4 +1,54 @@
 use super::*;
+use super::dispatch_event::PPC_MAIN_EVENT_QUEUE_REF;
+
+#[test]
+fn carbon_main_event_queue_ref_is_stable_and_flushes_pending_events() {
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"GetMainEventQueue");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::GetMainEventQueue
+    );
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetMainEventQueue);
+    assert_eq!(loaded.cpu.gpr[3], PPC_MAIN_EVENT_QUEUE_REF);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetMainEventQueue);
+    assert_eq!(loaded.cpu.gpr[3], PPC_MAIN_EVENT_QUEUE_REF);
+
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"FlushEventQueue");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::FlushEventQueue
+    );
+    loaded.set_event_queue([
+        PpcQueuedEvent {
+            what: 3,
+            message: 0x4120,
+            when: 1,
+            where_v: 20,
+            where_h: 30,
+            modifiers: 0,
+        },
+        PpcQueuedEvent {
+            what: 23,
+            message: PPC_CORE_EVENT_CLASS,
+            when: 1,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        },
+    ]);
+
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FlushEventQueue);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(loaded.event_queue().len(), 2);
+
+    loaded.cpu.gpr[3] = PPC_MAIN_EVENT_QUEUE_REF;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FlushEventQueue);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert!(loaded.event_queue().is_empty());
+}
 
 #[test]
 fn event_avail_peeks_without_consuming_matching_event() {

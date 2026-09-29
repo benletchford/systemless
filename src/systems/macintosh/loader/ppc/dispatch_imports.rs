@@ -2660,6 +2660,8 @@ pub(crate) fn dispatch_supported_import(
             Some(PpcImportAction::Return(0))
         }
         PpcImportDispatcherTarget::FlushEvents
+        | PpcImportDispatcherTarget::GetMainEventQueue
+        | PpcImportDispatcherTarget::FlushEventQueue
         | PpcImportDispatcherTarget::SetEventMask
         | PpcImportDispatcherTarget::GetNextEvent(_)
         | PpcImportDispatcherTarget::GetOSEvent
