@@ -412,6 +412,22 @@ impl DialogItemRecord {
     ) -> Option<DialogItemVisibilityChange> {
         evaluate_show_dialog_item(self.item_type, self.rect, original_rect)
     }
+
+    /// Extracts the item's header representation.
+    pub fn header(&self) -> DialogItemHeader {
+        DialogItemHeader {
+            item_type: u16::from(self.item_type),
+            handle: self.handle,
+            rect: self.rect,
+        }
+    }
+
+    /// Updates the header fields of this dialog item record in place.
+    pub fn update_header(&mut self, item_type: u8, handle: u32, rect: (i16, i16, i16, i16)) {
+        self.item_type = item_type;
+        self.handle = handle;
+        self.rect = rect;
+    }
 }
 
 #[inline]
@@ -932,6 +948,67 @@ where
     find_dialog_item_at_local_point(rects, local_v, local_h).map_or(-1, |idx| idx as i16)
 }
 
+/// Header representation for a dialog item containing its type, handle/ProcPtr, and display rectangle.
+///
+/// Inside Macintosh Volume I, pp. I-421--I-423;
+/// Macintosh Toolbox Essentials (1992), pp. 6-120--6-123.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DialogItemHeader {
+    /// Item type word (including `DIALOG_ITEM_DISABLED_FLAG`).
+    pub item_type: u16,
+    /// Handle to control, text, icon, picture, or ProcPtr for user item.
+    pub handle: u32,
+    /// Bounding rectangle in dialog-local coordinates (top, left, bottom, right).
+    pub rect: (i16, i16, i16, i16),
+}
+
+impl DialogItemHeader {
+    /// Canonical zeroed item header returned when a requested item does not exist.
+    pub const ZERO: Self = Self {
+        item_type: 0,
+        handle: 0,
+        rect: (0, 0, 0, 0),
+    };
+
+    /// Construct a new `DialogItemHeader`.
+    pub fn new(item_type: u16, handle: u32, rect: (i16, i16, i16, i16)) -> Self {
+        Self {
+            item_type,
+            handle,
+            rect,
+        }
+    }
+}
+
+/// Query the 1-indexed dialog item header from a slice of items.
+///
+/// Inside Macintosh Volume I, p. I-421;
+/// Macintosh Toolbox Essentials (1992), pp. 6-120--6-121.
+/// Returns the item's header, or `DialogItemHeader::ZERO` if the item number is 0 or out of bounds.
+pub fn evaluate_get_dialog_item<T>(
+    items: &[T],
+    item_number: usize,
+    header_extractor: impl FnOnce(&T) -> DialogItemHeader,
+) -> DialogItemHeader {
+    get_item_at_1_indexed(items, item_number).map_or(DialogItemHeader::ZERO, header_extractor)
+}
+
+/// Evaluates `GetDialogItemAsControl` for a dialog item.
+///
+/// Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 6-121.
+/// If the item is a control (`is_dialog_item_control`) and has a non-zero control handle,
+/// returns `Ok(handle)`. Otherwise, returns `Err(-50)` (`paramErr`).
+pub fn evaluate_get_dialog_item_as_control(
+    item_type: u8,
+    handle: u32,
+) -> Result<u32, i16> {
+    if is_dialog_item_control(item_type) && handle != 0 {
+        Ok(handle)
+    } else {
+        Err(-50)
+    }
+}
+
 /// Hit-tests a dialog-local point against dialog items, returning the 0-based index of the first matching item.
 ///
 /// If `enabled_only` is true, disabled items (`is_dialog_item_disabled`) are skipped.
@@ -1009,6 +1086,39 @@ pub fn offset_ditl_bytes(
             }
         }
     }
+}
+
+/// Size in bytes of the fixed header prefix of a compiled DITL item
+/// (4-byte handle + 8-byte Rect + 1-byte item type).
+#[allow(dead_code)]
+pub const DITL_ITEM_HEADER_SIZE: usize = 13;
+
+/// Writes the standard 13-byte DITL item header (4-byte handle, 8-byte rect, 1-byte item type)
+/// directly into a byte buffer at `offset`.
+///
+/// Macintosh Toolbox Essentials (1992), pp. 6-120--6-123.
+/// Returns `true` if the buffer was large enough and the header was written; `false` otherwise.
+#[allow(dead_code)]
+pub fn write_ditl_item_header_bytes(
+    bytes: &mut [u8],
+    offset: usize,
+    handle: u32,
+    rect: (i16, i16, i16, i16),
+    item_type: u8,
+) -> bool {
+    let Some(end) = offset.checked_add(DITL_ITEM_HEADER_SIZE) else {
+        return false;
+    };
+    let Some(slice) = bytes.get_mut(offset..end) else {
+        return false;
+    };
+    slice[0..4].copy_from_slice(&handle.to_be_bytes());
+    slice[4..6].copy_from_slice(&rect.0.to_be_bytes());
+    slice[6..8].copy_from_slice(&rect.1.to_be_bytes());
+    slice[8..10].copy_from_slice(&rect.2.to_be_bytes());
+    slice[10..12].copy_from_slice(&rect.3.to_be_bytes());
+    slice[12] = item_type;
+    true
 }
 
 /// Parsed representation of a Macintosh dialog template (`DLOG` resource).
@@ -4292,6 +4402,120 @@ mod tests {
         assert_eq!(hit_test(170, 50), 2);
         // Point outside all items
         assert_eq!(hit_test(300, 300), -1);
+    }
+
+    #[test]
+    fn dialog_item_header_query_update_and_control_evaluation() {
+        assert_eq!(
+            DialogItemHeader::ZERO,
+            DialogItemHeader {
+                item_type: 0,
+                handle: 0,
+                rect: (0, 0, 0, 0),
+            }
+        );
+        let header = DialogItemHeader::new(4, 0x12345678, (10, 20, 30, 40));
+        assert_eq!(header.item_type, 4);
+        assert_eq!(header.handle, 0x12345678);
+        assert_eq!(header.rect, (10, 20, 30, 40));
+
+        let mut record = DialogItemRecord {
+            item_offset: 2,
+            item_type: DIALOG_ITEM_BUTTON,
+            rect: (10, 20, 30, 40),
+            handle: 0x1000,
+            payload: b"OK".to_vec(),
+        };
+        assert_eq!(
+            record.header(),
+            DialogItemHeader {
+                item_type: DIALOG_ITEM_BUTTON as u16,
+                handle: 0x1000,
+                rect: (10, 20, 30, 40),
+            }
+        );
+
+        record.update_header(DIALOG_ITEM_CHECKBOX, 0x2000, (50, 60, 70, 80));
+        assert_eq!(record.item_type, DIALOG_ITEM_CHECKBOX);
+        assert_eq!(record.handle, 0x2000);
+        assert_eq!(record.rect, (50, 60, 70, 80));
+        assert_eq!(
+            record.header(),
+            DialogItemHeader {
+                item_type: DIALOG_ITEM_CHECKBOX as u16,
+                handle: 0x2000,
+                rect: (50, 60, 70, 80),
+            }
+        );
+
+        let records = [record];
+        // 1-indexed item query: item 1 exists
+        assert_eq!(
+            evaluate_get_dialog_item(&records, 1, |r| r.header()),
+            records[0].header()
+        );
+        // Item 0 is invalid -> DialogItemHeader::ZERO
+        assert_eq!(
+            evaluate_get_dialog_item(&records, 0, |r| r.header()),
+            DialogItemHeader::ZERO
+        );
+        // Item 2 is out of bounds -> DialogItemHeader::ZERO
+        assert_eq!(
+            evaluate_get_dialog_item(&records, 2, |r| r.header()),
+            DialogItemHeader::ZERO
+        );
+
+        // evaluate_get_dialog_item_as_control
+        assert_eq!(
+            evaluate_get_dialog_item_as_control(DIALOG_ITEM_BUTTON, 0x3000),
+            Ok(0x3000)
+        );
+        assert_eq!(
+            evaluate_get_dialog_item_as_control(DIALOG_ITEM_RESOURCE_CONTROL, 0x4000),
+            Ok(0x4000)
+        );
+        // Control with null handle -> Err(-50)
+        assert_eq!(
+            evaluate_get_dialog_item_as_control(DIALOG_ITEM_BUTTON, 0),
+            Err(-50)
+        );
+        // Static text (not a control) -> Err(-50)
+        assert_eq!(
+            evaluate_get_dialog_item_as_control(DIALOG_ITEM_STATIC_TEXT, 0x3000),
+            Err(-50)
+        );
+        // User item (not a control) -> Err(-50)
+        assert_eq!(
+            evaluate_get_dialog_item_as_control(DIALOG_ITEM_USER_ITEM, 0x3000),
+            Err(-50)
+        );
+
+        // write_ditl_item_header_bytes
+        let mut buf = vec![0u8; 32];
+        let written = write_ditl_item_header_bytes(
+            &mut buf,
+            4,
+            0xAABBCCDD,
+            (11, 22, 33, 44),
+            DIALOG_ITEM_RADIO,
+        );
+        assert!(written);
+        assert_eq!(&buf[4..8], &0xAABBCCDDu32.to_be_bytes());
+        assert_eq!(&buf[8..10], &11i16.to_be_bytes());
+        assert_eq!(&buf[10..12], &22i16.to_be_bytes());
+        assert_eq!(&buf[12..14], &33i16.to_be_bytes());
+        assert_eq!(&buf[14..16], &44i16.to_be_bytes());
+        assert_eq!(buf[16], DIALOG_ITEM_RADIO);
+
+        // write_ditl_item_header_bytes with buffer too small
+        let mut small_buf = [0u8; 10];
+        assert!(!write_ditl_item_header_bytes(
+            &mut small_buf,
+            0,
+            0,
+            (0, 0, 0, 0),
+            0
+        ));
     }
 }
 

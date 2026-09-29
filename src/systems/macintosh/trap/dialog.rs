@@ -9,11 +9,12 @@ use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::dialog_manager::{
     dialog_dbox_frame_rect, dialog_item_base_type, dialog_item_resource_type,
-    dialog_target_for_event, edit_text_frame_rect, evaluate_find_dialog_item, find_dialog_item_hit,
-    global_to_dialog_local_point, is_dialog_item_button, is_dialog_item_control,
-    is_dialog_item_disabled, is_dialog_item_edit_text, is_dialog_item_enabled,
-    is_dialog_item_resource, is_dialog_item_text, normalize_selection_bounds,
-    prepare_get_dialog_item_text, prepare_set_dialog_item_text, rect_contains_point,
+    dialog_target_for_event, edit_text_frame_rect, evaluate_find_dialog_item,
+    evaluate_get_dialog_item, find_dialog_item_hit, global_to_dialog_local_point,
+    is_dialog_item_button, is_dialog_item_control, is_dialog_item_disabled,
+    is_dialog_item_edit_text, is_dialog_item_enabled, is_dialog_item_resource,
+    is_dialog_item_text, normalize_selection_bounds, prepare_get_dialog_item_text,
+    prepare_set_dialog_item_text, rect_contains_point, DialogItemHeader,
     DIALOG_DBOX_FRAME_MARGIN, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX, DIALOG_ITEM_EDIT_TEXT,
     DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO, DIALOG_ITEM_RESOURCE_CONTROL,
     DIALOG_ITEM_STATIC_TEXT, DIALOG_ITEM_USER_ITEM, DIALOG_TEXT_LEFT_INSET,
@@ -11501,6 +11502,14 @@ impl super::TrapDispatcher {
                 let item_no = bus.read_word(sp + 12) as i16;
                 let dialog_ptr = bus.read_long(sp + 14);
 
+                let header = self
+                    .dialog_items
+                    .get(&dialog_ptr)
+                    .map(|items| {
+                        evaluate_get_dialog_item(items, item_no.max(0) as usize, |item| item.header())
+                    })
+                    .unwrap_or(DialogItemHeader::ZERO);
+
                 // Look up real item data
                 let found = self.dialog_items.get(&dialog_ptr).and_then(|items| {
                     crate::dialog_manager::get_item_at_1_indexed(items, item_no.max(0) as usize)
@@ -11513,19 +11522,19 @@ impl super::TrapDispatcher {
                             cpu.read_reg(Register::PC),
                             dialog_ptr,
                             item_no,
-                            item.item_type,
+                            header.item_type,
                             item.proc_ptr,
                             type_ptr,
                             item_handle_ptr,
                             box_ptr,
-                            item.rect.0,
-                            item.rect.1,
-                            item.rect.2,
-                            item.rect.3,
+                            header.rect.0,
+                            header.rect.1,
+                            header.rect.2,
+                            header.rect.3,
                         );
                     }
                     if type_ptr != 0 {
-                        bus.write_word(type_ptr, item.item_type as u16);
+                        bus.write_word(type_ptr, header.item_type);
                     }
                     if item_handle_ptr != 0 {
                         let current_handle = Self::dialog_item_handle(bus, dialog_ptr, item_no);
@@ -11589,10 +11598,10 @@ impl super::TrapDispatcher {
                         }
                     }
                     if box_ptr != 0 {
-                        bus.write_word(box_ptr, item.rect.0 as u16);
-                        bus.write_word(box_ptr + 2, item.rect.1 as u16);
-                        bus.write_word(box_ptr + 4, item.rect.2 as u16);
-                        bus.write_word(box_ptr + 6, item.rect.3 as u16);
+                        bus.write_word(box_ptr, header.rect.0 as u16);
+                        bus.write_word(box_ptr + 2, header.rect.1 as u16);
+                        bus.write_word(box_ptr + 4, header.rect.2 as u16);
+                        bus.write_word(box_ptr + 6, header.rect.3 as u16);
                     }
                     // Some apps use InsertMenu -> GetDItem -> SetDItem to
                     // build a custom popup control backed by a userItem. Do
@@ -11624,10 +11633,10 @@ impl super::TrapDispatcher {
                     }
                 } else {
                     if type_ptr != 0 {
-                        bus.write_word(type_ptr, 0);
+                        bus.write_word(type_ptr, header.item_type);
                     }
                     if item_handle_ptr != 0 {
-                        bus.write_long(item_handle_ptr, 0);
+                        bus.write_long(item_handle_ptr, header.handle);
                     }
                     if box_ptr != 0 {
                         bus.write_long(box_ptr, 0);
@@ -11714,13 +11723,12 @@ impl super::TrapDispatcher {
                     if let Some(item) =
                         crate::dialog_manager::get_item_at_1_indexed_mut(items, item_no as usize)
                     {
-                        item.item_type = item_type;
-                        item.rect = (box_top, box_left, box_bottom, box_right);
-                        if base_type == DIALOG_ITEM_USER_ITEM {
-                            // userItem: the "item" parameter is a ProcPtr
-                            // Inside Macintosh Volume I, I-405
-                            item.proc_ptr = item_handle;
-                        } else if is_dialog_item_text(base_type) {
+                        item.update_header(
+                            item_type,
+                            item_handle,
+                            (box_top, box_left, box_bottom, box_right),
+                        );
+                        if is_dialog_item_text(base_type) {
                             item.text = Self::text_item_string_from_handle(bus, item_handle);
                         }
                     }

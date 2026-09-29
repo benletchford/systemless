@@ -568,6 +568,28 @@ impl DialogItem {
     ) -> Option<crate::dialog_manager::DialogItemVisibilityChange> {
         crate::dialog_manager::evaluate_show_dialog_item(self.item_type, self.rect, original_rect)
     }
+
+    /// Extracts the item's header representation.
+    pub fn header(&self) -> crate::dialog_manager::DialogItemHeader {
+        crate::dialog_manager::DialogItemHeader {
+            item_type: u16::from(self.item_type),
+            handle: if self.is_user_item() {
+                self.proc_ptr
+            } else {
+                0
+            },
+            rect: self.rect,
+        }
+    }
+
+    /// Updates the header fields of this dialog item in place.
+    pub fn update_header(&mut self, item_type: u8, handle: u32, rect: (i16, i16, i16, i16)) {
+        self.item_type = item_type;
+        self.rect = rect;
+        if self.is_user_item() {
+            self.proc_ptr = handle;
+        }
+    }
 }
 
 impl From<crate::dialog_manager::DialogItemRecord> for DialogItem {

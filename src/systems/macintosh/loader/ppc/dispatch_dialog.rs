@@ -4,10 +4,11 @@ use super::*;
 use crate::dialog_manager::{
     dialog_item_base_type, dialog_item_resource_type_u32, dialog_rect_to_global,
     dialog_target_for_event, dialog_text_rect, edit_text_frame_rect, evaluate_dialog_select,
-    evaluate_find_dialog_item, evaluate_hide_dialog_item, evaluate_show_dialog_item,
-    extract_dialog_item_text_bytes, find_dialog_item_hit, global_to_dialog_local_point,
-    offset_ditl_bytes, parse_ditl_items, position_dialog_bounds as unified_position_dialog_bounds,
-    prepare_get_dialog_item_text, prepare_set_dialog_item_text, DialogItemRecord,
+    evaluate_find_dialog_item, evaluate_get_dialog_item, evaluate_get_dialog_item_as_control,
+    evaluate_hide_dialog_item, evaluate_show_dialog_item, extract_dialog_item_text_bytes,
+    find_dialog_item_hit, global_to_dialog_local_point, offset_ditl_bytes, parse_ditl_items,
+    position_dialog_bounds as unified_position_dialog_bounds, prepare_get_dialog_item_text,
+    prepare_set_dialog_item_text, DialogItemHeader, DialogItemRecord,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_DEFAULT_ITEM, DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -328,15 +329,15 @@ pub(super) fn dispatch_dialog_import(
             if control_out == 0 || !ppc_memory_can_write_bytes(memory, control_out, 4) {
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
             }
-            let control = ppc_dialog_items_for_dialog(memory, handles, dialog)
+            let control_result = ppc_dialog_items_for_dialog(memory, handles, dialog)
                 .and_then(|items| {
                     crate::dialog_manager::get_item_at_1_indexed(&items, item_number).cloned()
                 })
-                .filter(|item| item.is_control())
-                .map(|item| item.handle)
-                .unwrap_or(0);
+                .map(|item| evaluate_get_dialog_item_as_control(item.item_type, item.handle))
+                .unwrap_or(Err(PPC_PARAM_ERR));
+            let control = control_result.unwrap_or(0);
             let _ = memory.write_u32_be(control_out, control);
-            Some(PpcImportAction::Return(ppc_i16_result(if control != 0 {
+            Some(PpcImportAction::Return(ppc_i16_result(if control_result.is_ok() {
                 PPC_NO_ERR
             } else {
                 PPC_PARAM_ERR
@@ -2340,39 +2341,24 @@ fn ppc_get_dialog_item(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, handles: &[
     {
         return;
     }
-    let item = memory
-        .read_u32_be(dialog.wrapping_add(DIALOG_ITEMS_OFFSET))
-        .and_then(|items_handle| ppc_handle_bytes(memory, handles, items_handle))
-        .and_then(|bytes| ppc_parse_dialog_items(&bytes))
-        .and_then(|items| {
-            crate::dialog_manager::get_item_at_1_indexed(&items, item_number).cloned()
-        });
-    let Some(item) = item else {
-        if item_type_ptr != 0 {
-            let _ = memory.write_u16_be(item_type_ptr, 0);
-        }
-        if item_handle_ptr != 0 {
-            let _ = memory.write_u32_be(item_handle_ptr, 0);
-        }
-        if item_rect_ptr != 0 {
-            let _ = ppc_write_rect(memory, item_rect_ptr, 0, 0, 0, 0);
-        }
-        return;
-    };
+    let header = ppc_dialog_items_for_dialog(memory, handles, dialog)
+        .map(|items| evaluate_get_dialog_item(&items, item_number, |item| item.header()))
+        .unwrap_or(DialogItemHeader::ZERO);
+
     if item_type_ptr != 0 {
-        let _ = memory.write_u16_be(item_type_ptr, u16::from(item.item_type));
+        let _ = memory.write_u16_be(item_type_ptr, header.item_type);
     }
     if item_handle_ptr != 0 {
-        let _ = memory.write_u32_be(item_handle_ptr, item.handle);
+        let _ = memory.write_u32_be(item_handle_ptr, header.handle);
     }
     if item_rect_ptr != 0 {
         let _ = ppc_write_rect(
             memory,
             item_rect_ptr,
-            item.rect.0,
-            item.rect.1,
-            item.rect.2,
-            item.rect.3,
+            header.rect.0,
+            header.rect.1,
+            header.rect.2,
+            header.rect.3,
         );
     }
 }
