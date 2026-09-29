@@ -1193,25 +1193,32 @@ fn ppc_dispatch_dialog_compatibility(
             PpcImportAction::ReturnPreserve
         }
         PpcDialogCompatibilityOperation::AppendDitl => {
+            let Some(params) = crate::dialog_manager::evaluate_append_ditl_parameters(
+                dialog,
+                cpu.gpr[4],
+                cpu.gpr[5] as u16 as i16,
+            ) else {
+                return PpcImportAction::ReturnPreserve;
+            };
             let Some((handle, _ptr, current_bytes, current_items)) =
-                ppc_dialog_live_items(memory, handles, dialog)
+                ppc_dialog_live_items(memory, handles, params.dialog_ptr())
             else {
                 return PpcImportAction::ReturnPreserve;
             };
-            let Some(mut appended_bytes) = ppc_handle_bytes(memory, handles, cpu.gpr[4]) else {
+            let Some(mut appended_bytes) = ppc_handle_bytes(memory, handles, params.ditl_handle()) else {
                 return PpcImportAction::ReturnPreserve;
             };
             let Some(appended_items) = ppc_parse_dialog_items(&appended_bytes) else {
                 return PpcImportAction::ReturnPreserve;
             };
-            let method = cpu.gpr[5] as u16 as i16;
+            let method = params.method();
             let dialog_width = gworlds
                 .iter()
-                .find(|gworld| gworld.port == dialog)
+                .find(|gworld| gworld.port == params.dialog_ptr())
                 .map_or(0, |gworld| ppc_u32_to_i16_saturating(gworld.width));
             let dialog_height = gworlds
                 .iter()
-                .find(|gworld| gworld.port == dialog)
+                .find(|gworld| gworld.port == params.dialog_ptr())
                 .map_or(0, |gworld| ppc_u32_to_i16_saturating(gworld.height));
             let (dv, dh) = crate::dialog_manager::append_ditl_offset_delta(
                 method,
@@ -1244,14 +1251,19 @@ fn ppc_dispatch_dialog_compatibility(
             PpcImportAction::ReturnPreserve
         }
         PpcDialogCompatibilityOperation::ShortenDitl => {
+            let Some(params) = crate::dialog_manager::evaluate_shorten_ditl_parameters(
+                dialog,
+                usize::from(cpu.gpr[4] as u16),
+            ) else {
+                return PpcImportAction::ReturnPreserve;
+            };
             let Some((handle, _ptr, mut bytes, items)) =
-                ppc_dialog_live_items(memory, handles, dialog)
+                ppc_dialog_live_items(memory, handles, params.dialog_ptr())
             else {
                 return PpcImportAction::ReturnPreserve;
             };
-            let remove_count = usize::from(cpu.gpr[4] as u16);
             let (retained, count_minus_one) =
-                crate::dialog_manager::shorten_ditl_counts(items.len(), remove_count);
+                crate::dialog_manager::shorten_ditl_counts(items.len(), params.number_items());
             let end = if retained == 0 {
                 2
             } else {

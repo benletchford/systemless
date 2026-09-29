@@ -3636,16 +3636,48 @@ impl super::TrapDispatcher {
                         let method = bus.read_word(sp + 6) as i16;
                         let ditl_handle = bus.read_long(sp + 8);
                         let dialog_ptr = bus.read_long(sp + 12);
-                        let count =
-                            self.append_ditl_to_dialog(bus, dialog_ptr, ditl_handle, method);
+                        let count = if let Some(params) =
+                            crate::dialog_manager::evaluate_append_ditl_parameters(
+                                dialog_ptr,
+                                ditl_handle,
+                                method,
+                            ) {
+                            self.append_ditl_to_dialog(
+                                bus,
+                                params.dialog_ptr(),
+                                params.ditl_handle(),
+                                params.method(),
+                            )
+                        } else {
+                            self.dialog_items
+                                .get(&dialog_ptr)
+                                .map(|items| items.len() as u16)
+                                .unwrap_or(0)
+                        };
                         cpu.write_reg(Register::D0, count as u32);
                     }
                     (_, 0x0402) => {
                         let method = bus.read_word(sp) as i16;
                         let ditl_handle = bus.read_long(sp + 2);
                         let dialog_ptr = bus.read_long(sp + 6);
-                        let count =
-                            self.append_ditl_to_dialog(bus, dialog_ptr, ditl_handle, method);
+                        let count = if let Some(params) =
+                            crate::dialog_manager::evaluate_append_ditl_parameters(
+                                dialog_ptr,
+                                ditl_handle,
+                                method,
+                            ) {
+                            self.append_ditl_to_dialog(
+                                bus,
+                                params.dialog_ptr(),
+                                params.ditl_handle(),
+                                params.method(),
+                            )
+                        } else {
+                            self.dialog_items
+                                .get(&dialog_ptr)
+                                .map(|items| items.len() as u16)
+                                .unwrap_or(0)
+                        };
                         cpu.write_reg(Register::D0, count as u32);
                     }
                     // CountDITL ($A08B/$0403)
@@ -3682,13 +3714,37 @@ impl super::TrapDispatcher {
                     (0x0404, _) => {
                         let number_items = bus.read_word(sp + 6);
                         let dialog_ptr = bus.read_long(sp + 8);
-                        let count = self.shorten_ditl_in_dialog(bus, dialog_ptr, number_items);
+                        let count = if let Some(params) =
+                            crate::dialog_manager::evaluate_shorten_ditl_parameters(
+                                dialog_ptr,
+                                usize::from(number_items),
+                            ) {
+                            self.shorten_ditl_in_dialog(
+                                bus,
+                                params.dialog_ptr(),
+                                params.number_items() as u16,
+                            )
+                        } else {
+                            0
+                        };
                         cpu.write_reg(Register::D0, count as u32);
                     }
                     (_, 0x0404) => {
                         let number_items = bus.read_word(sp);
                         let dialog_ptr = bus.read_long(sp + 2);
-                        let count = self.shorten_ditl_in_dialog(bus, dialog_ptr, number_items);
+                        let count = if let Some(params) =
+                            crate::dialog_manager::evaluate_shorten_ditl_parameters(
+                                dialog_ptr,
+                                usize::from(number_items),
+                            ) {
+                            self.shorten_ditl_in_dialog(
+                                bus,
+                                params.dialog_ptr(),
+                                params.number_items() as u16,
+                            )
+                        } else {
+                            0
+                        };
                         cpu.write_reg(Register::D0, count as u32);
                     }
                     _ => {
