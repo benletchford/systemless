@@ -3201,12 +3201,15 @@ fn ppc_dialog_cancel_item(
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
     items: &[PpcDialogItemView],
+    configured_cancel: Option<i16>,
 ) -> Option<u16> {
-    crate::dialog_manager::find_dialog_cancel_item_index(
+    let cancel = crate::dialog_manager::resolve_dialog_cancel_item(
+        configured_cancel,
         items
             .iter()
             .map(|item| (item.item_type, ppc_dialog_item_title(memory, handles, item))),
-    )
+    );
+    (cancel > 0).then_some(cancel as u16)
 }
 
 fn ppc_modal_dialog(
@@ -3355,18 +3358,21 @@ fn ppc_modal_dialog(
         Some(3 | 5) => {
             let event = event.as_ref().unwrap();
             let character = event.message as u8;
-            let key_code = (event.message >> 8) as u8;
-            if matches!(character, b'\r' | 3)
-                || matches!(key_code, PPC_KEY_RETURN | PPC_KEY_NUMPAD_ENTER)
-            {
+            let decision = crate::dialog_manager::evaluate_modal_dialog_key(
+                event.what,
+                event.message,
+                event.modifiers,
+            );
+            if decision == crate::dialog_manager::DialogFilterDecision::TriggerDefaultButton {
                 memory
                     .read_u16_be(dialog + DIALOG_DEFAULT_ITEM_OFFSET)
                     .filter(|item| *item != 0)
-            } else if character == 0x1b || key_code == PPC_KEY_ESCAPE {
-                memory
+            } else if decision == crate::dialog_manager::DialogFilterDecision::TriggerCancelButton {
+                let configured_cancel = memory
                     .read_u16_be(dialog + DIALOG_CANCEL_ITEM_OFFSET)
                     .filter(|item| *item != 0)
-                    .or_else(|| ppc_dialog_cancel_item(memory, handles, &items))
+                    .map(|item| item as i16);
+                ppc_dialog_cancel_item(memory, handles, &items, configured_cancel)
             } else if character.eq_ignore_ascii_case(&b'a') && event.modifiers & 0x0100 != 0 {
                 let te_handle = memory
                     .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)

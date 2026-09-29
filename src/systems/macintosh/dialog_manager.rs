@@ -1077,13 +1077,13 @@ pub enum DialogFilterDecision {
 }
 
 /// Determine whether the specified character and key code correspond to the default button activation key (Return or Enter).
-pub fn is_dialog_default_key(char_code: u8, key_code: u8) -> bool {
+pub const fn is_dialog_default_key(char_code: u8, key_code: u8) -> bool {
     matches!(char_code, CHAR_RETURN | CHAR_ENTER)
         || matches!(key_code, KEY_RETURN | KEY_NUMPAD_ENTER)
 }
 
 /// Determine whether the specified character, key code, and modifier word correspond to the cancel button activation key (Escape or Command-Period).
-pub fn is_dialog_cancel_key(char_code: u8, key_code: u8, modifiers: u16) -> bool {
+pub const fn is_dialog_cancel_key(char_code: u8, key_code: u8, modifiers: u16) -> bool {
     char_code == CHAR_ESCAPE
         || key_code == KEY_ESCAPE
         || ((modifiers & MODIFIER_CMD_KEY) != 0
@@ -1091,7 +1091,7 @@ pub fn is_dialog_cancel_key(char_code: u8, key_code: u8, modifiers: u16) -> bool
 }
 
 /// Determine whether the specified character and key code correspond to the Tab key.
-pub fn is_dialog_tab_key(char_code: u8, key_code: u8) -> bool {
+pub const fn is_dialog_tab_key(char_code: u8, key_code: u8) -> bool {
     char_code == CHAR_TAB || key_code == KEY_TAB
 }
 
@@ -1478,6 +1478,77 @@ where
                 None
             }
         })
+}
+
+/// Resolves the 1-indexed cancel item number for a dialog.
+///
+/// Priority:
+/// 1. An explicitly configured cancel item (`configured_cancel > 0`).
+/// 2. An enabled PushButton with title "Cancel" (case-insensitive ASCII) found via `find_dialog_cancel_item_index`.
+/// 3. Returns 0 if no cancel item is configured or found.
+///
+/// Inside Macintosh: Macintosh Toolbox Essentials (1992), pp. 6-51, 6-86--6-90, 6-163.
+pub fn resolve_dialog_cancel_item<I, T>(configured_cancel: Option<i16>, items: I) -> i16
+where
+    I: IntoIterator<Item = (u8, T)>,
+    T: AsRef<[u8]>,
+{
+    if let Some(item) = configured_cancel {
+        if item > 0 {
+            return item;
+        }
+    }
+    find_dialog_cancel_item_index(items)
+        .map(|idx| idx as i16)
+        .unwrap_or(0)
+}
+
+/// Resolves the 1-indexed cancel item number for a modal dialog, falling back to
+/// `ALERT_BUTTON_CANCEL` (2) if no explicit or titled cancel item is found, per classic Mac OS convention.
+pub fn resolve_modal_dialog_cancel_item<I, T>(configured_cancel: Option<i16>, items: I) -> i16
+where
+    I: IntoIterator<Item = (u8, T)>,
+    T: AsRef<[u8]>,
+{
+    let item = resolve_dialog_cancel_item(configured_cancel, items);
+    if item > 0 {
+        item
+    } else {
+        ALERT_BUTTON_CANCEL
+    }
+}
+
+/// Resolves the 1-indexed default item number for a dialog.
+///
+/// If `configured_default` is `Some(item)` with `item > 0`, it is returned directly.
+/// Otherwise, defaults to `ALERT_BUTTON_OK` (1) if `item_count >= 1`, or 0 if empty.
+///
+/// Inside Macintosh Volume I, p. I-415; Macintosh Toolbox Essentials (1992), pp. 6-86--6-90, 6-163.
+pub fn resolve_dialog_default_item(configured_default: Option<i16>, item_count: usize) -> i16 {
+    if let Some(item) = configured_default {
+        if item > 0 {
+            return item;
+        }
+    }
+    if item_count >= 1 {
+        ALERT_BUTTON_OK
+    } else {
+        0
+    }
+}
+
+/// Returns true if `item_no` matches the active default item (`item_no == default_item && default_item > 0`).
+#[allow(dead_code)]
+#[inline]
+pub const fn is_dialog_default_button(item_no: i16, default_item: i16) -> bool {
+    item_no > 0 && item_no == default_item
+}
+
+/// Returns true if `item_no` matches the active cancel item (`item_no == cancel_item && cancel_item > 0`).
+#[allow(dead_code)]
+#[inline]
+pub const fn is_dialog_cancel_button(item_no: i16, cancel_item: i16) -> bool {
+    item_no > 0 && item_no == cancel_item
 }
 
 /// Computes the `(dv, dh)` translation offset for items being appended to a dialog via `AppendDITL`.
@@ -2605,6 +2676,55 @@ mod tests {
             find_dialog_cancel_item_index(items_no_cancel.iter().copied()),
             None
         );
+
+        // resolve_dialog_cancel_item
+        assert_eq!(
+            resolve_dialog_cancel_item(Some(3), items.iter().copied()),
+            3
+        );
+        assert_eq!(
+            resolve_dialog_cancel_item(Some(0), items.iter().copied()),
+            2
+        );
+        assert_eq!(
+            resolve_dialog_cancel_item(None, items.iter().copied()),
+            2
+        );
+        assert_eq!(
+            resolve_dialog_cancel_item(None, items_no_cancel.iter().copied()),
+            0
+        );
+
+        // resolve_modal_dialog_cancel_item
+        assert_eq!(
+            resolve_modal_dialog_cancel_item(Some(4), items.iter().copied()),
+            4
+        );
+        assert_eq!(
+            resolve_modal_dialog_cancel_item(None, items.iter().copied()),
+            2
+        );
+        assert_eq!(
+            resolve_modal_dialog_cancel_item(None, items_no_cancel.iter().copied()),
+            ALERT_BUTTON_CANCEL
+        );
+
+        // resolve_dialog_default_item
+        assert_eq!(resolve_dialog_default_item(Some(3), 5), 3);
+        assert_eq!(resolve_dialog_default_item(Some(0), 5), 1);
+        assert_eq!(resolve_dialog_default_item(None, 5), 1);
+        assert_eq!(resolve_dialog_default_item(None, 0), 0);
+
+        // is_dialog_default_button & is_dialog_cancel_button
+        assert!(is_dialog_default_button(1, 1));
+        assert!(!is_dialog_default_button(2, 1));
+        assert!(!is_dialog_default_button(0, 0));
+        assert!(!is_dialog_default_button(-1, -1));
+
+        assert!(is_dialog_cancel_button(2, 2));
+        assert!(!is_dialog_cancel_button(1, 2));
+        assert!(!is_dialog_cancel_button(0, 0));
+        assert!(!is_dialog_cancel_button(-1, -1));
     }
 
     #[test]
