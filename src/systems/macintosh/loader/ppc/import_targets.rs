@@ -551,6 +551,10 @@ pub enum PpcImportDispatcherTarget {
     SetDialogCancelItem,
     GetDialogCancelItem,
     SetDialogTracksCursor,
+    CouldDialog,
+    FreeDialog,
+    CouldAlert,
+    FreeAlert,
     StdFilterProc,
     GetStdFilterProc,
     DrawDialog,
@@ -3004,6 +3008,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "AppearanceLib", "SetDialogTracksCursor") => {
             PpcImportDispatcherTarget::SetDialogTracksCursor
         }
+        ("InterfaceLib", "CouldDialog") => PpcImportDispatcherTarget::CouldDialog,
+        ("InterfaceLib", "FreeDialog") => PpcImportDispatcherTarget::FreeDialog,
+        ("InterfaceLib", "CouldAlert") => PpcImportDispatcherTarget::CouldAlert,
+        ("InterfaceLib", "FreeAlert") => PpcImportDispatcherTarget::FreeAlert,
         ("InterfaceLib", "StdFilterProc") => PpcImportDispatcherTarget::StdFilterProc,
         ("InterfaceLib", "GetStdFilterProc") => PpcImportDispatcherTarget::GetStdFilterProc,
         ("InterfaceLib", "DrawDialog") => PpcImportDispatcherTarget::DrawDialog,

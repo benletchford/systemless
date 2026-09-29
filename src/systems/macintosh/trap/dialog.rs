@@ -11,9 +11,11 @@ use crate::dialog_manager::{
     dialog_dbox_frame_rect, dialog_item_base_type, dialog_item_resource_type,
     dialog_target_for_event, edit_text_frame_rect, evaluate_alert_invocation,
     evaluate_alert_parameters, AlertKind,
-    evaluate_alert_purgeability_parameters, evaluate_close_dialog_parameters,
-    evaluate_dialog_item_visibility_parameters_signed, evaluate_dialog_purgeability_parameters,
+    evaluate_close_dialog_parameters,
+    evaluate_dialog_item_visibility_parameters_signed,
     DialogTemplatePurgeabilityParameters,
+    evaluate_could_dialog_parameters, evaluate_free_dialog_parameters,
+    evaluate_could_alert_parameters, evaluate_free_alert_parameters,
     evaluate_dispose_dialog_parameters, evaluate_draw_dialog_parameters,
     evaluate_error_sound_parameters, ErrorSoundParameters,
     evaluate_find_dialog_item, evaluate_find_dialog_item_parameters,
@@ -16162,11 +16164,11 @@ impl super::TrapDispatcher {
             (true, 0x179) | (true, 0x17A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dialog_id = bus.read_word(sp) as i16;
-                let params = evaluate_dialog_purgeability_parameters(
-                    dialog_id,
-                    trap_num == 0x179,
-                    trap_num == 0x17A,
-                );
+                let params = if trap_num == 0x179 {
+                    evaluate_could_dialog_parameters(dialog_id)
+                } else {
+                    evaluate_free_dialog_parameters(dialog_id)
+                };
                 self.cascade_dialog_resource_purgeability(bus, &params);
                 let res_err = self.dialog_template_res_err(params.template_id());
                 bus.write_word(0x0A60, res_err as u16);
@@ -16392,11 +16394,11 @@ impl super::TrapDispatcher {
             (true, 0x189) | (true, 0x18A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let alert_id = bus.read_word(sp) as i16;
-                let params = evaluate_alert_purgeability_parameters(
-                    alert_id,
-                    trap_num == 0x189,
-                    trap_num == 0x18A,
-                );
+                let params = if trap_num == 0x189 {
+                    evaluate_could_alert_parameters(alert_id)
+                } else {
+                    evaluate_free_alert_parameters(alert_id)
+                };
                 self.cascade_dialog_resource_purgeability(bus, &params);
                 bus.write_word(0x0A60, 0);
                 cpu.write_reg(Register::A7, sp + 2);

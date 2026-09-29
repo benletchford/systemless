@@ -29,6 +29,8 @@ use crate::dialog_manager::{
     evaluate_dialog_cancel_item, evaluate_dialog_filter_cancel,
     evaluate_dialog_default_item, evaluate_get_dialog_cancel_item_parameters,
     evaluate_get_dialog_default_item_parameters,
+    evaluate_could_dialog_parameters, evaluate_free_dialog_parameters,
+    evaluate_could_alert_parameters, evaluate_free_alert_parameters,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -579,6 +581,34 @@ pub(super) fn dispatch_dialog_import(
                 Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(os_err)))
+        }
+        PpcImportDispatcherTarget::CouldDialog => {
+            let dialog_id = cpu.gpr[3] as u16 as i16;
+            let _params = evaluate_could_dialog_parameters(dialog_id);
+            *last_resource_error = 0;
+            let _ = memory.write_u16_be(crate::memory::globals::addr::RES_ERR, 0);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::FreeDialog => {
+            let dialog_id = cpu.gpr[3] as u16 as i16;
+            let _params = evaluate_free_dialog_parameters(dialog_id);
+            *last_resource_error = 0;
+            let _ = memory.write_u16_be(crate::memory::globals::addr::RES_ERR, 0);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::CouldAlert => {
+            let alert_id = cpu.gpr[3] as u16 as i16;
+            let _params = evaluate_could_alert_parameters(alert_id);
+            *last_resource_error = 0;
+            let _ = memory.write_u16_be(crate::memory::globals::addr::RES_ERR, 0);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::FreeAlert => {
+            let alert_id = cpu.gpr[3] as u16 as i16;
+            let _params = evaluate_free_alert_parameters(alert_id);
+            *last_resource_error = 0;
+            let _ = memory.write_u16_be(crate::memory::globals::addr::RES_ERR, 0);
+            Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::StdFilterProc => Some(PpcImportAction::Return(
             ppc_standard_filter_proc(cpu, memory),

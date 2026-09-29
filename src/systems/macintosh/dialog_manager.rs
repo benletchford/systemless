@@ -2690,6 +2690,42 @@ pub const fn evaluate_alert_purgeability_parameters(
     )
 }
 
+/// Evaluates parameters for a `CouldDialog` request.
+///
+/// Inside Macintosh Volume I, p. I-415.
+#[inline]
+#[must_use]
+pub const fn evaluate_could_dialog_parameters(dialog_id: i16) -> DialogTemplatePurgeabilityParameters {
+    evaluate_dialog_purgeability_parameters(dialog_id, true, false)
+}
+
+/// Evaluates parameters for a `FreeDialog` request.
+///
+/// Inside Macintosh Volume I, p. I-415.
+#[inline]
+#[must_use]
+pub const fn evaluate_free_dialog_parameters(dialog_id: i16) -> DialogTemplatePurgeabilityParameters {
+    evaluate_dialog_purgeability_parameters(dialog_id, false, true)
+}
+
+/// Evaluates parameters for a `CouldAlert` request.
+///
+/// Inside Macintosh Volume I, p. I-420.
+#[inline]
+#[must_use]
+pub const fn evaluate_could_alert_parameters(alert_id: i16) -> DialogTemplatePurgeabilityParameters {
+    evaluate_alert_purgeability_parameters(alert_id, true, false)
+}
+
+/// Evaluates parameters for a `FreeAlert` request.
+///
+/// Inside Macintosh Volume I, p. I-420.
+#[inline]
+#[must_use]
+pub const fn evaluate_free_alert_parameters(alert_id: i16) -> DialogTemplatePurgeabilityParameters {
+    evaluate_alert_purgeability_parameters(alert_id, false, true)
+}
+
 /// Backward compatibility alias for `evaluate_dialog_template_purgeability_parameters`.
 #[inline]
 #[must_use]
@@ -9515,6 +9551,12 @@ mod tests {
         // Convenience evaluator for FreeAlert
         let free_alrt_conv = evaluate_alert_purgeability_parameters(256, false, true);
         assert_eq!(free_alrt, free_alrt_conv);
+
+        // Specific routine evaluators
+        assert_eq!(could_dlog, evaluate_could_dialog_parameters(128));
+        assert_eq!(free_dlog, evaluate_free_dialog_parameters(128));
+        assert_eq!(could_alrt, evaluate_could_alert_parameters(256));
+        assert_eq!(free_alrt, evaluate_free_alert_parameters(256));
 
         // Direct constructor
         let direct_purge = DialogTemplatePurgeabilityParameters::new(
