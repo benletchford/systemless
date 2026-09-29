@@ -566,28 +566,17 @@ fn ppc_get_picture(
         }
         return vfs_resources[index].handle;
     }
-    let handle = ppc_process_alloc_handle_with_bytes(
-        process_memory_manager,
-        memory,
-        heap_cursor,
-        last_mem_error,
-        handles,
-        &minimal_pict_bytes(),
-    );
-    if handle == 0 {
-        *last_mem_error = PPC_MEM_FULL_ERR;
-        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-    } else {
-        *last_mem_error = PPC_NO_ERR;
-        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
-    }
+    // GetPicture is GetResource('PICT', picID): a missing picture yields NIL
+    // with ResError resNotFound. Inside Macintosh Volume I, I-475. EV Nova
+    // relies on the NIL to reuse an earlier ship class's target PICT.
+    *last_resource_error = PPC_RES_NOT_FOUND_ERR;
     if ppc_hle_trace_enabled() {
         eprintln!(
-            "[PPC-TRACE] GetPicture({}) current_ref={} -> fallback handle=${:08X} err={}",
-            picture_id, current_resource_refnum, handle, PPC_RES_NOT_FOUND_ERR
+            "[PPC-TRACE] GetPicture({}) current_ref={} -> NIL err={}",
+            picture_id, current_resource_refnum, PPC_RES_NOT_FOUND_ERR
         );
     }
-    handle
+    0
 }
 
 fn ppc_get_ind_pattern(
