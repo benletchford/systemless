@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.69.0](https://github.com/benletchford/systemless/compare/v0.68.0...v0.69.0) (2026-09-29)
+
+
+### Features
+
+* **catalogue:** enable Diablo Spawn browser launch ([#3385](https://github.com/benletchford/systemless/issues/3385)) ([13e3c9e](https://github.com/benletchford/systemless/commit/13e3c9e7f0dc88a8a9d27d4313ccfff81c8c5adc))
+* **catalogue:** stage PPC DroidWorks demo ([#3419](https://github.com/benletchford/systemless/issues/3419)) ([21a7fe7](https://github.com/benletchford/systemless/commit/21a7fe7371b510ab006545e53c62b8a8ab273673))
+* **catalogue:** stage PPC Jedi Knight II demo ([#3425](https://github.com/benletchford/systemless/issues/3425)) ([72cf3e7](https://github.com/benletchford/systemless/commit/72cf3e75fdd330cd7d1e5c9a91ccbb60743e6df5))
+* **catalogue:** stage PPC Quake III demo ([#3433](https://github.com/benletchford/systemless/issues/3433)) ([8c8fe01](https://github.com/benletchford/systemless/commit/8c8fe019a2d6119dc576caf638865d9bcc46d921))
+* **ppc:** support Carbon main event queue imports ([#3395](https://github.com/benletchford/systemless/issues/3395)) ([d4b1e3e](https://github.com/benletchford/systemless/commit/d4b1e3e14a0a2f9c1016c32f7b61ed12cb8bae7e))
+* **ppc:** track Power Manager auto-sleep state ([#3398](https://github.com/benletchford/systemless/issues/3398)) ([7231768](https://github.com/benletchford/systemless/commit/7231768644e7fbfa9fd929242ce53940bf7cf0f1))
+
+
+### Bug Fixes
+
+* **ppc:** preserve active DrawSprocket frames during composition ([#3413](https://github.com/benletchford/systemless/issues/3413)) ([583723e](https://github.com/benletchford/systemless/commit/583723e6c2ad8529594edc3caa8306144ea637cf))
+* **ppc:** report guest processor clock speed ([#3408](https://github.com/benletchford/systemless/issues/3408)) ([bddd73a](https://github.com/benletchford/systemless/commit/bddd73aa8db986f43097286fcca6a251eba75106))
+* **ppc:** report native CPU family through Gestalt ([#3402](https://github.com/benletchford/systemless/issues/3402)) ([edfdd71](https://github.com/benletchford/systemless/commit/edfdd7145c2d859ebfd2883f0ee0c6c9c26cdaa1))
+* **ppc:** report optional processor Gestalt features ([#3389](https://github.com/benletchford/systemless/issues/3389)) ([8553d87](https://github.com/benletchford/systemless/commit/8553d8770c19fc6d5e4f3fdb80a9c68278601cbe))
+* **vise:** align after stored blocks ([#3437](https://github.com/benletchford/systemless/issues/3437)) ([0b5c801](https://github.com/benletchford/systemless/commit/0b5c80101dfc90e8030550063a9a83ea4f74b0cf))
+* **vise:** decode packed extended catalogs ([#3430](https://github.com/benletchford/systemless/issues/3430)) ([1f7b4b6](https://github.com/benletchford/systemless/commit/1f7b4b68ec0ce906e32341935aa1fea36047d91e))
+
+
+### Performance Improvements
+
+* **chrome:** stop redrawing idle Standard File dialogs and restored desktop rows every frame ([#3377](https://github.com/benletchford/systemless/issues/3377)) ([208bef0](https://github.com/benletchford/systemless/commit/208bef0d6193b0b3544427d012a868b5f67596a8))
+* **copy_bits:** copy PowerPC text rows through the span copy ([#3374](https://github.com/benletchford/systemless/issues/3374)) ([342ea2e](https://github.com/benletchford/systemless/commit/342ea2e683e671278ab767ed718cc369d3af4596))
+* **presentation:** pack text ink inline with each cell ([#3373](https://github.com/benletchford/systemless/issues/3373)) ([996dd0a](https://github.com/benletchford/systemless/commit/996dd0afde295450ffb73f5e47d693de520fbbcc))
+* **quickdraw:** store CopyMask's opaque runs as spans ([#3378](https://github.com/benletchford/systemless/issues/3378)) ([31f20e3](https://github.com/benletchford/systemless/commit/31f20e37c0bca566f634af005531dd643d3fc331))
+* **text:** paint offscreen glyph cells in one pass ([#3375](https://github.com/benletchford/systemless/issues/3375)) ([ba06b10](https://github.com/benletchford/systemless/commit/ba06b1012e70f9e2514c0e9cf5ea42d883dacce3))
+* **text:** read glyph-span backgrounds on the stack and skip unchanged kiosk margins ([#3376](https://github.com/benletchford/systemless/issues/3376)) ([97b4dd9](https://github.com/benletchford/systemless/commit/97b4dd96f03501ba33f77989126f3e653aaa3499))
+
+
+### Code Refactoring
+
+* **dialog:** centralize alert stage and sound evaluation ([#3426](https://github.com/benletchford/systemless/issues/3426)) ([42af5d2](https://github.com/benletchford/systemless/commit/42af5d2506b9e10b352b941cd328e2453ff0995d))
+* **dialog:** centralize GetDialogItem and SetDialogItem evaluation ([#3439](https://github.com/benletchford/systemless/issues/3439)) ([51b49eb](https://github.com/benletchford/systemless/commit/51b49ebfca7bb3eb92e68f8d093bc1429df59bb1))
+* **dialog:** centralize NewDialog parameters and storage policy evaluation ([#3435](https://github.com/benletchford/systemless/issues/3435)) ([b14a27c](https://github.com/benletchford/systemless/commit/b14a27c23634d068d16d58f185ba5ee373315325))
+* **dialog:** unify CloseDialog and DisposeDialog teardown evaluation ([#3399](https://github.com/benletchford/systemless/issues/3399)) ([18584da](https://github.com/benletchford/systemless/commit/18584da959e24d59c5139fbcae3046c5177f3fd4))
+* **dialog:** unify Dialog Dispatch extension routines and CountDITL evaluation ([#3388](https://github.com/benletchford/systemless/issues/3388)) ([45e4f1f](https://github.com/benletchford/systemless/commit/45e4f1f205b0cb68619e476992a0c5e912c24149))
+* **dialog:** unify dialog item visibility transitions and FindDialogItem evaluation ([#3381](https://github.com/benletchford/systemless/issues/3381)) ([52328b2](https://github.com/benletchford/systemless/commit/52328b28c2ed61e8c802d363b1ca332ce3012f18))
+* **dialog:** unify DrawDialog and UpdateDialog evaluation ([#3409](https://github.com/benletchford/systemless/issues/3409)) ([6f569ff](https://github.com/benletchford/systemless/commit/6f569ff67be64ee63e8900383563de32264d5f61))
+* **dialog:** unify FindDialogItem and DialogRecord initialization evaluation ([#3417](https://github.com/benletchford/systemless/issues/3417)) ([3af5121](https://github.com/benletchford/systemless/commit/3af5121682a1846a648c2b080a5a072e13b8daf1))
+* **dialog:** unify GetDialogItem, SetDialogItem, and GetDialogItemAsControl evaluation ([#3384](https://github.com/benletchford/systemless/issues/3384)) ([a62bc9f](https://github.com/benletchford/systemless/commit/a62bc9f7b0871c5d015b42822b7a2483b0656579))
+* **dialog:** unify GetDialogItemText and SetDialogItemText evaluation ([#3411](https://github.com/benletchford/systemless/issues/3411)) ([69d36cf](https://github.com/benletchford/systemless/commit/69d36cf7f5fdb2722091e2447a40815562a67bd4))
+* **dialog:** unify ParamText and InitDialogs evaluation ([#3415](https://github.com/benletchford/systemless/issues/3415)) ([4b4fcf4](https://github.com/benletchford/systemless/commit/4b4fcf4aafa130e951f5177eed79f0b22a46f220))
+* **dialog:** unify SelectDialogItemText and dialog text field selection evaluation ([#3393](https://github.com/benletchford/systemless/issues/3393)) ([6ea5f70](https://github.com/benletchford/systemless/commit/6ea5f70acf1fb18f50c10cd0a468a1ff6f5e161a))
+
 ## [0.68.0](https://github.com/benletchford/systemless/compare/v0.67.0...v0.68.0) (2026-09-29)
 
 
