@@ -5133,13 +5133,14 @@ impl super::TrapDispatcher {
         // not the WDEF procID. Dialog boxes and alerts must use
         // dialogKind=2. The WDEF procID is retained in window_proc_ids.
         // Inside Macintosh Volume I, I-407..I-408, I-273; Volume VI, 11-42.
+        let init = crate::dialog_manager::evaluate_dialog_record_init(items_handle);
         bus.write_word(
             dlg_ptr + crate::dialog_manager::DIALOG_WINDOW_KIND_OFFSET,
-            crate::dialog_manager::DIALOG_WINDOW_KIND,
+            init.window_kind(),
         );
         bus.write_long(
             dlg_ptr + crate::dialog_manager::DIALOG_ITEMS_OFFSET,
-            items_handle,
+            init.items_handle(),
         );
 
         // SetDAFont / SetDialogFont affect subsequently created dialog and
@@ -5159,15 +5160,15 @@ impl super::TrapDispatcher {
         );
         bus.write_word(
             dlg_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
-            crate::dialog_manager::DIALOG_INITIAL_EDIT_FIELD as u16,
+            init.edit_field() as u16,
         );
         bus.write_word(
             dlg_ptr + crate::dialog_manager::DIALOG_EDIT_OPEN_OFFSET,
-            crate::dialog_manager::DIALOG_INITIAL_EDIT_OPEN as u16,
+            init.edit_open() as u16,
         );
         bus.write_word(
             dlg_ptr + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET,
-            crate::dialog_manager::DIALOG_INITIAL_DEFAULT_ITEM as u16,
+            init.default_item() as u16,
         );
 
         self.initialize_dialog_item_handles(bus, dlg_ptr, &items);
@@ -16167,18 +16168,22 @@ impl super::TrapDispatcher {
                 let pt_v = bus.read_word(sp) as i16;
                 let pt_h = bus.read_word(sp + 2) as i16;
                 let dialog_ptr = bus.read_long(sp + 4);
-                let result: i16 = if dialog_ptr == 0 {
-                    -1
-                } else if let Some(items) = self.dialog_items.get(&dialog_ptr) {
-                    evaluate_find_dialog_item(
-                        items.iter().map(|item| (item.rect, item.item_type)),
-                        pt_v,
-                        pt_h,
-                        |_| true,
-                    )
-                } else {
-                    -1
-                };
+                let result: i16 = crate::dialog_manager::evaluate_find_dialog_item_query(
+                    dialog_ptr,
+                    pt_v,
+                    pt_h,
+                )
+                .and_then(|query| {
+                    self.dialog_items.get(&query.dialog_ptr()).map(|items| {
+                        evaluate_find_dialog_item(
+                            items.iter().map(|item| (item.rect, item.item_type)),
+                            query.pt_v(),
+                            query.pt_h(),
+                            |_| true,
+                        )
+                    })
+                })
+                .unwrap_or(-1);
                 bus.write_word(sp + 8, result as u16);
                 cpu.write_reg(Register::A7, sp + 8);
                 Ok(())

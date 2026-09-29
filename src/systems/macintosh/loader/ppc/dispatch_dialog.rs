@@ -14,7 +14,7 @@ use crate::dialog_manager::{
     evaluate_get_dialog_item_text, evaluate_set_dialog_item_text,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
-    DIALOG_INITIAL_DEFAULT_ITEM, DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
+    DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
     DIALOG_ITEMS_OFFSET, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX, DIALOG_ITEM_DISABLED_FLAG,
     DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO,
     DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT,
@@ -1124,31 +1124,36 @@ fn ppc_dispatch_dialog_compatibility(
             PpcImportAction::Return(u32::from(count))
         }
         PpcDialogCompatibilityOperation::FindDialogItem => {
-            let point = cpu.gpr[4];
-            let v = (point >> 16) as u16 as i16;
-            let h = point as u16 as i16;
             // Inside Macintosh Volume IV, p. IV-60 and Macintosh Toolbox Essentials (1992), p. 6-125:
             // FindDialogItem takes dialog-local coordinates and returns the 0-indexed item number
             // of any item containing the point, whether enabled or disabled, or -1 if none match.
             // Control items use ppc_control_part_at_point so transparent group box bodies fall through.
-            let found = ppc_dialog_items_for_dialog(memory, handles, dialog)
-                .map(|items| {
-                    evaluate_find_dialog_item(
-                        items.iter().map(|item| (item.rect, item.item_type)),
-                        v,
-                        h,
-                        |index| {
-                            let item = &items[index];
-                            if item.handle != 0
-                                && controls.iter().any(|record| record.handle == item.handle)
-                            {
-                                ppc_control_part_at_point(memory, controls, item.handle, v, h)
+            let found = crate::dialog_manager::evaluate_find_dialog_item_packed(dialog, cpu.gpr[4])
+                .and_then(|query| {
+                    ppc_dialog_items_for_dialog(memory, handles, query.dialog_ptr()).map(|items| {
+                        evaluate_find_dialog_item(
+                            items.iter().map(|item| (item.rect, item.item_type)),
+                            query.pt_v(),
+                            query.pt_h(),
+                            |index| {
+                                let item = &items[index];
+                                if item.handle != 0
+                                    && controls.iter().any(|record| record.handle == item.handle)
+                                {
+                                    ppc_control_part_at_point(
+                                        memory,
+                                        controls,
+                                        item.handle,
+                                        query.pt_v(),
+                                        query.pt_h(),
+                                    )
                                     .is_some_and(|part| part != 0)
-                            } else {
-                                true
-                            }
-                        },
-                    )
+                                } else {
+                                    true
+                                }
+                            },
+                        )
+                    })
                 })
                 .unwrap_or(-1);
             PpcImportAction::Return(found as i32 as u32)
@@ -1862,36 +1867,37 @@ fn ppc_new_dialog(
         handles,
         &title_string,
     );
+    let init = crate::dialog_manager::evaluate_dialog_record_init(items);
     if title_handle == 0
         || memory
             .write_u16_be(
                 dialog + PPC_CWINDOW_WINDOW_KIND_OFFSET,
-                crate::dialog_manager::DIALOG_WINDOW_KIND,
+                init.window_kind(),
             )
             .is_none()
         || memory.write_u32_be(dialog + 134, title_handle).is_none()
         || memory
-            .write_u32_be(dialog + DIALOG_ITEMS_OFFSET, items)
+            .write_u32_be(dialog + DIALOG_ITEMS_OFFSET, init.items_handle())
             .is_none()
         || memory
-            .write_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET, 0)
+            .write_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET, init.text_handle())
             .is_none()
         || memory
             .write_u16_be(
                 dialog + DIALOG_EDIT_FIELD_OFFSET,
-                DIALOG_INITIAL_EDIT_FIELD as u16,
+                init.edit_field() as u16,
             )
             .is_none()
         || memory
             .write_u16_be(
                 dialog + DIALOG_EDIT_OPEN_OFFSET,
-                DIALOG_INITIAL_EDIT_OPEN as u16,
+                init.edit_open() as u16,
             )
             .is_none()
         || memory
             .write_u16_be(
                 dialog + DIALOG_DEFAULT_ITEM_OFFSET,
-                DIALOG_INITIAL_DEFAULT_ITEM as u16,
+                init.default_item() as u16,
             )
             .is_none()
     {
