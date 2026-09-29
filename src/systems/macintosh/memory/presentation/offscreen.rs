@@ -16,7 +16,7 @@
 //! same `Arc`.
 
 use super::ink::{CellInk, ComplexInk, InkView, InkViewMut};
-use super::{DetailCell, Ink, SampleOffsetHasher, TILE_SAMPLES};
+use super::{DetailCell, IndexedColor, Ink, SampleOffsetHasher, TILE_SAMPLES};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::BuildHasherDefault;
@@ -296,6 +296,7 @@ impl OffscreenCellMut<'_> {
         self.chunk.values[self.slot] = value;
     }
 
+    #[cfg(test)]
     pub(super) fn index(&self, sample: usize) -> u8 {
         assert!(sample < self.len());
         self.chunk.indices[self.slot * TILE_SAMPLES + sample]
@@ -305,6 +306,82 @@ impl OffscreenCellMut<'_> {
         assert!(sample < self.len());
         self.chunk.forget_shared(self.slot);
         self.chunk.indices[self.slot * TILE_SAMPLES + sample] = index;
+    }
+
+    /// Paint glyph coverage `alphas` (one per sample; 0 leaves a sample,
+    /// 255 sets it to `foreground`, anything else inks it) exactly as one
+    /// `set_index`/`remove_ink` or `update_ink` per covered sample would.
+    pub(super) fn paint_glyph(&mut self, alphas: &[u8], foreground: u8) {
+        let base = self.slot * TILE_SAMPLES;
+        let (mut full, mut partial) = (0u16, 0u16);
+        for (i, &alpha) in alphas.iter().enumerate() {
+            match alpha {
+                0 => {}
+                255 => full |= 1 << i,
+                _ => partial |= 1 << i,
+            }
+        }
+        if full | partial == 0 {
+            return;
+        }
+        assert!(alphas.len() <= self.len());
+        self.chunk.forget_shared(self.slot);
+        let mut bits = full;
+        while bits != 0 {
+            let i = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            self.chunk.indices[base + i] = foreground;
+        }
+        if !self.chunk.may_have_ink(self.slot) {
+            // A cell without ink (text drawn onto an erased buffer): each
+            // partly covered sample's ink is the foreground at its coverage
+            // over the sample's current index, exactly what `update` would
+            // build from nothing.
+            if partial != 0 {
+                let indices = &self.chunk.indices[base..base + TILE_SAMPLES];
+                let block = CellInk::painted(partial, foreground, alphas, indices);
+                self.chunk.slot_ink_mut(self.slot).assign(&block);
+            }
+            return;
+        }
+        let ink_to_clear = self.chunk.may_have_ink(self.slot) && full != 0;
+        if !ink_to_clear && partial == 0 {
+            return;
+        }
+        let indices = &self.chunk.indices[base..base + TILE_SAMPLES];
+        let backgrounds: [u8; TILE_SAMPLES] = std::array::from_fn(|i| indices[i]);
+        let mut held = if partial != 0 || self.chunk.may_have_ink(self.slot) {
+            self.chunk.slot_ink_mut(self.slot)
+        } else {
+            return;
+        };
+        let mut bits = full & held.mask();
+        while bits != 0 {
+            let i = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            held.remove(i);
+        }
+        let mut bits = partial;
+        while bits != 0 {
+            let i = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            let alpha = u32::from(alphas[i]);
+            held.update(
+                i,
+                || Ink { foreground, alpha: 0, background: IndexedColor::Solid(backgrounds[i]) },
+                |ink| {
+                    if ink.foreground != foreground {
+                        let previous = ink.clone();
+                        *ink = Ink {
+                            foreground,
+                            alpha: 0,
+                            background: previous.background.over(previous.foreground, previous.alpha),
+                        };
+                    }
+                    ink.alpha = ink.alpha.max(alpha);
+                },
+            );
+        }
     }
 
     pub(super) fn remove_ink(&mut self, sample: usize) {
@@ -326,6 +403,7 @@ impl OffscreenCellMut<'_> {
 
     /// Apply `change` to the ink of `sample`, starting from `ink()` when it
     /// has none.
+    #[cfg(test)]
     pub(super) fn update_ink(&mut self, sample: usize, ink: impl FnOnce() -> Ink, change: impl FnOnce(&mut Ink)) {
         self.chunk.forget_shared(self.slot);
         self.chunk.slot_ink_mut(self.slot).update(sample, ink, change);
@@ -785,6 +863,69 @@ mod tests {
 
     /// Unchanged cells are handed out as one shared `Arc`, and a stored
     /// `Arc` is handed back; any edit ends the sharing.
+    /// The per-sample painting `paint_glyph` replaces.
+    fn paint_per_sample(cell: &mut OffscreenCellMut<'_>, alphas: &[u8], foreground: u8) {
+        for (i, &alpha) in alphas.iter().enumerate() {
+            let alpha = u32::from(alpha);
+            if alpha == 0 {
+                continue;
+            }
+            if alpha == 255 {
+                cell.set_index(i, foreground);
+                cell.remove_ink(i);
+            } else {
+                let background = cell.index(i);
+                cell.update_ink(
+                    i,
+                    || Ink { foreground, alpha: 0, background: IndexedColor::Solid(background) },
+                    |ink| {
+                        if ink.foreground != foreground {
+                            let previous = ink.clone();
+                            *ink = Ink {
+                                foreground,
+                                alpha: 0,
+                                background: previous.background.over(previous.foreground, previous.alpha),
+                            };
+                        }
+                        ink.alpha = ink.alpha.max(alpha);
+                    },
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn glyph_cell_paint_matches_per_sample_painting() {
+        let mut painted = OffscreenDetail::default();
+        let mut reference = OffscreenDetail::default();
+        let mut rng = 0x2545_F491_4F6C_DD1Du64;
+        for step in 0..20_000 {
+            let r = next(&mut rng);
+            let address = 0x4_0000 + (r % 40) as u32;
+            let len = [4usize, 9, 16][((r >> 8) % 3) as usize];
+            let foreground = [3u8, 7, 200][((r >> 12) % 3) as usize];
+            let alphas: Vec<u8> = (0..len)
+                .map(|i| [0u8, 0, 255, 128, 40, 255, 1, 254][((r >> (16 + i * 3)) & 7) as usize])
+                .collect();
+            let background = (r >> 60) as u8;
+            if (r >> 58) & 3 == 0 {
+                painted.remove(address);
+                reference.remove(address);
+                continue;
+            }
+            let n = painted.cell_mut_or_insert(address, background, len).len().min(alphas.len());
+            painted.cell_mut(address).unwrap().paint_glyph(&alphas[..n], foreground);
+            let mut cell = reference.cell_mut_or_insert(address, background, len);
+            let n = alphas.len().min(cell.len());
+            paint_per_sample(&mut cell, &alphas[..n], foreground);
+            assert_eq!(
+                painted.get(address).map(|cell| (*cell).clone()),
+                reference.get(address).map(|cell| (*cell).clone()),
+                "step {step}"
+            );
+        }
+    }
+
     #[test]
     fn unchanged_cells_keep_their_identity() {
         let mut store = OffscreenDetail::default();

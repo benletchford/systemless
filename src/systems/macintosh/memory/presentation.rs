@@ -2596,50 +2596,43 @@ fn paint_offscreen_glyph_cell(
     (x, y, foreground): (i16, i16, u8),
     (in_text_run, run_ink, address): (bool, &mut OffscreenRunInk, u32),
 ) {
+    let scale = scale as i32;
+    let gx0 = (i32::from(x) - i32::from(h)) * scale - glyph.left;
+    let gy0 = (i32::from(y) - i32::from(v)) * scale - glyph.top;
+    if gx0 + scale <= 0 || gy0 + scale <= 0 || gx0 >= glyph.width || gy0 >= glyph.height {
+        return;
+    }
+    // The cell's coverage, one glyph row slice per sample row.
+    let mut alphas = [0u8; TILE_SAMPLES];
+    let mut any = false;
     for sy in 0..scale {
+        let gy = gy0 + sy;
+        if gy < 0 || gy >= glyph.height {
+            continue;
+        }
+        let row = &glyph.pixels[(gy * glyph.width) as usize..][..glyph.width as usize];
         for sx in 0..scale {
-            let gx = (i32::from(x) - i32::from(h)) * scale as i32 + sx as i32 - glyph.left;
-            let gy = (i32::from(y) - i32::from(v)) * scale as i32 + sy as i32 - glyph.top;
-            if gx < 0 || gy < 0 || gx >= glyph.width || gy >= glyph.height {
+            let gx = gx0 + sx;
+            if gx < 0 || gx >= glyph.width {
                 continue;
             }
-            let alpha = u32::from(glyph.pixels[(gy * glyph.width + gx) as usize]);
-            if alpha == 0 {
-                continue;
-            }
-            let i = (sy * scale + sx) as usize;
-            if in_text_run {
+            let alpha = row[gx as usize];
+            alphas[(sy * scale + sx) as usize] = alpha;
+            any |= alpha != 0;
+        }
+    }
+    if !any {
+        return;
+    }
+    let samples = (scale * scale) as usize;
+    if in_text_run {
+        for (i, &alpha) in alphas[..samples].iter().enumerate() {
+            if alpha != 0 {
                 run_ink.insert((address, i));
-            }
-            if alpha == 255 {
-                cell.set_index(i, foreground);
-                cell.remove_ink(i);
-            } else {
-                let background_index = cell.index(i);
-                cell.update_ink(
-                    i,
-                    || Ink {
-                        foreground,
-                        alpha: 0,
-                        background: IndexedColor::Solid(background_index),
-                    },
-                    |ink| {
-                        if ink.foreground != foreground {
-                            let previous = ink.clone();
-                            *ink = Ink {
-                                foreground,
-                                alpha: 0,
-                                background: previous
-                                    .background
-                                    .over(previous.foreground, previous.alpha),
-                            };
-                        }
-                        ink.alpha = ink.alpha.max(alpha);
-                    },
-                );
             }
         }
     }
+    cell.paint_glyph(&alphas[..samples], foreground);
 }
 
 impl MacMemoryBus {
