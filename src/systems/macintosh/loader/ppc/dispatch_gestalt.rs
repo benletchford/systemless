@@ -101,6 +101,10 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
             REFERENCE_POWERPC_EXECUTION_CAPABILITIES.native_cpu_type,
             PPC_NO_ERR,
         )),
+        // Gestalt.h: gestaltProcClkSpeed ('pclk') reports the processor's
+        // clock rate in hertz. Keep this guest machine property separate
+        // from host execution throughput.
+        b"pclk" => Some((REFERENCE_POWERPC_CPU_CLOCK_HZ, PPC_NO_ERR)),
         b"sysa" => REFERENCE_POWERPC_EXECUTION_CAPABILITIES
             .system_architecture
             .map(|architecture| (architecture, PPC_NO_ERR)),
