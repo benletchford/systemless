@@ -1494,10 +1494,11 @@ use super::*;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeGWorld);
 
         assert_eq!(loaded.heap_cursor(), heap_cursor_with_retained_data);
+        // The color table's released data merges with the storage above it.
         assert!(loaded
             .free_ptr_blocks()
             .iter()
-            .any(|record| record.ptr == first_base));
+            .any(|record| record.ptr <= first_base && first_base < record.ptr + record.size));
 
         loaded.cpu.gpr[3] = gworld_out_ptr;
         loaded.cpu.gpr[4] = 8;
