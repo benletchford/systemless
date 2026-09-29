@@ -1397,21 +1397,22 @@ where
     find_dialog_item_at_local_point(rects, local_v, local_h).map_or(-1, |idx| idx as i16)
 }
 
-/// The evaluated input parameters for a `FindDItem` / `FindDialogItem` query.
+/// The evaluated input parameters for a `FindDItem` ($A984) / CFM `FindDialogItem` call.
 ///
 /// Inside Macintosh Volume IV, p. IV-60 and Macintosh Toolbox Essentials (1992), p. 6-125:
 /// `FUNCTION FindDItem(theDialog: DialogPtr; thePt: Point): INTEGER;`
 /// Takes a dialog pointer and dialog-local coordinates (`thePt`). If `theDialog` is NIL (0),
-/// the query is invalid and yields `-1`.
+/// the parameters are invalid and evaluate to `None`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FindDialogItemQuery {
+pub struct FindDialogItemParameters {
     dialog_ptr: u32,
     pt_v: i16,
     pt_h: i16,
 }
 
-impl FindDialogItemQuery {
-    /// Constructs a query from dialog pointer and vertical/horizontal local coordinates.
+impl FindDialogItemParameters {
+    /// Constructs parameters from dialog pointer and vertical/horizontal local coordinates.
+    #[inline]
     pub const fn new(dialog_ptr: u32, pt_v: i16, pt_h: i16) -> Self {
         Self {
             dialog_ptr,
@@ -1421,56 +1422,63 @@ impl FindDialogItemQuery {
     }
 
     /// The target dialog pointer.
+    #[inline]
     pub const fn dialog_ptr(&self) -> u32 {
         self.dialog_ptr
     }
 
     /// The vertical dialog-local coordinate.
+    #[inline]
     pub const fn pt_v(&self) -> i16 {
         self.pt_v
     }
 
     /// The horizontal dialog-local coordinate.
+    #[inline]
     pub const fn pt_h(&self) -> i16 {
         self.pt_h
     }
 
     /// The dialog-local point as `(v, h)`.
     #[allow(dead_code)]
+    #[inline]
     pub const fn point(&self) -> (i16, i16) {
         (self.pt_v, self.pt_h)
     }
 
     /// The dialog-local point packed as `(v << 16) | (h & 0xffff)`.
     #[allow(dead_code)]
+    #[inline]
     pub const fn packed_point(&self) -> u32 {
         ((self.pt_v as u16 as u32) << 16) | (self.pt_h as u16 as u32)
     }
 }
 
-/// Evaluates a `FindDItem` / `FindDialogItem` query from dialog pointer and (v, h) coordinates.
+/// Evaluates `FindDItem` / `FindDialogItem` parameters from dialog pointer and (v, h) coordinates.
 /// Returns `None` if `dialog_ptr == 0`.
-pub const fn evaluate_find_dialog_item_query(
+#[inline]
+pub const fn evaluate_find_dialog_item_parameters(
     dialog_ptr: u32,
     pt_v: i16,
     pt_h: i16,
-) -> Option<FindDialogItemQuery> {
+) -> Option<FindDialogItemParameters> {
     if dialog_ptr == 0 {
         None
     } else {
-        Some(FindDialogItemQuery::new(dialog_ptr, pt_v, pt_h))
+        Some(FindDialogItemParameters::new(dialog_ptr, pt_v, pt_h))
     }
 }
 
-/// Evaluates a `FindDialogItem` query from dialog pointer and a 32-bit packed `Point` (`(v << 16) | h`).
+/// Evaluates `FindDialogItem` parameters from dialog pointer and a 32-bit packed `Point` (`(v << 16) | h`).
 /// Returns `None` if `dialog_ptr == 0`.
-pub const fn evaluate_find_dialog_item_packed(
+#[inline]
+pub const fn evaluate_find_dialog_item_parameters_packed(
     dialog_ptr: u32,
     point: u32,
-) -> Option<FindDialogItemQuery> {
+) -> Option<FindDialogItemParameters> {
     let v = (point >> 16) as u16 as i16;
     let h = point as u16 as i16;
-    evaluate_find_dialog_item_query(dialog_ptr, v, h)
+    evaluate_find_dialog_item_parameters(dialog_ptr, v, h)
 }
 
 /// Header representation for a dialog item containing its type, handle/ProcPtr, and display rectangle.
@@ -7955,33 +7963,37 @@ mod tests {
         assert_eq!(init.edit_open(), 0);
         assert_eq!(init.default_item(), 1);
 
-        // FindDialogItemQuery: null dialog pointer returns None
-        assert_eq!(evaluate_find_dialog_item_query(0, 10, 20), None);
-        assert_eq!(evaluate_find_dialog_item_packed(0, 0x000A_0014), None);
+        // FindDialogItemParameters: null dialog pointer returns None
+        assert_eq!(evaluate_find_dialog_item_parameters(0, 10, 20), None);
+        assert_eq!(evaluate_find_dialog_item_parameters_packed(0, 0x000A_0014), None);
 
-        // FindDialogItemQuery: valid query
-        let query = evaluate_find_dialog_item_query(0x1000, 15, 25).unwrap();
-        assert_eq!(query.dialog_ptr(), 0x1000);
-        assert_eq!(query.pt_v(), 15);
-        assert_eq!(query.pt_h(), 25);
-        assert_eq!(query.point(), (15, 25));
-        assert_eq!(query.packed_point(), 0x000F_0019);
+        // FindDialogItemParameters: valid parameters and constructor
+        let params = evaluate_find_dialog_item_parameters(0x1000, 15, 25).unwrap();
+        assert_eq!(params.dialog_ptr(), 0x1000);
+        assert_eq!(params.pt_v(), 15);
+        assert_eq!(params.pt_h(), 25);
+        assert_eq!(params.point(), (15, 25));
+        assert_eq!(params.packed_point(), 0x000F_0019);
+        assert_eq!(params, FindDialogItemParameters::new(0x1000, 15, 25));
 
-        // FindDialogItemQuery: from packed point
-        let packed_query = evaluate_find_dialog_item_packed(0x2000, 0x000F_0019).unwrap();
-        assert_eq!(packed_query.dialog_ptr(), 0x2000);
-        assert_eq!(packed_query.pt_v(), 15);
-        assert_eq!(packed_query.pt_h(), 25);
-        assert_eq!(packed_query.point(), (15, 25));
+        // FindDialogItemParameters: from packed point
+        let packed_params = evaluate_find_dialog_item_parameters_packed(0x2000, 0x000F_0019).unwrap();
+        assert_eq!(packed_params.dialog_ptr(), 0x2000);
+        assert_eq!(packed_params.pt_v(), 15);
+        assert_eq!(packed_params.pt_h(), 25);
+        assert_eq!(packed_params.point(), (15, 25));
+        assert_eq!(packed_params.packed_point(), 0x000F_0019);
+        assert_eq!(packed_params, FindDialogItemParameters::new(0x2000, 15, 25));
 
         // Negative coordinates packed correctly
-        let neg_query = evaluate_find_dialog_item_query(0x3000, -10, -20).unwrap();
-        assert_eq!(neg_query.pt_v(), -10);
-        assert_eq!(neg_query.pt_h(), -20);
+        let neg_params = evaluate_find_dialog_item_parameters(0x3000, -10, -20).unwrap();
+        assert_eq!(neg_params.pt_v(), -10);
+        assert_eq!(neg_params.pt_h(), -20);
         let from_packed_neg =
-            evaluate_find_dialog_item_packed(0x3000, neg_query.packed_point()).unwrap();
+            evaluate_find_dialog_item_parameters_packed(0x3000, neg_params.packed_point()).unwrap();
         assert_eq!(from_packed_neg.pt_v(), -10);
         assert_eq!(from_packed_neg.pt_h(), -20);
+        assert_eq!(from_packed_neg, neg_params);
     }
 
     #[test]

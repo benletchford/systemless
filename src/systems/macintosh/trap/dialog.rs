@@ -14,7 +14,8 @@ use crate::dialog_manager::{
     evaluate_close_dialog_parameters, evaluate_dialog_template_purgeability_query,
     evaluate_dispose_dialog_parameters, evaluate_draw_dialog_parameters,
     evaluate_error_sound,
-    evaluate_find_dialog_item, evaluate_get_dialog_item, evaluate_get_dialog_item_as_control,
+    evaluate_find_dialog_item, evaluate_find_dialog_item_parameters,
+    evaluate_get_dialog_item, evaluate_get_dialog_item_as_control,
     evaluate_get_dialog_item_as_control_parameters, evaluate_get_dialog_item_parameters,
     evaluate_get_new_dialog_parameters,
     evaluate_get_std_filter_proc_parameters, evaluate_modal_dialog_parameters,
@@ -16300,17 +16301,17 @@ impl super::TrapDispatcher {
                 let pt_v = bus.read_word(sp) as i16;
                 let pt_h = bus.read_word(sp + 2) as i16;
                 let dialog_ptr = bus.read_long(sp + 4);
-                let result: i16 = crate::dialog_manager::evaluate_find_dialog_item_query(
+                let result: i16 = evaluate_find_dialog_item_parameters(
                     dialog_ptr,
                     pt_v,
                     pt_h,
                 )
-                .and_then(|query| {
-                    self.dialog_items.get(&query.dialog_ptr()).map(|items| {
+                .and_then(|params| {
+                    self.dialog_items.get(&params.dialog_ptr()).map(|items| {
                         evaluate_find_dialog_item(
                             items.iter().map(|item| (item.rect, item.item_type)),
-                            query.pt_v(),
-                            query.pt_h(),
+                            params.pt_v(),
+                            params.pt_h(),
                             |_| true,
                         )
                     })

@@ -19,6 +19,7 @@ use crate::dialog_manager::{
     extract_dialog_item_text_bytes, find_dialog_item_hit, global_to_dialog_local_point, offset_ditl_bytes, parse_ditl_items,
     position_dialog_bounds as unified_position_dialog_bounds, DialogItemHeader, DialogItemRecord,
     GetNewDialogParameters, ParamTextParameters, SelectDialogItemTextParameters,
+    evaluate_find_dialog_item_parameters_packed,
     evaluate_get_dialog_item_text, evaluate_get_dialog_item_text_parameters,
     evaluate_param_text_parameters, evaluate_set_dialog_item_text, evaluate_set_dialog_item_text_parameters,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
@@ -1341,13 +1342,13 @@ fn ppc_dispatch_dialog_compatibility(
             // FindDialogItem takes dialog-local coordinates and returns the 0-indexed item number
             // of any item containing the point, whether enabled or disabled, or -1 if none match.
             // Control items use ppc_control_part_at_point so transparent group box bodies fall through.
-            let found = crate::dialog_manager::evaluate_find_dialog_item_packed(dialog, cpu.gpr[4])
-                .and_then(|query| {
-                    ppc_dialog_items_for_dialog(memory, handles, query.dialog_ptr()).map(|items| {
+            let found = evaluate_find_dialog_item_parameters_packed(dialog, cpu.gpr[4])
+                .and_then(|params| {
+                    ppc_dialog_items_for_dialog(memory, handles, params.dialog_ptr()).map(|items| {
                         evaluate_find_dialog_item(
                             items.iter().map(|item| (item.rect, item.item_type)),
-                            query.pt_v(),
-                            query.pt_h(),
+                            params.pt_v(),
+                            params.pt_h(),
                             |index| {
                                 let item = &items[index];
                                 if item.handle != 0
@@ -1357,8 +1358,8 @@ fn ppc_dispatch_dialog_compatibility(
                                         memory,
                                         controls,
                                         item.handle,
-                                        query.pt_v(),
-                                        query.pt_h(),
+                                        params.pt_v(),
+                                        params.pt_h(),
                                     )
                                     .is_some_and(|part| part != 0)
                                 } else {
