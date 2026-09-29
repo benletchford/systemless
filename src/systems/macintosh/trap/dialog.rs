@@ -9,16 +9,17 @@ use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::dialog_manager::{
     dialog_dbox_frame_rect, dialog_item_base_type, dialog_item_resource_type,
-    dialog_target_for_event, edit_text_frame_rect, evaluate_close_dialog,
-    evaluate_dispose_dialog, evaluate_find_dialog_item,
-    evaluate_get_dialog_item, evaluate_get_std_filter_proc, evaluate_select_dialog_item_text,
-    evaluate_set_dialog_cancel_item, evaluate_set_dialog_default_item,
-    evaluate_set_dialog_tracks_cursor, find_dialog_item_hit,
-    global_to_dialog_local_point, is_dialog_item_button, is_dialog_item_control,
-    is_dialog_item_disabled, is_dialog_item_edit_text, is_dialog_item_enabled,
-    is_dialog_item_resource, is_dialog_item_text, normalize_selection_bounds,
-    evaluate_get_dialog_item_text, evaluate_set_dialog_item_text, rect_contains_point,
-    DialogItemHeader, DIALOG_DBOX_FRAME_MARGIN, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX,
+    dialog_target_for_event, edit_text_frame_rect, evaluate_alert_invocation,
+    evaluate_close_dialog, evaluate_dispose_dialog, evaluate_error_sound,
+    evaluate_find_dialog_item, evaluate_get_dialog_item, evaluate_get_std_filter_proc,
+    evaluate_select_dialog_item_text, evaluate_set_dialog_cancel_item,
+    evaluate_set_dialog_default_item, evaluate_set_dialog_tracks_cursor,
+    find_dialog_item_hit, global_to_dialog_local_point, is_dialog_item_button,
+    is_dialog_item_control, is_dialog_item_disabled, is_dialog_item_edit_text,
+    is_dialog_item_enabled, is_dialog_item_resource, is_dialog_item_text,
+    normalize_selection_bounds, evaluate_get_dialog_item_text,
+    evaluate_set_dialog_item_text, rect_contains_point, DialogItemHeader,
+    DIALOG_DBOX_FRAME_MARGIN, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX,
     DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO,
     DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT, DIALOG_ITEM_USER_ITEM,
     DIALOG_TEXT_LEFT_INSET,
@@ -3961,15 +3962,6 @@ impl super::TrapDispatcher {
             _ => {} // noAutoCenter (0x0000) or unknown: use raw bounds
         }
         bounds
-    }
-
-    fn alert_stage_default_item(stages: u16, stage_word: u16) -> (u32, u32, Option<i16>) {
-        let info = crate::dialog_manager::alert_stage_info(stages, stage_word);
-        (
-            info.stage_index as u32,
-            info.stage_nibble as u32,
-            info.box_drawn.then_some(info.default_item),
-        )
     }
 
     fn begin_interactive_alert<C: CpuOps>(
@@ -10890,9 +10882,13 @@ impl super::TrapDispatcher {
                     // $0A9A would always return 0 — must use
                     // read_word/write_word.
                     let stage_word = bus.read_word(crate::memory::globals::addr::ALERT_STAGE);
-                    let (stage_idx, nibble, default_item) =
-                        Self::alert_stage_default_item(stages, stage_word);
-                    alert_trace_stage = Some((stages, stage_word, stage_idx, nibble));
+                    let eval = evaluate_alert_invocation(alert_id, stages, stage_word);
+                    alert_trace_stage = Some((
+                        stages,
+                        stage_word,
+                        eval.stage().stage_index() as u32,
+                        eval.stage().stage_nibble() as u32,
+                    ));
                     // bit 3 (MSB) of nibble = boldItm per StageList
                     // PACKED RECORD layout (IM:I I-422): boldItm,
                     // boxDrwn, sound[2]. Assembly mask okDismissal=8
@@ -10900,16 +10896,15 @@ impl super::TrapDispatcher {
                     // says Alert returns -1 when boxDrwn is clear.
                     // Increment AlertStage, capped at 3, so the
                     // next call uses the next stage's nibble.
-                    let next_stage = crate::dialog_manager::next_alert_stage(stage_word);
-                    bus.write_word(crate::memory::globals::addr::ALERT_STAGE, next_stage);
+                    bus.write_word(crate::memory::globals::addr::ALERT_STAGE, eval.next_stage());
                     // ANumber records the resource ID of the last
                     // alert that occurred (IM:I I-423). Apps that
                     // probe ANumber after a sequence of Alert
                     // calls expect this to reflect the most-recent
                     // ID — used by some defensive resume logic.
-                    bus.write_word(crate::memory::globals::addr::ANUMBER, alert_id as u16);
+                    bus.write_word(crate::memory::globals::addr::ANUMBER, eval.anumber());
 
-                    if let Some(default_item) = default_item {
+                    if let Some(default_item) = eval.default_item() {
                         // A filter procedure customizes event handling; it does
                         // not make a visible alert non-modal. Until guest
                         // filter callbacks are supported, preserve the visible
@@ -10934,8 +10929,8 @@ impl super::TrapDispatcher {
                                     cpu.read_reg(Register::PC),
                                     stages,
                                     stage_word,
-                                    stage_idx,
-                                    nibble,
+                                    eval.stage().stage_index(),
+                                    eval.stage().stage_nibble(),
                                     default_item
                                 );
                             }
@@ -10943,7 +10938,7 @@ impl super::TrapDispatcher {
                         }
                         default_item
                     } else {
-                        ALERT_MISSING_RESOURCE_RESULT
+                        eval.suppressed_result()
                     }
                 } else {
                     bus.write_word(
@@ -16248,7 +16243,8 @@ impl super::TrapDispatcher {
             (true, 0x18C) => {
                 let sp = cpu.read_reg(Register::A7);
                 let sound_proc = bus.read_long(sp);
-                bus.write_long(crate::memory::globals::addr::DA_BEEPER, sound_proc);
+                let eval = evaluate_error_sound(sound_proc);
+                bus.write_long(crate::memory::globals::addr::DA_BEEPER, eval.sound_proc());
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }

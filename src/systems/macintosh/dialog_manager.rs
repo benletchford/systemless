@@ -1500,6 +1500,254 @@ pub fn alert_stage_info(stages: u16, stage_counter: u16) -> AlertStageInfo {
     }
 }
 
+/// Canonical result returned by alert traps when the alert window is suppressed (box drawn is false).
+/// Inside Macintosh Volume I, p. I-418, I-422.
+pub const ALERT_SUPPRESSED_RESULT: i16 = -1;
+
+/// Evaluated alert stage state including sound number, default item, and stage counter progression.
+///
+/// Inside Macintosh Volume I, pp. I-417--I-424;
+/// Macintosh Toolbox Essentials (1992), pp. 6-105--6-119, 6-150.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AlertStageEvaluation {
+    /// Zero-based stage index (0..=3), clamped from guest stage counter.
+    stage_index: u16,
+    /// Raw 4-bit nibble for this stage.
+    stage_nibble: u8,
+    /// Whether the alert window is drawn (bit 2 / 0x04 of the nibble).
+    box_drawn: bool,
+    /// The default button item index: 1 (OK) if bit 3 is 0, or 2 (Cancel) if bit 3 is 1.
+    default_item: i16,
+    /// Sound number (0..=3) from bits 0..=1.
+    sound_number: u8,
+    /// Next alert stage counter to be written to `AlertStage` ($0A9A), clamped to 3.
+    next_stage: u16,
+}
+
+#[allow(dead_code)]
+impl AlertStageEvaluation {
+    /// Creates a new evaluated alert stage.
+    #[inline]
+    pub const fn new(
+        stage_index: u16,
+        stage_nibble: u8,
+        box_drawn: bool,
+        default_item: i16,
+        sound_number: u8,
+        next_stage: u16,
+    ) -> Self {
+        Self {
+            stage_index,
+            stage_nibble,
+            box_drawn,
+            default_item,
+            sound_number,
+            next_stage,
+        }
+    }
+
+    /// Zero-based stage index (0..=3), clamped from guest stage counter.
+    #[inline]
+    pub const fn stage_index(&self) -> u16 {
+        self.stage_index
+    }
+
+    /// Raw 4-bit nibble for this stage.
+    #[inline]
+    pub const fn stage_nibble(&self) -> u8 {
+        self.stage_nibble
+    }
+
+    /// Whether the alert window is drawn (bit 2 / 0x04 of the nibble).
+    #[inline]
+    pub const fn box_drawn(&self) -> bool {
+        self.box_drawn
+    }
+
+    /// The default button item index: 1 (OK) if bit 3 is 0, or 2 (Cancel) if bit 3 is 1.
+    #[inline]
+    pub const fn default_item(&self) -> i16 {
+        self.default_item
+    }
+
+    /// The effective default button item if the alert window is drawn, or `None` if suppressed.
+    #[inline]
+    pub const fn effective_default_item(&self) -> Option<i16> {
+        if self.box_drawn {
+            Some(self.default_item)
+        } else {
+            None
+        }
+    }
+
+    /// Sound number (0..=3) from bits 0..=1.
+    #[inline]
+    pub const fn sound_number(&self) -> u8 {
+        self.sound_number
+    }
+
+    /// Whether an audible alert sound is specified (sound number > 0).
+    #[inline]
+    pub const fn has_sound(&self) -> bool {
+        self.sound_number != 0
+    }
+
+    /// Next alert stage counter to be written to `AlertStage` ($0A9A), clamped to 3.
+    #[inline]
+    pub const fn next_stage(&self) -> u16 {
+        self.next_stage
+    }
+
+    /// Canonical result code returned when the alert window is suppressed (`ALERT_SUPPRESSED_RESULT` / `-1`).
+    #[inline]
+    pub const fn suppressed_result(&self) -> i16 {
+        ALERT_SUPPRESSED_RESULT
+    }
+}
+
+/// Evaluated invocation of an Alert family trap (`Alert`, `StopAlert`, `NoteAlert`, `CautionAlert`).
+///
+/// Encapsulates the alert resource ID, evaluated stage parameters, next stage counter,
+/// and low-memory `ANumber` updates.
+/// Inside Macintosh Volume I, pp. I-417--I-424.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AlertInvocationEvaluation {
+    alert_id: i16,
+    stage: AlertStageEvaluation,
+}
+
+#[allow(dead_code)]
+impl AlertInvocationEvaluation {
+    /// Creates a new alert invocation evaluation.
+    #[inline]
+    pub const fn new(alert_id: i16, stage: AlertStageEvaluation) -> Self {
+        Self { alert_id, stage }
+    }
+
+    /// The alert resource ID being invoked.
+    #[inline]
+    pub const fn alert_id(&self) -> i16 {
+        self.alert_id
+    }
+
+    /// Evaluated stage details.
+    #[inline]
+    pub const fn stage(&self) -> &AlertStageEvaluation {
+        &self.stage
+    }
+
+    /// Next alert stage counter to write to `AlertStage` (`$0A9A`).
+    #[inline]
+    pub const fn next_stage(&self) -> u16 {
+        self.stage.next_stage()
+    }
+
+    /// Value to write to low-memory `ANumber` (`$0A98`), recording the last alert resource ID.
+    #[inline]
+    pub const fn anumber(&self) -> u16 {
+        self.alert_id as u16
+    }
+
+    /// The effective default item number if the alert window is drawn, or `None` if suppressed.
+    #[inline]
+    pub const fn default_item(&self) -> Option<i16> {
+        self.stage.effective_default_item()
+    }
+
+    /// Sound number (0..=3) associated with this alert stage.
+    #[inline]
+    pub const fn sound_number(&self) -> u8 {
+        self.stage.sound_number()
+    }
+
+    /// Whether an audible alert sound is specified for this stage.
+    #[inline]
+    pub const fn has_sound(&self) -> bool {
+        self.stage.has_sound()
+    }
+
+    /// Whether the alert box display is suppressed (box drawn is false).
+    #[inline]
+    pub const fn is_suppressed(&self) -> bool {
+        !self.stage.box_drawn()
+    }
+
+    /// Canonical result code returned when the alert window is suppressed (`ALERT_SUPPRESSED_RESULT` / `-1`).
+    #[inline]
+    pub const fn suppressed_result(&self) -> i16 {
+        self.stage.suppressed_result()
+    }
+}
+
+/// Evaluated parameter for `ErrorSound` ($A98C).
+///
+/// Sets the error-sound procedure for alerts in `DABeeper` ($0A9C).
+/// Passing NIL (0) indicates no sound (and no menu bar blinking) at all.
+/// Inside Macintosh Volume I, p. I-411.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ErrorSoundEvaluation {
+    sound_proc: u32,
+}
+
+#[allow(dead_code)]
+impl ErrorSoundEvaluation {
+    /// Creates a new error sound evaluation.
+    #[inline]
+    pub const fn new(sound_proc: u32) -> Self {
+        Self { sound_proc }
+    }
+
+    /// The guest procedure pointer to store in `DABeeper` ($0A9C).
+    #[inline]
+    pub const fn sound_proc(&self) -> u32 {
+        self.sound_proc
+    }
+
+    /// Whether the sound procedure is NIL (0), silencing alert sounds.
+    #[inline]
+    pub const fn is_silent(&self) -> bool {
+        self.sound_proc == 0
+    }
+}
+
+/// Evaluates alert stage parameters and stage counter advancement for an alert template.
+///
+/// Inside Macintosh Volume I, pp. I-422--I-424.
+#[inline]
+pub fn evaluate_alert_stage(stages: u16, current_stage: u16) -> AlertStageEvaluation {
+    let info = alert_stage_info(stages, current_stage);
+    let next_stage = next_alert_stage(current_stage);
+    AlertStageEvaluation::new(
+        info.stage_index,
+        info.stage_nibble,
+        info.box_drawn,
+        info.default_item,
+        info.sound_number,
+        next_stage,
+    )
+}
+
+/// Evaluates invocation of an alert given its resource ID, stages word, and current stage counter.
+///
+/// Inside Macintosh Volume I, pp. I-417--I-424.
+#[inline]
+pub fn evaluate_alert_invocation(
+    alert_id: i16,
+    stages: u16,
+    current_stage: u16,
+) -> AlertInvocationEvaluation {
+    let stage = evaluate_alert_stage(stages, current_stage);
+    AlertInvocationEvaluation::new(alert_id, stage)
+}
+
+/// Evaluates `ErrorSound` ($A98C) parameter.
+///
+/// Inside Macintosh Volume I, p. I-411.
+#[inline]
+pub const fn evaluate_error_sound(sound_proc: u32) -> ErrorSoundEvaluation {
+    ErrorSoundEvaluation::new(sound_proc)
+}
+
 /// Replace `^0`..`^3` placeholders in dialog text bytes with the corresponding ParamText slot contents.
 ///
 /// Returns `Cow::Borrowed` when no `^` character is present, avoiding allocations.
@@ -5701,6 +5949,103 @@ mod tests {
             evaluate_find_dialog_item_packed(0x3000, neg_query.packed_point()).unwrap();
         assert_eq!(from_packed_neg.pt_v(), -10);
         assert_eq!(from_packed_neg.pt_h(), -20);
+    }
+
+    #[test]
+    fn alert_stage_and_sound_evaluation() {
+        // Stages word 0xF721:
+        // Stage 0 (nibble 0x1): boldItm=0 (default 1), boxDrwn=0 (suppressed), sound=1
+        // Stage 1 (nibble 0x2): boldItm=0 (default 1), boxDrwn=0 (suppressed), sound=2
+        // Stage 2 (nibble 0x7): boldItm=0 (default 1), boxDrwn=1 (drawn), sound=3
+        // Stage 3 (nibble 0xF): boldItm=1 (default 2), boxDrwn=1 (drawn), sound=3
+        let stages = 0xF721;
+
+        // Stage 0: box drawn is false, suppressed
+        let eval0 = evaluate_alert_stage(stages, 0);
+        assert_eq!(eval0.stage_index(), 0);
+        assert_eq!(eval0.stage_nibble(), 0x01);
+        assert!(!eval0.box_drawn());
+        assert_eq!(eval0.default_item(), 1);
+        assert_eq!(eval0.effective_default_item(), None);
+        assert_eq!(eval0.sound_number(), 1);
+        assert!(eval0.has_sound());
+        assert_eq!(eval0.next_stage(), 1);
+        assert_eq!(eval0.suppressed_result(), ALERT_SUPPRESSED_RESULT);
+
+        // Stage 1: box drawn is false, sound 2, next stage 2
+        let eval1 = evaluate_alert_stage(stages, 1);
+        assert_eq!(eval1.stage_index(), 1);
+        assert_eq!(eval1.stage_nibble(), 0x02);
+        assert!(!eval1.box_drawn());
+        assert_eq!(eval1.default_item(), 1);
+        assert_eq!(eval1.effective_default_item(), None);
+        assert_eq!(eval1.sound_number(), 2);
+        assert!(eval1.has_sound());
+        assert_eq!(eval1.next_stage(), 2);
+
+        // Stage 2: box drawn is true, sound 3, next stage 3
+        let eval2 = evaluate_alert_stage(stages, 2);
+        assert_eq!(eval2.stage_index(), 2);
+        assert_eq!(eval2.stage_nibble(), 0x07);
+        assert!(eval2.box_drawn());
+        assert_eq!(eval2.default_item(), 1);
+        assert_eq!(eval2.effective_default_item(), Some(1));
+        assert_eq!(eval2.sound_number(), 3);
+        assert!(eval2.has_sound());
+        assert_eq!(eval2.next_stage(), 3);
+
+        // Stage 3: box drawn is true, default item 2 (Cancel), sound 3, next stage capped at 3
+        let eval3 = evaluate_alert_stage(stages, 3);
+        assert_eq!(eval3.stage_index(), 3);
+        assert_eq!(eval3.stage_nibble(), 0x0F);
+        assert!(eval3.box_drawn());
+        assert_eq!(eval3.default_item(), 2);
+        assert_eq!(eval3.effective_default_item(), Some(2));
+        assert_eq!(eval3.sound_number(), 3);
+        assert!(eval3.has_sound());
+        assert_eq!(eval3.next_stage(), 3);
+
+        // Stage > 3 clamped to stage 3
+        let eval_clamped = evaluate_alert_stage(stages, 99);
+        assert_eq!(eval_clamped.stage_index(), 3);
+        assert_eq!(eval_clamped.next_stage(), 3);
+
+        // Silent stage: nibble 0x04 -> box drawn true, sound 0, default 1
+        let silent_eval = evaluate_alert_stage(0x0004, 0);
+        assert_eq!(silent_eval.sound_number(), 0);
+        assert!(!silent_eval.has_sound());
+        assert!(silent_eval.box_drawn());
+        assert_eq!(silent_eval.effective_default_item(), Some(1));
+
+        // AlertInvocationEvaluation
+        let inv_drawn = evaluate_alert_invocation(128, stages, 2);
+        assert_eq!(inv_drawn.alert_id(), 128);
+        assert_eq!(inv_drawn.anumber(), 128);
+        assert_eq!(inv_drawn.next_stage(), 3);
+        assert!(!inv_drawn.is_suppressed());
+        assert_eq!(inv_drawn.default_item(), Some(1));
+        assert_eq!(inv_drawn.sound_number(), 3);
+        assert!(inv_drawn.has_sound());
+        assert_eq!(inv_drawn.suppressed_result(), -1);
+
+        let inv_suppressed = evaluate_alert_invocation(-300, stages, 0);
+        assert_eq!(inv_suppressed.alert_id(), -300);
+        assert_eq!(inv_suppressed.anumber(), (-300i16) as u16);
+        assert_eq!(inv_suppressed.next_stage(), 1);
+        assert!(inv_suppressed.is_suppressed());
+        assert_eq!(inv_suppressed.default_item(), None);
+        assert_eq!(inv_suppressed.sound_number(), 1);
+        assert!(inv_suppressed.has_sound());
+        assert_eq!(inv_suppressed.suppressed_result(), -1);
+
+        // ErrorSoundEvaluation
+        let err_sound = evaluate_error_sound(0x00AB_CDEF);
+        assert_eq!(err_sound.sound_proc(), 0x00AB_CDEF);
+        assert!(!err_sound.is_silent());
+
+        let err_silent = evaluate_error_sound(0);
+        assert_eq!(err_silent.sound_proc(), 0);
+        assert!(err_silent.is_silent());
     }
 }
 

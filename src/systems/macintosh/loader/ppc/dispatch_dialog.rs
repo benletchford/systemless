@@ -1538,11 +1538,11 @@ fn ppc_new_alert_dialog(
             return 0;
         };
         let ditl_bytes = vfs_resources[ditl_index].data.clone();
-        let stage_info = crate::dialog_manager::alert_stage_info(template.stages, 0);
+        let stage_eval = crate::dialog_manager::evaluate_alert_stage(template.stages, 0);
         (
             template.bounds,
             ditl_bytes,
-            stage_info.default_item as u16,
+            stage_eval.default_item() as u16,
             0u16,
             template.position,
             1u32,
