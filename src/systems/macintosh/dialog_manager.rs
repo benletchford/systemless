@@ -1547,64 +1547,6 @@ pub fn evaluate_get_dialog_item<T>(
     get_item_at_1_indexed(items, item_number).map_or(DialogItemHeader::ZERO, header_extractor)
 }
 
-/// Canonical evaluated query for `GetDialogItem` / `GetDItem`.
-///
-/// Inside Macintosh Volume I, p. I-421;
-/// Macintosh Toolbox Essentials (1992), pp. 6-120--6-123.
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct GetDialogItemQuery {
-    dialog_ptr: u32,
-    item_number: usize,
-}
-
-#[allow(dead_code)]
-impl GetDialogItemQuery {
-    /// Constructs a new `GetDialogItemQuery`.
-    #[inline]
-    pub const fn new(dialog_ptr: u32, item_number: usize) -> Self {
-        Self {
-            dialog_ptr,
-            item_number,
-        }
-    }
-
-    /// The target dialog pointer.
-    #[inline]
-    pub const fn dialog_ptr(&self) -> u32 {
-        self.dialog_ptr
-    }
-
-    /// The 1-based dialog item index.
-    #[inline]
-    pub const fn item_number(&self) -> usize {
-        self.item_number
-    }
-
-    /// The 1-based dialog item index as signed 16-bit integer.
-    #[inline]
-    pub const fn item_no(&self) -> i16 {
-        self.item_number as i16
-    }
-}
-
-/// Evaluates and validates input parameters for `GetDialogItem` / `GetDItem`.
-///
-/// Returns `None` if `dialog_ptr == 0` or `item_number == 0`.
-#[allow(dead_code)]
-#[inline]
-pub const fn evaluate_get_dialog_item_query(
-    dialog_ptr: u32,
-    item_number: usize,
-) -> Option<GetDialogItemQuery> {
-    if dialog_ptr == 0 || item_number == 0 {
-        return None;
-    }
-    Some(GetDialogItemQuery {
-        dialog_ptr,
-        item_number,
-    })
-}
 
 /// Evaluated parameters for a `GetDialogItem` / `GetDItem` invocation.
 ///
@@ -2349,18 +2291,18 @@ pub enum DialogTemplatePurgeabilityAction {
     MakeUnpurgeableLoadIfMissing,
 }
 
-/// Evaluated query for a dialog or alert template purgeability operation.
+/// Evaluated parameters for a dialog or alert template purgeability operation.
 ///
 /// Inside Macintosh Volume I, pp. I-415, I-420.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DialogTemplatePurgeabilityQuery {
+pub struct DialogTemplatePurgeabilityParameters {
     template_type: [u8; 4],
     template_id: i16,
     action: DialogTemplatePurgeabilityAction,
 }
 
-impl DialogTemplatePurgeabilityQuery {
-    /// Constructs a new `DialogTemplatePurgeabilityQuery`.
+impl DialogTemplatePurgeabilityParameters {
+    /// Constructs a new `DialogTemplatePurgeabilityParameters`.
     #[inline]
     #[must_use]
     pub const fn new(
@@ -2416,18 +2358,44 @@ impl DialogTemplatePurgeabilityQuery {
             DialogTemplatePurgeabilityAction::MakePurgeable
         )
     }
+
+    /// Whether this purgeability operation targets an alert template (`ALRT`).
+    #[inline]
+    #[must_use]
+    pub const fn is_alert(&self) -> bool {
+        self.template_type[0] == b'A'
+            && self.template_type[1] == b'L'
+            && self.template_type[2] == b'R'
+            && self.template_type[3] == b'T'
+    }
+
+    /// Whether this purgeability operation targets a dialog template (`DLOG`).
+    #[inline]
+    #[must_use]
+    pub const fn is_dialog(&self) -> bool {
+        self.template_type[0] == b'D'
+            && self.template_type[1] == b'L'
+            && self.template_type[2] == b'O'
+            && self.template_type[3] == b'G'
+    }
 }
+
+/// Backward compatibility alias for `DialogTemplatePurgeabilityParameters`.
+#[allow(dead_code)]
+pub type DialogTemplatePurgeabilityQuery = DialogTemplatePurgeabilityParameters;
 
 /// Evaluates and validates input parameters for a dialog or alert template purgeability request.
 ///
 /// Inside Macintosh Volume I, pp. I-415, I-420.
 #[inline]
-pub fn evaluate_dialog_template_purgeability_query(
+#[must_use]
+#[allow(dead_code)]
+pub const fn evaluate_dialog_template_purgeability_parameters(
     template_type: [u8; 4],
     template_id: i16,
     load_if_missing: bool,
     purgeable: bool,
-) -> DialogTemplatePurgeabilityQuery {
+) -> DialogTemplatePurgeabilityParameters {
     let action = if purgeable {
         DialogTemplatePurgeabilityAction::MakePurgeable
     } else if load_if_missing {
@@ -2435,7 +2403,57 @@ pub fn evaluate_dialog_template_purgeability_query(
     } else {
         DialogTemplatePurgeabilityAction::MakePurgeable
     };
-    DialogTemplatePurgeabilityQuery::new(template_type, template_id, action)
+    DialogTemplatePurgeabilityParameters::new(template_type, template_id, action)
+}
+
+/// Convenience evaluation for dialog template purgeability (`CouldDialog` / `FreeDialog`).
+#[inline]
+#[must_use]
+pub const fn evaluate_dialog_purgeability_parameters(
+    dialog_id: i16,
+    load_if_missing: bool,
+    purgeable: bool,
+) -> DialogTemplatePurgeabilityParameters {
+    evaluate_dialog_template_purgeability_parameters(
+        *b"DLOG",
+        dialog_id,
+        load_if_missing,
+        purgeable,
+    )
+}
+
+/// Convenience evaluation for alert template purgeability (`CouldAlert` / `FreeAlert`).
+#[inline]
+#[must_use]
+pub const fn evaluate_alert_purgeability_parameters(
+    alert_id: i16,
+    load_if_missing: bool,
+    purgeable: bool,
+) -> DialogTemplatePurgeabilityParameters {
+    evaluate_dialog_template_purgeability_parameters(
+        *b"ALRT",
+        alert_id,
+        load_if_missing,
+        purgeable,
+    )
+}
+
+/// Backward compatibility alias for `evaluate_dialog_template_purgeability_parameters`.
+#[inline]
+#[must_use]
+#[allow(dead_code)]
+pub const fn evaluate_dialog_template_purgeability_query(
+    template_type: [u8; 4],
+    template_id: i16,
+    load_if_missing: bool,
+    purgeable: bool,
+) -> DialogTemplatePurgeabilityParameters {
+    evaluate_dialog_template_purgeability_parameters(
+        template_type,
+        template_id,
+        load_if_missing,
+        purgeable,
+    )
 }
 
 /// Parsed representation of a Macintosh dialog template (`DLOG` resource).
@@ -8208,22 +8226,12 @@ mod tests {
     }
 
     #[test]
-    fn get_and_set_dialog_item_query_and_parameters_evaluation() {
+    fn set_dialog_item_parameters_evaluation() {
         // DITL item entry offsets
         assert_eq!(DITL_ITEM_HANDLE_OFFSET, 0);
         assert_eq!(DITL_ITEM_RECT_OFFSET, 4);
         assert_eq!(DITL_ITEM_TYPE_OFFSET, 12);
         assert_eq!(DITL_ITEM_DATA_LEN_OFFSET, 13);
-
-        // evaluate_get_dialog_item_query
-        assert_eq!(evaluate_get_dialog_item_query(0, 1), None);
-        assert_eq!(evaluate_get_dialog_item_query(0x1000, 0), None);
-
-        let query = evaluate_get_dialog_item_query(0x0001_2340, 3)
-            .expect("valid query parameters should succeed");
-        assert_eq!(query.dialog_ptr(), 0x0001_2340);
-        assert_eq!(query.item_number(), 3);
-        assert_eq!(query.item_no(), 3);
 
         // evaluate_set_dialog_item_parameters
         assert_eq!(
@@ -8627,8 +8635,8 @@ mod tests {
 
     #[test]
     fn dialog_template_purgeability_and_standard_alert_evaluation() {
-        // DialogTemplatePurgeabilityQuery evaluation
-        let could_dlog = evaluate_dialog_template_purgeability_query(*b"DLOG", 128, true, false);
+        // DialogTemplatePurgeabilityParameters evaluation
+        let could_dlog = evaluate_dialog_template_purgeability_parameters(*b"DLOG", 128, true, false);
         assert_eq!(could_dlog.template_type(), *b"DLOG");
         assert_eq!(could_dlog.template_id(), 128);
         assert_eq!(
@@ -8637,8 +8645,14 @@ mod tests {
         );
         assert!(could_dlog.load_if_missing());
         assert!(!could_dlog.purgeable());
+        assert!(could_dlog.is_dialog());
+        assert!(!could_dlog.is_alert());
 
-        let free_dlog = evaluate_dialog_template_purgeability_query(*b"DLOG", 128, false, true);
+        // Convenience evaluator for CouldDialog
+        let could_dlog_conv = evaluate_dialog_purgeability_parameters(128, true, false);
+        assert_eq!(could_dlog, could_dlog_conv);
+
+        let free_dlog = evaluate_dialog_template_purgeability_parameters(*b"DLOG", 128, false, true);
         assert_eq!(free_dlog.template_type(), *b"DLOG");
         assert_eq!(free_dlog.template_id(), 128);
         assert_eq!(
@@ -8647,8 +8661,14 @@ mod tests {
         );
         assert!(!free_dlog.load_if_missing());
         assert!(free_dlog.purgeable());
+        assert!(free_dlog.is_dialog());
+        assert!(!free_dlog.is_alert());
 
-        let could_alrt = evaluate_dialog_template_purgeability_query(*b"ALRT", 256, true, false);
+        // Convenience evaluator for FreeDialog
+        let free_dlog_conv = evaluate_dialog_purgeability_parameters(128, false, true);
+        assert_eq!(free_dlog, free_dlog_conv);
+
+        let could_alrt = evaluate_dialog_template_purgeability_parameters(*b"ALRT", 256, true, false);
         assert_eq!(could_alrt.template_type(), *b"ALRT");
         assert_eq!(could_alrt.template_id(), 256);
         assert_eq!(
@@ -8657,8 +8677,14 @@ mod tests {
         );
         assert!(could_alrt.load_if_missing());
         assert!(!could_alrt.purgeable());
+        assert!(!could_alrt.is_dialog());
+        assert!(could_alrt.is_alert());
 
-        let free_alrt = evaluate_dialog_template_purgeability_query(*b"ALRT", 256, false, true);
+        // Convenience evaluator for CouldAlert
+        let could_alrt_conv = evaluate_alert_purgeability_parameters(256, true, false);
+        assert_eq!(could_alrt, could_alrt_conv);
+
+        let free_alrt = evaluate_dialog_template_purgeability_parameters(*b"ALRT", 256, false, true);
         assert_eq!(free_alrt.template_type(), *b"ALRT");
         assert_eq!(free_alrt.template_id(), 256);
         assert_eq!(
@@ -8667,6 +8693,23 @@ mod tests {
         );
         assert!(!free_alrt.load_if_missing());
         assert!(free_alrt.purgeable());
+        assert!(!free_alrt.is_dialog());
+        assert!(free_alrt.is_alert());
+
+        // Convenience evaluator for FreeAlert
+        let free_alrt_conv = evaluate_alert_purgeability_parameters(256, false, true);
+        assert_eq!(free_alrt, free_alrt_conv);
+
+        // Direct constructor
+        let direct_purge = DialogTemplatePurgeabilityParameters::new(
+            *b"DLOG",
+            42,
+            DialogTemplatePurgeabilityAction::MakePurgeable,
+        );
+        assert_eq!(direct_purge.template_id(), 42);
+        assert!(direct_purge.is_dialog());
+        assert!(direct_purge.purgeable());
+
 
         // StandardAlertParameters evaluation
         // StandardAlert: requires valid writable item_hit_out_ptr
