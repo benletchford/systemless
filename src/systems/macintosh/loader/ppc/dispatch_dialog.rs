@@ -11,7 +11,8 @@ use crate::dialog_manager::{
     evaluate_get_dialog_item_as_control, evaluate_get_dialog_item_as_control_parameters,
     evaluate_get_dialog_item_parameters, evaluate_get_new_dialog_parameters,
     evaluate_get_std_filter_proc_parameters,
-    evaluate_hide_dialog_item, evaluate_modal_dialog_parameters,
+    evaluate_hide_dialog_item, evaluate_is_dialog_event_parameters,
+    evaluate_modal_dialog_parameters,
     evaluate_select_dialog_item_text_parameters, evaluate_set_dialog_cancel_item_parameters,
     evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_tracks_cursor_parameters,
     evaluate_show_dialog_item, evaluate_standard_alert_parameters, evaluate_update_dialog_parameters,
@@ -1156,11 +1157,11 @@ fn ppc_dispatch_dialog_compatibility(
     let dialog = cpu.gpr[3];
     match operation {
         PpcDialogCompatibilityOperation::IsDialogEvent => {
-            let Some(query) = crate::dialog_manager::evaluate_is_dialog_event_query(cpu.gpr[3])
+            let Some(params) = evaluate_is_dialog_event_parameters(cpu.gpr[3])
             else {
                 return PpcImportAction::Return(0);
             };
-            let result = ppc_read_dialog_event(memory, query.event_ptr()).is_some_and(|event| {
+            let result = ppc_read_dialog_event(memory, params.event_ptr()).is_some_and(|event| {
                 let dialog = ppc_dialog_for_event(memory, gworlds, event.what, event.message);
                 let bounds = dialog.and_then(|d| ppc_dialog_global_bounds(memory, gworlds, d));
                 crate::dialog_manager::is_dialog_event(
