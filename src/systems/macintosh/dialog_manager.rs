@@ -3333,6 +3333,116 @@ pub fn shorten_ditl_counts(current_count: usize, remove_count: usize) -> (usize,
     (retained, count_minus_one)
 }
 
+/// Canonical evaluated parameters for `AppendDITL`.
+///
+/// Macintosh Toolbox Essentials (1992), pp. 6-108, 6-153.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AppendDitlParameters {
+    dialog_ptr: u32,
+    ditl_handle: u32,
+    method: i16,
+}
+
+#[allow(dead_code)]
+impl AppendDitlParameters {
+    /// Constructs a new `AppendDitlParameters`.
+    #[inline]
+    pub const fn new(dialog_ptr: u32, ditl_handle: u32, method: i16) -> Self {
+        Self {
+            dialog_ptr,
+            ditl_handle,
+            method,
+        }
+    }
+
+    /// The target dialog pointer.
+    #[inline]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// The handle to the DITL resource data to append.
+    #[inline]
+    pub const fn ditl_handle(&self) -> u32 {
+        self.ditl_handle
+    }
+
+    /// The placement method (`overlayDITL`, `appendDITLRight`, `appendDITLBottom`, or relative item).
+    #[inline]
+    pub const fn method(&self) -> i16 {
+        self.method
+    }
+}
+
+/// Evaluates and validates input parameters for `AppendDITL`.
+///
+/// Returns `None` if `dialog_ptr == 0` or `ditl_handle == 0`.
+#[inline]
+pub const fn evaluate_append_ditl_parameters(
+    dialog_ptr: u32,
+    ditl_handle: u32,
+    method: i16,
+) -> Option<AppendDitlParameters> {
+    if dialog_ptr == 0 || ditl_handle == 0 {
+        return None;
+    }
+    Some(AppendDitlParameters {
+        dialog_ptr,
+        ditl_handle,
+        method,
+    })
+}
+
+/// Canonical evaluated parameters for `ShortenDITL`.
+///
+/// Macintosh Toolbox Essentials (1992), pp. 6-153--6-154.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShortenDitlParameters {
+    dialog_ptr: u32,
+    number_items: usize,
+}
+
+#[allow(dead_code)]
+impl ShortenDitlParameters {
+    /// Constructs a new `ShortenDitlParameters`.
+    #[inline]
+    pub const fn new(dialog_ptr: u32, number_items: usize) -> Self {
+        Self {
+            dialog_ptr,
+            number_items,
+        }
+    }
+
+    /// The target dialog pointer.
+    #[inline]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// The number of items to remove from the end of the DITL.
+    #[inline]
+    pub const fn number_items(&self) -> usize {
+        self.number_items
+    }
+}
+
+/// Evaluates and validates input parameters for `ShortenDITL`.
+///
+/// Returns `None` if `dialog_ptr == 0`.
+#[inline]
+pub const fn evaluate_shorten_ditl_parameters(
+    dialog_ptr: u32,
+    number_items: usize,
+) -> Option<ShortenDitlParameters> {
+    if dialog_ptr == 0 {
+        return None;
+    }
+    Some(ShortenDitlParameters {
+        dialog_ptr,
+        number_items,
+    })
+}
+
 /// Returns true if two rectangles intersect.
 pub fn rects_intersect(a: (i16, i16, i16, i16), b: (i16, i16, i16, i16)) -> bool {
     a.0 < b.2 && a.2 > b.0 && a.1 < b.3 && a.3 > b.1
@@ -6682,6 +6792,42 @@ mod tests {
             evaluate_show_dialog_item(DIALOG_ITEM_BUTTON, visible_rect, None),
             None
         );
+    }
+
+    #[test]
+    fn append_and_shorten_ditl_parameters_evaluation() {
+        // evaluate_append_ditl_parameters
+        assert_eq!(evaluate_append_ditl_parameters(0, 0x2000, 0), None);
+        assert_eq!(evaluate_append_ditl_parameters(0x1000, 0, 0), None);
+        assert_eq!(evaluate_append_ditl_parameters(0, 0, 1), None);
+
+        let append_params = evaluate_append_ditl_parameters(0x0002_4680, 0x0008_ACE0, APPEND_DITL_RIGHT)
+            .expect("valid append ditl parameters should evaluate");
+        assert_eq!(append_params.dialog_ptr(), 0x0002_4680);
+        assert_eq!(append_params.ditl_handle(), 0x0008_ACE0);
+        assert_eq!(append_params.method(), APPEND_DITL_RIGHT);
+
+        let append_direct = AppendDitlParameters::new(0x0001_1110, 0x0002_2220, APPEND_DITL_BOTTOM);
+        assert_eq!(append_direct.dialog_ptr(), 0x0001_1110);
+        assert_eq!(append_direct.ditl_handle(), 0x0002_2220);
+        assert_eq!(append_direct.method(), APPEND_DITL_BOTTOM);
+
+        // evaluate_shorten_ditl_parameters
+        assert_eq!(evaluate_shorten_ditl_parameters(0, 5), None);
+        assert_eq!(evaluate_shorten_ditl_parameters(0, 0), None);
+
+        let shorten_params = evaluate_shorten_ditl_parameters(0x0003_5790, 3)
+            .expect("valid shorten ditl parameters should evaluate");
+        assert_eq!(shorten_params.dialog_ptr(), 0x0003_5790);
+        assert_eq!(shorten_params.number_items(), 3);
+
+        let shorten_zero = evaluate_shorten_ditl_parameters(0x0003_5790, 0)
+            .expect("shorten with 0 items should evaluate");
+        assert_eq!(shorten_zero.number_items(), 0);
+
+        let shorten_direct = ShortenDitlParameters::new(0x0004_4440, 7);
+        assert_eq!(shorten_direct.dialog_ptr(), 0x0004_4440);
+        assert_eq!(shorten_direct.number_items(), 7);
     }
 }
 

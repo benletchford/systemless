@@ -3644,13 +3644,18 @@ impl super::TrapDispatcher {
         ditl_handle: u32,
         method: i16,
     ) -> u16 {
-        if dialog_ptr == 0 || ditl_handle == 0 {
+        let Some(params) =
+            crate::dialog_manager::evaluate_append_ditl_parameters(dialog_ptr, ditl_handle, method)
+        else {
             return self
                 .dialog_items
                 .get(&dialog_ptr)
                 .map(|items| items.len() as u16)
                 .unwrap_or(0);
-        }
+        };
+        let dialog_ptr = params.dialog_ptr();
+        let ditl_handle = params.ditl_handle();
+        let method = params.method();
 
         let source_ptr = bus.read_long(ditl_handle);
         let Some(source_alloc_len) = bus.get_alloc_size(source_ptr) else {
@@ -3772,9 +3777,14 @@ impl super::TrapDispatcher {
         dialog_ptr: u32,
         number_items: u16,
     ) -> u16 {
-        if dialog_ptr == 0 {
+        let Some(params) = crate::dialog_manager::evaluate_shorten_ditl_parameters(
+            dialog_ptr,
+            usize::from(number_items),
+        ) else {
             return 0;
-        }
+        };
+        let dialog_ptr = params.dialog_ptr();
+        let number_items = params.number_items();
 
         let items_handle = bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_ITEMS_OFFSET);
         let ditl_ptr = if items_handle != 0 {
@@ -3794,7 +3804,7 @@ impl super::TrapDispatcher {
             .cloned()
             .unwrap_or(raw_items);
         let (keep_count, count_minus_one) =
-            crate::dialog_manager::shorten_ditl_counts(items.len(), number_items as usize);
+            crate::dialog_manager::shorten_ditl_counts(items.len(), number_items);
 
         for item_no in (keep_count + 1)..=items.len() {
             let item_no = item_no as i16;
