@@ -11,8 +11,9 @@ use crate::dialog_manager::{
     dialog_dbox_frame_rect, dialog_item_base_type, dialog_item_resource_type,
     dialog_target_for_event, edit_text_frame_rect, evaluate_alert_invocation,
     evaluate_alert_parameters, AlertKind,
-    evaluate_close_dialog_parameters, evaluate_dialog_item_visibility_parameters_signed,
-    evaluate_dialog_template_purgeability_query,
+    evaluate_alert_purgeability_parameters, evaluate_close_dialog_parameters,
+    evaluate_dialog_item_visibility_parameters_signed, evaluate_dialog_purgeability_parameters,
+    DialogTemplatePurgeabilityParameters,
     evaluate_dispose_dialog_parameters, evaluate_draw_dialog_parameters,
     evaluate_error_sound,
     evaluate_find_dialog_item, evaluate_find_dialog_item_parameters,
@@ -439,39 +440,34 @@ impl super::TrapDispatcher {
     fn cascade_dialog_resource_purgeability(
         &mut self,
         bus: &mut MacMemoryBus,
-        template_type: [u8; 4],
-        template_id: i16,
-        purgeable: bool,
-        load_if_missing: bool,
+        params: &DialogTemplatePurgeabilityParameters,
     ) {
         let Some((_, template_ptr)) = self.prepare_dialog_resource_handle(
             bus,
-            template_type,
-            template_id,
-            purgeable,
-            load_if_missing,
+            params.template_type(),
+            params.template_id(),
+            params.purgeable(),
+            params.load_if_missing(),
         ) else {
             return;
         };
 
-        let items_id = match template_type {
+        let items_id = if params.is_dialog() && bus.get_alloc_size(template_ptr).unwrap_or(0) >= 20 {
             // IM:I I-437: DLOG item-list ID is at offset 18.
-            [b'D', b'L', b'O', b'G'] if bus.get_alloc_size(template_ptr).unwrap_or(0) >= 20 => {
-                bus.read_word(template_ptr + 18) as i16
-            }
+            bus.read_word(template_ptr + 18) as i16
+        } else if params.is_alert() && bus.get_alloc_size(template_ptr).unwrap_or(0) >= 10 {
             // IM:I I-425..I-426: ALRT item-list ID is at offset 8.
-            [b'A', b'L', b'R', b'T'] if bus.get_alloc_size(template_ptr).unwrap_or(0) >= 10 => {
-                bus.read_word(template_ptr + 8) as i16
-            }
-            _ => return,
+            bus.read_word(template_ptr + 8) as i16
+        } else {
+            return;
         };
 
         let Some((_, ditl_ptr)) = self.prepare_dialog_resource_handle(
             bus,
             *b"DITL",
             items_id,
-            purgeable,
-            load_if_missing,
+            params.purgeable(),
+            params.load_if_missing(),
         ) else {
             return;
         };
@@ -484,8 +480,8 @@ impl super::TrapDispatcher {
                     bus,
                     res_type,
                     item.resource_id,
-                    purgeable,
-                    load_if_missing,
+                    params.purgeable(),
+                    params.load_if_missing(),
                 );
             }
         }
@@ -16106,20 +16102,13 @@ impl super::TrapDispatcher {
             (true, 0x179) | (true, 0x17A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dialog_id = bus.read_word(sp) as i16;
-                let query = evaluate_dialog_template_purgeability_query(
-                    *b"DLOG",
+                let params = evaluate_dialog_purgeability_parameters(
                     dialog_id,
                     trap_num == 0x179,
                     trap_num == 0x17A,
                 );
-                self.cascade_dialog_resource_purgeability(
-                    bus,
-                    query.template_type(),
-                    query.template_id(),
-                    query.purgeable(),
-                    query.load_if_missing(),
-                );
-                let res_err = self.dialog_template_res_err(query.template_id());
+                self.cascade_dialog_resource_purgeability(bus, &params);
+                let res_err = self.dialog_template_res_err(params.template_id());
                 bus.write_word(0x0A60, res_err as u16);
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
@@ -16343,19 +16332,12 @@ impl super::TrapDispatcher {
             (true, 0x189) | (true, 0x18A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let alert_id = bus.read_word(sp) as i16;
-                let query = evaluate_dialog_template_purgeability_query(
-                    *b"ALRT",
+                let params = evaluate_alert_purgeability_parameters(
                     alert_id,
                     trap_num == 0x189,
                     trap_num == 0x18A,
                 );
-                self.cascade_dialog_resource_purgeability(
-                    bus,
-                    query.template_type(),
-                    query.template_id(),
-                    query.purgeable(),
-                    query.load_if_missing(),
-                );
+                self.cascade_dialog_resource_purgeability(bus, &params);
                 bus.write_word(0x0A60, 0);
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
