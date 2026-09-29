@@ -383,6 +383,7 @@ pub const DIALOG_DISPATCH_SET_DIALOG_DEFAULT_ITEM: u16 = 0x0004;
 pub const DIALOG_DISPATCH_SET_DIALOG_CANCEL_ITEM: u16 = 0x0005;
 pub const DIALOG_DISPATCH_SET_DIALOG_TRACKS_CURSOR: u16 = 0x0006;
 pub const DIALOG_DISPATCH_NEW_FEATURES_DIALOG: u16 = 0x000C;
+pub const DIALOG_DISPATCH_GET_DIALOG_ITEM_AS_CONTROL: u16 = 0x0011;
 
 /// Standard Mac OS result codes used by Dialog Manager extension routines.
 pub const DIALOG_NO_ERR: i16 = 0;
@@ -1695,6 +1696,93 @@ pub fn evaluate_get_dialog_item_as_control(
     }
 }
 
+/// Evaluated input parameters for a `GetDialogItemAsControl` request.
+///
+/// Inside Macintosh: Appearance Manager (1997);
+/// Universal Interfaces `Dialogs.h`.
+/// `FUNCTION GetDialogItemAsControl(theDialog: DialogPtr; itemNo: SInt16; VAR outControl: ControlHandle): OSStatus;`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GetDialogItemAsControlParameters {
+    dialog_ptr: u32,
+    item_number: usize,
+    control_out: u32,
+}
+
+impl GetDialogItemAsControlParameters {
+    /// Constructs a new `GetDialogItemAsControlParameters` instance.
+    #[inline]
+    #[must_use]
+    pub const fn new(dialog_ptr: u32, item_number: usize, control_out: u32) -> Self {
+        Self {
+            dialog_ptr,
+            item_number,
+            control_out,
+        }
+    }
+
+    /// Pointer to the dialog record.
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// 1-based item number within the dialog item list.
+    #[inline]
+    #[must_use]
+    pub const fn item_number(&self) -> usize {
+        self.item_number
+    }
+
+    /// 1-based item number as an `i16`.
+    #[inline]
+    #[must_use]
+    pub const fn item_no(&self) -> i16 {
+        if self.item_number > i16::MAX as usize {
+            i16::MAX
+        } else {
+            self.item_number as i16
+        }
+    }
+
+    /// 0-based item index within the dialog item slice.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn item_index(&self) -> usize {
+        self.item_number.saturating_sub(1)
+    }
+
+    /// Guest pointer to the output `ControlHandle` variable.
+    #[inline]
+    #[must_use]
+    pub const fn control_out(&self) -> u32 {
+        self.control_out
+    }
+}
+
+/// Evaluates and validates input parameters for a `GetDialogItemAsControl` request.
+///
+/// Returns `Err(paramErr)` (-50) if `theDialog == 0`, `itemNo == 0`, `outControl == 0`,
+/// or the output pointer cannot be written.
+#[inline]
+pub fn evaluate_get_dialog_item_as_control_parameters(
+    dialog_ptr: u32,
+    item_number: usize,
+    control_out: u32,
+    can_write: bool,
+) -> Result<GetDialogItemAsControlParameters, i16> {
+    if dialog_ptr == 0 || item_number == 0 || control_out == 0 || !can_write {
+        Err(DIALOG_PARAM_ERR)
+    } else {
+        Ok(GetDialogItemAsControlParameters::new(
+            dialog_ptr,
+            item_number,
+            control_out,
+        ))
+    }
+}
+
 /// Evaluated parameters for a `SetDialogDefaultItem` request.
 ///
 /// Macintosh Toolbox Essentials (1992), p. 6-164:
@@ -2708,6 +2796,68 @@ pub const fn is_dialog_cancel_key(char_code: u8, key_code: u8, modifiers: u16) -
 /// Determine whether the specified character and key code correspond to the Tab key.
 pub const fn is_dialog_tab_key(char_code: u8, key_code: u8) -> bool {
     char_code == CHAR_TAB || key_code == KEY_TAB
+}
+
+/// Evaluated input parameters for a `ModalDialog` invocation.
+///
+/// Inside Macintosh Volume I, p. I-415;
+/// Macintosh Toolbox Essentials (1992), pp. 6-135--6-141.
+/// `PROCEDURE ModalDialog (filterProc: ProcPtr; VAR itemHit: INTEGER);`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ModalDialogParameters {
+    filter_proc: u32,
+    item_hit_ptr: u32,
+}
+
+impl ModalDialogParameters {
+    /// Constructs a new `ModalDialogParameters` instance.
+    #[inline]
+    #[must_use]
+    pub const fn new(filter_proc: u32, item_hit_ptr: u32) -> Self {
+        Self {
+            filter_proc,
+            item_hit_ptr,
+        }
+    }
+
+    /// Guest pointer to the filter procedure, or 0 (NIL) if none.
+    #[inline]
+    #[must_use]
+    pub const fn filter_proc(&self) -> u32 {
+        self.filter_proc
+    }
+
+    /// Whether an explicit non-NIL filter procedure was provided.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn has_filter_proc(&self) -> bool {
+        self.filter_proc != 0
+    }
+
+    /// Guest pointer to the output `itemHit` variable.
+    #[inline]
+    #[must_use]
+    pub const fn item_hit_ptr(&self) -> u32 {
+        self.item_hit_ptr
+    }
+}
+
+/// Evaluates and validates input parameters for a `ModalDialog` invocation.
+///
+/// Inside Macintosh Volume I, p. I-415.
+/// Returns `None` if `itemHit` pointer is NIL (0) or cannot be written.
+#[inline]
+pub fn evaluate_modal_dialog_parameters(
+    filter_proc: u32,
+    item_hit_ptr: u32,
+    can_write_item_hit: bool,
+) -> Option<ModalDialogParameters> {
+    if item_hit_ptr == 0 || !can_write_item_hit {
+        None
+    } else {
+        Some(ModalDialogParameters::new(filter_proc, item_hit_ptr))
+    }
 }
 
 /// Evaluate a keyboard event for standard modal dialog filtering.
@@ -5203,6 +5353,7 @@ mod tests {
         assert_eq!(DIALOG_DISPATCH_SET_DIALOG_CANCEL_ITEM, 0x0005);
         assert_eq!(DIALOG_DISPATCH_SET_DIALOG_TRACKS_CURSOR, 0x0006);
         assert_eq!(DIALOG_DISPATCH_NEW_FEATURES_DIALOG, 0x000C);
+        assert_eq!(DIALOG_DISPATCH_GET_DIALOG_ITEM_AS_CONTROL, 0x0011);
 
         // Default button outline geometry
         assert_eq!(DEFAULT_BUTTON_OUTLINE_THICKNESS, 3);
@@ -7516,5 +7667,61 @@ mod tests {
         assert_eq!(direct.storage_policy(), DialogStoragePolicy::AllocateNew);
         assert_eq!(direct.behind(), 0);
     }
+
+    #[test]
+    fn get_dialog_item_as_control_and_modal_dialog_parameters_evaluation() {
+        // evaluate_get_dialog_item_as_control_parameters
+        assert_eq!(
+            evaluate_get_dialog_item_as_control_parameters(0, 1, 0x1000, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_dialog_item_as_control_parameters(0x2000, 0, 0x1000, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_dialog_item_as_control_parameters(0x2000, 1, 0, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_dialog_item_as_control_parameters(0x2000, 1, 0x1000, false),
+            Err(DIALOG_PARAM_ERR)
+        );
+
+        let control_params =
+            evaluate_get_dialog_item_as_control_parameters(0x2000, 3, 0x3000, true).unwrap();
+        assert_eq!(control_params.dialog_ptr(), 0x2000);
+        assert_eq!(control_params.item_number(), 3);
+        assert_eq!(control_params.item_no(), 3);
+        assert_eq!(control_params.item_index(), 2);
+        assert_eq!(control_params.control_out(), 0x3000);
+
+        let direct_control = GetDialogItemAsControlParameters::new(0x4000, 1, 0x5000);
+        assert_eq!(direct_control.dialog_ptr(), 0x4000);
+        assert_eq!(direct_control.item_number(), 1);
+        assert_eq!(direct_control.item_no(), 1);
+        assert_eq!(direct_control.item_index(), 0);
+        assert_eq!(direct_control.control_out(), 0x5000);
+
+        // evaluate_modal_dialog_parameters
+        assert_eq!(evaluate_modal_dialog_parameters(0, 0, true), None);
+        assert_eq!(evaluate_modal_dialog_parameters(0x1000, 0x2000, false), None);
+
+        let modal_params = evaluate_modal_dialog_parameters(0x1000, 0x2000, true).unwrap();
+        assert_eq!(modal_params.filter_proc(), 0x1000);
+        assert!(modal_params.has_filter_proc());
+        assert_eq!(modal_params.item_hit_ptr(), 0x2000);
+
+        let no_filter = evaluate_modal_dialog_parameters(0, 0x2000, true).unwrap();
+        assert_eq!(no_filter.filter_proc(), 0);
+        assert!(!no_filter.has_filter_proc());
+        assert_eq!(no_filter.item_hit_ptr(), 0x2000);
+
+        let direct_modal = ModalDialogParameters::new(0x3000, 0x4000);
+        assert_eq!(direct_modal.filter_proc(), 0x3000);
+        assert!(direct_modal.has_filter_proc());
+        assert_eq!(direct_modal.item_hit_ptr(), 0x4000);
+    }
 }
+
 

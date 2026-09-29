@@ -6,8 +6,9 @@ use crate::dialog_manager::{
     dialog_target_for_event, dialog_text_rect, edit_text_frame_rect,
     evaluate_close_or_dispose_dialog, evaluate_count_ditl, evaluate_count_ditl_query,
     evaluate_dialog_select, evaluate_find_dialog_item, evaluate_get_dialog_item,
-    evaluate_get_dialog_item_as_control, evaluate_get_new_dialog_parameters,
-    evaluate_get_std_filter_proc_parameters, evaluate_hide_dialog_item,
+    evaluate_get_dialog_item_as_control, evaluate_get_dialog_item_as_control_parameters,
+    evaluate_get_new_dialog_parameters, evaluate_get_std_filter_proc_parameters,
+    evaluate_hide_dialog_item, evaluate_modal_dialog_parameters,
     evaluate_select_dialog_item_text_parameters, evaluate_set_dialog_cancel_item_parameters,
     evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_tracks_cursor_parameters,
     evaluate_show_dialog_item,
@@ -345,17 +346,24 @@ pub(super) fn dispatch_dialog_import(
             let dialog = cpu.gpr[3];
             let item_number = cpu.gpr[4] as u16 as usize;
             let control_out = cpu.gpr[5];
-            if control_out == 0 || !ppc_memory_can_write_bytes(memory, control_out, 4) {
-                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
-            }
-            let control_result = ppc_dialog_items_for_dialog(memory, handles, dialog)
+            let can_write = ppc_memory_can_write_bytes(memory, control_out, 4);
+            let params = match evaluate_get_dialog_item_as_control_parameters(
+                dialog,
+                item_number,
+                control_out,
+                can_write,
+            ) {
+                Ok(params) => params,
+                Err(err) => return Some(PpcImportAction::Return(ppc_i16_result(err))),
+            };
+            let control_result = ppc_dialog_items_for_dialog(memory, handles, params.dialog_ptr())
                 .and_then(|items| {
-                    crate::dialog_manager::get_item_at_1_indexed(&items, item_number).cloned()
+                    crate::dialog_manager::get_item_at_1_indexed(&items, params.item_number()).cloned()
                 })
                 .map(|item| evaluate_get_dialog_item_as_control(item.item_type, item.handle))
                 .unwrap_or(Err(PPC_PARAM_ERR));
             let control = control_result.unwrap_or(0);
-            let _ = memory.write_u32_be(control_out, control);
+            let _ = memory.write_u32_be(params.control_out(), control);
             Some(PpcImportAction::Return(ppc_i16_result(if control_result.is_ok() {
                 PPC_NO_ERR
             } else {
@@ -3356,10 +3364,12 @@ fn ppc_modal_dialog(
     if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
         return action;
     }
+    let filter_proc = cpu.gpr[3];
     let item_hit_ptr = cpu.gpr[4];
-    if item_hit_ptr == 0 || !ppc_memory_can_write_bytes(memory, item_hit_ptr, 2) {
+    let can_write = ppc_memory_can_write_bytes(memory, item_hit_ptr, 2);
+    let Some(params) = evaluate_modal_dialog_parameters(filter_proc, item_hit_ptr, can_write) else {
         return PpcImportAction::ReturnPreserve;
-    }
+    };
     let dialog = if memory.read_u16_be(current_gworld.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET))
         == Some(2)
     {
@@ -3577,11 +3587,11 @@ fn ppc_modal_dialog(
         _ => None,
     };
     if let Some(hit) = hit {
-        let _ = memory.write_u16_be(item_hit_ptr, hit);
+        let _ = memory.write_u16_be(params.item_hit_ptr(), hit);
         if ppc_hle_trace_enabled() {
             eprintln!(
                 "[PPC-TRACE] ModalDialog dialog=${dialog:08X} filter=${:08X} -> item {}",
-                cpu.gpr[3], hit
+                params.filter_proc(), hit
             );
         }
         PpcImportAction::ReturnPreserve

@@ -11,8 +11,9 @@ use crate::dialog_manager::{
     dialog_dbox_frame_rect, dialog_item_base_type, dialog_item_resource_type,
     dialog_target_for_event, edit_text_frame_rect, evaluate_alert_invocation,
     evaluate_close_dialog, evaluate_dispose_dialog, evaluate_error_sound,
-    evaluate_find_dialog_item, evaluate_get_dialog_item, evaluate_get_new_dialog_parameters,
-    evaluate_get_std_filter_proc_parameters,
+    evaluate_find_dialog_item, evaluate_get_dialog_item, evaluate_get_dialog_item_as_control,
+    evaluate_get_dialog_item_as_control_parameters, evaluate_get_new_dialog_parameters,
+    evaluate_get_std_filter_proc_parameters, evaluate_modal_dialog_parameters,
     evaluate_select_dialog_item_text_parameters, evaluate_set_dialog_cancel_item_parameters,
     evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_tracks_cursor_parameters,
     find_dialog_item_hit, global_to_dialog_local_point, is_dialog_item_button,
@@ -12950,9 +12951,14 @@ impl super::TrapDispatcher {
                     let sp = cpu.read_reg(Register::A7);
                     let item_hit_ptr = bus.read_long(sp);
                     let filter_proc = bus.read_long(sp + 4);
-                    if item_hit_ptr != 0 {
-                        bus.write_word(item_hit_ptr, 0);
-                    }
+                    let Some(params) = evaluate_modal_dialog_parameters(
+                        filter_proc,
+                        item_hit_ptr,
+                        item_hit_ptr != 0,
+                    ) else {
+                        return Some(Ok(()));
+                    };
+                    bus.write_word(params.item_hit_ptr(), 0);
 
                     // Find the modal dialog's items. Most callers keep the
                     // dialog as the front window, but games can temporarily
@@ -12984,8 +12990,8 @@ impl super::TrapDispatcher {
                                 "[DIALOG-FILTER] init dialog=${:08X} items={} filter_proc=${:08X} item_hit_ptr=${:08X}",
                                 dialog_ptr,
                                 items.len(),
-                                filter_proc,
-                                item_hit_ptr
+                                params.filter_proc(),
+                                params.item_hit_ptr()
                             );
                         }
                         // Re-read userItem proc pointers from guest memory.
@@ -13239,7 +13245,7 @@ impl super::TrapDispatcher {
                             edit_item,
                             saved_pixels,
                             stack_ptr: sp,
-                            item_hit_ptr,
+                            item_hit_ptr: params.item_hit_ptr(),
                             rendered_pixels,
                             flash_remaining: 0,
                             flash_delay: 0,
@@ -13249,7 +13255,7 @@ impl super::TrapDispatcher {
                             draw_procs_done: !has_draw_procs,
                             rendered_pixels_final: !has_draw_procs,
                             filter_presentation_epoch: None,
-                            filter_proc,
+                            filter_proc: params.filter_proc(),
                             game_managed,
                             last_filter_event: None,
                             popup_draws,
@@ -16801,6 +16807,55 @@ impl super::TrapDispatcher {
                         let dialog_ptr = bus.read_long(sp + 2);
                         let os_err = match evaluate_set_dialog_tracks_cursor_parameters(dialog_ptr, tracks) {
                             Ok(_params) => crate::dialog_manager::DIALOG_NO_ERR,
+                            Err(err) => err,
+                        };
+                        bus.write_word(sp + param_bytes, os_err as u16);
+                        cpu.write_reg(Register::A7, sp + param_bytes);
+                    }
+                    // GetDialogItemAsControl (selector $11, param_bytes=10)
+                    // FUNCTION GetDialogItemAsControl(theDialog: DialogPtr;
+                    //     itemNo: SInt16; VAR outControl: ControlHandle): OSStatus;
+                    // Inside Macintosh: Appearance Manager (1997).
+                    //
+                    // Stack: SP+0=outControl(4), SP+4=itemNo(2), SP+6=theDialog(4).
+                    // Result slot at SP+param_bytes (pre-pushed by caller).
+                    crate::dialog_manager::DIALOG_DISPATCH_GET_DIALOG_ITEM_AS_CONTROL => {
+                        let control_out = bus.read_long(sp);
+                        let item_number = bus.read_word(sp + 4) as usize;
+                        let dialog_ptr = bus.read_long(sp + 6);
+                        let result = evaluate_get_dialog_item_as_control_parameters(
+                            dialog_ptr,
+                            item_number,
+                            control_out,
+                            control_out != 0,
+                        );
+                        let os_err = match result {
+                            Ok(params) => {
+                                let item_info = self
+                                    .dialog_items
+                                    .get(&params.dialog_ptr())
+                                    .and_then(|items| {
+                                        crate::dialog_manager::get_item_at_1_indexed(
+                                            items,
+                                            params.item_number(),
+                                        )
+                                    })
+                                    .map(|item| {
+                                        let handle = Self::dialog_item_handle(
+                                            bus,
+                                            params.dialog_ptr(),
+                                            params.item_no(),
+                                        );
+                                        evaluate_get_dialog_item_as_control(item.item_type, handle)
+                                    })
+                                    .unwrap_or(Err(crate::dialog_manager::DIALOG_PARAM_ERR));
+                                let handle = item_info.unwrap_or(0);
+                                bus.write_long(params.control_out(), handle);
+                                match item_info {
+                                    Ok(_) => crate::dialog_manager::DIALOG_NO_ERR,
+                                    Err(err) => err,
+                                }
+                            }
                             Err(err) => err,
                         };
                         bus.write_word(sp + param_bytes, os_err as u16);
