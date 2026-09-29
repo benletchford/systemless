@@ -33,6 +33,7 @@ use crate::dialog_manager::{
     evaluate_could_alert_parameters, evaluate_free_alert_parameters,
     evaluate_move_dialog_item_parameters, evaluate_move_dialog_item_rect,
     evaluate_size_dialog_item_parameters, evaluate_size_dialog_item_rect,
+    evaluate_append_dialog_item_list_parameters, evaluate_appended_dialog_bounds,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -660,6 +661,108 @@ pub(super) fn dispatch_dialog_import(
                         }
                     } else {
                         PPC_PARAM_ERR
+                    }
+                }
+                Err(err) => err,
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(os_err)))
+        }
+        PpcImportDispatcherTarget::AppendDialogItemList => {
+            let dialog = cpu.gpr[3];
+            let ditl_id = cpu.gpr[4] as u16 as i16;
+            let method = cpu.gpr[5] as u16 as i16;
+            let os_err = match evaluate_append_dialog_item_list_parameters(dialog, ditl_id, method) {
+                Ok(params) => {
+                    let ditl_index = ppc_vfs_resource_index(
+                        vfs_resources,
+                        current_resource_refnum,
+                        u32::from_be_bytes(*b"DITL"),
+                        params.ditl_id(),
+                        false,
+                    );
+                    if let Some(ditl_index) = ditl_index {
+                        let mut appended_bytes = vfs_resources[ditl_index].data.clone();
+                        if let Some(appended_items) = ppc_parse_dialog_items(&appended_bytes) {
+                            let live_items = ppc_dialog_live_items(memory, handles, params.dialog_ptr());
+                            if let Some((handle, _ptr, current_bytes, current_items)) = live_items {
+                                let method = params.method();
+                                let dialog_width = gworlds
+                                    .iter()
+                                    .find(|gworld| gworld.port == params.dialog_ptr())
+                                    .map_or(0, |gworld| ppc_u32_to_i16_saturating(gworld.width));
+                                let dialog_height = gworlds
+                                    .iter()
+                                    .find(|gworld| gworld.port == params.dialog_ptr())
+                                    .map_or(0, |gworld| ppc_u32_to_i16_saturating(gworld.height));
+                                let (dv, dh) = crate::dialog_manager::append_ditl_offset_delta(
+                                    method,
+                                    dialog_height,
+                                    dialog_width,
+                                    |item_no| {
+                                        current_items
+                                            .get(item_no.saturating_sub(1))
+                                            .map(|item| (item.rect.0, item.rect.1))
+                                    },
+                                );
+                                ppc_offset_ditl_items(&mut appended_bytes, &appended_items, dv, dh);
+                                let total_count = current_items.len().saturating_add(appended_items.len());
+                                let mut combined = current_bytes;
+                                combined.extend_from_slice(appended_bytes.get(2..).unwrap_or_default());
+                                let count_minus_one = total_count.saturating_sub(1).min(i16::MAX as usize) as i16;
+                                combined[0..2].copy_from_slice(&count_minus_one.to_be_bytes());
+                                let size = u32::try_from(combined.len()).unwrap_or(u32::MAX);
+                                let mut allocator = PpcProcessAllocatorView {
+                                    memory_manager: process_memory_manager,
+                                };
+                                let result = allocator.resize_handle(
+                                    memory,
+                                    heap_cursor,
+                                    last_mem_error,
+                                    handles,
+                                    handle,
+                                    size,
+                                );
+                                *last_mem_error = result;
+                                if result == PPC_NO_ERR {
+                                    if let Some(ptr) = memory.read_u32_be(handle) {
+                                        let _ = memory.write_bytes(ptr, &combined);
+                                    }
+                                }
+
+                                if let Some(gworld) = gworlds.iter_mut().find(|gw| gw.port == params.dialog_ptr()) {
+                                    let old_bounds = (0, 0, gworld.height as i16, gworld.width as i16);
+                                    let new_bounds = evaluate_appended_dialog_bounds(
+                                        old_bounds,
+                                        appended_items.iter().map(|item| {
+                                            (
+                                                item.rect.0 + dv,
+                                                item.rect.1 + dh,
+                                                item.rect.2 + dv,
+                                                item.rect.3 + dh,
+                                            )
+                                        }),
+                                    );
+                                    gworld.height = (new_bounds.2.max(old_bounds.2)) as u32;
+                                    gworld.width = (new_bounds.3.max(old_bounds.3)) as u32;
+                                    let _ = ppc_write_rect(
+                                        memory,
+                                        params.dialog_ptr() + 16,
+                                        0,
+                                        0,
+                                        gworld.height as i16,
+                                        gworld.width as i16,
+                                    );
+                                }
+                                PPC_NO_ERR
+                            } else {
+                                PPC_PARAM_ERR
+                            }
+                        } else {
+                            PPC_PARAM_ERR
+                        }
+                    } else {
+                        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
+                        PPC_RES_NOT_FOUND_ERR
                     }
                 }
                 Err(err) => err,

@@ -1464,6 +1464,22 @@ fn import_bindings_classify_dialog_imports() {
         PpcImportDispatcherTarget::SizeDialogItem
     );
     assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "AppendDialogItemList"),
+        PpcImportDispatcherTarget::AppendDialogItemList
+    );
+    assert_eq!(
+        dispatcher_target_for_import("AppearanceLib", "AppendDialogItemList"),
+        PpcImportDispatcherTarget::AppendDialogItemList
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DialogsLib", "AppendDialogItemList"),
+        PpcImportDispatcherTarget::AppendDialogItemList
+    );
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "AppendDialogItemList"),
+        PpcImportDispatcherTarget::AppendDialogItemList
+    );
+    assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "StdFilterProc"),
         PpcImportDispatcherTarget::StdFilterProc
     );
@@ -2416,4 +2432,94 @@ fn size_dialog_item_sizes_ditl_item_and_control_and_rejects_invalid_params() {
     let probe = loaded.run_with_hle_imports(64);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+}
+
+#[test]
+fn append_dialog_item_list_appends_items_and_rejects_missing_resources_and_invalid_params() {
+    let pef = synthetic_pef_with_library_import(b"AppearanceLib", b"AppendDialogItemList");
+    let mut loaded = load_pef_application(&pef).unwrap();
+
+    let mut ditl = vec![0; 18];
+    ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&50i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&100i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_BUTTON;
+    ditl[15] = 2;
+    ditl[16..18].copy_from_slice(b"OK");
+
+    let items_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &ditl,
+    );
+    loaded
+        .memory
+        .write_u32_be(PPC_MAIN_GWORLD + PPC_DIALOG_ITEMS_OFFSET, items_handle)
+        .unwrap();
+
+    let mut ditl_res = vec![0; 20];
+    ditl_res[0..2].copy_from_slice(&0i16.to_be_bytes());
+    ditl_res[6..8].copy_from_slice(&10i16.to_be_bytes());
+    ditl_res[8..10].copy_from_slice(&10i16.to_be_bytes());
+    ditl_res[10..12].copy_from_slice(&30i16.to_be_bytes());
+    ditl_res[12..14].copy_from_slice(&80i16.to_be_bytes());
+    ditl_res[14] = PPC_DIALOG_ITEM_BUTTON;
+    ditl_res[15] = 4;
+    ditl_res[16..20].copy_from_slice(b"More");
+
+    let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+    loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+        ref_num: current_resource_refnum,
+        path: String::new(),
+        res_type: u32::from_be_bytes(*b"DITL"),
+        res_id: 300,
+        name: Vec::new(),
+        data: ditl_res,
+        raw_data: None,
+        raw_attrs: None,
+        attrs: 0,
+        handle: 0,
+    });
+
+    // 1. Valid call: AppendDialogItemList(PPC_MAIN_GWORLD, 300, appendDITLBottom = 2)
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = 300;
+    loaded.cpu.gpr[5] = 2;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    // Live items count should now be 2 (count minus 1 = 1)
+    let ditl_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(ditl_ptr), Some(1));
+
+    // 2. Reject NIL dialog
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 300;
+    loaded.cpu.gpr[5] = 2;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+
+    // 3. Reject ditl_id == 0
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 2;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+
+    // 4. Reject missing DITL resource
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = 9999;
+    loaded.cpu.gpr[5] = 2;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_RES_NOT_FOUND_ERR));
 }

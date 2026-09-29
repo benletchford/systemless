@@ -516,12 +516,15 @@ pub const DIALOG_DISPATCH_NEW_FEATURES_DIALOG: u16 = 0x000C;
 pub const DIALOG_DISPATCH_GET_DIALOG_ITEM_AS_CONTROL: u16 = 0x000F;
 pub const DIALOG_DISPATCH_MOVE_DIALOG_ITEM: u16 = 0x0010;
 pub const DIALOG_DISPATCH_SIZE_DIALOG_ITEM: u16 = 0x0011;
+pub const DIALOG_DISPATCH_APPEND_DIALOG_ITEM_LIST: u16 = 0x0012;
+#[allow(dead_code)]
 pub const DIALOG_DISPATCH_GET_DIALOG_DEFAULT_ITEM: u16 = 0x0012;
 pub const DIALOG_DISPATCH_GET_DIALOG_CANCEL_ITEM: u16 = 0x0013;
 
 /// Standard Mac OS result codes used by Dialog Manager extension routines.
 pub const DIALOG_NO_ERR: i16 = 0;
 pub const DIALOG_PARAM_ERR: i16 = -50;
+pub const DIALOG_RES_NOT_FOUND: i16 = -192;
 
 /// Standard default button outline thickness in pixels.
 /// Macintosh Toolbox Essentials (1992), Listing 6-17.
@@ -5649,6 +5652,90 @@ pub const fn evaluate_append_ditl_parameters(
     })
 }
 
+/// Canonical evaluated parameters for `AppendDialogItemList`.
+///
+/// Universal Interfaces 3.4.1 `Dialogs.h`:
+/// `EXTERN_API( OSErr ) AppendDialogItemList(DialogRef dialog, SInt16 ditlID, DITLMethod method);`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AppendDialogItemListParameters {
+    dialog_ptr: u32,
+    ditl_id: i16,
+    method: i16,
+}
+
+impl AppendDialogItemListParameters {
+    /// Constructs a new `AppendDialogItemListParameters`.
+    #[inline]
+    #[must_use]
+    pub const fn new(dialog_ptr: u32, ditl_id: i16, method: i16) -> Self {
+        Self {
+            dialog_ptr,
+            ditl_id,
+            method,
+        }
+    }
+
+    /// The target dialog pointer.
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// The resource ID of the `'DITL'` resource to append.
+    #[inline]
+    #[must_use]
+    pub const fn ditl_id(&self) -> i16 {
+        self.ditl_id
+    }
+
+    /// The placement method (`overlayDITL`, `appendDITLRight`, `appendDITLBottom`, or relative item).
+    #[inline]
+    #[must_use]
+    pub const fn method(&self) -> i16 {
+        self.method
+    }
+}
+
+/// Evaluates and validates input parameters for `AppendDialogItemList`.
+///
+/// Returns `Ok(AppendDialogItemListParameters)` if `dialog_ptr != 0`, or `Err(DIALOG_PARAM_ERR)` otherwise.
+#[inline]
+#[must_use]
+pub const fn evaluate_append_dialog_item_list_parameters(
+    dialog_ptr: u32,
+    ditl_id: i16,
+    method: i16,
+) -> Result<AppendDialogItemListParameters, i16> {
+    if dialog_ptr == 0 || ditl_id == 0 {
+        Err(DIALOG_PARAM_ERR)
+    } else {
+        Ok(AppendDialogItemListParameters::new(
+            dialog_ptr,
+            ditl_id,
+            method,
+        ))
+    }
+}
+
+/// Evaluates expanded dialog window bounds to encompass newly appended item rectangles.
+///
+/// Macintosh Toolbox Essentials (1992), p. 6-108:
+/// `AppendDialogItemList` expands the dialog box, if necessary, to encompass the new items.
+#[inline]
+#[must_use]
+pub fn evaluate_appended_dialog_bounds(
+    current_bounds: (i16, i16, i16, i16),
+    appended_item_rects: impl IntoIterator<Item = (i16, i16, i16, i16)>,
+) -> (i16, i16, i16, i16) {
+    let mut bounds = current_bounds;
+    for rect in appended_item_rects {
+        bounds.2 = bounds.2.max(rect.2);
+        bounds.3 = bounds.3.max(rect.3);
+    }
+    bounds
+}
+
 /// Canonical evaluated parameters for `ShortenDITL`.
 ///
 /// Macintosh Toolbox Essentials (1992), pp. 6-153--6-154.
@@ -7097,8 +7184,10 @@ mod tests {
         assert_eq!(DIALOG_DISPATCH_GET_DIALOG_ITEM_AS_CONTROL, 0x000F);
         assert_eq!(DIALOG_DISPATCH_MOVE_DIALOG_ITEM, 0x0010);
         assert_eq!(DIALOG_DISPATCH_SIZE_DIALOG_ITEM, 0x0011);
+        assert_eq!(DIALOG_DISPATCH_APPEND_DIALOG_ITEM_LIST, 0x0012);
         assert_eq!(DIALOG_DISPATCH_GET_DIALOG_DEFAULT_ITEM, 0x0012);
         assert_eq!(DIALOG_DISPATCH_GET_DIALOG_CANCEL_ITEM, 0x0013);
+        assert_eq!(DIALOG_RES_NOT_FOUND, -192);
 
         // Default button outline geometry
         assert_eq!(DEFAULT_BUTTON_OUTLINE_THICKNESS, 3);
@@ -9591,6 +9680,47 @@ mod tests {
         let rect2 = (10, 20, 50, 80);
         let sized_rect = evaluate_size_dialog_item_rect(rect2, 100, 150);
         assert_eq!(sized_rect, (10, 20, 160, 120));
+    }
+
+    #[test]
+    fn append_dialog_item_list_parameters_and_bounds_evaluation() {
+        // evaluate_append_dialog_item_list_parameters
+        assert_eq!(
+            evaluate_append_dialog_item_list_parameters(0, 128, APPEND_DITL_BOTTOM),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_append_dialog_item_list_parameters(0x0005_4320, 0, APPEND_DITL_BOTTOM),
+            Err(DIALOG_PARAM_ERR)
+        );
+
+        let params = evaluate_append_dialog_item_list_parameters(0x0005_4320, 256, APPEND_DITL_RIGHT)
+            .expect("valid parameters should evaluate");
+        assert_eq!(params.dialog_ptr(), 0x0005_4320);
+        assert_eq!(params.ditl_id(), 256);
+        assert_eq!(params.method(), APPEND_DITL_RIGHT);
+
+        let direct = AppendDialogItemListParameters::new(0x0006_7890, -100, -3);
+        assert_eq!(direct.dialog_ptr(), 0x0006_7890);
+        assert_eq!(direct.ditl_id(), -100);
+        assert_eq!(direct.method(), -3);
+
+        // evaluate_appended_dialog_bounds
+        let initial_bounds = (0, 0, 100, 200);
+        let items_within = [(10, 20, 50, 80), (60, 70, 90, 150)];
+        assert_eq!(
+            evaluate_appended_dialog_bounds(initial_bounds, items_within),
+            (0, 0, 100, 200)
+        );
+
+        let items_expanding = [
+            (10, 20, 50, 80),
+            (60, 70, 150, 250), // bottom=150 (>100), right=250 (>200)
+        ];
+        assert_eq!(
+            evaluate_appended_dialog_bounds(initial_bounds, items_expanding),
+            (0, 0, 150, 250)
+        );
     }
 
     #[test]

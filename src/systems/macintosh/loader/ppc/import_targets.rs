@@ -553,6 +553,7 @@ pub enum PpcImportDispatcherTarget {
     SetDialogTracksCursor,
     MoveDialogItem,
     SizeDialogItem,
+    AppendDialogItemList,
     CouldDialog,
     FreeDialog,
     CouldAlert,
@@ -3015,6 +3016,9 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib" | "AppearanceLib", "SizeDialogItem") => {
             PpcImportDispatcherTarget::SizeDialogItem
+        }
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "AppendDialogItemList") => {
+            PpcImportDispatcherTarget::AppendDialogItemList
         }
         ("InterfaceLib", "CouldDialog") => PpcImportDispatcherTarget::CouldDialog,
         ("InterfaceLib", "FreeDialog") => PpcImportDispatcherTarget::FreeDialog,
