@@ -12,8 +12,8 @@ use crate::dialog_manager::{
     dialog_target_for_event, edit_text_frame_rect, evaluate_alert_invocation,
     evaluate_close_dialog, evaluate_dispose_dialog, evaluate_error_sound,
     evaluate_find_dialog_item, evaluate_get_dialog_item, evaluate_get_std_filter_proc,
-    evaluate_select_dialog_item_text, evaluate_set_dialog_cancel_item,
-    evaluate_set_dialog_default_item, evaluate_set_dialog_tracks_cursor,
+    evaluate_select_dialog_item_text, evaluate_set_dialog_cancel_item_parameters,
+    evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_tracks_cursor,
     find_dialog_item_hit, global_to_dialog_local_point, is_dialog_item_button,
     is_dialog_item_control, is_dialog_item_disabled, is_dialog_item_edit_text,
     is_dialog_item_enabled, is_dialog_item_resource, is_dialog_item_text,
@@ -16722,21 +16722,24 @@ impl super::TrapDispatcher {
                     crate::dialog_manager::DIALOG_DISPATCH_SET_DIALOG_DEFAULT_ITEM => {
                         let new_item = bus.read_word(sp) as i16;
                         let dialog_ptr = bus.read_long(sp + 2);
-                        let result = evaluate_set_dialog_default_item(dialog_ptr, new_item);
-                        if result.is_ok() {
-                            bus.write_word(
-                                dialog_ptr + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET,
-                                new_item as u16,
-                            );
-                            // Mirror into active tracking state if
-                            // this dialog is currently being tracked.
-                            if let Some(tracking) = self.dialog_tracking.as_mut() {
-                                if tracking.dialog_ptr == dialog_ptr {
-                                    tracking.default_item = new_item;
+                        let result = evaluate_set_dialog_default_item_parameters(dialog_ptr, new_item);
+                        let os_err = match result {
+                            Ok(params) => {
+                                bus.write_word(
+                                    params.dialog_ptr() + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET,
+                                    params.item_no() as u16,
+                                );
+                                // Mirror into active tracking state if
+                                // this dialog is currently being tracked.
+                                if let Some(tracking) = self.dialog_tracking.as_mut() {
+                                    if tracking.dialog_ptr == params.dialog_ptr() {
+                                        tracking.default_item = params.item_no();
+                                    }
                                 }
+                                crate::dialog_manager::DIALOG_NO_ERR
                             }
-                        }
-                        let os_err = result.unwrap_or(0);
+                            Err(err) => err,
+                        };
                         bus.write_word(sp + param_bytes, os_err as u16);
                         cpu.write_reg(Register::A7, sp + param_bytes);
                     }
@@ -16756,16 +16759,19 @@ impl super::TrapDispatcher {
                     crate::dialog_manager::DIALOG_DISPATCH_SET_DIALOG_CANCEL_ITEM => {
                         let new_item = bus.read_word(sp) as i16;
                         let dialog_ptr = bus.read_long(sp + 2);
-                        let result = evaluate_set_dialog_cancel_item(dialog_ptr, new_item);
-                        if result.is_ok() {
-                            self.dialog_cancel_items.insert(dialog_ptr, new_item);
-                            if let Some(tracking) = self.dialog_tracking.as_mut() {
-                                if tracking.dialog_ptr == dialog_ptr {
-                                    tracking.cancel_item = new_item;
+                        let result = evaluate_set_dialog_cancel_item_parameters(dialog_ptr, new_item);
+                        let os_err = match result {
+                            Ok(params) => {
+                                self.dialog_cancel_items.insert(params.dialog_ptr(), params.item_no());
+                                if let Some(tracking) = self.dialog_tracking.as_mut() {
+                                    if tracking.dialog_ptr == params.dialog_ptr() {
+                                        tracking.cancel_item = params.item_no();
+                                    }
                                 }
+                                crate::dialog_manager::DIALOG_NO_ERR
                             }
-                        }
-                        let os_err = result.unwrap_or(0);
+                            Err(err) => err,
+                        };
                         bus.write_word(sp + param_bytes, os_err as u16);
                         cpu.write_reg(Register::A7, sp + param_bytes);
                     }
