@@ -3686,10 +3686,13 @@ impl super::TrapDispatcher {
                     // Inside Macintosh: Macintosh Toolbox Essentials (1992), pp. 6-128 to 6-129.
                     (0x0403, _) | (_, 0x0403) => {
                         let dialog_ptr = bus.read_long(sp + 6);
-                        let ditl_word = if dialog_ptr != 0 {
-                            let items_handle = bus
-                                .read_long(dialog_ptr + crate::dialog_manager::DIALOG_ITEMS_OFFSET);
-                            if items_handle != 0 {
+                        let count = if let Some(query) =
+                            crate::dialog_manager::evaluate_count_ditl_query(dialog_ptr)
+                        {
+                            let items_handle = bus.read_long(
+                                query.dialog_ptr() + crate::dialog_manager::DIALOG_ITEMS_OFFSET,
+                            );
+                            let ditl_word = if items_handle != 0 {
                                 let ditl_ptr = bus.read_long(items_handle);
                                 if ditl_ptr != 0 {
                                     Some(bus.read_word(ditl_ptr))
@@ -3698,16 +3701,15 @@ impl super::TrapDispatcher {
                                 }
                             } else {
                                 None
-                            }
+                            };
+                            let tracked_count = self
+                                .dialog_items
+                                .get(&query.dialog_ptr())
+                                .map_or(0, |items| items.len());
+                            crate::dialog_manager::evaluate_count_ditl(ditl_word, tracked_count)
                         } else {
-                            None
+                            0
                         };
-                        let tracked_count = self
-                            .dialog_items
-                            .get(&dialog_ptr)
-                            .map_or(0, |items| items.len());
-                        let count =
-                            crate::dialog_manager::evaluate_count_ditl(ditl_word, tracked_count);
 
                         cpu.write_reg(Register::D0, count as u32);
                     }

@@ -1724,13 +1724,60 @@ pub fn evaluate_set_dialog_cancel_item_parameters(
     }
 }
 
-/// Evaluates `SetDialogTracksCursor` parameter validity.
+/// Evaluated parameters for a `SetDialogTracksCursor` request.
+///
+/// Macintosh Toolbox Essentials (1992), p. 6-166:
+/// `FUNCTION SetDialogTracksCursor(theDialog: DialogPtr; tracks: BOOLEAN): OSErr;`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SetDialogTracksCursorParameters {
+    dialog_ptr: u32,
+    tracks: bool,
+}
+
+impl SetDialogTracksCursorParameters {
+    #[inline]
+    #[must_use]
+    pub const fn new(dialog_ptr: u32, tracks: bool) -> Self {
+        Self {
+            dialog_ptr,
+            tracks,
+        }
+    }
+
+    #[allow(dead_code)]
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    #[allow(dead_code)]
+    #[inline]
+    #[must_use]
+    pub const fn tracks(&self) -> bool {
+        self.tracks
+    }
+
+    /// Returns `true` if `theDialog` is `NIL` (0), meaning cursor tracking
+    /// applies globally to all dialogs.
+    #[allow(dead_code)]
+    #[inline]
+    #[must_use]
+    pub const fn tracks_all_dialogs(&self) -> bool {
+        self.dialog_ptr == 0
+    }
+}
+
+/// Evaluates `SetDialogTracksCursor` parameters.
 ///
 /// Macintosh Toolbox Essentials (1992), p. 6-166.
 /// Passing `NIL` (0) for `theDialog` sets tracking for all dialogs.
-/// Returns `Ok(DIALOG_NO_ERR)`.
-pub fn evaluate_set_dialog_tracks_cursor(_dialog_ptr: u32, _tracks: bool) -> Result<i16, i16> {
-    Ok(DIALOG_NO_ERR)
+/// Returns `Ok(SetDialogTracksCursorParameters)`.
+pub fn evaluate_set_dialog_tracks_cursor_parameters(
+    dialog_ptr: u32,
+    tracks: bool,
+) -> Result<SetDialogTracksCursorParameters, i16> {
+    Ok(SetDialogTracksCursorParameters::new(dialog_ptr, tracks))
 }
 
 /// Evaluates `GetStdFilterProc` output pointer validation.
@@ -1743,6 +1790,40 @@ pub fn evaluate_get_std_filter_proc(out_proc: u32, can_write: bool) -> Result<i1
     } else {
         Ok(DIALOG_NO_ERR)
     }
+}
+
+/// The evaluated query parameters for a `CountDITL` / `CountDitl` operation.
+///
+/// Macintosh Toolbox Essentials (1992), pp. 6-128--6-129:
+/// `FUNCTION CountDITL (theDialog: DialogPtr): Integer;`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CountDitlQuery {
+    dialog_ptr: u32,
+}
+
+impl CountDitlQuery {
+    #[inline]
+    #[must_use]
+    pub const fn new(dialog_ptr: u32) -> Self {
+        Self { dialog_ptr }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+}
+
+/// Evaluates a `CountDITL` query from the dialog pointer.
+///
+/// Macintosh Toolbox Essentials (1992), pp. 6-128--6-129.
+/// Returns `None` if `dialog_ptr == 0`.
+pub fn evaluate_count_ditl_query(dialog_ptr: u32) -> Option<CountDitlQuery> {
+    if dialog_ptr == 0 {
+        return None;
+    }
+    Some(CountDitlQuery::new(dialog_ptr))
 }
 
 /// Evaluates the total number of items in a dialog.
@@ -6273,9 +6354,9 @@ mod tests {
             Err(DIALOG_PARAM_ERR)
         );
 
-        // evaluate_set_dialog_tracks_cursor
-        assert_eq!(evaluate_set_dialog_tracks_cursor(0x1000, true), Ok(DIALOG_NO_ERR));
-        assert_eq!(evaluate_set_dialog_tracks_cursor(0, false), Ok(DIALOG_NO_ERR));
+        // evaluate_set_dialog_tracks_cursor_parameters
+        assert!(evaluate_set_dialog_tracks_cursor_parameters(0x1000, true).is_ok());
+        assert!(evaluate_set_dialog_tracks_cursor_parameters(0, false).is_ok());
 
         // evaluate_get_std_filter_proc
         assert_eq!(evaluate_get_std_filter_proc(0x2000, true), Ok(DIALOG_NO_ERR));
@@ -7096,6 +7177,37 @@ mod tests {
         let cancel_direct = SetDialogCancelItemParameters::new(0x0007_4567, 4);
         assert_eq!(cancel_direct.dialog_ptr(), 0x0007_4567);
         assert_eq!(cancel_direct.item_no(), 4);
+    }
+
+    #[test]
+    fn count_ditl_and_set_dialog_tracks_cursor_evaluation() {
+        // evaluate_count_ditl_query
+        assert_eq!(evaluate_count_ditl_query(0), None);
+
+        let query = evaluate_count_ditl_query(0x0008_1234)
+            .expect("valid count_ditl query should evaluate");
+        assert_eq!(query.dialog_ptr(), 0x0008_1234);
+
+        let query_direct = CountDitlQuery::new(0x0009_5678);
+        assert_eq!(query_direct.dialog_ptr(), 0x0009_5678);
+
+        // evaluate_set_dialog_tracks_cursor_parameters
+        let tracks_dlg = evaluate_set_dialog_tracks_cursor_parameters(0x000A_1110, true)
+            .expect("tracks cursor for dialog should evaluate");
+        assert_eq!(tracks_dlg.dialog_ptr(), 0x000A_1110);
+        assert!(tracks_dlg.tracks());
+        assert!(!tracks_dlg.tracks_all_dialogs());
+
+        let tracks_all = evaluate_set_dialog_tracks_cursor_parameters(0, false)
+            .expect("tracks cursor for all dialogs should evaluate");
+        assert_eq!(tracks_all.dialog_ptr(), 0);
+        assert!(!tracks_all.tracks());
+        assert!(tracks_all.tracks_all_dialogs());
+
+        let direct_tracks = SetDialogTracksCursorParameters::new(0x000B_2220, true);
+        assert_eq!(direct_tracks.dialog_ptr(), 0x000B_2220);
+        assert!(direct_tracks.tracks());
+        assert!(!direct_tracks.tracks_all_dialogs());
     }
 }
 

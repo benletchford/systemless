@@ -4,11 +4,11 @@ use super::*;
 use crate::dialog_manager::{
     dialog_item_base_type, dialog_item_resource_type_u32, dialog_rect_to_global,
     dialog_target_for_event, dialog_text_rect, edit_text_frame_rect,
-    evaluate_close_or_dispose_dialog, evaluate_count_ditl,
+    evaluate_close_or_dispose_dialog, evaluate_count_ditl, evaluate_count_ditl_query,
     evaluate_dialog_select, evaluate_find_dialog_item, evaluate_get_dialog_item,
     evaluate_get_dialog_item_as_control, evaluate_get_std_filter_proc, evaluate_hide_dialog_item,
     evaluate_select_dialog_item_text, evaluate_set_dialog_cancel_item_parameters,
-    evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_tracks_cursor,
+    evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_tracks_cursor_parameters,
     evaluate_show_dialog_item,
     extract_dialog_item_text_bytes, find_dialog_item_hit, global_to_dialog_local_point, offset_ditl_bytes, parse_ditl_items,
     position_dialog_bounds as unified_position_dialog_bounds, DialogItemHeader, DialogItemRecord,
@@ -464,7 +464,10 @@ pub(super) fn dispatch_dialog_import(
             // Cursor tracking is performed by the host UI when applicable.
             let dialog = cpu.gpr[3];
             let tracks = cpu.gpr[4] != 0;
-            let os_err = evaluate_set_dialog_tracks_cursor(dialog, tracks).unwrap_or_else(|e| e);
+            let os_err = match evaluate_set_dialog_tracks_cursor_parameters(dialog, tracks) {
+                Ok(_params) => PPC_NO_ERR,
+                Err(err) => err,
+            };
             Some(PpcImportAction::Return(ppc_i16_result(os_err)))
         }
         PpcImportDispatcherTarget::StdFilterProc => Some(PpcImportAction::Return(
@@ -1142,8 +1145,10 @@ fn ppc_dispatch_dialog_compatibility(
             }
         }
         PpcDialogCompatibilityOperation::CountDitl => {
-            let items = ppc_dialog_items_for_dialog(memory, handles, dialog);
-            let count = evaluate_count_ditl(None, items.map_or(0, |i| i.len()));
+            let count = evaluate_count_ditl_query(dialog).map_or(0, |query| {
+                let items = ppc_dialog_items_for_dialog(memory, handles, query.dialog_ptr());
+                evaluate_count_ditl(None, items.map_or(0, |i| i.len()))
+            });
             PpcImportAction::Return(u32::from(count))
         }
         PpcDialogCompatibilityOperation::FindDialogItem => {
