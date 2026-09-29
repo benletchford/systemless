@@ -2744,6 +2744,20 @@ pub fn alert_stage_info(stages: u16, stage_counter: u16) -> AlertStageInfo {
 /// Inside Macintosh Volume I, p. I-418, I-422.
 pub const ALERT_SUPPRESSED_RESULT: i16 = -1;
 
+/// Initial alert stage counter value (`0`).
+///
+/// Inside Macintosh Volume I, p. I-423.
+pub const INITIAL_ALERT_STAGE: u16 = 0;
+
+/// Evaluates the alert stage counter after `ResetAlertStage`.
+///
+/// Resets the alert stage counter (`AlertStage` / `ACount` at `$0A9A`) back to stage 0.
+/// Inside Macintosh Volume I, p. I-423.
+#[inline]
+pub const fn evaluate_reset_alert_stage() -> u16 {
+    INITIAL_ALERT_STAGE
+}
+
 /// Evaluated alert stage state including sound number, default item, and stage counter progression.
 ///
 /// Inside Macintosh Volume I, pp. I-417--I-424;
@@ -3479,7 +3493,7 @@ impl InitDialogsEvaluation {
 
     /// The initial alert stage count written to low memory (`ACount` / `AlertStage` at `$0A9A`), which is 0.
     pub const fn initial_alert_stage(&self) -> i16 {
-        0
+        INITIAL_ALERT_STAGE as i16
     }
 
     /// The initial sound beeper procedure pointer (`DABeeper` at `$0A9C`), which is 0 (default sound).
@@ -8747,6 +8761,12 @@ mod tests {
         let err_silent = evaluate_error_sound(0);
         assert_eq!(err_silent.sound_proc(), 0);
         assert!(err_silent.is_silent());
+
+        // ResetAlertStage evaluation
+        assert_eq!(INITIAL_ALERT_STAGE, 0);
+        assert_eq!(evaluate_reset_alert_stage(), 0);
+        let init_eval = evaluate_init_dialogs(0x1234);
+        assert_eq!(init_eval.initial_alert_stage(), 0);
     }
 
     #[test]

@@ -1754,3 +1754,146 @@ fn set_dialog_cancel_item_dispatches_with_canonical_evaluation() {
     assert!(eval.has_item());
     assert!(eval.matches_item(2));
 }
+
+#[test]
+fn reset_alert_stage_resets_acount_to_initial_stage() {
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"ResetAlertStage");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded
+        .memory
+        .write_u16_be(crate::memory::globals::addr::ALERT_STAGE, 2)
+        .unwrap();
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(crate::memory::globals::addr::ALERT_STAGE),
+        Some(crate::dialog_manager::INITIAL_ALERT_STAGE)
+    );
+}
+
+#[test]
+fn init_dialogs_initializes_dialog_globals_in_memory() {
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"InitDialogs");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    use crate::memory::globals::addr;
+    loaded.memory.write_u32_be(addr::RESUME_PROC, 0xDEAD_BEEF).unwrap();
+    loaded.memory.write_u32_be(addr::DA_BEEPER, 0x00AA_BBCC).unwrap();
+    loaded.memory.write_u16_be(addr::ALERT_STAGE, 3).unwrap();
+    for i in 0..4u32 {
+        loaded.memory.write_u32_be(addr::DA_STRINGS + i * 4, 0x00D0_0000 | i).unwrap();
+    }
+    loaded.cpu.gpr[3] = 0x1234_5678;
+
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.memory.read_u32_be(addr::RESUME_PROC),
+        Some(0x1234_5678)
+    );
+    assert_eq!(loaded.memory.read_u32_be(addr::DA_BEEPER), Some(0));
+    assert_eq!(
+        loaded.memory.read_u16_be(addr::ALERT_STAGE),
+        Some(crate::dialog_manager::INITIAL_ALERT_STAGE)
+    );
+    for i in 0..4u32 {
+        assert_eq!(loaded.memory.read_u32_be(addr::DA_STRINGS + i * 4), Some(0));
+    }
+}
+
+#[test]
+fn alert_stage_progression_suppression_and_anumber_recording() {
+    let pef = synthetic_pef_with_import(b"Alert");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let alert_id = 140i16;
+    // Template with 4 stages:
+    // Stage 0 (nibble 0): 0x4 -> box_drawn = true, default_item = 1
+    // Stage 1 (nibble 1): 0xC -> box_drawn = true, default_item = 2
+    // Stage 2 (nibble 2): 0x0 -> box_drawn = false (suppressed!)
+    // Stage 3 (nibble 3): 0x4 -> box_drawn = true, default_item = 1
+    // Word: (4 << 12) | (0 << 8) | (12 << 4) | 4 = 0x40C4
+    let stages_word = 0x40C4u16;
+    let mut alert = vec![0; 14];
+    for (offset, value) in [(0, 130i16), (2, 150), (4, 260), (6, 450)] {
+        alert[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    alert[8..10].copy_from_slice(&alert_id.to_be_bytes());
+    alert[10..12].copy_from_slice(&stages_word.to_be_bytes());
+
+    let mut ditl = vec![0; 38];
+    ditl[0..2].copy_from_slice(&1i16.to_be_bytes());
+    for (offset, value) in [(6, 20i16), (8, 20), (10, 70), (12, 280)] {
+        ditl[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    ditl[14] = PPC_DIALOG_ITEM_BUTTON;
+    ditl[15] = 2;
+    ditl[16..18].copy_from_slice(b"OK");
+    for (offset, value) in [(22, 90i16), (24, 210), (26, 110), (28, 280)] {
+        ditl[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    ditl[30] = PPC_DIALOG_ITEM_BUTTON;
+    ditl[31] = 6;
+    ditl[32..38].copy_from_slice(b"Cancel");
+
+    for (res_type, data) in [(*b"ALRT", alert), (*b"DITL", ditl)] {
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: current_resource_refnum,
+            path: String::new(),
+            res_type: u32::from_be_bytes(res_type),
+            res_id: alert_id,
+            name: Vec::new(),
+            data,
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+    }
+
+    use crate::memory::globals::addr;
+    let app_code_pc = loaded.cpu.pc;
+
+    // 1. Stage 2 in stages_word is nibble 0x0: suppressed!
+    loaded.memory.write_u16_be(addr::ALERT_STAGE, 2).unwrap();
+    loaded.memory.write_u16_be(addr::ANUMBER, 0xCAFE).unwrap();
+    loaded.cpu.gpr[3] = alert_id as u16 as u32;
+    loaded.cpu.gpr[4] = 0;
+
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.cpu.gpr[3],
+        ppc_i16_result(crate::dialog_manager::ALERT_SUPPRESSED_RESULT)
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(addr::ALERT_STAGE),
+        Some(3),
+        "suppressed alert advances ALERT_STAGE to 3"
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(addr::ANUMBER),
+        Some(alert_id as u16),
+        "suppressed alert records ANUMBER"
+    );
+
+    // 2. Stage 3 in stages_word is nibble 0x4: drawn! Next stage stays clamped at 3.
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = alert_id as u16 as u32;
+    loaded.cpu.gpr[4] = 0;
+    let probe = loaded.run_with_hle_imports(128);
+    assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+    assert_eq!(
+        loaded.memory.read_u16_be(addr::ALERT_STAGE),
+        Some(3),
+        "clamped alert stage stays at 3"
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(addr::ANUMBER),
+        Some(alert_id as u16)
+    );
+    let dialog = *loaded.current_gworld;
+    assert!(ppc_window_is_visible(&mut loaded.memory, dialog));
+}

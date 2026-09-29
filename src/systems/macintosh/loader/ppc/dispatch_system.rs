@@ -342,12 +342,16 @@ pub(crate) fn ppc_dispatch_system_compatibility(
         | PpcSystemCompatibilityOperation::MidiWritePacket => {
             PpcImportAction::Return(ppc_i16_result(PPC_NOT_ENOUGH_HARDWARE_ERR))
         }
+        PpcSystemCompatibilityOperation::ResetAlertStage => {
+            let stage = crate::dialog_manager::evaluate_reset_alert_stage();
+            let _ = memory.write_u16_be(crate::memory::globals::addr::ALERT_STAGE, stage);
+            PpcImportAction::ReturnPreserve
+        }
         PpcSystemCompatibilityOperation::DiLoad
         | PpcSystemCompatibilityOperation::DiUnload
         | PpcSystemCompatibilityOperation::Debugger
         | PpcSystemCompatibilityOperation::InitCrm
         | PpcSystemCompatibilityOperation::InitCtbUtilities
-        | PpcSystemCompatibilityOperation::NmRemove
-        | PpcSystemCompatibilityOperation::ResetAlertStage => PpcImportAction::ReturnPreserve,
+        | PpcSystemCompatibilityOperation::NmRemove => PpcImportAction::ReturnPreserve,
     }
 }
