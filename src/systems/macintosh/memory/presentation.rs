@@ -3006,6 +3006,20 @@ impl MacMemoryBus {
             .is_some_and(|p| p.screen_rect_unchanged_since(mark, rect))
     }
 
+    /// Whether `bytes` already sit at `address` as plain pixels: the same
+    /// guest bytes, with no retained text over any of them (a screen span
+    /// within one row, or any span when nothing is presented). Storing them
+    /// again would change nothing, so a restore may skip the span. False
+    /// while read tracing needs to see the bytes.
+    pub(crate) fn span_holds_plain_bytes(&self, address: u32, bytes: &[u8]) -> bool {
+        self.untraced_ram_slice(address, bytes.len())
+            .is_some_and(|held| held == bytes)
+            && self
+                .presentation
+                .as_ref()
+                .is_none_or(|p| p.plain_screen_row(address, bytes.len()))
+    }
+
     pub(crate) fn begin_cpu_pixel_copy(&mut self, source: u32, bytes: u32) -> bool {
         let addresses: [u32; 4] =
             std::array::from_fn(|i| self.translate_guest_address(source.wrapping_add(i as u32)));
@@ -3763,6 +3777,20 @@ mod tests {
         bus.outline_glyph_pixel(address, 0, 0, 0);
         bus.write_byte(address, 0);
         bus.end_outline_glyph();
+    }
+
+    #[test]
+    fn plain_bytes_check_sees_text_under_matching_bytes() {
+        let mut bus = bus();
+        assert!(bus.span_holds_plain_bytes(0x1000, &[255; 8]));
+        assert!(!bus.span_holds_plain_bytes(0x1000, &[255, 255, 255, 255, 255, 255, 255, 0]));
+        paint_detail(&mut bus, 0x1002);
+        let row = bus.read_bytes(0x1000, 8);
+        assert!(
+            !bus.span_holds_plain_bytes(0x1000, &row),
+            "equal bytes over retained text are not plain"
+        );
+        assert!(bus.span_holds_plain_bytes(0x1003, &row[3..]));
     }
 
     #[test]

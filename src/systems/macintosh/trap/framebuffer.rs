@@ -1113,6 +1113,29 @@ impl super::TrapDispatcher {
         let left = left.max(0).min(screen_width);
         let bottom = bottom.max(0).min(screen_height);
         let right = right.max(0).min(screen_width);
+        if pixel_size == 8 {
+            // Chrome restores the desktop around retained overlays every
+            // frame, so most rows already hold the pattern. Build each row
+            // once, leave rows that already hold it as plain pixels, and
+            // store the rest as one span.
+            let mut row = vec![0u8; (right - left).max(0) as usize];
+            if row.is_empty() {
+                return;
+            }
+            for y in top..bottom {
+                let pattern =
+                    crate::window_manager::STANDARD_DESKTOP_PATTERN[y.rem_euclid(8) as usize];
+                for (x, pixel) in (left..right).zip(row.iter_mut()) {
+                    let bit = (pattern >> (7 - x.rem_euclid(8))) & 1;
+                    *pixel = if bit == 0 { light } else { dark };
+                }
+                let address = screen_base + y as u32 * row_bytes + left as u32;
+                if !bus.span_holds_plain_bytes(address, &row) {
+                    bus.write_bytes(address, &row);
+                }
+            }
+            return;
+        }
         for y in top..bottom {
             let pattern = crate::window_manager::STANDARD_DESKTOP_PATTERN
                 [y.rem_euclid(8) as usize];
@@ -6990,6 +7013,91 @@ mod redraw_chrome_tests {
             Some(dark),
             "the close-box glyph should retain the themed dark ink"
         );
+    }
+
+    #[test]
+    fn desktop_restore_stores_only_rows_that_differ_from_the_pattern() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        disp.set_ui_theme_id(crate::ui_theme::UiThemeId::SystemlessDefault);
+        let (base, row_bytes, width, height, depth) = disp.screen_mode;
+        assert_eq!(depth, 8);
+        let palette = std::array::from_fn(|i| disp.device_clut[i].map(|c| (c >> 8) as u8));
+        bus.enable_outline_presentation(disp.screen_mode, palette, 4);
+        let (top, left, bottom, right) = (30i16, 21i16, 60i16, 120i16);
+        let rect = (top, left, right - left, bottom - top);
+        let theme = disp.ui_theme().palette();
+        let light = disp.theme_pixel_index(&bus, theme.desktop_light);
+        let dark = disp.theme_pixel_index(&bus, theme.desktop_dark);
+        let pixel = |bus: &MacMemoryBus, x: i16, y: i16| {
+            TrapDispatcher::fb_get_pixel_index(
+                bus,
+                base,
+                row_bytes,
+                depth,
+                width as i16,
+                height as i16,
+                x,
+                y,
+            )
+        };
+        let assert_pattern = |bus: &MacMemoryBus| {
+            for y in top..bottom {
+                let pattern =
+                    crate::window_manager::STANDARD_DESKTOP_PATTERN[y.rem_euclid(8) as usize];
+                for x in left..right {
+                    let bit = (pattern >> (7 - x.rem_euclid(8))) & 1;
+                    let want = if bit == 0 { light } else { dark };
+                    assert_eq!(pixel(bus, x, y), Some(want), "desktop pixel ({x}, {y})");
+                }
+            }
+        };
+
+        disp.fill_theme_desktop_rect(&mut bus, top, left, bottom, right);
+        assert_pattern(&bus);
+        let held = bus.screen_mark().expect("presented screen");
+        disp.fill_theme_desktop_rect(&mut bus, top, left, bottom, right);
+        assert!(
+            bus.screen_rect_unchanged_since(held, rect),
+            "restoring a desktop that already holds the pattern stores nothing"
+        );
+        // A parked idle frame restores chrome under a write probe, which
+        // journals each store; a desktop that holds the pattern stores none.
+        bus.begin_uncapped_write_probe();
+        bus.arm_access_watch(base, base + u32::from(height) * row_bytes);
+        disp.fill_theme_desktop_rect(&mut bus, top, left, bottom, right);
+        let hits = bus.take_access_watch().expect("armed watch");
+        bus.cancel_write_probe();
+        assert!(
+            hits.iter().all(|hit| !hit.write),
+            "held rows were stored again: {hits:?}"
+        );
+
+        // Direct writes and outline text over the desktop are restored.
+        bus.write_byte(base + 35 * row_bytes + 50, light ^ dark ^ 1);
+        TrapDispatcher::fb_draw_string_styled_index(
+            &mut bus,
+            base,
+            row_bytes,
+            depth,
+            width as i16,
+            height as i16,
+            60,
+            50,
+            "W",
+            0,
+            12,
+            0,
+            dark,
+        );
+        let text_rows = || (40..52).map(|y| base + y * row_bytes + left as u32);
+        assert!(text_rows().any(|row| bus
+            .save_pixel_bytes(row, (right - left) as usize)
+            .has_detail_in(0..(right - left) as usize)));
+        disp.fill_theme_desktop_rect(&mut bus, top, left, bottom, right);
+        assert_pattern(&bus);
+        assert!(text_rows().all(|row| !bus
+            .save_pixel_bytes(row, (right - left) as usize)
+            .has_detail_in(0..(right - left) as usize)));
     }
 
     #[test]
