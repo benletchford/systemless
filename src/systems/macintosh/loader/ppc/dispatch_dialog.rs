@@ -952,7 +952,11 @@ fn ppc_dispatch_dialog_compatibility(
     let dialog = cpu.gpr[3];
     match operation {
         PpcDialogCompatibilityOperation::IsDialogEvent => {
-            let result = ppc_read_dialog_event(memory, cpu.gpr[3]).is_some_and(|event| {
+            let Some(query) = crate::dialog_manager::evaluate_is_dialog_event_query(cpu.gpr[3])
+            else {
+                return PpcImportAction::Return(0);
+            };
+            let result = ppc_read_dialog_event(memory, query.event_ptr()).is_some_and(|event| {
                 let dialog = ppc_dialog_for_event(memory, gworlds, event.what, event.message);
                 let bounds = dialog.and_then(|d| ppc_dialog_global_bounds(memory, gworlds, d));
                 crate::dialog_manager::is_dialog_event(
@@ -970,10 +974,14 @@ fn ppc_dispatch_dialog_compatibility(
             if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
                 return action;
             }
-            let event_ptr = cpu.gpr[3];
-            let dialog_out_ptr = cpu.gpr[4];
-            let item_hit_ptr = cpu.gpr[5];
-            let Some(event) = ppc_read_dialog_event(memory, event_ptr) else {
+            let Some(params) = crate::dialog_manager::evaluate_dialog_select_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4],
+                cpu.gpr[5],
+            ) else {
+                return PpcImportAction::Return(0);
+            };
+            let Some(event) = ppc_read_dialog_event(memory, params.event_ptr()) else {
                 return PpcImportAction::Return(0);
             };
             let Some(dialog) = ppc_dialog_for_event(memory, gworlds, event.what, event.message)
@@ -1018,12 +1026,12 @@ fn ppc_dispatch_dialog_compatibility(
                 },
             );
 
-            if action.should_set_dialog_ptr() && dialog_out_ptr != 0 {
-                let _ = memory.write_u32_be(dialog_out_ptr, dialog);
+            if action.should_set_dialog_ptr() && params.has_dialog_out() {
+                let _ = memory.write_u32_be(params.dialog_out_ptr(), dialog);
             }
             if let Some(hit) = action.item_hit() {
-                if item_hit_ptr != 0 {
-                    let _ = memory.write_u16_be(item_hit_ptr, hit as u16);
+                if params.has_item_hit_out() {
+                    let _ = memory.write_u16_be(params.item_hit_ptr(), hit as u16);
                 }
             }
 
