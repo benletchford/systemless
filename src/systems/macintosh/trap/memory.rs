@@ -3686,11 +3686,11 @@ impl super::TrapDispatcher {
                     // Inside Macintosh: Macintosh Toolbox Essentials (1992), pp. 6-128 to 6-129.
                     (0x0403, _) | (_, 0x0403) => {
                         let dialog_ptr = bus.read_long(sp + 6);
-                        let count = if let Some(query) =
-                            crate::dialog_manager::evaluate_count_ditl_query(dialog_ptr)
+                        let count = if let Some(params) =
+                            crate::dialog_manager::evaluate_count_ditl_parameters(dialog_ptr)
                         {
                             let items_handle = bus.read_long(
-                                query.dialog_ptr() + crate::dialog_manager::DIALOG_ITEMS_OFFSET,
+                                params.dialog_ptr() + crate::dialog_manager::DIALOG_ITEMS_OFFSET,
                             );
                             let ditl_word = if items_handle != 0 {
                                 let ditl_ptr = bus.read_long(items_handle);
@@ -3704,7 +3704,7 @@ impl super::TrapDispatcher {
                             };
                             let tracked_count = self
                                 .dialog_items
-                                .get(&query.dialog_ptr())
+                                .get(&params.dialog_ptr())
                                 .map_or(0, |items| items.len());
                             crate::dialog_manager::evaluate_count_ditl(ditl_word, tracked_count)
                         } else {
