@@ -6,13 +6,14 @@ use crate::dialog_manager::{
     dialog_target_for_event, dialog_text_rect, edit_text_frame_rect,
     evaluate_close_or_dispose_dialog, evaluate_count_ditl, evaluate_count_ditl_query,
     evaluate_dialog_select, evaluate_find_dialog_item, evaluate_get_dialog_item,
-    evaluate_get_dialog_item_as_control, evaluate_get_std_filter_proc_parameters, evaluate_hide_dialog_item,
+    evaluate_get_dialog_item_as_control, evaluate_get_new_dialog_parameters,
+    evaluate_get_std_filter_proc_parameters, evaluate_hide_dialog_item,
     evaluate_select_dialog_item_text_parameters, evaluate_set_dialog_cancel_item_parameters,
     evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_tracks_cursor_parameters,
     evaluate_show_dialog_item,
     extract_dialog_item_text_bytes, find_dialog_item_hit, global_to_dialog_local_point, offset_ditl_bytes, parse_ditl_items,
     position_dialog_bounds as unified_position_dialog_bounds, DialogItemHeader, DialogItemRecord,
-    SelectDialogItemTextParameters,
+    GetNewDialogParameters, SelectDialogItemTextParameters,
     evaluate_get_dialog_item_text, evaluate_set_dialog_item_text,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
@@ -153,10 +154,18 @@ pub(super) fn dispatch_dialog_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetNewDialog => {
+            let params = evaluate_get_new_dialog_parameters(
+                cpu.gpr[3] as u16 as i16,
+                cpu.gpr[4],
+                cpu.gpr[5],
+            );
             if ppc_hle_trace_enabled() {
                 eprintln!(
                     "[PPC-TRACE] GetNewDialog id={} storage=${:08X} behind=${:08X} lr=${:08X}",
-                    cpu.gpr[3] as u16 as i16, cpu.gpr[4], cpu.gpr[5], cpu.lr
+                    params.dialog_id(),
+                    params.storage(),
+                    params.behind(),
+                    cpu.lr
                 );
             }
             let dialog = ppc_get_new_dialog(
@@ -175,6 +184,7 @@ pub(super) fn dispatch_dialog_import(
                 current_resource_refnum,
                 last_resource_error,
                 param_text,
+                params,
             );
             if dialog != 0 {
                 *current_gworld = dialog;
@@ -1712,8 +1722,9 @@ fn ppc_get_new_dialog(
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
     param_text: &SharedProcessDialogText,
+    params: GetNewDialogParameters,
 ) -> u32 {
-    let dialog_id = cpu.gpr[3] as u16 as i16;
+    let dialog_id = params.dialog_id();
     let Some(dlog_index) = ppc_vfs_resource_index(
         vfs_resources,
         current_resource_refnum,
@@ -1785,12 +1796,12 @@ fn ppc_get_new_dialog(
         return 0;
     }
     let mut new_cpu = cpu.clone();
-    new_cpu.gpr[3] = cpu.gpr[4];
+    new_cpu.gpr[3] = params.storage();
     new_cpu.gpr[4] = scratch;
     new_cpu.gpr[5] = scratch + 8;
     new_cpu.gpr[6] = u32::from(template.visible);
     new_cpu.gpr[7] = template.proc_id as u16 as u32;
-    new_cpu.gpr[8] = cpu.gpr[5];
+    new_cpu.gpr[8] = params.behind();
     new_cpu.gpr[9] = u32::from(template.go_away);
     new_cpu.gpr[10] = template.ref_con;
     let dialog = ppc_new_dialog(

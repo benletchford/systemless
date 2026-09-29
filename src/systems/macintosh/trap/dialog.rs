@@ -11,7 +11,8 @@ use crate::dialog_manager::{
     dialog_dbox_frame_rect, dialog_item_base_type, dialog_item_resource_type,
     dialog_target_for_event, edit_text_frame_rect, evaluate_alert_invocation,
     evaluate_close_dialog, evaluate_dispose_dialog, evaluate_error_sound,
-    evaluate_find_dialog_item, evaluate_get_dialog_item, evaluate_get_std_filter_proc_parameters,
+    evaluate_find_dialog_item, evaluate_get_dialog_item, evaluate_get_new_dialog_parameters,
+    evaluate_get_std_filter_proc_parameters,
     evaluate_select_dialog_item_text_parameters, evaluate_set_dialog_cancel_item_parameters,
     evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_tracks_cursor_parameters,
     find_dialog_item_hit, global_to_dialog_local_point, is_dialog_item_button,
@@ -10631,14 +10632,16 @@ impl super::TrapDispatcher {
             // GetNewDialog ($A97C): Parses DLOG + DITL resources, creates DialogRecord, stores parsed items for ModalDialog/GetDItem; saves background pixels before drawing so ModalDialog can restore clean background on dismiss
             (true, 0x17C) => {
                 let sp = cpu.read_reg(Register::A7);
-                let behind = bus.read_long(sp);
-                let storage_ptr = bus.read_long(sp + 4);
-                let dialog_id = bus.read_word(sp + 8) as i16;
-                eprintln!("[TRAP] GetNewDialog({})", dialog_id);
+                let params = evaluate_get_new_dialog_parameters(
+                    bus.read_word(sp + 8) as i16,
+                    bus.read_long(sp + 4),
+                    bus.read_long(sp),
+                );
+                eprintln!("[TRAP] GetNewDialog({})", params.dialog_id());
 
                 // Look up DLOG resource
                 let dlog_ptr = self
-                    .find_or_load_resource_any(bus, *b"DLOG", dialog_id)
+                    .find_or_load_resource_any(bus, *b"DLOG", params.dialog_id())
                     .map(|(_, ptr)| ptr);
 
                 if let Some(dlog_data) = dlog_ptr {
@@ -10655,7 +10658,7 @@ impl super::TrapDispatcher {
                     let Some(ditl_data) = ditl_info else {
                         eprintln!(
                             "[TRAP] GetNewDialog({}): DITL {} not found",
-                            dialog_id, items_id
+                            params.dialog_id(), items_id
                         );
                         // MTE 1992 p. 6-114: GetNewDialog returns NIL if
                         // either the DLOG or item-list resource cannot be
@@ -10676,7 +10679,7 @@ impl super::TrapDispatcher {
 
                     eprintln!(
                         "[TRAP] GetNewDialog({}) bounds=({},{},{},{}) raw_bounds=({},{},{},{}) position=${:04X} len={} procID={} items={} title=\"{}\"",
-                        dialog_id, bounds.0, bounds.1, bounds.2, bounds.3,
+                        params.dialog_id(), bounds.0, bounds.1, bounds.2, bounds.3,
                         raw_bounds.0, raw_bounds.1, raw_bounds.2, raw_bounds.3,
                         position,
                         dlog_len,
@@ -10736,7 +10739,7 @@ impl super::TrapDispatcher {
                     // and associated before the initial visible shell is drawn.
                     // The ictb ID follows the DITL ID, not the DLOG ID.
                     // Macintosh Toolbox Essentials 1992, pp. 6-158 to 6-164.
-                    let dialog_color_table = self.copy_dialog_color_table_resource(bus, dialog_id);
+                    let dialog_color_table = self.copy_dialog_color_table_resource(bus, params.dialog_id());
                     let dialog_item_color_table = dialog_color_table
                         .is_some()
                         .then(|| self.copy_dialog_item_color_table_resource(bus, items_id))
@@ -10745,7 +10748,7 @@ impl super::TrapDispatcher {
                     let dlg_ptr = self.finish_dialog_creation(
                         bus,
                         cpu,
-                        storage_ptr,
+                        params.storage(),
                         bounds,
                         &title,
                         visible,
@@ -10772,16 +10775,16 @@ impl super::TrapDispatcher {
                     // noise.  Inside Macintosh Volume VI, 20-12 to
                     // 20-13 (palette association and activation).
                     if dlg_ptr != 0 {
-                        let palette = self.copy_palette_resource(bus, dialog_id);
+                        let palette = self.copy_palette_resource(bus, params.dialog_id());
                         if palette != 0 {
                             self.set_window_palette_association(dlg_ptr, palette, -0x2000);
                             self.activate_palette_for_window(bus, dlg_ptr);
                         }
-                        self.apply_behind_parameter(bus, dlg_ptr, behind);
+                        self.apply_behind_parameter(bus, dlg_ptr, params.behind());
                     }
                     bus.write_long(sp + 10, dlg_ptr);
                 } else {
-                    eprintln!("[TRAP] GetNewDialog({}): DLOG not found -> NIL", dialog_id);
+                    eprintln!("[TRAP] GetNewDialog({}): DLOG not found -> NIL", params.dialog_id());
                     // MTE 1992 p. 6-114: GetNewDialog returns NIL if the
                     // DLOG resource cannot be read. Resource Manager ResError
                     // reports resNotFound (-192) for missing resources.

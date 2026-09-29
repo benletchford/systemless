@@ -145,6 +145,73 @@ pub const fn evaluate_dialog_storage_policy(storage: u32) -> DialogStoragePolicy
     }
 }
 
+/// Canonical validated parameters for a `GetNewDialog` request.
+///
+/// Inside Macintosh Volume I, p. I-413;
+/// Macintosh Toolbox Essentials (1992), pp. 6-117--6-118:
+/// `FUNCTION GetNewDialog (dialogID: Integer; dStorage: Ptr; behind: WindowPtr): DialogPtr;`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GetNewDialogParameters {
+    dialog_id: i16,
+    storage: u32,
+    behind: u32,
+}
+
+impl GetNewDialogParameters {
+    /// Constructs a new `GetNewDialogParameters` instance.
+    #[inline]
+    #[must_use]
+    pub const fn new(dialog_id: i16, storage: u32, behind: u32) -> Self {
+        Self {
+            dialog_id,
+            storage,
+            behind,
+        }
+    }
+
+    /// Target resource ID of the `DLOG` template.
+    #[inline]
+    #[must_use]
+    pub const fn dialog_id(&self) -> i16 {
+        self.dialog_id
+    }
+
+    /// The raw storage pointer passed by the caller (0 = allocate).
+    #[inline]
+    #[must_use]
+    pub const fn storage(&self) -> u32 {
+        self.storage
+    }
+
+    /// The dialog storage allocation policy.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn storage_policy(&self) -> DialogStoragePolicy {
+        evaluate_dialog_storage_policy(self.storage)
+    }
+
+    /// The window pointer to place the dialog behind (`0xFFFFFFFF` = frontmost).
+    #[inline]
+    #[must_use]
+    pub const fn behind(&self) -> u32 {
+        self.behind
+    }
+}
+
+/// Evaluates and validates input parameters for a `GetNewDialog` request.
+///
+/// Inside Macintosh Volume I, p. I-413;
+/// Macintosh Toolbox Essentials (1992), pp. 6-117--6-118.
+#[inline]
+pub const fn evaluate_get_new_dialog_parameters(
+    dialog_id: i16,
+    storage: u32,
+    behind: u32,
+) -> GetNewDialogParameters {
+    GetNewDialogParameters::new(dialog_id, storage, behind)
+}
+
 /// Canonical validated parameters for `NewDialog`, `NewCDialog`, and `NewFeaturesDialog`.
 ///
 /// Inside Macintosh Volume I, p. I-412, Volume V, p. V-243, and
@@ -7425,4 +7492,29 @@ mod tests {
         assert_eq!(direct_eval.sel_start, 0);
         assert_eq!(direct_eval.sel_end, 15);
     }
+
+    #[test]
+    fn get_new_dialog_parameters_evaluation() {
+        let params_alloc = evaluate_get_new_dialog_parameters(128, 0, 0xFFFF_FFFF);
+        assert_eq!(params_alloc.dialog_id(), 128);
+        assert_eq!(params_alloc.storage(), 0);
+        assert_eq!(params_alloc.storage_policy(), DialogStoragePolicy::AllocateNew);
+        assert_eq!(params_alloc.behind(), 0xFFFF_FFFF);
+
+        let params_supplied = evaluate_get_new_dialog_parameters(129, 0x0002_0000, 0x0003_0000);
+        assert_eq!(params_supplied.dialog_id(), 129);
+        assert_eq!(params_supplied.storage(), 0x0002_0000);
+        assert_eq!(
+            params_supplied.storage_policy(),
+            DialogStoragePolicy::CallerSupplied(0x0002_0000)
+        );
+        assert_eq!(params_supplied.behind(), 0x0003_0000);
+
+        let direct = GetNewDialogParameters::new(200, 0, 0);
+        assert_eq!(direct.dialog_id(), 200);
+        assert_eq!(direct.storage(), 0);
+        assert_eq!(direct.storage_policy(), DialogStoragePolicy::AllocateNew);
+        assert_eq!(direct.behind(), 0);
+    }
 }
+
