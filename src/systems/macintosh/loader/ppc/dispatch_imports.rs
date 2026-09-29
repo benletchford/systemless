@@ -2488,6 +2488,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DisposeAEEventHandlerUPP
         | PpcImportDispatcherTarget::NewEventHandlerUPP
         | PpcImportDispatcherTarget::DisposeEventHandlerUPP
+        | PpcImportDispatcherTarget::NewEventLoopTimerUPP
+        | PpcImportDispatcherTarget::DisposeEventLoopTimerUPP
         | PpcImportDispatcherTarget::NewFatRoutineDescriptor
         | PpcImportDispatcherTarget::DisposeRoutineDescriptor
         | PpcImportDispatcherTarget::CallUniversalProc

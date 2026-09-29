@@ -415,6 +415,63 @@ fn carbon_event_handler_upp_binds_weak_import_and_builds_descriptor() {
 }
 
 #[test]
+fn carbon_event_loop_timer_upp_binds_weak_import_and_builds_descriptor() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "NewEventLoopTimerUPP"),
+        PpcImportDispatcherTarget::NewEventLoopTimerUPP
+    );
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "DisposeEventLoopTimerUPP"),
+        PpcImportDispatcherTarget::DisposeEventLoopTimerUPP
+    );
+
+    let bindings = PpcImportBindingPlan::prepare(
+        vec![PefResolvedImport {
+            library_index: 0,
+            symbol_index: 0,
+            library_name: "CarbonLib".to_string(),
+            symbol_name: "NewEventLoopTimerUPP".to_string(),
+            class: 2,
+            weak: true,
+        }],
+        1,
+        0,
+        ppc_import_layout(),
+        &SystemlessPpcImportBindingPolicy,
+    )
+    .unwrap()
+    .into_initial_bindings();
+    assert_eq!(bindings[0].address, PPC_IMPORT_TVECTOR_BASE);
+    assert_eq!(
+        bindings[0].dispatcher_target,
+        PpcImportDispatcherTarget::NewEventLoopTimerUPP
+    );
+
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"NewEventLoopTimerUPP")).unwrap();
+    loaded.cpu.gpr[3] = PPC_CODE_BASE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewEventLoopTimerUPP);
+    let descriptor = loaded.cpu.gpr[3];
+    assert_ne!(descriptor, 0);
+    assert_eq!(
+        loaded.memory.read_u16_be(descriptor),
+        Some(PPC_MIXED_MODE_TRAP)
+    );
+    let record = descriptor + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE;
+    assert_eq!(
+        loaded.memory.read_u32_be(record),
+        Some(PPC_EVENT_LOOP_TIMER_PROC_INFO)
+    );
+
+    loaded.cpu.gpr[3] = descriptor;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DisposeEventLoopTimerUPP,
+    );
+    assert_eq!(loaded.cpu.gpr[3], descriptor);
+}
+
+#[test]
 fn carbon_io_completion_upp_uses_a_releasable_ppc_descriptor() {
     assert_eq!(
         dispatcher_target_for_import("CarbonLib", "NewIOCompletionUPP"),
