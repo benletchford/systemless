@@ -1522,6 +1522,7 @@ pub fn evaluate_get_dialog_item<T>(
 ///
 /// Inside Macintosh Volume I, p. I-421;
 /// Macintosh Toolbox Essentials (1992), pp. 6-120--6-123.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GetDialogItemQuery {
     dialog_ptr: u32,
@@ -1561,6 +1562,7 @@ impl GetDialogItemQuery {
 /// Evaluates and validates input parameters for `GetDialogItem` / `GetDItem`.
 ///
 /// Returns `None` if `dialog_ptr == 0` or `item_number == 0`.
+#[allow(dead_code)]
 #[inline]
 pub const fn evaluate_get_dialog_item_query(
     dialog_ptr: u32,
@@ -1573,6 +1575,162 @@ pub const fn evaluate_get_dialog_item_query(
         dialog_ptr,
         item_number,
     })
+}
+
+/// Evaluated parameters for a `GetDialogItem` / `GetDItem` invocation.
+///
+/// Inside Macintosh Volume I, p. I-421; Macintosh Toolbox Essentials (1992), p. 6-120.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GetDialogItemParameters {
+    dialog_ptr: u32,
+    item_number: usize,
+    item_type_ptr: u32,
+    item_handle_ptr: u32,
+    item_rect_ptr: u32,
+}
+
+impl GetDialogItemParameters {
+    /// Constructs a new `GetDialogItemParameters`.
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        dialog_ptr: u32,
+        item_number: usize,
+        item_type_ptr: u32,
+        item_handle_ptr: u32,
+        item_rect_ptr: u32,
+    ) -> Self {
+        Self {
+            dialog_ptr,
+            item_number,
+            item_type_ptr,
+            item_handle_ptr,
+            item_rect_ptr,
+        }
+    }
+
+    /// The target dialog pointer.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// The 1-based dialog item index.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn item_number(&self) -> usize {
+        self.item_number
+    }
+
+    /// The 1-based dialog item index as signed 16-bit integer.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn item_no(&self) -> i16 {
+        self.item_number as i16
+    }
+
+    /// The 0-based dialog item index.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn item_index(&self) -> usize {
+        self.item_number.saturating_sub(1)
+    }
+
+    /// Output pointer receiving the item type word.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn item_type_ptr(&self) -> u32 {
+        self.item_type_ptr
+    }
+
+    /// Output pointer receiving the item handle or procedure pointer.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn item_handle_ptr(&self) -> u32 {
+        self.item_handle_ptr
+    }
+
+    /// Output pointer receiving the item display rectangle.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn item_rect_ptr(&self) -> u32 {
+        self.item_rect_ptr
+    }
+
+    /// Output pointer receiving the item type word (alias for `item_type_ptr`).
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn type_ptr(&self) -> u32 {
+        self.item_type_ptr
+    }
+
+    /// Output pointer receiving the item handle or procedure pointer (alias for `item_handle_ptr`).
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn handle_ptr(&self) -> u32 {
+        self.item_handle_ptr
+    }
+
+    /// Output pointer receiving the item display rectangle (alias for `item_rect_ptr`).
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn rect_ptr(&self) -> u32 {
+        self.item_rect_ptr
+    }
+
+    /// Output pointer receiving the item display bounding box (alias for `item_rect_ptr`).
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn box_ptr(&self) -> u32 {
+        self.item_rect_ptr
+    }
+}
+
+/// Evaluates and validates input parameters for `GetDialogItem` / `GetDItem`.
+///
+/// Returns `None` if `dialog_ptr == 0` or `item_number == 0`, or if any non-null output pointer
+/// fails its respective writability check (`can_write_type`, `can_write_handle`, `can_write_rect`).
+///
+/// Inside Macintosh Volume I, p. I-421; Macintosh Toolbox Essentials (1992), p. 6-120.
+#[inline]
+pub const fn evaluate_get_dialog_item_parameters(
+    dialog_ptr: u32,
+    item_number: usize,
+    item_type_ptr: u32,
+    item_handle_ptr: u32,
+    item_rect_ptr: u32,
+    can_write_type: bool,
+    can_write_handle: bool,
+    can_write_rect: bool,
+) -> Option<GetDialogItemParameters> {
+    if dialog_ptr == 0 || item_number == 0 {
+        return None;
+    }
+    if (item_type_ptr != 0 && !can_write_type)
+        || (item_handle_ptr != 0 && !can_write_handle)
+        || (item_rect_ptr != 0 && !can_write_rect)
+    {
+        return None;
+    }
+    Some(GetDialogItemParameters::new(
+        dialog_ptr,
+        item_number,
+        item_type_ptr,
+        item_handle_ptr,
+        item_rect_ptr,
+    ))
 }
 
 /// Canonical evaluated parameters for `SetDialogItem` / `SetDItem`.
@@ -8043,6 +8201,90 @@ mod tests {
         assert_eq!(alert_compat.alert_param_ptr(), 0);
         assert_eq!(alert_compat.item_hit_out_ptr(), 0);
         assert!(!alert_compat.is_standard());
+    }
+
+    #[test]
+    fn get_and_set_dialog_item_parameters_evaluation() {
+        // evaluate_get_dialog_item_parameters
+        assert_eq!(
+            evaluate_get_dialog_item_parameters(0, 1, 0x1000, 0x2000, 0x3000, true, true, true),
+            None
+        );
+        assert_eq!(
+            evaluate_get_dialog_item_parameters(
+                0x4000, 0, 0x1000, 0x2000, 0x3000, true, true, true
+            ),
+            None
+        );
+        assert_eq!(
+            evaluate_get_dialog_item_parameters(
+                0x4000, 1, 0x1000, 0x2000, 0x3000, false, true, true
+            ),
+            None
+        );
+        assert_eq!(
+            evaluate_get_dialog_item_parameters(
+                0x4000, 1, 0x1000, 0x2000, 0x3000, true, false, true
+            ),
+            None
+        );
+        assert_eq!(
+            evaluate_get_dialog_item_parameters(
+                0x4000, 1, 0x1000, 0x2000, 0x3000, true, true, false
+            ),
+            None
+        );
+
+        // Null output pointers do not require write permission
+        let params_null =
+            evaluate_get_dialog_item_parameters(0x4000, 2, 0, 0, 0, false, false, false).unwrap();
+        assert_eq!(params_null.dialog_ptr(), 0x4000);
+        assert_eq!(params_null.item_number(), 2);
+        assert_eq!(params_null.item_no(), 2);
+        assert_eq!(params_null.item_index(), 1);
+        assert_eq!(params_null.item_type_ptr(), 0);
+        assert_eq!(params_null.item_handle_ptr(), 0);
+        assert_eq!(params_null.item_rect_ptr(), 0);
+
+        let params = evaluate_get_dialog_item_parameters(
+            0x5000, 3, 0x1000, 0x2000, 0x3000, true, true, true,
+        )
+        .unwrap();
+        assert_eq!(params.dialog_ptr(), 0x5000);
+        assert_eq!(params.item_number(), 3);
+        assert_eq!(params.item_no(), 3);
+        assert_eq!(params.item_index(), 2);
+        assert_eq!(params.item_type_ptr(), 0x1000);
+        assert_eq!(params.item_handle_ptr(), 0x2000);
+        assert_eq!(params.item_rect_ptr(), 0x3000);
+
+        let direct = GetDialogItemParameters::new(0x6000, 4, 0x10, 0x20, 0x30);
+        assert_eq!(direct.dialog_ptr(), 0x6000);
+        assert_eq!(direct.item_number(), 4);
+        assert_eq!(direct.item_no(), 4);
+        assert_eq!(direct.item_index(), 3);
+        assert_eq!(direct.item_type_ptr(), 0x10);
+        assert_eq!(direct.item_handle_ptr(), 0x20);
+        assert_eq!(direct.item_rect_ptr(), 0x30);
+
+        // evaluate_set_dialog_item_parameters
+        assert_eq!(
+            evaluate_set_dialog_item_parameters(0, 1, 4, 0x2000, (10, 20, 30, 40)),
+            None
+        );
+        assert_eq!(
+            evaluate_set_dialog_item_parameters(0x1000, 0, 4, 0x2000, (10, 20, 30, 40)),
+            None
+        );
+        let set_params =
+            evaluate_set_dialog_item_parameters(0x1000, 1, 4, 0x2000, (10, 20, 30, 40)).unwrap();
+        assert_eq!(set_params.dialog_ptr(), 0x1000);
+        assert_eq!(set_params.item_number(), 1);
+        assert_eq!(set_params.item_no(), 1);
+        assert_eq!(set_params.item_type(), 4);
+        assert_eq!(set_params.base_type(), 4);
+        assert_eq!(set_params.item_handle(), 0x2000);
+        assert_eq!(set_params.rect(), (10, 20, 30, 40));
     }
 }
 

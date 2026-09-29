@@ -13,10 +13,12 @@ use crate::dialog_manager::{
     evaluate_close_dialog, evaluate_dialog_template_purgeability_query, evaluate_dispose_dialog,
     evaluate_error_sound,
     evaluate_find_dialog_item, evaluate_get_dialog_item, evaluate_get_dialog_item_as_control,
-    evaluate_get_dialog_item_as_control_parameters, evaluate_get_new_dialog_parameters,
+    evaluate_get_dialog_item_as_control_parameters, evaluate_get_dialog_item_parameters,
+    evaluate_get_new_dialog_parameters,
     evaluate_get_std_filter_proc_parameters, evaluate_modal_dialog_parameters,
     evaluate_select_dialog_item_text_parameters, evaluate_set_dialog_cancel_item_parameters,
-    evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_tracks_cursor_parameters,
+    evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_item_parameters,
+    evaluate_set_dialog_tracks_cursor_parameters,
     find_dialog_item_hit, global_to_dialog_local_point, is_dialog_item_button,
     is_dialog_item_control, is_dialog_item_disabled, is_dialog_item_edit_text,
     is_dialog_item_enabled, is_dialog_item_resource, is_dialog_item_text,
@@ -11554,54 +11556,60 @@ impl super::TrapDispatcher {
                 let item_no = bus.read_word(sp + 12) as i16;
                 let dialog_ptr = bus.read_long(sp + 14);
 
-                let query = crate::dialog_manager::evaluate_get_dialog_item_query(
+                let params = evaluate_get_dialog_item_parameters(
                     dialog_ptr,
                     item_no.max(0) as usize,
+                    type_ptr,
+                    item_handle_ptr,
+                    box_ptr,
+                    true,
+                    true,
+                    true,
                 );
 
-                let header = query
-                    .and_then(|q| {
-                        self.dialog_items.get(&q.dialog_ptr()).map(|items| {
-                            evaluate_get_dialog_item(items, q.item_number(), |item| item.header())
+                let header = params
+                    .and_then(|p| {
+                        self.dialog_items.get(&p.dialog_ptr()).map(|items| {
+                            evaluate_get_dialog_item(items, p.item_number(), |item| item.header())
                         })
                     })
                     .unwrap_or(DialogItemHeader::ZERO);
 
                 // Look up real item data
-                let found = query.and_then(|q| {
-                    self.dialog_items.get(&q.dialog_ptr()).and_then(|items| {
-                        crate::dialog_manager::get_item_at_1_indexed(items, q.item_number())
+                let found = params.and_then(|p| {
+                    self.dialog_items.get(&p.dialog_ptr()).and_then(|items| {
+                        crate::dialog_manager::get_item_at_1_indexed(items, p.item_number())
                     })
                 });
 
-                if let (Some(query), Some(item)) = (query, found) {
+                if let (Some(params), Some(item)) = (params, found) {
                     if trace_dialog_items_enabled() && item.is_user_item() {
                         eprintln!(
                             "[DIALOG-ITEM] GetDItem pc=${:08X} dialog=${:08X} item={} type={} proc=${:08X} out_type=${:08X} out_item=${:08X} out_box=${:08X} rect=({},{},{},{})",
                             cpu.read_reg(Register::PC),
-                            query.dialog_ptr(),
-                            query.item_no(),
+                            params.dialog_ptr(),
+                            params.item_no(),
                             header.item_type,
                             item.proc_ptr,
-                            type_ptr,
-                            item_handle_ptr,
-                            box_ptr,
+                            params.type_ptr(),
+                            params.handle_ptr(),
+                            params.box_ptr(),
                             header.rect.0,
                             header.rect.1,
                             header.rect.2,
                             header.rect.3,
                         );
                     }
-                    if type_ptr != 0 {
-                        bus.write_word(type_ptr, header.item_type);
+                    if params.type_ptr() != 0 {
+                        bus.write_word(params.type_ptr(), header.item_type);
                     }
-                    if item_handle_ptr != 0 {
-                        let current_handle = Self::dialog_item_handle(bus, query.dialog_ptr(), query.item_no());
+                    if params.handle_ptr() != 0 {
+                        let current_handle = Self::dialog_item_handle(bus, params.dialog_ptr(), params.item_no());
                         let base_type = dialog_item_base_type(item.item_type);
                         if current_handle != 0
                             || !(DIALOG_ITEM_BUTTON..=DIALOG_ITEM_RADIO).contains(&base_type)
                         {
-                            bus.write_long(item_handle_ptr, current_handle);
+                            bus.write_long(params.handle_ptr(), current_handle);
                         } else {
                             // Create a full ControlRecord so draw_control can render it.
                             // ControlRecord layout:
@@ -11619,7 +11627,7 @@ impl super::TrapDispatcher {
                             let title_len = title.len().min(255);
                             let ctrl_rec = bus.alloc(42 + title_len as u32);
                             bus.write_long(ctrl_rec, 0); // nextControl
-                            bus.write_long(ctrl_rec + 4, query.dialog_ptr()); // contrlOwner
+                            bus.write_long(ctrl_rec + 4, params.dialog_ptr()); // contrlOwner
                                                                       // contrlRect: dialog-local coordinates (draw_control gets
                                                                       // screen offset from the owner window's PixMap bounds)
                             bus.write_word(ctrl_rec + 8, item.rect.0 as u16);
@@ -11630,7 +11638,7 @@ impl super::TrapDispatcher {
                             bus.write_byte(ctrl_rec + 17, 0); // contrlHilite
                             let value = self
                                 .dialog_control_values
-                                .get(&(query.dialog_ptr(), query.item_no()))
+                                .get(&(params.dialog_ptr(), params.item_no()))
                                 .copied()
                                 .unwrap_or(0);
                             bus.write_word(ctrl_rec + 18, value as u16);
@@ -11649,18 +11657,18 @@ impl super::TrapDispatcher {
                             let handle = bus.alloc(4);
                             bus.write_long(handle, ctrl_rec);
                             self.control_manager.associate_handle(handle, ctrl_rec);
-                            bus.write_long(item_handle_ptr, handle);
+                            bus.write_long(params.handle_ptr(), handle);
                             self.dialog_control_handles
-                                .insert(handle, (query.dialog_ptr(), query.item_no()));
+                                .insert(handle, (params.dialog_ptr(), params.item_no()));
                             // Also update the DITL item handle storage
-                            Self::set_dialog_item_handle(bus, query.dialog_ptr(), query.item_no(), handle);
+                            Self::set_dialog_item_handle(bus, params.dialog_ptr(), params.item_no(), handle);
                         }
                     }
-                    if box_ptr != 0 {
-                        bus.write_word(box_ptr, header.rect.0 as u16);
-                        bus.write_word(box_ptr + 2, header.rect.1 as u16);
-                        bus.write_word(box_ptr + 4, header.rect.2 as u16);
-                        bus.write_word(box_ptr + 6, header.rect.3 as u16);
+                    if params.box_ptr() != 0 {
+                        bus.write_word(params.box_ptr(), header.rect.0 as u16);
+                        bus.write_word(params.box_ptr() + 2, header.rect.1 as u16);
+                        bus.write_word(params.box_ptr() + 4, header.rect.2 as u16);
+                        bus.write_word(params.box_ptr() + 6, header.rect.3 as u16);
                     }
                     // Some apps use InsertMenu -> GetDItem -> SetDItem to
                     // build a custom popup control backed by a userItem. Do
@@ -11674,14 +11682,14 @@ impl super::TrapDispatcher {
                         if enabled_user_item {
                             if item.proc_ptr != 0 {
                                 self.dialog_item_popup_menus
-                                    .insert((query.dialog_ptr(), query.item_no()), menu_id);
+                                    .insert((params.dialog_ptr(), params.item_no()), menu_id);
                                 self.dialog_popup_original_rects
-                                    .insert((query.dialog_ptr(), query.item_no()), item.rect);
+                                    .insert((params.dialog_ptr(), params.item_no()), item.rect);
                                 self.pending_dialog_popup_menu = None;
                             } else {
                                 self.pending_dialog_popup_menu = Some(PendingDialogPopupMenu {
-                                    dialog_ptr: query.dialog_ptr(),
-                                    item_no: query.item_no(),
+                                    dialog_ptr: params.dialog_ptr(),
+                                    item_no: params.item_no(),
                                     menu_id,
                                     rect: item.rect,
                                 });
@@ -11738,7 +11746,7 @@ impl super::TrapDispatcher {
                     (0, 0, 0, 0)
                 };
 
-                let Some(params) = crate::dialog_manager::evaluate_set_dialog_item_parameters(
+                let Some(params) = evaluate_set_dialog_item_parameters(
                     dialog_ptr,
                     item_no.max(0) as usize,
                     item_type as u16,
