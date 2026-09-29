@@ -5050,15 +5050,16 @@ impl super::TrapDispatcher {
     ) -> u32 {
         let previous_port = *self.current_port;
         let previous_gdevice = *self.current_gdevice;
-        let dlg_ptr = if storage_ptr != 0 {
-            storage_ptr
-        } else {
-            // GetNewDialog/NewDialog allocate storage when dStorage is NIL
-            // (IM:I I-424, I-412). System 7's Memory Manager zone layout
-            // gives manager-owned records stable low-byte placement that
-            // some 68K apps accidentally depend on; keep that shape local
-            // to Dialog Manager records instead of changing all heap blocks.
-            bus.alloc_aligned(170, MANAGER_DIALOG_RECORD_ALIGNMENT)
+        let dlg_ptr = match crate::dialog_manager::evaluate_dialog_storage_policy(storage_ptr) {
+            crate::dialog_manager::DialogStoragePolicy::CallerSupplied(ptr) => ptr,
+            crate::dialog_manager::DialogStoragePolicy::AllocateNew => {
+                // GetNewDialog/NewDialog allocate storage when dStorage is NIL
+                // (IM:I I-424, I-412). System 7's Memory Manager zone layout
+                // gives manager-owned records stable low-byte placement that
+                // some 68K apps accidentally depend on; keep that shape local
+                // to Dialog Manager records instead of changing all heap blocks.
+                bus.alloc_aligned(170, MANAGER_DIALOG_RECORD_ALIGNMENT)
+            }
         };
 
         self.window_stack.push((
@@ -15892,24 +15893,38 @@ impl super::TrapDispatcher {
                 let bounds_rect_ptr = bus.read_long(sp + 22);
                 let storage_ptr = bus.read_long(sp + 26);
 
-                let bounds = if bounds_rect_ptr != 0 {
-                    (
-                        bus.read_word(bounds_rect_ptr) as i16,
-                        bus.read_word(bounds_rect_ptr + 2) as i16,
-                        bus.read_word(bounds_rect_ptr + 4) as i16,
-                        bus.read_word(bounds_rect_ptr + 6) as i16,
-                    )
-                } else {
-                    (0, 0, 0, 0)
+                let is_color = trap_num == 0x24B;
+                let Ok(params) = crate::dialog_manager::evaluate_new_dialog_parameters(
+                    storage_ptr,
+                    bounds_rect_ptr,
+                    title_ptr,
+                    visible,
+                    proc_id,
+                    behind,
+                    go_away_flag,
+                    ref_con,
+                    items_handle,
+                    is_color,
+                ) else {
+                    bus.write_long(sp + 30, 0);
+                    cpu.write_reg(Register::A7, sp + 30);
+                    return Some(Ok(()));
                 };
-                let title = if title_ptr != 0 {
-                    decode_mac_roman(&bus.read_pstring(title_ptr))
+
+                let bounds = (
+                    bus.read_word(params.bounds_ptr()) as i16,
+                    bus.read_word(params.bounds_ptr() + 2) as i16,
+                    bus.read_word(params.bounds_ptr() + 4) as i16,
+                    bus.read_word(params.bounds_ptr() + 6) as i16,
+                );
+                let title = if params.has_title() {
+                    decode_mac_roman(&bus.read_pstring(params.title_ptr()))
                 } else {
                     String::new()
                 };
 
-                let items_ptr = if items_handle != 0 {
-                    bus.read_long(items_handle)
+                let items_ptr = if params.has_items() {
+                    bus.read_long(params.items())
                 } else {
                     0
                 };
@@ -15927,21 +15942,21 @@ impl super::TrapDispatcher {
                 let dlg_ptr = self.finish_dialog_creation(
                     bus,
                     cpu,
-                    storage_ptr,
+                    params.storage(),
                     bounds,
                     &title,
-                    visible,
-                    proc_id,
-                    go_away_flag,
-                    ref_con,
-                    items_handle,
+                    params.is_visible(),
+                    params.proc_id(),
+                    params.go_away(),
+                    params.ref_con(),
+                    params.items(),
                     items,
                     None,
                     None,
-                    trap_num == 0x24B,
+                    params.is_color(),
                 );
                 // Honor Pascal `behind` param at SP+10 per IM:I I-412.
-                self.apply_behind_parameter(bus, dlg_ptr, behind);
+                self.apply_behind_parameter(bus, dlg_ptr, params.behind());
                 bus.write_long(sp + 30, dlg_ptr);
                 cpu.write_reg(Register::A7, sp + 30);
                 Ok(())
@@ -16468,23 +16483,36 @@ impl super::TrapDispatcher {
                         let bounds_rect_ptr = bus.read_long(sp + 26);
                         let storage_ptr = bus.read_long(sp + 30);
 
-                        let bounds = if bounds_rect_ptr != 0 {
-                            (
-                                bus.read_word(bounds_rect_ptr) as i16,
-                                bus.read_word(bounds_rect_ptr + 2) as i16,
-                                bus.read_word(bounds_rect_ptr + 4) as i16,
-                                bus.read_word(bounds_rect_ptr + 6) as i16,
-                            )
-                        } else {
-                            (0, 0, 0, 0)
+                        let Ok(params) = crate::dialog_manager::evaluate_new_dialog_parameters(
+                            storage_ptr,
+                            bounds_rect_ptr,
+                            title_ptr,
+                            visible,
+                            proc_id,
+                            behind,
+                            go_away_flag,
+                            ref_con,
+                            items_handle,
+                            true,
+                        ) else {
+                            bus.write_long(sp + param_bytes, 0);
+                            cpu.write_reg(Register::A7, sp + param_bytes);
+                            return Some(Ok(()));
                         };
-                        let title = if title_ptr != 0 {
-                            decode_mac_roman(&bus.read_pstring(title_ptr))
+
+                        let bounds = (
+                            bus.read_word(params.bounds_ptr()) as i16,
+                            bus.read_word(params.bounds_ptr() + 2) as i16,
+                            bus.read_word(params.bounds_ptr() + 4) as i16,
+                            bus.read_word(params.bounds_ptr() + 6) as i16,
+                        );
+                        let title = if params.has_title() {
+                            decode_mac_roman(&bus.read_pstring(params.title_ptr()))
                         } else {
                             String::new()
                         };
-                        let items_ptr = if items_handle != 0 {
-                            bus.read_long(items_handle)
+                        let items_ptr = if params.has_items() {
+                            bus.read_long(params.items())
                         } else {
                             0
                         };
@@ -16502,20 +16530,20 @@ impl super::TrapDispatcher {
                         let dlg_ptr = self.finish_dialog_creation(
                             bus,
                             cpu,
-                            storage_ptr,
+                            params.storage(),
                             bounds,
                             &title,
-                            visible,
-                            proc_id,
-                            go_away_flag,
-                            ref_con,
-                            items_handle,
+                            params.is_visible(),
+                            params.proc_id(),
+                            params.go_away(),
+                            params.ref_con(),
+                            params.items(),
                             items,
                             None,
                             None,
                             true,
                         );
-                        self.apply_behind_parameter(bus, dlg_ptr, behind);
+                        self.apply_behind_parameter(bus, dlg_ptr, params.behind());
                         bus.write_long(sp + param_bytes, dlg_ptr);
                         cpu.write_reg(Register::A7, sp + param_bytes);
                     }

@@ -1792,51 +1792,67 @@ fn ppc_new_dialog(
     let bounds_ptr = cpu.gpr[4];
     let title_ptr = cpu.gpr[5];
     let visible = cpu.gpr[6] != 0;
-    let proc_id = cpu.gpr[7];
+    let proc_id = cpu.gpr[7] as u16 as i16;
     let behind = cpu.gpr[8];
     let go_away = cpu.gpr[9] != 0;
     let ref_con = cpu.gpr[10];
     let items = ppc_parameter_area_slot_addr(cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
         .and_then(|addr| memory.read_u32_be(addr))
         .unwrap_or(0);
-    if bounds_ptr == 0 {
+
+    let Ok(params) = crate::dialog_manager::evaluate_new_dialog_parameters(
+        requested_storage,
+        bounds_ptr,
+        title_ptr,
+        visible,
+        proc_id,
+        behind,
+        go_away,
+        ref_con,
+        items,
+        true,
+    ) else {
         *last_mem_error = PPC_PARAM_ERR;
         return 0;
-    }
+    };
 
-    let storage = if requested_storage == 0 {
-        let storage = process_memory_manager.new_native_ptr(memory, DIALOG_RECORD_SIZE, true);
-        ppc_apply_process_native_allocator(
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            last_mem_error,
-        );
-        storage
-    } else if ppc_memory_can_write_bytes(memory, requested_storage, DIALOG_RECORD_SIZE) {
-        let _ = memory.write_bytes(requested_storage, &vec![0; DIALOG_RECORD_SIZE as usize]);
-        requested_storage
-    } else {
-        0
+    let storage = match params.storage_policy() {
+        crate::dialog_manager::DialogStoragePolicy::AllocateNew => {
+            let storage = process_memory_manager.new_native_ptr(memory, DIALOG_RECORD_SIZE, true);
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            storage
+        }
+        crate::dialog_manager::DialogStoragePolicy::CallerSupplied(requested) => {
+            if ppc_memory_can_write_bytes(memory, requested, DIALOG_RECORD_SIZE) {
+                let _ = memory.write_bytes(requested, &vec![0; DIALOG_RECORD_SIZE as usize]);
+                requested
+            } else {
+                0
+            }
+        }
     };
     if storage == 0 {
-        *last_mem_error = if requested_storage == 0 {
-            PPC_MEM_FULL_ERR
-        } else {
-            PPC_PARAM_ERR
+        *last_mem_error = match params.storage_policy() {
+            crate::dialog_manager::DialogStoragePolicy::AllocateNew => PPC_MEM_FULL_ERR,
+            crate::dialog_manager::DialogStoragePolicy::CallerSupplied(_) => PPC_PARAM_ERR,
         };
         return 0;
     }
 
     let mut window_cpu = cpu.clone();
     window_cpu.gpr[3] = storage;
-    window_cpu.gpr[4] = bounds_ptr;
-    window_cpu.gpr[5] = title_ptr;
-    window_cpu.gpr[6] = u32::from(visible);
-    window_cpu.gpr[7] = proc_id;
-    window_cpu.gpr[8] = behind;
-    window_cpu.gpr[9] = u32::from(go_away);
-    window_cpu.gpr[10] = ref_con;
+    window_cpu.gpr[4] = params.bounds_ptr();
+    window_cpu.gpr[5] = params.title_ptr();
+    window_cpu.gpr[6] = u32::from(params.is_visible());
+    window_cpu.gpr[7] = params.proc_id() as u16 as u32;
+    window_cpu.gpr[8] = params.behind();
+    window_cpu.gpr[9] = u32::from(params.go_away());
+    window_cpu.gpr[10] = params.ref_con();
     let mut allocator = PpcProcessAllocatorView {
         memory_manager: process_memory_manager,
     };
@@ -1856,7 +1872,7 @@ fn ppc_new_dialog(
         return 0;
     }
 
-    let title = ppc_read_pstring_bytes(memory, title_ptr).unwrap_or_default();
+    let title = ppc_read_pstring_bytes(memory, params.title_ptr()).unwrap_or_default();
     let mut title_string = Vec::with_capacity(title.len().saturating_add(1));
     title_string.push(title.len().min(255) as u8);
     title_string.extend(title.into_iter().take(255));
@@ -1867,7 +1883,7 @@ fn ppc_new_dialog(
         handles,
         &title_string,
     );
-    let init = crate::dialog_manager::evaluate_dialog_record_init(items);
+    let init = crate::dialog_manager::evaluate_dialog_record_init(params.items());
     if title_handle == 0
         || memory
             .write_u16_be(
