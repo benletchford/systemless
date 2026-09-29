@@ -24,6 +24,7 @@ use crate::dialog_manager::{
     evaluate_get_dialog_item_text, evaluate_get_dialog_item_text_parameters,
     evaluate_param_text_parameters, evaluate_set_dialog_item_text, evaluate_set_dialog_item_text_parameters,
     evaluate_std_filter_proc, evaluate_std_filter_proc_event, evaluate_std_filter_proc_parameters,
+    evaluate_dialog_item_default_button_outline,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -3247,20 +3248,22 @@ pub(super) fn ppc_draw_dialog(
                     item.handle,
                     true,
                 );
-                if base_type == DIALOG_ITEM_BUTTON
-                    && index + 1 == default_item
-                    && ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7
-                {
-                    let (outer, oval) =
-                        crate::dialog_manager::default_button_outline_geometry(rect);
-                    let _ = ppc_frame_front_round_rect(
-                        memory,
-                        front,
-                        outer,
-                        oval,
-                        crate::dialog_manager::DEFAULT_BUTTON_OUTLINE_THICKNESS,
-                        ppc_theme_rgb(palette.frame_dark),
-                    );
+                if ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7 {
+                    if let Some(outline) = evaluate_dialog_item_default_button_outline(
+                        (index + 1) as i16,
+                        default_item as i16,
+                        item.item_type,
+                        rect,
+                    ) {
+                        let _ = ppc_frame_front_round_rect(
+                            memory,
+                            front,
+                            outline.outer_rect(),
+                            outline.oval(),
+                            outline.thickness(),
+                            ppc_theme_rgb(palette.frame_dark),
+                        );
+                    }
                 }
             }
             DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_EDIT_TEXT => {
