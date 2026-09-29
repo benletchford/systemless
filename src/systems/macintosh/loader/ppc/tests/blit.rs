@@ -366,6 +366,63 @@ use super::*;
     }
 
     #[test]
+    fn copybits_arithmetic_modes_use_boolean_fallbacks_on_one_bit_destinations() {
+        // Imaging With QuickDraw (1994), Table 4-2. Exercise the full PPC
+        // import path for every source and destination bit combination.
+        for (mode, fallback) in [
+            (32, 0), // srcCopy
+            (33, 1), // srcBic
+            (34, 2), // srcXor
+            (35, 3), // srcOr
+            (37, 1), // srcBic
+            (38, 2), // srcXor
+            (39, 3), // srcOr
+        ] {
+            for source in 0u8..=1 {
+                for destination in 0u8..=1 {
+                    let pef = synthetic_pef_with_import(b"CopyBits");
+                    let mut loaded = load_pef_application(&pef).unwrap();
+                    let scratch = PPC_HEAP_BASE + 0x11680;
+                    let src_pixels = scratch;
+                    let dst_pixels = scratch + 4;
+                    let src_pixmap = scratch + 8;
+                    let dst_pixmap = scratch + 64;
+                    let rect = scratch + 120;
+                    loaded.memory.add_region(scratch, vec![0; 128]);
+                    ppc_write_pixmap(&mut loaded.memory, src_pixmap, src_pixels, 1, 0, 0, 1, 1, 1)
+                        .unwrap();
+                    ppc_write_pixmap(&mut loaded.memory, dst_pixmap, dst_pixels, 1, 0, 0, 1, 1, 1)
+                        .unwrap();
+                    loaded.memory.write_u8(src_pixels, source << 7).unwrap();
+                    loaded.memory.write_u8(dst_pixels, destination << 7).unwrap();
+                    ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 1).unwrap();
+                    loaded.cpu.gpr[3] = src_pixmap;
+                    loaded.cpu.gpr[4] = dst_pixmap;
+                    loaded.cpu.gpr[5] = rect;
+                    loaded.cpu.gpr[6] = rect;
+                    loaded.cpu.gpr[7] = mode;
+                    loaded.cpu.gpr[8] = 0;
+
+                    let probe = loaded.run_with_hle_imports(64);
+                    assert_eq!(probe.handled_import_count, 1, "mode {mode}");
+                    let expected = match fallback {
+                        0 => source,
+                        1 => destination & !source,
+                        2 => destination ^ source,
+                        3 => destination | source,
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(
+                        loaded.memory.read_u8(dst_pixels),
+                        Some(expected << 7),
+                        "mode {mode}, source {source}, destination {destination}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn hle_import_runner_copybits_adds_direct_color_with_add_over() {
         let pef = synthetic_pef_with_import(b"CopyBits");
         let mut loaded = load_pef_application(&pef).unwrap();

@@ -3089,7 +3089,18 @@ pub(crate) fn ppc_copy_bits(
                 if transparent && src_pixel == transparent_back_pixel {
                     continue;
                 }
-                let pixel = if matches!(mode, 32 | 33 | 34 | 35 | 37 | 38 | 39) {
+                let pixel = if dst_bits.depth == 1 && matches!(mode, 32 | 33 | 34 | 35 | 37 | 38 | 39) {
+                    // Arithmetic modes on a one-bit destination use the
+                    // Boolean fallbacks in Imaging With QuickDraw, Table 4-2.
+                    let destination = ppc_read_pixmap_raw_pixel(memory, dst_bits, dst_x, dst_y)?;
+                    match mode {
+                        32 => src_pixel,                        // srcCopy
+                        33 | 37 => destination & !src_pixel,  // srcBic
+                        34 | 38 => destination ^ src_pixel,   // srcXor
+                        35 | 39 => destination | src_pixel,   // srcOr
+                        _ => unreachable!(),
+                    }
+                } else if matches!(mode, 32 | 33 | 34 | 35 | 37 | 38 | 39) {
                     // Color QuickDraw arithmetic modes convert both pixels to
                     // their RGB components, combine each component, and assign
                     // the destination the closest representable color.
