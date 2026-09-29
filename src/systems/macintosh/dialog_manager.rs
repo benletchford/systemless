@@ -4190,7 +4190,7 @@ pub fn evaluate_select_dialog_item_text(
     })
 }
 
-/// Evaluated teardown parameters for `CloseDialog` and `DisposeDialog`.
+/// Canonical evaluated parameters for `CloseDialog` and `DisposeDialog`.
 ///
 /// Inside Macintosh Volume I, p. I-413, and Macintosh Toolbox Essentials (1992), pp. 6-119--6-120:
 /// - `CloseDialog` removes the dialog's window from the window list and frees standard items/controls,
@@ -4198,22 +4198,43 @@ pub fn evaluate_select_dialog_item_text(
 /// - `DisposeDialog` removes the dialog's window and frees standard items/controls, and additionally
 ///   disposes the copied DITL handle and the `DialogRecord` memory allocated by `GetNewDialog`/`NewDialog`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DialogTearDownEvaluation {
-    /// Target dialog pointer.
-    pub dialog_ptr: u32,
-    /// Whether the dialog record and its copied items handle should be released.
-    pub dispose_record: bool,
+pub struct DialogTeardownParameters {
+    dialog_ptr: u32,
+    dispose_record: bool,
 }
 
 #[allow(dead_code)]
-impl DialogTearDownEvaluation {
-    /// Whether this teardown represents `DisposeDialog` (releasing dialog record and items handle).
-    pub fn is_dispose(&self) -> bool {
+impl DialogTeardownParameters {
+    /// Constructs a new `DialogTeardownParameters`.
+    #[inline]
+    pub const fn new(dialog_ptr: u32, dispose_record: bool) -> Self {
+        Self {
+            dialog_ptr,
+            dispose_record,
+        }
+    }
+
+    /// Target dialog pointer.
+    #[inline]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// Whether the dialog record and copied items handle should be released.
+    #[inline]
+    pub const fn dispose_record(&self) -> bool {
         self.dispose_record
     }
 
-    /// Whether this teardown represents `CloseDialog` (preserving dialog record and items handle).
-    pub fn is_close(&self) -> bool {
+    /// Whether this teardown represents `DisposeDialog`.
+    #[inline]
+    pub const fn is_dispose(&self) -> bool {
+        self.dispose_record
+    }
+
+    /// Whether this teardown represents `CloseDialog`.
+    #[inline]
+    pub const fn is_close(&self) -> bool {
         !self.dispose_record
     }
 }
@@ -4221,14 +4242,15 @@ impl DialogTearDownEvaluation {
 /// Evaluates tearing down a dialog via `CloseDialog` (`is_dispose == false`) or `DisposeDialog` (`is_dispose == true`).
 ///
 /// Returns `None` if `dialog_ptr == 0`.
-pub fn evaluate_close_or_dispose_dialog(
+#[inline]
+pub const fn evaluate_dialog_teardown_parameters(
     dialog_ptr: u32,
     is_dispose: bool,
-) -> Option<DialogTearDownEvaluation> {
+) -> Option<DialogTeardownParameters> {
     if dialog_ptr == 0 {
         None
     } else {
-        Some(DialogTearDownEvaluation {
+        Some(DialogTeardownParameters {
             dialog_ptr,
             dispose_record: is_dispose,
         })
@@ -4238,91 +4260,114 @@ pub fn evaluate_close_or_dispose_dialog(
 /// Evaluates closing a dialog via `CloseDialog`.
 ///
 /// Returns `None` if `dialog_ptr == 0`.
-pub fn evaluate_close_dialog(dialog_ptr: u32) -> Option<DialogTearDownEvaluation> {
-    evaluate_close_or_dispose_dialog(dialog_ptr, false)
+#[inline]
+pub const fn evaluate_close_dialog_parameters(
+    dialog_ptr: u32,
+) -> Option<DialogTeardownParameters> {
+    evaluate_dialog_teardown_parameters(dialog_ptr, false)
 }
 
 /// Evaluates disposing a dialog via `DisposeDialog`.
 ///
 /// Returns `None` if `dialog_ptr == 0`.
-pub fn evaluate_dispose_dialog(dialog_ptr: u32) -> Option<DialogTearDownEvaluation> {
-    evaluate_close_or_dispose_dialog(dialog_ptr, true)
+#[inline]
+pub const fn evaluate_dispose_dialog_parameters(
+    dialog_ptr: u32,
+) -> Option<DialogTeardownParameters> {
+    evaluate_dialog_teardown_parameters(dialog_ptr, true)
 }
 
-/// Architecture-neutral evaluation outcome for a `DrawDialog` request.
+
+/// Canonical evaluated parameters for `DrawDialog`.
 ///
 /// Inside Macintosh Volume I (1985), p. I-417;
 /// Macintosh Toolbox Essentials (1992), p. 6-142.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DrawDialogEvaluation {
-    /// Dialog pointer to redraw.
-    pub dialog_ptr: u32,
+pub struct DrawDialogParameters {
+    dialog_ptr: u32,
 }
 
 #[allow(dead_code)]
-impl DrawDialogEvaluation {
-    /// Returns the dialog pointer to redraw.
-    pub fn dialog_ptr(&self) -> u32 {
+impl DrawDialogParameters {
+    /// Constructs a new `DrawDialogParameters`.
+    #[inline]
+    pub const fn new(dialog_ptr: u32) -> Self {
+        Self { dialog_ptr }
+    }
+
+    /// Target dialog pointer.
+    #[inline]
+    pub const fn dialog_ptr(&self) -> u32 {
         self.dialog_ptr
     }
 }
 
-/// Architecture-neutral evaluation outcome for an `UpdateDialog` request.
+/// Evaluates and validates input parameters for `DrawDialog`.
+///
+/// Returns `None` if `dialog_ptr == 0`.
+#[inline]
+pub const fn evaluate_draw_dialog_parameters(dialog_ptr: u32) -> Option<DrawDialogParameters> {
+    if dialog_ptr == 0 {
+        None
+    } else {
+        Some(DrawDialogParameters { dialog_ptr })
+    }
+}
+
+/// Canonical evaluated parameters for `UpdateDialog` / `UpdtDialog`.
 ///
 /// Inside Macintosh Volume I (1985), p. I-415;
 /// Macintosh Toolbox Essentials (1992), pp. 6-142--6-143.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct UpdateDialogEvaluation {
-    /// Dialog pointer to redraw.
-    pub dialog_ptr: u32,
-    /// Handle to the update region.
-    pub update_rgn: u32,
+pub struct UpdateDialogParameters {
+    dialog_ptr: u32,
+    update_rgn: u32,
 }
 
 #[allow(dead_code)]
-impl UpdateDialogEvaluation {
-    /// Returns the dialog pointer to redraw.
-    pub fn dialog_ptr(&self) -> u32 {
+impl UpdateDialogParameters {
+    /// Constructs a new `UpdateDialogParameters`.
+    #[inline]
+    pub const fn new(dialog_ptr: u32, update_rgn: u32) -> Self {
+        Self {
+            dialog_ptr,
+            update_rgn,
+        }
+    }
+
+    /// Target dialog pointer.
+    #[inline]
+    pub const fn dialog_ptr(&self) -> u32 {
         self.dialog_ptr
     }
 
-    /// Returns the update region handle.
-    pub fn update_rgn(&self) -> u32 {
+    /// Handle to the update region.
+    #[inline]
+    pub const fn update_rgn(&self) -> u32 {
         self.update_rgn
     }
 
-    /// Converts this update evaluation into a general draw dialog evaluation.
-    pub fn as_draw_dialog(&self) -> DrawDialogEvaluation {
-        DrawDialogEvaluation {
+    /// Converts this update request to a general `DrawDialogParameters`.
+    #[inline]
+    pub const fn as_draw_dialog(&self) -> DrawDialogParameters {
+        DrawDialogParameters {
             dialog_ptr: self.dialog_ptr,
         }
     }
 }
 
-/// Evaluates a `DrawDialog` call, returning a `DrawDialogEvaluation` if the dialog pointer is non-null.
+/// Evaluates and validates input parameters for `UpdateDialog` / `UpdtDialog`.
 ///
-/// Inside Macintosh Volume I (1985), p. I-417;
-/// Macintosh Toolbox Essentials (1992), p. 6-142.
+/// Returns `None` if `dialog_ptr == 0` or `update_rgn == 0`.
 #[inline]
-pub fn evaluate_draw_dialog(dialog_ptr: u32) -> Option<DrawDialogEvaluation> {
-    if dialog_ptr == 0 {
-        None
-    } else {
-        Some(DrawDialogEvaluation { dialog_ptr })
-    }
-}
-
-/// Evaluates an `UpdateDialog` call, returning an `UpdateDialogEvaluation` if both the dialog pointer
-/// and the update region handle are non-null.
-///
-/// Inside Macintosh Volume I (1985), p. I-415;
-/// Macintosh Toolbox Essentials (1992), pp. 6-142--6-143.
-#[inline]
-pub fn evaluate_update_dialog(dialog_ptr: u32, update_rgn: u32) -> Option<UpdateDialogEvaluation> {
+pub const fn evaluate_update_dialog_parameters(
+    dialog_ptr: u32,
+    update_rgn: u32,
+) -> Option<UpdateDialogParameters> {
     if dialog_ptr == 0 || update_rgn == 0 {
         None
     } else {
-        Some(UpdateDialogEvaluation {
+        Some(UpdateDialogParameters {
             dialog_ptr,
             update_rgn,
         })
@@ -7462,54 +7507,65 @@ mod tests {
     #[test]
     fn dialog_teardown_evaluation() {
         // Zero dialog pointer returns None for all variants
-        assert_eq!(evaluate_close_or_dispose_dialog(0, false), None);
-        assert_eq!(evaluate_close_or_dispose_dialog(0, true), None);
-        assert_eq!(evaluate_close_dialog(0), None);
-        assert_eq!(evaluate_dispose_dialog(0), None);
+        assert_eq!(evaluate_dialog_teardown_parameters(0, false), None);
+        assert_eq!(evaluate_dialog_teardown_parameters(0, true), None);
+        assert_eq!(evaluate_close_dialog_parameters(0), None);
+        assert_eq!(evaluate_dispose_dialog_parameters(0), None);
 
         // CloseDialog evaluation
-        let close_eval = evaluate_close_dialog(0x1000).unwrap();
-        assert_eq!(close_eval.dialog_ptr, 0x1000);
-        assert!(!close_eval.dispose_record);
-        assert!(close_eval.is_close());
-        assert!(!close_eval.is_dispose());
+        let close_params = evaluate_close_dialog_parameters(0x1000).unwrap();
+        assert_eq!(close_params.dialog_ptr(), 0x1000);
+        assert_eq!(close_params.dispose_record(), false);
+        assert!(close_params.is_close());
+        assert!(!close_params.is_dispose());
+        assert_eq!(
+            close_params,
+            DialogTeardownParameters::new(0x1000, false)
+        );
 
         // DisposeDialog evaluation
-        let dispose_eval = evaluate_dispose_dialog(0x2000).unwrap();
-        assert_eq!(dispose_eval.dialog_ptr, 0x2000);
-        assert!(dispose_eval.dispose_record);
-        assert!(dispose_eval.is_dispose());
-        assert!(!dispose_eval.is_close());
-
-        // evaluate_close_or_dispose_dialog equivalence
+        let dispose_params = evaluate_dispose_dialog_parameters(0x2000).unwrap();
+        assert_eq!(dispose_params.dialog_ptr(), 0x2000);
+        assert_eq!(dispose_params.dispose_record(), true);
+        assert!(dispose_params.is_dispose());
+        assert!(!dispose_params.is_close());
         assert_eq!(
-            evaluate_close_or_dispose_dialog(0x1000, false),
-            Some(close_eval)
+            dispose_params,
+            DialogTeardownParameters::new(0x2000, true)
+        );
+
+        // evaluate_dialog_teardown_parameters equivalence
+        assert_eq!(
+            evaluate_dialog_teardown_parameters(0x1000, false),
+            Some(close_params)
         );
         assert_eq!(
-            evaluate_close_or_dispose_dialog(0x2000, true),
-            Some(dispose_eval)
+            evaluate_dialog_teardown_parameters(0x2000, true),
+            Some(dispose_params)
         );
     }
 
     #[test]
     fn draw_and_update_dialog_evaluation() {
         // DrawDialog evaluation
-        assert_eq!(evaluate_draw_dialog(0), None);
-        let draw_eval = evaluate_draw_dialog(0x5000).unwrap();
-        assert_eq!(draw_eval.dialog_ptr, 0x5000);
-        assert_eq!(draw_eval.dialog_ptr(), 0x5000);
+        assert_eq!(evaluate_draw_dialog_parameters(0), None);
+        let draw_params = evaluate_draw_dialog_parameters(0x5000).unwrap();
+        assert_eq!(draw_params.dialog_ptr(), 0x5000);
+        assert_eq!(draw_params, DrawDialogParameters::new(0x5000));
 
         // UpdateDialog evaluation
-        assert_eq!(evaluate_update_dialog(0, 0x1000), None);
-        assert_eq!(evaluate_update_dialog(0x5000, 0), None);
-        assert_eq!(evaluate_update_dialog(0, 0), None);
-        let update_eval = evaluate_update_dialog(0x5000, 0x2000).unwrap();
-        assert_eq!(update_eval.dialog_ptr, 0x5000);
-        assert_eq!(update_eval.dialog_ptr(), 0x5000);
-        assert_eq!(update_eval.update_rgn, 0x2000);
-        assert_eq!(update_eval.update_rgn(), 0x2000);
-        assert_eq!(update_eval.as_draw_dialog(), draw_eval);
+        assert_eq!(evaluate_update_dialog_parameters(0, 0x1000), None);
+        assert_eq!(evaluate_update_dialog_parameters(0x5000, 0), None);
+        assert_eq!(evaluate_update_dialog_parameters(0, 0), None);
+
+        let update_params = evaluate_update_dialog_parameters(0x5000, 0x2000).unwrap();
+        assert_eq!(update_params.dialog_ptr(), 0x5000);
+        assert_eq!(update_params.update_rgn(), 0x2000);
+        assert_eq!(update_params.as_draw_dialog(), draw_params);
+        assert_eq!(
+            update_params,
+            UpdateDialogParameters::new(0x5000, 0x2000)
+        );
 
         // has_user_proc
         let user_with_proc = DialogItemRecord {

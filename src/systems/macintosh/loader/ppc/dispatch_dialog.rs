@@ -4,15 +4,18 @@ use super::*;
 use crate::dialog_manager::{
     dialog_item_base_type, dialog_item_resource_type_u32, dialog_rect_to_global,
     dialog_target_for_event, dialog_text_rect, edit_text_frame_rect,
-    evaluate_close_or_dispose_dialog, evaluate_count_ditl, evaluate_count_ditl_query,
-    evaluate_dialog_select, evaluate_find_dialog_item, evaluate_get_dialog_item,
+    evaluate_count_ditl, evaluate_count_ditl_query,
+    evaluate_dialog_select, evaluate_dialog_teardown_parameters,
+    evaluate_draw_dialog_parameters,
+    evaluate_find_dialog_item, evaluate_get_dialog_item,
     evaluate_get_dialog_item_as_control, evaluate_get_dialog_item_as_control_parameters,
     evaluate_get_dialog_item_parameters, evaluate_get_new_dialog_parameters,
     evaluate_get_std_filter_proc_parameters,
     evaluate_hide_dialog_item, evaluate_modal_dialog_parameters,
     evaluate_select_dialog_item_text_parameters, evaluate_set_dialog_cancel_item_parameters,
     evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_tracks_cursor_parameters,
-    evaluate_show_dialog_item, evaluate_standard_alert_parameters, evaluate_alert_parameters,
+    evaluate_show_dialog_item, evaluate_standard_alert_parameters, evaluate_update_dialog_parameters,
+    evaluate_alert_parameters,
     extract_dialog_item_text_bytes, find_dialog_item_hit, global_to_dialog_local_point, offset_ditl_bytes, parse_ditl_items,
     position_dialog_bounds as unified_position_dialog_bounds, DialogItemHeader, DialogItemRecord,
     GetNewDialogParameters, SelectDialogItemTextParameters,
@@ -289,18 +292,18 @@ pub(super) fn dispatch_dialog_import(
             let window = cpu.gpr[3];
             let is_dispose =
                 binding.dispatcher_target == PpcImportDispatcherTarget::DisposeDialog;
-            let Some(eval) = evaluate_close_or_dispose_dialog(window, is_dispose) else {
+            let Some(params) = evaluate_dialog_teardown_parameters(window, is_dispose) else {
                 return Some(PpcImportAction::ReturnPreserve);
             };
             toolbox_startup.dispose_dialog_count =
                 toolbox_startup.dispose_dialog_count.saturating_add(1);
-            toolbox_startup.last_disposed_dialog = eval.dialog_ptr;
+            toolbox_startup.last_disposed_dialog = params.dialog_ptr();
             let items_handle = memory
-                .read_u32_be(eval.dialog_ptr.wrapping_add(DIALOG_ITEMS_OFFSET))
+                .read_u32_be(params.dialog_ptr().wrapping_add(DIALOG_ITEMS_OFFSET))
                 .unwrap_or(0);
-            let items = ppc_dialog_items_for_dialog(memory, handles, eval.dialog_ptr).unwrap_or_default();
+            let items = ppc_dialog_items_for_dialog(memory, handles, params.dialog_ptr()).unwrap_or_default();
             ppc_close_window(
-                eval.dialog_ptr,
+                params.dialog_ptr(),
                 memory,
                 process_memory_manager,
                 window_list,
@@ -333,10 +336,10 @@ pub(super) fn dispatch_dialog_import(
                 window_list,
                 current_gworld,
                 current_gdevice,
-                eval.dialog_ptr,
+                params.dialog_ptr(),
                 items_handle,
                 &items,
-                eval.dispose_record,
+                params.dispose_record(),
             );
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -529,10 +532,10 @@ pub(super) fn dispatch_dialog_import(
             if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
                 return Some(action);
             }
-            let Some(eval) = crate::dialog_manager::evaluate_draw_dialog(cpu.gpr[3]) else {
+            let Some(params) = evaluate_draw_dialog_parameters(cpu.gpr[3]) else {
                 return Some(PpcImportAction::ReturnPreserve);
             };
-            let dialog = eval.dialog_ptr;
+            let dialog = params.dialog_ptr();
             *current_gworld = dialog;
             *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
             let bounds = ppc_dialog_global_bounds(memory, gworlds, dialog);
@@ -1494,10 +1497,10 @@ fn ppc_dispatch_dialog_compatibility(
             if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
                 return action;
             }
-            let Some(eval) = crate::dialog_manager::evaluate_update_dialog(dialog, cpu.gpr[4]) else {
+            let Some(params) = evaluate_update_dialog_parameters(dialog, cpu.gpr[4]) else {
                 return PpcImportAction::ReturnPreserve;
             };
-            let dialog = eval.dialog_ptr;
+            let dialog = params.dialog_ptr();
             *current_gworld = dialog;
             *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
             let bounds = ppc_dialog_global_bounds(memory, gworlds, dialog);
