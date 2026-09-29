@@ -389,6 +389,8 @@ pub enum PpcImportDispatcherTarget {
     LMSetGrayRgn,
     GetDCtlEntry,
     GetADBInfo,
+    AutoSleepControl,
+    IsAutoSlpControlDisabled,
     OpenDriver,
     Control,
     PBControl,
@@ -2792,6 +2794,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LMSetGrayRgn") => PpcImportDispatcherTarget::LMSetGrayRgn,
         ("InterfaceLib", "GetDCtlEntry") => PpcImportDispatcherTarget::GetDCtlEntry,
         ("InterfaceLib", "GetADBInfo") => PpcImportDispatcherTarget::GetADBInfo,
+        ("InterfaceLib", "AutoSleepControl") => PpcImportDispatcherTarget::AutoSleepControl,
+        ("InterfaceLib", "IsAutoSlpControlDisabled") => {
+            PpcImportDispatcherTarget::IsAutoSlpControlDisabled
+        }
         ("InterfaceLib", "OpenDriver") => PpcImportDispatcherTarget::OpenDriver,
         ("InterfaceLib", "Control") => PpcImportDispatcherTarget::Control,
         ("InterfaceLib", "PBControl")

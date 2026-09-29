@@ -26,6 +26,27 @@ pub(super) fn dispatch_device_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::AutoSleepControl => {
+            // AutoSleepControl(Boolean enableSleep): false increments the
+            // disable level, and true decrements it. A classic guest cannot
+            // put the host to sleep, but this preserves the guest's Power
+            // Manager state and its paired query.
+            // Inside Macintosh: Devices (1994), pp. 6-43–6-44.
+            if cpu.gpr[3] as u8 == 0 {
+                toolbox_startup.auto_sleep_disable_level =
+                    toolbox_startup.auto_sleep_disable_level.saturating_add(1);
+            } else {
+                toolbox_startup.auto_sleep_disable_level =
+                    toolbox_startup.auto_sleep_disable_level.saturating_sub(1);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::IsAutoSlpControlDisabled => {
+            // Boolean IsAutoSlpControlDisabled(); Devices (1994), p. 6-44.
+            Some(PpcImportAction::Return(u32::from(
+                toolbox_startup.auto_sleep_disable_level != 0,
+            )))
+        }
         PpcImportDispatcherTarget::GetDCtlEntry => {
             Some(PpcImportAction::Return(if cpu.gpr[3] as u16 as i16 == 0 {
                 PPC_MAIN_DCE_HANDLE
