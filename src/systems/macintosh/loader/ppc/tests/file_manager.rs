@@ -3033,6 +3033,24 @@ fn pb_read_async_queues_completion_on_eof() {
     }
 
     #[test]
+    fn native_partition_growth_budgets_above_launch_cfm_storage() {
+        // Launch-time CFM storage (initial libraries and initializer
+        // containers) sits below the cursor and must not consume the SIZE
+        // budget.
+        let pef = synthetic_pef_with_import(b"NewPtrClear");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let fragment_storage = 2 * 1024 * 1024;
+        let launch_cursor = loaded.heap_cursor() + fragment_storage;
+        loaded.set_heap_cursor(launch_cursor);
+        let partition = 64 * 1024 * 1024;
+        loaded.grow_application_partition(partition);
+        assert_eq!(
+            ppc_heap_free_capacity(&loaded.memory, launch_cursor, loaded.heap_limit()).0,
+            partition - loaded.stack_size
+        );
+    }
+
+    #[test]
     fn native_partition_growth_skips_stack_display_and_system_reservations() {
         let pef = synthetic_pef_with_import(b"NewPtrClear");
         let mut loaded = load_pef_application(&pef).unwrap();

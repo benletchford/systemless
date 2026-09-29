@@ -188,6 +188,7 @@ fn cfm_load_resumes_after_initialization_and_failed_loads_can_retry() {
                         &mut connections,
                         &mut next_connection,
                         &mut import_run_state,
+                        None,
                     )
                 } else {
                     ppc_get_shared_library(
@@ -336,6 +337,83 @@ fn cfm_load_resumes_after_initialization_and_failed_loads_can_retry() {
         }
         assert!(calls.is_empty());
         assert!(manager.native_ptr_records().is_empty());
+    }
+}
+
+#[test]
+fn get_shared_library_keeps_disk_fragment_storage_out_of_the_partition() {
+    // Deimos Rising's application loads its engine with GetSharedLibrary;
+    // the ~2 MB container copy and sections must not consume the SIZE
+    // partition the game budgets for its own heap.
+    use crate::execution_kernel::ExecutionTaskState;
+    for partitioned in [false, true] {
+        let calls = SharedGuestCallStack::default();
+        let worker = calls.create_task().unwrap();
+        assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
+        assert!(calls.switch_to_task(worker));
+        // A SIZE partition grows the heap past the stack; without one the
+        // heap stays bounded by the stack mapping.
+        let partition_limit = if partitioned {
+            PPC_STACK_TOP + 0x8000
+        } else {
+            PPC_HEAP_BASE + 0x10000
+        };
+        let owner = PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, partition_limit);
+        let mut manager = owner.0.borrow_mut();
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(PPC_HEAP_BASE, vec![0; 0x10000]);
+        memory.add_region(0x5000, b"\x04test".to_vec());
+        memory.add_region(0x6000, vec![0; 64]);
+        memory.add_region(0x8000, vec![0; 128]);
+        let mut libraries = vec![PpcCfmLibraryFragment {
+            name: "test".to_string(),
+            bytes: synthetic_pef_with_initializer(),
+        }];
+        let mut connections = Vec::new();
+        let mut next_connection = PPC_FIRST_CFM_CONNECTION_ID;
+        let mut import_run_state =
+            PpcImportRunState::from_parts(Vec::new(), 0, ppc_import_layout());
+        let mut cursor = PPC_HEAP_BASE;
+        let mut cpu = PpcCpu::new();
+        cpu.gpr[1] = 0x8000;
+        cpu.gpr[2] = 0x2200;
+        cpu.lr = 0x4000;
+        cpu.gpr[3] = 0x5000;
+        cpu.gpr[4] = PPC_CFM_POWERPC_ARCH;
+        cpu.gpr[5] = PPC_CFM_LOAD_LIB;
+        cpu.gpr[6] = 0x6000;
+        cpu.gpr[7] = 0x6004;
+        cpu.gpr[8] = 0x6008;
+
+        assert_eq!(
+            ppc_get_shared_library(
+                &mut cpu,
+                &calls,
+                &mut manager,
+                &mut memory,
+                &mut cursor,
+                partition_limit,
+                &mut connections,
+                &mut libraries,
+                &mut next_connection,
+                &mut import_run_state,
+            ),
+            PpcImportAction::Continue
+        );
+        // The initializer's scratch block follows the fragment storage.
+        let scratch = manager.native_ptr_records()[0].ptr;
+        let fragment_bytes = scratch - PPC_HEAP_BASE;
+        assert!(fragment_bytes > 0);
+        let expected = if partitioned {
+            partition_limit + fragment_bytes
+        } else {
+            partition_limit
+        };
+        assert_eq!(manager.application_heap_limit(0), expected);
+        assert_eq!(
+            manager.native_heap_state().map(|heap| heap.heap_limit),
+            Some(expected)
+        );
     }
 }
 

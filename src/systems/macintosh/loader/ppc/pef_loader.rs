@@ -231,6 +231,14 @@ fn ppc_plan_initial_cfm_libraries(
             library_name: fragment.name.clone(),
             error: error.os_error(),
         })?;
+        if ppc_hle_trace_enabled() {
+            eprintln!(
+                "[PPC-TRACE] CFM library {:?} bytes={} heap=${heap_cursor:08X}..${:08X}",
+                fragment.name,
+                fragment.bytes.len(),
+                plan.next_heap_cursor()
+            );
+        }
         heap_cursor = plan.next_heap_cursor();
         pending.commit();
         let prepared = plan.prepared_fragment();

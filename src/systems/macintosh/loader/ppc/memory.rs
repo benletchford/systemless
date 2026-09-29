@@ -1229,3 +1229,51 @@ pub(crate) fn ppc_heap_free_capacity(
 ) -> (u32, u32) {
     memory.readonly_allocation_available_bytes(heap_cursor, heap_limit)
 }
+
+/// Keep a code fragment loaded from disk out of the application's SIZE
+/// budget. A PowerPC application's partition does not include its code
+/// fragments: with virtual memory on they are file-mapped, and with it off
+/// the Process Manager enlarges the partition to hold them (Finder Get Info:
+/// "memory requirements will increase ... if virtual memory is turned
+/// off"). The fragment's storage stays in the native heap mapping, so grow
+/// the application limit by the bytes it used, skipping reserved gaps like
+/// `grow_application_partition`. Only a partition grown past the stack can
+/// extend: that growth excluded the fixed stack and display mappings, while
+/// a heap still bounded by the stack has no SIZE budget to protect.
+pub(crate) fn ppc_exempt_fragment_from_partition(
+    memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    bytes: u32,
+) {
+    let Some(heap) = memory_manager.native_heap_state() else {
+        return;
+    };
+    let old_limit = memory_manager.native_allocation_limit(heap.heap_limit);
+    if bytes == 0 || old_limit < PPC_STACK_TOP {
+        return;
+    }
+    let Some(mut limit) = old_limit.checked_add(bytes) else {
+        return;
+    };
+    loop {
+        let available = ppc_heap_free_capacity(memory, old_limit, limit).0;
+        if available >= bytes {
+            break;
+        }
+        let Some(next) = limit.checked_add(bytes - available) else {
+            return;
+        };
+        limit = next;
+    }
+    memory_manager.grow_native_heap_limit(limit);
+    memory_manager.set_application_heap_limit(limit);
+    let _ = memory.write_u32_be(crate::memory::globals::addr::APPL_LIMIT, limit);
+    let _ = memory.write_u32_be(PPC_APPLICATION_ZONE, limit);
+    let _ = memory.write_u32_be(PPC_SYSTEM_ZONE, limit);
+    ppc_update_zone_free_bytes(memory, heap.heap_cursor, limit);
+    if ppc_hle_trace_enabled() {
+        eprintln!(
+            "[PPC-TRACE] fragment storage {bytes} bytes exempt from partition: limit ${old_limit:08X}->${limit:08X}"
+        );
+    }
+}

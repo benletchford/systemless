@@ -101,6 +101,7 @@ pub(super) fn dispatch_cfm_import(context: PpcCfmDispatchContext<'_>) -> Option<
             cfm_connections,
             next_cfm_connection_id,
             import_run_state,
+            None,
         )),
         PpcImportDispatcherTarget::GetDiskFragment => Some(ppc_get_disk_fragment(
             cpu,
@@ -211,6 +212,9 @@ pub(super) fn ppc_get_shared_library(
                     Ok(size) => size,
                     Err(_) => return return_error(PPC_FRAG_NO_MEM),
                 };
+                let cursor_before_fragment = process_memory_manager
+                    .native_heap_state()
+                    .map_or(*heap_cursor, |heap| heap.heap_cursor);
                 let fragment_addr = ppc_process_heap_alloc(
                     process_memory_manager,
                     memory,
@@ -235,6 +239,17 @@ pub(super) fn ppc_get_shared_library(
                     Ok(prepared) => prepared,
                     Err(error) => return return_error(error),
                 };
+                if ppc_hle_trace_enabled() {
+                    eprintln!(
+                        "[PPC-TRACE] GetSharedLibrary {lib_name:?} container=${fragment_addr:08X} size={fragment_size} heap=${:08X}",
+                        *heap_cursor
+                    );
+                }
+                ppc_exempt_fragment_from_partition(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor.saturating_sub(cursor_before_fragment),
+                );
                 let connection = PpcCfmConnection {
                     id,
                     library_name: lib_name.clone(),
@@ -398,9 +413,18 @@ pub(super) fn ppc_get_disk_fragment(
     let Ok(size) = u32::try_from(bytes.len()) else {
         return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_NO_MEM));
     };
+    let cursor_before_fragment = process_memory_manager
+        .native_heap_state()
+        .map_or(*heap_cursor, |heap| heap.heap_cursor);
     let address = ppc_process_heap_alloc(process_memory_manager, memory, heap_cursor, size, false);
     if address == 0 || memory.write_bytes(address, bytes).is_none() {
         return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_NO_MEM));
+    }
+    if ppc_hle_trace_enabled() {
+        eprintln!(
+            "[PPC-TRACE] GetDiskFragment {path:?} offset={offset} container=${address:08X} size={size} heap=${:08X}",
+            *heap_cursor
+        );
     }
     cpu.gpr[3..=9].copy_from_slice(&[address, size, name, flags, conn, main, err]);
     ppc_get_mem_fragment(
@@ -413,6 +437,7 @@ pub(super) fn ppc_get_disk_fragment(
         cfm_connections,
         next_cfm_connection_id,
         import_run_state,
+        Some(cursor_before_fragment),
     )
 }
 
@@ -426,6 +451,7 @@ pub(super) fn ppc_get_mem_fragment(
     cfm_connections: &mut Vec<PpcCfmConnection>,
     next_cfm_connection_id: &mut u32,
     import_run_state: &mut PpcImportRunState,
+    disk_fragment_cursor: Option<u32>,
 ) -> PpcImportAction {
     // Inside Macintosh: PowerPC System Software (1994), pp. 3-21--3-22:
     // GetMemFragment binds an in-memory PEF and returns a connection ID plus
@@ -512,6 +538,14 @@ pub(super) fn ppc_get_mem_fragment(
                 Ok(prepared) => prepared,
                 Err(error) => return PpcImportAction::Return(ppc_i16_result(error)),
             };
+            // GetDiskFragment's container copy and sections came from disk.
+            if let Some(before) = disk_fragment_cursor {
+                ppc_exempt_fragment_from_partition(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor.saturating_sub(before),
+                );
+            }
             if ppc_hle_trace_enabled() {
                 eprintln!(
                     "[PPC-TRACE] GetMemFragment name={frag_name:?} bytes={length} lr=${:08X} -> conn={id} main=${:08X} init=${:08X} term=${:08X} entry=${:08X} rtoc=${:08X} imports={}",

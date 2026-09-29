@@ -275,7 +275,11 @@ impl PpcLoadedApp {
     /// Inside Macintosh: Processes (1994), pp. 1-3 and 2-18.
     pub(crate) fn grow_application_partition(&mut self, partition_size: u32) {
         let requested_heap = partition_size.saturating_sub(self.stack_size);
-        let heap_base = self.heap_base();
+        // Everything below the cursor at launch is CFM storage (initial
+        // libraries, initializer containers and blocks), which a Power Mac
+        // keeps outside the SIZE partition; budget the heap from above it.
+        // See `ppc_exempt_fragment_from_partition`.
+        let heap_base = self.heap_cursor();
         if requested_heap <= ppc_heap_free_capacity(&self.memory, heap_base, self.heap_limit()).0 {
             return;
         }
