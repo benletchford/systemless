@@ -86,6 +86,10 @@ pub(crate) const DEFAULT_HOST_EXECUTION_POLICY: HostExecutionPolicy = HostExecut
     realtime_powerpc_cpu_mhz: 120.0,
 };
 
+/// Guest-advertised 604 clock speed for native PowerPC Gestalt('pclk').
+/// This is independent of how many instructions the host executes per tick.
+pub(crate) const REFERENCE_POWERPC_CPU_CLOCK_HZ: u32 = 120_000_000;
+
 impl MachineProfile {
     /// 68K guest capabilities derived from this profile's existing fields.
     pub(crate) const fn m68k_execution_capabilities(self) -> GuestExecutionCapabilities {
