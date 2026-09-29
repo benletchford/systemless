@@ -2486,6 +2486,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DisposeControlUserPaneDrawUPP
         | PpcImportDispatcherTarget::NewAEEventHandlerUPP
         | PpcImportDispatcherTarget::DisposeAEEventHandlerUPP
+        | PpcImportDispatcherTarget::NewEventHandlerUPP
+        | PpcImportDispatcherTarget::DisposeEventHandlerUPP
         | PpcImportDispatcherTarget::NewFatRoutineDescriptor
         | PpcImportDispatcherTarget::DisposeRoutineDescriptor
         | PpcImportDispatcherTarget::CallUniversalProc
