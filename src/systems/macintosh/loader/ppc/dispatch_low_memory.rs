@@ -97,14 +97,39 @@ pub(super) fn dispatch_low_memory_import(
                 memory.write_u16_be(crate::memory::globals::addr::ALERT_STAGE, cpu.gpr[3] as u16);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::LMGetACount => Some(PpcImportAction::Return(ppc_i16_result(
+            memory
+                .read_u16_be(crate::memory::globals::addr::ALERT_STAGE)
+                .unwrap_or(0) as i16,
+        ))),
         PpcImportDispatcherTarget::LMSetANumber => {
             let _ = memory.write_u16_be(crate::memory::globals::addr::ANUMBER, cpu.gpr[3] as u16);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::LMGetANumber => Some(PpcImportAction::Return(ppc_i16_result(
+            memory
+                .read_u16_be(crate::memory::globals::addr::ANUMBER)
+                .unwrap_or(0) as i16,
+        ))),
+        PpcImportDispatcherTarget::LMSetDABeeper => {
+            let eval = crate::dialog_manager::evaluate_error_sound(cpu.gpr[3]);
+            let _ = memory.write_u32_be(crate::memory::globals::addr::DA_BEEPER, eval.sound_proc());
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::LMGetDABeeper => Some(PpcImportAction::Return(
+            memory
+                .read_u32_be(crate::memory::globals::addr::DA_BEEPER)
+                .unwrap_or(0),
+        )),
         PpcImportDispatcherTarget::LMSetDlgFont => {
             let _ = memory.write_u16_be(crate::memory::globals::addr::DLG_FONT, cpu.gpr[3] as u16);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::LMGetDlgFont => Some(PpcImportAction::Return(ppc_i16_result(
+            memory
+                .read_u16_be(crate::memory::globals::addr::DLG_FONT)
+                .unwrap_or(0) as i16,
+        ))),
         PpcImportDispatcherTarget::SetMenuFlash => {
             // Macintosh Toolbox Essentials (1992), p. 3-142: SetMenuFlash
             // stores the selected-menu blink count in the MenuFlash global.

@@ -15,7 +15,7 @@ use crate::dialog_manager::{
     evaluate_dialog_item_visibility_parameters_signed, evaluate_dialog_purgeability_parameters,
     DialogTemplatePurgeabilityParameters,
     evaluate_dispose_dialog_parameters, evaluate_draw_dialog_parameters,
-    evaluate_error_sound,
+    evaluate_error_sound_parameters, ErrorSoundParameters,
     evaluate_find_dialog_item, evaluate_find_dialog_item_parameters,
     evaluate_get_dialog_item, evaluate_get_dialog_item_as_control,
     evaluate_get_dialog_item_as_control_parameters, evaluate_get_dialog_item_parameters,
@@ -16429,7 +16429,7 @@ impl super::TrapDispatcher {
             (true, 0x18C) => {
                 let sp = cpu.read_reg(Register::A7);
                 let sound_proc = bus.read_long(sp);
-                let eval = evaluate_error_sound(sound_proc);
+                let eval: ErrorSoundParameters = evaluate_error_sound_parameters(sound_proc);
                 bus.write_long(crate::memory::globals::addr::DA_BEEPER, eval.sound_proc());
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())

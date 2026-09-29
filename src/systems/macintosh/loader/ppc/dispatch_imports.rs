@@ -2044,7 +2044,8 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("Font Manager imports return through dispatch_font_import")
         }
         PpcImportDispatcherTarget::SelectDialogItemText
-        | PpcImportDispatcherTarget::InitDialogs => {
+        | PpcImportDispatcherTarget::InitDialogs
+        | PpcImportDispatcherTarget::ErrorSound => {
             unreachable!("dialog imports return through dispatch_dialog_import")
         }
         PpcImportDispatcherTarget::SystemTask
@@ -2691,8 +2692,13 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LMSetPaintWhite
         | PpcImportDispatcherTarget::LMSetResumeProc
         | PpcImportDispatcherTarget::LMSetACount
+        | PpcImportDispatcherTarget::LMGetACount
         | PpcImportDispatcherTarget::LMSetANumber
+        | PpcImportDispatcherTarget::LMGetANumber
+        | PpcImportDispatcherTarget::LMSetDABeeper
+        | PpcImportDispatcherTarget::LMGetDABeeper
         | PpcImportDispatcherTarget::LMSetDlgFont
+        | PpcImportDispatcherTarget::LMGetDlgFont
         | PpcImportDispatcherTarget::SetMenuFlash
         | PpcImportDispatcherTarget::GetGrayRgn
         | PpcImportDispatcherTarget::LMSetGrayRgn

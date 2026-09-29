@@ -20,6 +20,7 @@ use crate::dialog_manager::{
     extract_dialog_item_text_bytes, find_dialog_item_hit, global_to_dialog_local_point, offset_ditl_bytes, parse_ditl_items,
     position_dialog_bounds as unified_position_dialog_bounds, DialogItemHeader, DialogItemRecord,
     GetNewDialogParameters, ParamTextParameters, SelectDialogItemTextParameters,
+    evaluate_error_sound_parameters, ErrorSoundParameters,
     evaluate_alert_dialog_record_init, evaluate_find_dialog_item_parameters_packed,
     evaluate_get_dialog_item_text, evaluate_get_dialog_item_text_parameters,
     evaluate_param_text_parameters, evaluate_set_dialog_item_text, evaluate_set_dialog_item_text_parameters,
@@ -168,6 +169,11 @@ pub(super) fn dispatch_dialog_import(
             for i in 0..eval.da_strings_count() as u32 {
                 let _ = memory.write_u32_be(crate::memory::globals::addr::DA_STRINGS + i * 4, 0);
             }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::ErrorSound => {
+            let eval: ErrorSoundParameters = evaluate_error_sound_parameters(cpu.gpr[3]);
+            let _ = memory.write_u32_be(crate::memory::globals::addr::DA_BEEPER, eval.sound_proc());
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetNewDialog => {
