@@ -1160,24 +1160,33 @@ fn ppc_dispatch_dialog_compatibility(
         }
         PpcDialogCompatibilityOperation::HideDialogItem
         | PpcDialogCompatibilityOperation::ShowDialogItem => {
-            if let Some((_handle, ptr, _bytes, items)) =
-                ppc_dialog_live_items(memory, handles, dialog)
+            let item_number = cpu.gpr[4] as u16 as usize;
+            if let Some(query) =
+                crate::dialog_manager::evaluate_dialog_item_visibility_query(dialog, item_number)
             {
-                let item_number = cpu.gpr[4] as u16 as usize;
-                if let Some(item) = item_number
-                    .checked_sub(1)
-                    .and_then(|index| items.get(index))
+                if let Some((_handle, ptr, _bytes, items)) =
+                    ppc_dialog_live_items(memory, handles, query.dialog_ptr())
                 {
-                    let hide = operation == PpcDialogCompatibilityOperation::HideDialogItem;
-                    let change = if hide {
-                        evaluate_hide_dialog_item(item.item_type, item.rect)
-                    } else {
-                        evaluate_show_dialog_item(item.item_type, item.rect, None)
-                    };
-                    if let Some(change) = change {
-                        let item_addr = ptr + item.item_offset as u32;
-                        let _ = memory.write_u16_be(item_addr + 6, change.new_rect.1 as u16);
-                        let _ = memory.write_u16_be(item_addr + 10, change.new_rect.3 as u16);
+                    if let Some(item) =
+                        crate::dialog_manager::get_item_at_1_indexed(&items, query.item_number())
+                    {
+                        let hide = operation == PpcDialogCompatibilityOperation::HideDialogItem;
+                        let change = if hide {
+                            evaluate_hide_dialog_item(item.item_type, item.rect)
+                        } else {
+                            evaluate_show_dialog_item(item.item_type, item.rect, None)
+                        };
+                        if let Some(change) = change {
+                            let item_addr = ptr + item.item_offset as u32;
+                            let _ = memory.write_u16_be(
+                                item_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET + 2,
+                                change.new_rect().1 as u16,
+                            );
+                            let _ = memory.write_u16_be(
+                                item_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET + 6,
+                                change.new_rect().3 as u16,
+                            );
+                        }
                     }
                 }
             }

@@ -1158,6 +1158,78 @@ pub struct DialogItemVisibilityChange {
     pub enclosing_rect: (i16, i16, i16, i16),
 }
 
+#[allow(dead_code)]
+impl DialogItemVisibilityChange {
+    /// The updated display rectangle for the item (`item.rect`).
+    #[inline]
+    pub const fn new_rect(&self) -> (i16, i16, i16, i16) {
+        self.new_rect
+    }
+
+    /// The local rectangle requiring invalidation and/or background erasure.
+    #[inline]
+    pub const fn enclosing_rect(&self) -> (i16, i16, i16, i16) {
+        self.enclosing_rect
+    }
+}
+
+/// Canonical evaluated query for `HideDialogItem` and `ShowDialogItem`.
+///
+/// Inside Macintosh Volume IV, p. IV-59;
+/// Macintosh Toolbox Essentials (1992), pp. 6-123--6-124.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DialogItemVisibilityQuery {
+    dialog_ptr: u32,
+    item_number: usize,
+}
+
+#[allow(dead_code)]
+impl DialogItemVisibilityQuery {
+    /// Constructs a new `DialogItemVisibilityQuery`.
+    #[inline]
+    pub const fn new(dialog_ptr: u32, item_number: usize) -> Self {
+        Self {
+            dialog_ptr,
+            item_number,
+        }
+    }
+
+    /// The target dialog pointer.
+    #[inline]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// The 1-based dialog item index.
+    #[inline]
+    pub const fn item_number(&self) -> usize {
+        self.item_number
+    }
+
+    /// The 1-based dialog item index as signed 16-bit integer.
+    #[inline]
+    pub const fn item_no(&self) -> i16 {
+        self.item_number as i16
+    }
+}
+
+/// Evaluates and validates input parameters for `HideDialogItem` and `ShowDialogItem`.
+///
+/// Returns `None` if `dialog_ptr == 0` or `item_number == 0`.
+#[inline]
+pub const fn evaluate_dialog_item_visibility_query(
+    dialog_ptr: u32,
+    item_number: usize,
+) -> Option<DialogItemVisibilityQuery> {
+    if dialog_ptr == 0 || item_number == 0 {
+        return None;
+    }
+    Some(DialogItemVisibilityQuery {
+        dialog_ptr,
+        item_number,
+    })
+}
+
 /// Evaluates whether a dialog item should be hidden, and calculates its new offscreen
 /// display rectangle and local invalidation/erasure rectangle.
 ///
@@ -6568,6 +6640,48 @@ mod tests {
         assert!(!disabled_user.is_enabled());
         assert_eq!(disabled_user.item_handle(), 0x000D_EF00);
         assert_eq!(disabled_user.rect(), (100, 110, 120, 130));
+    }
+
+    #[test]
+    fn dialog_item_visibility_query_and_evaluation() {
+        // evaluate_dialog_item_visibility_query
+        assert_eq!(evaluate_dialog_item_visibility_query(0, 1), None);
+        assert_eq!(evaluate_dialog_item_visibility_query(0x1000, 0), None);
+
+        let query = evaluate_dialog_item_visibility_query(0x0003_4560, 4)
+            .expect("valid visibility query should succeed");
+        assert_eq!(query.dialog_ptr(), 0x0003_4560);
+        assert_eq!(query.item_number(), 4);
+        assert_eq!(query.item_no(), 4);
+
+        // evaluate_hide_dialog_item and accessors
+        let visible_rect = (20, 30, 40, 80);
+        let hide_change = evaluate_hide_dialog_item(DIALOG_ITEM_BUTTON, visible_rect)
+            .expect("visible item should produce hide change");
+        assert_eq!(hide_change.new_rect(), (20, 30 + 16384, 40, 80 + 16384));
+        assert_eq!(hide_change.enclosing_rect(), visible_rect);
+
+        // Hiding already-hidden item is a no-op
+        assert_eq!(
+            evaluate_hide_dialog_item(DIALOG_ITEM_BUTTON, hide_change.new_rect()),
+            None
+        );
+
+        // evaluate_show_dialog_item and accessors
+        let show_change = evaluate_show_dialog_item(
+            DIALOG_ITEM_BUTTON,
+            hide_change.new_rect(),
+            Some(visible_rect),
+        )
+        .expect("hidden item should produce show change");
+        assert_eq!(show_change.new_rect(), visible_rect);
+        assert_eq!(show_change.enclosing_rect(), visible_rect);
+
+        // Showing already-visible item is a no-op
+        assert_eq!(
+            evaluate_show_dialog_item(DIALOG_ITEM_BUTTON, visible_rect, None),
+            None
+        );
     }
 }
 
