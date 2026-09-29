@@ -2842,6 +2842,16 @@ impl FixtureRunner {
     }
 
     fn redraw_chrome(&mut self) {
+        // An active DrawSprocket context owns the display. Repainting the
+        // Window Manager desktop here would cover direct full-screen blits
+        // outside any smaller setup window still on the window list.
+        if self
+            .native
+            .application()
+            .is_some_and(|app| app.draw_sprocket.active_context.is_some())
+        {
+            return;
+        }
         self.dispatcher.with_process_state(|dispatcher| {
             dispatcher.redraw_chrome(&mut self.bus);
         });
