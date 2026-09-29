@@ -274,12 +274,23 @@ impl PpcLoadedApp {
     /// those addresses must never become available to the expanding allocator.
     /// Inside Macintosh: Processes (1994), pp. 1-3 and 2-18.
     pub(crate) fn grow_application_partition(&mut self, partition_size: u32) {
-        let requested_heap = partition_size.saturating_sub(self.stack_size);
-        // Everything below the cursor at launch is CFM storage (initial
-        // libraries, initializer containers and blocks), which a Power Mac
-        // keeps outside the SIZE partition; budget the heap from above it.
-        // See `ppc_exempt_fragment_from_partition`.
-        let heap_base = self.heap_cursor();
+        // The application's data section counts against the partition even
+        // though it is mapped outside the native heap; launch-time CFM code
+        // and container copies in the heap do not. See
+        // `PpcLaunchPartitionStorage` and `ppc_exempt_fragment_from_partition`.
+        let storage = self.launch_partition_storage;
+        let requested_heap = partition_size
+            .saturating_sub(self.stack_size)
+            .saturating_sub(storage.application_data)
+            .saturating_add(storage.outside_partition)
+            & !(PPC_HEAP_ALIGNMENT - 1);
+        let heap_base = self.heap_base();
+        if ppc_hle_trace_enabled() {
+            eprintln!(
+                "[PPC-TRACE] partition {partition_size} bytes: stack={} application data={} CFM code and containers outside={} heap={requested_heap}",
+                self.stack_size, storage.application_data, storage.outside_partition
+            );
+        }
         if requested_heap <= ppc_heap_free_capacity(&self.memory, heap_base, self.heap_limit()).0 {
             return;
         }

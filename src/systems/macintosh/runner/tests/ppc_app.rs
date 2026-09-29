@@ -109,6 +109,7 @@ fn ppc_loaded_app_runs_through_fixture_runner() {
         stack_base: PPC_STACK_BASE,
         stack_size: PPC_STACK_SIZE,
         stack_pointer: PPC_STACK_TOP - 64,
+        launch_partition_storage: Default::default(),
         tick_state: SharedProcessTickState::default(),
         clock_cycles_per_tick: 1,
         clock_cycle_phase: 0,

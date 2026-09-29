@@ -395,7 +395,10 @@ fn synthetic_pef_with_loader(loader: Vec<u8>) -> Vec<u8> {
 }
 
 fn synthetic_pef_with_loader_and_data(loader: Vec<u8>, data: &[u8]) -> Vec<u8> {
-    let code = synthetic_code();
+    synthetic_pef_with_loader_code_and_data(loader, &synthetic_code(), data)
+}
+
+fn synthetic_pef_with_loader_code_and_data(loader: Vec<u8>, code: &[u8], data: &[u8]) -> Vec<u8> {
     let loader_offset = 0x80usize;
     let code_offset = align_test_offset((loader_offset + loader.len()).max(0x100), 0x10);
     let data_offset = code_offset + code.len();
@@ -444,7 +447,7 @@ fn synthetic_pef_with_loader_and_data(loader: Vec<u8>, data: &[u8]) -> Vec<u8> {
     );
 
     bytes[loader_offset..loader_offset + loader.len()].copy_from_slice(&loader);
-    bytes[code_offset..code_offset + code.len()].copy_from_slice(&code);
+    bytes[code_offset..code_offset + code.len()].copy_from_slice(code);
     bytes[data_offset..data_offset + data.len()].copy_from_slice(&data);
     bytes
 }

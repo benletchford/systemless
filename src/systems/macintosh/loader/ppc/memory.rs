@@ -1230,13 +1230,16 @@ pub(crate) fn ppc_heap_free_capacity(
     memory.readonly_allocation_available_bytes(heap_cursor, heap_limit)
 }
 
-/// Keep a code fragment loaded from disk out of the application's SIZE
-/// budget. A PowerPC application's partition does not include its code
-/// fragments: with virtual memory on they are file-mapped, and with it off
-/// the Process Manager enlarges the partition to hold them (Finder Get Info:
-/// "memory requirements will increase ... if virtual memory is turned
-/// off"). The fragment's storage stays in the native heap mapping, so grow
-/// the application limit by the bytes it used, skipping reserved gaps like
+/// Keep a disk fragment's code out of the application's SIZE budget.
+/// PowerPC System Software (1994), pp. 1-53--1-57: code sections are
+/// file-mapped outside the application heap with virtual memory on, and
+/// with it off the application's code grows the partition while other
+/// fragments' code goes to temporary memory. Data sections, including
+/// per-context import library data, are loaded into the application heap
+/// and stay charged. Callers pass the code section bytes plus the
+/// container copy, which CFM reads from the file rather than the heap.
+/// That storage stays in the native heap mapping, so grow the application
+/// limit by those bytes, skipping reserved gaps like
 /// `grow_application_partition`. Only a partition grown past the stack can
 /// extend: that growth excluded the fixed stack and display mappings, while
 /// a heap still bounded by the stack has no SIZE budget to protect.
@@ -1252,6 +1255,12 @@ pub(crate) fn ppc_exempt_fragment_from_partition(
     if bytes == 0 || old_limit < PPC_STACK_TOP {
         return;
     }
+    let Some(bytes) = bytes
+        .checked_add(PPC_HEAP_ALIGNMENT - 1)
+        .map(|bytes| bytes & !(PPC_HEAP_ALIGNMENT - 1))
+    else {
+        return;
+    };
     let Some(mut limit) = old_limit.checked_add(bytes) else {
         return;
     };
@@ -1273,7 +1282,7 @@ pub(crate) fn ppc_exempt_fragment_from_partition(
     ppc_update_zone_free_bytes(memory, heap.heap_cursor, limit);
     if ppc_hle_trace_enabled() {
         eprintln!(
-            "[PPC-TRACE] fragment storage {bytes} bytes exempt from partition: limit ${old_limit:08X}->${limit:08X}"
+            "[PPC-TRACE] fragment code and container {bytes} bytes exempt from partition: limit ${old_limit:08X}->${limit:08X}"
         );
     }
 }

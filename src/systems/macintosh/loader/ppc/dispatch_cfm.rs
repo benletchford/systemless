@@ -212,9 +212,6 @@ pub(super) fn ppc_get_shared_library(
                     Ok(size) => size,
                     Err(_) => return return_error(PPC_FRAG_NO_MEM),
                 };
-                let cursor_before_fragment = process_memory_manager
-                    .native_heap_state()
-                    .map_or(*heap_cursor, |heap| heap.heap_cursor);
                 let fragment_addr = ppc_process_heap_alloc(
                     process_memory_manager,
                     memory,
@@ -248,7 +245,7 @@ pub(super) fn ppc_get_shared_library(
                 ppc_exempt_fragment_from_partition(
                     process_memory_manager,
                     memory,
-                    heap_cursor.saturating_sub(cursor_before_fragment),
+                    fragment_size.saturating_add(prepared.code_size),
                 );
                 let connection = PpcCfmConnection {
                     id,
@@ -413,9 +410,6 @@ pub(super) fn ppc_get_disk_fragment(
     let Ok(size) = u32::try_from(bytes.len()) else {
         return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_NO_MEM));
     };
-    let cursor_before_fragment = process_memory_manager
-        .native_heap_state()
-        .map_or(*heap_cursor, |heap| heap.heap_cursor);
     let address = ppc_process_heap_alloc(process_memory_manager, memory, heap_cursor, size, false);
     if address == 0 || memory.write_bytes(address, bytes).is_none() {
         return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_NO_MEM));
@@ -437,7 +431,7 @@ pub(super) fn ppc_get_disk_fragment(
         cfm_connections,
         next_cfm_connection_id,
         import_run_state,
-        Some(cursor_before_fragment),
+        Some(size),
     )
 }
 
@@ -451,7 +445,7 @@ pub(super) fn ppc_get_mem_fragment(
     cfm_connections: &mut Vec<PpcCfmConnection>,
     next_cfm_connection_id: &mut u32,
     import_run_state: &mut PpcImportRunState,
-    disk_fragment_cursor: Option<u32>,
+    disk_container_size: Option<u32>,
 ) -> PpcImportAction {
     // Inside Macintosh: PowerPC System Software (1994), pp. 3-21--3-22:
     // GetMemFragment binds an in-memory PEF and returns a connection ID plus
@@ -538,12 +532,13 @@ pub(super) fn ppc_get_mem_fragment(
                 Ok(prepared) => prepared,
                 Err(error) => return PpcImportAction::Return(ppc_i16_result(error)),
             };
-            // GetDiskFragment's container copy and sections came from disk.
-            if let Some(before) = disk_fragment_cursor {
+            // GetDiskFragment's container copy and code came from disk; its
+            // data sections stay in the partition.
+            if let Some(container_size) = disk_container_size {
                 ppc_exempt_fragment_from_partition(
                     process_memory_manager,
                     memory,
-                    heap_cursor.saturating_sub(before),
+                    container_size.saturating_add(prepared.code_size),
                 );
             }
             if ppc_hle_trace_enabled() {
