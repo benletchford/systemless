@@ -12,6 +12,11 @@
 
 use m68k::CpuType;
 
+/// Minimum Appearance Manager version advertised by the classic guest.
+/// Apple Gestalt Manager, `gestaltAppearanceVersion` (`'apvr'`): the low word
+/// is a binary-coded decimal version, and `0x0101` denotes version 1.0.1.
+pub const APPEARANCE_MANAGER_VERSION_BCD: u16 = 0x0101;
+
 /// Bag of constants describing one canonical guest machine: Gestalt
 /// selector responses, screen geometry, RAM size, VBL rate, realtime
 /// guest-advertised CPU MHz.
