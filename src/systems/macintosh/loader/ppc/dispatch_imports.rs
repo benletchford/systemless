@@ -2018,7 +2018,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetDialogItemText
         | PpcImportDispatcherTarget::SetDialogItemText
         | PpcImportDispatcherTarget::SetDialogDefaultItem
+        | PpcImportDispatcherTarget::GetDialogDefaultItem
         | PpcImportDispatcherTarget::SetDialogCancelItem
+        | PpcImportDispatcherTarget::GetDialogCancelItem
         | PpcImportDispatcherTarget::SetDialogTracksCursor
         | PpcImportDispatcherTarget::StdFilterProc
         | PpcImportDispatcherTarget::GetStdFilterProc

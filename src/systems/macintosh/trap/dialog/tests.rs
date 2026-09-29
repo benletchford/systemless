@@ -1116,6 +1116,143 @@
     }
 
     #[test]
+    fn dialogdispatch_getdialogdefaultitem_selector_12_reads_default_item_and_returns_noerr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(256);
+        let out_item_ptr = 0x300000u32;
+
+        // 1. Initial dialog without configured default defaults to 1
+        bus.write_long(TEST_SP, out_item_ptr); // VAR outDefaultItem
+        bus.write_long(TEST_SP + 4, dialog_ptr); // theDialog
+        bus.write_word(TEST_SP + 8, 0xBEEF); // result slot
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0412); // selector 0x12, 8 param bytes
+
+        let result = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(out_item_ptr), 1);
+        assert_eq!(bus.read_word(TEST_SP + 8), 0);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+
+        // 2. After SetDialogDefaultItem updates the default item to 3
+        bus.write_word(dialog_ptr + 168, 3);
+        bus.write_word(out_item_ptr, 0);
+        bus.write_long(TEST_SP, out_item_ptr);
+        bus.write_long(TEST_SP + 4, dialog_ptr);
+        bus.write_word(TEST_SP + 8, 0xBEEF);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0412);
+
+        let result = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(out_item_ptr), 3);
+        assert_eq!(bus.read_word(TEST_SP + 8), 0);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+    }
+
+    #[test]
+    fn dialogdispatch_getdialogcancelitem_selector_13_reads_cancel_item_and_returns_noerr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(256);
+        let out_item_ptr = 0x300000u32;
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 4,
+                    rect: (20, 20, 40, 90),
+                    text: "OK".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+                DialogItem {
+                    item_type: 4,
+                    rect: (20, 110, 40, 200),
+                    text: "Cancel".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+            ],
+        );
+
+        // 1. Inferred cancel button titled "Cancel" (item 2)
+        bus.write_long(TEST_SP, out_item_ptr); // VAR outCancelItem
+        bus.write_long(TEST_SP + 4, dialog_ptr); // theDialog
+        bus.write_word(TEST_SP + 8, 0xBEEF); // result slot
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0413); // selector 0x13, 8 param bytes
+
+        let result = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(out_item_ptr), 2);
+        assert_eq!(bus.read_word(TEST_SP + 8), 0);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+
+        // 2. Explicitly configured cancel button (item 5) overrides title search
+        disp.dialog_cancel_items.insert(dialog_ptr, 5);
+        bus.write_word(out_item_ptr, 0);
+        bus.write_long(TEST_SP, out_item_ptr);
+        bus.write_long(TEST_SP + 4, dialog_ptr);
+        bus.write_word(TEST_SP + 8, 0xBEEF);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0413);
+
+        let result = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(out_item_ptr), 5);
+        assert_eq!(bus.read_word(TEST_SP + 8), 0);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+    }
+
+    #[test]
+    fn dialogdispatch_getdialogdefaultitem_and_cancelitem_reject_invalid_parameters() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(256);
+        let out_item_ptr = 0x300000u32;
+
+        // GetDialogDefaultItem with NIL dialog
+        bus.write_long(TEST_SP, out_item_ptr);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0412);
+        let _ = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert_eq!(bus.read_word(TEST_SP + 8) as i16, crate::dialog_manager::DIALOG_PARAM_ERR);
+
+        // GetDialogDefaultItem with NIL out pointer
+        bus.write_long(TEST_SP, 0);
+        bus.write_long(TEST_SP + 4, dialog_ptr);
+        bus.write_word(TEST_SP + 8, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0412);
+        let _ = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert_eq!(bus.read_word(TEST_SP + 8) as i16, crate::dialog_manager::DIALOG_PARAM_ERR);
+
+        // GetDialogCancelItem with NIL dialog
+        bus.write_long(TEST_SP, out_item_ptr);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0413);
+        let _ = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert_eq!(bus.read_word(TEST_SP + 8) as i16, crate::dialog_manager::DIALOG_PARAM_ERR);
+
+        // GetDialogCancelItem with NIL out pointer
+        bus.write_long(TEST_SP, 0);
+        bus.write_long(TEST_SP + 4, dialog_ptr);
+        bus.write_word(TEST_SP + 8, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0413);
+        let _ = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert_eq!(bus.read_word(TEST_SP + 8) as i16, crate::dialog_manager::DIALOG_PARAM_ERR);
+    }
+
+    #[test]
     fn dialogdispatch_modal_dialog_first_entry_honors_preserved_default_and_cancel_items() {
         let (mut disp, mut cpu, mut bus) = setup();
         let dialog_ptr = 0x200000u32;

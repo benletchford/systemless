@@ -547,7 +547,9 @@ pub enum PpcImportDispatcherTarget {
     GetDialogItemText,
     SetDialogItemText,
     SetDialogDefaultItem,
+    GetDialogDefaultItem,
     SetDialogCancelItem,
+    GetDialogCancelItem,
     SetDialogTracksCursor,
     StdFilterProc,
     GetStdFilterProc,
@@ -2987,9 +2989,17 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SetDialogItemText") | ("InterfaceLib", "setdialogitemtext") => {
             PpcImportDispatcherTarget::SetDialogItemText
         }
-        ("InterfaceLib", "SetDialogDefaultItem") => PpcImportDispatcherTarget::SetDialogDefaultItem,
+        ("InterfaceLib" | "AppearanceLib", "SetDialogDefaultItem") => {
+            PpcImportDispatcherTarget::SetDialogDefaultItem
+        }
+        ("InterfaceLib" | "AppearanceLib", "GetDialogDefaultItem") => {
+            PpcImportDispatcherTarget::GetDialogDefaultItem
+        }
         ("InterfaceLib" | "AppearanceLib", "SetDialogCancelItem") => {
             PpcImportDispatcherTarget::SetDialogCancelItem
+        }
+        ("InterfaceLib" | "AppearanceLib", "GetDialogCancelItem") => {
+            PpcImportDispatcherTarget::GetDialogCancelItem
         }
         ("InterfaceLib" | "AppearanceLib", "SetDialogTracksCursor") => {
             PpcImportDispatcherTarget::SetDialogTracksCursor

@@ -27,6 +27,8 @@ use crate::dialog_manager::{
     evaluate_std_filter_proc, evaluate_std_filter_proc_event, evaluate_std_filter_proc_parameters,
     evaluate_dialog_item_default_button_outline,
     evaluate_dialog_cancel_item, evaluate_dialog_filter_cancel,
+    evaluate_dialog_default_item, evaluate_get_dialog_cancel_item_parameters,
+    evaluate_get_dialog_default_item_parameters,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -50,6 +52,8 @@ pub(super) const PPC_DIALOG_EDIT_FIELD_OFFSET: u32 = DIALOG_EDIT_FIELD_OFFSET;
 pub(super) const PPC_DIALOG_EDIT_OPEN_OFFSET: u32 = DIALOG_EDIT_OPEN_OFFSET;
 #[cfg(test)]
 pub(super) const PPC_DIALOG_DEFAULT_ITEM_OFFSET: u32 = DIALOG_DEFAULT_ITEM_OFFSET;
+#[cfg(test)]
+pub(super) const PPC_DIALOG_CANCEL_ITEM_OFFSET: u32 = DIALOG_CANCEL_ITEM_OFFSET;
 #[cfg(test)]
 pub(super) const PPC_DIALOG_RESOURCE_ID_OFFSET: u32 = DIALOG_RESOURCE_ID_OFFSET;
 #[cfg(test)]
@@ -486,6 +490,31 @@ pub(super) fn dispatch_dialog_import(
             };
             Some(PpcImportAction::Return(ppc_i16_result(os_err)))
         }
+        PpcImportDispatcherTarget::GetDialogDefaultItem => {
+            let dialog = cpu.gpr[3];
+            let out_item_ptr = cpu.gpr[4];
+            let can_write = ppc_memory_can_write_bytes(memory, out_item_ptr, 2);
+            let result =
+                evaluate_get_dialog_default_item_parameters(dialog, out_item_ptr, can_write);
+            let os_err = match result {
+                Ok(params) => {
+                    let configured = memory
+                        .read_u16_be(params.dialog_ptr() + DIALOG_DEFAULT_ITEM_OFFSET)
+                        .map(|item| item as i16);
+                    let default_item = evaluate_dialog_default_item(configured);
+                    if memory
+                        .write_u16_be(params.out_default_item_ptr(), default_item as u16)
+                        .is_some()
+                    {
+                        PPC_NO_ERR
+                    } else {
+                        PPC_PARAM_ERR
+                    }
+                }
+                Err(err) => err,
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(os_err)))
+        }
         PpcImportDispatcherTarget::SetDialogCancelItem => {
             // Macintosh Toolbox Essentials (1992), p. 6-165: the System 7
             // cancel item is Dialog Manager state rather than a public
@@ -500,6 +529,35 @@ pub(super) fn dispatch_dialog_import(
                             params.dialog_ptr() + DIALOG_CANCEL_ITEM_OFFSET,
                             params.item_no() as u16,
                         )
+                        .is_some()
+                    {
+                        PPC_NO_ERR
+                    } else {
+                        PPC_PARAM_ERR
+                    }
+                }
+                Err(err) => err,
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(os_err)))
+        }
+        PpcImportDispatcherTarget::GetDialogCancelItem => {
+            let dialog = cpu.gpr[3];
+            let out_item_ptr = cpu.gpr[4];
+            let can_write = ppc_memory_can_write_bytes(memory, out_item_ptr, 2);
+            let result =
+                evaluate_get_dialog_cancel_item_parameters(dialog, out_item_ptr, can_write);
+            let os_err = match result {
+                Ok(params) => {
+                    let configured = memory
+                        .read_u16_be(params.dialog_ptr() + DIALOG_CANCEL_ITEM_OFFSET)
+                        .filter(|&item| item != 0)
+                        .map(|item| item as i16);
+                    let items = ppc_dialog_items_for_dialog(memory, handles, params.dialog_ptr())
+                        .unwrap_or_default();
+                    let cancel_item = ppc_dialog_cancel_item(memory, handles, &items, configured)
+                        .unwrap_or(0);
+                    if memory
+                        .write_u16_be(params.out_cancel_item_ptr(), cancel_item)
                         .is_some()
                     {
                         PPC_NO_ERR

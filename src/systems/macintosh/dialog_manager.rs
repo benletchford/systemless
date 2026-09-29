@@ -514,6 +514,8 @@ pub const DIALOG_DISPATCH_SET_DIALOG_CANCEL_ITEM: u16 = 0x0005;
 pub const DIALOG_DISPATCH_SET_DIALOG_TRACKS_CURSOR: u16 = 0x0006;
 pub const DIALOG_DISPATCH_NEW_FEATURES_DIALOG: u16 = 0x000C;
 pub const DIALOG_DISPATCH_GET_DIALOG_ITEM_AS_CONTROL: u16 = 0x0011;
+pub const DIALOG_DISPATCH_GET_DIALOG_DEFAULT_ITEM: u16 = 0x0012;
+pub const DIALOG_DISPATCH_GET_DIALOG_CANCEL_ITEM: u16 = 0x0013;
 
 /// Standard Mac OS result codes used by Dialog Manager extension routines.
 pub const DIALOG_NO_ERR: i16 = 0;
@@ -2135,6 +2137,126 @@ pub fn evaluate_set_dialog_cancel_item_parameters(
         Err(DIALOG_PARAM_ERR)
     } else {
         Ok(SetDialogCancelItemParameters::new(dialog_ptr, new_item))
+    }
+}
+
+/// Evaluated parameters for a `GetDialogDefaultItem` request.
+///
+/// Inside Macintosh: Appearance Manager (1997).
+/// `pascal OSStatus GetDialogDefaultItem(DialogRef theDialog, DialogItemIndex *outDefaultItem);`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GetDialogDefaultItemParameters {
+    dialog_ptr: u32,
+    out_default_item_ptr: u32,
+}
+
+impl GetDialogDefaultItemParameters {
+    #[inline]
+    #[must_use]
+    pub const fn new(dialog_ptr: u32, out_default_item_ptr: u32) -> Self {
+        Self {
+            dialog_ptr,
+            out_default_item_ptr,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn out_default_item_ptr(&self) -> u32 {
+        self.out_default_item_ptr
+    }
+}
+
+/// Evaluated parameters for a `GetDialogCancelItem` request.
+///
+/// Inside Macintosh: Appearance Manager (1997).
+/// `pascal OSStatus GetDialogCancelItem(DialogRef theDialog, DialogItemIndex *outCancelItem);`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GetDialogCancelItemParameters {
+    dialog_ptr: u32,
+    out_cancel_item_ptr: u32,
+}
+
+impl GetDialogCancelItemParameters {
+    #[inline]
+    #[must_use]
+    pub const fn new(dialog_ptr: u32, out_cancel_item_ptr: u32) -> Self {
+        Self {
+            dialog_ptr,
+            out_cancel_item_ptr,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn out_cancel_item_ptr(&self) -> u32 {
+        self.out_cancel_item_ptr
+    }
+}
+
+/// Evaluates `GetDialogDefaultItem` parameters.
+///
+/// Inside Macintosh: Appearance Manager (1997).
+/// Returns `Ok(GetDialogDefaultItemParameters)` if `dialog_ptr != 0` and `can_write` is true (valid output pointer),
+/// or `Err(DIALOG_PARAM_ERR)` otherwise.
+pub fn evaluate_get_dialog_default_item_parameters(
+    dialog_ptr: u32,
+    out_default_item_ptr: u32,
+    can_write: bool,
+) -> Result<GetDialogDefaultItemParameters, i16> {
+    if dialog_ptr == 0 || out_default_item_ptr == 0 || !can_write {
+        Err(DIALOG_PARAM_ERR)
+    } else {
+        Ok(GetDialogDefaultItemParameters::new(
+            dialog_ptr,
+            out_default_item_ptr,
+        ))
+    }
+}
+
+/// Evaluates `GetDialogCancelItem` parameters.
+///
+/// Inside Macintosh: Appearance Manager (1997).
+/// Returns `Ok(GetDialogCancelItemParameters)` if `dialog_ptr != 0` and `can_write` is true (valid output pointer),
+/// or `Err(DIALOG_PARAM_ERR)` otherwise.
+pub fn evaluate_get_dialog_cancel_item_parameters(
+    dialog_ptr: u32,
+    out_cancel_item_ptr: u32,
+    can_write: bool,
+) -> Result<GetDialogCancelItemParameters, i16> {
+    if dialog_ptr == 0 || out_cancel_item_ptr == 0 || !can_write {
+        Err(DIALOG_PARAM_ERR)
+    } else {
+        Ok(GetDialogCancelItemParameters::new(
+            dialog_ptr,
+            out_cancel_item_ptr,
+        ))
+    }
+}
+
+/// Canonical default item for a dialog if none is explicitly configured or if configured is 0.
+pub const DEFAULT_DIALOG_ITEM: i16 = ALERT_BUTTON_OK;
+
+/// Resolves the effective default item number for a dialog.
+///
+/// Returns `configured` if `configured > 0`, otherwise returns `ALERT_BUTTON_OK` (1).
+#[inline]
+pub const fn evaluate_dialog_default_item(configured: Option<i16>) -> i16 {
+    match configured {
+        Some(item) if item > 0 => item,
+        _ => DEFAULT_DIALOG_ITEM,
     }
 }
 
@@ -9094,6 +9216,58 @@ mod tests {
         let cancel_direct = SetDialogCancelItemParameters::new(0x0007_4567, 4);
         assert_eq!(cancel_direct.dialog_ptr(), 0x0007_4567);
         assert_eq!(cancel_direct.item_no(), 4);
+
+        // evaluate_get_dialog_default_item_parameters
+        assert_eq!(
+            evaluate_get_dialog_default_item_parameters(0, 0x1000, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_dialog_default_item_parameters(0x0004_1234, 0, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_dialog_default_item_parameters(0x0004_1234, 0x1000, false),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let get_default_params = evaluate_get_dialog_default_item_parameters(0x0004_1234, 0x1000, true)
+            .expect("valid get default item parameters should evaluate");
+        assert_eq!(get_default_params.dialog_ptr(), 0x0004_1234);
+        assert_eq!(get_default_params.out_default_item_ptr(), 0x1000);
+
+        let get_default_direct = GetDialogDefaultItemParameters::new(0x0005_2345, 0x2000);
+        assert_eq!(get_default_direct.dialog_ptr(), 0x0005_2345);
+        assert_eq!(get_default_direct.out_default_item_ptr(), 0x2000);
+
+        // evaluate_get_dialog_cancel_item_parameters
+        assert_eq!(
+            evaluate_get_dialog_cancel_item_parameters(0, 0x3000, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_dialog_cancel_item_parameters(0x0006_3456, 0, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_dialog_cancel_item_parameters(0x0006_3456, 0x3000, false),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let get_cancel_params = evaluate_get_dialog_cancel_item_parameters(0x0006_3456, 0x3000, true)
+            .expect("valid get cancel item parameters should evaluate");
+        assert_eq!(get_cancel_params.dialog_ptr(), 0x0006_3456);
+        assert_eq!(get_cancel_params.out_cancel_item_ptr(), 0x3000);
+
+        let get_cancel_direct = GetDialogCancelItemParameters::new(0x0007_4567, 0x4000);
+        assert_eq!(get_cancel_direct.dialog_ptr(), 0x0007_4567);
+        assert_eq!(get_cancel_direct.out_cancel_item_ptr(), 0x4000);
+
+        // evaluate_dialog_default_item
+        assert_eq!(DEFAULT_DIALOG_ITEM, 1);
+        assert_eq!(evaluate_dialog_default_item(Some(2)), 2);
+        assert_eq!(evaluate_dialog_default_item(Some(1)), 1);
+        assert_eq!(evaluate_dialog_default_item(Some(0)), 1);
+        assert_eq!(evaluate_dialog_default_item(Some(-1)), 1);
+        assert_eq!(evaluate_dialog_default_item(None), 1);
     }
 
     #[test]
