@@ -3534,6 +3534,41 @@ where
     has_visible_item
 }
 
+/// Canonical evaluated query parameters for `IsDialogEvent`.
+///
+/// Inside Macintosh Volume I, p. I-416;
+/// Macintosh Toolbox Essentials (1992), p. 6-138.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IsDialogEventQuery {
+    event_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl IsDialogEventQuery {
+    /// Constructs a new `IsDialogEventQuery`.
+    #[inline]
+    pub const fn new(event_ptr: u32) -> Self {
+        Self { event_ptr }
+    }
+
+    /// The guest pointer to the `EventRecord`.
+    #[inline]
+    pub const fn event_ptr(&self) -> u32 {
+        self.event_ptr
+    }
+}
+
+/// Evaluates and validates query parameters for `IsDialogEvent`.
+///
+/// Returns `None` if `event_ptr == 0`.
+#[inline]
+pub const fn evaluate_is_dialog_event_query(event_ptr: u32) -> Option<IsDialogEventQuery> {
+    if event_ptr == 0 {
+        return None;
+    }
+    Some(IsDialogEventQuery { event_ptr })
+}
+
 /// Tests whether an event should be handled as part of an active modeless or movable modal dialog.
 ///
 /// Inside Macintosh Volume I (1985), p. I-416;
@@ -3676,6 +3711,79 @@ impl DialogSelectAction {
             _ => None,
         }
     }
+}
+
+/// Canonical evaluated parameters for `DialogSelect`.
+///
+/// Inside Macintosh Volume I, pp. I-417--I-418;
+/// Macintosh Toolbox Essentials (1992), pp. 6-139--6-141.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DialogSelectParameters {
+    event_ptr: u32,
+    dialog_out_ptr: u32,
+    item_hit_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl DialogSelectParameters {
+    /// Constructs a new `DialogSelectParameters`.
+    #[inline]
+    pub const fn new(event_ptr: u32, dialog_out_ptr: u32, item_hit_ptr: u32) -> Self {
+        Self {
+            event_ptr,
+            dialog_out_ptr,
+            item_hit_ptr,
+        }
+    }
+
+    /// The guest pointer to the input `EventRecord`.
+    #[inline]
+    pub const fn event_ptr(&self) -> u32 {
+        self.event_ptr
+    }
+
+    /// The guest pointer to the output `DialogPtr` location.
+    #[inline]
+    pub const fn dialog_out_ptr(&self) -> u32 {
+        self.dialog_out_ptr
+    }
+
+    /// The guest pointer to the output `itemHit` location.
+    #[inline]
+    pub const fn item_hit_ptr(&self) -> u32 {
+        self.item_hit_ptr
+    }
+
+    /// Whether a non-null output `DialogPtr` location was provided.
+    #[inline]
+    pub const fn has_dialog_out(&self) -> bool {
+        self.dialog_out_ptr != 0
+    }
+
+    /// Whether a non-null output `itemHit` location was provided.
+    #[inline]
+    pub const fn has_item_hit_out(&self) -> bool {
+        self.item_hit_ptr != 0
+    }
+}
+
+/// Evaluates and validates parameters for `DialogSelect`.
+///
+/// Returns `None` if `event_ptr == 0`.
+#[inline]
+pub const fn evaluate_dialog_select_parameters(
+    event_ptr: u32,
+    dialog_out_ptr: u32,
+    item_hit_ptr: u32,
+) -> Option<DialogSelectParameters> {
+    if event_ptr == 0 {
+        return None;
+    }
+    Some(DialogSelectParameters {
+        event_ptr,
+        dialog_out_ptr,
+        item_hit_ptr,
+    })
 }
 
 /// Evaluates an event record within the context of `DialogSelect`.
@@ -6828,6 +6936,45 @@ mod tests {
         let shorten_direct = ShortenDitlParameters::new(0x0004_4440, 7);
         assert_eq!(shorten_direct.dialog_ptr(), 0x0004_4440);
         assert_eq!(shorten_direct.number_items(), 7);
+    }
+
+    #[test]
+    fn is_dialog_event_and_dialog_select_parameters_evaluation() {
+        // evaluate_is_dialog_event_query
+        assert_eq!(evaluate_is_dialog_event_query(0), None);
+
+        let query = evaluate_is_dialog_event_query(0x0005_1234)
+            .expect("valid is_dialog_event query should evaluate");
+        assert_eq!(query.event_ptr(), 0x0005_1234);
+
+        let query_direct = IsDialogEventQuery::new(0x0007_5678);
+        assert_eq!(query_direct.event_ptr(), 0x0007_5678);
+
+        // evaluate_dialog_select_parameters
+        assert_eq!(evaluate_dialog_select_parameters(0, 0x1000, 0x2000), None);
+
+        let select_all = evaluate_dialog_select_parameters(0x0001_2340, 0x0002_3450, 0x0003_4560)
+            .expect("valid select parameters should evaluate");
+        assert_eq!(select_all.event_ptr(), 0x0001_2340);
+        assert_eq!(select_all.dialog_out_ptr(), 0x0002_3450);
+        assert_eq!(select_all.item_hit_ptr(), 0x0003_4560);
+        assert!(select_all.has_dialog_out());
+        assert!(select_all.has_item_hit_out());
+
+        let select_none = evaluate_dialog_select_parameters(0x0001_2340, 0, 0)
+            .expect("valid select with null outputs should evaluate");
+        assert_eq!(select_none.event_ptr(), 0x0001_2340);
+        assert_eq!(select_none.dialog_out_ptr(), 0);
+        assert_eq!(select_none.item_hit_ptr(), 0);
+        assert!(!select_none.has_dialog_out());
+        assert!(!select_none.has_item_hit_out());
+
+        let select_direct = DialogSelectParameters::new(0x000A_1110, 0x000B_2220, 0);
+        assert_eq!(select_direct.event_ptr(), 0x000A_1110);
+        assert_eq!(select_direct.dialog_out_ptr(), 0x000B_2220);
+        assert_eq!(select_direct.item_hit_ptr(), 0);
+        assert!(select_direct.has_dialog_out());
+        assert!(!select_direct.has_item_hit_out());
     }
 }
 

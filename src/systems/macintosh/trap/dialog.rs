@@ -11045,6 +11045,14 @@ impl super::TrapDispatcher {
             (true, 0x17F) => {
                 let sp = cpu.read_reg(Register::A7);
                 let event_ptr = bus.read_long(sp);
+                let Some(query) =
+                    crate::dialog_manager::evaluate_is_dialog_event_query(event_ptr)
+                else {
+                    bus.write_byte(sp + 4, 0);
+                    cpu.write_reg(Register::A7, sp + 4);
+                    return Some(Ok(()));
+                };
+                let event_ptr = query.event_ptr();
                 let (what, message, where_v, where_h, _modifiers) =
                     Self::read_guest_event_record(bus, event_ptr);
                 let target_dialog = self.dialog_from_window_event(what, message);
@@ -11087,6 +11095,16 @@ impl super::TrapDispatcher {
                 let item_hit_ptr = bus.read_long(sp);
                 let dialog_out_ptr = bus.read_long(sp + 4);
                 let event_ptr = bus.read_long(sp + 8);
+                let Some(params) = crate::dialog_manager::evaluate_dialog_select_parameters(
+                    event_ptr,
+                    dialog_out_ptr,
+                    item_hit_ptr,
+                ) else {
+                    bus.write_byte(sp + 12, 0);
+                    cpu.write_reg(Register::A7, sp + 12);
+                    return Some(Ok(()));
+                };
+                let event_ptr = params.event_ptr();
                 let (what, message, where_v, where_h, _modifiers) =
                     Self::read_guest_event_record(bus, event_ptr);
                 let mut result = false;
@@ -11140,12 +11158,12 @@ impl super::TrapDispatcher {
                             },
                         );
 
-                        if action.should_set_dialog_ptr() && dialog_out_ptr != 0 {
-                            bus.write_long(dialog_out_ptr, dialog_ptr);
+                        if action.should_set_dialog_ptr() && params.has_dialog_out() {
+                            bus.write_long(params.dialog_out_ptr(), dialog_ptr);
                         }
                         if let Some(hit) = action.item_hit() {
-                            if item_hit_ptr != 0 {
-                                bus.write_word(item_hit_ptr, hit as u16);
+                            if params.has_item_hit_out() {
+                                bus.write_word(params.item_hit_ptr(), hit as u16);
                             }
                         }
 
