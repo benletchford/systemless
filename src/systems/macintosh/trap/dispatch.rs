@@ -496,6 +496,11 @@ impl DialogItem {
         crate::dialog_manager::is_dialog_item_user_item(self.item_type)
     }
 
+    /// Whether the item represents an application user item with an installed procedure pointer.
+    pub fn has_user_proc(&self) -> bool {
+        self.is_user_item() && self.proc_ptr != 0
+    }
+
     /// Whether the item represents a standard pushbutton (`ctrlItem + btnCtrl`, 4).
     pub fn is_button(&self) -> bool {
         crate::dialog_manager::is_dialog_item_button(self.item_type)

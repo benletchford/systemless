@@ -828,6 +828,10 @@ impl super::TrapDispatcher {
         dialog_ptr: u32,
         update_rect: Option<(i16, i16, i16, i16)>,
     ) -> bool {
+        let Some(eval) = crate::dialog_manager::evaluate_draw_dialog(dialog_ptr) else {
+            return false;
+        };
+        let dialog_ptr = eval.dialog_ptr;
         let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() else {
             return false;
         };
@@ -906,38 +910,27 @@ impl super::TrapDispatcher {
         dialog_ptr: u32,
         update_rect: Option<(i16, i16, i16, i16)>,
     ) {
+        let Some(eval) = crate::dialog_manager::evaluate_draw_dialog(dialog_ptr) else {
+            return;
+        };
+        let dialog_ptr = eval.dialog_ptr;
         let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() else {
             return;
         };
         Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
         let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
-        let effective_update_rect = update_rect.map(|rect| {
-            if Self::rects_intersect(rect, bounds) {
-                rect
-            } else {
-                (
-                    bounds.0.saturating_add(rect.0),
-                    bounds.1.saturating_add(rect.1),
-                    bounds.0.saturating_add(rect.2),
-                    bounds.1.saturating_add(rect.3),
-                )
-            }
-        });
-        for (i, item) in items.iter().enumerate() {
-            let item_rect = Self::dialog_item_screen_rect(bounds, item.rect);
-            if item.is_user_item()
-                && item.proc_ptr != 0
-                && Self::rects_intersect(item_rect, bounds)
-                && effective_update_rect
-                    .map(|rect| Self::rects_intersect(item_rect, rect))
-                    .unwrap_or(true)
-            {
-                self.modeless_dialog_draw_proc_queue.push_back((
-                    dialog_ptr,
-                    item.proc_ptr,
-                    (i + 1) as i16,
-                ));
-            }
+        let user_items = crate::dialog_manager::evaluate_dialog_user_item_numbers(
+            items.iter().map(|item| (item.has_user_proc(), item.rect)),
+            bounds,
+            update_rect,
+        );
+        for item_number in user_items {
+            let item = &items[item_number - 1];
+            self.modeless_dialog_draw_proc_queue.push_back((
+                dialog_ptr,
+                item.proc_ptr,
+                item_number as i16,
+            ));
         }
         self.dialog_items.insert(dialog_ptr, items);
     }
@@ -11366,6 +11359,11 @@ impl super::TrapDispatcher {
             (true, 0x181) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dialog_ptr = bus.read_long(sp);
+                cpu.write_reg(Register::A7, sp + 4);
+                let Some(eval) = crate::dialog_manager::evaluate_draw_dialog(dialog_ptr) else {
+                    return Some(Ok(()));
+                };
+                let dialog_ptr = eval.dialog_ptr;
                 if let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() {
                     Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
                     let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
@@ -11400,7 +11398,6 @@ impl super::TrapDispatcher {
                         self.modeless_dialog_cdef_draw_queue.push_back(dialog_ptr);
                     }
                 }
-                cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
 
@@ -15970,11 +15967,11 @@ impl super::TrapDispatcher {
                 let update_rgn = bus.read_long(sp);
                 let dialog_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
-                if update_rgn == 0 {
+                let Some(eval) = crate::dialog_manager::evaluate_update_dialog(dialog_ptr, update_rgn) else {
                     return Some(Ok(()));
-                }
-                let update_rect = Self::region_handle_rect(bus, update_rgn);
-                self.update_dialog_window_contents(bus, cpu, dialog_ptr, update_rect);
+                };
+                let update_rect = Self::region_handle_rect(bus, eval.update_rgn);
+                self.update_dialog_window_contents(bus, cpu, eval.dialog_ptr, update_rect);
                 Ok(())
             }
 

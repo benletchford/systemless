@@ -299,6 +299,11 @@ impl DialogItemRecord {
         is_dialog_item_user_item(self.item_type)
     }
 
+    /// Whether the item represents an application user item with an installed procedure pointer or handle.
+    pub fn has_user_proc(&self) -> bool {
+        self.is_user_item() && self.handle != 0
+    }
+
     /// Whether the item represents a standard pushbutton (`ctrlItem + btnCtrl`, 4).
     pub fn is_button(&self) -> bool {
         is_dialog_item_button(self.item_type)
@@ -1970,6 +1975,86 @@ pub fn evaluate_dispose_dialog(dialog_ptr: u32) -> Option<DialogTearDownEvaluati
     evaluate_close_or_dispose_dialog(dialog_ptr, true)
 }
 
+/// Architecture-neutral evaluation outcome for a `DrawDialog` request.
+///
+/// Inside Macintosh Volume I (1985), p. I-417;
+/// Macintosh Toolbox Essentials (1992), p. 6-142.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DrawDialogEvaluation {
+    /// Dialog pointer to redraw.
+    pub dialog_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl DrawDialogEvaluation {
+    /// Returns the dialog pointer to redraw.
+    pub fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+}
+
+/// Architecture-neutral evaluation outcome for an `UpdateDialog` request.
+///
+/// Inside Macintosh Volume I (1985), p. I-415;
+/// Macintosh Toolbox Essentials (1992), pp. 6-142--6-143.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UpdateDialogEvaluation {
+    /// Dialog pointer to redraw.
+    pub dialog_ptr: u32,
+    /// Handle to the update region.
+    pub update_rgn: u32,
+}
+
+#[allow(dead_code)]
+impl UpdateDialogEvaluation {
+    /// Returns the dialog pointer to redraw.
+    pub fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// Returns the update region handle.
+    pub fn update_rgn(&self) -> u32 {
+        self.update_rgn
+    }
+
+    /// Converts this update evaluation into a general draw dialog evaluation.
+    pub fn as_draw_dialog(&self) -> DrawDialogEvaluation {
+        DrawDialogEvaluation {
+            dialog_ptr: self.dialog_ptr,
+        }
+    }
+}
+
+/// Evaluates a `DrawDialog` call, returning a `DrawDialogEvaluation` if the dialog pointer is non-null.
+///
+/// Inside Macintosh Volume I (1985), p. I-417;
+/// Macintosh Toolbox Essentials (1992), p. 6-142.
+#[inline]
+pub fn evaluate_draw_dialog(dialog_ptr: u32) -> Option<DrawDialogEvaluation> {
+    if dialog_ptr == 0 {
+        None
+    } else {
+        Some(DrawDialogEvaluation { dialog_ptr })
+    }
+}
+
+/// Evaluates an `UpdateDialog` call, returning an `UpdateDialogEvaluation` if both the dialog pointer
+/// and the update region handle are non-null.
+///
+/// Inside Macintosh Volume I (1985), p. I-415;
+/// Macintosh Toolbox Essentials (1992), pp. 6-142--6-143.
+#[inline]
+pub fn evaluate_update_dialog(dialog_ptr: u32, update_rgn: u32) -> Option<UpdateDialogEvaluation> {
+    if dialog_ptr == 0 || update_rgn == 0 {
+        None
+    } else {
+        Some(UpdateDialogEvaluation {
+            dialog_ptr,
+            update_rgn,
+        })
+    }
+}
+
 /// Computes the outer bounding rectangle and corner oval radius for drawing the standard 3px bold
 /// default button ring around a push button rectangle.
 ///
@@ -2148,6 +2233,66 @@ pub fn dialog_item_intersects_bounds(
     item_rect: (i16, i16, i16, i16),
 ) -> bool {
     rects_intersect(dialog_rect_to_global(bounds, item_rect), bounds)
+}
+
+/// Returns the effective global update rectangle given dialog bounds and an update rectangle.
+///
+/// If `update_rect` already intersects `bounds` (or is in global coordinates), it is used as-is.
+/// Otherwise, `update_rect` is assumed to be dialog-local coordinates and is converted to global coordinates.
+pub fn dialog_effective_update_rect(
+    bounds: (i16, i16, i16, i16),
+    update_rect: (i16, i16, i16, i16),
+) -> (i16, i16, i16, i16) {
+    if rects_intersect(update_rect, bounds) {
+        update_rect
+    } else {
+        dialog_rect_to_global(bounds, update_rect)
+    }
+}
+
+/// Returns true if a dialog item's local rectangle intersects the dialog bounds and an optional update rectangle.
+pub fn dialog_item_intersects_draw_area(
+    bounds: (i16, i16, i16, i16),
+    item_rect: (i16, i16, i16, i16),
+    update_rect: Option<(i16, i16, i16, i16)>,
+) -> bool {
+    if !dialog_item_intersects_bounds(bounds, item_rect) {
+        return false;
+    }
+    match update_rect {
+        Some(rect) => {
+            let global_rect = dialog_rect_to_global(bounds, item_rect);
+            let effective_rect = dialog_effective_update_rect(bounds, rect);
+            rects_intersect(global_rect, effective_rect)
+        }
+        None => true,
+    }
+}
+
+/// Returns the 1-based dialog item numbers for all user items with an installed callback procedure
+/// that intersect the dialog bounds and optional update rectangle.
+///
+/// Inside Macintosh Volume I (1985), pp. I-405, I-415, I-417;
+/// Macintosh Toolbox Essentials (1992), pp. 6-142--6-143.
+pub fn evaluate_dialog_user_item_numbers<I>(
+    items: I,
+    bounds: (i16, i16, i16, i16),
+    update_rect: Option<(i16, i16, i16, i16)>,
+) -> Vec<usize>
+where
+    I: IntoIterator<Item = (bool, (i16, i16, i16, i16))>,
+{
+    items
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, (has_user_proc, item_rect))| {
+            if has_user_proc && dialog_item_intersects_draw_area(bounds, item_rect, update_rect) {
+                Some(index + 1)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Checks whether an in-bounds dialog is game-managed (all items intersecting bounds are user items).
@@ -4845,6 +4990,124 @@ mod tests {
         assert_eq!(
             evaluate_close_or_dispose_dialog(0x2000, true),
             Some(dispose_eval)
+        );
+    }
+
+    #[test]
+    fn draw_and_update_dialog_evaluation() {
+        // DrawDialog evaluation
+        assert_eq!(evaluate_draw_dialog(0), None);
+        let draw_eval = evaluate_draw_dialog(0x5000).unwrap();
+        assert_eq!(draw_eval.dialog_ptr, 0x5000);
+        assert_eq!(draw_eval.dialog_ptr(), 0x5000);
+
+        // UpdateDialog evaluation
+        assert_eq!(evaluate_update_dialog(0, 0x1000), None);
+        assert_eq!(evaluate_update_dialog(0x5000, 0), None);
+        assert_eq!(evaluate_update_dialog(0, 0), None);
+        let update_eval = evaluate_update_dialog(0x5000, 0x2000).unwrap();
+        assert_eq!(update_eval.dialog_ptr, 0x5000);
+        assert_eq!(update_eval.dialog_ptr(), 0x5000);
+        assert_eq!(update_eval.update_rgn, 0x2000);
+        assert_eq!(update_eval.update_rgn(), 0x2000);
+        assert_eq!(update_eval.as_draw_dialog(), draw_eval);
+
+        // has_user_proc
+        let user_with_proc = DialogItemRecord {
+            item_offset: 0,
+            item_type: DIALOG_ITEM_USER_ITEM,
+            rect: (10, 10, 50, 50),
+            handle: 0x4000,
+            payload: Vec::new(),
+        };
+        assert!(user_with_proc.has_user_proc());
+
+        let user_without_proc = DialogItemRecord {
+            item_offset: 0,
+            item_type: DIALOG_ITEM_USER_ITEM,
+            rect: (10, 10, 50, 50),
+            handle: 0,
+            payload: Vec::new(),
+        };
+        assert!(!user_without_proc.has_user_proc());
+
+        let button_with_proc = DialogItemRecord {
+            item_offset: 0,
+            item_type: DIALOG_ITEM_BUTTON,
+            rect: (10, 10, 50, 50),
+            handle: 0x4000,
+            payload: Vec::new(),
+        };
+        assert!(!button_with_proc.has_user_proc());
+
+        // dialog_effective_update_rect
+        let bounds = (100, 100, 300, 400);
+        let intersecting = (150, 150, 250, 250);
+        assert_eq!(dialog_effective_update_rect(bounds, intersecting), intersecting);
+        let local_rect = (10, 10, 50, 50);
+        assert_eq!(
+            dialog_effective_update_rect(bounds, local_rect),
+            (110, 110, 150, 150)
+        );
+
+        // dialog_item_intersects_draw_area
+        let in_bounds_item_rect = (10, 10, 50, 50); // global: (110, 110, 150, 150)
+        assert!(dialog_item_intersects_draw_area(bounds, in_bounds_item_rect, None));
+        assert!(dialog_item_intersects_draw_area(
+            bounds,
+            in_bounds_item_rect,
+            Some((100, 100, 200, 200))
+        ));
+        assert!(!dialog_item_intersects_draw_area(
+            bounds,
+            in_bounds_item_rect,
+            Some((200, 200, 300, 300))
+        ));
+
+        let offscreen_item_rect = (500, 500, 550, 550);
+        assert!(!dialog_item_intersects_draw_area(bounds, offscreen_item_rect, None));
+        assert!(!dialog_item_intersects_draw_area(
+            bounds,
+            offscreen_item_rect,
+            Some((100, 100, 200, 200))
+        ));
+
+        // evaluate_dialog_user_item_numbers
+        let items = vec![
+            (user_with_proc.has_user_proc(), user_with_proc.rect),
+            (button_with_proc.has_user_proc(), button_with_proc.rect),
+            (user_without_proc.has_user_proc(), user_without_proc.rect),
+            (true, (500, 500, 550, 550)), // user with proc but offscreen
+            (true, (60, 60, 100, 100)),   // user with proc in bounds (item 5, global 160..200)
+        ];
+
+        assert_eq!(
+            evaluate_dialog_user_item_numbers(items.clone(), bounds, None),
+            vec![1, 5]
+        );
+        assert_eq!(
+            evaluate_dialog_user_item_numbers(
+                items.clone(),
+                bounds,
+                Some((100, 100, 155, 155)) // covers item 1 (110..150) but not item 5 (160..200)
+            ),
+            vec![1]
+        );
+        assert_eq!(
+            evaluate_dialog_user_item_numbers(
+                items.clone(),
+                bounds,
+                Some((155, 155, 250, 250)) // covers item 5 (160..200) but not item 1 (110..150)
+            ),
+            vec![5]
+        );
+        assert_eq!(
+            evaluate_dialog_user_item_numbers(
+                items,
+                bounds,
+                Some((250, 250, 300, 300)) // covers neither item
+            ),
+            Vec::<usize>::new()
         );
     }
 }
