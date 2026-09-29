@@ -21,6 +21,8 @@ use crate::dialog_manager::{
     evaluate_find_dialog_item, evaluate_find_dialog_item_parameters,
     evaluate_get_dialog_item, evaluate_get_dialog_item_as_control,
     evaluate_get_dialog_item_as_control_parameters, evaluate_get_dialog_item_parameters,
+    evaluate_move_dialog_item_parameters, evaluate_move_dialog_item_rect,
+    evaluate_size_dialog_item_parameters, evaluate_size_dialog_item_rect,
     evaluate_get_new_dialog_parameters,
     evaluate_get_std_filter_proc_parameters, evaluate_is_dialog_event_parameters,
     evaluate_dialog_default_item, evaluate_get_dialog_cancel_item_parameters,
@@ -16943,6 +16945,186 @@ impl super::TrapDispatcher {
                                 match item_info {
                                     Ok(_) => crate::dialog_manager::DIALOG_NO_ERR,
                                     Err(err) => err,
+                                }
+                            }
+                            Err(err) => err,
+                        };
+                        bus.write_word(sp + param_bytes, os_err as u16);
+                        cpu.write_reg(Register::A7, sp + param_bytes);
+                    }
+                    // MoveDialogItem (selector $10, param_bytes=10)
+                    // FUNCTION MoveDialogItem(inDialog: DialogRef;
+                    //     inItemNo: SInt16; inHoriz: SInt16; inVert: SInt16): OSErr;
+                    // Universal Interfaces 3.4.1 Dialogs.h (THREEWORDINLINE 0x303C, 0x0510, 0xAA68).
+                    //
+                    // Stack: SP+0=inVert(2), SP+2=inHoriz(2), SP+4=inItemNo(2), SP+6=inDialog(4).
+                    // Result slot at SP+param_bytes (pre-pushed by caller).
+                    crate::dialog_manager::DIALOG_DISPATCH_MOVE_DIALOG_ITEM => {
+                        let in_vert = bus.read_word(sp) as i16;
+                        let in_horiz = bus.read_word(sp + 2) as i16;
+                        let item_no = bus.read_word(sp + 4) as i16;
+                        let dialog_ptr = bus.read_long(sp + 6);
+                        let result = evaluate_move_dialog_item_parameters(
+                            dialog_ptr,
+                            item_no,
+                            in_horiz,
+                            in_vert,
+                        );
+                        let os_err = match result {
+                            Ok(params) => {
+                                let item_exists = self
+                                    .dialog_items
+                                    .get(&params.dialog_ptr())
+                                    .and_then(|items| {
+                                        crate::dialog_manager::get_item_at_1_indexed(
+                                            items,
+                                            params.item_number(),
+                                        )
+                                    })
+                                    .map(|item| item.rect);
+                                if let Some(current_rect) = item_exists {
+                                    let new_rect = evaluate_move_dialog_item_rect(
+                                        current_rect,
+                                        params.in_horiz(),
+                                        params.in_vert(),
+                                    );
+                                    if let Some(items) = self.dialog_items.get_mut(&params.dialog_ptr()) {
+                                        if let Some(item) = crate::dialog_manager::get_item_at_1_indexed_mut(
+                                            items,
+                                            params.item_number(),
+                                        ) {
+                                            item.rect = new_rect;
+                                        }
+                                    }
+                                    if let Some(item_handle_addr) = Self::dialog_item_handle_addr(
+                                        bus,
+                                        params.dialog_ptr(),
+                                        params.item_no(),
+                                    ) {
+                                        bus.write_word(
+                                            item_handle_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET,
+                                            new_rect.0 as u16,
+                                        );
+                                        bus.write_word(
+                                            item_handle_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET + 2,
+                                            new_rect.1 as u16,
+                                        );
+                                        bus.write_word(
+                                            item_handle_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET + 4,
+                                            new_rect.2 as u16,
+                                        );
+                                        bus.write_word(
+                                            item_handle_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET + 6,
+                                            new_rect.3 as u16,
+                                        );
+                                    }
+                                    let handle = Self::dialog_item_handle(
+                                        bus,
+                                        params.dialog_ptr(),
+                                        params.item_no(),
+                                    );
+                                    if handle != 0 {
+                                        let ctrl_ptr = bus.read_long(handle);
+                                        if ctrl_ptr != 0 {
+                                            bus.write_word(ctrl_ptr + 8, new_rect.0 as u16);
+                                            bus.write_word(ctrl_ptr + 10, new_rect.1 as u16);
+                                            bus.write_word(ctrl_ptr + 12, new_rect.2 as u16);
+                                            bus.write_word(ctrl_ptr + 14, new_rect.3 as u16);
+                                        }
+                                    }
+                                    crate::dialog_manager::DIALOG_NO_ERR
+                                } else {
+                                    crate::dialog_manager::DIALOG_PARAM_ERR
+                                }
+                            }
+                            Err(err) => err,
+                        };
+                        bus.write_word(sp + param_bytes, os_err as u16);
+                        cpu.write_reg(Register::A7, sp + param_bytes);
+                    }
+                    // SizeDialogItem (selector $11, param_bytes=10)
+                    // FUNCTION SizeDialogItem(inDialog: DialogRef;
+                    //     inItemNo: SInt16; inWidth: SInt16; inHeight: SInt16): OSErr;
+                    // Universal Interfaces 3.4.1 Dialogs.h (THREEWORDINLINE 0x303C, 0x0511, 0xAA68).
+                    //
+                    // Stack: SP+0=inHeight(2), SP+2=inWidth(2), SP+4=inItemNo(2), SP+6=inDialog(4).
+                    // Result slot at SP+param_bytes (pre-pushed by caller).
+                    crate::dialog_manager::DIALOG_DISPATCH_SIZE_DIALOG_ITEM => {
+                        let in_height = bus.read_word(sp) as i16;
+                        let in_width = bus.read_word(sp + 2) as i16;
+                        let item_no = bus.read_word(sp + 4) as i16;
+                        let dialog_ptr = bus.read_long(sp + 6);
+                        let result = evaluate_size_dialog_item_parameters(
+                            dialog_ptr,
+                            item_no,
+                            in_width,
+                            in_height,
+                        );
+                        let os_err = match result {
+                            Ok(params) => {
+                                let item_exists = self
+                                    .dialog_items
+                                    .get(&params.dialog_ptr())
+                                    .and_then(|items| {
+                                        crate::dialog_manager::get_item_at_1_indexed(
+                                            items,
+                                            params.item_number(),
+                                        )
+                                    })
+                                    .map(|item| item.rect);
+                                if let Some(current_rect) = item_exists {
+                                    let new_rect = evaluate_size_dialog_item_rect(
+                                        current_rect,
+                                        params.in_width(),
+                                        params.in_height(),
+                                    );
+                                    if let Some(items) = self.dialog_items.get_mut(&params.dialog_ptr()) {
+                                        if let Some(item) = crate::dialog_manager::get_item_at_1_indexed_mut(
+                                            items,
+                                            params.item_number(),
+                                        ) {
+                                            item.rect = new_rect;
+                                        }
+                                    }
+                                    if let Some(item_handle_addr) = Self::dialog_item_handle_addr(
+                                        bus,
+                                        params.dialog_ptr(),
+                                        params.item_no(),
+                                    ) {
+                                        bus.write_word(
+                                            item_handle_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET,
+                                            new_rect.0 as u16,
+                                        );
+                                        bus.write_word(
+                                            item_handle_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET + 2,
+                                            new_rect.1 as u16,
+                                        );
+                                        bus.write_word(
+                                            item_handle_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET + 4,
+                                            new_rect.2 as u16,
+                                        );
+                                        bus.write_word(
+                                            item_handle_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET + 6,
+                                            new_rect.3 as u16,
+                                        );
+                                    }
+                                    let handle = Self::dialog_item_handle(
+                                        bus,
+                                        params.dialog_ptr(),
+                                        params.item_no(),
+                                    );
+                                    if handle != 0 {
+                                        let ctrl_ptr = bus.read_long(handle);
+                                        if ctrl_ptr != 0 {
+                                            bus.write_word(ctrl_ptr + 8, new_rect.0 as u16);
+                                            bus.write_word(ctrl_ptr + 10, new_rect.1 as u16);
+                                            bus.write_word(ctrl_ptr + 12, new_rect.2 as u16);
+                                            bus.write_word(ctrl_ptr + 14, new_rect.3 as u16);
+                                        }
+                                    }
+                                    crate::dialog_manager::DIALOG_NO_ERR
+                                } else {
+                                    crate::dialog_manager::DIALOG_PARAM_ERR
                                 }
                             }
                             Err(err) => err,

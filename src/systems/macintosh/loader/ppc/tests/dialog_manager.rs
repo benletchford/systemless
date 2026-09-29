@@ -1448,6 +1448,22 @@ fn import_bindings_classify_dialog_imports() {
         PpcImportDispatcherTarget::SetDialogTracksCursor
     );
     assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "MoveDialogItem"),
+        PpcImportDispatcherTarget::MoveDialogItem
+    );
+    assert_eq!(
+        dispatcher_target_for_import("AppearanceLib", "MoveDialogItem"),
+        PpcImportDispatcherTarget::MoveDialogItem
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SizeDialogItem"),
+        PpcImportDispatcherTarget::SizeDialogItem
+    );
+    assert_eq!(
+        dispatcher_target_for_import("AppearanceLib", "SizeDialogItem"),
+        PpcImportDispatcherTarget::SizeDialogItem
+    );
+    assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "StdFilterProc"),
         PpcImportDispatcherTarget::StdFilterProc
     );
@@ -2226,4 +2242,178 @@ fn could_alert_and_free_alert_dispatch_with_canonical_evaluation() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded_free.cpu.gpr[3], 256); // Preserved
     assert_eq!(loaded_free.memory.read_u16_be(addr::RES_ERR), Some(0));
+}
+
+#[test]
+fn move_dialog_item_moves_ditl_item_and_control_and_rejects_invalid_params() {
+    let pef = synthetic_pef_with_library_import(b"AppearanceLib", b"MoveDialogItem");
+    let mut loaded = load_pef_application(&pef).unwrap();
+
+    let mut ditl = vec![0; 18];
+    ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&50i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&100i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_BUTTON;
+    ditl[15] = 2;
+    ditl[16..18].copy_from_slice(b"OK");
+
+    let mut control_rec = vec![0u8; 40];
+    control_rec[8..10].copy_from_slice(&10i16.to_be_bytes());
+    control_rec[10..12].copy_from_slice(&20i16.to_be_bytes());
+    control_rec[12..14].copy_from_slice(&50i16.to_be_bytes());
+    control_rec[14..16].copy_from_slice(&100i16.to_be_bytes());
+    let ctrl_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &control_rec,
+    );
+    ditl[2..6].copy_from_slice(&ctrl_handle.to_be_bytes());
+
+    let items_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &ditl,
+    );
+    loaded
+        .memory
+        .write_u32_be(PPC_MAIN_GWORLD + PPC_DIALOG_ITEMS_OFFSET, items_handle)
+        .unwrap();
+
+    // 1. Move item 1 to inHoriz=150, inVert=120
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = 150;
+    loaded.cpu.gpr[6] = 120;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    let ditl_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(ditl_ptr + 6), Some(120));
+    assert_eq!(loaded.memory.read_u16_be(ditl_ptr + 8), Some(150));
+    assert_eq!(loaded.memory.read_u16_be(ditl_ptr + 10), Some(160));
+    assert_eq!(loaded.memory.read_u16_be(ditl_ptr + 12), Some(230));
+
+    let ctrl_ptr = loaded.memory.read_u32_be(ctrl_handle).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(ctrl_ptr + 8), Some(120));
+    assert_eq!(loaded.memory.read_u16_be(ctrl_ptr + 10), Some(150));
+    assert_eq!(loaded.memory.read_u16_be(ctrl_ptr + 12), Some(160));
+    assert_eq!(loaded.memory.read_u16_be(ctrl_ptr + 14), Some(230));
+
+    // 2. Reject NIL dialog
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = 100;
+    loaded.cpu.gpr[6] = 100;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+
+    // 3. Reject invalid item number
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = 99;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+}
+
+#[test]
+fn size_dialog_item_sizes_ditl_item_and_control_and_rejects_invalid_params() {
+    let pef = synthetic_pef_with_library_import(b"AppearanceLib", b"SizeDialogItem");
+    let mut loaded = load_pef_application(&pef).unwrap();
+
+    let mut ditl = vec![0; 18];
+    ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&50i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&100i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_BUTTON;
+    ditl[15] = 2;
+    ditl[16..18].copy_from_slice(b"OK");
+
+    let mut control_rec = vec![0u8; 40];
+    control_rec[8..10].copy_from_slice(&10i16.to_be_bytes());
+    control_rec[10..12].copy_from_slice(&20i16.to_be_bytes());
+    control_rec[12..14].copy_from_slice(&50i16.to_be_bytes());
+    control_rec[14..16].copy_from_slice(&100i16.to_be_bytes());
+    let ctrl_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &control_rec,
+    );
+    ditl[2..6].copy_from_slice(&ctrl_handle.to_be_bytes());
+
+    let items_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &ditl,
+    );
+    loaded
+        .memory
+        .write_u32_be(PPC_MAIN_GWORLD + PPC_DIALOG_ITEMS_OFFSET, items_handle)
+        .unwrap();
+
+    // 1. Resize item 1 to inWidth=120, inHeight=70
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = 120;
+    loaded.cpu.gpr[6] = 70;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    let ditl_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(ditl_ptr + 6), Some(10));
+    assert_eq!(loaded.memory.read_u16_be(ditl_ptr + 8), Some(20));
+    assert_eq!(loaded.memory.read_u16_be(ditl_ptr + 10), Some(80));
+    assert_eq!(loaded.memory.read_u16_be(ditl_ptr + 12), Some(140));
+
+    let ctrl_ptr = loaded.memory.read_u32_be(ctrl_handle).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(ctrl_ptr + 8), Some(10));
+    assert_eq!(loaded.memory.read_u16_be(ctrl_ptr + 10), Some(20));
+    assert_eq!(loaded.memory.read_u16_be(ctrl_ptr + 12), Some(80));
+    assert_eq!(loaded.memory.read_u16_be(ctrl_ptr + 14), Some(140));
+
+    // 2. Reject NIL dialog
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = 80;
+    loaded.cpu.gpr[6] = 80;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+
+    // 3. Reject invalid item number
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = 99;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
 }

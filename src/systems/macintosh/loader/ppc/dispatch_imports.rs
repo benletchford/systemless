@@ -2022,6 +2022,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::SetDialogCancelItem
         | PpcImportDispatcherTarget::GetDialogCancelItem
         | PpcImportDispatcherTarget::SetDialogTracksCursor
+        | PpcImportDispatcherTarget::MoveDialogItem
+        | PpcImportDispatcherTarget::SizeDialogItem
         | PpcImportDispatcherTarget::CouldDialog
         | PpcImportDispatcherTarget::FreeDialog
         | PpcImportDispatcherTarget::CouldAlert

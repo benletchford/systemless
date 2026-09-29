@@ -513,7 +513,9 @@ pub const DIALOG_DISPATCH_SET_DIALOG_DEFAULT_ITEM: u16 = 0x0004;
 pub const DIALOG_DISPATCH_SET_DIALOG_CANCEL_ITEM: u16 = 0x0005;
 pub const DIALOG_DISPATCH_SET_DIALOG_TRACKS_CURSOR: u16 = 0x0006;
 pub const DIALOG_DISPATCH_NEW_FEATURES_DIALOG: u16 = 0x000C;
-pub const DIALOG_DISPATCH_GET_DIALOG_ITEM_AS_CONTROL: u16 = 0x0011;
+pub const DIALOG_DISPATCH_GET_DIALOG_ITEM_AS_CONTROL: u16 = 0x000F;
+pub const DIALOG_DISPATCH_MOVE_DIALOG_ITEM: u16 = 0x0010;
+pub const DIALOG_DISPATCH_SIZE_DIALOG_ITEM: u16 = 0x0011;
 pub const DIALOG_DISPATCH_GET_DIALOG_DEFAULT_ITEM: u16 = 0x0012;
 pub const DIALOG_DISPATCH_GET_DIALOG_CANCEL_ITEM: u16 = 0x0013;
 
@@ -2258,6 +2260,216 @@ pub const fn evaluate_dialog_default_item(configured: Option<i16>) -> i16 {
         Some(item) if item > 0 => item,
         _ => DEFAULT_DIALOG_ITEM,
     }
+}
+
+/// Canonical evaluated parameters for `MoveDialogItem`.
+///
+/// Universal Interfaces 3.4.1 `Dialogs.h`:
+/// `EXTERN_API( OSErr ) MoveDialogItem(DialogRef inDialog, SInt16 inItemNo, SInt16 inHoriz, SInt16 inVert);`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MoveDialogItemParameters {
+    dialog_ptr: u32,
+    item_no: i16,
+    in_horiz: i16,
+    in_vert: i16,
+}
+
+impl MoveDialogItemParameters {
+    /// Constructs a new `MoveDialogItemParameters`.
+    #[inline]
+    #[must_use]
+    pub const fn new(dialog_ptr: u32, item_no: i16, in_horiz: i16, in_vert: i16) -> Self {
+        Self {
+            dialog_ptr,
+            item_no,
+            in_horiz,
+            in_vert,
+        }
+    }
+
+    /// The target dialog pointer.
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// The 1-based dialog item number.
+    #[inline]
+    #[must_use]
+    pub const fn item_no(&self) -> i16 {
+        self.item_no
+    }
+
+    /// The 1-based dialog item number as a `usize`.
+    #[inline]
+    #[must_use]
+    pub const fn item_number(&self) -> usize {
+        self.item_no as usize
+    }
+
+    /// The target horizontal coordinate (left).
+    #[inline]
+    #[must_use]
+    pub const fn in_horiz(&self) -> i16 {
+        self.in_horiz
+    }
+
+    /// The target vertical coordinate (top).
+    #[inline]
+    #[must_use]
+    pub const fn in_vert(&self) -> i16 {
+        self.in_vert
+    }
+}
+
+/// Evaluates parameters for `MoveDialogItem`.
+///
+/// Returns `Ok(MoveDialogItemParameters)` if `dialog_ptr != 0` and `item_no > 0`,
+/// or `Err(DIALOG_PARAM_ERR)` otherwise.
+#[inline]
+#[must_use]
+pub const fn evaluate_move_dialog_item_parameters(
+    dialog_ptr: u32,
+    item_no: i16,
+    in_horiz: i16,
+    in_vert: i16,
+) -> Result<MoveDialogItemParameters, i16> {
+    if dialog_ptr == 0 || item_no <= 0 {
+        Err(DIALOG_PARAM_ERR)
+    } else {
+        Ok(MoveDialogItemParameters::new(
+            dialog_ptr,
+            item_no,
+            in_horiz,
+            in_vert,
+        ))
+    }
+}
+
+/// Evaluates the transformed item rectangle for `MoveDialogItem`.
+///
+/// Moves the item's display rectangle so that its top-left corner is at `(in_vert, in_horiz)`,
+/// preserving its existing width and height.
+#[inline]
+#[must_use]
+pub const fn evaluate_move_dialog_item_rect(
+    current_rect: (i16, i16, i16, i16),
+    in_horiz: i16,
+    in_vert: i16,
+) -> (i16, i16, i16, i16) {
+    let height = current_rect.2.saturating_sub(current_rect.0);
+    let width = current_rect.3.saturating_sub(current_rect.1);
+    (
+        in_vert,
+        in_horiz,
+        in_vert.saturating_add(height),
+        in_horiz.saturating_add(width),
+    )
+}
+
+/// Canonical evaluated parameters for `SizeDialogItem`.
+///
+/// Universal Interfaces 3.4.1 `Dialogs.h`:
+/// `EXTERN_API( OSErr ) SizeDialogItem(DialogRef inDialog, SInt16 inItemNo, SInt16 inWidth, SInt16 inHeight);`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SizeDialogItemParameters {
+    dialog_ptr: u32,
+    item_no: i16,
+    in_width: i16,
+    in_height: i16,
+}
+
+impl SizeDialogItemParameters {
+    /// Constructs a new `SizeDialogItemParameters`.
+    #[inline]
+    #[must_use]
+    pub const fn new(dialog_ptr: u32, item_no: i16, in_width: i16, in_height: i16) -> Self {
+        Self {
+            dialog_ptr,
+            item_no,
+            in_width,
+            in_height,
+        }
+    }
+
+    /// The target dialog pointer.
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// The 1-based dialog item number.
+    #[inline]
+    #[must_use]
+    pub const fn item_no(&self) -> i16 {
+        self.item_no
+    }
+
+    /// The 1-based dialog item number as a `usize`.
+    #[inline]
+    #[must_use]
+    pub const fn item_number(&self) -> usize {
+        self.item_no as usize
+    }
+
+    /// The target width.
+    #[inline]
+    #[must_use]
+    pub const fn in_width(&self) -> i16 {
+        self.in_width
+    }
+
+    /// The target height.
+    #[inline]
+    #[must_use]
+    pub const fn in_height(&self) -> i16 {
+        self.in_height
+    }
+}
+
+/// Evaluates parameters for `SizeDialogItem`.
+///
+/// Returns `Ok(SizeDialogItemParameters)` if `dialog_ptr != 0` and `item_no > 0`,
+/// or `Err(DIALOG_PARAM_ERR)` otherwise.
+#[inline]
+#[must_use]
+pub const fn evaluate_size_dialog_item_parameters(
+    dialog_ptr: u32,
+    item_no: i16,
+    in_width: i16,
+    in_height: i16,
+) -> Result<SizeDialogItemParameters, i16> {
+    if dialog_ptr == 0 || item_no <= 0 {
+        Err(DIALOG_PARAM_ERR)
+    } else {
+        Ok(SizeDialogItemParameters::new(
+            dialog_ptr,
+            item_no,
+            in_width,
+            in_height,
+        ))
+    }
+}
+
+/// Evaluates the transformed item rectangle for `SizeDialogItem`.
+///
+/// Resizes the item's display rectangle so that its top-left corner is preserved,
+/// and its bottom-right corner becomes `(top + in_height, left + in_width)`.
+#[inline]
+#[must_use]
+pub const fn evaluate_size_dialog_item_rect(
+    current_rect: (i16, i16, i16, i16),
+    in_width: i16,
+    in_height: i16,
+) -> (i16, i16, i16, i16) {
+    (
+        current_rect.0,
+        current_rect.1,
+        current_rect.0.saturating_add(in_height),
+        current_rect.1.saturating_add(in_width),
+    )
 }
 
 /// Evaluated parameters for a `SetDialogTracksCursor` request.
@@ -6882,7 +7094,11 @@ mod tests {
         assert_eq!(DIALOG_DISPATCH_SET_DIALOG_CANCEL_ITEM, 0x0005);
         assert_eq!(DIALOG_DISPATCH_SET_DIALOG_TRACKS_CURSOR, 0x0006);
         assert_eq!(DIALOG_DISPATCH_NEW_FEATURES_DIALOG, 0x000C);
-        assert_eq!(DIALOG_DISPATCH_GET_DIALOG_ITEM_AS_CONTROL, 0x0011);
+        assert_eq!(DIALOG_DISPATCH_GET_DIALOG_ITEM_AS_CONTROL, 0x000F);
+        assert_eq!(DIALOG_DISPATCH_MOVE_DIALOG_ITEM, 0x0010);
+        assert_eq!(DIALOG_DISPATCH_SIZE_DIALOG_ITEM, 0x0011);
+        assert_eq!(DIALOG_DISPATCH_GET_DIALOG_DEFAULT_ITEM, 0x0012);
+        assert_eq!(DIALOG_DISPATCH_GET_DIALOG_CANCEL_ITEM, 0x0013);
 
         // Default button outline geometry
         assert_eq!(DEFAULT_BUTTON_OUTLINE_THICKNESS, 3);
@@ -9304,6 +9520,77 @@ mod tests {
         assert_eq!(evaluate_dialog_default_item(Some(0)), 1);
         assert_eq!(evaluate_dialog_default_item(Some(-1)), 1);
         assert_eq!(evaluate_dialog_default_item(None), 1);
+    }
+
+    #[test]
+    fn move_and_size_dialog_item_parameters_evaluation() {
+        // evaluate_move_dialog_item_parameters
+        assert_eq!(
+            evaluate_move_dialog_item_parameters(0, 1, 10, 20),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_move_dialog_item_parameters(0x0001_1110, 0, 10, 20),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_move_dialog_item_parameters(0x0001_1110, -1, 10, 20),
+            Err(DIALOG_PARAM_ERR)
+        );
+
+        let move_params = evaluate_move_dialog_item_parameters(0x0001_1110, 2, 50, 60)
+            .expect("valid move dialog item parameters should evaluate");
+        assert_eq!(move_params.dialog_ptr(), 0x0001_1110);
+        assert_eq!(move_params.item_no(), 2);
+        assert_eq!(move_params.item_number(), 2);
+        assert_eq!(move_params.in_horiz(), 50);
+        assert_eq!(move_params.in_vert(), 60);
+
+        let move_direct = MoveDialogItemParameters::new(0x0002_2220, 3, -10, -20);
+        assert_eq!(move_direct.dialog_ptr(), 0x0002_2220);
+        assert_eq!(move_direct.item_no(), 3);
+        assert_eq!(move_direct.item_number(), 3);
+        assert_eq!(move_direct.in_horiz(), -10);
+        assert_eq!(move_direct.in_vert(), -20);
+
+        // evaluate_move_dialog_item_rect
+        let rect = (20, 30, 60, 90); // height=40, width=60
+        let moved_rect = evaluate_move_dialog_item_rect(rect, 100, 150); // top=150, left=100
+        assert_eq!(moved_rect, (150, 100, 190, 160));
+
+        // evaluate_size_dialog_item_parameters
+        assert_eq!(
+            evaluate_size_dialog_item_parameters(0, 1, 100, 200),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_size_dialog_item_parameters(0x0001_1110, 0, 100, 200),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_size_dialog_item_parameters(0x0001_1110, -5, 100, 200),
+            Err(DIALOG_PARAM_ERR)
+        );
+
+        let size_params = evaluate_size_dialog_item_parameters(0x0001_1110, 4, 80, 120)
+            .expect("valid size dialog item parameters should evaluate");
+        assert_eq!(size_params.dialog_ptr(), 0x0001_1110);
+        assert_eq!(size_params.item_no(), 4);
+        assert_eq!(size_params.item_number(), 4);
+        assert_eq!(size_params.in_width(), 80);
+        assert_eq!(size_params.in_height(), 120);
+
+        let size_direct = SizeDialogItemParameters::new(0x0003_3330, 5, 45, 55);
+        assert_eq!(size_direct.dialog_ptr(), 0x0003_3330);
+        assert_eq!(size_direct.item_no(), 5);
+        assert_eq!(size_direct.item_number(), 5);
+        assert_eq!(size_direct.in_width(), 45);
+        assert_eq!(size_direct.in_height(), 55);
+
+        // evaluate_size_dialog_item_rect
+        let rect2 = (10, 20, 50, 80);
+        let sized_rect = evaluate_size_dialog_item_rect(rect2, 100, 150);
+        assert_eq!(sized_rect, (10, 20, 160, 120));
     }
 
     #[test]

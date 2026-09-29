@@ -1253,6 +1253,184 @@
     }
 
     #[test]
+    fn dialogdispatch_movedialogitem_selector_10_moves_item_and_control_and_returns_noerr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(256);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(32);
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+
+        bus.write_word(ditl_ptr, 0);
+        bus.write_long(ditl_ptr + 2, 0);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 50);
+        bus.write_word(ditl_ptr + 12, 100);
+        bus.write_byte(ditl_ptr + 14, 4);
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 4,
+                rect: (10, 20, 50, 100),
+                text: "OK".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        let ctrl_handle = bus.alloc(4);
+        let ctrl_ptr = bus.alloc(40);
+        bus.write_long(ctrl_handle, ctrl_ptr);
+        bus.write_long(ditl_ptr + 2, ctrl_handle);
+        bus.write_word(ctrl_ptr + 8, 10);
+        bus.write_word(ctrl_ptr + 10, 20);
+        bus.write_word(ctrl_ptr + 12, 50);
+        bus.write_word(ctrl_ptr + 14, 100);
+
+        bus.write_word(TEST_SP, 150);
+        bus.write_word(TEST_SP + 2, 200);
+        bus.write_word(TEST_SP + 4, 1);
+        bus.write_long(TEST_SP + 6, dialog_ptr);
+        bus.write_word(TEST_SP + 10, 0xBEEF);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0510);
+
+        let result = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 10), 0);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+
+        let item = &disp.dialog_items.get(&dialog_ptr).unwrap()[0];
+        assert_eq!(item.rect, (150, 200, 190, 280));
+        assert_eq!(bus.read_word(ditl_ptr + 6) as i16, 150);
+        assert_eq!(bus.read_word(ditl_ptr + 8) as i16, 200);
+        assert_eq!(bus.read_word(ditl_ptr + 10) as i16, 190);
+        assert_eq!(bus.read_word(ditl_ptr + 12) as i16, 280);
+        assert_eq!(bus.read_word(ctrl_ptr + 8) as i16, 150);
+        assert_eq!(bus.read_word(ctrl_ptr + 10) as i16, 200);
+        assert_eq!(bus.read_word(ctrl_ptr + 12) as i16, 190);
+        assert_eq!(bus.read_word(ctrl_ptr + 14) as i16, 280);
+    }
+
+    #[test]
+    fn dialogdispatch_sizedialogitem_selector_11_sizes_item_and_control_and_returns_noerr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(256);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(32);
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+
+        bus.write_word(ditl_ptr, 0);
+        bus.write_long(ditl_ptr + 2, 0);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 50);
+        bus.write_word(ditl_ptr + 12, 100);
+        bus.write_byte(ditl_ptr + 14, 4);
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 4,
+                rect: (10, 20, 50, 100),
+                text: "Button".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        let ctrl_handle = bus.alloc(4);
+        let ctrl_ptr = bus.alloc(40);
+        bus.write_long(ctrl_handle, ctrl_ptr);
+        bus.write_long(ditl_ptr + 2, ctrl_handle);
+        bus.write_word(ctrl_ptr + 8, 10);
+        bus.write_word(ctrl_ptr + 10, 20);
+        bus.write_word(ctrl_ptr + 12, 50);
+        bus.write_word(ctrl_ptr + 14, 100);
+
+        bus.write_word(TEST_SP, 60);
+        bus.write_word(TEST_SP + 2, 120);
+        bus.write_word(TEST_SP + 4, 1);
+        bus.write_long(TEST_SP + 6, dialog_ptr);
+        bus.write_word(TEST_SP + 10, 0xBEEF);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0511);
+
+        let result = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 10), 0);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+
+        let item = &disp.dialog_items.get(&dialog_ptr).unwrap()[0];
+        assert_eq!(item.rect, (10, 20, 70, 140));
+        assert_eq!(bus.read_word(ditl_ptr + 6) as i16, 10);
+        assert_eq!(bus.read_word(ditl_ptr + 8) as i16, 20);
+        assert_eq!(bus.read_word(ditl_ptr + 10) as i16, 70);
+        assert_eq!(bus.read_word(ditl_ptr + 12) as i16, 140);
+        assert_eq!(bus.read_word(ctrl_ptr + 8) as i16, 10);
+        assert_eq!(bus.read_word(ctrl_ptr + 10) as i16, 20);
+        assert_eq!(bus.read_word(ctrl_ptr + 12) as i16, 70);
+        assert_eq!(bus.read_word(ctrl_ptr + 14) as i16, 140);
+    }
+
+    #[test]
+    fn dialogdispatch_movedialogitem_and_sizedialogitem_reject_invalid_parameters() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(256);
+
+        // MoveDialogItem with NIL dialog
+        bus.write_word(TEST_SP, 10);
+        bus.write_word(TEST_SP + 2, 20);
+        bus.write_word(TEST_SP + 4, 1);
+        bus.write_long(TEST_SP + 6, 0);
+        bus.write_word(TEST_SP + 10, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0510);
+        let _ = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert_eq!(bus.read_word(TEST_SP + 10) as i16, crate::dialog_manager::DIALOG_PARAM_ERR);
+
+        // MoveDialogItem with item_no = 0
+        bus.write_word(TEST_SP, 10);
+        bus.write_word(TEST_SP + 2, 20);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, dialog_ptr);
+        bus.write_word(TEST_SP + 10, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0510);
+        let _ = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert_eq!(bus.read_word(TEST_SP + 10) as i16, crate::dialog_manager::DIALOG_PARAM_ERR);
+
+        // SizeDialogItem with NIL dialog
+        bus.write_word(TEST_SP, 50);
+        bus.write_word(TEST_SP + 2, 60);
+        bus.write_word(TEST_SP + 4, 1);
+        bus.write_long(TEST_SP + 6, 0);
+        bus.write_word(TEST_SP + 10, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0511);
+        let _ = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert_eq!(bus.read_word(TEST_SP + 10) as i16, crate::dialog_manager::DIALOG_PARAM_ERR);
+
+        // SizeDialogItem with item_no = -1
+        bus.write_word(TEST_SP, 50);
+        bus.write_word(TEST_SP + 2, 60);
+        bus.write_word(TEST_SP + 4, 0xFFFF);
+        bus.write_long(TEST_SP + 6, dialog_ptr);
+        bus.write_word(TEST_SP + 10, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0511);
+        let _ = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert_eq!(bus.read_word(TEST_SP + 10) as i16, crate::dialog_manager::DIALOG_PARAM_ERR);
+    }
+
+    #[test]
     fn dialogdispatch_modal_dialog_first_entry_honors_preserved_default_and_cancel_items() {
         let (mut disp, mut cpu, mut bus) = setup();
         let dialog_ptr = 0x200000u32;

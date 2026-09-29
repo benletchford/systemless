@@ -31,6 +31,8 @@ use crate::dialog_manager::{
     evaluate_get_dialog_default_item_parameters,
     evaluate_could_dialog_parameters, evaluate_free_dialog_parameters,
     evaluate_could_alert_parameters, evaluate_free_alert_parameters,
+    evaluate_move_dialog_item_parameters, evaluate_move_dialog_item_rect,
+    evaluate_size_dialog_item_parameters, evaluate_size_dialog_item_rect,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -578,6 +580,88 @@ pub(super) fn dispatch_dialog_import(
             let tracks = cpu.gpr[4] != 0;
             let os_err = match evaluate_set_dialog_tracks_cursor_parameters(dialog, tracks) {
                 Ok(_params) => PPC_NO_ERR,
+                Err(err) => err,
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(os_err)))
+        }
+        PpcImportDispatcherTarget::MoveDialogItem => {
+            let dialog = cpu.gpr[3];
+            let item_no = cpu.gpr[4] as u16 as i16;
+            let in_horiz = cpu.gpr[5] as u16 as i16;
+            let in_vert = cpu.gpr[6] as u16 as i16;
+            let os_err = match evaluate_move_dialog_item_parameters(dialog, item_no, in_horiz, in_vert) {
+                Ok(params) => {
+                    let live_items = ppc_dialog_live_items(memory, handles, params.dialog_ptr());
+                    if let Some((_handle, ptr, _bytes, items)) = live_items {
+                        if let Some(item) = crate::dialog_manager::get_item_at_1_indexed(&items, params.item_number()) {
+                            let new_rect = evaluate_move_dialog_item_rect(item.rect, params.in_horiz(), params.in_vert());
+                            let item_addr = ptr + item.item_offset as u32;
+                            let rect_addr = item_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET;
+                            let _ = memory.write_u16_be(rect_addr, new_rect.0 as u16);
+                            let _ = memory.write_u16_be(rect_addr + 2, new_rect.1 as u16);
+                            let _ = memory.write_u16_be(rect_addr + 4, new_rect.2 as u16);
+                            let _ = memory.write_u16_be(rect_addr + 6, new_rect.3 as u16);
+                            if item.handle != 0 {
+                                if let Some(control) = ppc_control_ptr(memory, item.handle) {
+                                    let _ = ppc_write_rect(
+                                        memory,
+                                        control + PPC_CONTROL_RECT_OFFSET,
+                                        new_rect.0,
+                                        new_rect.1,
+                                        new_rect.2,
+                                        new_rect.3,
+                                    );
+                                }
+                            }
+                            PPC_NO_ERR
+                        } else {
+                            PPC_PARAM_ERR
+                        }
+                    } else {
+                        PPC_PARAM_ERR
+                    }
+                }
+                Err(err) => err,
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(os_err)))
+        }
+        PpcImportDispatcherTarget::SizeDialogItem => {
+            let dialog = cpu.gpr[3];
+            let item_no = cpu.gpr[4] as u16 as i16;
+            let in_width = cpu.gpr[5] as u16 as i16;
+            let in_height = cpu.gpr[6] as u16 as i16;
+            let os_err = match evaluate_size_dialog_item_parameters(dialog, item_no, in_width, in_height) {
+                Ok(params) => {
+                    let live_items = ppc_dialog_live_items(memory, handles, params.dialog_ptr());
+                    if let Some((_handle, ptr, _bytes, items)) = live_items {
+                        if let Some(item) = crate::dialog_manager::get_item_at_1_indexed(&items, params.item_number()) {
+                            let new_rect = evaluate_size_dialog_item_rect(item.rect, params.in_width(), params.in_height());
+                            let item_addr = ptr + item.item_offset as u32;
+                            let rect_addr = item_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET;
+                            let _ = memory.write_u16_be(rect_addr, new_rect.0 as u16);
+                            let _ = memory.write_u16_be(rect_addr + 2, new_rect.1 as u16);
+                            let _ = memory.write_u16_be(rect_addr + 4, new_rect.2 as u16);
+                            let _ = memory.write_u16_be(rect_addr + 6, new_rect.3 as u16);
+                            if item.handle != 0 {
+                                if let Some(control) = ppc_control_ptr(memory, item.handle) {
+                                    let _ = ppc_write_rect(
+                                        memory,
+                                        control + PPC_CONTROL_RECT_OFFSET,
+                                        new_rect.0,
+                                        new_rect.1,
+                                        new_rect.2,
+                                        new_rect.3,
+                                    );
+                                }
+                            }
+                            PPC_NO_ERR
+                        } else {
+                            PPC_PARAM_ERR
+                        }
+                    } else {
+                        PPC_PARAM_ERR
+                    }
+                }
                 Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(os_err)))
