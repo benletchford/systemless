@@ -16085,29 +16085,44 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 6);
                 let mut updated_control_rect = None;
                 let mut redraw_local_rect = None;
-                if dialog_ptr != 0 && item_no > 0 {
-                    let key = (dialog_ptr, item_no);
-                    if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
+                if let Some(query) = crate::dialog_manager::evaluate_dialog_item_visibility_query(
+                    dialog_ptr,
+                    item_no.max(0) as usize,
+                ) {
+                    let key = (query.dialog_ptr(), query.item_no());
+                    if let Some(items) = self.dialog_items.get_mut(&query.dialog_ptr()) {
                         if let Some(item) = crate::dialog_manager::get_item_at_1_indexed_mut(
                             items,
-                            item_no as usize,
+                            query.item_number(),
                         ) {
                             let rect = item.rect;
                             if let Some(change) = item.evaluate_hide() {
                                 self.hidden_dialog_item_rects.entry(key).or_insert(rect);
-                                item.rect = change.new_rect;
-                                updated_control_rect = Some(change.new_rect);
-                                redraw_local_rect = Some(change.enclosing_rect);
+                                item.rect = change.new_rect();
+                                updated_control_rect = Some(change.new_rect());
+                                redraw_local_rect = Some(change.enclosing_rect());
                             }
                         }
                     }
                     if let Some(rect) = redraw_local_rect {
-                        self.erase_dialog_item_enclosing_rect(bus, dialog_ptr, rect);
-                        self.invalidate_window_rect(bus, dialog_ptr, rect);
+                        self.erase_dialog_item_enclosing_rect(bus, query.dialog_ptr(), rect);
+                        self.invalidate_window_rect(bus, query.dialog_ptr(), rect);
                     }
                     if let Some(rect) = updated_control_rect {
+                        if let Some(item_handle_addr) =
+                            Self::dialog_item_handle_addr(bus, query.dialog_ptr(), query.item_no())
+                        {
+                            bus.write_word(
+                                item_handle_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET + 2,
+                                rect.1 as u16,
+                            );
+                            bus.write_word(
+                                item_handle_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET + 6,
+                                rect.3 as u16,
+                            );
+                        }
                         if let Some(ctrl_handle) =
-                            self.dialog_control_handle_for_item(dialog_ptr, item_no)
+                            self.dialog_control_handle_for_item(query.dialog_ptr(), query.item_no())
                         {
                             let ctrl_ptr = bus.read_long(ctrl_handle);
                             if ctrl_ptr != 0 {
@@ -16118,8 +16133,8 @@ impl super::TrapDispatcher {
                             }
                         }
                         if let Some(tracking) = self.dialog_tracking.as_mut() {
-                            if tracking.dialog_ptr == dialog_ptr {
-                                let idx = (item_no as usize).wrapping_sub(1);
+                            if tracking.dialog_ptr == query.dialog_ptr() {
+                                let idx = query.item_number().wrapping_sub(1);
                                 if idx < tracking.items.len() {
                                     tracking.items[idx].rect = rect;
                                 }
@@ -16145,27 +16160,42 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 6);
                 let mut updated_control_rect = None;
                 let mut redraw_local_rect = None;
-                if dialog_ptr != 0 && item_no > 0 {
-                    let key = (dialog_ptr, item_no);
-                    if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
+                if let Some(query) = crate::dialog_manager::evaluate_dialog_item_visibility_query(
+                    dialog_ptr,
+                    item_no.max(0) as usize,
+                ) {
+                    let key = (query.dialog_ptr(), query.item_no());
+                    if let Some(items) = self.dialog_items.get_mut(&query.dialog_ptr()) {
                         if let Some(item) = crate::dialog_manager::get_item_at_1_indexed_mut(
                             items,
-                            item_no as usize,
+                            query.item_number(),
                         ) {
                             let orig = self.hidden_dialog_item_rects.remove(&key);
                             if let Some(change) = item.evaluate_show(orig) {
-                                item.rect = change.new_rect;
-                                updated_control_rect = Some(change.new_rect);
-                                redraw_local_rect = Some(change.enclosing_rect);
+                                item.rect = change.new_rect();
+                                updated_control_rect = Some(change.new_rect());
+                                redraw_local_rect = Some(change.enclosing_rect());
                             }
                         }
                     }
                     if let Some(rect) = redraw_local_rect {
-                        self.invalidate_window_rect(bus, dialog_ptr, rect);
+                        self.invalidate_window_rect(bus, query.dialog_ptr(), rect);
                     }
                     if let Some(rect) = updated_control_rect {
+                        if let Some(item_handle_addr) =
+                            Self::dialog_item_handle_addr(bus, query.dialog_ptr(), query.item_no())
+                        {
+                            bus.write_word(
+                                item_handle_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET + 2,
+                                rect.1 as u16,
+                            );
+                            bus.write_word(
+                                item_handle_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET + 6,
+                                rect.3 as u16,
+                            );
+                        }
                         if let Some(ctrl_handle) =
-                            self.dialog_control_handle_for_item(dialog_ptr, item_no)
+                            self.dialog_control_handle_for_item(query.dialog_ptr(), query.item_no())
                         {
                             let ctrl_ptr = bus.read_long(ctrl_handle);
                             if ctrl_ptr != 0 {
@@ -16176,8 +16206,8 @@ impl super::TrapDispatcher {
                             }
                         }
                         if let Some(tracking) = self.dialog_tracking.as_mut() {
-                            if tracking.dialog_ptr == dialog_ptr {
-                                let idx = (item_no as usize).wrapping_sub(1);
+                            if tracking.dialog_ptr == query.dialog_ptr() {
+                                let idx = query.item_number().wrapping_sub(1);
                                 if idx < tracking.items.len() {
                                     tracking.items[idx].rect = rect;
                                 }
