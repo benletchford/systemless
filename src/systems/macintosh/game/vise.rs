@@ -20,6 +20,7 @@ const VISE_CATALOG_HEADER_LEN: usize = 20;
 const VISE_VERSION_35: u32 = 0x8001_0201;
 const VISE_VERSION_35_LITE: u32 = 0x8001_0202;
 const VISE_VERSION_36_LITE: u32 = 0x8001_0300;
+const VISE_VERSION_36_FULL: u32 = 0x8001_0304;
 const VISE_VERSION_EXTENDED_CATALOG: u32 = 0x8001_0307;
 const VISE_VERSION_PACKED_CATALOG: u32 = 0x8001_0308;
 const VISE_DIRECTORY_RECORD_LEN: usize = 78;
@@ -29,6 +30,11 @@ const VISE_EXTENDED_DIRECTORY_SUFFIX_LEN: usize = 66;
 const VISE_EXTENDED_FILE_SUFFIX_LEN: usize = 62;
 const VISE_PACKED_DIRECTORY_SUFFIX_LEN: usize = 70;
 const VISE_PACKED_FILE_SUFFIX_LEN: usize = 66;
+// The uncompressed 0x80010304 CVCT catalog adds these suffixes after each
+// fixed record. Observed in the public Macintosh Myth demo installer:
+// https://www.vintageapplemac.com/files/games/Myth%20Demo%20Installer.sit
+const VISE_36_FULL_DIRECTORY_SUFFIX_LEN: usize = 22;
+const VISE_36_FULL_FILE_SUFFIX_LEN: usize = 16;
 
 // Installer VISE 3 archive layout and transform reference:
 // ScummVM `common/compression/vise.cpp`, GPL-3.0-or-later, as of
@@ -242,6 +248,7 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
         VISE_VERSION_35
             | VISE_VERSION_35_LITE
             | VISE_VERSION_36_LITE
+            | VISE_VERSION_36_FULL
             | VISE_VERSION_EXTENDED_CATALOG
             | VISE_VERSION_PACKED_CATALOG
     ) {
@@ -344,9 +351,19 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                 cursor += VISE_DIRECTORY_RECORD_LEN;
                 let parent = read_u16(record, 68, "directory parent")? as usize;
                 let name_len = record[76] as usize;
-                if version == VISE_VERSION_36_LITE {
-                    range(catalog_data, cursor, 6, "VISE 3.6 directory extension")?;
-                    cursor += 6;
+                if matches!(version, VISE_VERSION_36_LITE | VISE_VERSION_36_FULL) {
+                    let suffix_len = if version == VISE_VERSION_36_FULL {
+                        VISE_36_FULL_DIRECTORY_SUFFIX_LEN
+                    } else {
+                        6
+                    };
+                    range(
+                        catalog_data,
+                        cursor,
+                        suffix_len,
+                        "VISE 3.6 directory extension",
+                    )?;
+                    cursor += suffix_len;
                 } else if extended_catalog {
                     let suffix_len = if version == VISE_VERSION_PACKED_CATALOG {
                         VISE_PACKED_DIRECTORY_SUFFIX_LEN
@@ -393,7 +410,15 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                 file_type.copy_from_slice(&record[40..44]);
                 let mut creator = [0; 4];
                 creator.copy_from_slice(&record[44..48]);
-                if extended_catalog {
+                if version == VISE_VERSION_36_FULL {
+                    range(
+                        catalog_data,
+                        cursor,
+                        VISE_36_FULL_FILE_SUFFIX_LEN,
+                        "VISE 3.6 full file suffix",
+                    )?;
+                    cursor += VISE_36_FULL_FILE_SUFFIX_LEN;
+                } else if extended_catalog {
                     let suffix_len = if version == VISE_VERSION_PACKED_CATALOG {
                         VISE_PACKED_FILE_SUFFIX_LEN
                     } else {
@@ -1587,5 +1612,46 @@ pub(crate) mod tests {
             pair.swap(0, 1);
         }
         assert_eq!(decode_vise_fork(&packed, 5).unwrap(), b"abcde");
+    }
+
+    #[test]
+    fn parses_vise_0304_directory_and_file_suffixes() {
+        let original = make_test_archive("Game", b"powerpc payload", b"resource fork");
+        let catalog_offset = read_u32(&original, 36, "catalog offset").unwrap() as usize;
+        let file_record_start = catalog_offset + VISE_CATALOG_HEADER_LEN + 4;
+        let mut file =
+            original[file_record_start..file_record_start + VISE_FILE_RECORD_LEN].to_vec();
+        file[92..94].copy_from_slice(&1u16.to_be_bytes());
+
+        let mut archive = original[..catalog_offset].to_vec();
+        archive[16..20].copy_from_slice(&VISE_VERSION_36_FULL.to_be_bytes());
+        let mut catalog = [0u8; VISE_CATALOG_HEADER_LEN];
+        catalog[..4].copy_from_slice(VISE_CATALOG_MAGIC);
+        catalog[16..18].copy_from_slice(&2u16.to_be_bytes());
+        archive.extend_from_slice(&catalog);
+        archive.extend_from_slice(b"DVCT");
+        let mut directory = [0u8; VISE_DIRECTORY_RECORD_LEN];
+        directory[76] = 6;
+        archive.extend_from_slice(&directory);
+        archive.extend_from_slice(&[0u8; VISE_36_FULL_DIRECTORY_SUFFIX_LEN]);
+        archive.extend_from_slice(b"Folder");
+        archive.extend_from_slice(b"FVCT");
+        archive.extend_from_slice(&file);
+        archive.extend_from_slice(&[0u8; VISE_36_FULL_FILE_SUFFIX_LEN]);
+        archive.extend_from_slice(b"Game");
+
+        let parsed = parse_vise(&archive).unwrap().unwrap();
+        assert_eq!(parsed.dirs, ["Folder"]);
+        assert_eq!(parsed.entries.len(), 1);
+        let game = &parsed.entries[0];
+        assert_eq!(game.path, "Folder/Game");
+        assert_eq!(
+            decode_vise_fork(game.data_packed, game.data_unpacked_len).unwrap(),
+            b"powerpc payload"
+        );
+        assert_eq!(
+            decode_vise_fork(game.rsrc_packed, game.rsrc_unpacked_len).unwrap(),
+            b"resource fork"
+        );
     }
 }
