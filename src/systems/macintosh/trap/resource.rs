@@ -273,6 +273,7 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
             | b"os  "
             | b"powr"
             | b"appr"
+            | b"apvr"
             | b"addr"
             | b"hdwr"
             | b"sdev"
@@ -4095,6 +4096,16 @@ impl super::TrapDispatcher {
                     // Dialog Manager (no theming).
                     b"appr" => {
                         cpu.write_reg(Register::A0, 0x0001);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // Gestalt Appearance Manager version ('apvr'). Apple
+                    // Gestalt Manager, gestaltAppearanceVersion: the low word
+                    // is BCD (version 1.0.1 = $0101).
+                    b"apvr" => {
+                        cpu.write_reg(
+                            Register::A0,
+                            u32::from(crate::machine_profile::APPEARANCE_MANAGER_VERSION_BCD),
+                        );
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltAddressingModeAttr ('addr') -> 32-bit clean.

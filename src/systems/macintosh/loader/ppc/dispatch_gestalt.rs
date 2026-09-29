@@ -153,6 +153,12 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
         b"os  " => Some((0x00FF, PPC_NO_ERR)),
         b"powr" => Some((0, PPC_NO_ERR)),
         b"appr" => Some((1, PPC_NO_ERR)),
+        // Apple Gestalt Manager, gestaltAppearanceVersion ('apvr'):
+        // version 1.0.1 is encoded as BCD $0101 in the low word.
+        b"apvr" => Some((
+            u32::from(crate::machine_profile::APPEARANCE_MANAGER_VERSION_BCD),
+            PPC_NO_ERR,
+        )),
         b"addr" => Some((0b111, PPC_NO_ERR)),
         b"sdev" => Some((0, PPC_NO_ERR)),
         b"stdf" => Some((1, PPC_NO_ERR)),

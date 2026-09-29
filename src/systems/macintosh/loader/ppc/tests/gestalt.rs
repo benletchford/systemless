@@ -59,6 +59,31 @@ fn gestalt_logical_ram_matches_physical_ram_without_virtual_memory() {
 }
 
 #[test]
+fn gestalt_appearance_version_matches_advertised_manager() {
+    let pef = synthetic_pef_with_import(b"Gestalt");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let response_ptr = PPC_HEAP_BASE;
+    loaded.memory.add_region(response_ptr, vec![0; 4]);
+
+    for (selector, expected) in [
+        (*b"appr", 1),
+        (
+            *b"apvr",
+            u32::from(crate::machine_profile::APPEARANCE_MANAGER_VERSION_BCD),
+        ),
+    ] {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = u32::from_be_bytes(selector);
+        loaded.cpu.gpr[4] = response_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u32_be(response_ptr), Some(expected));
+    }
+}
+
+#[test]
 fn hle_import_runner_handles_gestalt_powerpc_capabilities() {
     let pef = synthetic_pef_with_import(b"Gestalt");
     let mut loaded = load_pef_application(&pef).unwrap();

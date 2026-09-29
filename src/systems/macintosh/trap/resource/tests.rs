@@ -5792,6 +5792,23 @@ fn gestalt_vers() {
 }
 
 #[test]
+fn gestalt_appearance_version_matches_advertised_manager() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    for (selector, expected) in [
+        (*b"appr", 1),
+        (
+            *b"apvr",
+            u32::from(crate::machine_profile::APPEARANCE_MANAGER_VERSION_BCD),
+        ),
+    ] {
+        cpu.write_reg(Register::D0, u32::from_be_bytes(selector));
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::A0), expected);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+}
+
+#[test]
 fn gestalt_reports_materialized_trap_table_bases() {
     let (mut disp, mut cpu, mut bus) = setup();
 
