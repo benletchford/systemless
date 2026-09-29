@@ -10,6 +10,7 @@ architectures:
 - ppc
 default_architecture: ppc
 category: Role-Playing
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -23,6 +24,19 @@ compatibility:
       Tristram with the game HUD. Browser launch remains unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3029
+  - date: "2026-09-29"
+    tester: Catalogue maintainer
+    systemless_version: 82e063408e8b627b1374e0bd7db4688da0bf5096
+    architecture: ppc
+    environment: >-
+      Local Chrome preview on Apple M1 with the unchanged archive. The browser
+      advances through the startup dialog, shareware menu, class selection,
+      and character naming to Tristram. A ground click moves the Warrior and
+      scrolls the camera while the HUD remains visible. A steady-state sample
+      measured approximately 60 guest ticks per second. The transition from
+      the startup dialog includes a long black loading screen.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3329
 runtime:
   application_partition_size: 33554432
   screen_depth: 8
@@ -74,13 +88,14 @@ artifacts:
 references:
 - https://classicmacdemos.com/diablo
 - https://github.com/benletchford/systemless/issues/3029
+- https://github.com/benletchford/systemless/issues/3329
 ---
 
 ## Return to Tristram
 
 This original Macintosh Diablo Demo 1.04 includes the PowerPC-only Diablo
 Spawn application and its game data. It reaches live single-player gameplay
-in Systemless. Browser launch remains disabled until browser testing is
-approved.
+in Systemless and in the browser. The screen can stay black for a while during
+loading before the shareware menu appears.
 
 ![A warrior in Diablo Spawn's Tristram, running in Systemless](https://assets.systemless.org/catalogue/media/sha256/12/125cff131af38ea34dd27752d5886167f4aa05951a82c5531a12007c3e202288.png)
