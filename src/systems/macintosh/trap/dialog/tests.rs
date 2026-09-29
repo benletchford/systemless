@@ -1431,6 +1431,79 @@
     }
 
     #[test]
+    fn dialogdispatch_appenddialogitemlist_selector_12_appends_items_and_returns_noerr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(256);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(32);
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+
+        bus.write_word(ditl_ptr, 0); // 1 item (count-1)
+        bus.write_long(ditl_ptr + 2, 0);
+        bus.write_word(ditl_ptr + 6, 10);
+        bus.write_word(ditl_ptr + 8, 20);
+        bus.write_word(ditl_ptr + 10, 50);
+        bus.write_word(ditl_ptr + 12, 100);
+        bus.write_byte(ditl_ptr + 14, 4);
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 4,
+                rect: (10, 20, 50, 100),
+                text: "OK".to_string(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        let ditl_300 = build_test_ditl_items(&[
+            (4, (10, 10, 30, 80), b"Extra"),
+        ]);
+        disp.install_test_resource(&mut bus, *b"DITL", 300, &ditl_300);
+
+        // 1. AppendDialogItemList(dialog, 300, appendDITLBottom = 2)
+        bus.write_word(TEST_SP, 2);
+        bus.write_word(TEST_SP + 2, 300);
+        bus.write_long(TEST_SP + 4, dialog_ptr);
+        bus.write_word(TEST_SP + 8, 0xBEEF);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0412);
+
+        let result = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 8), 0);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+
+        let items = disp.dialog_items.get(&dialog_ptr).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1].text, "Extra");
+
+        // 2. Reject NIL dialog
+        bus.write_word(TEST_SP, 2);
+        bus.write_word(TEST_SP + 2, 300);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0412);
+        let _ = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert_eq!(bus.read_word(TEST_SP + 8) as i16, crate::dialog_manager::DIALOG_PARAM_ERR);
+
+        // 3. Reject missing DITL resource
+        bus.write_word(TEST_SP, 2);
+        bus.write_word(TEST_SP + 2, 9999);
+        bus.write_long(TEST_SP + 4, dialog_ptr);
+        bus.write_word(TEST_SP + 8, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0412);
+        let _ = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert_eq!(bus.read_word(TEST_SP + 8) as i16, crate::dialog_manager::DIALOG_RES_NOT_FOUND);
+    }
+
+    #[test]
     fn dialogdispatch_modal_dialog_first_entry_honors_preserved_default_and_cancel_items() {
         let (mut disp, mut cpu, mut bus) = setup();
         let dialog_ptr = 0x200000u32;

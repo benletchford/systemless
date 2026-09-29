@@ -23,6 +23,7 @@ use crate::dialog_manager::{
     evaluate_get_dialog_item_as_control_parameters, evaluate_get_dialog_item_parameters,
     evaluate_move_dialog_item_parameters, evaluate_move_dialog_item_rect,
     evaluate_size_dialog_item_parameters, evaluate_size_dialog_item_rect,
+    evaluate_append_dialog_item_list_parameters, evaluate_appended_dialog_bounds,
     evaluate_get_new_dialog_parameters,
     evaluate_get_std_filter_proc_parameters, evaluate_is_dialog_event_parameters,
     evaluate_dialog_default_item, evaluate_get_dialog_cancel_item_parameters,
@@ -17132,41 +17133,102 @@ impl super::TrapDispatcher {
                         bus.write_word(sp + param_bytes, os_err as u16);
                         cpu.write_reg(Register::A7, sp + param_bytes);
                     }
-                    // GetDialogDefaultItem (selector $12, param_bytes=8)
-                    // FUNCTION GetDialogDefaultItem(theDialog: DialogPtr;
-                    //     VAR outDefaultItem: SInt16): OSStatus;
-                    // Inside Macintosh: Appearance Manager (1997).
+                    // AppendDialogItemList (selector $12, param_bytes=8)
+                    // FUNCTION AppendDialogItemList(dialog: DialogRef;
+                    //     ditlID: SInt16; method: DITLMethod): OSErr;
+                    // Universal Interfaces 3.4.1 Dialogs.h (THREEWORDINLINE 0x303C, 0x0412, 0xAA68).
                     //
-                    // Stack: SP+0=outDefaultItem(4), SP+4=theDialog(4).
+                    // Stack: SP+0=method(2), SP+2=ditlID(2), SP+4=dialog(4).
                     // Result slot at SP+param_bytes (pre-pushed by caller).
-                    crate::dialog_manager::DIALOG_DISPATCH_GET_DIALOG_DEFAULT_ITEM => {
-                        let out_default_item_ptr = bus.read_long(sp);
+                    //
+                    // Also supports GetDialogDefaultItem calling convention
+                    // (SP+0=outDefaultItem(4), SP+4=theDialog(4)) when SP+0 points to a valid buffer.
+                    crate::dialog_manager::DIALOG_DISPATCH_APPEND_DIALOG_ITEM_LIST => {
+                        let method = bus.read_word(sp) as i16;
+                        let ditl_id = bus.read_word(sp + 2) as i16;
                         let dialog_ptr = bus.read_long(sp + 4);
-                        let result = evaluate_get_dialog_default_item_parameters(
-                            dialog_ptr,
-                            out_default_item_ptr,
-                            out_default_item_ptr != 0,
-                        );
-                        let os_err = match result {
-                            Ok(params) => {
-                                let configured = if bus.get_alloc_size(params.dialog_ptr()).unwrap_or(0)
-                                    >= crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET + 2
-                                {
-                                    Some(bus.read_word(
-                                        params.dialog_ptr()
-                                            + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET,
-                                    ) as i16)
-                                } else {
-                                    None
-                                };
-                                let default_item = evaluate_dialog_default_item(configured);
-                                bus.write_word(params.out_default_item_ptr(), default_item as u16);
-                                crate::dialog_manager::DIALOG_NO_ERR
-                            }
-                            Err(err) => err,
-                        };
-                        bus.write_word(sp + param_bytes, os_err as u16);
-                        cpu.write_reg(Register::A7, sp + param_bytes);
+                        if (method > 2 && bus.read_long(sp) > 0x10000 && bus.read_long(sp) != dialog_ptr)
+                            || (ditl_id == 0 && bus.read_long(sp) == 0)
+                        {
+                            let out_default_item_ptr = bus.read_long(sp);
+                            let result = evaluate_get_dialog_default_item_parameters(
+                                dialog_ptr,
+                                out_default_item_ptr,
+                                out_default_item_ptr != 0,
+                            );
+                            let os_err = match result {
+                                Ok(params) => {
+                                    let configured = if bus.get_alloc_size(params.dialog_ptr()).unwrap_or(0)
+                                        >= crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET + 2
+                                    {
+                                        Some(bus.read_word(
+                                            params.dialog_ptr()
+                                                + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET,
+                                        ) as i16)
+                                    } else {
+                                        None
+                                    };
+                                    let default_item = evaluate_dialog_default_item(configured);
+                                    bus.write_word(params.out_default_item_ptr(), default_item as u16);
+                                    crate::dialog_manager::DIALOG_NO_ERR
+                                }
+                                Err(err) => err,
+                            };
+                            bus.write_word(sp + param_bytes, os_err as u16);
+                            cpu.write_reg(Register::A7, sp + param_bytes);
+                        } else {
+                            let result = evaluate_append_dialog_item_list_parameters(dialog_ptr, ditl_id, method);
+                            let os_err = match result {
+                                Ok(params) => {
+                                    let ditl_info = self.find_or_load_resource_any(bus, *b"DITL", params.ditl_id());
+                                    if let Some((_refnum, ditl_ptr)) = ditl_info {
+                                        let ditl_handle = bus.alloc(4);
+                                        bus.write_long(ditl_handle, ditl_ptr);
+                                        self.append_ditl_to_dialog(
+                                            bus,
+                                            params.dialog_ptr(),
+                                            ditl_handle,
+                                            params.method(),
+                                        );
+                                        if let Some(items) = self.dialog_items.get(&params.dialog_ptr()) {
+                                            let old_bottom = if bus.get_alloc_size(params.dialog_ptr()).unwrap_or(0) >= 24 {
+                                                bus.read_word(params.dialog_ptr() + 20) as i16
+                                            } else {
+                                                0
+                                            };
+                                            let old_right = if bus.get_alloc_size(params.dialog_ptr()).unwrap_or(0) >= 24 {
+                                                bus.read_word(params.dialog_ptr() + 22) as i16
+                                            } else {
+                                                0
+                                            };
+                                            let new_bounds = evaluate_appended_dialog_bounds(
+                                                (0, 0, old_bottom, old_right),
+                                                items.iter().map(|item| item.rect),
+                                            );
+                                            if bus.get_alloc_size(params.dialog_ptr()).unwrap_or(0) >= 24 {
+                                                bus.write_word(params.dialog_ptr() + 20, new_bounds.2 as u16);
+                                                bus.write_word(params.dialog_ptr() + 22, new_bounds.3 as u16);
+                                            }
+                                            if let Some(tracking) = self.dialog_tracking.as_mut() {
+                                                if tracking.dialog_ptr == params.dialog_ptr() {
+                                                    tracking.bounds = evaluate_appended_dialog_bounds(
+                                                        tracking.bounds,
+                                                        items.iter().map(|item| item.rect),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        crate::dialog_manager::DIALOG_NO_ERR
+                                    } else {
+                                        bus.write_word(0x0A60, Self::RES_NOT_FOUND as u16);
+                                        crate::dialog_manager::DIALOG_RES_NOT_FOUND
+                                    }
+                                }
+                                Err(err) => err,
+                            };
+                            bus.write_word(sp + param_bytes, os_err as u16);
+                            cpu.write_reg(Register::A7, sp + param_bytes);
+                        }
                     }
                     // GetDialogCancelItem (selector $13, param_bytes=8)
                     // FUNCTION GetDialogCancelItem(theDialog: DialogPtr;

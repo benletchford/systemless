@@ -2024,6 +2024,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::SetDialogTracksCursor
         | PpcImportDispatcherTarget::MoveDialogItem
         | PpcImportDispatcherTarget::SizeDialogItem
+        | PpcImportDispatcherTarget::AppendDialogItemList
         | PpcImportDispatcherTarget::CouldDialog
         | PpcImportDispatcherTarget::FreeDialog
         | PpcImportDispatcherTarget::CouldAlert
