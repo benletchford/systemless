@@ -41,6 +41,60 @@ pub const DIALOG_STANDARD_ALERT_STACK_OFFSET: u32 = 180;
 /// Canonical Dialog window kind. Inside Macintosh Volume I, p. I-273.
 pub const DIALOG_WINDOW_KIND: u16 = 2;
 
+/// Canonical evaluated initial fields for a newly created `DialogRecord`.
+///
+/// Inside Macintosh Volume I, pp. I-407--I-411:
+/// Newly created dialogs initialize `windowKind` to `dialogKind` (2), store the items list handle,
+/// initialize `textH` to NIL (0), `editField` to -1 (no field active), `editOpen` to 0 (closed),
+/// and `aDefItem` to 1 (item 1 default).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DialogRecordInitEvaluation {
+    items_handle: u32,
+}
+
+impl DialogRecordInitEvaluation {
+    /// Constructs initial DialogRecord evaluation from an items list handle.
+    pub const fn new(items_handle: u32) -> Self {
+        Self { items_handle }
+    }
+
+    /// The window kind word (`dialogKind` = 2).
+    pub const fn window_kind(&self) -> u16 {
+        DIALOG_WINDOW_KIND
+    }
+
+    /// The item list handle.
+    pub const fn items_handle(&self) -> u32 {
+        self.items_handle
+    }
+
+    /// The initial text handle (NIL = 0).
+    #[allow(dead_code)]
+    pub const fn text_handle(&self) -> u32 {
+        0
+    }
+
+    /// The initial edit field index (-1 = no edit field active).
+    pub const fn edit_field(&self) -> i16 {
+        DIALOG_INITIAL_EDIT_FIELD
+    }
+
+    /// The initial edit open flag (0 = closed).
+    pub const fn edit_open(&self) -> i16 {
+        DIALOG_INITIAL_EDIT_OPEN
+    }
+
+    /// The initial default item number (1 = item 1 is default).
+    pub const fn default_item(&self) -> i16 {
+        DIALOG_INITIAL_DEFAULT_ITEM
+    }
+}
+
+/// Evaluates the initial `DialogRecord` fields for a dialog with the given item list handle.
+pub const fn evaluate_dialog_record_init(items_handle: u32) -> DialogRecordInitEvaluation {
+    DialogRecordInitEvaluation::new(items_handle)
+}
+
 /// Canonical DialogDispatch ($AA68) routine selectors.
 /// Macintosh Toolbox Essentials (1992), pp. 6-162--6-167.
 #[allow(dead_code)]
@@ -981,6 +1035,82 @@ where
     I: IntoIterator<Item = &'a (i16, i16, i16, i16)>,
 {
     find_dialog_item_at_local_point(rects, local_v, local_h).map_or(-1, |idx| idx as i16)
+}
+
+/// The evaluated input parameters for a `FindDItem` / `FindDialogItem` query.
+///
+/// Inside Macintosh Volume IV, p. IV-60 and Macintosh Toolbox Essentials (1992), p. 6-125:
+/// `FUNCTION FindDItem(theDialog: DialogPtr; thePt: Point): INTEGER;`
+/// Takes a dialog pointer and dialog-local coordinates (`thePt`). If `theDialog` is NIL (0),
+/// the query is invalid and yields `-1`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FindDialogItemQuery {
+    dialog_ptr: u32,
+    pt_v: i16,
+    pt_h: i16,
+}
+
+impl FindDialogItemQuery {
+    /// Constructs a query from dialog pointer and vertical/horizontal local coordinates.
+    pub const fn new(dialog_ptr: u32, pt_v: i16, pt_h: i16) -> Self {
+        Self {
+            dialog_ptr,
+            pt_v,
+            pt_h,
+        }
+    }
+
+    /// The target dialog pointer.
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// The vertical dialog-local coordinate.
+    pub const fn pt_v(&self) -> i16 {
+        self.pt_v
+    }
+
+    /// The horizontal dialog-local coordinate.
+    pub const fn pt_h(&self) -> i16 {
+        self.pt_h
+    }
+
+    /// The dialog-local point as `(v, h)`.
+    #[allow(dead_code)]
+    pub const fn point(&self) -> (i16, i16) {
+        (self.pt_v, self.pt_h)
+    }
+
+    /// The dialog-local point packed as `(v << 16) | (h & 0xffff)`.
+    #[allow(dead_code)]
+    pub const fn packed_point(&self) -> u32 {
+        ((self.pt_v as u16 as u32) << 16) | (self.pt_h as u16 as u32)
+    }
+}
+
+/// Evaluates a `FindDItem` / `FindDialogItem` query from dialog pointer and (v, h) coordinates.
+/// Returns `None` if `dialog_ptr == 0`.
+pub const fn evaluate_find_dialog_item_query(
+    dialog_ptr: u32,
+    pt_v: i16,
+    pt_h: i16,
+) -> Option<FindDialogItemQuery> {
+    if dialog_ptr == 0 {
+        None
+    } else {
+        Some(FindDialogItemQuery::new(dialog_ptr, pt_v, pt_h))
+    }
+}
+
+/// Evaluates a `FindDialogItem` query from dialog pointer and a 32-bit packed `Point` (`(v << 16) | h`).
+/// Returns `None` if `dialog_ptr == 0`.
+pub const fn evaluate_find_dialog_item_packed(
+    dialog_ptr: u32,
+    point: u32,
+) -> Option<FindDialogItemQuery> {
+    let v = (point >> 16) as u16 as i16;
+    let h = point as u16 as i16;
+    evaluate_find_dialog_item_query(dialog_ptr, v, h)
 }
 
 /// Header representation for a dialog item containing its type, handle/ProcPtr, and display rectangle.
@@ -5531,6 +5661,46 @@ mod tests {
         let clamped = evaluate_param_text([Some(&long_bytes), None, None, None]);
         assert_eq!(clamped.slot(0).unwrap().len(), 255);
         assert_eq!(clamped.slot(0).unwrap(), &vec![b'X'; 255][..]);
+    }
+
+    #[test]
+    fn find_dialog_item_and_dialog_record_init_evaluation() {
+        // DialogRecordInitEvaluation
+        let init = evaluate_dialog_record_init(0x1234_5678);
+        assert_eq!(init.window_kind(), 2);
+        assert_eq!(init.items_handle(), 0x1234_5678);
+        assert_eq!(init.text_handle(), 0);
+        assert_eq!(init.edit_field(), -1);
+        assert_eq!(init.edit_open(), 0);
+        assert_eq!(init.default_item(), 1);
+
+        // FindDialogItemQuery: null dialog pointer returns None
+        assert_eq!(evaluate_find_dialog_item_query(0, 10, 20), None);
+        assert_eq!(evaluate_find_dialog_item_packed(0, 0x000A_0014), None);
+
+        // FindDialogItemQuery: valid query
+        let query = evaluate_find_dialog_item_query(0x1000, 15, 25).unwrap();
+        assert_eq!(query.dialog_ptr(), 0x1000);
+        assert_eq!(query.pt_v(), 15);
+        assert_eq!(query.pt_h(), 25);
+        assert_eq!(query.point(), (15, 25));
+        assert_eq!(query.packed_point(), 0x000F_0019);
+
+        // FindDialogItemQuery: from packed point
+        let packed_query = evaluate_find_dialog_item_packed(0x2000, 0x000F_0019).unwrap();
+        assert_eq!(packed_query.dialog_ptr(), 0x2000);
+        assert_eq!(packed_query.pt_v(), 15);
+        assert_eq!(packed_query.pt_h(), 25);
+        assert_eq!(packed_query.point(), (15, 25));
+
+        // Negative coordinates packed correctly
+        let neg_query = evaluate_find_dialog_item_query(0x3000, -10, -20).unwrap();
+        assert_eq!(neg_query.pt_v(), -10);
+        assert_eq!(neg_query.pt_h(), -20);
+        let from_packed_neg =
+            evaluate_find_dialog_item_packed(0x3000, neg_query.packed_point()).unwrap();
+        assert_eq!(from_packed_neg.pt_v(), -10);
+        assert_eq!(from_packed_neg.pt_h(), -20);
     }
 }
 
