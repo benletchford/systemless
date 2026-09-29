@@ -145,8 +145,9 @@ pub(super) fn dispatch_dialog_import(
 
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::InitDialogs => {
+            let eval = crate::dialog_manager::evaluate_init_dialogs(cpu.gpr[3]);
             toolbox_startup.dialogs_initialized = true;
-            toolbox_startup.dialog_resume_proc = cpu.gpr[3];
+            toolbox_startup.dialog_resume_proc = eval.resume_proc();
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetNewDialog => {
@@ -865,20 +866,25 @@ fn ppc_release_dialog_storage(
 }
 
 fn ppc_param_text(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, param_text: &mut [Vec<u8>; 4]) {
-    for (index, slot) in param_text.iter_mut().enumerate() {
+    let mut storage: [Option<Vec<u8>>; crate::dialog_manager::PARAM_TEXT_SLOT_COUNT] =
+        [None, None, None, None];
+    for (index, slot_storage) in storage.iter_mut().enumerate() {
         let ptr = cpu.gpr[3 + index];
-        if ptr == 0 {
-            continue;
-        }
-        if let Some(bytes) = ppc_read_pstring_bytes(memory, ptr) {
-            *slot = bytes;
+        if ptr != 0 {
+            if let Some(bytes) = ppc_read_pstring_bytes(memory, ptr) {
+                *slot_storage = Some(bytes);
+            }
         }
     }
+    let eval = crate::dialog_manager::evaluate_param_text([
+        storage[0].as_deref(),
+        storage[1].as_deref(),
+        storage[2].as_deref(),
+        storage[3].as_deref(),
+    ]);
+    eval.apply_to(param_text);
     if ppc_hle_trace_enabled() {
-        let strings = param_text
-            .iter()
-            .map(|bytes| decode_mac_roman(bytes))
-            .collect::<Vec<_>>();
+        let strings = eval.decoded_strings(param_text);
         eprintln!("[PPC-TRACE] ParamText strings={:?}", strings);
     }
 }
