@@ -9,7 +9,7 @@ use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::dialog_manager::{
     dialog_dbox_frame_rect, dialog_item_base_type, dialog_item_resource_type,
-    dialog_target_for_event, edit_text_frame_rect, find_dialog_item_hit,
+    dialog_target_for_event, edit_text_frame_rect, evaluate_find_dialog_item, find_dialog_item_hit,
     global_to_dialog_local_point, is_dialog_item_button, is_dialog_item_control,
     is_dialog_item_disabled, is_dialog_item_edit_text, is_dialog_item_enabled,
     is_dialog_item_resource, is_dialog_item_text, normalize_selection_bounds,
@@ -16012,16 +16012,11 @@ impl super::TrapDispatcher {
                             item_no as usize,
                         ) {
                             let rect = item.rect;
-                            // MTE 1992, 6-123: already-hidden items (left > 8192) are a no-op.
-                            if !crate::dialog_manager::is_dialog_item_rect_hidden(rect) {
-                                let enclosing = crate::dialog_manager::dialog_item_enclosing_rect(
-                                    item.item_type,
-                                    rect,
-                                );
+                            if let Some(change) = item.evaluate_hide() {
                                 self.hidden_dialog_item_rects.entry(key).or_insert(rect);
-                                item.rect = crate::dialog_manager::hide_dialog_item_rect(rect);
-                                updated_control_rect = Some(item.rect);
-                                redraw_local_rect = Some(enclosing);
+                                item.rect = change.new_rect;
+                                updated_control_rect = Some(change.new_rect);
+                                redraw_local_rect = Some(change.enclosing_rect);
                             }
                         }
                     }
@@ -16076,20 +16071,11 @@ impl super::TrapDispatcher {
                             items,
                             item_no as usize,
                         ) {
-                            let rect = item.rect;
-                            // MTE 1992, 6-124: already-visible items (left < 8192) are a no-op.
-                            if crate::dialog_manager::is_dialog_item_rect_hidden(rect) {
-                                let restored_rect =
-                                    self.hidden_dialog_item_rects.remove(&key).unwrap_or_else(
-                                        || crate::dialog_manager::show_dialog_item_rect(rect),
-                                    );
-                                let enclosing = crate::dialog_manager::dialog_item_enclosing_rect(
-                                    item.item_type,
-                                    restored_rect,
-                                );
-                                item.rect = restored_rect;
-                                updated_control_rect = Some(restored_rect);
-                                redraw_local_rect = Some(enclosing);
+                            let orig = self.hidden_dialog_item_rects.remove(&key);
+                            if let Some(change) = item.evaluate_show(orig) {
+                                item.rect = change.new_rect;
+                                updated_control_rect = Some(change.new_rect);
+                                redraw_local_rect = Some(change.enclosing_rect);
                             }
                         }
                     }
@@ -16149,12 +16135,12 @@ impl super::TrapDispatcher {
                 let result: i16 = if dialog_ptr == 0 {
                     -1
                 } else if let Some(items) = self.dialog_items.get(&dialog_ptr) {
-                    crate::dialog_manager::find_dialog_item_at_local_point(
-                        items.iter().map(|item| &item.rect),
+                    evaluate_find_dialog_item(
+                        items.iter().map(|item| (item.rect, item.item_type)),
                         pt_v,
                         pt_h,
+                        |_| true,
                     )
-                    .map_or(-1, |idx| idx as i16)
                 } else {
                     -1
                 };

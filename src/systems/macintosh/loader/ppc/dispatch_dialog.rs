@@ -3,11 +3,11 @@
 use super::*;
 use crate::dialog_manager::{
     dialog_item_base_type, dialog_item_resource_type_u32, dialog_rect_to_global,
-    dialog_target_for_event, dialog_text_rect, edit_text_frame_rect,
+    dialog_target_for_event, dialog_text_rect, edit_text_frame_rect, evaluate_dialog_select,
+    evaluate_find_dialog_item, evaluate_hide_dialog_item, evaluate_show_dialog_item,
     extract_dialog_item_text_bytes, find_dialog_item_hit, global_to_dialog_local_point,
-    hide_dialog_item_rect, is_dialog_item_rect_hidden, offset_ditl_bytes, parse_ditl_items,
-    position_dialog_bounds as unified_position_dialog_bounds, prepare_get_dialog_item_text,
-    prepare_set_dialog_item_text, show_dialog_item_rect, DialogItemRecord,
+    offset_ditl_bytes, parse_ditl_items, position_dialog_bounds as unified_position_dialog_bounds,
+    prepare_get_dialog_item_text, prepare_set_dialog_item_text, DialogItemRecord,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_DEFAULT_ITEM, DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -979,7 +979,7 @@ fn ppc_dispatch_dialog_compatibility(
                 }
             };
 
-            let action = crate::dialog_manager::evaluate_dialog_select(
+            let action = evaluate_dialog_select(
                 event.what,
                 event.message,
                 event.where_v,
@@ -1105,15 +1105,31 @@ fn ppc_dispatch_dialog_compatibility(
             let point = cpu.gpr[4];
             let v = (point >> 16) as u16 as i16;
             let h = point as u16 as i16;
-            // FindDialogItem takes dialog-local coordinates, so pass an empty
-            // origin and let the shared hit test apply the same control-list
-            // and group-box fall-through rules as DialogSelect.
+            // Inside Macintosh Volume IV, p. IV-60 and Macintosh Toolbox Essentials (1992), p. 6-125:
+            // FindDialogItem takes dialog-local coordinates and returns the 0-indexed item number
+            // of any item containing the point, whether enabled or disabled, or -1 if none match.
+            // Control items use ppc_control_part_at_point so transparent group box bodies fall through.
             let found = ppc_dialog_items_for_dialog(memory, handles, dialog)
-                .and_then(|items| {
-                    ppc_dialog_item_at_global_point(memory, controls, &items, (0, 0, 0, 0), v, h)
+                .map(|items| {
+                    evaluate_find_dialog_item(
+                        items.iter().map(|item| (item.rect, item.item_type)),
+                        v,
+                        h,
+                        |index| {
+                            let item = &items[index];
+                            if item.handle != 0
+                                && controls.iter().any(|record| record.handle == item.handle)
+                            {
+                                ppc_control_part_at_point(memory, controls, item.handle, v, h)
+                                    .is_some_and(|part| part != 0)
+                            } else {
+                                true
+                            }
+                        },
+                    )
                 })
-                .map_or(u32::MAX, |item| u32::from(item) - 1);
-            PpcImportAction::Return(found)
+                .unwrap_or(-1);
+            PpcImportAction::Return(found as i32 as u32)
         }
         PpcDialogCompatibilityOperation::HideDialogItem
         | PpcDialogCompatibilityOperation::ShowDialogItem => {
@@ -1126,17 +1142,15 @@ fn ppc_dispatch_dialog_compatibility(
                     .and_then(|index| items.get(index))
                 {
                     let hide = operation == PpcDialogCompatibilityOperation::HideDialogItem;
-                    let is_hidden = is_dialog_item_rect_hidden(item.rect);
-                    let should_move = if hide { !is_hidden } else { is_hidden };
-                    if should_move {
-                        let new_rect = if hide {
-                            hide_dialog_item_rect(item.rect)
-                        } else {
-                            show_dialog_item_rect(item.rect)
-                        };
+                    let change = if hide {
+                        evaluate_hide_dialog_item(item.item_type, item.rect)
+                    } else {
+                        evaluate_show_dialog_item(item.item_type, item.rect, None)
+                    };
+                    if let Some(change) = change {
                         let item_addr = ptr + item.item_offset as u32;
-                        let _ = memory.write_u16_be(item_addr + 6, new_rect.1 as u16);
-                        let _ = memory.write_u16_be(item_addr + 10, new_rect.3 as u16);
+                        let _ = memory.write_u16_be(item_addr + 6, change.new_rect.1 as u16);
+                        let _ = memory.write_u16_be(item_addr + 10, change.new_rect.3 as u16);
                     }
                 }
             }
