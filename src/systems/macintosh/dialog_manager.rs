@@ -1911,6 +1911,65 @@ pub fn evaluate_select_dialog_item_text(
     })
 }
 
+/// Evaluated teardown parameters for `CloseDialog` and `DisposeDialog`.
+///
+/// Inside Macintosh Volume I, p. I-413, and Macintosh Toolbox Essentials (1992), pp. 6-119--6-120:
+/// - `CloseDialog` removes the dialog's window from the window list and frees standard items/controls,
+///   but retains the `DialogRecord` memory and the DITL handle (caller-supplied `dStorage`).
+/// - `DisposeDialog` removes the dialog's window and frees standard items/controls, and additionally
+///   disposes the copied DITL handle and the `DialogRecord` memory allocated by `GetNewDialog`/`NewDialog`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DialogTearDownEvaluation {
+    /// Target dialog pointer.
+    pub dialog_ptr: u32,
+    /// Whether the dialog record and its copied items handle should be released.
+    pub dispose_record: bool,
+}
+
+#[allow(dead_code)]
+impl DialogTearDownEvaluation {
+    /// Whether this teardown represents `DisposeDialog` (releasing dialog record and items handle).
+    pub fn is_dispose(&self) -> bool {
+        self.dispose_record
+    }
+
+    /// Whether this teardown represents `CloseDialog` (preserving dialog record and items handle).
+    pub fn is_close(&self) -> bool {
+        !self.dispose_record
+    }
+}
+
+/// Evaluates tearing down a dialog via `CloseDialog` (`is_dispose == false`) or `DisposeDialog` (`is_dispose == true`).
+///
+/// Returns `None` if `dialog_ptr == 0`.
+pub fn evaluate_close_or_dispose_dialog(
+    dialog_ptr: u32,
+    is_dispose: bool,
+) -> Option<DialogTearDownEvaluation> {
+    if dialog_ptr == 0 {
+        None
+    } else {
+        Some(DialogTearDownEvaluation {
+            dialog_ptr,
+            dispose_record: is_dispose,
+        })
+    }
+}
+
+/// Evaluates closing a dialog via `CloseDialog`.
+///
+/// Returns `None` if `dialog_ptr == 0`.
+pub fn evaluate_close_dialog(dialog_ptr: u32) -> Option<DialogTearDownEvaluation> {
+    evaluate_close_or_dispose_dialog(dialog_ptr, false)
+}
+
+/// Evaluates disposing a dialog via `DisposeDialog`.
+///
+/// Returns `None` if `dialog_ptr == 0`.
+pub fn evaluate_dispose_dialog(dialog_ptr: u32) -> Option<DialogTearDownEvaluation> {
+    evaluate_close_or_dispose_dialog(dialog_ptr, true)
+}
+
 /// Computes the outer bounding rectangle and corner oval radius for drawing the standard 3px bold
 /// default button ring around a push button rectangle.
 ///
@@ -4754,6 +4813,39 @@ mod tests {
         };
         assert_eq!(button_record.select_text(0, -1), None);
         assert_eq!(button_record.evaluate_select_text(0, 1), None);
+    }
+
+    #[test]
+    fn dialog_teardown_evaluation() {
+        // Zero dialog pointer returns None for all variants
+        assert_eq!(evaluate_close_or_dispose_dialog(0, false), None);
+        assert_eq!(evaluate_close_or_dispose_dialog(0, true), None);
+        assert_eq!(evaluate_close_dialog(0), None);
+        assert_eq!(evaluate_dispose_dialog(0), None);
+
+        // CloseDialog evaluation
+        let close_eval = evaluate_close_dialog(0x1000).unwrap();
+        assert_eq!(close_eval.dialog_ptr, 0x1000);
+        assert!(!close_eval.dispose_record);
+        assert!(close_eval.is_close());
+        assert!(!close_eval.is_dispose());
+
+        // DisposeDialog evaluation
+        let dispose_eval = evaluate_dispose_dialog(0x2000).unwrap();
+        assert_eq!(dispose_eval.dialog_ptr, 0x2000);
+        assert!(dispose_eval.dispose_record);
+        assert!(dispose_eval.is_dispose());
+        assert!(!dispose_eval.is_close());
+
+        // evaluate_close_or_dispose_dialog equivalence
+        assert_eq!(
+            evaluate_close_or_dispose_dialog(0x1000, false),
+            Some(close_eval)
+        );
+        assert_eq!(
+            evaluate_close_or_dispose_dialog(0x2000, true),
+            Some(dispose_eval)
+        );
     }
 }
 
