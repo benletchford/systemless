@@ -21843,12 +21843,18 @@ impl super::TrapDispatcher {
         // fill's inputs match the last fill and nothing outside the
         // destination has changed since, the margins are still uniform and
         // already hold what the fill would write.
-        let key = (destination, self.menu_bar_hidden, self.screen_mode, self.kiosk_black_index());
-        if self
-            .kiosk_letterbox_filled
-            .get()
-            .is_some_and(|(held, mark)| held == key && self.kiosk_margins_unchanged_since(bus, mark, destination))
-        {
+        // The cheap inputs are compared first: a sprite game blits many small
+        // rectangles whose destinations never match the last fill.
+        let repeat = self.kiosk_letterbox_filled.get().is_some_and(
+            |((held_destination, hidden, mode, black), mark)| {
+                held_destination == destination
+                    && hidden == self.menu_bar_hidden
+                    && mode == self.screen_mode
+                    && black == self.kiosk_black_index()
+                    && self.kiosk_margins_unchanged_since(bus, mark, destination)
+            },
+        );
+        if repeat {
             return;
         }
         // CopyBits owns only its destination rectangle; a large centered blit
@@ -21863,8 +21869,18 @@ impl super::TrapDispatcher {
         // Run after the blit so overlapping screen-to-screen copies cannot
         // lose source pixels while the margins are cleared.
         let filled = self.fill_kiosk_stage_around_rect(bus, destination);
-        self.kiosk_letterbox_filled
-            .set(if filled { bus.screen_mark().map(|mark| (key, mark)) } else { None });
+        let held = if filled {
+            let key = (
+                destination,
+                self.menu_bar_hidden,
+                self.screen_mode,
+                self.kiosk_black_index(),
+            );
+            bus.screen_mark().map(|mark| (key, mark))
+        } else {
+            None
+        };
+        self.kiosk_letterbox_filled.set(held);
     }
 
     /// Address of a replacement `grafProcs.bitsProc` on the current port, or
