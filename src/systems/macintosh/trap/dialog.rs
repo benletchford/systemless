@@ -10,6 +10,7 @@ use crate::cpu::{CpuOps, Register};
 use crate::dialog_manager::{
     dialog_dbox_frame_rect, dialog_item_base_type, dialog_item_resource_type,
     dialog_target_for_event, edit_text_frame_rect, evaluate_alert_invocation,
+    evaluate_alert_parameters, AlertKind,
     evaluate_close_dialog, evaluate_dialog_template_purgeability_query, evaluate_dispose_dialog,
     evaluate_error_sound,
     evaluate_find_dialog_item, evaluate_get_dialog_item, evaluate_get_dialog_item_as_control,
@@ -10865,13 +10866,17 @@ impl super::TrapDispatcher {
                 }
                 let filter_proc = bus.read_long(sp);
                 let alert_id = bus.read_word(sp + 4) as i16;
-                let trap_name = match trap_num {
-                    0x185 => "Alert",
-                    0x186 => "StopAlert",
-                    0x187 => "NoteAlert",
-                    0x188 => "CautionAlert",
-                    _ => "Alert?",
+                let kind = match trap_num {
+                    0x185 => AlertKind::Alert,
+                    0x186 => AlertKind::Stop,
+                    0x187 => AlertKind::Note,
+                    0x188 => AlertKind::Caution,
+                    _ => AlertKind::Alert,
                 };
+                let params = evaluate_alert_parameters(alert_id, filter_proc, kind);
+                let trap_name = params.kind().name();
+                let alert_id = params.alert_id();
+                let filter_proc = params.filter_proc();
                 let alert_stage_before = bus.read_word(crate::memory::globals::addr::ALERT_STAGE);
                 let anumber_before = bus.read_word(crate::memory::globals::addr::ANUMBER);
                 let mut alert_trace_stage: Option<(u16, u16, u32, u32)> = None;

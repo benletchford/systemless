@@ -2659,6 +2659,135 @@ impl AlertStageEvaluation {
     }
 }
 
+/// Variant kind of classic Alert family invocation.
+///
+/// Inside Macintosh Volume I, pp. I-418, I-422;
+/// Macintosh Toolbox Essentials (1992), pp. 6-105..6-107.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AlertKind {
+    /// Plain `Alert` ($A985) without default icon.
+    Alert,
+    /// `StopAlert` ($A986) with Stop icon (ID 0).
+    Stop,
+    /// `NoteAlert` ($A987) with Note icon (ID 1).
+    Note,
+    /// `CautionAlert` ($A988) with Caution icon (ID 2).
+    Caution,
+}
+
+impl AlertKind {
+    /// Associated system icon resource ID (`stopIcon`=0, `noteIcon`=1, `cautionIcon`=2), or `None` for plain alert.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn icon_id(&self) -> Option<i16> {
+        match self {
+            Self::Alert => None,
+            Self::Stop => Some(0),
+            Self::Note => Some(1),
+            Self::Caution => Some(2),
+        }
+    }
+
+    /// Whether this is a plain alert without an associated alert icon.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn is_plain(&self) -> bool {
+        matches!(self, Self::Alert)
+    }
+
+    /// Human-readable diagnostic routine name.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Alert => "Alert",
+            Self::Stop => "StopAlert",
+            Self::Note => "NoteAlert",
+            Self::Caution => "CautionAlert",
+        }
+    }
+}
+
+/// Evaluated parameters for a classic Alert family invocation (`Alert`, `StopAlert`, `NoteAlert`, `CautionAlert`).
+///
+/// Inside Macintosh Volume I, pp. I-418, I-422;
+/// Macintosh Toolbox Essentials (1992), pp. 6-105..6-107.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AlertParameters {
+    alert_id: i16,
+    filter_proc: u32,
+    kind: AlertKind,
+}
+
+impl AlertParameters {
+    /// Constructs a new `AlertParameters`.
+    #[inline]
+    #[must_use]
+    pub const fn new(alert_id: i16, filter_proc: u32, kind: AlertKind) -> Self {
+        Self {
+            alert_id,
+            filter_proc,
+            kind,
+        }
+    }
+
+    /// The requested alert resource ID.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn alert_id(&self) -> i16 {
+        self.alert_id
+    }
+
+    /// The optional modal filter procedure pointer or UPP.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn filter_proc(&self) -> u32 {
+        self.filter_proc
+    }
+
+    /// Whether a non-nil modal filter procedure pointer was supplied.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn has_filter_proc(&self) -> bool {
+        self.filter_proc != 0
+    }
+
+    /// The alert kind variant.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn kind(&self) -> AlertKind {
+        self.kind
+    }
+
+    /// Associated system icon resource ID, if any.
+    #[inline]
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn icon_id(&self) -> Option<i16> {
+        self.kind.icon_id()
+    }
+}
+
+/// Evaluates and validates input parameters for an Alert family invocation.
+///
+/// Inside Macintosh Volume I, pp. I-418, I-422.
+#[inline]
+#[must_use]
+pub const fn evaluate_alert_parameters(
+    alert_id: i16,
+    filter_proc: u32,
+    kind: AlertKind,
+) -> AlertParameters {
+    AlertParameters::new(alert_id, filter_proc, kind)
+}
+
 /// Evaluated invocation of an Alert family trap (`Alert`, `StopAlert`, `NoteAlert`, `CautionAlert`).
 ///
 /// Encapsulates the alert resource ID, evaluated stage parameters, next stage counter,
@@ -8285,6 +8414,63 @@ mod tests {
         assert_eq!(set_params.base_type(), 4);
         assert_eq!(set_params.item_handle(), 0x2000);
         assert_eq!(set_params.rect(), (10, 20, 30, 40));
+    }
+
+    #[test]
+    fn alert_parameters_evaluation() {
+        // AlertKind properties
+        assert_eq!(AlertKind::Alert.icon_id(), None);
+        assert!(AlertKind::Alert.is_plain());
+        assert_eq!(AlertKind::Alert.name(), "Alert");
+
+        assert_eq!(AlertKind::Stop.icon_id(), Some(0));
+        assert!(!AlertKind::Stop.is_plain());
+        assert_eq!(AlertKind::Stop.name(), "StopAlert");
+
+        assert_eq!(AlertKind::Note.icon_id(), Some(1));
+        assert!(!AlertKind::Note.is_plain());
+        assert_eq!(AlertKind::Note.name(), "NoteAlert");
+
+        assert_eq!(AlertKind::Caution.icon_id(), Some(2));
+        assert!(!AlertKind::Caution.is_plain());
+        assert_eq!(AlertKind::Caution.name(), "CautionAlert");
+
+        // evaluate_alert_parameters without filter
+        let params_plain = evaluate_alert_parameters(128, 0, AlertKind::Alert);
+        assert_eq!(params_plain.alert_id(), 128);
+        assert_eq!(params_plain.filter_proc(), 0);
+        assert!(!params_plain.has_filter_proc());
+        assert_eq!(params_plain.kind(), AlertKind::Alert);
+        assert_eq!(params_plain.icon_id(), None);
+
+        // evaluate_alert_parameters with filter and icon
+        let params_stop = evaluate_alert_parameters(-300, 0x0012_3456, AlertKind::Stop);
+        assert_eq!(params_stop.alert_id(), -300);
+        assert_eq!(params_stop.filter_proc(), 0x0012_3456);
+        assert!(params_stop.has_filter_proc());
+        assert_eq!(params_stop.kind(), AlertKind::Stop);
+        assert_eq!(params_stop.icon_id(), Some(0));
+
+        let params_note = evaluate_alert_parameters(2000, 0x0078_9ABC, AlertKind::Note);
+        assert_eq!(params_note.alert_id(), 2000);
+        assert_eq!(params_note.filter_proc(), 0x0078_9ABC);
+        assert!(params_note.has_filter_proc());
+        assert_eq!(params_note.kind(), AlertKind::Note);
+        assert_eq!(params_note.icon_id(), Some(1));
+
+        let params_caution = evaluate_alert_parameters(2001, 0, AlertKind::Caution);
+        assert_eq!(params_caution.alert_id(), 2001);
+        assert_eq!(params_caution.filter_proc(), 0);
+        assert!(!params_caution.has_filter_proc());
+        assert_eq!(params_caution.kind(), AlertKind::Caution);
+        assert_eq!(params_caution.icon_id(), Some(2));
+
+        // Direct constructor
+        let direct = AlertParameters::new(500, 0x4000, AlertKind::Stop);
+        assert_eq!(direct.alert_id(), 500);
+        assert_eq!(direct.filter_proc(), 0x4000);
+        assert!(direct.has_filter_proc());
+        assert_eq!(direct.kind(), AlertKind::Stop);
     }
 }
 

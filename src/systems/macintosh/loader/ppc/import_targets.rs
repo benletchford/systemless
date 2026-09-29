@@ -778,7 +778,7 @@ pub enum PpcImportDispatcherTarget {
     SameProcess,
     GetProcessInformation,
     ParamText,
-    AlertReturnDefault,
+    AlertReturnDefault(crate::dialog_manager::AlertKind),
     StandardAlert,
     ExitToShell,
     MathCeil,
@@ -3381,8 +3381,17 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::ParamText
         }
         ("InterfaceLib", "X2Fix") => PpcImportDispatcherTarget::X2Fix,
-        ("InterfaceLib", "Alert" | "StopAlert" | "NoteAlert" | "CautionAlert") => {
-            PpcImportDispatcherTarget::AlertReturnDefault
+        ("InterfaceLib", "Alert") => {
+            PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Alert)
+        }
+        ("InterfaceLib", "StopAlert") => {
+            PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Stop)
+        }
+        ("InterfaceLib", "NoteAlert") => {
+            PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Note)
+        }
+        ("InterfaceLib", "CautionAlert") => {
+            PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Caution)
         }
         ("InterfaceLib" | "AppearanceLib", "StandardAlert") => {
             PpcImportDispatcherTarget::StandardAlert

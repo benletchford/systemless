@@ -4621,7 +4621,7 @@ fn import_bindings_classify_supported_memory_manager_imports() {
     );
     assert_eq!(
         bindings[15].dispatcher_target,
-        PpcImportDispatcherTarget::AlertReturnDefault
+        PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Note)
     );
 }
 

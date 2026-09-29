@@ -12,7 +12,7 @@ use crate::dialog_manager::{
     evaluate_hide_dialog_item, evaluate_modal_dialog_parameters,
     evaluate_select_dialog_item_text_parameters, evaluate_set_dialog_cancel_item_parameters,
     evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_tracks_cursor_parameters,
-    evaluate_show_dialog_item, evaluate_standard_alert_parameters,
+    evaluate_show_dialog_item, evaluate_standard_alert_parameters, evaluate_alert_parameters,
     extract_dialog_item_text_bytes, find_dialog_item_hit, global_to_dialog_local_point, offset_ditl_bytes, parse_ditl_items,
     position_dialog_bounds as unified_position_dialog_bounds, DialogItemHeader, DialogItemRecord,
     GetNewDialogParameters, SelectDialogItemTextParameters,
@@ -600,32 +600,16 @@ pub(super) fn dispatch_dialog_import(
             param_text.with_mut(|slots| ppc_param_text(cpu, memory, slots));
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::StandardAlert
-        | PpcImportDispatcherTarget::AlertReturnDefault => {
-            // StandardAlert displays a modal alert and returns the chosen button
-            // through outItemHit, with an OSErr in r3.
-            // OSErr StandardAlert(AlertType, ConstStr255Param, ConstStr255Param,
-            //                     const AlertStdAlertParamRec *, SInt16 *);
-            // Apple Dialog Manager Reference, pp. 65, 75–76, 82–83.
-            let standard = binding.dispatcher_target == PpcImportDispatcherTarget::StandardAlert;
-            let output = if standard { cpu.gpr[7] } else { 0 };
-            let can_write = ppc_memory_can_write_bytes(memory, output, 2);
-            let params = match evaluate_standard_alert_parameters(
-                cpu.gpr[3] as u16 as i16,
-                cpu.gpr[4],
-                cpu.gpr[5],
-                cpu.gpr[6],
-                output,
-                standard,
-                can_write,
-            ) {
-                Ok(params) => params,
-                Err(err) => return Some(PpcImportAction::Return(ppc_i16_result(err))),
-            };
+        PpcImportDispatcherTarget::AlertReturnDefault(kind) => {
+            let alert_id = cpu.gpr[3] as u16 as i16;
+            let filter_proc = cpu.gpr[4];
+            let params = evaluate_alert_parameters(alert_id, filter_proc, kind);
             if ppc_hle_trace_enabled() {
                 eprintln!(
-                    "[PPC-TRACE] Alert id={} params={:?}",
+                    "[PPC-TRACE] {} id={} filter=${:08X} params={:?}",
+                    params.kind().name(),
                     params.alert_id(),
+                    params.filter_proc(),
                     param_text
                         .iter()
                         .map(|bytes| decode_mac_roman(&bytes))
@@ -633,19 +617,12 @@ pub(super) fn dispatch_dialog_import(
                 );
             }
             let mut dialog = gworlds.iter().rev().find_map(|record| {
-                let matches_call = if params.is_standard() {
-                    memory.read_u32_be(record.port + DIALOG_STANDARD_ALERT_OUTPUT_OFFSET)
-                        == Some(params.item_hit_out_ptr())
-                        && memory.read_u32_be(record.port + DIALOG_STANDARD_ALERT_STACK_OFFSET)
-                            == Some(cpu.gpr[1])
-                } else {
-                    memory
-                        .read_u32_be(record.port + DIALOG_STANDARD_ALERT_OUTPUT_OFFSET)
-                        .unwrap_or(0)
-                        == 0
-                        && memory.read_u16_be(record.port + DIALOG_RESOURCE_ID_OFFSET)
-                            == Some(params.alert_id() as u16)
-                };
+                let matches_call = memory
+                    .read_u32_be(record.port + DIALOG_STANDARD_ALERT_OUTPUT_OFFSET)
+                    .unwrap_or(0)
+                    == 0
+                    && memory.read_u16_be(record.port + DIALOG_RESOURCE_ID_OFFSET)
+                        == Some(params.alert_id() as u16);
                 (memory.read_u16_be(record.port + PPC_CWINDOW_WINDOW_KIND_OFFSET) == Some(2)
                     && ppc_window_is_visible(memory, record.port)
                     && matches_call)
@@ -668,15 +645,11 @@ pub(super) fn dispatch_dialog_import(
                     current_resource_refnum,
                     last_resource_error,
                     params.alert_id(),
-                    params.is_standard(),
+                    false,
                     param_text,
                 );
                 if created == 0 {
-                    return Some(PpcImportAction::Return(ppc_i16_result(if params.is_standard() {
-                        *last_resource_error
-                    } else {
-                        -1
-                    })));
+                    return Some(PpcImportAction::Return(ppc_i16_result(-1)));
                 }
                 *current_gworld = created;
                 *current_gdevice = ppc_gworld_device(gworlds, created).unwrap_or(*current_gdevice);
@@ -696,13 +669,7 @@ pub(super) fn dispatch_dialog_import(
             *current_gworld = dialog;
             *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
             let mut modal_cpu = cpu.clone();
-            if params.is_standard() {
-                modal_cpu.gpr[3] = if params.alert_param_ptr() == 0 {
-                    0
-                } else {
-                    memory.read_u32_be(params.alert_param_ptr() + 2).unwrap_or(0)
-                };
-            }
+            modal_cpu.gpr[3] = params.filter_proc();
             modal_cpu.gpr[4] = dialog + DIALOG_ALERT_HIT_OFFSET;
             let action = ppc_modal_dialog(
                 &mut modal_cpu,
@@ -773,12 +740,169 @@ pub(super) fn dispatch_dialog_import(
                     &items,
                     true,
                 );
-                if params.is_standard() {
-                    let _ = memory.write_u16_be(params.item_hit_out_ptr(), hit);
-                    Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
-                } else {
-                    Some(PpcImportAction::Return(u32::from(hit)))
+                Some(PpcImportAction::Return(u32::from(hit)))
+            } else {
+                Some(action)
+            }
+        }
+        PpcImportDispatcherTarget::StandardAlert => {
+            // StandardAlert displays a modal alert and returns the chosen button
+            // through outItemHit, with an OSErr in r3.
+            // OSErr StandardAlert(AlertType, ConstStr255Param, ConstStr255Param,
+            //                     const AlertStdAlertParamRec *, SInt16 *);
+            // Apple Dialog Manager Reference, pp. 65, 75–76, 82–83.
+            let output = cpu.gpr[7];
+            let can_write = ppc_memory_can_write_bytes(memory, output, 2);
+            let params = match evaluate_standard_alert_parameters(
+                cpu.gpr[3] as u16 as i16,
+                cpu.gpr[4],
+                cpu.gpr[5],
+                cpu.gpr[6],
+                output,
+                true,
+                can_write,
+            ) {
+                Ok(params) => params,
+                Err(err) => return Some(PpcImportAction::Return(ppc_i16_result(err))),
+            };
+            if ppc_hle_trace_enabled() {
+                eprintln!(
+                    "[PPC-TRACE] StandardAlert id={} params={:?}",
+                    params.alert_id(),
+                    param_text
+                        .iter()
+                        .map(|bytes| decode_mac_roman(&bytes))
+                        .collect::<Vec<_>>()
+                );
+            }
+            let mut dialog = gworlds.iter().rev().find_map(|record| {
+                let matches_call = memory.read_u32_be(record.port + DIALOG_STANDARD_ALERT_OUTPUT_OFFSET)
+                    == Some(params.item_hit_out_ptr())
+                    && memory.read_u32_be(record.port + DIALOG_STANDARD_ALERT_STACK_OFFSET)
+                        == Some(cpu.gpr[1]);
+                (memory.read_u16_be(record.port + PPC_CWINDOW_WINDOW_KIND_OFFSET) == Some(2)
+                    && ppc_window_is_visible(memory, record.port)
+                    && matches_call)
+                    .then_some(record.port)
+            });
+            if dialog.is_none() {
+                let created = ppc_new_alert_dialog(
+                    cpu,
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    controls,
+                    gworlds,
+                    window_list,
+                    *current_gdevice,
+                    vfs_resources,
+                    current_resource_refnum,
+                    last_resource_error,
+                    params.alert_id(),
+                    true,
+                    param_text,
+                );
+                if created == 0 {
+                    return Some(PpcImportAction::Return(ppc_i16_result(*last_resource_error)));
                 }
+                *current_gworld = created;
+                *current_gdevice = ppc_gworld_device(gworlds, created).unwrap_or(*current_gdevice);
+                let _ = ppc_draw_dialog(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    screen_clut,
+                    vfs_resources,
+                    current_resource_refnum,
+                    created,
+                );
+                dialog = Some(created);
+            }
+            let dialog = dialog.unwrap();
+            *current_gworld = dialog;
+            *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
+            let mut modal_cpu = cpu.clone();
+            modal_cpu.gpr[3] = if params.alert_param_ptr() == 0 {
+                0
+            } else {
+                memory.read_u32_be(params.alert_param_ptr() + 2).unwrap_or(0)
+            };
+            modal_cpu.gpr[4] = dialog + DIALOG_ALERT_HIT_OFFSET;
+            let action = ppc_modal_dialog(
+                &mut modal_cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                controls,
+                gworlds,
+                current_gworld,
+                current_gdevice,
+                screen_clut,
+                *quickdraw_fore_color,
+                quickdraw_fore_indices,
+                input,
+                event_queue,
+                dialog_callback_stack,
+                vfs_resources,
+                current_resource_refnum,
+            );
+            if matches!(action, PpcImportAction::ReturnPreserve) {
+                let hit = memory
+                    .read_u16_be(dialog + DIALOG_ALERT_HIT_OFFSET)
+                    .unwrap_or(1);
+                let items_handle = memory
+                    .read_u32_be(dialog + DIALOG_ITEMS_OFFSET)
+                    .unwrap_or(0);
+                let items =
+                    ppc_dialog_items_for_dialog(memory, handles, dialog).unwrap_or_default();
+                ppc_close_window(
+                    dialog,
+                    memory,
+                    process_memory_manager,
+                    window_list,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    gworlds,
+                    current_gworld,
+                    current_gdevice,
+                    screen_clut,
+                    color_manager_clut,
+                    toolbox_startup,
+                    event_queue,
+                    tick_count,
+                    input,
+                    quickdraw_fore_color,
+                    quickdraw_back_color,
+                    quickdraw_fore_indices,
+                );
+                ppc_release_dialog_storage(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    controls,
+                    gworlds,
+                    window_list,
+                    current_gworld,
+                    current_gdevice,
+                    dialog,
+                    items_handle,
+                    &items,
+                    true,
+                );
+                let _ = memory.write_u16_be(params.item_hit_out_ptr(), hit);
+                Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
             } else {
                 Some(action)
             }

@@ -2194,7 +2194,7 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("Process Manager imports return through dispatch_process_import")
         }
         PpcImportDispatcherTarget::ParamText
-        | PpcImportDispatcherTarget::AlertReturnDefault
+        | PpcImportDispatcherTarget::AlertReturnDefault(_)
         | PpcImportDispatcherTarget::StandardAlert => {
             unreachable!("dialog imports return through dispatch_dialog_import")
         }
