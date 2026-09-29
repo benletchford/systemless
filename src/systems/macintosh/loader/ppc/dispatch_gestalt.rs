@@ -94,6 +94,13 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
             REFERENCE_POWERPC_EXECUTION_CAPABILITIES.native_cpu_type,
             PPC_NO_ERR,
         )),
+        // gestaltNativeCPUfamily ('cpuf') reports the processor family.
+        // Mac OS 8 Technote TN1102, "Native CPU Family Gestalt": a 604
+        // reports gestaltCPU604 for both 'cpuf' and 'cput'.
+        b"cpuf" => Some((
+            REFERENCE_POWERPC_EXECUTION_CAPABILITIES.native_cpu_type,
+            PPC_NO_ERR,
+        )),
         b"sysa" => REFERENCE_POWERPC_EXECUTION_CAPABILITIES
             .system_architecture
             .map(|architecture| (architecture, PPC_NO_ERR)),
