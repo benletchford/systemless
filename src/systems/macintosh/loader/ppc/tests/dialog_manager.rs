@@ -2167,3 +2167,63 @@ fn get_dialog_cancel_item_reads_cancel_item_and_rejects_invalid_pointers() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
 }
+
+#[test]
+fn could_dialog_and_free_dialog_dispatch_with_canonical_evaluation() {
+    use crate::memory::globals::addr;
+
+    let pef_could = synthetic_pef_with_library_import(b"InterfaceLib", b"CouldDialog");
+    let mut loaded_could = load_pef_application(&pef_could).unwrap();
+    loaded_could
+        .memory
+        .write_u16_be(addr::RES_ERR, 0xBEEF)
+        .unwrap();
+    loaded_could.cpu.gpr[3] = 128;
+    assert_eq!(loaded_could.imports[0].dispatcher_target, PpcImportDispatcherTarget::CouldDialog);
+    let probe = loaded_could.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_could.cpu.gpr[3], 128); // Preserved
+    assert_eq!(loaded_could.memory.read_u16_be(addr::RES_ERR), Some(0));
+
+    let pef_free = synthetic_pef_with_library_import(b"InterfaceLib", b"FreeDialog");
+    let mut loaded_free = load_pef_application(&pef_free).unwrap();
+    loaded_free
+        .memory
+        .write_u16_be(addr::RES_ERR, 0xCAFE)
+        .unwrap();
+    loaded_free.cpu.gpr[3] = 128;
+    let probe = loaded_free.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_free.cpu.gpr[3], 128); // Preserved
+    assert_eq!(loaded_free.memory.read_u16_be(addr::RES_ERR), Some(0));
+}
+
+#[test]
+fn could_alert_and_free_alert_dispatch_with_canonical_evaluation() {
+    use crate::memory::globals::addr;
+
+    let pef_could = synthetic_pef_with_library_import(b"InterfaceLib", b"CouldAlert");
+    let mut loaded_could = load_pef_application(&pef_could).unwrap();
+    loaded_could
+        .memory
+        .write_u16_be(addr::RES_ERR, 0xBEEF)
+        .unwrap();
+    loaded_could.cpu.gpr[3] = 256;
+    let probe = loaded_could.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_could.cpu.gpr[3], 256); // Preserved
+    assert_eq!(loaded_could.memory.read_u16_be(addr::RES_ERR), Some(0));
+
+    let pef_free = synthetic_pef_with_library_import(b"InterfaceLib", b"FreeAlert");
+    let mut loaded_free = load_pef_application(&pef_free).unwrap();
+    loaded_free
+        .memory
+        .write_u16_be(addr::RES_ERR, 0xCAFE)
+        .unwrap();
+    loaded_free.cpu.gpr[3] = 256;
+    let probe = loaded_free.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_free.cpu.gpr[3], 256); // Preserved
+    assert_eq!(loaded_free.memory.read_u16_be(addr::RES_ERR), Some(0));
+}
