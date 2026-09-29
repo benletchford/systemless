@@ -4,7 +4,7 @@ use super::*;
 use crate::dialog_manager::{
     dialog_item_base_type, dialog_item_resource_type_u32, dialog_rect_to_global,
     dialog_target_for_event, dialog_text_rect, edit_text_frame_rect,
-    evaluate_count_ditl, evaluate_count_ditl_query,
+    evaluate_count_ditl, evaluate_count_ditl_parameters,
     evaluate_dialog_item_visibility_parameters, evaluate_dialog_select,
     evaluate_dialog_teardown_parameters, evaluate_draw_dialog_parameters,
     evaluate_find_dialog_item, evaluate_get_dialog_item,
@@ -1332,8 +1332,8 @@ fn ppc_dispatch_dialog_compatibility(
             }
         }
         PpcDialogCompatibilityOperation::CountDitl => {
-            let count = evaluate_count_ditl_query(dialog).map_or(0, |query| {
-                let items = ppc_dialog_items_for_dialog(memory, handles, query.dialog_ptr());
+            let count = evaluate_count_ditl_parameters(dialog).map_or(0, |params| {
+                let items = ppc_dialog_items_for_dialog(memory, handles, params.dialog_ptr());
                 evaluate_count_ditl(None, items.map_or(0, |i| i.len()))
             });
             PpcImportAction::Return(u32::from(count))

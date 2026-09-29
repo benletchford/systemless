@@ -2170,16 +2170,17 @@ pub fn evaluate_get_std_filter_proc(out_proc: u32, can_write: bool) -> Result<i1
     evaluate_get_std_filter_proc_parameters(out_proc, can_write).map(|_| DIALOG_NO_ERR)
 }
 
-/// The evaluated query parameters for a `CountDITL` / `CountDitl` operation.
+/// The evaluated parameters for a `CountDITL` / `CountDitl` operation.
 ///
 /// Macintosh Toolbox Essentials (1992), pp. 6-128--6-129:
 /// `FUNCTION CountDITL (theDialog: DialogPtr): Integer;`
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CountDitlQuery {
+pub struct CountDitlParameters {
     dialog_ptr: u32,
 }
 
-impl CountDitlQuery {
+#[allow(dead_code)]
+impl CountDitlParameters {
     #[inline]
     #[must_use]
     pub const fn new(dialog_ptr: u32) -> Self {
@@ -2191,17 +2192,25 @@ impl CountDitlQuery {
     pub const fn dialog_ptr(&self) -> u32 {
         self.dialog_ptr
     }
+
+    /// Whether the dialog pointer is non-null.
+    #[inline]
+    #[must_use]
+    pub const fn is_valid(&self) -> bool {
+        self.dialog_ptr != 0
+    }
 }
 
-/// Evaluates a `CountDITL` query from the dialog pointer.
+/// Evaluates `CountDITL` / `CountDitl` parameters from the dialog pointer.
 ///
 /// Macintosh Toolbox Essentials (1992), pp. 6-128--6-129.
 /// Returns `None` if `dialog_ptr == 0`.
-pub fn evaluate_count_ditl_query(dialog_ptr: u32) -> Option<CountDitlQuery> {
+#[inline]
+pub const fn evaluate_count_ditl_parameters(dialog_ptr: u32) -> Option<CountDitlParameters> {
     if dialog_ptr == 0 {
         return None;
     }
-    Some(CountDitlQuery::new(dialog_ptr))
+    Some(CountDitlParameters::new(dialog_ptr))
 }
 
 /// Evaluates the total number of items in a dialog.
@@ -8439,15 +8448,19 @@ mod tests {
 
     #[test]
     fn count_ditl_and_set_dialog_tracks_cursor_evaluation() {
-        // evaluate_count_ditl_query
-        assert_eq!(evaluate_count_ditl_query(0), None);
+        // evaluate_count_ditl_parameters
+        assert_eq!(evaluate_count_ditl_parameters(0), None);
 
-        let query = evaluate_count_ditl_query(0x0008_1234)
-            .expect("valid count_ditl query should evaluate");
-        assert_eq!(query.dialog_ptr(), 0x0008_1234);
+        let params = evaluate_count_ditl_parameters(0x0008_1234)
+            .expect("valid count_ditl parameters should evaluate");
+        assert_eq!(params.dialog_ptr(), 0x0008_1234);
+        assert!(params.is_valid());
 
-        let query_direct = CountDitlQuery::new(0x0009_5678);
-        assert_eq!(query_direct.dialog_ptr(), 0x0009_5678);
+        let params_direct = CountDitlParameters::new(0x0009_5678);
+        assert_eq!(params_direct.dialog_ptr(), 0x0009_5678);
+        assert!(params_direct.is_valid());
+        let params_zero = CountDitlParameters::new(0);
+        assert!(!params_zero.is_valid());
 
         // evaluate_set_dialog_tracks_cursor_parameters
         let tracks_dlg = evaluate_set_dialog_tracks_cursor_parameters(0x000A_1110, true)
