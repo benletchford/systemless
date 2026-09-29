@@ -691,7 +691,7 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        let items_handle = bus.read_long(dialog_ptr + 156);
+        let items_handle = bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_ITEMS_OFFSET);
         if items_handle == 0 {
             return None;
         }
@@ -11521,26 +11521,33 @@ impl super::TrapDispatcher {
                 let item_no = bus.read_word(sp + 12) as i16;
                 let dialog_ptr = bus.read_long(sp + 14);
 
-                let header = self
-                    .dialog_items
-                    .get(&dialog_ptr)
-                    .map(|items| {
-                        evaluate_get_dialog_item(items, item_no.max(0) as usize, |item| item.header())
+                let query = crate::dialog_manager::evaluate_get_dialog_item_query(
+                    dialog_ptr,
+                    item_no.max(0) as usize,
+                );
+
+                let header = query
+                    .and_then(|q| {
+                        self.dialog_items.get(&q.dialog_ptr()).map(|items| {
+                            evaluate_get_dialog_item(items, q.item_number(), |item| item.header())
+                        })
                     })
                     .unwrap_or(DialogItemHeader::ZERO);
 
                 // Look up real item data
-                let found = self.dialog_items.get(&dialog_ptr).and_then(|items| {
-                    crate::dialog_manager::get_item_at_1_indexed(items, item_no.max(0) as usize)
+                let found = query.and_then(|q| {
+                    self.dialog_items.get(&q.dialog_ptr()).and_then(|items| {
+                        crate::dialog_manager::get_item_at_1_indexed(items, q.item_number())
+                    })
                 });
 
-                if let Some(item) = found {
+                if let (Some(query), Some(item)) = (query, found) {
                     if trace_dialog_items_enabled() && item.is_user_item() {
                         eprintln!(
                             "[DIALOG-ITEM] GetDItem pc=${:08X} dialog=${:08X} item={} type={} proc=${:08X} out_type=${:08X} out_item=${:08X} out_box=${:08X} rect=({},{},{},{})",
                             cpu.read_reg(Register::PC),
-                            dialog_ptr,
-                            item_no,
+                            query.dialog_ptr(),
+                            query.item_no(),
                             header.item_type,
                             item.proc_ptr,
                             type_ptr,
@@ -11556,7 +11563,7 @@ impl super::TrapDispatcher {
                         bus.write_word(type_ptr, header.item_type);
                     }
                     if item_handle_ptr != 0 {
-                        let current_handle = Self::dialog_item_handle(bus, dialog_ptr, item_no);
+                        let current_handle = Self::dialog_item_handle(bus, query.dialog_ptr(), query.item_no());
                         let base_type = dialog_item_base_type(item.item_type);
                         if current_handle != 0
                             || !(DIALOG_ITEM_BUTTON..=DIALOG_ITEM_RADIO).contains(&base_type)
@@ -11579,7 +11586,7 @@ impl super::TrapDispatcher {
                             let title_len = title.len().min(255);
                             let ctrl_rec = bus.alloc(42 + title_len as u32);
                             bus.write_long(ctrl_rec, 0); // nextControl
-                            bus.write_long(ctrl_rec + 4, dialog_ptr); // contrlOwner
+                            bus.write_long(ctrl_rec + 4, query.dialog_ptr()); // contrlOwner
                                                                       // contrlRect: dialog-local coordinates (draw_control gets
                                                                       // screen offset from the owner window's PixMap bounds)
                             bus.write_word(ctrl_rec + 8, item.rect.0 as u16);
@@ -11590,7 +11597,7 @@ impl super::TrapDispatcher {
                             bus.write_byte(ctrl_rec + 17, 0); // contrlHilite
                             let value = self
                                 .dialog_control_values
-                                .get(&(dialog_ptr, item_no))
+                                .get(&(query.dialog_ptr(), query.item_no()))
                                 .copied()
                                 .unwrap_or(0);
                             bus.write_word(ctrl_rec + 18, value as u16);
@@ -11611,9 +11618,9 @@ impl super::TrapDispatcher {
                             self.control_manager.associate_handle(handle, ctrl_rec);
                             bus.write_long(item_handle_ptr, handle);
                             self.dialog_control_handles
-                                .insert(handle, (dialog_ptr, item_no));
+                                .insert(handle, (query.dialog_ptr(), query.item_no()));
                             // Also update the DITL item handle storage
-                            Self::set_dialog_item_handle(bus, dialog_ptr, item_no, handle);
+                            Self::set_dialog_item_handle(bus, query.dialog_ptr(), query.item_no(), handle);
                         }
                     }
                     if box_ptr != 0 {
@@ -11634,14 +11641,14 @@ impl super::TrapDispatcher {
                         if enabled_user_item {
                             if item.proc_ptr != 0 {
                                 self.dialog_item_popup_menus
-                                    .insert((dialog_ptr, item_no), menu_id);
+                                    .insert((query.dialog_ptr(), query.item_no()), menu_id);
                                 self.dialog_popup_original_rects
-                                    .insert((dialog_ptr, item_no), item.rect);
+                                    .insert((query.dialog_ptr(), query.item_no()), item.rect);
                                 self.pending_dialog_popup_menu = None;
                             } else {
                                 self.pending_dialog_popup_menu = Some(PendingDialogPopupMenu {
-                                    dialog_ptr,
-                                    item_no,
+                                    dialog_ptr: query.dialog_ptr(),
+                                    item_no: query.item_no(),
                                     menu_id,
                                     rect: item.rect,
                                 });
@@ -11698,13 +11705,24 @@ impl super::TrapDispatcher {
                     (0, 0, 0, 0)
                 };
 
-                let base_type = dialog_item_base_type(item_type);
-                let previous_handle = Self::dialog_item_handle(bus, dialog_ptr, item_no);
+                let Some(params) = crate::dialog_manager::evaluate_set_dialog_item_parameters(
+                    dialog_ptr,
+                    item_no.max(0) as usize,
+                    item_type as u16,
+                    item_handle,
+                    (box_top, box_left, box_bottom, box_right),
+                ) else {
+                    cpu.write_reg(Register::A7, sp + 16);
+                    return Some(Ok(()));
+                };
+
+                let base_type = params.base_type();
+                let previous_handle = Self::dialog_item_handle(bus, params.dialog_ptr(), params.item_no());
                 let previous_item = self
                     .dialog_items
-                    .get(&dialog_ptr)
+                    .get(&params.dialog_ptr())
                     .and_then(|items| {
-                        crate::dialog_manager::get_item_at_1_indexed(items, item_no as usize)
+                        crate::dialog_manager::get_item_at_1_indexed(items, params.item_number())
                     })
                     .cloned();
                 if trace_dialog_items_enabled() {
@@ -11713,14 +11731,14 @@ impl super::TrapDispatcher {
                         cpu.read_reg(Register::PC),
                         sp,
                         (0..24u32).map(|i| bus.read_byte(sp + i)).collect::<Vec<u8>>(),
-                        dialog_ptr,
-                        item_no,
-                        item_type,
-                        item_handle,
-                        box_top,
-                        box_left,
-                        box_bottom,
-                        box_right,
+                        params.dialog_ptr(),
+                        params.item_no(),
+                        params.item_type(),
+                        params.item_handle(),
+                        params.rect().0,
+                        params.rect().1,
+                        params.rect().2,
+                        params.rect().3,
                     );
                 }
 
@@ -11729,59 +11747,77 @@ impl super::TrapDispatcher {
                     self.dialog_control_handles.remove(&previous_handle);
                 }
                 if let Some(item_handle_addr) =
-                    Self::dialog_item_handle_addr(bus, dialog_ptr, item_no)
+                    Self::dialog_item_handle_addr(bus, params.dialog_ptr(), params.item_no())
                 {
-                    bus.write_long(item_handle_addr, item_handle);
-                    bus.write_word(item_handle_addr + 4, box_top as u16);
-                    bus.write_word(item_handle_addr + 6, box_left as u16);
-                    bus.write_word(item_handle_addr + 8, box_bottom as u16);
-                    bus.write_word(item_handle_addr + 10, box_right as u16);
-                    bus.write_byte(item_handle_addr + 12, item_type);
+                    bus.write_long(
+                        item_handle_addr + crate::dialog_manager::DITL_ITEM_HANDLE_OFFSET,
+                        params.item_handle(),
+                    );
+                    bus.write_word(
+                        item_handle_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET,
+                        params.rect().0 as u16,
+                    );
+                    bus.write_word(
+                        item_handle_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET + 2,
+                        params.rect().1 as u16,
+                    );
+                    bus.write_word(
+                        item_handle_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET + 4,
+                        params.rect().2 as u16,
+                    );
+                    bus.write_word(
+                        item_handle_addr + crate::dialog_manager::DITL_ITEM_RECT_OFFSET + 6,
+                        params.rect().3 as u16,
+                    );
+                    bus.write_byte(
+                        item_handle_addr + crate::dialog_manager::DITL_ITEM_TYPE_OFFSET,
+                        params.item_type(),
+                    );
                 }
-                if let Some(items) = self.dialog_items.get_mut(&dialog_ptr) {
+                if let Some(items) = self.dialog_items.get_mut(&params.dialog_ptr()) {
                     if let Some(item) =
-                        crate::dialog_manager::get_item_at_1_indexed_mut(items, item_no as usize)
+                        crate::dialog_manager::get_item_at_1_indexed_mut(items, params.item_number())
                     {
                         item.update_header(
-                            item_type,
-                            item_handle,
-                            (box_top, box_left, box_bottom, box_right),
+                            params.item_type(),
+                            params.item_handle(),
+                            params.rect(),
                         );
                         if is_dialog_item_text(base_type) {
-                            item.text = Self::text_item_string_from_handle(bus, item_handle);
+                            item.text = Self::text_item_string_from_handle(bus, params.item_handle());
                         }
                     }
                 }
 
                 if let Some(pending) = self.pending_dialog_popup_menu {
-                    if pending.dialog_ptr == dialog_ptr && pending.item_no == item_no {
+                    if pending.dialog_ptr == params.dialog_ptr() && pending.item_no == params.item_no() {
                         if base_type == DIALOG_ITEM_USER_ITEM
-                            && is_dialog_item_enabled(item_type)
-                            && item_handle != 0
+                            && params.is_enabled()
+                            && params.item_handle() != 0
                         {
                             self.dialog_item_popup_menus
-                                .insert((dialog_ptr, item_no), pending.menu_id);
+                                .insert((params.dialog_ptr(), params.item_no()), pending.menu_id);
                             self.dialog_popup_original_rects
-                                .insert((dialog_ptr, item_no), pending.rect);
+                                .insert((params.dialog_ptr(), params.item_no()), pending.rect);
                         }
                         self.pending_dialog_popup_menu = None;
                     }
                 }
 
                 if let Some(previous_item) = previous_item {
-                    let key = (dialog_ptr, item_no);
+                    let key = (params.dialog_ptr(), params.item_no());
                     let previous_base_type = dialog_item_base_type(previous_item.item_type);
                     let previous_enabled_user_item = previous_base_type == DIALOG_ITEM_USER_ITEM
                         && is_dialog_item_enabled(previous_item.item_type);
                     let current_enabled_user_item =
-                        base_type == DIALOG_ITEM_USER_ITEM && is_dialog_item_enabled(item_type);
+                        base_type == DIALOG_ITEM_USER_ITEM && params.is_enabled();
                     let old_width = previous_item.rect.3 - previous_item.rect.1;
                     let old_height = previous_item.rect.2 - previous_item.rect.0;
-                    let new_width = box_right - box_left;
-                    let new_height = box_bottom - box_top;
+                    let new_width = params.rect().3 - params.rect().1;
+                    let new_height = params.rect().2 - params.rect().0;
                     let narrowed_to_popup_indicator = previous_enabled_user_item
                         && current_enabled_user_item
-                        && item_handle == 0
+                        && params.item_handle() == 0
                         && old_width >= 40
                         && new_width > 0
                         && new_width <= 24
@@ -11802,40 +11838,39 @@ impl super::TrapDispatcher {
                 }
 
                 if is_dialog_item_text(base_type) {
-                    if item_handle != 0 {
+                    if params.item_handle() != 0 {
                         self.dialog_item_handles
-                            .insert(item_handle, (dialog_ptr, (item_no - 1) as usize));
+                            .insert(params.item_handle(), (params.dialog_ptr(), params.item_number() - 1));
                     }
                 } else if (DIALOG_ITEM_BUTTON..=DIALOG_ITEM_RESOURCE_CONTROL).contains(&base_type)
-                    && item_handle != 0
+                    && params.item_handle() != 0
                 {
                     self.dialog_control_handles
-                        .insert(item_handle, (dialog_ptr, item_no));
-                    let ctrl_ptr = bus.read_long(item_handle);
+                        .insert(params.item_handle(), (params.dialog_ptr(), params.item_no()));
+                    let ctrl_ptr = bus.read_long(params.item_handle());
                     if ctrl_ptr != 0 {
-                        bus.write_word(ctrl_ptr + 8, box_top as u16);
-                        bus.write_word(ctrl_ptr + 10, box_left as u16);
-                        bus.write_word(ctrl_ptr + 12, box_bottom as u16);
-                        bus.write_word(ctrl_ptr + 14, box_right as u16);
+                        bus.write_word(ctrl_ptr + 8, params.rect().0 as u16);
+                        bus.write_word(ctrl_ptr + 10, params.rect().1 as u16);
+                        bus.write_word(ctrl_ptr + 12, params.rect().2 as u16);
+                        bus.write_word(ctrl_ptr + 14, params.rect().3 as u16);
                         self.dialog_control_values
-                            .insert((dialog_ptr, item_no), bus.read_word(ctrl_ptr + 18) as i16);
+                            .insert((params.dialog_ptr(), params.item_no()), bus.read_word(ctrl_ptr + 18) as i16);
                     }
                 }
 
                 // Also update tracking state if dialog is currently active
                 if let Some(ref mut tracking) = self.dialog_tracking {
-                    if tracking.dialog_ptr == dialog_ptr
-                        && item_no > 0
-                        && (item_no as usize) <= tracking.items.len()
+                    if tracking.dialog_ptr == params.dialog_ptr()
+                        && params.item_number() <= tracking.items.len()
                     {
-                        let item = &mut tracking.items[(item_no - 1) as usize];
-                        item.item_type = item_type;
-                        item.rect = (box_top, box_left, box_bottom, box_right);
+                        let item = &mut tracking.items[params.item_number() - 1];
+                        item.item_type = params.item_type();
+                        item.rect = params.rect();
                         if base_type == DIALOG_ITEM_USER_ITEM {
-                            item.proc_ptr = item_handle;
+                            item.proc_ptr = params.item_handle();
                         } else if is_dialog_item_text(base_type) {
-                            item.text = Self::text_item_string_from_handle(bus, item_handle);
-                            if tracking.edit_item == item_no {
+                            item.text = Self::text_item_string_from_handle(bus, params.item_handle());
+                            if tracking.edit_item == params.item_no() {
                                 tracking.edit_text = item.text.clone();
                             }
                         }

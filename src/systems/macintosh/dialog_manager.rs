@@ -347,6 +347,14 @@ pub const APPEND_DITL_OVERLAY: i16 = 0;
 pub const APPEND_DITL_RIGHT: i16 = 1;
 pub const APPEND_DITL_BOTTOM: i16 = 2;
 
+/// Canonical DITL entry field offsets in guest memory.
+/// Inside Macintosh Volume I, p. I-426.
+pub const DITL_ITEM_HANDLE_OFFSET: u32 = 0;
+pub const DITL_ITEM_RECT_OFFSET: u32 = 4;
+pub const DITL_ITEM_TYPE_OFFSET: u32 = 12;
+#[allow(dead_code)]
+pub const DITL_ITEM_DATA_LEN_OFFSET: u32 = 13;
+
 /// Item disable bit in the DITL item type byte.
 pub const DIALOG_ITEM_DISABLED_FLAG: u8 = 0x80;
 
@@ -1368,6 +1376,168 @@ pub fn evaluate_get_dialog_item<T>(
     header_extractor: impl FnOnce(&T) -> DialogItemHeader,
 ) -> DialogItemHeader {
     get_item_at_1_indexed(items, item_number).map_or(DialogItemHeader::ZERO, header_extractor)
+}
+
+/// Canonical evaluated query for `GetDialogItem` / `GetDItem`.
+///
+/// Inside Macintosh Volume I, p. I-421;
+/// Macintosh Toolbox Essentials (1992), pp. 6-120--6-123.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GetDialogItemQuery {
+    dialog_ptr: u32,
+    item_number: usize,
+}
+
+#[allow(dead_code)]
+impl GetDialogItemQuery {
+    /// Constructs a new `GetDialogItemQuery`.
+    #[inline]
+    pub const fn new(dialog_ptr: u32, item_number: usize) -> Self {
+        Self {
+            dialog_ptr,
+            item_number,
+        }
+    }
+
+    /// The target dialog pointer.
+    #[inline]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// The 1-based dialog item index.
+    #[inline]
+    pub const fn item_number(&self) -> usize {
+        self.item_number
+    }
+
+    /// The 1-based dialog item index as signed 16-bit integer.
+    #[inline]
+    pub const fn item_no(&self) -> i16 {
+        self.item_number as i16
+    }
+}
+
+/// Evaluates and validates input parameters for `GetDialogItem` / `GetDItem`.
+///
+/// Returns `None` if `dialog_ptr == 0` or `item_number == 0`.
+#[inline]
+pub const fn evaluate_get_dialog_item_query(
+    dialog_ptr: u32,
+    item_number: usize,
+) -> Option<GetDialogItemQuery> {
+    if dialog_ptr == 0 || item_number == 0 {
+        return None;
+    }
+    Some(GetDialogItemQuery {
+        dialog_ptr,
+        item_number,
+    })
+}
+
+/// Canonical evaluated parameters for `SetDialogItem` / `SetDItem`.
+///
+/// Inside Macintosh Volume I, p. I-421;
+/// Macintosh Toolbox Essentials (1992), pp. 6-120--6-123.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SetDialogItemParameters {
+    dialog_ptr: u32,
+    item_number: usize,
+    item_type: u8,
+    item_handle: u32,
+    rect: (i16, i16, i16, i16),
+}
+
+#[allow(dead_code)]
+impl SetDialogItemParameters {
+    /// Constructs a new `SetDialogItemParameters` instance.
+    #[inline]
+    pub const fn new(
+        dialog_ptr: u32,
+        item_number: usize,
+        item_type: u8,
+        item_handle: u32,
+        rect: (i16, i16, i16, i16),
+    ) -> Self {
+        Self {
+            dialog_ptr,
+            item_number,
+            item_type,
+            item_handle,
+            rect,
+        }
+    }
+
+    /// The target dialog pointer.
+    #[inline]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// The 1-based dialog item index.
+    #[inline]
+    pub const fn item_number(&self) -> usize {
+        self.item_number
+    }
+
+    /// The 1-based dialog item index as signed 16-bit integer.
+    #[inline]
+    pub const fn item_no(&self) -> i16 {
+        self.item_number as i16
+    }
+
+    /// The item type byte.
+    #[inline]
+    pub const fn item_type(&self) -> u8 {
+        self.item_type
+    }
+
+    /// The base item type (stripped of enabled/disabled flag).
+    #[inline]
+    pub const fn base_type(&self) -> u8 {
+        dialog_item_base_type(self.item_type)
+    }
+
+    /// Whether the item is enabled.
+    #[inline]
+    pub const fn is_enabled(&self) -> bool {
+        is_dialog_item_enabled(self.item_type)
+    }
+
+    /// The item handle or procedure pointer.
+    #[inline]
+    pub const fn item_handle(&self) -> u32 {
+        self.item_handle
+    }
+
+    /// The item bounding rectangle `(top, left, bottom, right)`.
+    #[inline]
+    pub const fn rect(&self) -> (i16, i16, i16, i16) {
+        self.rect
+    }
+}
+
+/// Evaluates and validates input parameters for `SetDialogItem` / `SetDItem`.
+///
+/// Returns `None` if `dialog_ptr == 0` or `item_number == 0`.
+#[inline]
+pub const fn evaluate_set_dialog_item_parameters(
+    dialog_ptr: u32,
+    item_number: usize,
+    item_type: u16,
+    item_handle: u32,
+    rect: (i16, i16, i16, i16),
+) -> Option<SetDialogItemParameters> {
+    if dialog_ptr == 0 || item_number == 0 {
+        return None;
+    }
+    Some(SetDialogItemParameters {
+        dialog_ptr,
+        item_number,
+        item_type: item_type as u8,
+        item_handle,
+        rect,
+    })
 }
 
 /// Evaluates `GetDialogItemAsControl` for a dialog item.
@@ -6336,6 +6506,68 @@ mod tests {
         assert!(!minimal_params.is_color());
         assert!(!minimal_params.has_title());
         assert!(!minimal_params.has_items());
+    }
+
+    #[test]
+    fn get_and_set_dialog_item_query_and_parameters_evaluation() {
+        // DITL item entry offsets
+        assert_eq!(DITL_ITEM_HANDLE_OFFSET, 0);
+        assert_eq!(DITL_ITEM_RECT_OFFSET, 4);
+        assert_eq!(DITL_ITEM_TYPE_OFFSET, 12);
+        assert_eq!(DITL_ITEM_DATA_LEN_OFFSET, 13);
+
+        // evaluate_get_dialog_item_query
+        assert_eq!(evaluate_get_dialog_item_query(0, 1), None);
+        assert_eq!(evaluate_get_dialog_item_query(0x1000, 0), None);
+
+        let query = evaluate_get_dialog_item_query(0x0001_2340, 3)
+            .expect("valid query parameters should succeed");
+        assert_eq!(query.dialog_ptr(), 0x0001_2340);
+        assert_eq!(query.item_number(), 3);
+        assert_eq!(query.item_no(), 3);
+
+        // evaluate_set_dialog_item_parameters
+        assert_eq!(
+            evaluate_set_dialog_item_parameters(0, 1, 4, 0x2000, (10, 20, 30, 40)),
+            None
+        );
+        assert_eq!(
+            evaluate_set_dialog_item_parameters(0x1000, 0, 4, 0x2000, (10, 20, 30, 40)),
+            None
+        );
+
+        let enabled_btn = evaluate_set_dialog_item_parameters(
+            0x0005_6780,
+            2,
+            DIALOG_ITEM_BUTTON as u16,
+            0x000A_BC00,
+            (50, 60, 70, 80),
+        )
+        .expect("valid set parameters should succeed");
+
+        assert_eq!(enabled_btn.dialog_ptr(), 0x0005_6780);
+        assert_eq!(enabled_btn.item_number(), 2);
+        assert_eq!(enabled_btn.item_no(), 2);
+        assert_eq!(enabled_btn.item_type(), DIALOG_ITEM_BUTTON);
+        assert_eq!(enabled_btn.base_type(), DIALOG_ITEM_BUTTON);
+        assert!(enabled_btn.is_enabled());
+        assert_eq!(enabled_btn.item_handle(), 0x000A_BC00);
+        assert_eq!(enabled_btn.rect(), (50, 60, 70, 80));
+
+        let disabled_user = evaluate_set_dialog_item_parameters(
+            0x0005_6780,
+            5,
+            (DIALOG_ITEM_USER_ITEM | DIALOG_ITEM_DISABLED_FLAG) as u16,
+            0x000D_EF00,
+            (100, 110, 120, 130),
+        )
+        .expect("valid disabled item parameters should succeed");
+
+        assert_eq!(disabled_user.item_number(), 5);
+        assert_eq!(disabled_user.base_type(), DIALOG_ITEM_USER_ITEM);
+        assert!(!disabled_user.is_enabled());
+        assert_eq!(disabled_user.item_handle(), 0x000D_EF00);
+        assert_eq!(disabled_user.rect(), (100, 110, 120, 130));
     }
 }
 
