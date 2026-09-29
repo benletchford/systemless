@@ -3507,6 +3507,77 @@ pub fn prepare_get_dialog_item_text(text_bytes: &[u8]) -> (u8, &[u8]) {
     encode_dialog_item_pstring(text_bytes)
 }
 
+/// Canonical evaluated parameters for `GetDialogItemText` / `GetIText`.
+///
+/// Inside Macintosh Volume I (1985), p. I-422;
+/// Macintosh Toolbox Essentials (1992), pp. 6-130--6-131.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GetDialogItemTextParameters {
+    item_handle: u32,
+    text_out_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl GetDialogItemTextParameters {
+    /// Constructs a new `GetDialogItemTextParameters`.
+    #[inline]
+    pub const fn new(item_handle: u32, text_out_ptr: u32) -> Self {
+        Self {
+            item_handle,
+            text_out_ptr,
+        }
+    }
+
+    /// Target text item handle (`Handle`).
+    #[inline]
+    pub const fn item_handle(&self) -> u32 {
+        self.item_handle
+    }
+
+    /// Alias for `item_handle`.
+    #[inline]
+    pub const fn handle(&self) -> u32 {
+        self.item_handle
+    }
+
+    /// Target Str255 output pointer.
+    #[inline]
+    pub const fn text_out_ptr(&self) -> u32 {
+        self.text_out_ptr
+    }
+
+    /// Alias for `text_out_ptr`.
+    #[inline]
+    pub const fn text_ptr(&self) -> u32 {
+        self.text_out_ptr
+    }
+
+    /// Whether a non-null item handle was supplied.
+    #[inline]
+    pub const fn has_handle(&self) -> bool {
+        self.item_handle != 0
+    }
+}
+
+/// Evaluates and validates input parameters for `GetDialogItemText` / `GetIText`.
+///
+/// Returns `None` if `text_out_ptr == 0` or `!can_write`.
+#[inline]
+pub const fn evaluate_get_dialog_item_text_parameters(
+    item_handle: u32,
+    text_out_ptr: u32,
+    can_write: bool,
+) -> Option<GetDialogItemTextParameters> {
+    if text_out_ptr == 0 || !can_write {
+        None
+    } else {
+        Some(GetDialogItemTextParameters {
+            item_handle,
+            text_out_ptr,
+        })
+    }
+}
+
 /// Architecture-neutral evaluation outcome for a `GetDialogItemText` request.
 ///
 /// Inside Macintosh Volume I (1985), p. I-422;
@@ -3579,6 +3650,70 @@ pub fn evaluate_get_dialog_item_text(
             text_out_ptr,
             len,
             text: text.to_vec(),
+        })
+    }
+}
+
+/// Canonical evaluated parameters for `SetDialogItemText` / `SetIText`.
+///
+/// Inside Macintosh Volume I (1985), p. I-422;
+/// Macintosh Toolbox Essentials (1992), p. 6-131.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SetDialogItemTextParameters {
+    item_handle: u32,
+    text_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl SetDialogItemTextParameters {
+    /// Constructs a new `SetDialogItemTextParameters`.
+    #[inline]
+    pub const fn new(item_handle: u32, text_ptr: u32) -> Self {
+        Self {
+            item_handle,
+            text_ptr,
+        }
+    }
+
+    /// Target text item handle (`Handle`).
+    #[inline]
+    pub const fn item_handle(&self) -> u32 {
+        self.item_handle
+    }
+
+    /// Alias for `item_handle`.
+    #[inline]
+    pub const fn handle(&self) -> u32 {
+        self.item_handle
+    }
+
+    /// Source Str255 input pointer.
+    #[inline]
+    pub const fn text_ptr(&self) -> u32 {
+        self.text_ptr
+    }
+
+    /// Whether a non-null item handle was supplied.
+    #[inline]
+    pub const fn has_handle(&self) -> bool {
+        self.item_handle != 0
+    }
+}
+
+/// Evaluates and validates input parameters for `SetDialogItemText` / `SetIText`.
+///
+/// Returns `None` if `text_ptr == 0`.
+#[inline]
+pub const fn evaluate_set_dialog_item_text_parameters(
+    item_handle: u32,
+    text_ptr: u32,
+) -> Option<SetDialogItemTextParameters> {
+    if text_ptr == 0 {
+        None
+    } else {
+        Some(SetDialogItemTextParameters {
+            item_handle,
+            text_ptr,
         })
     }
 }
@@ -7477,6 +7612,43 @@ mod tests {
 
     #[test]
     fn get_and_set_dialog_item_text_evaluation() {
+        // evaluate_get_dialog_item_text_parameters
+        assert_eq!(evaluate_get_dialog_item_text_parameters(0x1000, 0, true), None);
+        assert_eq!(evaluate_get_dialog_item_text_parameters(0x1000, 0x2000, false), None);
+        assert_eq!(evaluate_get_dialog_item_text_parameters(0x1000, 0, false), None);
+
+        let get_params = evaluate_get_dialog_item_text_parameters(0x1000, 0x2000, true).unwrap();
+        assert_eq!(get_params.item_handle(), 0x1000);
+        assert_eq!(get_params.handle(), 0x1000);
+        assert_eq!(get_params.text_out_ptr(), 0x2000);
+        assert_eq!(get_params.text_ptr(), 0x2000);
+        assert!(get_params.has_handle());
+
+        let get_nil_handle_params = evaluate_get_dialog_item_text_parameters(0, 0x2000, true).unwrap();
+        assert_eq!(get_nil_handle_params.item_handle(), 0);
+        assert!(!get_nil_handle_params.has_handle());
+
+        let direct_get_params = GetDialogItemTextParameters::new(0x4000, 0x5000);
+        assert_eq!(direct_get_params.item_handle(), 0x4000);
+        assert_eq!(direct_get_params.text_out_ptr(), 0x5000);
+
+        // evaluate_set_dialog_item_text_parameters
+        assert_eq!(evaluate_set_dialog_item_text_parameters(0x1000, 0), None);
+
+        let set_params = evaluate_set_dialog_item_text_parameters(0x1000, 0x3000).unwrap();
+        assert_eq!(set_params.item_handle(), 0x1000);
+        assert_eq!(set_params.handle(), 0x1000);
+        assert_eq!(set_params.text_ptr(), 0x3000);
+        assert!(set_params.has_handle());
+
+        let set_nil_handle_params = evaluate_set_dialog_item_text_parameters(0, 0x3000).unwrap();
+        assert_eq!(set_nil_handle_params.item_handle(), 0);
+        assert!(!set_nil_handle_params.has_handle());
+
+        let direct_set_params = SetDialogItemTextParameters::new(0x6000, 0x7000);
+        assert_eq!(direct_set_params.item_handle(), 0x6000);
+        assert_eq!(direct_set_params.text_ptr(), 0x7000);
+
         // evaluate_get_dialog_item_text
         assert_eq!(evaluate_get_dialog_item_text(0x1000, 0, b"Hello"), None);
 
