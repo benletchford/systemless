@@ -4823,6 +4823,110 @@ pub fn default_button_outline_geometry(
     (outer, oval)
 }
 
+/// Canonical geometry and rendering metrics for a dialog default button outline ring.
+///
+/// Macintosh Toolbox Essentials (1992), Listing 6-17, pp. 6-50--6-51:
+/// The standard default button ring is outset by 4 pixels around the button rectangle,
+/// has a corner diameter of `(height / 2 - 4).max(4)`, and a pen thickness of 3 pixels.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DialogDefaultButtonOutline {
+    outer_rect: (i16, i16, i16, i16),
+    oval_width: i16,
+    oval_height: i16,
+    thickness: i16,
+}
+
+impl DialogDefaultButtonOutline {
+    /// Constructs a new `DialogDefaultButtonOutline`.
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        outer_rect: (i16, i16, i16, i16),
+        oval_width: i16,
+        oval_height: i16,
+        thickness: i16,
+    ) -> Self {
+        Self {
+            outer_rect,
+            oval_width,
+            oval_height,
+            thickness,
+        }
+    }
+
+    /// Outer bounding rectangle `(top, left, bottom, right)`.
+    #[inline]
+    #[must_use]
+    pub const fn outer_rect(&self) -> (i16, i16, i16, i16) {
+        self.outer_rect
+    }
+
+    /// Corner oval width in pixels.
+    #[inline]
+    #[must_use]
+    pub const fn oval_width(&self) -> i16 {
+        self.oval_width
+    }
+
+    /// Corner oval height in pixels.
+    #[allow(dead_code)]
+    #[inline]
+    #[must_use]
+    pub const fn oval_height(&self) -> i16 {
+        self.oval_height
+    }
+
+    /// Corner oval diameter shortcut (equal to `oval_width()`).
+    #[allow(dead_code)]
+    #[inline]
+    #[must_use]
+    pub const fn oval(&self) -> i16 {
+        self.oval_width
+    }
+
+    /// Pen frame thickness in pixels.
+    #[inline]
+    #[must_use]
+    pub const fn thickness(&self) -> i16 {
+        self.thickness
+    }
+}
+
+/// Evaluates default button outline geometry for a given push button bounding rectangle.
+///
+/// Macintosh Toolbox Essentials (1992), Listing 6-17, pp. 6-50--6-51.
+#[inline]
+pub fn evaluate_dialog_default_button_outline(
+    button_rect: (i16, i16, i16, i16),
+) -> DialogDefaultButtonOutline {
+    let (outer, oval) = default_button_outline_geometry(button_rect);
+    DialogDefaultButtonOutline::new(
+        outer,
+        oval,
+        oval,
+        DEFAULT_BUTTON_OUTLINE_THICKNESS,
+    )
+}
+
+/// Evaluates whether a dialog item is the default push button, returning its outline geometry if so.
+///
+/// Macintosh Toolbox Essentials (1992), Listing 6-17, pp. 6-50--6-51:
+/// Returns `Some(DialogDefaultButtonOutline)` if `raw_type` represents a push button (`DIALOG_ITEM_BUTTON`)
+/// and `is_dialog_default_button(item_no, default_item)` is `true`. Otherwise returns `None`.
+#[inline]
+pub fn evaluate_dialog_item_default_button_outline(
+    item_no: i16,
+    default_item: i16,
+    raw_type: u8,
+    button_rect: (i16, i16, i16, i16),
+) -> Option<DialogDefaultButtonOutline> {
+    if is_dialog_item_button(raw_type) && is_dialog_default_button(item_no, default_item) {
+        Some(evaluate_dialog_default_button_outline(button_rect))
+    } else {
+        None
+    }
+}
+
 /// Returns true if the title matches "Cancel" (case-insensitive ASCII), which identifies
 /// the standard Cancel button in dialog boxes per Macintosh Toolbox Essentials (1992), p. 6-51.
 pub fn is_dialog_cancel_button_title(title: &[u8]) -> bool {
@@ -9323,6 +9427,84 @@ mod tests {
         assert!(!eval_mouse.is_handled());
         assert_eq!(eval_mouse.item_hit(), None);
         assert_eq!(eval_mouse.boolean_result(), 0);
+    }
+
+    #[test]
+    fn dialog_default_button_outline_evaluation() {
+        let direct = DialogDefaultButtonOutline::new((10, 20, 30, 40), 6, 6, 3);
+        assert_eq!(direct.outer_rect(), (10, 20, 30, 40));
+        assert_eq!(direct.oval_width(), 6);
+        assert_eq!(direct.oval_height(), 6);
+        assert_eq!(direct.oval(), 6);
+        assert_eq!(direct.thickness(), 3);
+
+        // evaluate_dialog_default_button_outline
+        let outline = evaluate_dialog_default_button_outline((10, 20, 30, 40));
+        assert_eq!(outline.outer_rect(), (6, 16, 34, 44));
+        assert_eq!(outline.oval_width(), 10);
+        assert_eq!(outline.oval_height(), 10);
+        assert_eq!(outline.oval(), 10);
+        assert_eq!(outline.thickness(), DEFAULT_BUTTON_OUTLINE_THICKNESS);
+
+        // evaluate_dialog_item_default_button_outline
+        let item_match = evaluate_dialog_item_default_button_outline(
+            1,
+            1,
+            DIALOG_ITEM_BUTTON,
+            (10, 20, 30, 40),
+        );
+        assert_eq!(item_match, Some(outline));
+
+        // Disabled button flag preserved
+        let disabled_button = evaluate_dialog_item_default_button_outline(
+            1,
+            1,
+            DIALOG_ITEM_BUTTON | DIALOG_ITEM_DISABLED_FLAG,
+            (10, 20, 30, 40),
+        );
+        assert_eq!(disabled_button, Some(outline));
+
+        // Non-matching item number
+        assert_eq!(
+            evaluate_dialog_item_default_button_outline(
+                2,
+                1,
+                DIALOG_ITEM_BUTTON,
+                (10, 20, 30, 40),
+            ),
+            None
+        );
+
+        // No default item (0)
+        assert_eq!(
+            evaluate_dialog_item_default_button_outline(
+                1,
+                0,
+                DIALOG_ITEM_BUTTON,
+                (10, 20, 30, 40),
+            ),
+            None
+        );
+
+        // Non-button item types
+        assert_eq!(
+            evaluate_dialog_item_default_button_outline(
+                1,
+                1,
+                DIALOG_ITEM_CHECKBOX,
+                (10, 20, 30, 40),
+            ),
+            None
+        );
+        assert_eq!(
+            evaluate_dialog_item_default_button_outline(
+                1,
+                1,
+                DIALOG_ITEM_STATIC_TEXT,
+                (10, 20, 30, 40),
+            ),
+            None
+        );
     }
 }
 

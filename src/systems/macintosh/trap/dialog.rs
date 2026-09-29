@@ -4159,7 +4159,10 @@ impl super::TrapDispatcher {
                         Some((
                             Self::dialog_item_screen_rect(t.bounds, item.rect),
                             item.text.clone(),
-                            flash_item == t.default_item,
+                            crate::dialog_manager::is_dialog_default_button(
+                                flash_item,
+                                t.default_item,
+                            ),
                             remaining % 2 == 0,
                         ))
                     } else {
@@ -6831,7 +6834,11 @@ impl super::TrapDispatcher {
                     abs_bottom,
                     abs_right,
                     &item.text,
-                    auto_default_outline && item_num == default_item,
+                    auto_default_outline
+                        && crate::dialog_manager::is_dialog_default_button(
+                            item_num,
+                            default_item,
+                        ),
                     enabled,
                 ),
                 DIALOG_ITEM_CHECKBOX => {
@@ -8055,19 +8062,19 @@ impl super::TrapDispatcher {
             // Macintosh Toolbox Essentials 1992, Listing 6-17
             // references/executor/src/error/system_error.cpp
             if is_default {
-                let ((hilite_top, hilite_left, hilite_bottom, hilite_right), oval) =
-                    crate::dialog_manager::default_button_outline_geometry((
-                        top, left, bottom, right,
-                    ));
+                let outline = crate::dialog_manager::evaluate_dialog_default_button_outline((
+                    top, left, bottom, right,
+                ));
+                let (hilite_top, hilite_left, hilite_bottom, hilite_right) = outline.outer_rect();
                 self.fb_frame_round_rect(
                     bus,
                     hilite_top,
                     hilite_left,
                     hilite_bottom,
                     hilite_right,
-                    oval,
-                    oval,
-                    crate::dialog_manager::DEFAULT_BUTTON_OUTLINE_THICKNESS,
+                    outline.oval_width(),
+                    outline.oval_height(),
+                    outline.thickness(),
                 );
             }
         }
