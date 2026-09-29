@@ -1769,10 +1769,9 @@ fn ppc_ptr_imports_mutate_the_process_memory_manager_immediately() {
                     size: 24,
                 }]
             );
-            assert_eq!(
-                allocator.free_ptr_blocks,
-                vec![ProcessPtrRecord { ptr, size: 40 }]
-            );
+            // The topmost block returns to the heap tail.
+            assert!(allocator.free_ptr_blocks.is_empty());
+            assert_eq!(allocator.heap.heap_cursor, ptr);
         },
     );
 }
@@ -1929,12 +1928,19 @@ fn ppc_handle_imports_mutate_the_process_memory_manager_immediately() {
                 })
             );
             assert_eq!(memory_manager.recover_handle(grown.ptr), None);
+            // The grown block returns to the heap tail; the original block,
+            // released when SetHandleSize relocated the data past
+            // `blocking_ptr`, stays on the free list.
+            assert_eq!(
+                memory_manager.native_heap_state().map(|heap| heap.heap_cursor),
+                Some(grown.ptr)
+            );
             assert!(memory_manager
                 .native_allocator()
                 .unwrap()
                 .free_ptr_blocks
                 .iter()
-                .any(|record| record.ptr == grown.ptr && record.size == grown.capacity));
+                .any(|record| record.ptr == original.ptr));
 
             native.cpu.pc = native.entry_pc;
             native.cpu.lr = PPC_HALT_PC;
@@ -2284,7 +2290,12 @@ fn ppc_recover_handle_rejects_a_directly_disposed_native_handle() {
             .native_allocator()
             .unwrap()
             .free_handle_blocks
-            .contains(&record));
+            .contains(&ProcessHandleRecord {
+                handle,
+                ptr: 0,
+                size: 0,
+                capacity: 0,
+            }));
 
         native.cpu.pc = native.entry_pc;
         native.cpu.lr = PPC_HALT_PC;
@@ -3265,7 +3276,13 @@ fn hle_import_runner_dispose_handle_invalidates_tracked_handle() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], handle);
     assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
-    assert_eq!(loaded.heap_cursor(), heap_cursor);
+    // The data block returns to the heap tail; the master pointer stays
+    // reserved for a later NewHandle.
+    assert!(loaded.heap_cursor() < heap_cursor);
+    assert_eq!(
+        loaded.heap_cursor(),
+        handle + ppc_allocation_size(4).unwrap()
+    );
     assert!(test_handle_records!(loaded)
         .iter()
         .all(|record| record.handle != handle));
@@ -3742,7 +3759,7 @@ fn new_handle_abi_marshalling_shares_semantics_without_sharing_addresses() {
 }
 
 #[test]
-fn hle_import_runner_reuses_disposed_handle_capacity() {
+fn hle_import_runner_reuses_disposed_handle_master_pointer() {
     let pef = synthetic_pef_with_import(b"NewHandleClear");
     let mut loaded = load_pef_application(&pef).unwrap();
     loaded.cpu.gpr[3] = 64;
@@ -3763,8 +3780,19 @@ fn hle_import_runner_reuses_disposed_handle_capacity() {
 
     assert_eq!(probe.handled_import_count, 1);
     assert!(test_handle_records!(loaded).is_empty());
-    assert_eq!(loaded.free_handle_blocks().len(), 1);
-    assert_eq!(loaded.free_handle_blocks()[0].capacity, 64);
+    // Only the master pointer waits for reuse; the data block rejoined the
+    // heap tail.
+    assert_eq!(
+        loaded.free_handle_blocks(),
+        vec![PpcHandleRecord {
+            handle,
+            ptr: 0,
+            size: 0,
+            capacity: 0,
+        }]
+    );
+    assert_eq!(loaded.heap_cursor(), ptr);
+    assert!(heap_cursor > ptr);
 
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.lr = PPC_HALT_PC;
@@ -3775,9 +3803,9 @@ fn hle_import_runner_reuses_disposed_handle_capacity() {
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(loaded.cpu.gpr[3], handle);
     assert_eq!(loaded.memory.read_u32_be(handle), Some(ptr));
-    assert_eq!(loaded.heap_cursor(), heap_cursor);
+    assert_eq!(loaded.heap_cursor(), ptr + 16);
     assert_eq!(test_handle_records!(loaded)[0].size, 16);
-    assert_eq!(test_handle_records!(loaded)[0].capacity, 64);
+    assert_eq!(test_handle_records!(loaded)[0].capacity, 16);
     assert!(loaded.free_handle_blocks().is_empty());
     for offset in 0..16 {
         assert_eq!(loaded.memory.read_u8(ptr + offset), Some(0));
@@ -4655,14 +4683,9 @@ fn hle_import_runner_handles_new_ptr_clear_and_continues() {
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
     assert!(loaded.ptrs().is_empty());
-    assert_eq!(
-        loaded.free_ptr_blocks(),
-        vec![PpcPtrRecord {
-            ptr: PPC_HEAP_BASE,
-            size: 24
-        }]
-    );
-    let heap_cursor = loaded.heap_cursor();
+    // The only block returns to the heap tail rather than the free list.
+    assert!(loaded.free_ptr_blocks().is_empty());
+    assert_eq!(loaded.heap_cursor(), PPC_HEAP_BASE);
 
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.lr = PPC_HALT_PC;
@@ -4674,15 +4697,8 @@ fn hle_import_runner_handles_new_ptr_clear_and_continues() {
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], PPC_HEAP_BASE);
-    assert_eq!(loaded.heap_cursor(), heap_cursor);
-    // The 32-byte block serves the 16-byte request and keeps its tail free.
-    assert_eq!(
-        loaded.free_ptr_blocks(),
-        vec![PpcPtrRecord {
-            ptr: PPC_HEAP_BASE + 16,
-            size: 16
-        }]
-    );
+    assert_eq!(loaded.heap_cursor(), PPC_HEAP_BASE + 16);
+    assert!(loaded.free_ptr_blocks().is_empty());
     assert_eq!(loaded.ptrs()[0].size, 12);
 }
 

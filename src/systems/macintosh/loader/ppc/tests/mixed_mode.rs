@@ -678,13 +678,11 @@ fn hle_import_runner_disposes_and_reuses_routine_descriptor_storage() {
         }
     );
     assert_eq!(loaded.cpu.gpr[3], descriptor);
-    assert_eq!(loaded.heap_cursor(), heap_cursor);
+    // The topmost descriptor returns to the heap tail.
+    assert_eq!(loaded.heap_cursor(), descriptor);
     assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
     assert!(!loaded.ptrs().iter().any(|record| record.ptr == descriptor));
-    assert!(loaded
-        .free_ptr_blocks()
-        .iter()
-        .any(|record| record.ptr == descriptor && record.size == descriptor_size));
+    assert!(loaded.free_ptr_blocks().is_empty());
 
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.lr = PPC_HALT_PC;

@@ -6775,7 +6775,14 @@ fn pb_read_async_queues_completion_on_eof() {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(loaded.cpu.gpr[3], resource_handle);
-        assert_eq!(loaded.heap_cursor(), allocated_heap_cursor);
+        // The released resource data rejoined the heap tail, so the new block
+        // takes only what it needs from the same space.
+        let data = loaded.memory.read_u32_be(resource_handle).unwrap();
+        assert_eq!(
+            loaded.heap_cursor(),
+            data + ppc_allocation_size(11_000).unwrap()
+        );
+        assert!(loaded.heap_cursor() <= allocated_heap_cursor);
     }
 
     #[test]

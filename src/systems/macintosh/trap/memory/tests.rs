@@ -454,7 +454,20 @@ fn dispose_handle_trap_releases_native_process_allocation_immediately() {
             .native_allocator()
             .and_then(|allocator| allocator.free_handle_blocks.last())
             .copied(),
-        Some(record)
+        Some(ProcessHandleRecord {
+            handle,
+            ptr: 0,
+            size: 0,
+            capacity: 0,
+        })
+    );
+    // The data block joins the shared free list at its full capacity.
+    assert_eq!(
+        memory_manager
+            .borrow()
+            .native_allocator()
+            .map(|allocator| allocator.free_ptr_blocks.clone()),
+        Some(vec![ProcessPtrRecord { ptr, size: 32 }])
     );
 }
 

@@ -118,8 +118,12 @@ fn cfm_initializer_storage_reuses_only_completed_or_refused_allocations() {
     assert!(calls.complete_powerpc_releasing_scratch(&mut cpu, &mut manager));
     assert_eq!(cpu.pc, 0x4000);
     assert!(manager.native_ptr_records().is_empty());
-    // The two adjacent scratch blocks merge into one free block.
-    assert_eq!(manager.native_free_ptr_blocks().len(), 1);
+    // The two adjacent scratch blocks merge and return to the heap tail.
+    assert!(manager.native_free_ptr_blocks().is_empty());
+    assert_eq!(
+        manager.native_heap_state().map(|heap| heap.heap_cursor),
+        Some(first)
+    );
 }
 
 #[test]
@@ -147,7 +151,7 @@ fn cfm_load_resumes_after_initialization_and_failed_loads_can_retry() {
         let mut next_connection = PPC_FIRST_CFM_CONNECTION_ID;
         let mut import_run_state =
             PpcImportRunState::from_parts(Vec::new(), 0, ppc_import_layout());
-        let mut cursor = PPC_HEAP_BASE;
+        let mut cursor: u32;
         let mut cpu = PpcCpu::new();
         cpu.gpr[1] = 0x8000;
         cpu.gpr[2] = 0x2200;
@@ -169,7 +173,10 @@ fn cfm_load_resumes_after_initialization_and_failed_loads_can_retry() {
         }
         let request = cpu.clone();
         macro_rules! load {
-            ($cpu:expr) => {
+            ($cpu:expr) => {{
+                // Like the import dispatcher, snapshot the canonical cursor:
+                // released blocks at the top of the heap lower it.
+                cursor = manager.native_heap_state().unwrap().heap_cursor;
                 if use_memory {
                     ppc_get_mem_fragment(
                         $cpu,
@@ -196,7 +203,7 @@ fn cfm_load_resumes_after_initialization_and_failed_loads_can_retry() {
                         &mut import_run_state,
                     )
                 }
-            };
+            }};
         }
         assert_eq!(load!(&mut cpu), PpcImportAction::Continue);
         let id = connections[0].id;
@@ -401,7 +408,8 @@ fn cfm_initializer_storage_is_released_when_load_outputs_become_readonly() {
         assert_eq!(cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
         assert!(connections.is_empty());
         assert!(manager.native_ptr_records().is_empty());
-        assert_eq!(manager.native_free_ptr_blocks().len(), 1);
+        // The released initializer storage returned to the heap tail.
+        assert!(manager.native_free_ptr_blocks().is_empty());
         assert!(calls.is_empty());
     }
 }
@@ -516,10 +524,16 @@ fn cfm_initializer_effect_executes_and_returns_to_its_worker() {
         manager.set_native_mem_error(-108);
         assert!(calls.complete_powerpc_releasing_scratch(&mut cpu, &mut manager));
         assert!(manager.native_ptr_records().is_empty());
-        assert_eq!(manager.native_free_ptr_blocks().len(), 1);
+        // The released initializer storage returned to the heap tail.
+        assert!(manager.native_free_ptr_blocks().is_empty());
+        let cursor_after_release = manager.native_heap_state().unwrap().heap_cursor;
         assert_eq!(manager.native_heap_state().unwrap().last_mem_error, -108);
         assert!(!calls.complete_powerpc_releasing_scratch(&mut cpu, &mut manager));
-        assert_eq!(manager.native_free_ptr_blocks().len(), 1);
+        assert!(manager.native_free_ptr_blocks().is_empty());
+        assert_eq!(
+            manager.native_heap_state().unwrap().heap_cursor,
+            cursor_after_release
+        );
         assert_eq!((cpu.pc, cpu.lr, cpu.gpr[2]), (0x4000, 0x4000, 0x2200));
         assert_eq!(
             cpu.gpr[3],

@@ -5628,6 +5628,12 @@ impl ProcessNativeAllocatorState {
             end = end.max(block_end(free.ptr, free.size).unwrap_or(end));
             merged = true;
         }
+        // Free space at the top of the heap rejoins the unallocated tail, so
+        // a later large request can span it and the space above the cursor.
+        if end == self.heap.heap_cursor && start >= self.heap.heap_base {
+            self.heap.heap_cursor = start;
+            return;
+        }
         self.free_ptr_blocks.push(if merged {
             ProcessPtrRecord {
                 ptr: start,
@@ -6903,7 +6909,19 @@ impl ProcessNativeMemoryManager {
         self.handle_high_locked.remove(&record.handle);
         self.native_handles.remove(&record.handle);
         if let Some(allocator) = &mut self.native_allocator {
-            allocator.free_handle_blocks.push(record);
+            // Relocatable and nonrelocatable blocks share one heap: the freed
+            // data rejoins the merging free list so any later request can use
+            // it, and only the master pointer waits for a later NewHandle.
+            // Inside Macintosh: Memory (1992), pp. 1-18--1-20 and 2-34.
+            if record.ptr != 0 {
+                allocator.release_ptr_block(record.ptr, record.capacity);
+            }
+            allocator.free_handle_blocks.push(ProcessHandleRecord {
+                handle: record.handle,
+                ptr: 0,
+                size: 0,
+                capacity: 0,
+            });
             allocator.heap.last_mem_error = Self::NO_ERR;
             self.native_allocator_dirty = true;
         }
@@ -8040,6 +8058,15 @@ impl ProcessNativeMemoryManager {
             }
         });
         allocator.heap.heap_cursor = reclaim_base;
+        // A block freed earlier may now end at the lowered cursor.
+        while let Some(index) = allocator.free_ptr_blocks.iter().position(|free| {
+            Self::native_allocation_size(free.size)
+                .and_then(|capacity| free.ptr.checked_add(capacity))
+                == Some(allocator.heap.heap_cursor)
+        }) {
+            let free = allocator.free_ptr_blocks.swap_remove(index);
+            allocator.heap.heap_cursor = free.ptr;
+        }
         allocator.heap.last_mem_error = Self::NO_ERR;
         self.native_allocator_dirty = true;
         true
@@ -9207,7 +9234,7 @@ impl ProcessNativeMemoryManager {
             self.native_allocator_dirty = true;
             return Self::NO_ERR;
         }
-        let Some(old_aligned) = Self::native_allocation_size(record.size) else {
+        let Some(old_aligned) = Self::native_allocation_size(record.capacity) else {
             self.set_native_mem_error(Self::PARAM_ERR);
             return Self::PARAM_ERR;
         };
@@ -9229,8 +9256,34 @@ impl ProcessNativeMemoryManager {
                 |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
             )
             .is_some_and(|(ptr, _)| ptr == record.ptr);
+        // A relocated block may land in any free block large enough, like a
+        // fresh NewHandle. Inside Macintosh: Memory (1992), pp. 2-40--2-41.
+        let reusable_ptr_index = (!can_extend_last)
+            .then(|| {
+                allocator
+                    .free_ptr_blocks
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, free)| {
+                        let capacity = Self::native_allocation_size(free.size)?;
+                        (capacity >= new_aligned
+                            && free
+                                .ptr
+                                .checked_add(capacity)
+                                .is_some_and(|end| end <= allocation_limit))
+                        .then_some((index, capacity))
+                    })
+                    .min_by_key(|(_, capacity)| *capacity)
+                    .map(|(index, _)| index)
+            })
+            .flatten();
         let (new_ptr, next_cursor) = if can_extend_last {
             (record.ptr, record.ptr.checked_add(new_aligned))
+        } else if let Some(index) = reusable_ptr_index {
+            (
+                allocator.free_ptr_blocks[index].ptr,
+                Some(allocator.heap.heap_cursor),
+            )
         } else {
             let Some((ptr, next)) = Self::native_allocation_bounds(
                 allocator.heap.heap_cursor,
@@ -9264,6 +9317,7 @@ impl ProcessNativeMemoryManager {
             self.set_native_mem_error(Self::PARAM_ERR);
             return Self::PARAM_ERR;
         }
+        let old = record;
         self.ptr_to_handle.remove(&record.ptr);
         self.native_handle_ptrs.remove(&record.ptr);
         record.ptr = new_ptr;
@@ -9276,7 +9330,13 @@ impl ProcessNativeMemoryManager {
             .native_allocator
             .as_mut()
             .expect("native allocator remains registered");
+        if let Some(index) = reusable_ptr_index {
+            allocator.take_ptr_block(index, new_aligned);
+        }
         allocator.heap.heap_cursor = next_cursor;
+        if new_ptr != old.ptr {
+            allocator.release_ptr_block(old.ptr, old.capacity);
+        }
         allocator.heap.last_mem_error = Self::NO_ERR;
         self.native_allocator_dirty = true;
         Self::NO_ERR
@@ -12012,10 +12072,9 @@ mod tests {
         );
         let allocator = manager.native_allocator().unwrap();
         assert!(allocator.ptrs.is_empty());
-        assert_eq!(
-            allocator.free_ptr_blocks,
-            vec![ProcessPtrRecord { ptr, size: 20 }]
-        );
+        // The block returns to the heap tail, which stays above the mapping.
+        assert!(allocator.free_ptr_blocks.is_empty());
+        assert_eq!(allocator.heap.heap_cursor, ptr);
     }
 
     #[test]
@@ -12101,6 +12160,128 @@ mod tests {
                 ptr: first + 48,
                 size: 16,
             }]
+        );
+    }
+
+    #[test]
+    fn process_memory_manager_reuses_disposed_native_handle_data_for_ptrs() {
+        // Deimos Rising reads a level image into a large handle, disposes
+        // it, then allocates the level's GWorld pixels with NewPtr. Handle
+        // and pointer blocks share one heap, so the freed data must serve
+        // the pointer. Inside Macintosh: Memory (1992), pp. 1-18--1-20.
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let mut native = GuestAddressSpace::new();
+        native.add_region(HEAP_BASE, vec![0; 0x100]);
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor: HEAP_BASE,
+                heap_limit: HEAP_BASE + 0x100,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        let handle = manager.new_native_handle(&mut native, 64, false);
+        let data = manager.native_allocation(handle).unwrap().ptr;
+        let neighbour = manager.new_native_ptr(&mut native, 32, false);
+        let _pinned = manager.new_native_ptr(&mut native, 16, false);
+        let cursor = manager.native_heap_state().unwrap().heap_cursor;
+        assert_eq!(neighbour, data + 64);
+
+        assert!(manager.dispose_native_handle(&mut native, handle).is_some());
+        manager.dispose_native_ptr(neighbour);
+        let allocator = manager.native_allocator().unwrap();
+        assert_eq!(
+            allocator.free_ptr_blocks,
+            vec![ProcessPtrRecord {
+                ptr: data,
+                size: 96,
+            }]
+        );
+        assert_eq!(
+            allocator.free_handle_blocks,
+            vec![ProcessHandleRecord {
+                handle,
+                ptr: 0,
+                size: 0,
+                capacity: 0,
+            }]
+        );
+
+        // Larger than either freed block alone, so it needs the merge.
+        assert_eq!(manager.new_native_ptr(&mut native, 90, false), data);
+        assert_eq!(manager.native_heap_state().unwrap().heap_cursor, cursor);
+        assert!(manager.native_allocator().unwrap().free_ptr_blocks.is_empty());
+
+        // The master pointer is recycled by the next NewHandle.
+        assert_eq!(manager.new_native_handle(&mut native, 8, false), handle);
+    }
+
+    #[test]
+    fn process_memory_manager_releases_relocated_native_handle_blocks() {
+        // SetHandleSize moves a block that cannot grow in place; the old
+        // block becomes free and a later relocation may use free space.
+        // Inside Macintosh: Memory (1992), pp. 2-40--2-41.
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let mut native = GuestAddressSpace::new();
+        native.add_region(HEAP_BASE, vec![0; 0x200]);
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor: HEAP_BASE,
+                heap_limit: HEAP_BASE + 0x200,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        let handle = manager.new_native_handle(&mut native, 16, false);
+        let original = manager.native_allocation(handle).unwrap().ptr;
+        native.write_bytes(original, b"relocated bytes!").unwrap();
+        let hole = manager.new_native_ptr(&mut native, 64, false);
+        let _pinned = manager.new_native_ptr(&mut native, 16, false);
+        manager.dispose_native_ptr(hole);
+        let cursor = manager.native_heap_state().unwrap().heap_cursor;
+
+        // The block cannot extend in place: it moves into the freed 64-byte
+        // hole instead of growing the heap, and its old block is released.
+        assert_eq!(
+            manager.set_native_handle_size(&mut native, handle, 48),
+            ProcessMemoryManager::NO_ERR
+        );
+        let grown = manager.native_allocation(handle).unwrap();
+        assert_eq!(grown.ptr, hole);
+        assert_eq!(native.read_u32_be(handle), Some(hole));
+        assert_eq!(
+            (0..16)
+                .map(|offset| native.read_u8(hole + offset))
+                .collect::<Option<Vec<_>>>(),
+            Some(b"relocated bytes!".to_vec())
+        );
+        assert_eq!(manager.native_heap_state().unwrap().heap_cursor, cursor);
+        let mut free = manager.native_allocator().unwrap().free_ptr_blocks.clone();
+        free.sort_by_key(|record| record.ptr);
+        assert_eq!(
+            free,
+            vec![
+                ProcessPtrRecord {
+                    ptr: original,
+                    size: 16,
+                },
+                ProcessPtrRecord {
+                    ptr: hole + 48,
+                    size: 16,
+                },
+            ]
         );
     }
 
@@ -12448,7 +12629,8 @@ mod tests {
         assert_ne!(unloaded, 0);
         assert_eq!(bus.read_long(unloaded), 0);
         assert_eq!(manager.state_for_handle(unloaded), Some(0x60));
-        let recycled_ptr = manager.native_allocator().unwrap().free_ptr_blocks[0].ptr;
+        // The emptied placeholder block returned to the heap tail.
+        assert!(manager.native_allocator().unwrap().free_ptr_blocks.is_empty());
         let cursor_before_load = manager.native_heap_state().unwrap().heap_cursor;
         let detached = manager.detached_clone();
 
@@ -12457,10 +12639,10 @@ mod tests {
             ProcessMemoryManager::NO_ERR
         );
         let loaded = manager.native_allocation(unloaded).unwrap();
-        assert_eq!(loaded.ptr, recycled_ptr);
+        assert_eq!(loaded.ptr, cursor_before_load);
         assert_eq!(
             manager.native_heap_state().unwrap().heap_cursor,
-            cursor_before_load
+            cursor_before_load + ProcessNativeMemoryManager::native_allocation_size(8).unwrap()
         );
         assert_eq!(manager.recover_handle(loaded.ptr), Some(unloaded));
         assert_eq!(
