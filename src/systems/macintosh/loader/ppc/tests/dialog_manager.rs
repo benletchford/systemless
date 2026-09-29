@@ -1703,3 +1703,54 @@ fn find_dialog_item_falls_through_group_boxes_to_enclosed_controls() {
         assert_eq!(loaded.cpu.gpr[3], expected, "point {point:08X}");
     }
 }
+
+#[test]
+fn set_dialog_cancel_item_dispatches_with_canonical_evaluation() {
+    let pef = synthetic_pef_with_import(b"SetDialogCancelItem");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let dialog = PPC_DATA_BASE + 0x5100;
+    loaded.memory.add_region(dialog, vec![0; PPC_DIALOG_RECORD_SIZE as usize]);
+
+    let app_code_pc = loaded.cpu.pc;
+
+    // 1. NIL dialog rejects with paramErr
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 2;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+
+    // 2. Valid dialog writes cancel item to DIALOG_CANCEL_ITEM_OFFSET
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = 2;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(dialog + crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET),
+        Some(2)
+    );
+
+    // 3. Test canonical evaluation against items
+    let dummy_items: [(u8, &[u8]); 2] = [
+        (crate::dialog_manager::DIALOG_ITEM_BUTTON, b"OK"),
+        (crate::dialog_manager::DIALOG_ITEM_BUTTON, b"Cancel"),
+    ];
+    let eval = crate::dialog_manager::evaluate_dialog_cancel_item(
+        loaded
+            .memory
+            .read_u16_be(dialog + crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET)
+            .map(|item| item as i16),
+        dummy_items.iter().copied(),
+    );
+    assert_eq!(eval.item_no(), Some(2));
+    assert_eq!(eval.to_u16(), Some(2));
+    assert!(eval.has_item());
+    assert!(eval.matches_item(2));
+}

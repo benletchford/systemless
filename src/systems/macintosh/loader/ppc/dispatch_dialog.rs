@@ -25,6 +25,7 @@ use crate::dialog_manager::{
     evaluate_param_text_parameters, evaluate_set_dialog_item_text, evaluate_set_dialog_item_text_parameters,
     evaluate_std_filter_proc, evaluate_std_filter_proc_event, evaluate_std_filter_proc_parameters,
     evaluate_dialog_item_default_button_outline,
+    evaluate_dialog_cancel_item, evaluate_dialog_filter_cancel,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -3520,13 +3521,13 @@ fn ppc_dialog_cancel_item(
     items: &[PpcDialogItemView],
     configured_cancel: Option<i16>,
 ) -> Option<u16> {
-    let cancel = crate::dialog_manager::resolve_dialog_cancel_item(
+    evaluate_dialog_cancel_item(
         configured_cancel,
         items
             .iter()
             .map(|item| (item.item_type, ppc_dialog_item_title(memory, handles, item))),
-    );
-    (cancel > 0).then_some(cancel as u16)
+    )
+    .to_u16()
 }
 
 fn ppc_modal_dialog(
@@ -3690,12 +3691,20 @@ fn ppc_modal_dialog(
             let filter_eval = evaluate_std_filter_proc(decision, default_item);
             if let Some(item_hit) = filter_eval.item_hit() {
                 Some(item_hit as u16)
-            } else if decision == crate::dialog_manager::DialogFilterDecision::TriggerCancelButton {
-                let configured_cancel = memory
-                    .read_u16_be(dialog + DIALOG_CANCEL_ITEM_OFFSET)
-                    .filter(|item| *item != 0)
-                    .map(|item| item as i16);
-                ppc_dialog_cancel_item(memory, handles, &items, configured_cancel)
+            } else if let Some(cancel_hit) = evaluate_dialog_filter_cancel(
+                decision,
+                if decision == crate::dialog_manager::DialogFilterDecision::TriggerCancelButton {
+                    let configured_cancel = memory
+                        .read_u16_be(dialog + DIALOG_CANCEL_ITEM_OFFSET)
+                        .filter(|item| *item != 0)
+                        .map(|item| item as i16);
+                    ppc_dialog_cancel_item(memory, handles, &items, configured_cancel)
+                        .map(|item| item as i16)
+                } else {
+                    None
+                },
+            ) {
+                Some(cancel_hit as u16)
             } else if character.eq_ignore_ascii_case(&b'a') && event.modifiers & 0x0100 != 0 {
                 let te_handle = memory
                     .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)

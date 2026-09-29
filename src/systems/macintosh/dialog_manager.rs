@@ -4959,6 +4959,133 @@ where
         })
 }
 
+/// Canonical resolution of a dialog's cancel item.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DialogCancelItemResolution {
+    item_no: Option<i16>,
+}
+
+impl DialogCancelItemResolution {
+    /// Constructs a `DialogCancelItemResolution` from an optional 1-indexed item number.
+    #[inline]
+    #[must_use]
+    pub const fn new(item_no: Option<i16>) -> Self {
+        Self { item_no }
+    }
+
+    /// Constructs an empty `DialogCancelItemResolution` indicating no cancel item.
+    #[allow(dead_code)]
+    #[inline]
+    #[must_use]
+    pub const fn none() -> Self {
+        Self { item_no: None }
+    }
+
+    /// 1-indexed item number if a cancel item was resolved, or `None`.
+    #[allow(dead_code)]
+    #[inline]
+    #[must_use]
+    pub const fn item_no(&self) -> Option<i16> {
+        self.item_no
+    }
+
+    /// 1-indexed item number as an `i16`, returning `0` if no cancel item was resolved.
+    #[inline]
+    #[must_use]
+    pub const fn item_number(&self) -> i16 {
+        match self.item_no {
+            Some(item) => item,
+            None => 0,
+        }
+    }
+
+    /// 1-indexed item number as a `u16`, returning `None` if no cancel item was resolved.
+    #[inline]
+    #[must_use]
+    pub fn to_u16(&self) -> Option<u16> {
+        self.item_no.and_then(|item| u16::try_from(item).ok())
+    }
+
+    /// Returns `true` if a cancel item was resolved (`item_no > 0`).
+    #[inline]
+    #[must_use]
+    pub const fn has_item(&self) -> bool {
+        match self.item_no {
+            Some(item) => item > 0,
+            None => false,
+        }
+    }
+
+    /// Returns `true` if `item_no` matches the resolved cancel item (`item_no == cancel_item && cancel_item > 0`).
+    #[allow(dead_code)]
+    #[inline]
+    #[must_use]
+    pub const fn matches_item(&self, item_no: i16) -> bool {
+        match self.item_no {
+            Some(cancel) => is_dialog_cancel_button(item_no, cancel),
+            None => false,
+        }
+    }
+}
+
+/// Evaluates and resolves the 1-indexed cancel item number for a dialog.
+///
+/// Priority:
+/// 1. An explicitly configured cancel item (`configured_cancel > 0`).
+/// 2. An enabled PushButton with title "Cancel" (case-insensitive ASCII) found via `find_dialog_cancel_item_index`.
+/// 3. None if no cancel item is configured or found.
+///
+/// Inside Macintosh: Macintosh Toolbox Essentials (1992), pp. 6-51, 6-86--6-90, 6-163.
+pub fn evaluate_dialog_cancel_item<I, T>(
+    configured_cancel: Option<i16>,
+    items: I,
+) -> DialogCancelItemResolution
+where
+    I: IntoIterator<Item = (u8, T)>,
+    T: AsRef<[u8]>,
+{
+    if let Some(item) = configured_cancel {
+        if item > 0 {
+            return DialogCancelItemResolution::new(Some(item));
+        }
+    }
+    let found = find_dialog_cancel_item_index(items).and_then(|idx| i16::try_from(idx).ok());
+    DialogCancelItemResolution::new(found)
+}
+
+/// Evaluates and resolves the 1-indexed cancel item number for a modal dialog,
+/// falling back to `ALERT_BUTTON_CANCEL` (2) if no explicit or titled cancel item is found.
+///
+/// Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 6-51.
+pub fn evaluate_modal_dialog_cancel_item<I, T>(
+    configured_cancel: Option<i16>,
+    items: I,
+) -> DialogCancelItemResolution
+where
+    I: IntoIterator<Item = (u8, T)>,
+    T: AsRef<[u8]>,
+{
+    let resolution = evaluate_dialog_cancel_item(configured_cancel, items);
+    if resolution.has_item() {
+        resolution
+    } else {
+        DialogCancelItemResolution::new(Some(ALERT_BUTTON_CANCEL))
+    }
+}
+
+/// Evaluates whether a dialog filter decision triggers a cancel item, returning its 1-indexed number if so.
+#[inline]
+pub fn evaluate_dialog_filter_cancel(
+    decision: DialogFilterDecision,
+    cancel_item: Option<i16>,
+) -> Option<i16> {
+    if decision == DialogFilterDecision::TriggerCancelButton {
+        cancel_item.filter(|&item| item > 0)
+    } else {
+        None
+    }
+}
+
 /// Resolves the 1-indexed cancel item number for a dialog.
 ///
 /// Priority:
@@ -4967,34 +5094,26 @@ where
 /// 3. Returns 0 if no cancel item is configured or found.
 ///
 /// Inside Macintosh: Macintosh Toolbox Essentials (1992), pp. 6-51, 6-86--6-90, 6-163.
+#[allow(dead_code)]
+#[inline]
 pub fn resolve_dialog_cancel_item<I, T>(configured_cancel: Option<i16>, items: I) -> i16
 where
     I: IntoIterator<Item = (u8, T)>,
     T: AsRef<[u8]>,
 {
-    if let Some(item) = configured_cancel {
-        if item > 0 {
-            return item;
-        }
-    }
-    find_dialog_cancel_item_index(items)
-        .map(|idx| idx as i16)
-        .unwrap_or(0)
+    evaluate_dialog_cancel_item(configured_cancel, items).item_number()
 }
 
 /// Resolves the 1-indexed cancel item number for a modal dialog, falling back to
 /// `ALERT_BUTTON_CANCEL` (2) if no explicit or titled cancel item is found, per classic Mac OS convention.
+#[allow(dead_code)]
+#[inline]
 pub fn resolve_modal_dialog_cancel_item<I, T>(configured_cancel: Option<i16>, items: I) -> i16
 where
     I: IntoIterator<Item = (u8, T)>,
     T: AsRef<[u8]>,
 {
-    let item = resolve_dialog_cancel_item(configured_cancel, items);
-    if item > 0 {
-        item
-    } else {
-        ALERT_BUTTON_CANCEL
-    }
+    evaluate_modal_dialog_cancel_item(configured_cancel, items).item_number()
 }
 
 /// Resolves the 1-indexed default item number for a dialog.
@@ -6629,6 +6748,68 @@ mod tests {
             vec![(DIALOG_ITEM_BUTTON, "OK"), (DIALOG_ITEM_BUTTON, "Help")];
         assert_eq!(
             find_dialog_cancel_item_index(items_no_cancel.iter().copied()),
+            None
+        );
+
+        // evaluate_dialog_cancel_item & DialogCancelItemResolution
+        let eval_explicit = evaluate_dialog_cancel_item(Some(3), items.iter().copied());
+        assert_eq!(eval_explicit.item_no(), Some(3));
+        assert_eq!(eval_explicit.item_number(), 3);
+        assert_eq!(eval_explicit.to_u16(), Some(3));
+        assert!(eval_explicit.has_item());
+        assert!(eval_explicit.matches_item(3));
+        assert!(!eval_explicit.matches_item(2));
+
+        let eval_titled = evaluate_dialog_cancel_item(Some(0), items.iter().copied());
+        assert_eq!(eval_titled.item_no(), Some(2));
+        assert_eq!(eval_titled.item_number(), 2);
+        assert_eq!(eval_titled.to_u16(), Some(2));
+        assert!(eval_titled.has_item());
+
+        let eval_none = evaluate_dialog_cancel_item(None, items_no_cancel.iter().copied());
+        assert_eq!(eval_none.item_no(), None);
+        assert_eq!(eval_none.item_number(), 0);
+        assert_eq!(eval_none.to_u16(), None);
+        assert!(!eval_none.has_item());
+        assert!(!eval_none.matches_item(0));
+
+        let eval_empty = DialogCancelItemResolution::none();
+        assert_eq!(eval_empty.item_no(), None);
+        assert!(!eval_empty.has_item());
+
+        // evaluate_modal_dialog_cancel_item
+        let modal_eval_explicit = evaluate_modal_dialog_cancel_item(Some(4), items.iter().copied());
+        assert_eq!(modal_eval_explicit.item_no(), Some(4));
+        assert_eq!(modal_eval_explicit.item_number(), 4);
+
+        let modal_eval_titled = evaluate_modal_dialog_cancel_item(None, items.iter().copied());
+        assert_eq!(modal_eval_titled.item_no(), Some(2));
+        assert_eq!(modal_eval_titled.item_number(), 2);
+
+        let modal_eval_fallback = evaluate_modal_dialog_cancel_item(None, items_no_cancel.iter().copied());
+        assert_eq!(modal_eval_fallback.item_no(), Some(ALERT_BUTTON_CANCEL));
+        assert_eq!(modal_eval_fallback.item_number(), ALERT_BUTTON_CANCEL);
+        assert!(modal_eval_fallback.matches_item(ALERT_BUTTON_CANCEL));
+
+        // evaluate_dialog_filter_cancel
+        assert_eq!(
+            evaluate_dialog_filter_cancel(DialogFilterDecision::TriggerCancelButton, Some(2)),
+            Some(2)
+        );
+        assert_eq!(
+            evaluate_dialog_filter_cancel(DialogFilterDecision::TriggerCancelButton, Some(0)),
+            None
+        );
+        assert_eq!(
+            evaluate_dialog_filter_cancel(DialogFilterDecision::TriggerCancelButton, None),
+            None
+        );
+        assert_eq!(
+            evaluate_dialog_filter_cancel(DialogFilterDecision::TriggerDefaultButton, Some(2)),
+            None
+        );
+        assert_eq!(
+            evaluate_dialog_filter_cancel(DialogFilterDecision::Unhandled, Some(2)),
             None
         );
 

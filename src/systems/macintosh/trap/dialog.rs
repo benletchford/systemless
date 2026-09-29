@@ -4025,10 +4025,11 @@ impl super::TrapDispatcher {
         if dialog_ptr == 0 {
             return false;
         }
-        let cancel_item = crate::dialog_manager::resolve_dialog_cancel_item(
+        let cancel_item = crate::dialog_manager::evaluate_dialog_cancel_item(
             None,
             items.iter().map(|item| (item.item_type, &item.text)),
-        );
+        )
+        .item_number();
         let init = crate::dialog_manager::evaluate_alert_dialog_record_init(
             items_handle,
             alert_id,
@@ -4272,17 +4273,23 @@ impl super::TrapDispatcher {
                     .as_ref()
                     .map(|tracking| (tracking.default_item, tracking.cancel_item))
                     .unwrap_or((0, 0));
-                let hit = match crate::dialog_manager::evaluate_modal_dialog_key(
+                let decision = crate::dialog_manager::evaluate_modal_dialog_key(
                     event.what,
                     event.message,
                     event.modifiers,
-                ) {
-                    crate::dialog_manager::DialogFilterDecision::TriggerDefaultButton => {
-                        default_item
-                    }
-                    crate::dialog_manager::DialogFilterDecision::TriggerCancelButton => cancel_item,
-                    _ => 0,
-                };
+                );
+                let hit = crate::dialog_manager::evaluate_std_filter_proc(
+                    decision,
+                    Some(default_item),
+                )
+                .item_hit()
+                .or_else(|| {
+                    crate::dialog_manager::evaluate_dialog_filter_cancel(
+                        decision,
+                        Some(cancel_item),
+                    )
+                })
+                .unwrap_or(0);
                 if hit > 0 {
                     self.finish_interactive_alert(cpu, bus, hit);
                 }
@@ -12782,10 +12789,10 @@ impl super::TrapDispatcher {
                                     crate::dialog_manager::DialogFilterDecision::TriggerCancelButton => {
                                         let target =
                                             self.dialog_tracking.as_ref().and_then(|tracking| {
-                                                let cancel = tracking.cancel_item;
-                                                if cancel <= 0 {
-                                                    return None;
-                                                }
+                                                let cancel = crate::dialog_manager::evaluate_dialog_filter_cancel(
+                                                    crate::dialog_manager::DialogFilterDecision::TriggerCancelButton,
+                                                    Some(tracking.cancel_item),
+                                                )?;
                                                 tracking
                                                     .items
                                                     .get(cancel.saturating_sub(1) as usize)
@@ -13061,7 +13068,7 @@ impl super::TrapDispatcher {
                         let (edit_text, edit_item, default_item) =
                             Self::dialog_edit_state(bus, dialog_ptr, &items);
                         let cancel_item =
-                            crate::dialog_manager::resolve_modal_dialog_cancel_item(
+                            crate::dialog_manager::evaluate_modal_dialog_cancel_item(
                                 self.dialog_cancel_items.get(&dialog_ptr).copied().or_else(|| {
                                     if bus.get_alloc_size(dialog_ptr).unwrap_or(0)
                                         >= crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET + 2
@@ -13080,7 +13087,8 @@ impl super::TrapDispatcher {
                                     }
                                 }),
                                 items.iter().map(|item| (item.item_type, &item.text)),
-                            );
+                            )
+                            .item_number();
                         let edit_text_modified = edit_item > 0
                             && self
                                 .dialog_edit_text_modified_items
