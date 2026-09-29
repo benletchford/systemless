@@ -17,7 +17,7 @@ use crate::dialog_manager::{
     DIALOG_INITIAL_DEFAULT_ITEM, DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
     DIALOG_ITEMS_OFFSET, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX, DIALOG_ITEM_DISABLED_FLAG,
     DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO,
-    DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT, DIALOG_ITEM_USER_ITEM,
+    DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT,
     DIALOG_RECORD_SIZE, DIALOG_RESOURCE_ID_OFFSET, DIALOG_STANDARD_ALERT_OUTPUT_OFFSET,
     DIALOG_STANDARD_ALERT_STACK_OFFSET, DIALOG_TEXT_HANDLE_OFFSET,
 };
@@ -40,7 +40,7 @@ pub(super) const PPC_DIALOG_RESOURCE_ID_OFFSET: u32 = DIALOG_RESOURCE_ID_OFFSET;
 #[cfg(test)]
 pub(super) const PPC_DIALOG_ITEM_DISABLED: u8 = DIALOG_ITEM_DISABLED_FLAG;
 #[cfg(test)]
-pub(super) const PPC_DIALOG_ITEM_USER_ITEM: u8 = DIALOG_ITEM_USER_ITEM;
+pub(super) const PPC_DIALOG_ITEM_USER_ITEM: u8 = crate::dialog_manager::DIALOG_ITEM_USER_ITEM;
 #[cfg(test)]
 pub(super) const PPC_DIALOG_ITEM_BUTTON: u8 = DIALOG_ITEM_BUTTON;
 #[cfg(test)]
@@ -474,7 +474,10 @@ pub(super) fn dispatch_dialog_import(
             if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
                 return Some(action);
             }
-            let dialog = cpu.gpr[3];
+            let Some(eval) = crate::dialog_manager::evaluate_draw_dialog(cpu.gpr[3]) else {
+                return Some(PpcImportAction::ReturnPreserve);
+            };
+            let dialog = eval.dialog_ptr;
             *current_gworld = dialog;
             *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
             let bounds = ppc_dialog_global_bounds(memory, gworlds, dialog);
@@ -1258,6 +1261,10 @@ fn ppc_dispatch_dialog_compatibility(
             if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
                 return action;
             }
+            let Some(eval) = crate::dialog_manager::evaluate_update_dialog(dialog, cpu.gpr[4]) else {
+                return PpcImportAction::ReturnPreserve;
+            };
+            let dialog = eval.dialog_ptr;
             *current_gworld = dialog;
             *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
             let bounds = ppc_dialog_global_bounds(memory, gworlds, dialog);
@@ -2522,21 +2529,19 @@ fn ppc_dialog_draw_callbacks(
     bounds: (i16, i16, i16, i16),
     default_rtoc: u32,
 ) -> Vec<(PpcCallbackTarget, u32)> {
-    items
-        .iter()
-        .enumerate()
-        .filter_map(|(index, item)| {
-            if dialog_item_base_type(item.item_type) != DIALOG_ITEM_USER_ITEM || item.handle == 0 {
-                return None;
-            }
-            if !crate::dialog_manager::dialog_item_intersects_bounds(bounds, item.rect) {
-                return None;
-            }
-            let target = ppc_resolve_callback_target(memory, item.handle, default_rtoc, None)?;
-            memory.read_u32_be(target.entry)?;
-            Some((target, u32::try_from(index + 1).unwrap_or(u32::MAX)))
-        })
-        .collect()
+    crate::dialog_manager::evaluate_dialog_user_item_numbers(
+        items.iter().map(|item| (item.has_user_proc(), item.rect)),
+        bounds,
+        None,
+    )
+    .into_iter()
+    .filter_map(|item_number| {
+        let item = &items[item_number - 1];
+        let target = ppc_resolve_callback_target(memory, item.handle, default_rtoc, None)?;
+        memory.read_u32_be(target.entry)?;
+        Some((target, u32::try_from(item_number).unwrap_or(u32::MAX)))
+    })
+    .collect()
 }
 
 fn ppc_next_dialog_callback(
