@@ -4,6 +4,7 @@
 //! Inside Macintosh: Macintosh Toolbox Essentials (1992), pp. 6-1--6-179.
 use std::borrow::Cow;
 
+use crate::mac_roman::encode_mac_roman_lossy;
 use crate::trap::types::decode_mac_roman;
 
 /// Canonical guest DialogRecord byte size.
@@ -368,6 +369,13 @@ impl DialogItemRecord {
         self.text_payload()
             .map(decode_mac_roman)
             .unwrap_or_default()
+    }
+
+    /// Sets the decoded text on this item if it represents text or a titled control.
+    pub fn set_text(&mut self, text: &str) {
+        if self.has_text_or_title() {
+            self.payload = encode_mac_roman_lossy(text);
+        }
     }
 
     /// Whether the item references an external resource (resource control, icon, or picture).
@@ -1625,6 +1633,150 @@ pub fn prepare_set_dialog_item_text(text_bytes: &[u8]) -> (&[u8], String) {
 #[allow(dead_code)]
 pub fn prepare_get_dialog_item_text(text_bytes: &[u8]) -> (u8, &[u8]) {
     encode_dialog_item_pstring(text_bytes)
+}
+
+/// Architecture-neutral evaluation outcome for a `GetDialogItemText` request.
+///
+/// Inside Macintosh Volume I (1985), p. I-422;
+/// Macintosh Toolbox Essentials (1992), pp. 6-130--6-131.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GetDialogItemTextEvaluation {
+    /// Target dialog item handle.
+    pub item_handle: u32,
+    /// Destination pointer for the Str255 output parameter.
+    pub text_out_ptr: u32,
+    /// Length of the Pascal string payload (clamped to 255).
+    pub len: u8,
+    /// Raw byte payload of the text.
+    pub text: Vec<u8>,
+}
+
+#[allow(dead_code)]
+impl GetDialogItemTextEvaluation {
+    /// Target dialog item handle.
+    pub fn item_handle(&self) -> u32 {
+        self.item_handle
+    }
+
+    /// Destination pointer for the Str255 output parameter.
+    pub fn text_out_ptr(&self) -> u32 {
+        self.text_out_ptr
+    }
+
+    /// Length byte of the Pascal string.
+    pub fn len(&self) -> u8 {
+        self.len
+    }
+
+    /// Raw text bytes.
+    pub fn text(&self) -> &[u8] {
+        &self.text
+    }
+
+    /// Decoded Mac Roman string.
+    pub fn decoded_text(&self) -> String {
+        decode_mac_roman(&self.text)
+    }
+
+    /// Complete Pascal string representation `[len, text...]`.
+    pub fn pstring_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(usize::from(self.len) + 1);
+        out.push(self.len);
+        out.extend_from_slice(&self.text);
+        out
+    }
+}
+
+/// Evaluates a `GetDialogItemText` request.
+///
+/// Returns `None` if `text_out_ptr == 0` (unwritable destination).
+///
+/// Inside Macintosh Volume I (1985), p. I-422;
+/// Macintosh Toolbox Essentials (1992), pp. 6-130--6-131.
+pub fn evaluate_get_dialog_item_text(
+    item_handle: u32,
+    text_out_ptr: u32,
+    source_bytes: &[u8],
+) -> Option<GetDialogItemTextEvaluation> {
+    if text_out_ptr == 0 {
+        None
+    } else {
+        let (len, text) = prepare_get_dialog_item_text(source_bytes);
+        Some(GetDialogItemTextEvaluation {
+            item_handle,
+            text_out_ptr,
+            len,
+            text: text.to_vec(),
+        })
+    }
+}
+
+/// Architecture-neutral evaluation outcome for a `SetDialogItemText` request.
+///
+/// Inside Macintosh Volume I (1985), p. I-422;
+/// Macintosh Toolbox Essentials (1992), p. 6-131.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SetDialogItemTextEvaluation {
+    /// Target dialog item handle.
+    pub item_handle: u32,
+    /// Source pointer for the Str255 input string.
+    pub text_ptr: u32,
+    /// Raw byte payload of the text (clamped to at most 255 bytes).
+    pub bytes: Vec<u8>,
+    /// Decoded Mac Roman string.
+    pub text: String,
+}
+
+#[allow(dead_code)]
+impl SetDialogItemTextEvaluation {
+    /// Target dialog item handle.
+    pub fn item_handle(&self) -> u32 {
+        self.item_handle
+    }
+
+    /// Source pointer for the Str255 input string.
+    pub fn text_ptr(&self) -> u32 {
+        self.text_ptr
+    }
+
+    /// Raw text bytes.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Number of text bytes.
+    pub fn byte_len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// Decoded text string.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+}
+
+/// Evaluates a `SetDialogItemText` request.
+///
+/// Returns `None` if `text_ptr == 0` (null source string pointer).
+///
+/// Inside Macintosh Volume I (1985), p. I-422;
+/// Macintosh Toolbox Essentials (1992), p. 6-131.
+pub fn evaluate_set_dialog_item_text(
+    item_handle: u32,
+    text_ptr: u32,
+    raw_text: &[u8],
+) -> Option<SetDialogItemTextEvaluation> {
+    if text_ptr == 0 {
+        None
+    } else {
+        let (bytes, text) = prepare_set_dialog_item_text(raw_text);
+        Some(SetDialogItemTextEvaluation {
+            item_handle,
+            text_ptr,
+            bytes: bytes.to_vec(),
+            text,
+        })
+    }
 }
 
 /// Resolves the active dialog item text bytes from an optional handle buffer and fallback DITL payload.
@@ -5109,6 +5261,77 @@ mod tests {
             ),
             Vec::<usize>::new()
         );
+    }
+
+    #[test]
+    fn get_and_set_dialog_item_text_evaluation() {
+        // evaluate_get_dialog_item_text
+        assert_eq!(evaluate_get_dialog_item_text(0x1000, 0, b"Hello"), None);
+
+        let get_eval = evaluate_get_dialog_item_text(0x1000, 0x2000, b"Hello").unwrap();
+        assert_eq!(get_eval.item_handle(), 0x1000);
+        assert_eq!(get_eval.text_out_ptr(), 0x2000);
+        assert_eq!(get_eval.len(), 5);
+        assert_eq!(get_eval.text(), b"Hello");
+        assert_eq!(get_eval.decoded_text(), "Hello");
+        assert_eq!(get_eval.pstring_bytes(), b"\x05Hello");
+
+        let empty_get = evaluate_get_dialog_item_text(0x1000, 0x2000, b"").unwrap();
+        assert_eq!(empty_get.len(), 0);
+        assert_eq!(empty_get.text(), b"");
+        assert_eq!(empty_get.pstring_bytes(), vec![0]);
+
+        let long_bytes = vec![b'A'; 300];
+        let clamped_get = evaluate_get_dialog_item_text(0x1000, 0x2000, &long_bytes).unwrap();
+        assert_eq!(clamped_get.len(), 255);
+        assert_eq!(clamped_get.text().len(), 255);
+        assert_eq!(clamped_get.pstring_bytes().len(), 256);
+
+        // evaluate_set_dialog_item_text
+        assert_eq!(evaluate_set_dialog_item_text(0x1000, 0, b"Submit"), None);
+
+        let set_eval = evaluate_set_dialog_item_text(0x1000, 0x3000, b"Submit").unwrap();
+        assert_eq!(set_eval.item_handle(), 0x1000);
+        assert_eq!(set_eval.text_ptr(), 0x3000);
+        assert_eq!(set_eval.bytes(), b"Submit");
+        assert_eq!(set_eval.byte_len(), 6);
+        assert_eq!(set_eval.text(), "Submit");
+
+        let long_raw = vec![b'Z'; 300];
+        let clamped_set = evaluate_set_dialog_item_text(0x1000, 0x3000, &long_raw).unwrap();
+        assert_eq!(clamped_set.byte_len(), 255);
+        assert_eq!(clamped_set.bytes().len(), 255);
+
+        // DialogItemRecord::set_text
+        let mut edit_record = DialogItemRecord {
+            item_offset: 0,
+            item_type: DIALOG_ITEM_EDIT_TEXT,
+            rect: (10, 10, 30, 100),
+            handle: 0,
+            payload: b"Original".to_vec(),
+        };
+        edit_record.set_text("Modified");
+        assert_eq!(edit_record.text(), "Modified");
+
+        let mut button_record = DialogItemRecord {
+            item_offset: 0,
+            item_type: DIALOG_ITEM_BUTTON,
+            rect: (10, 10, 30, 100),
+            handle: 0,
+            payload: b"OK".to_vec(),
+        };
+        button_record.set_text("Cancel");
+        assert_eq!(button_record.text(), "Cancel");
+
+        let mut icon_record = DialogItemRecord {
+            item_offset: 0,
+            item_type: DIALOG_ITEM_ICON,
+            rect: (10, 10, 42, 42),
+            handle: 0,
+            payload: vec![0, 128], // icon res id 128
+        };
+        icon_record.set_text("NotText");
+        assert_eq!(icon_record.payload, vec![0, 128]);
     }
 }
 

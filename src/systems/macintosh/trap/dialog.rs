@@ -17,7 +17,7 @@ use crate::dialog_manager::{
     global_to_dialog_local_point, is_dialog_item_button, is_dialog_item_control,
     is_dialog_item_disabled, is_dialog_item_edit_text, is_dialog_item_enabled,
     is_dialog_item_resource, is_dialog_item_text, normalize_selection_bounds,
-    prepare_get_dialog_item_text, prepare_set_dialog_item_text, rect_contains_point,
+    evaluate_get_dialog_item_text, evaluate_set_dialog_item_text, rect_contains_point,
     DialogItemHeader, DIALOG_DBOX_FRAME_MARGIN, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX,
     DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO,
     DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT, DIALOG_ITEM_USER_ITEM,
@@ -16256,72 +16256,80 @@ impl super::TrapDispatcher {
                 let pc = cpu.read_reg(Register::PC);
                 let text_str_ptr = bus.read_long(sp);
                 let item_handle = bus.read_long(sp + 4);
+                cpu.write_reg(Register::A7, sp + 8);
+
+                let raw_bytes = if text_str_ptr != 0 {
+                    bus.read_pstring(text_str_ptr)
+                } else {
+                    Vec::new()
+                };
+                let Some(eval) = evaluate_set_dialog_item_text(
+                    item_handle,
+                    text_str_ptr,
+                    &raw_bytes,
+                ) else {
+                    return Some(Ok(()));
+                };
+
                 let mut redraw_text_item = None;
-                if text_str_ptr != 0 {
-                    let raw_bytes = bus.read_pstring(text_str_ptr);
-                    let (bytes, text) = prepare_set_dialog_item_text(&raw_bytes);
-                    let len = bytes.len();
-
-                    if item_handle != 0 {
-                        let data_ptr = Self::ensure_text_handle_size(bus, item_handle, len);
-                        if data_ptr != 0 {
-                            bus.write_bytes(data_ptr, bytes);
-                        }
+                if eval.item_handle != 0 {
+                    let data_ptr = Self::ensure_text_handle_size(bus, eval.item_handle, eval.byte_len());
+                    if data_ptr != 0 {
+                        bus.write_bytes(data_ptr, eval.bytes());
                     }
+                }
 
-                    // Also update the item in dialog_items so ModalDialog picks it up
-                    if let Some((dlg_ptr, idx)) =
-                        self.dialog_item_handles.get(&item_handle).copied()
-                    {
-                        let item_no = (idx + 1) as i16;
-                        if trace_dialog_items_enabled() {
-                            eprintln!(
-                                "[DIALOG-ITEM] SetDialogItemText pc=${:08X} dialog=${:08X} item={} handle=${:08X} text={:?}",
-                                pc,
-                                dlg_ptr,
-                                item_no,
-                                item_handle,
-                                text
-                            );
-                        }
-                        if let Some(items) = self.dialog_items.get_mut(&dlg_ptr) {
-                            if let Some(item) =
-                                crate::dialog_manager::get_item_at_1_indexed_mut(items, idx + 1)
-                            {
-                                item.text = text.clone();
-                            }
-                        }
-                        let mut refresh_tracking = false;
-                        if let Some(tracking) = self.dialog_tracking.as_mut() {
-                            if tracking.dialog_ptr == dlg_ptr && idx < tracking.items.len() {
-                                tracking.items[idx].text = text.clone();
-                                if tracking.edit_item == item_no {
-                                    tracking.edit_text = text;
-                                    tracking.edit_text_modified = false;
-                                }
-                                refresh_tracking = !tracking.game_managed;
-                            }
-                        }
-                        if refresh_tracking {
-                            self.refresh_dialog_tracking_snapshot(bus, Some(item_no));
-                        } else {
-                            redraw_text_item = Some((dlg_ptr, item_no));
-                        }
-                    } else if trace_dialog_items_enabled() {
+                // Also update the item in dialog_items so ModalDialog picks it up
+                if let Some((dlg_ptr, idx)) =
+                    self.dialog_item_handles.get(&eval.item_handle).copied()
+                {
+                    let item_no = (idx + 1) as i16;
+                    if trace_dialog_items_enabled() {
                         eprintln!(
-                            "[DIALOG-ITEM] SetDialogItemText pc=${:08X} dialog=<unknown> handle=${:08X} text={:?}",
+                            "[DIALOG-ITEM] SetDialogItemText pc=${:08X} dialog=${:08X} item={} handle=${:08X} text={:?}",
                             pc,
-                            item_handle,
-                            text
+                            dlg_ptr,
+                            item_no,
+                            eval.item_handle,
+                            eval.text
                         );
                     }
+                    if let Some(items) = self.dialog_items.get_mut(&dlg_ptr) {
+                        if let Some(item) =
+                            crate::dialog_manager::get_item_at_1_indexed_mut(items, idx + 1)
+                        {
+                            item.set_text(eval.text());
+                        }
+                    }
+                    let mut refresh_tracking = false;
+                    if let Some(tracking) = self.dialog_tracking.as_mut() {
+                        if tracking.dialog_ptr == dlg_ptr && idx < tracking.items.len() {
+                            tracking.items[idx].set_text(eval.text());
+                            if tracking.edit_item == item_no {
+                                tracking.edit_text = eval.text.clone();
+                                tracking.edit_text_modified = false;
+                            }
+                            refresh_tracking = !tracking.game_managed;
+                        }
+                    }
+                    if refresh_tracking {
+                        self.refresh_dialog_tracking_snapshot(bus, Some(item_no));
+                    } else {
+                        redraw_text_item = Some((dlg_ptr, item_no));
+                    }
+                } else if trace_dialog_items_enabled() {
+                    eprintln!(
+                        "[DIALOG-ITEM] SetDialogItemText pc=${:08X} dialog=<unknown> handle=${:08X} text={:?}",
+                        pc,
+                        eval.item_handle,
+                        eval.text
+                    );
                 }
 
                 if let Some((dlg_ptr, item_no)) = redraw_text_item {
                     self.redraw_dialog_text_item(bus, dlg_ptr, item_no);
                 }
 
-                cpu.write_reg(Register::A7, sp + 8);
                 Ok(())
             }
 
@@ -16333,50 +16341,62 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let text_ptr = bus.read_long(sp);
                 let item_handle = bus.read_long(sp + 4);
+                cpu.write_reg(Register::A7, sp + 8);
 
-                if text_ptr != 0 {
-                    // If dialog tracking is active, return the current edit text
-                    let mut wrote = false;
-                    if let Some(ref tracking) = self.dialog_tracking {
-                        let current_edit_handle =
-                            self.dialog_item_handles.get(&item_handle).copied().filter(
-                                |(dlg_ptr, idx)| {
-                                    *dlg_ptr == tracking.dialog_ptr
-                                        && (*idx as i16 + 1) == tracking.edit_item
-                                },
-                            );
-                        if current_edit_handle.is_some() {
-                            let bytes = encode_mac_roman_lossy(&tracking.edit_text);
-                            let (len, text) = prepare_get_dialog_item_text(&bytes);
-                            bus.write_byte(text_ptr, len);
-                            for (i, byte) in text.iter().enumerate() {
-                                bus.write_byte(text_ptr + 1 + i as u32, *byte);
+                if text_ptr == 0 {
+                    return Some(Ok(()));
+                }
+
+                // If dialog tracking is active, return the current edit text
+                let mut wrote = false;
+                if let Some(ref tracking) = self.dialog_tracking {
+                    let current_edit_handle =
+                        self.dialog_item_handles.get(&item_handle).copied().filter(
+                            |(dlg_ptr, idx)| {
+                                *dlg_ptr == tracking.dialog_ptr
+                                    && (*idx as i16 + 1) == tracking.edit_item
+                            },
+                        );
+                    if current_edit_handle.is_some() {
+                        let bytes = encode_mac_roman_lossy(&tracking.edit_text);
+                        if let Some(eval) = evaluate_get_dialog_item_text(
+                            item_handle,
+                            text_ptr,
+                            &bytes,
+                        ) {
+                            bus.write_byte(eval.text_out_ptr, eval.len);
+                            for (i, byte) in eval.text.iter().enumerate() {
+                                bus.write_byte(eval.text_out_ptr + 1 + i as u32, *byte);
                             }
                             wrote = true;
                         }
                     }
-                    if !wrote {
-                        // Text item handles store raw bytes, not a Pascal-length byte.
-                        // Inside Macintosh Volume I, I-422; Executor dialManip.cpp
-                        if item_handle != 0 {
-                            let master = bus.read_long(item_handle);
-                            if master != 0 {
-                                let total_size = bus.get_alloc_size(master).unwrap_or(0) as usize;
-                                let raw_bytes = bus.read_bytes(master, total_size);
-                                let (len, text) = prepare_get_dialog_item_text(&raw_bytes);
-                                bus.write_byte(text_ptr, len);
-                                for (i, byte) in text.iter().enumerate() {
-                                    bus.write_byte(text_ptr + 1 + i as u32, *byte);
+                }
+                if !wrote {
+                    // Text item handles store raw bytes, not a Pascal-length byte.
+                    // Inside Macintosh Volume I, I-422; Executor dialManip.cpp
+                    if item_handle != 0 {
+                        let master = bus.read_long(item_handle);
+                        if master != 0 {
+                            let total_size = bus.get_alloc_size(master).unwrap_or(0) as usize;
+                            let raw_bytes = bus.read_bytes(master, total_size);
+                            if let Some(eval) = evaluate_get_dialog_item_text(
+                                item_handle,
+                                text_ptr,
+                                &raw_bytes,
+                            ) {
+                                bus.write_byte(eval.text_out_ptr, eval.len);
+                                for (i, byte) in eval.text.iter().enumerate() {
+                                    bus.write_byte(eval.text_out_ptr + 1 + i as u32, *byte);
                                 }
                                 wrote = true;
                             }
                         }
-                        if !wrote {
-                            bus.write_byte(text_ptr, 0);
-                        }
+                    }
+                    if !wrote {
+                        bus.write_byte(text_ptr, 0);
                     }
                 }
-                cpu.write_reg(Register::A7, sp + 8);
                 Ok(())
             }
 
