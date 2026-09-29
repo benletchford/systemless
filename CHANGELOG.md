@@ -1,5 +1,78 @@
 # Changelog
 
+## [0.68.0](https://github.com/benletchford/systemless/compare/v0.67.0...v0.68.0) (2026-09-29)
+
+
+### Features
+
+* append path components to PPC CFURL objects ([#3320](https://github.com/benletchford/systemless/issues/3320)) ([5989d85](https://github.com/benletchford/systemless/commit/5989d8599caf08638cf53cb6d65ffbf15c5babf0))
+* **catalogue:** approve Creep Night demo browser launch ([#3347](https://github.com/benletchford/systemless/issues/3347)) ([aa47c0b](https://github.com/benletchford/systemless/commit/aa47c0b7dcc5416e089ca7ee5e83235e16b92aee))
+* **catalogue:** approve Power Pete demo browser launch ([#3353](https://github.com/benletchford/systemless/issues/3353)) ([9f55361](https://github.com/benletchford/systemless/commit/9f553617bee79ae1545d1a7e730972949aa0a636))
+* **catalogue:** enable 3-d ultra pinball browser launch ([#3343](https://github.com/benletchford/systemless/issues/3343)) ([b546fda](https://github.com/benletchford/systemless/commit/b546fda4d2f97be6e4bd32c50b97aa59915d59a7))
+* **catalogue:** enable A-10 Cuba demo after browser approval ([#3331](https://github.com/benletchford/systemless/issues/3331)) ([44478d7](https://github.com/benletchford/systemless/commit/44478d7015c5fabd6852fc76b3c1fec121a94625))
+* **catalogue:** enable Diablo II Shareware browser launch ([#3380](https://github.com/benletchford/systemless/issues/3380)) ([f4d1fb1](https://github.com/benletchford/systemless/commit/f4d1fb10548b419527ea46156160825bd03e7434))
+* create PPC CFBundle objects from bundle URLs ([#3325](https://github.com/benletchford/systemless/issues/3325)) ([93b376e](https://github.com/benletchford/systemless/commit/93b376e00e3173941109019d91de279ce4e9f74a))
+* **desktop:** persist System Folder preferences ([#3251](https://github.com/benletchford/systemless/issues/3251)) ([34e81e5](https://github.com/benletchford/systemless/commit/34e81e5d50c1624af3c8527703de95a305e7643f))
+* expose main CFBundle to PPC Carbon applications ([#3311](https://github.com/benletchford/systemless/issues/3311)) ([6c7b39b](https://github.com/benletchford/systemless/commit/6c7b39b0b610598fc50809acfbd67635e8d7a148))
+* expose PPC bundle private Frameworks URL ([#3316](https://github.com/benletchford/systemless/issues/3316)) ([700479d](https://github.com/benletchford/systemless/commit/700479d765b88a89d5c3392f1352ec88191fd965))
+* support PPC Carbon multiprocessing imports ([#3306](https://github.com/benletchford/systemless/issues/3306)) ([8b6f7b6](https://github.com/benletchford/systemless/commit/8b6f7b6c9883e53bf446a7d30f32a3f8f27a73d1))
+
+
+### Bug Fixes
+
+* bind Carbon dec2num in PPC imports ([#3308](https://github.com/benletchford/systemless/issues/3308)) ([9443de9](https://github.com/benletchford/systemless/commit/9443de9afbe1c8142dd1c0cdb517570409b8c271))
+* bind Carbon MoreMasterPointers in PPC imports ([#3300](https://github.com/benletchford/systemless/issues/3300)) ([1d70154](https://github.com/benletchford/systemless/commit/1d70154cf7cba3f5bb53b554fa25e7b4808e1512))
+* **dialog:** redraw only changed text item during modal tracking ([#3304](https://github.com/benletchford/systemless/issues/3304)) ([a6588fb](https://github.com/benletchford/systemless/commit/a6588fb35cd4ed7f3101a8bf9338fa4c8c68c78d))
+* **dialog:** redraw only the changed SetIText item ([#3278](https://github.com/benletchford/systemless/issues/3278)) ([8cb5ebd](https://github.com/benletchford/systemless/commit/8cb5ebdda46be611d4d7ed9fe666f788412ac476))
+* extend PPC browser worker startup deadline on progress ([#3327](https://github.com/benletchford/systemless/issues/3327)) ([f6a5b46](https://github.com/benletchford/systemless/commit/f6a5b46c080acb0902086d61edad1b2df1690e19))
+* **memory/presentation:** resolve private interface, unused method, and unused mut warnings ([e47e385](https://github.com/benletchford/systemless/commit/e47e38508e4035b7fb2cff52c99a8cc113795b7b))
+* **ppc:** read DrawSprocket context CLUT entries ([#3263](https://github.com/benletchford/systemless/issues/3263)) ([0af90c4](https://github.com/benletchford/systemless/commit/0af90c49873fac8eca46c759cf555b5362fb7cc5))
+* **ppc:** return callable standard dialog filter ([#3267](https://github.com/benletchford/systemless/issues/3267)) ([1f056af](https://github.com/benletchford/systemless/commit/1f056afd09eac0033bbf16b0689d2e23a3e93513))
+* **ppc:** serialize DrawSprocket contexts ([#3259](https://github.com/benletchford/systemless/issues/3259)) ([c6ed3ee](https://github.com/benletchford/systemless/commit/c6ed3eeb4d9e387c2852a71eb0a99887a5321c40))
+* preserve global bounds for PPC window hit testing ([#3285](https://github.com/benletchford/systemless/issues/3285)) ([b4c9a5e](https://github.com/benletchford/systemless/commit/b4c9a5e8d3fd7524746b7f669da53c399e155f48))
+* **quickdraw:** draw straight lines as single pen coverage ([#3282](https://github.com/benletchford/systemless/issues/3282)) ([03f4b1e](https://github.com/benletchford/systemless/commit/03f4b1e92b2a78ec31c98f5d0fa325ada801e26f))
+
+
+### Performance Improvements
+
+* **dialog:** refresh only drawn regions in retained snapshots ([#3312](https://github.com/benletchford/systemless/issues/3312)) ([844e9ed](https://github.com/benletchford/systemless/commit/844e9eda7bc950a983d45c45d3b1b0dc6f033974))
+* **dialog:** reuse tracked snapshot when redrawing dialog items ([#3323](https://github.com/benletchford/systemless/issues/3323)) ([93b8621](https://github.com/benletchford/systemless/commit/93b8621b88cb99c210abf8f73bdff21b9f9e1059))
+* **present:** resolve retained text coverage on the GPU on macOS ([#3253](https://github.com/benletchford/systemless/issues/3253)) ([27d1056](https://github.com/benletchford/systemless/commit/27d10560e159fce0fe61469663ec9b2f103119b1))
+* **quickdraw:** batch patterned 8-bit rows and narrow snapshot updates ([#3289](https://github.com/benletchford/systemless/issues/3289)) ([9f50a53](https://github.com/benletchford/systemless/commit/9f50a53f377c6c16d882c4e5c5207ed3bc7ad6ab))
+* **quickdraw:** cache pixel pattern color matches per draw ([#3271](https://github.com/benletchford/systemless/issues/3271)) ([50f30e5](https://github.com/benletchford/systemless/commit/50f30e5d99ceab465e0fe541e444689a4db16bd0))
+* **web:** skip drawing grace during ui tracking ([#3295](https://github.com/benletchford/systemless/issues/3295)) ([3fe94dc](https://github.com/benletchford/systemless/commit/3fe94dc5a6506efb4c08c90328228350c3a9d377))
+
+
+### Code Refactoring
+
+* **dialog:** delegate 68k DITL resource parsing to architecture-neutral dialog manager ([#3305](https://github.com/benletchford/systemless/issues/3305)) ([65de671](https://github.com/benletchford/systemless/commit/65de671c244aa6901e177ea4b8f072ecd688960d))
+* **dialog:** introduce architecture-neutral Dialog Manager domain and DITL parsing ([da8641c](https://github.com/benletchford/systemless/commit/da8641c7e95d2f64137c2c218e80a5ca4e0825c7))
+* **dialog:** unify append, shorten, and count DITL manipulation and geometry ([#3350](https://github.com/benletchford/systemless/issues/3350)) ([cf7f3dc](https://github.com/benletchford/systemless/commit/cf7f3dc441feb101a2f16104f0e73e2b2cb085f4))
+* **dialog:** unify dialog and alert template parsing, alert stages, and ParamText substitution ([#3317](https://github.com/benletchford/systemless/issues/3317)) ([de73a61](https://github.com/benletchford/systemless/commit/de73a6180302d5ae9f86712147ffcb5c5e608aa4))
+* **dialog:** unify dialog dispatch selectors, default button ring geometry, and cancel button detection ([#3346](https://github.com/benletchford/systemless/issues/3346)) ([1c2472e](https://github.com/benletchford/systemless/commit/1c2472e29c61989173c4a3229ad8ef8055f242f5))
+* **dialog:** unify dialog event handling, edit text key processing, and record offsets ([#3352](https://github.com/benletchford/systemless/issues/3352)) ([292d1da](https://github.com/benletchford/systemless/commit/292d1daafd5c94655945cc875720a402eda5cb01))
+* **dialog:** unify dialog item geometry, visibility, and hit testing ([#3310](https://github.com/benletchford/systemless/issues/3310)) ([a2460c3](https://github.com/benletchford/systemless/commit/a2460c3af6631e7e211915e99e157f555a2d76f0))
+* **dialog:** unify dialog item hit testing, coordinate conversions, and disabled state predicates ([#3362](https://github.com/benletchford/systemless/issues/3362)) ([46cff95](https://github.com/benletchford/systemless/commit/46cff95e65db0eaafef6d6e2bb988b2837dc2703))
+* **dialog:** unify dialog item kind predicates and DialogSelect evaluation ([#3372](https://github.com/benletchford/systemless/issues/3372)) ([d0697e7](https://github.com/benletchford/systemless/commit/d0697e789c66cfa942b5fd04e1fbf5e472f98bd7))
+* **dialog:** unify dialog item resource mapping and type resolution ([#3368](https://github.com/benletchford/systemless/issues/3368)) ([2782b97](https://github.com/benletchford/systemless/commit/2782b97b467e38b1d980d5d4e157a56aea0bdc2b))
+* **dialog:** unify dialog item text and record manipulation ([#3332](https://github.com/benletchford/systemless/issues/3332)) ([0919f80](https://github.com/benletchford/systemless/commit/0919f80856776dd1dc167808a5a17df8f04e8701))
+* **dialog:** unify dialog item text extraction and validation ([#3365](https://github.com/benletchford/systemless/issues/3365)) ([522e88a](https://github.com/benletchford/systemless/commit/522e88a04d9c1b1ca79e9ab51f36e1ca5b3104f8))
+* **dialog:** unify dialog lifecycle and item resource disposal ([#3341](https://github.com/benletchford/systemless/issues/3341)) ([784e888](https://github.com/benletchford/systemless/commit/784e8881f8b00a7026f1d4b80931cc883ce5ac9d))
+* **dialog:** unify event target routing, edit text outset geometry, and item typing ([#3356](https://github.com/benletchford/systemless/issues/3356)) ([2ab21fe](https://github.com/benletchford/systemless/commit/2ab21fea7076c44ab324e9cfba9ce948ce590b9d))
+* **dialog:** unify modal dialog event filtering and default/cancel button resolution ([#3370](https://github.com/benletchford/systemless/issues/3370)) ([79fe129](https://github.com/benletchford/systemless/commit/79fe12926926cad1aa979de17e09f0e4b29affee))
+* **dialog:** unify modal dialog keyboard navigation and standard filter evaluation ([#3326](https://github.com/benletchford/systemless/issues/3326)) ([0e4bcbc](https://github.com/benletchford/systemless/commit/0e4bcbcc934a0e2436bdbe968115b6be649d7004))
+* **dialog:** unify PPC item type decoding, dialog record offsets, and initial state ([#3358](https://github.com/benletchford/systemless/issues/3358)) ([bfde15c](https://github.com/benletchford/systemless/commit/bfde15c88520d94d7728317838dc371e90ebf3f2))
+* **dialog:** unify selection normalization, default and cancel items, and alert types ([#3336](https://github.com/benletchford/systemless/issues/3336)) ([f1b1c3c](https://github.com/benletchford/systemless/commit/f1b1c3ca219f9be0544b69ac4bd845368ca9d403))
+* **loader/ppc:** extract cfm hle import dispatcher into dispatch_imports submodule ([3e959cb](https://github.com/benletchford/systemless/commit/3e959cb4d1ce7f3a69e7f10697a6b85815d4118f))
+* **loader/ppc:** extract cfm import dispatch targets into import_targets submodule ([f0884f2](https://github.com/benletchford/systemless/commit/f0884f26c4408e5f4233811b73e813a4f3be835e))
+* **loader/ppc:** extract execution diagnostics and watch observers into diagnostics submodule ([4543d34](https://github.com/benletchford/systemless/commit/4543d343ea0a6f788d1b44d758696cc0bb1a23fb))
+* **loader/ppc:** extract loaded app hle execution engine into loaded_app_execution submodule ([866ed0d](https://github.com/benletchford/systemless/commit/866ed0d6ead1b25e900bb5382d8e73e893fd2243))
+* **loader/ppc:** extract loader constants, loaded app definition, and surface helpers into submodules ([170317b](https://github.com/benletchford/systemless/commit/170317be62e2c000684db6a505bfd759eafb4eb7))
+* **loader/ppc:** extract pef application loader into pef_loader submodule ([5bfcd4e](https://github.com/benletchford/systemless/commit/5bfcd4e5494347dd61ea9be00e8b1ce9767302de))
+* **loader/ppc:** extract picture rendering and font/gestalt helpers into submodules ([f48ffc0](https://github.com/benletchford/systemless/commit/f48ffc0e5aa37b3c12403f9901a5ab2c216328e5))
+* **loader/ppc:** extract surface rendering, trap management, and domain math into submodules ([629c007](https://github.com/benletchford/systemless/commit/629c007277e3aca19c430e8a179e774846c49e93))
+* **loader/ppc:** extract toolbox startup, process memory, and import policies into submodules ([3e08b46](https://github.com/benletchford/systemless/commit/3e08b4652d00a5617d2bc083eaf5cc4ab80e28fa))
+
 ## [0.67.0](https://github.com/benletchford/systemless/compare/v0.66.0...v0.67.0) (2026-09-28)
 
 
