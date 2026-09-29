@@ -2726,6 +2726,11 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::ReturnNoErr => Some(PpcImportAction::Return(0)),
         PpcImportDispatcherTarget::ReturnOne => Some(PpcImportAction::Return(1)),
+        PpcImportDispatcherTarget::NewOTNotifyUPP => {
+            // OpenTransport.h (Universal Interfaces 3.4.1): on classic PowerPC
+            // systems, NewOTNotifyUPP(userRoutine) returns the routine pointer.
+            Some(PpcImportAction::Return(cpu.gpr[3]))
+        }
         PpcImportDispatcherTarget::NoOpPreserve => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::ExitToShell => Some(PpcImportAction::Halt),
         PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => None,
