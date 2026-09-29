@@ -14440,9 +14440,9 @@ impl super::TrapDispatcher {
                 // dispatches per destination pixel through
                 // `read_bitmap_pixel`. Prove that the clipped source and mask
                 // spans are wholly in bounds, then fetch each span once per
-                // row and retain the existing masked byte writes. Keeping the
-                // writes per opaque pixel preserves framebuffer tracing and
-                // watchpoint behavior; palette translation remains identical.
+                // row and store each opaque run as one span. Span stores fall
+                // back to byte stores while framebuffer tracing or watchpoints
+                // are active; palette translation is unchanged.
                 let clipped_width = i32::from(clip_r) - i32::from(clip_l);
                 let clipped_height = i32::from(clip_b) - i32::from(clip_t);
                 let src_clip_top = i32::from(src_top) + (i32::from(clip_t) - i32::from(dst_top));
@@ -14562,17 +14562,34 @@ impl super::TrapDispatcher {
                         );
 
                         let dst_row_base = dst_info.base + dst_row * dst_info.row_bytes + dst_col;
-                        for (column, &source_pixel) in source_row.iter().enumerate() {
+                        if let Some(translation) = palette_translation.as_ref() {
+                            for pixel in &mut source_row {
+                                *pixel = translation[*pixel as usize];
+                            }
+                        }
+                        // Store each run of opaque pixels as one span. On a
+                        // presented screen row that is one presentation
+                        // update per run rather than per pixel, with the
+                        // same result as storing the pixels one at a time;
+                        // transparent pixels are not touched.
+                        let opaque = |column: usize| {
                             let mask_bit = mask_first_bit + column;
-                            if mask_row[mask_bit / 8] & (1 << (7 - mask_bit % 8)) == 0 {
+                            mask_row[mask_bit / 8] & (1 << (7 - mask_bit % 8)) != 0
+                        };
+                        let mut column = 0;
+                        while column < width {
+                            if !opaque(column) {
+                                column += 1;
                                 continue;
                             }
-                            let destination_pixel = palette_translation
-                                .as_ref()
-                                .map_or(source_pixel, |translation| {
-                                    translation[source_pixel as usize]
-                                });
-                            bus.write_byte(dst_row_base + column as u32, destination_pixel);
+                            let start = column;
+                            while column < width && opaque(column) {
+                                column += 1;
+                            }
+                            bus.write_bytes(
+                                dst_row_base + start as u32,
+                                &source_row[start..column],
+                            );
                         }
                     }
                     return Some(Ok(()));
