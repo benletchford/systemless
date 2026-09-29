@@ -2646,13 +2646,14 @@ impl Presentation {
         // the bitmap glyph may store to it: the cell then holds the
         // background the store must not show. Elsewhere a blank cell would
         // show exactly the unchanged byte, so none is made.
+        let rows = GlyphRowSamples::new((glyph, *h, *v), scale, y);
         self.offscreen.selected_cells_mut_or_insert(
             address,
             backgrounds,
             samples,
             |i| {
                 let x = x0.wrapping_add((i / lanes) as i16);
-                let coverage = offscreen_glyph_cell_coverage((glyph, *h, *v), scale, (x, y));
+                let coverage = rows.cell(x);
                 (coverage.is_some() || stored[i / lanes] != 0).then_some(coverage)
             },
             |i, coverage, cell| {
@@ -2710,36 +2711,79 @@ fn paint_offscreen_glyph_cell(
 /// The glyph's coverage of guest pixel (`x`, `y`), one sample per entry, or
 /// `None` when the glyph leaves the pixel uncovered.
 fn offscreen_glyph_cell_coverage(
-    (glyph, h, v): (&OutlineGlyph, i16, i16),
+    glyph: (&OutlineGlyph, i16, i16),
     scale: u32,
     (x, y): (i16, i16),
 ) -> Option<[u8; TILE_SAMPLES]> {
-    let scale = scale as i32;
-    let gx0 = (i32::from(x) - i32::from(h)) * scale - glyph.left;
-    let gy0 = (i32::from(y) - i32::from(v)) * scale - glyph.top;
-    if gx0 + scale <= 0 || gy0 + scale <= 0 || gx0 >= glyph.width || gy0 >= glyph.height {
-        return None;
-    }
-    // The cell's coverage, one glyph row slice per sample row.
-    let mut alphas = [0u8; TILE_SAMPLES];
-    let mut any = false;
-    for sy in 0..scale {
-        let gy = gy0 + sy;
-        if gy < 0 || gy >= glyph.height {
-            continue;
-        }
-        let row = &glyph.pixels[(gy * glyph.width) as usize..][..glyph.width as usize];
-        for sx in 0..scale {
-            let gx = gx0 + sx;
-            if gx < 0 || gx >= glyph.width {
-                continue;
+    GlyphRowSamples::new(glyph, scale, y).cell(x)
+}
+
+/// The glyph's sample rows under guest row `y`, found once for a run of
+/// pixels along the row; `cell` reads each pixel's coverage from them.
+struct GlyphRowSamples<'a> {
+    glyph: &'a OutlineGlyph,
+    h: i16,
+    scale: usize,
+    /// Each sample row's glyph row, empty where the glyph has none.
+    rows: [&'a [u8]; 4],
+    any_row: bool,
+}
+
+impl<'a> GlyphRowSamples<'a> {
+    fn new((glyph, h, v): (&'a OutlineGlyph, i16, i16), scale: u32, y: i16) -> Self {
+        let scale = scale as usize;
+        assert!(scale * scale <= TILE_SAMPLES, "cell samples exceed a tile");
+        let gy0 = (i32::from(y) - i32::from(v)) * scale as i32 - glyph.top;
+        let mut rows: [&[u8]; 4] = [&[]; 4];
+        for (sy, row) in rows[..scale].iter_mut().enumerate() {
+            let gy = gy0 + sy as i32;
+            if gy >= 0 && gy < glyph.height {
+                *row = &glyph.pixels[(gy * glyph.width) as usize..][..glyph.width as usize];
             }
-            let alpha = row[gx as usize];
-            alphas[(sy * scale + sx) as usize] = alpha;
-            any |= alpha != 0;
+        }
+        let any_row = rows.iter().any(|row| !row.is_empty());
+        Self {
+            glyph,
+            h,
+            scale,
+            rows,
+            any_row,
         }
     }
-    any.then_some(alphas)
+
+    /// The coverage of pixel `x`, one sample per entry, or `None` when the
+    /// glyph leaves it uncovered.
+    fn cell(&self, x: i16) -> Option<[u8; TILE_SAMPLES]> {
+        let scale = self.scale;
+        let width = self.glyph.width;
+        let gx0 = (i32::from(x) - i32::from(self.h)) * scale as i32 - self.glyph.left;
+        if !self.any_row || gx0 + scale as i32 <= 0 || gx0 >= width {
+            return None;
+        }
+        let mut alphas = [0u8; TILE_SAMPLES];
+        let mut any = 0u8;
+        let rows = self.rows[..scale].iter().enumerate();
+        if gx0 >= 0 && gx0 + scale as i32 <= width {
+            // Wholly inside the glyph's columns: one slice per sample row.
+            let gx0 = gx0 as usize;
+            for (sy, row) in rows.filter(|(_, row)| !row.is_empty()) {
+                let samples = &row[gx0..gx0 + scale];
+                alphas[sy * scale..][..scale].copy_from_slice(samples);
+                any |= samples.iter().fold(0, |any, &alpha| any | alpha);
+            }
+        } else {
+            for (sy, row) in rows.filter(|(_, row)| !row.is_empty()) {
+                for sx in 0..scale {
+                    let gx = gx0 + sx as i32;
+                    if gx >= 0 && gx < width {
+                        alphas[sy * scale + sx] = row[gx as usize];
+                        any |= row[gx as usize];
+                    }
+                }
+            }
+        }
+        (any != 0).then_some(alphas)
+    }
 }
 
 /// Paint `alphas`, a covered pixel's samples, into its offscreen cell.
@@ -4160,6 +4204,55 @@ mod tests {
                 per_pixel.outline_presentation_rgb(),
                 "opaque {opaque}: rendered"
             );
+        }
+    }
+
+    /// A row's sampler reads every pixel's coverage exactly as sampling the
+    /// glyph one sample at a time does, at every scale, over and around
+    /// glyphs whose edges fall inside cells.
+    #[test]
+    fn glyph_row_samples_match_per_sample_coverage() {
+        let per_sample =
+            |glyph: &OutlineGlyph, (h, v): (i16, i16), scale: i32, (x, y): (i16, i16)| {
+                let gx0 = (i32::from(x) - i32::from(h)) * scale - glyph.left;
+                let gy0 = (i32::from(y) - i32::from(v)) * scale - glyph.top;
+                let mut alphas = [0u8; TILE_SAMPLES];
+                let mut any = false;
+                for sy in 0..scale {
+                    for sx in 0..scale {
+                        let (gx, gy) = (gx0 + sx, gy0 + sy);
+                        if gx >= 0 && gx < glyph.width && gy >= 0 && gy < glyph.height {
+                            let alpha = glyph.pixels[(gy * glyph.width + gx) as usize];
+                            alphas[(sy * scale + sx) as usize] = alpha;
+                            any |= alpha != 0;
+                        }
+                    }
+                }
+                any.then_some(alphas)
+            };
+        for scale in 1..=4i32 {
+            for (width, height, left, top) in [(9, 7, -3, 2), (13, 11, 1, -5), (4, 4, 0, 0)] {
+                let glyph = OutlineGlyph {
+                    pixels: (0..width * height)
+                        .map(|i| [0, 255, 0, 90, 0, 0, 17][(i * 5 % 7) as usize])
+                        .collect(),
+                    width,
+                    height,
+                    left,
+                    top,
+                };
+                let (h, v) = (2i16, -1i16);
+                for y in -8..8i16 {
+                    let rows = GlyphRowSamples::new((&glyph, h, v), scale as u32, y);
+                    for x in -8..12i16 {
+                        assert_eq!(
+                            rows.cell(x),
+                            per_sample(&glyph, (h, v), scale, (x, y)),
+                            "scale {scale} glyph {width}x{height} at ({left},{top}) pixel ({x},{y})"
+                        );
+                    }
+                }
+            }
         }
     }
 
