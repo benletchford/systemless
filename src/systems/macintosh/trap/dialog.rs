@@ -19,7 +19,8 @@ use crate::dialog_manager::{
     evaluate_get_dialog_item, evaluate_get_dialog_item_as_control,
     evaluate_get_dialog_item_as_control_parameters, evaluate_get_dialog_item_parameters,
     evaluate_get_new_dialog_parameters,
-    evaluate_get_std_filter_proc_parameters, evaluate_modal_dialog_parameters,
+    evaluate_get_std_filter_proc_parameters, evaluate_is_dialog_event_parameters,
+    evaluate_modal_dialog_parameters,
     evaluate_param_text_parameters,
     evaluate_select_dialog_item_text_parameters, evaluate_set_dialog_cancel_item_parameters,
     evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_item_parameters,
@@ -11062,14 +11063,14 @@ impl super::TrapDispatcher {
             (true, 0x17F) => {
                 let sp = cpu.read_reg(Register::A7);
                 let event_ptr = bus.read_long(sp);
-                let Some(query) =
-                    crate::dialog_manager::evaluate_is_dialog_event_query(event_ptr)
+                let Some(params) =
+                    evaluate_is_dialog_event_parameters(event_ptr)
                 else {
                     bus.write_byte(sp + 4, 0);
                     cpu.write_reg(Register::A7, sp + 4);
                     return Some(Ok(()));
                 };
-                let event_ptr = query.event_ptr();
+                let event_ptr = params.event_ptr();
                 let (what, message, where_v, where_h, _modifiers) =
                     Self::read_guest_event_record(bus, event_ptr);
                 let target_dialog = self.dialog_from_window_event(what, message);

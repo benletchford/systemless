@@ -4847,18 +4847,18 @@ where
     has_visible_item
 }
 
-/// Canonical evaluated query parameters for `IsDialogEvent`.
+/// Canonical evaluated parameters for `IsDialogEvent`.
 ///
 /// Inside Macintosh Volume I, p. I-416;
 /// Macintosh Toolbox Essentials (1992), p. 6-138.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct IsDialogEventQuery {
+pub struct IsDialogEventParameters {
     event_ptr: u32,
 }
 
 #[allow(dead_code)]
-impl IsDialogEventQuery {
-    /// Constructs a new `IsDialogEventQuery`.
+impl IsDialogEventParameters {
+    /// Constructs a new `IsDialogEventParameters`.
     #[inline]
     pub const fn new(event_ptr: u32) -> Self {
         Self { event_ptr }
@@ -4869,17 +4869,23 @@ impl IsDialogEventQuery {
     pub const fn event_ptr(&self) -> u32 {
         self.event_ptr
     }
+
+    /// Whether the pointer is non-null.
+    #[inline]
+    pub const fn is_valid(&self) -> bool {
+        self.event_ptr != 0
+    }
 }
 
-/// Evaluates and validates query parameters for `IsDialogEvent`.
+/// Evaluates and validates parameters for `IsDialogEvent`.
 ///
 /// Returns `None` if `event_ptr == 0`.
 #[inline]
-pub const fn evaluate_is_dialog_event_query(event_ptr: u32) -> Option<IsDialogEventQuery> {
+pub const fn evaluate_is_dialog_event_parameters(event_ptr: u32) -> Option<IsDialogEventParameters> {
     if event_ptr == 0 {
         return None;
     }
-    Some(IsDialogEventQuery { event_ptr })
+    Some(IsDialogEventParameters { event_ptr })
 }
 
 /// Tests whether an event should be handled as part of an active modeless or movable modal dialog.
@@ -8347,15 +8353,19 @@ mod tests {
 
     #[test]
     fn is_dialog_event_and_dialog_select_parameters_evaluation() {
-        // evaluate_is_dialog_event_query
-        assert_eq!(evaluate_is_dialog_event_query(0), None);
+        // evaluate_is_dialog_event_parameters
+        assert_eq!(evaluate_is_dialog_event_parameters(0), None);
 
-        let query = evaluate_is_dialog_event_query(0x0005_1234)
-            .expect("valid is_dialog_event query should evaluate");
-        assert_eq!(query.event_ptr(), 0x0005_1234);
+        let params = evaluate_is_dialog_event_parameters(0x0005_1234)
+            .expect("valid is_dialog_event parameters should evaluate");
+        assert_eq!(params.event_ptr(), 0x0005_1234);
+        assert!(params.is_valid());
 
-        let query_direct = IsDialogEventQuery::new(0x0007_5678);
-        assert_eq!(query_direct.event_ptr(), 0x0007_5678);
+        let params_direct = IsDialogEventParameters::new(0x0007_5678);
+        assert_eq!(params_direct.event_ptr(), 0x0007_5678);
+        assert!(params_direct.is_valid());
+        let params_zero = IsDialogEventParameters::new(0);
+        assert!(!params_zero.is_valid());
 
         // evaluate_dialog_select_parameters
         assert_eq!(evaluate_dialog_select_parameters(0, 0x1000, 0x2000), None);
