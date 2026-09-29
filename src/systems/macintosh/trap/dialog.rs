@@ -11,7 +11,8 @@ use crate::dialog_manager::{
     dialog_dbox_frame_rect, dialog_item_base_type, dialog_item_resource_type,
     dialog_target_for_event, edit_text_frame_rect, evaluate_alert_invocation,
     evaluate_alert_parameters, AlertKind,
-    evaluate_close_dialog, evaluate_dialog_template_purgeability_query, evaluate_dispose_dialog,
+    evaluate_close_dialog_parameters, evaluate_dialog_template_purgeability_query,
+    evaluate_dispose_dialog_parameters, evaluate_draw_dialog_parameters,
     evaluate_error_sound,
     evaluate_find_dialog_item, evaluate_get_dialog_item, evaluate_get_dialog_item_as_control,
     evaluate_get_dialog_item_as_control_parameters, evaluate_get_dialog_item_parameters,
@@ -19,7 +20,7 @@ use crate::dialog_manager::{
     evaluate_get_std_filter_proc_parameters, evaluate_modal_dialog_parameters,
     evaluate_select_dialog_item_text_parameters, evaluate_set_dialog_cancel_item_parameters,
     evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_item_parameters,
-    evaluate_set_dialog_tracks_cursor_parameters,
+    evaluate_set_dialog_tracks_cursor_parameters, evaluate_update_dialog_parameters,
     find_dialog_item_hit, global_to_dialog_local_point, is_dialog_item_button,
     is_dialog_item_control, is_dialog_item_disabled, is_dialog_item_edit_text,
     is_dialog_item_enabled, is_dialog_item_resource, is_dialog_item_text,
@@ -836,10 +837,10 @@ impl super::TrapDispatcher {
         dialog_ptr: u32,
         update_rect: Option<(i16, i16, i16, i16)>,
     ) -> bool {
-        let Some(eval) = crate::dialog_manager::evaluate_draw_dialog(dialog_ptr) else {
+        let Some(params) = evaluate_draw_dialog_parameters(dialog_ptr) else {
             return false;
         };
-        let dialog_ptr = eval.dialog_ptr;
+        let dialog_ptr = params.dialog_ptr();
         let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() else {
             return false;
         };
@@ -918,10 +919,10 @@ impl super::TrapDispatcher {
         dialog_ptr: u32,
         update_rect: Option<(i16, i16, i16, i16)>,
     ) {
-        let Some(eval) = crate::dialog_manager::evaluate_draw_dialog(dialog_ptr) else {
+        let Some(params) = evaluate_draw_dialog_parameters(dialog_ptr) else {
             return;
         };
-        let dialog_ptr = eval.dialog_ptr;
+        let dialog_ptr = params.dialog_ptr();
         let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() else {
             return;
         };
@@ -4090,8 +4091,8 @@ impl super::TrapDispatcher {
         let dialog_ptr = saved.dialog_ptr;
         self.dialog_saved_pixels
             .insert(dialog_ptr, saved.saved_pixels.clone());
-        if let Some(eval) = evaluate_dispose_dialog(dialog_ptr) {
-            self.close_dialog_window(bus, cpu, eval.dialog_ptr, eval.dispose_record);
+        if let Some(params) = evaluate_dispose_dialog_parameters(dialog_ptr) {
+            self.close_dialog_window(bus, cpu, params.dialog_ptr(), params.dispose_record());
         }
         cpu.write_reg(Register::A7, stack_after);
     }
@@ -10128,8 +10129,8 @@ impl super::TrapDispatcher {
                     if self.front_window == click.dialog_ptr
                         && rect_contains_point(rect, event.where_v, event.where_h)
                     {
-                        if let Some(eval) = evaluate_dispose_dialog(click.dialog_ptr) {
-                            self.close_dialog_window(bus, cpu, eval.dialog_ptr, eval.dispose_record);
+                        if let Some(params) = evaluate_dispose_dialog_parameters(click.dialog_ptr) {
+                            self.close_dialog_window(bus, cpu, params.dialog_ptr(), params.dispose_record());
                         }
                         self.capture_gui_frame(
                             bus,
@@ -11399,10 +11400,10 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let dialog_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                let Some(eval) = crate::dialog_manager::evaluate_draw_dialog(dialog_ptr) else {
+                let Some(params) = evaluate_draw_dialog_parameters(dialog_ptr) else {
                     return Some(Ok(()));
                 };
-                let dialog_ptr = eval.dialog_ptr;
+                let dialog_ptr = params.dialog_ptr();
                 if let Some(mut items) = self.dialog_items.get(&dialog_ptr).cloned() {
                     Self::refresh_ditl_proc_ptrs(bus, dialog_ptr, &mut items);
                     let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
@@ -11475,9 +11476,9 @@ impl super::TrapDispatcher {
                 let dialog_ptr =
                     self.resolve_dispos_dialog_ptr_after_modal_button_hit(requested_dialog_ptr);
                 eprintln!("[TRAP] DisposDialog(${:08X})", requested_dialog_ptr);
-                if let Some(eval) = evaluate_dispose_dialog(dialog_ptr) {
-                    self.close_dialog_window(bus, cpu, eval.dialog_ptr, eval.dispose_record);
-                    self.capture_gui_frame(bus, &format!("dispos_dialog_{:08X}", eval.dialog_ptr));
+                if let Some(params) = evaluate_dispose_dialog_parameters(dialog_ptr) {
+                    self.close_dialog_window(bus, cpu, params.dialog_ptr(), params.dispose_record());
+                    self.capture_gui_frame(bus, &format!("dispos_dialog_{:08X}", params.dialog_ptr()));
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -16061,8 +16062,8 @@ impl super::TrapDispatcher {
             (true, 0x182) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dialog_ptr = bus.read_long(sp);
-                if let Some(eval) = evaluate_close_dialog(dialog_ptr) {
-                    self.close_dialog_window(bus, cpu, eval.dialog_ptr, eval.dispose_record);
+                if let Some(params) = evaluate_close_dialog_parameters(dialog_ptr) {
+                    self.close_dialog_window(bus, cpu, params.dialog_ptr(), params.dispose_record());
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -16077,11 +16078,11 @@ impl super::TrapDispatcher {
                 let update_rgn = bus.read_long(sp);
                 let dialog_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
-                let Some(eval) = crate::dialog_manager::evaluate_update_dialog(dialog_ptr, update_rgn) else {
+                let Some(params) = evaluate_update_dialog_parameters(dialog_ptr, update_rgn) else {
                     return Some(Ok(()));
                 };
-                let update_rect = Self::region_handle_rect(bus, eval.update_rgn);
-                self.update_dialog_window_contents(bus, cpu, eval.dialog_ptr, update_rect);
+                let update_rect = Self::region_handle_rect(bus, params.update_rgn());
+                self.update_dialog_window_contents(bus, cpu, params.dialog_ptr(), update_rect);
                 Ok(())
             }
 
