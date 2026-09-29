@@ -3,7 +3,8 @@
 use super::*;
 use crate::dialog_manager::{
     dialog_item_base_type, dialog_item_resource_type_u32, dialog_rect_to_global,
-    dialog_target_for_event, dialog_text_rect, edit_text_frame_rect, evaluate_count_ditl,
+    dialog_target_for_event, dialog_text_rect, edit_text_frame_rect,
+    evaluate_close_or_dispose_dialog, evaluate_count_ditl,
     evaluate_dialog_select, evaluate_find_dialog_item, evaluate_get_dialog_item,
     evaluate_get_dialog_item_as_control, evaluate_get_std_filter_proc, evaluate_hide_dialog_item,
     evaluate_select_dialog_item_text, evaluate_set_dialog_cancel_item,
@@ -270,17 +271,20 @@ pub(super) fn dispatch_dialog_import(
         }
         PpcImportDispatcherTarget::CloseDialog | PpcImportDispatcherTarget::DisposeDialog => {
             let window = cpu.gpr[3];
-            let dispose_record =
+            let is_dispose =
                 binding.dispatcher_target == PpcImportDispatcherTarget::DisposeDialog;
+            let Some(eval) = evaluate_close_or_dispose_dialog(window, is_dispose) else {
+                return Some(PpcImportAction::ReturnPreserve);
+            };
             toolbox_startup.dispose_dialog_count =
                 toolbox_startup.dispose_dialog_count.saturating_add(1);
-            toolbox_startup.last_disposed_dialog = window;
+            toolbox_startup.last_disposed_dialog = eval.dialog_ptr;
             let items_handle = memory
-                .read_u32_be(window.wrapping_add(DIALOG_ITEMS_OFFSET))
+                .read_u32_be(eval.dialog_ptr.wrapping_add(DIALOG_ITEMS_OFFSET))
                 .unwrap_or(0);
-            let items = ppc_dialog_items_for_dialog(memory, handles, window).unwrap_or_default();
+            let items = ppc_dialog_items_for_dialog(memory, handles, eval.dialog_ptr).unwrap_or_default();
             ppc_close_window(
-                window,
+                eval.dialog_ptr,
                 memory,
                 process_memory_manager,
                 window_list,
@@ -313,10 +317,10 @@ pub(super) fn dispatch_dialog_import(
                 window_list,
                 current_gworld,
                 current_gdevice,
-                window,
+                eval.dialog_ptr,
                 items_handle,
                 &items,
-                dispose_record,
+                eval.dispose_record,
             );
             Some(PpcImportAction::ReturnPreserve)
         }

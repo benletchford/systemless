@@ -9,7 +9,8 @@ use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::dialog_manager::{
     dialog_dbox_frame_rect, dialog_item_base_type, dialog_item_resource_type,
-    dialog_target_for_event, edit_text_frame_rect, evaluate_find_dialog_item,
+    dialog_target_for_event, edit_text_frame_rect, evaluate_close_dialog,
+    evaluate_dispose_dialog, evaluate_find_dialog_item,
     evaluate_get_dialog_item, evaluate_get_std_filter_proc, evaluate_select_dialog_item_text,
     evaluate_set_dialog_cancel_item, evaluate_set_dialog_default_item,
     evaluate_set_dialog_tracks_cursor, find_dialog_item_hit,
@@ -4087,7 +4088,9 @@ impl super::TrapDispatcher {
         let dialog_ptr = saved.dialog_ptr;
         self.dialog_saved_pixels
             .insert(dialog_ptr, saved.saved_pixels.clone());
-        self.close_dialog_window(bus, cpu, dialog_ptr, true);
+        if let Some(eval) = evaluate_dispose_dialog(dialog_ptr) {
+            self.close_dialog_window(bus, cpu, eval.dialog_ptr, eval.dispose_record);
+        }
         cpu.write_reg(Register::A7, stack_after);
     }
 
@@ -9550,6 +9553,9 @@ impl super::TrapDispatcher {
         dialog_ptr: u32,
         dispose_storage: bool,
     ) {
+        if dialog_ptr == 0 {
+            return;
+        }
         let retained_modal_is_logical_front = self.dialog_modal_entered.contains(&dialog_ptr)
             && self
                 .window_stack
@@ -10118,7 +10124,9 @@ impl super::TrapDispatcher {
                     if self.front_window == click.dialog_ptr
                         && rect_contains_point(rect, event.where_v, event.where_h)
                     {
-                        self.close_dialog_window(bus, cpu, click.dialog_ptr, true);
+                        if let Some(eval) = evaluate_dispose_dialog(click.dialog_ptr) {
+                            self.close_dialog_window(bus, cpu, eval.dialog_ptr, eval.dispose_record);
+                        }
                         self.capture_gui_frame(
                             bus,
                             &format!("retained_modal_dialog_button_{}", click.item_no),
@@ -11431,8 +11439,10 @@ impl super::TrapDispatcher {
                 let dialog_ptr =
                     self.resolve_dispos_dialog_ptr_after_modal_button_hit(requested_dialog_ptr);
                 eprintln!("[TRAP] DisposDialog(${:08X})", requested_dialog_ptr);
-                self.close_dialog_window(bus, cpu, dialog_ptr, true);
-                self.capture_gui_frame(bus, &format!("dispos_dialog_{:08X}", dialog_ptr));
+                if let Some(eval) = evaluate_dispose_dialog(dialog_ptr) {
+                    self.close_dialog_window(bus, cpu, eval.dialog_ptr, eval.dispose_record);
+                    self.capture_gui_frame(bus, &format!("dispos_dialog_{:08X}", eval.dialog_ptr));
+                }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
@@ -15944,7 +15954,9 @@ impl super::TrapDispatcher {
             (true, 0x182) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dialog_ptr = bus.read_long(sp);
-                self.close_dialog_window(bus, cpu, dialog_ptr, false);
+                if let Some(eval) = evaluate_close_dialog(dialog_ptr) {
+                    self.close_dialog_window(bus, cpu, eval.dialog_ptr, eval.dispose_record);
+                }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
