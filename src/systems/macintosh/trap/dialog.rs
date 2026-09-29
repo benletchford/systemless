@@ -13,7 +13,7 @@ use crate::dialog_manager::{
     evaluate_close_dialog, evaluate_dispose_dialog, evaluate_error_sound,
     evaluate_find_dialog_item, evaluate_get_dialog_item, evaluate_get_std_filter_proc,
     evaluate_select_dialog_item_text, evaluate_set_dialog_cancel_item_parameters,
-    evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_tracks_cursor,
+    evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_tracks_cursor_parameters,
     find_dialog_item_hit, global_to_dialog_local_point, is_dialog_item_button,
     is_dialog_item_control, is_dialog_item_disabled, is_dialog_item_edit_text,
     is_dialog_item_enabled, is_dialog_item_resource, is_dialog_item_text,
@@ -16792,8 +16792,10 @@ impl super::TrapDispatcher {
                     crate::dialog_manager::DIALOG_DISPATCH_SET_DIALOG_TRACKS_CURSOR => {
                         let tracks = bus.read_byte(sp) != 0;
                         let dialog_ptr = bus.read_long(sp + 2);
-                        let os_err = evaluate_set_dialog_tracks_cursor(dialog_ptr, tracks)
-                            .unwrap_or_else(|e| e);
+                        let os_err = match evaluate_set_dialog_tracks_cursor_parameters(dialog_ptr, tracks) {
+                            Ok(_params) => crate::dialog_manager::DIALOG_NO_ERR,
+                            Err(err) => err,
+                        };
                         bus.write_word(sp + param_bytes, os_err as u16);
                         cpu.write_reg(Register::A7, sp + param_bytes);
                     }
