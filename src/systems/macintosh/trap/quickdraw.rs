@@ -21839,6 +21839,18 @@ impl super::TrapDispatcher {
         }
 
         let destination = (rect.dst_top, rect.dst_left, rect.dst_bottom, rect.dst_right);
+        // A crawl or animation repeats the same blit every frame. When the
+        // fill's inputs match the last fill and nothing outside the
+        // destination has changed since, the margins are still uniform and
+        // already hold what the fill would write.
+        let key = (destination, self.menu_bar_hidden, self.screen_mode, self.kiosk_black_index());
+        if self
+            .kiosk_letterbox_filled
+            .get()
+            .is_some_and(|(held, mark)| held == key && self.kiosk_margins_unchanged_since(bus, mark, destination))
+        {
+            return;
+        }
         // CopyBits owns only its destination rectangle; a large centered blit
         // may still be an overlay within a larger application composition.
         // On indexed color screens, require uniform exposed bands before
@@ -21850,7 +21862,9 @@ impl super::TrapDispatcher {
 
         // Run after the blit so overlapping screen-to-screen copies cannot
         // lose source pixels while the margins are cleared.
-        self.fill_kiosk_stage_around_rect(bus, destination);
+        let filled = self.fill_kiosk_stage_around_rect(bus, destination);
+        self.kiosk_letterbox_filled
+            .set(if filled { bus.screen_mark().map(|mark| (key, mark)) } else { None });
     }
 
     /// Address of a replacement `grafProcs.bitsProc` on the current port, or
