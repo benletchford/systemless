@@ -691,6 +691,8 @@ fn decode_vise_word_aligned_deflate(data: &[u8], required_len: usize) -> Result<
                         return Ok(output);
                     }
                 }
+                // The next block also starts on a word boundary when LEN is odd.
+                bits.align_to_word()?;
             }
             1 => {
                 let (literal_lengths, distance_lengths) = fixed_huffman_lengths();
@@ -1564,5 +1566,26 @@ pub(crate) mod tests {
         truncated[catalog_offset + 4..catalog_offset + 8]
             .copy_from_slice(&((packed_records.len() - 2) as u32).to_be_bytes());
         assert!(parse_vise(&truncated).unwrap().is_err());
+    }
+
+    #[test]
+    fn decodes_word_aligned_stored_blocks_with_odd_payload() {
+        // VISE pads both the stored header and its odd-length payload to a
+        // 16-bit boundary before reading the next block.
+        let stream = [
+            0x00, 0x00, // nonfinal stored block, word-aligned LEN
+            0x03, 0x00, 0xFC, 0xFF, b'a', b'b', b'c', 0x00, // odd-length pad
+            0x01, 0x00, // final stored block, word-aligned LEN
+            0x02, 0x00, 0xFD, 0xFF, b'd', b'e',
+        ];
+        let mut inverse = [0u8; 256];
+        for (encoded, decoded) in VISE_DEOBFUSCATION_TABLE.iter().copied().enumerate() {
+            inverse[decoded as usize] = encoded as u8;
+        }
+        let mut packed: Vec<u8> = stream.iter().map(|byte| inverse[*byte as usize]).collect();
+        for pair in packed.chunks_exact_mut(2) {
+            pair.swap(0, 1);
+        }
+        assert_eq!(decode_vise_fork(&packed, 5).unwrap(), b"abcde");
     }
 }
