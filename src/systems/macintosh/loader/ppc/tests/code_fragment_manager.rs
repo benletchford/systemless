@@ -188,6 +188,7 @@ fn cfm_load_resumes_after_initialization_and_failed_loads_can_retry() {
                         &mut connections,
                         &mut next_connection,
                         &mut import_run_state,
+                        None,
                     )
                 } else {
                     ppc_get_shared_library(
@@ -336,6 +337,104 @@ fn cfm_load_resumes_after_initialization_and_failed_loads_can_retry() {
         }
         assert!(calls.is_empty());
         assert!(manager.native_ptr_records().is_empty());
+    }
+}
+
+#[test]
+fn get_shared_library_keeps_disk_fragment_code_out_of_the_partition() {
+    // PowerPC System Software (1994), pp. 1-53--1-57: a library's code is
+    // file-mapped (or put in temporary memory), outside the application
+    // partition, but its per-context data section is loaded into the
+    // application heap. Deimos Rising loads its engine (910 KB of code,
+    // 265 KB of data) with GetSharedLibrary.
+    use crate::execution_kernel::ExecutionTaskState;
+    const CODE_SIZE: usize = 0x4000;
+    const DATA_SIZE: usize = 0x6000;
+    let mut code = synthetic_code();
+    code.resize(CODE_SIZE, 0);
+    let pef = synthetic_pef_with_loader_code_and_data(
+        synthetic_loader(b"InterfaceLib", b"TestImport"),
+        &code,
+        &[0x5a; DATA_SIZE],
+    );
+    let container_size = pef.len() as u32;
+    for partitioned in [false, true] {
+        let calls = SharedGuestCallStack::default();
+        let worker = calls.create_task().unwrap();
+        assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
+        assert!(calls.switch_to_task(worker));
+        // A SIZE partition grows the heap past the stack; without one the
+        // heap stays bounded by the stack mapping.
+        let partition_limit = if partitioned {
+            PPC_STACK_TOP + 0x8000
+        } else {
+            PPC_HEAP_BASE + 0x40000
+        };
+        let owner = PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, partition_limit);
+        let mut manager = owner.0.borrow_mut();
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(PPC_HEAP_BASE, vec![0; 0x40000]);
+        memory.add_region(0x5000, b"\x04test".to_vec());
+        memory.add_region(0x6000, vec![0; 64]);
+        memory.add_region(0x8000, vec![0; 128]);
+        let mut libraries = vec![PpcCfmLibraryFragment {
+            name: "test".to_string(),
+            bytes: pef.clone(),
+        }];
+        let mut connections = Vec::new();
+        let mut next_connection = PPC_FIRST_CFM_CONNECTION_ID;
+        let mut import_run_state =
+            PpcImportRunState::from_parts(Vec::new(), 0, ppc_import_layout());
+        let mut cursor = PPC_HEAP_BASE;
+        let mut cpu = PpcCpu::new();
+        cpu.gpr[1] = 0x8000;
+        cpu.gpr[2] = 0x2200;
+        cpu.lr = 0x4000;
+        cpu.gpr[3] = 0x5000;
+        cpu.gpr[4] = PPC_CFM_POWERPC_ARCH;
+        cpu.gpr[5] = PPC_CFM_LOAD_LIB;
+        cpu.gpr[6] = 0x6000;
+        cpu.gpr[7] = 0x6004;
+        cpu.gpr[8] = 0x6008;
+        let free_before = ppc_heap_free_capacity(&memory, PPC_HEAP_BASE, partition_limit).0;
+
+        assert_eq!(
+            ppc_get_shared_library(
+                &mut cpu,
+                &calls,
+                &mut manager,
+                &mut memory,
+                &mut cursor,
+                partition_limit,
+                &mut connections,
+                &mut libraries,
+                &mut next_connection,
+                &mut import_run_state,
+            ),
+            PpcImportAction::Return(0)
+        );
+        let limit = manager.application_heap_limit(0);
+        assert_eq!(
+            manager.native_heap_state().map(|heap| heap.heap_limit),
+            Some(limit)
+        );
+        if !partitioned {
+            assert_eq!(limit, partition_limit);
+            continue;
+        }
+        assert_eq!(
+            limit,
+            partition_limit + ((container_size + CODE_SIZE as u32 + 15) & !15),
+            "the container copy and code sections are outside the partition"
+        );
+        // The data section still consumes partition capacity, up to heap
+        // and section alignment.
+        let free_after = ppc_heap_free_capacity(&memory, cursor, limit).0;
+        let consumed = free_before - free_after;
+        assert!(
+            (DATA_SIZE as u32..DATA_SIZE as u32 + 0x100).contains(&consumed),
+            "data section consumed {consumed:#x} bytes of the partition"
+        );
     }
 }
 

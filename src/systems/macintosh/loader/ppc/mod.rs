@@ -205,6 +205,7 @@ mod dispatch_imports;
 mod import_policies;
 mod loaded_app;
 pub use loaded_app::PpcLoadedApp;
+use loaded_app::PpcLaunchPartitionStorage;
 mod pict_rendering;
 mod process_memory;
 mod surface;

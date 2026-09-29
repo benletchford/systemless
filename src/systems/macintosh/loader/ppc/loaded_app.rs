@@ -12,6 +12,7 @@ pub struct PpcLoadedApp {
     pub stack_base: u32,
     pub stack_size: u32,
     pub stack_pointer: u32,
+    pub(crate) launch_partition_storage: PpcLaunchPartitionStorage,
     /// Process-scoped host pacing snapshot for the wrapping Macintosh clock.
     /// Guest-visible time is always read from low-memory `Ticks`; this handle
     /// only lets callback scheduling share the last observed value while a
@@ -114,6 +115,18 @@ pub struct PpcLoadedApp {
     pub(crate) window_list: crate::process_context::SharedProcessWindowList,
     pub(crate) process_memory_manager: PpcProcessMemoryManager,
     pub draw_sprocket: PpcDrawSprocketState,
+}
+
+/// Launch-time storage that `grow_application_partition` budgets around.
+/// PowerPC System Software (1994), pp. 1-53--1-60.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct PpcLaunchPartitionStorage {
+    /// Heap bytes CFM keeps outside the partition: initial libraries' code
+    /// sections and the container copies handed to fragment initializers.
+    pub(crate) outside_partition: u32,
+    /// The application fragment's data sections. They are mapped outside
+    /// the native heap but belong to the application heap on a Power Mac.
+    pub(crate) application_data: u32,
 }
 
 impl std::ops::Deref for PpcLoadedApp {

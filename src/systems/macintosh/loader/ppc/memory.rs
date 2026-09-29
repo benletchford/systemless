@@ -1229,3 +1229,60 @@ pub(crate) fn ppc_heap_free_capacity(
 ) -> (u32, u32) {
     memory.readonly_allocation_available_bytes(heap_cursor, heap_limit)
 }
+
+/// Keep a disk fragment's code out of the application's SIZE budget.
+/// PowerPC System Software (1994), pp. 1-53--1-57: code sections are
+/// file-mapped outside the application heap with virtual memory on, and
+/// with it off the application's code grows the partition while other
+/// fragments' code goes to temporary memory. Data sections, including
+/// per-context import library data, are loaded into the application heap
+/// and stay charged. Callers pass the code section bytes plus the
+/// container copy, which CFM reads from the file rather than the heap.
+/// That storage stays in the native heap mapping, so grow the application
+/// limit by those bytes, skipping reserved gaps like
+/// `grow_application_partition`. Only a partition grown past the stack can
+/// extend: that growth excluded the fixed stack and display mappings, while
+/// a heap still bounded by the stack has no SIZE budget to protect.
+pub(crate) fn ppc_exempt_fragment_from_partition(
+    memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    bytes: u32,
+) {
+    let Some(heap) = memory_manager.native_heap_state() else {
+        return;
+    };
+    let old_limit = memory_manager.native_allocation_limit(heap.heap_limit);
+    if bytes == 0 || old_limit < PPC_STACK_TOP {
+        return;
+    }
+    let Some(bytes) = bytes
+        .checked_add(PPC_HEAP_ALIGNMENT - 1)
+        .map(|bytes| bytes & !(PPC_HEAP_ALIGNMENT - 1))
+    else {
+        return;
+    };
+    let Some(mut limit) = old_limit.checked_add(bytes) else {
+        return;
+    };
+    loop {
+        let available = ppc_heap_free_capacity(memory, old_limit, limit).0;
+        if available >= bytes {
+            break;
+        }
+        let Some(next) = limit.checked_add(bytes - available) else {
+            return;
+        };
+        limit = next;
+    }
+    memory_manager.grow_native_heap_limit(limit);
+    memory_manager.set_application_heap_limit(limit);
+    let _ = memory.write_u32_be(crate::memory::globals::addr::APPL_LIMIT, limit);
+    let _ = memory.write_u32_be(PPC_APPLICATION_ZONE, limit);
+    let _ = memory.write_u32_be(PPC_SYSTEM_ZONE, limit);
+    ppc_update_zone_free_bytes(memory, heap.heap_cursor, limit);
+    if ppc_hle_trace_enabled() {
+        eprintln!(
+            "[PPC-TRACE] fragment code and container {bytes} bytes exempt from partition: limit ${old_limit:08X}->${limit:08X}"
+        );
+    }
+}

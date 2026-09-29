@@ -231,6 +231,14 @@ fn ppc_plan_initial_cfm_libraries(
             library_name: fragment.name.clone(),
             error: error.os_error(),
         })?;
+        if ppc_hle_trace_enabled() {
+            eprintln!(
+                "[PPC-TRACE] CFM library {:?} bytes={} heap=${heap_cursor:08X}..${:08X}",
+                fragment.name,
+                fragment.bytes.len(),
+                plan.next_heap_cursor()
+            );
+        }
         heap_cursor = plan.next_heap_cursor();
         pending.commit();
         let prepared = plan.prepared_fragment();
@@ -559,6 +567,21 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
         PPC_CLASSIC_APP_MEMORY_BASE,
         vec![0u8; PPC_CLASSIC_APP_MEMORY_SIZE],
     );
+    // PowerPC System Software (1994), pp. 1-53--1-60: the application's code
+    // stays outside its partition, while its data section (globals) is
+    // loaded into the application heap. Initial libraries' code sections and
+    // the container copies below are CFM storage outside the partition too.
+    let mut launch_partition_storage = PpcLaunchPartitionStorage {
+        outside_partition: initial_library_plans
+            .iter()
+            .map(|library| library.plan.prepared_fragment().code_size)
+            .fold(0, u32::saturating_add),
+        application_data: mapped_sections
+            .iter()
+            .filter(|section| section.section_kind != SECTION_KIND_CODE)
+            .map(|section| section.bytes.len() as u32)
+            .fold(0, u32::saturating_add),
+    };
     for section in mapped_sections {
         if section.section_kind == SECTION_KIND_CODE
             || section.section_kind == SECTION_KIND_CONSTANT
@@ -735,6 +758,9 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
                 error: PPC_FRAG_NO_MEM,
             });
         }
+        launch_partition_storage.outside_partition = launch_partition_storage
+            .outside_partition
+            .saturating_add(fragment_size);
         let init_block = ppc_create_mem_fragment_init_block(
             None,
             &mut memory,
@@ -770,6 +796,9 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
         if fragment_addr == 0 || memory.write_bytes(fragment_addr, data).is_none() {
             return Err(PpcLoadError::AddressOverflow);
         }
+        launch_partition_storage.outside_partition = launch_partition_storage
+            .outside_partition
+            .saturating_add(fragment_size);
         let init_block = ppc_create_mem_fragment_init_block(
             None,
             &mut memory,
@@ -897,6 +926,7 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
         stack_base,
         stack_size,
         stack_pointer,
+        launch_partition_storage,
         tick_state: SharedProcessTickState::default(),
         clock_cycles_per_tick: 1,
         clock_cycle_phase: 0,

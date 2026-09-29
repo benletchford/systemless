@@ -3033,6 +3033,30 @@ fn pb_read_async_queues_completion_on_eof() {
     }
 
     #[test]
+    fn native_partition_growth_charges_data_but_not_launch_cfm_code() {
+        // PowerPC System Software (1994), pp. 1-53--1-60: the application's
+        // data section is part of its partition even though Systemless maps
+        // it outside the native heap; CFM code and the container copies
+        // handed to initializers are not.
+        let pef = synthetic_pef_with_initializer();
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let storage = loaded.launch_partition_storage;
+        assert_eq!(storage.outside_partition, pef.len() as u32);
+        assert_eq!(storage.application_data, 8);
+
+        let outside_partition = 2 * 1024 * 1024;
+        let application_data = 256 * 1024;
+        loaded.launch_partition_storage.outside_partition = outside_partition;
+        loaded.launch_partition_storage.application_data = application_data;
+        let partition = 64 * 1024 * 1024;
+        loaded.grow_application_partition(partition);
+        assert_eq!(
+            ppc_heap_free_capacity(&loaded.memory, loaded.heap_base(), loaded.heap_limit()).0,
+            partition - loaded.stack_size - application_data + outside_partition
+        );
+    }
+
+    #[test]
     fn native_partition_growth_skips_stack_display_and_system_reservations() {
         let pef = synthetic_pef_with_import(b"NewPtrClear");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -3051,7 +3075,8 @@ fn pb_read_async_queues_completion_on_eof() {
         loaded.grow_application_partition(partition);
         assert_eq!(
             ppc_heap_free_capacity(&loaded.memory, loaded.heap_base(), loaded.heap_limit()).0,
-            partition - loaded.stack_size
+            (partition - loaded.stack_size - loaded.launch_partition_storage.application_data)
+                & !(PPC_HEAP_ALIGNMENT - 1)
         );
         loaded.set_heap_cursor(old_limit - 16);
         loaded.cpu.gpr[3] = 128;

@@ -65,6 +65,10 @@ pub(crate) struct CfmPreparedFragment {
     pub(crate) init_addr: u32,
     pub(crate) term_addr: u32,
     pub(crate) exports: Vec<CfmExport>,
+    /// Bytes of instantiated code sections. PowerPC System Software (1994),
+    /// pp. 1-53--1-57: code is file-mapped or held in temporary memory,
+    /// outside the application partition; data sections stay in its heap.
+    pub(crate) code_size: u32,
 }
 
 /// A plan owns uncommitted bytes only. The process allocator must accept the
@@ -173,6 +177,11 @@ impl CfmFragmentPlan {
                 loader.term_offset,
             )?,
             exports: resolve_fragment_exports(fragment, &sections, import_addrs)?,
+            code_size: sections
+                .iter()
+                .filter(|section| section.section_kind == SECTION_KIND_CODE)
+                .map(|section| section.bytes.len() as u32)
+                .sum(),
         };
         Ok(Self {
             sections,
