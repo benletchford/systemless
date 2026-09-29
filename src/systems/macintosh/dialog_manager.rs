@@ -432,6 +432,24 @@ impl DialogItemRecord {
         self.handle = handle;
         self.rect = rect;
     }
+
+    /// Evaluates or computes the normalized selection range `(start, end)` for this edit text item.
+    ///
+    /// Returns `None` if this item is not an `editText` item.
+    pub fn select_text(&self, start_sel: i16, end_sel: i16) -> Option<(u16, u16)> {
+        if !self.is_edit_text() {
+            return None;
+        }
+        let text_len = self.text_payload().map(|p| p.len()).unwrap_or(0);
+        Some(normalize_dialog_item_selection(start_sel, end_sel, text_len))
+    }
+
+    /// Evaluates or computes the normalized selection range `(start, end)` for this edit text item.
+    ///
+    /// Returns `None` if this item is not an `editText` item.
+    pub fn evaluate_select_text(&self, start_sel: i16, end_sel: i16) -> Option<(u16, u16)> {
+        self.select_text(start_sel, end_sel)
+    }
 }
 
 #[inline]
@@ -1841,6 +1859,56 @@ pub fn normalize_dialog_item_selection(
         );
         (s as u16, e as u16)
     }
+}
+
+/// Evaluated parameters for selecting an editable text item in a dialog.
+///
+/// Inside Macintosh Volume I, p. I-414, and Macintosh Toolbox Essentials (1992), pp. 6-131--6-132.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SelectDialogItemTextEvaluation {
+    /// 0-indexed edit field index for `DialogRecord.editField` (offset 164).
+    pub edit_field: u16,
+    /// Normalized selection start offset.
+    pub sel_start: u16,
+    /// Normalized selection end offset.
+    pub sel_end: u16,
+}
+
+#[allow(dead_code)]
+impl SelectDialogItemTextEvaluation {
+    /// Returns the normalized selection range `(start, end)`.
+    pub fn selection_range(&self) -> (u16, u16) {
+        (self.sel_start, self.sel_end)
+    }
+}
+
+/// Evaluates selecting an editable text item in a dialog, returning the normalized selection
+/// and the 0-indexed edit field if valid.
+///
+/// Inside Macintosh Volume I, p. I-414, and Macintosh Toolbox Essentials (1992), pp. 6-131--6-132:
+/// - If `dialog_ptr == 0`, returns `None`.
+/// - If `item_number == 0`, returns `None`.
+/// - If `is_edit_text == false`, returns `None` (non-editText items are ignored).
+/// - Clamps and normalizes `start_sel` and `end_sel` bounds (including `0..-1` and `0..32767` select-all).
+/// - Sets `edit_field` to `(item_number - 1) as u16`.
+pub fn evaluate_select_dialog_item_text(
+    dialog_ptr: u32,
+    item_number: usize,
+    is_edit_text: bool,
+    start_sel: i16,
+    end_sel: i16,
+    text_len: usize,
+) -> Option<SelectDialogItemTextEvaluation> {
+    if dialog_ptr == 0 || item_number == 0 || !is_edit_text {
+        return None;
+    }
+    let edit_field = (item_number - 1).min(i16::MAX as usize) as u16;
+    let (sel_start, sel_end) = normalize_dialog_item_selection(start_sel, end_sel, text_len);
+    Some(SelectDialogItemTextEvaluation {
+        edit_field,
+        sel_start,
+        sel_end,
+    })
 }
 
 /// Computes the outer bounding rectangle and corner oval radius for drawing the standard 3px bold
@@ -4615,6 +4683,77 @@ mod tests {
         // Header count word is None: falls back to record_count
         assert_eq!(evaluate_count_ditl(None, 0), 0);
         assert_eq!(evaluate_count_ditl(None, 7), 7);
+    }
+
+    #[test]
+    fn select_dialog_item_text_evaluation() {
+        // evaluate_select_dialog_item_text invalid inputs
+        assert_eq!(
+            evaluate_select_dialog_item_text(0, 1, true, 0, 5, 10),
+            None
+        );
+        assert_eq!(
+            evaluate_select_dialog_item_text(0x1000, 0, true, 0, 5, 10),
+            None
+        );
+        assert_eq!(
+            evaluate_select_dialog_item_text(0x1000, 1, false, 0, 5, 10),
+            None
+        );
+
+        // evaluate_select_dialog_item_text normal selection
+        let eval = evaluate_select_dialog_item_text(0x1000, 1, true, 2, 5, 10).unwrap();
+        assert_eq!(eval.edit_field, 0);
+        assert_eq!(eval.sel_start, 2);
+        assert_eq!(eval.sel_end, 5);
+        assert_eq!(eval.selection_range(), (2, 5));
+
+        // evaluate_select_dialog_item_text item 3 (edit field index 2)
+        let eval_item3 = evaluate_select_dialog_item_text(0x1000, 3, true, 1, 4, 10).unwrap();
+        assert_eq!(eval_item3.edit_field, 2);
+        assert_eq!(eval_item3.sel_start, 1);
+        assert_eq!(eval_item3.sel_end, 4);
+
+        // Select all special cases: (0, -1) and (0, 32767)
+        let eval_all1 = evaluate_select_dialog_item_text(0x1000, 2, true, 0, -1, 15).unwrap();
+        assert_eq!(eval_all1.edit_field, 1);
+        assert_eq!(eval_all1.selection_range(), (0, 15));
+
+        let eval_all2 = evaluate_select_dialog_item_text(0x1000, 2, true, 0, i16::MAX, 15).unwrap();
+        assert_eq!(eval_all2.selection_range(), (0, 15));
+
+        // Empty text with select all
+        let eval_empty = evaluate_select_dialog_item_text(0x1000, 1, true, 0, -1, 0).unwrap();
+        assert_eq!(eval_empty.selection_range(), (0, 0));
+
+        // Clamping out-of-bounds
+        let eval_clamped = evaluate_select_dialog_item_text(0x1000, 1, true, -10, 50, 12).unwrap();
+        assert_eq!(eval_clamped.selection_range(), (0, 12));
+
+        // Reversed bounds swapping
+        let eval_swapped = evaluate_select_dialog_item_text(0x1000, 1, true, 8, 3, 12).unwrap();
+        assert_eq!(eval_swapped.selection_range(), (3, 8));
+
+        // DialogItemRecord::select_text and evaluate_select_text
+        let edit_record = DialogItemRecord {
+            item_offset: 0,
+            item_type: DIALOG_ITEM_EDIT_TEXT,
+            rect: (0, 0, 20, 100),
+            handle: 0,
+            payload: b"Hello World".to_vec(),
+        };
+        assert_eq!(edit_record.select_text(0, -1), Some((0, 11)));
+        assert_eq!(edit_record.evaluate_select_text(2, 7), Some((2, 7)));
+
+        let button_record = DialogItemRecord {
+            item_offset: 0,
+            item_type: DIALOG_ITEM_BUTTON,
+            rect: (0, 0, 20, 100),
+            handle: 0,
+            payload: b"OK".to_vec(),
+        };
+        assert_eq!(button_record.select_text(0, -1), None);
+        assert_eq!(button_record.evaluate_select_text(0, 1), None);
     }
 }
 

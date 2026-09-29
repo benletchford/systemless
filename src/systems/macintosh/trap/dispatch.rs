@@ -590,6 +590,25 @@ impl DialogItem {
             self.proc_ptr = handle;
         }
     }
+
+    /// Updates the selection range of this dialog item.
+    pub fn select_text(&mut self, sel_start: u16, sel_end: u16) {
+        self.sel_start = sel_start as i16;
+        self.sel_end = sel_end as i16;
+    }
+
+    /// Evaluates or computes the normalized selection range `(start, end)` for this edit text item.
+    ///
+    /// Returns `None` if this item is not an `editText` item.
+    pub fn evaluate_select_text(&self, start_sel: i16, end_sel: i16) -> Option<(u16, u16)> {
+        if !self.is_edit_text() {
+            return None;
+        }
+        let text_len = super::types::encode_mac_roman_lossy(&self.text).len();
+        Some(crate::dialog_manager::normalize_dialog_item_selection(
+            start_sel, end_sel, text_len,
+        ))
+    }
 }
 
 impl From<crate::dialog_manager::DialogItemRecord> for DialogItem {

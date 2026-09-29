@@ -6,9 +6,9 @@ use crate::dialog_manager::{
     dialog_target_for_event, dialog_text_rect, edit_text_frame_rect, evaluate_count_ditl,
     evaluate_dialog_select, evaluate_find_dialog_item, evaluate_get_dialog_item,
     evaluate_get_dialog_item_as_control, evaluate_get_std_filter_proc, evaluate_hide_dialog_item,
-    evaluate_set_dialog_cancel_item, evaluate_set_dialog_default_item,
-    evaluate_set_dialog_tracks_cursor, evaluate_show_dialog_item, extract_dialog_item_text_bytes,
-    find_dialog_item_hit, global_to_dialog_local_point, offset_ditl_bytes, parse_ditl_items,
+    evaluate_select_dialog_item_text, evaluate_set_dialog_cancel_item,
+    evaluate_set_dialog_default_item, evaluate_set_dialog_tracks_cursor, evaluate_show_dialog_item,
+    extract_dialog_item_text_bytes, find_dialog_item_hit, global_to_dialog_local_point, offset_ditl_bytes, parse_ditl_items,
     position_dialog_bounds as unified_position_dialog_bounds, prepare_get_dialog_item_text,
     prepare_set_dialog_item_text, DialogItemHeader, DialogItemRecord,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
@@ -2325,13 +2325,19 @@ fn ppc_select_dialog_item_text(
     let length = memory
         .read_u16_be(te_ptr + PPC_TE_LENGTH_OFFSET)
         .unwrap_or(0) as usize;
-    let (start, end) = crate::dialog_manager::normalize_dialog_item_selection(
+    let Some(eval) = evaluate_select_dialog_item_text(
+        dialog,
+        item_number,
+        item.is_edit_text(),
         selection_start as i16,
         selection_end as i16,
         length,
-    );
-    let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, start);
-    let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, end);
+    ) else {
+        return;
+    };
+    let _ = memory.write_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET, eval.edit_field);
+    let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, eval.sel_start);
+    let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, eval.sel_end);
     let _ = memory.write_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET, 1);
     let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
 }

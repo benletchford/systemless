@@ -10,8 +10,9 @@ use crate::cpu::{CpuOps, Register};
 use crate::dialog_manager::{
     dialog_dbox_frame_rect, dialog_item_base_type, dialog_item_resource_type,
     dialog_target_for_event, edit_text_frame_rect, evaluate_find_dialog_item,
-    evaluate_get_dialog_item, evaluate_get_std_filter_proc, evaluate_set_dialog_cancel_item,
-    evaluate_set_dialog_default_item, evaluate_set_dialog_tracks_cursor, find_dialog_item_hit,
+    evaluate_get_dialog_item, evaluate_get_std_filter_proc, evaluate_select_dialog_item_text,
+    evaluate_set_dialog_cancel_item, evaluate_set_dialog_default_item,
+    evaluate_set_dialog_tracks_cursor, find_dialog_item_hit,
     global_to_dialog_local_point, is_dialog_item_button, is_dialog_item_control,
     is_dialog_item_disabled, is_dialog_item_edit_text, is_dialog_item_enabled,
     is_dialog_item_resource, is_dialog_item_text, normalize_selection_bounds,
@@ -15790,16 +15791,19 @@ impl super::TrapDispatcher {
                             items,
                             item_no as usize,
                         ) {
-                            if item.is_edit_text() {
-                                let text_len = encode_mac_roman_lossy(&item.text).len();
-                                let (s, e) = crate::dialog_manager::normalize_dialog_item_selection(
-                                    start_sel, end_sel, text_len,
-                                );
-                                item.sel_start = s as i16;
-                                item.sel_end = e as i16;
+                            let text_len = encode_mac_roman_lossy(&item.text).len();
+                            if let Some(eval) = evaluate_select_dialog_item_text(
+                                dialog_ptr,
+                                item_no as usize,
+                                item.is_edit_text(),
+                                start_sel,
+                                end_sel,
+                                text_len,
+                            ) {
+                                item.select_text(eval.sel_start, eval.sel_end);
                                 bus.write_word(
                                     dialog_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
-                                    (item_no - 1) as u16,
+                                    eval.edit_field,
                                 );
                                 // Mirror selStart/selEnd into the TERecord so
                                 // callers that read (**textH).selStart via the
@@ -15813,8 +15817,8 @@ impl super::TrapDispatcher {
                                 if text_h_handle != 0 {
                                     let te_ptr = bus.read_long(text_h_handle);
                                     if te_ptr != 0 {
-                                        bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, s);
-                                        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, e);
+                                        bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, eval.sel_start);
+                                        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, eval.sel_end);
                                     }
                                 }
                                 redraw_item = Some((dialog_ptr, item_no));
