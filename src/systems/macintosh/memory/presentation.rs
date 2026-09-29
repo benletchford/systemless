@@ -2619,6 +2619,7 @@ impl Presentation {
         lanes: usize,
         foreground: &[u8],
         backgrounds: &[u8],
+        stored: &[u8],
     ) {
         let end = u64::from(address) + backgrounds.len() as u64;
         let screen_end = u64::from(self.base) + u64::from(self.row_bytes) * u64::from(self.height);
@@ -2638,24 +2639,31 @@ impl Presentation {
             return;
         };
         let scale = self.scale;
+        let samples = (scale * scale) as usize;
         let in_text_run = self.in_text_run;
         let run_ink = &mut self.offscreen_run_ink;
-        self.offscreen.cells_mut_or_insert(
+        // A pixel the glyph leaves uncovered keeps a blank cell only where
+        // the bitmap glyph may store to it: the cell then holds the
+        // background the store must not show. Elsewhere a blank cell would
+        // show exactly the unchanged byte, so none is made.
+        self.offscreen.selected_cells_mut_or_insert(
             address,
             backgrounds,
-            (scale * scale) as usize,
-            |i, cell| {
-                paint_offscreen_glyph_cell(
-                    cell,
-                    (glyph, *h, *v),
-                    scale,
-                    (
-                        x0.wrapping_add((i / lanes) as i16),
-                        y,
+            samples,
+            |i| {
+                let x = x0.wrapping_add((i / lanes) as i16);
+                let coverage = offscreen_glyph_cell_coverage((glyph, *h, *v), scale, (x, y));
+                (coverage.is_some() || stored[i / lanes] != 0).then_some(coverage)
+            },
+            |i, coverage, cell| {
+                if let Some(alphas) = coverage {
+                    paint_offscreen_glyph_coverage(
+                        cell,
+                        &alphas[..samples],
                         foreground[i % lanes],
-                    ),
-                    (in_text_run, run_ink, address + i as u32),
-                );
+                        (in_text_run, run_ink, address + i as u32),
+                    );
+                }
             },
         );
     }
@@ -2689,11 +2697,28 @@ fn paint_offscreen_glyph_cell(
     (x, y, foreground): (i16, i16, u8),
     (in_text_run, run_ink, address): (bool, &mut OffscreenRunInk, u32),
 ) {
+    if let Some(alphas) = offscreen_glyph_cell_coverage((glyph, h, v), scale, (x, y)) {
+        paint_offscreen_glyph_coverage(
+            cell,
+            &alphas[..(scale * scale) as usize],
+            foreground,
+            (in_text_run, run_ink, address),
+        );
+    }
+}
+
+/// The glyph's coverage of guest pixel (`x`, `y`), one sample per entry, or
+/// `None` when the glyph leaves the pixel uncovered.
+fn offscreen_glyph_cell_coverage(
+    (glyph, h, v): (&OutlineGlyph, i16, i16),
+    scale: u32,
+    (x, y): (i16, i16),
+) -> Option<[u8; TILE_SAMPLES]> {
     let scale = scale as i32;
     let gx0 = (i32::from(x) - i32::from(h)) * scale - glyph.left;
     let gy0 = (i32::from(y) - i32::from(v)) * scale - glyph.top;
     if gx0 + scale <= 0 || gy0 + scale <= 0 || gx0 >= glyph.width || gy0 >= glyph.height {
-        return;
+        return None;
     }
     // The cell's coverage, one glyph row slice per sample row.
     let mut alphas = [0u8; TILE_SAMPLES];
@@ -2714,18 +2739,24 @@ fn paint_offscreen_glyph_cell(
             any |= alpha != 0;
         }
     }
-    if !any {
-        return;
-    }
-    let samples = (scale * scale) as usize;
+    any.then_some(alphas)
+}
+
+/// Paint `alphas`, a covered pixel's samples, into its offscreen cell.
+fn paint_offscreen_glyph_coverage(
+    cell: &mut offscreen::OffscreenCellMut<'_>,
+    alphas: &[u8],
+    foreground: u8,
+    (in_text_run, run_ink, address): (bool, &mut OffscreenRunInk, u32),
+) {
     if in_text_run {
-        for (i, &alpha) in alphas[..samples].iter().enumerate() {
+        for (i, &alpha) in alphas.iter().enumerate() {
             if alpha != 0 {
                 run_ink.insert((address, i));
             }
         }
     }
-    cell.paint_glyph(&alphas[..samples], foreground);
+    cell.paint_glyph(alphas, foreground);
 }
 
 impl MacMemoryBus {
@@ -2990,7 +3021,9 @@ impl MacMemoryBus {
     /// `outline_glyph_pixel` for `count` consecutive pixels of `lanes` bytes
     /// from `address` (pixel `x0` of row `y`), each lane taking its byte of
     /// the big-endian `foreground`. The backgrounds are read up front, as
-    /// the per-pixel calls would read them before drawing the run.
+    /// the per-pixel calls would read them before drawing the run. `stored`
+    /// holds each pixel's bitmap-glyph coverage: zero where the drawing will
+    /// not store to the pixel.
     pub(crate) fn outline_glyph_span(
         &mut self,
         address: u32,
@@ -2998,6 +3031,7 @@ impl MacMemoryBus {
         count: usize,
         lanes: usize,
         foreground: u32,
+        stored: &[u8],
     ) {
         if self.presentation.is_none() || count == 0 {
             return;
@@ -3017,7 +3051,14 @@ impl MacMemoryBus {
             (foreground >> ((lanes.saturating_sub(1 + lane)) * 8)) as u8
         });
         if let Some(mut p) = self.presentation.as_mut() {
-            p.glyph_span(address, (x0, y), lanes, &foreground[..lanes], backgrounds);
+            p.glyph_span(
+                address,
+                (x0, y),
+                lanes,
+                &foreground[..lanes],
+                backgrounds,
+                stored,
+            );
         }
     }
 
@@ -4018,7 +4059,14 @@ mod tests {
                                 (foreground >> ((lanes - 1 - lane) * 8)) as u8,
                             );
                         }
-                        span.outline_glyph_span(start, (3, y), count, lanes, foreground);
+                        span.outline_glyph_span(
+                            start,
+                            (3, y),
+                            count,
+                            lanes,
+                            foreground,
+                            &[255; 20],
+                        );
                         assert_eq!(
                             snapshot(&span),
                             snapshot(&per_pixel),
@@ -4027,6 +4075,91 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// A glyph span makes no cell for a pixel the glyph leaves uncovered and
+    /// the bitmap glyph does not store to, where the per-pixel path makes a
+    /// blank one: once the bitmap glyph's stores land and the rows reach the
+    /// screen, both look the same.
+    #[test]
+    fn glyph_spans_skip_blank_cells_that_nothing_stores_to() {
+        // Coverage in glyph pixels 0, 3 and 6 of each row; the rest blank.
+        let glyph = OutlineGlyph {
+            pixels: (0..32 * 8)
+                .map(|i| if (i % 32 / 4) % 3 == 0 { 200 } else { 0 })
+                .collect(),
+            width: 32,
+            height: 8,
+            left: 0,
+            top: 0,
+        };
+        let start = 0x4_0010u32;
+        // Bitmap stores at a covered pixel (0) and two uncovered ones (1, 4).
+        let stored = [255u8, 255, 0, 0, 255, 0, 0, 0];
+        let foreground = 0x2A;
+        for opaque in [false, true] {
+            let setup = || {
+                let mut bus = MacMemoryBus::new(1024 * 1024);
+                let palette = std::array::from_fn(|i| [i as u8, (i * 3) as u8, 255 - i as u8]);
+                bus.enable_outline_presentation((0x1000, 8, 8, 8, 8), palette, 4);
+                for i in 0..16u32 {
+                    bus.write_byte(start + i, 0x10 + i as u8);
+                }
+                let mut p = bus.presentation.as_mut().unwrap();
+                p.glyph = Some((glyph.clone(), 0, 0));
+                p.in_text_run = opaque;
+                drop(p);
+                bus
+            };
+            let mut per_pixel = setup();
+            let mut span = setup();
+            for y in 0..2i16 {
+                let row = start + y as u32 * 8;
+                for x in 0..8u32 {
+                    per_pixel.outline_glyph_pixel(row + x, x as i16, y, foreground);
+                }
+                span.outline_glyph_span(row, (0, y), 8, 1, u32::from(foreground), &stored);
+                for bus in [&mut per_pixel, &mut span] {
+                    for (x, &alpha) in stored.iter().enumerate() {
+                        if alpha != 0 {
+                            bus.write_byte(row + x as u32, foreground);
+                        }
+                    }
+                }
+            }
+            let cells = |bus: &MacMemoryBus| {
+                bus.presentation
+                    .as_ref()
+                    .unwrap()
+                    .offscreen
+                    .addresses()
+                    .len()
+            };
+            assert!(
+                cells(&span) < cells(&per_pixel),
+                "opaque {opaque}: blank cells skipped"
+            );
+            for bus in [&mut per_pixel, &mut span] {
+                bus.end_outline_glyph();
+                let pixels = bus.read_bytes(start, 16);
+                assert!(bus.copy_detail_rows(
+                    &[(start, 0x1000), (start + 8, 0x1008)],
+                    &pixels,
+                    8,
+                    None
+                ));
+            }
+            assert_eq!(
+                span.read_bytes(0x1000, 16),
+                per_pixel.read_bytes(0x1000, 16),
+                "opaque {opaque}: RAM"
+            );
+            assert_eq!(
+                span.outline_presentation_rgb(),
+                per_pixel.outline_presentation_rgb(),
+                "opaque {opaque}: rendered"
+            );
         }
     }
 

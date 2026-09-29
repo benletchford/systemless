@@ -1117,6 +1117,24 @@ impl super::TrapDispatcher {
         Ok(())
     }
 
+    /// The coverage of the `count` pixels from `start` of a glyph row whose
+    /// coverage from `left` is `row`, into `out`.
+    fn glyph_run_coverage(
+        row: &[Option<u8>],
+        left: i16,
+        start: i16,
+        count: usize,
+        out: &mut Vec<u8>,
+    ) {
+        out.clear();
+        let first = (start - left) as usize;
+        out.extend(
+            row[first..first + count]
+                .iter()
+                .map(|alpha| alpha.unwrap_or(0)),
+        );
+    }
+
     /// Draw a clipped, transfer-mode-aware shape. The `coverage_at`
     /// closure returns 0..=255 alpha for each (y, x) in the shape's
     /// bounding rect:
@@ -1749,15 +1767,20 @@ impl super::TrapDispatcher {
         // 4-103). Cache only source indices actually drawn: the match remains
         // fixed for this draw, while tiny rectangles avoid 256 unused lookups.
         let mut raw_pixpat_destination_indices = [None; 256];
+        // A glyph row's coverage, taken once for the presentation's runs and
+        // the row's stores: `None` for a pixel the clip excludes.
+        let mut row_coverage: Vec<Option<u8>> = Vec::new();
+        let mut run_coverage: Vec<u8> = Vec::new();
         for y in r.top..r.bottom {
             if y < clip_top || y >= clip_bottom {
                 continue;
             }
             let dy = (y - bounds_top) as u32;
             if glyph_detail {
+                row_coverage.clear();
                 let mut run: Option<(i16, usize)> = None;
                 for x in r.left..r.right {
-                    let inside = x >= clip_left
+                    let clipped_in = x >= clip_left
                         && x < clip_right
                         && (!vis_region_complex
                             || Self::region_contains_point_cached(
@@ -1774,12 +1797,21 @@ impl super::TrapDispatcher {
                                 clip_region_cache.as_ref(),
                                 y,
                                 x,
-                            ))
+                            ));
+                    row_coverage.push(clipped_in.then(|| coverage_at(y, x)));
+                    let inside = clipped_in
                         && (((x - bounds_left) as u32) + 1) * glyph_lanes <= pix_row_bytes;
                     run = match (inside, run) {
                         (true, Some((start, count))) => Some((start, count + 1)),
                         (true, None) => Some((x, 1)),
                         (false, Some((start, count))) => {
+                            Self::glyph_run_coverage(
+                                &row_coverage,
+                                r.left,
+                                start,
+                                count,
+                                &mut run_coverage,
+                            );
                             let dx = (start - bounds_left) as u32;
                             bus.outline_glyph_span(
                                 pix_base + dy * pix_row_bytes + dx * glyph_lanes,
@@ -1787,6 +1819,7 @@ impl super::TrapDispatcher {
                                 count,
                                 glyph_lanes as usize,
                                 glyph_foreground,
+                                &run_coverage,
                             );
                             None
                         }
@@ -1794,6 +1827,13 @@ impl super::TrapDispatcher {
                     };
                 }
                 if let Some((start, count)) = run {
+                    Self::glyph_run_coverage(
+                        &row_coverage,
+                        r.left,
+                        start,
+                        count,
+                        &mut run_coverage,
+                    );
                     let dx = (start - bounds_left) as u32;
                     bus.outline_glyph_span(
                         pix_base + dy * pix_row_bytes + dx * glyph_lanes,
@@ -1801,36 +1841,45 @@ impl super::TrapDispatcher {
                         count,
                         glyph_lanes as usize,
                         glyph_foreground,
+                        &run_coverage,
                     );
                 }
             }
             for x in r.left..r.right {
-                if x < clip_left || x >= clip_right {
-                    continue;
-                }
-                if vis_region_complex
-                    && !Self::region_contains_point_cached(
-                        bus,
-                        vis_rgn_handle,
-                        vis_region_cache.as_ref(),
-                        y,
-                        x,
-                    )
-                {
-                    continue;
-                }
-                if clip_region_complex
-                    && !Self::region_contains_point_cached(
-                        bus,
-                        clip_rgn_handle,
-                        clip_region_cache.as_ref(),
-                        y,
-                        x,
-                    )
-                {
-                    continue;
-                }
-                let alpha = coverage_at(y, x);
+                let alpha = if glyph_detail {
+                    // The clip and coverage as the runs above took them.
+                    let Some(alpha) = row_coverage[(x - r.left) as usize] else {
+                        continue;
+                    };
+                    alpha
+                } else {
+                    if x < clip_left || x >= clip_right {
+                        continue;
+                    }
+                    if vis_region_complex
+                        && !Self::region_contains_point_cached(
+                            bus,
+                            vis_rgn_handle,
+                            vis_region_cache.as_ref(),
+                            y,
+                            x,
+                        )
+                    {
+                        continue;
+                    }
+                    if clip_region_complex
+                        && !Self::region_contains_point_cached(
+                            bus,
+                            clip_rgn_handle,
+                            clip_region_cache.as_ref(),
+                            y,
+                            x,
+                        )
+                    {
+                        continue;
+                    }
+                    coverage_at(y, x)
+                };
                 if alpha == 0 {
                     continue;
                 }

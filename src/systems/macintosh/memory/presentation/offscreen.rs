@@ -664,14 +664,17 @@ impl OffscreenDetail {
     }
 
     /// `cell_mut_or_insert` for each of the consecutive addresses from
-    /// `address`, one per byte of `backgrounds`, visiting each cell with its
-    /// offset. Each chunk is looked up once. The span must not wrap.
-    pub(super) fn cells_mut_or_insert(
+    /// `address`, one per byte of `backgrounds`, that `select` picks: a cell
+    /// for which `select` returns `None` is neither inserted nor visited; the
+    /// others are inserted when absent and visited with their offset and what
+    /// `select` returned. Each chunk is looked up once. The span must not wrap.
+    pub(super) fn selected_cells_mut_or_insert<T>(
         &mut self,
         address: u32,
         backgrounds: &[u8],
         len: usize,
-        mut visit: impl FnMut(usize, &mut OffscreenCellMut<'_>),
+        mut select: impl FnMut(usize) -> Option<T>,
+        mut visit: impl FnMut(usize, T, &mut OffscreenCellMut<'_>),
     ) {
         assert!(
             u64::from(address) + backgrounds.len() as u64 <= 1 << 32,
@@ -681,12 +684,28 @@ impl OffscreenDetail {
         while offset < backgrounds.len() {
             let (key, first) = split(address + offset as u32);
             let run = (CHUNK_BYTES - first).min(backgrounds.len() - offset);
-            let chunk = self.chunks.entry(key).or_insert_with(|| Box::new(Chunk::new()));
-            for (i, slot) in (first..first + run).enumerate() {
-                if chunk.insert_blank(slot, backgrounds[offset + i], len) {
-                    self.count += 1;
+            // The chunk is found (or made) at the run's first selected cell.
+            let mut pending =
+                (0..run).find_map(|i| select(offset + i).map(|selected| (i, selected)));
+            if let Some((skipped, _)) = pending {
+                let chunk = self
+                    .chunks
+                    .entry(key)
+                    .or_insert_with(|| Box::new(Chunk::new()));
+                for i in skipped..run {
+                    let selected = match pending.take() {
+                        Some((_, selected)) => selected,
+                        None => match select(offset + i) {
+                            Some(selected) => selected,
+                            None => continue,
+                        },
+                    };
+                    let slot = first + i;
+                    if chunk.insert_blank(slot, backgrounds[offset + i], len) {
+                        self.count += 1;
+                    }
+                    visit(offset + i, selected, &mut OffscreenCellMut { chunk, slot });
                 }
-                visit(offset + i, &mut OffscreenCellMut { chunk, slot });
             }
             offset += run;
         }
