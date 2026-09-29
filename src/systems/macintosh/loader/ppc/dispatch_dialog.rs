@@ -7,7 +7,8 @@ use crate::dialog_manager::{
     evaluate_close_or_dispose_dialog, evaluate_count_ditl, evaluate_count_ditl_query,
     evaluate_dialog_select, evaluate_find_dialog_item, evaluate_get_dialog_item,
     evaluate_get_dialog_item_as_control, evaluate_get_dialog_item_as_control_parameters,
-    evaluate_get_new_dialog_parameters, evaluate_get_std_filter_proc_parameters,
+    evaluate_get_dialog_item_parameters, evaluate_get_new_dialog_parameters,
+    evaluate_get_std_filter_proc_parameters,
     evaluate_hide_dialog_item, evaluate_modal_dialog_parameters,
     evaluate_select_dialog_item_text_parameters, evaluate_set_dialog_cancel_item_parameters,
     evaluate_set_dialog_default_item_parameters, evaluate_set_dialog_tracks_cursor_parameters,
@@ -2463,29 +2464,35 @@ fn ppc_get_dialog_item(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, handles: &[
     let item_type_ptr = cpu.gpr[5];
     let item_handle_ptr = cpu.gpr[6];
     let item_rect_ptr = cpu.gpr[7];
-    let Some(query) = crate::dialog_manager::evaluate_get_dialog_item_query(dialog, item_number) else {
+    let can_write_type = ppc_optional_output_can_write(memory, item_type_ptr, 2);
+    let can_write_handle = ppc_optional_output_can_write(memory, item_handle_ptr, 4);
+    let can_write_rect = ppc_optional_output_can_write(memory, item_rect_ptr, 8);
+    let Some(params) = evaluate_get_dialog_item_parameters(
+        dialog,
+        item_number,
+        item_type_ptr,
+        item_handle_ptr,
+        item_rect_ptr,
+        can_write_type,
+        can_write_handle,
+        can_write_rect,
+    ) else {
         return;
     };
-    if !ppc_optional_output_can_write(memory, item_type_ptr, 2)
-        || !ppc_optional_output_can_write(memory, item_handle_ptr, 4)
-        || !ppc_optional_output_can_write(memory, item_rect_ptr, 8)
-    {
-        return;
-    }
-    let header = ppc_dialog_items_for_dialog(memory, handles, query.dialog_ptr())
-        .map(|items| evaluate_get_dialog_item(&items, query.item_number(), |item| item.header()))
+    let header = ppc_dialog_items_for_dialog(memory, handles, params.dialog_ptr())
+        .map(|items| evaluate_get_dialog_item(&items, params.item_number(), |item| item.header()))
         .unwrap_or(DialogItemHeader::ZERO);
 
-    if item_type_ptr != 0 {
-        let _ = memory.write_u16_be(item_type_ptr, header.item_type);
+    if params.item_type_ptr() != 0 {
+        let _ = memory.write_u16_be(params.item_type_ptr(), header.item_type);
     }
-    if item_handle_ptr != 0 {
-        let _ = memory.write_u32_be(item_handle_ptr, header.handle);
+    if params.item_handle_ptr() != 0 {
+        let _ = memory.write_u32_be(params.item_handle_ptr(), header.handle);
     }
-    if item_rect_ptr != 0 {
+    if params.item_rect_ptr() != 0 {
         let _ = ppc_write_rect(
             memory,
-            item_rect_ptr,
+            params.item_rect_ptr(),
             header.rect.0,
             header.rect.1,
             header.rect.2,
