@@ -20,7 +20,7 @@ use crate::dialog_manager::{
     extract_dialog_item_text_bytes, find_dialog_item_hit, global_to_dialog_local_point, offset_ditl_bytes, parse_ditl_items,
     position_dialog_bounds as unified_position_dialog_bounds, DialogItemHeader, DialogItemRecord,
     GetNewDialogParameters, ParamTextParameters, SelectDialogItemTextParameters,
-    evaluate_find_dialog_item_parameters_packed,
+    evaluate_alert_dialog_record_init, evaluate_find_dialog_item_parameters_packed,
     evaluate_get_dialog_item_text, evaluate_get_dialog_item_text_parameters,
     evaluate_param_text_parameters, evaluate_set_dialog_item_text, evaluate_set_dialog_item_text_parameters,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
@@ -1861,10 +1861,16 @@ fn ppc_new_alert_dialog(
         dialog
     };
     if dialog != 0 {
-        let _ = memory.write_u16_be(dialog + DIALOG_RESOURCE_ID_OFFSET, alert_id as u16);
-        let _ = memory.write_u16_be(dialog + DIALOG_DEFAULT_ITEM_OFFSET, default_item);
-        let _ = memory.write_u16_be(dialog + DIALOG_ALERT_HIT_OFFSET, 0);
-        let _ = memory.write_u16_be(dialog + DIALOG_CANCEL_ITEM_OFFSET, cancel_item);
+        let init = evaluate_alert_dialog_record_init(
+            items_handle,
+            alert_id,
+            default_item as i16,
+            cancel_item as i16,
+        );
+        let _ = memory.write_u16_be(dialog + DIALOG_RESOURCE_ID_OFFSET, init.alert_id() as u16);
+        let _ = memory.write_u16_be(dialog + DIALOG_DEFAULT_ITEM_OFFSET, init.default_item() as u16);
+        let _ = memory.write_u16_be(dialog + DIALOG_ALERT_HIT_OFFSET, init.alert_hit() as u16);
+        let _ = memory.write_u16_be(dialog + DIALOG_CANCEL_ITEM_OFFSET, init.cancel_item() as u16);
         if standard {
             let _ = memory.write_u32_be(dialog + DIALOG_STANDARD_ALERT_OUTPUT_OFFSET, cpu.gpr[7]);
             let _ = memory.write_u32_be(dialog + DIALOG_STANDARD_ALERT_STACK_OFFSET, cpu.gpr[1]);
