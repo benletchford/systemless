@@ -1967,6 +1967,8 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::GetDCtlEntry
         | PpcImportDispatcherTarget::GetADBInfo
+        | PpcImportDispatcherTarget::AutoSleepControl
+        | PpcImportDispatcherTarget::IsAutoSlpControlDisabled
         | PpcImportDispatcherTarget::OpenDriver
         | PpcImportDispatcherTarget::Control
         | PpcImportDispatcherTarget::PBControl

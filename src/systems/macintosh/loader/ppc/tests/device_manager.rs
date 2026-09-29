@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+fn auto_sleep_control_tracks_nested_disables() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "AutoSleepControl"),
+        PpcImportDispatcherTarget::AutoSleepControl
+    );
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "IsAutoSlpControlDisabled"),
+        PpcImportDispatcherTarget::IsAutoSlpControlDisabled
+    );
+
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"AutoSleepControl");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AutoSleepControl);
+    assert_eq!(loaded.toolbox_startup.auto_sleep_disable_level, 1);
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AutoSleepControl);
+    assert_eq!(loaded.toolbox_startup.auto_sleep_disable_level, 2);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::IsAutoSlpControlDisabled,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    loaded.cpu.gpr[3] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AutoSleepControl);
+    assert_eq!(loaded.toolbox_startup.auto_sleep_disable_level, 1);
+    loaded.cpu.gpr[3] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AutoSleepControl);
+    assert_eq!(loaded.toolbox_startup.auto_sleep_disable_level, 0);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::IsAutoSlpControlDisabled,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    loaded.cpu.gpr[3] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AutoSleepControl);
+    assert_eq!(loaded.toolbox_startup.auto_sleep_disable_level, 0);
+}
+
+#[test]
 fn get_dctl_entry_exposes_only_the_main_device() {
     let pef = synthetic_pef_with_import(b"GetDCtlEntry");
     let mut loaded = load_pef_application(&pef).unwrap();

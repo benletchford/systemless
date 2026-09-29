@@ -34,6 +34,8 @@ pub struct PpcToolboxStartupState {
     pub flush_events_count: u32,
     pub last_flush_event_mask: u16,
     pub last_flush_stop_mask: u16,
+    /// Power Manager nesting level for AutoSleepControl(false).
+    pub(crate) auto_sleep_disable_level: u32,
     pub dispose_dialog_count: u32,
     pub last_disposed_dialog: u32,
     /// Most recent EventRecord exposed through the native event imports.
@@ -106,6 +108,7 @@ impl Default for PpcToolboxStartupState {
             flush_events_count: 0,
             last_flush_event_mask: 0,
             last_flush_stop_mask: 0,
+            auto_sleep_disable_level: 0,
             dispose_dialog_count: 0,
             last_disposed_dialog: 0,
             last_event_record: None,
