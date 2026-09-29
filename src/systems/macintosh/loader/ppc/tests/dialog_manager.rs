@@ -2023,3 +2023,147 @@ fn lm_dlgfont_accessors_manage_dlg_font_global() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded_get.cpu.gpr[3], 7);
 }
+
+#[test]
+fn get_dialog_default_item_reads_default_item_and_rejects_invalid_pointers() {
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"GetDialogDefaultItem");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let dialog = PPC_DATA_BASE + 0x1000;
+    let out_ptr = PPC_DATA_BASE + 0x2000;
+    loaded.memory.add_region(dialog, vec![0; PPC_DIALOG_RECORD_SIZE as usize]);
+    loaded.memory.add_region(out_ptr, vec![0; 4]);
+
+    let app_code_pc = loaded.cpu.pc;
+
+    // 1. Unset default item resolves to 1 (DEFAULT_DIALOG_ITEM)
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = out_ptr;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u16_be(out_ptr), Some(1));
+
+    // 2. Explicitly configured default item (3) is returned
+    loaded
+        .memory
+        .write_u16_be(dialog + PPC_DIALOG_DEFAULT_ITEM_OFFSET, 3)
+        .unwrap();
+    loaded.memory.write_u16_be(out_ptr, 0).unwrap();
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = out_ptr;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u16_be(out_ptr), Some(3));
+
+    // 3. NIL dialog pointer returns paramErr
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = out_ptr;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+
+    // 4. NIL out pointer returns paramErr
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+}
+
+#[test]
+fn get_dialog_cancel_item_reads_cancel_item_and_rejects_invalid_pointers() {
+    let pef = synthetic_pef_with_library_import(b"AppearanceLib", b"GetDialogCancelItem");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let dialog = PPC_DATA_BASE + 0x1000;
+    let out_ptr = PPC_DATA_BASE + 0x2000;
+    loaded.memory.add_region(dialog, vec![0; PPC_DIALOG_RECORD_SIZE as usize]);
+    loaded.memory.add_region(out_ptr, vec![0; 4]);
+
+    // Build DITL with 2 buttons: item 1 "OK", item 2 "Cancel"
+    let mut ditl = Vec::new();
+    ditl.extend_from_slice(&1u16.to_be_bytes()); // 2 items (0-based count)
+    // Item 1: OK
+    ditl.extend_from_slice(&0u32.to_be_bytes());
+    ditl.extend_from_slice(&[0, 10, 0, 10, 0, 30, 0, 80]);
+    ditl.push(PPC_DIALOG_ITEM_BUTTON);
+    ditl.push(2);
+    ditl.extend_from_slice(b"OK");
+    if ditl.len() % 2 != 0 {
+        ditl.push(0);
+    }
+    // Item 2: Cancel
+    ditl.extend_from_slice(&0u32.to_be_bytes());
+    ditl.extend_from_slice(&[0, 10, 0, 90, 0, 30, 0, 160]);
+    ditl.push(PPC_DIALOG_ITEM_BUTTON);
+    ditl.push(6);
+    ditl.extend_from_slice(b"Cancel");
+    if ditl.len() % 2 != 0 {
+        ditl.push(0);
+    }
+
+    let items_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &ditl,
+    );
+    loaded
+        .memory
+        .write_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET, items_handle)
+        .unwrap();
+
+    let app_code_pc = loaded.cpu.pc;
+
+    // 1. Inferred cancel button titled "Cancel" (item 2)
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = out_ptr;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u16_be(out_ptr), Some(2));
+
+    // 2. Explicitly configured cancel button (5) overrides title search
+    loaded
+        .memory
+        .write_u16_be(dialog + PPC_DIALOG_CANCEL_ITEM_OFFSET, 5)
+        .unwrap();
+    loaded.memory.write_u16_be(out_ptr, 0).unwrap();
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = out_ptr;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u16_be(out_ptr), Some(5));
+
+    // 3. NIL dialog pointer returns paramErr
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = out_ptr;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+
+    // 4. NIL out pointer returns paramErr
+    loaded.cpu.pc = app_code_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+}

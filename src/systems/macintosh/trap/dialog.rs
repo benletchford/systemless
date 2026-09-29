@@ -21,6 +21,8 @@ use crate::dialog_manager::{
     evaluate_get_dialog_item_as_control_parameters, evaluate_get_dialog_item_parameters,
     evaluate_get_new_dialog_parameters,
     evaluate_get_std_filter_proc_parameters, evaluate_is_dialog_event_parameters,
+    evaluate_dialog_default_item, evaluate_get_dialog_cancel_item_parameters,
+    evaluate_get_dialog_default_item_parameters,
     evaluate_modal_dialog_parameters,
     evaluate_param_text_parameters,
     evaluate_select_dialog_item_text_parameters, evaluate_set_dialog_cancel_item_parameters,
@@ -16940,6 +16942,99 @@ impl super::TrapDispatcher {
                                     Ok(_) => crate::dialog_manager::DIALOG_NO_ERR,
                                     Err(err) => err,
                                 }
+                            }
+                            Err(err) => err,
+                        };
+                        bus.write_word(sp + param_bytes, os_err as u16);
+                        cpu.write_reg(Register::A7, sp + param_bytes);
+                    }
+                    // GetDialogDefaultItem (selector $12, param_bytes=8)
+                    // FUNCTION GetDialogDefaultItem(theDialog: DialogPtr;
+                    //     VAR outDefaultItem: SInt16): OSStatus;
+                    // Inside Macintosh: Appearance Manager (1997).
+                    //
+                    // Stack: SP+0=outDefaultItem(4), SP+4=theDialog(4).
+                    // Result slot at SP+param_bytes (pre-pushed by caller).
+                    crate::dialog_manager::DIALOG_DISPATCH_GET_DIALOG_DEFAULT_ITEM => {
+                        let out_default_item_ptr = bus.read_long(sp);
+                        let dialog_ptr = bus.read_long(sp + 4);
+                        let result = evaluate_get_dialog_default_item_parameters(
+                            dialog_ptr,
+                            out_default_item_ptr,
+                            out_default_item_ptr != 0,
+                        );
+                        let os_err = match result {
+                            Ok(params) => {
+                                let configured = if bus.get_alloc_size(params.dialog_ptr()).unwrap_or(0)
+                                    >= crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET + 2
+                                {
+                                    Some(bus.read_word(
+                                        params.dialog_ptr()
+                                            + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET,
+                                    ) as i16)
+                                } else {
+                                    None
+                                };
+                                let default_item = evaluate_dialog_default_item(configured);
+                                bus.write_word(params.out_default_item_ptr(), default_item as u16);
+                                crate::dialog_manager::DIALOG_NO_ERR
+                            }
+                            Err(err) => err,
+                        };
+                        bus.write_word(sp + param_bytes, os_err as u16);
+                        cpu.write_reg(Register::A7, sp + param_bytes);
+                    }
+                    // GetDialogCancelItem (selector $13, param_bytes=8)
+                    // FUNCTION GetDialogCancelItem(theDialog: DialogPtr;
+                    //     VAR outCancelItem: SInt16): OSStatus;
+                    // Inside Macintosh: Appearance Manager (1997).
+                    //
+                    // Stack: SP+0=outCancelItem(4), SP+4=theDialog(4).
+                    // Result slot at SP+param_bytes (pre-pushed by caller).
+                    crate::dialog_manager::DIALOG_DISPATCH_GET_DIALOG_CANCEL_ITEM => {
+                        let out_cancel_item_ptr = bus.read_long(sp);
+                        let dialog_ptr = bus.read_long(sp + 4);
+                        let result = evaluate_get_dialog_cancel_item_parameters(
+                            dialog_ptr,
+                            out_cancel_item_ptr,
+                            out_cancel_item_ptr != 0,
+                        );
+                        let os_err = match result {
+                            Ok(params) => {
+                                let configured_cancel = self
+                                    .dialog_cancel_items
+                                    .get(&params.dialog_ptr())
+                                    .copied()
+                                    .or_else(|| {
+                                        if bus.get_alloc_size(params.dialog_ptr()).unwrap_or(0)
+                                            >= crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET + 2
+                                        {
+                                            let raw = bus.read_word(
+                                                params.dialog_ptr()
+                                                    + crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET,
+                                            ) as i16;
+                                            if raw != 0 {
+                                                Some(raw)
+                                            } else {
+                                                None
+                                            }
+                                        } else {
+                                            None
+                                        }
+                                    });
+                                let cancel_item = match self.dialog_items.get(&params.dialog_ptr()) {
+                                    Some(items) => {
+                                        crate::dialog_manager::evaluate_dialog_cancel_item(
+                                            configured_cancel,
+                                            items.iter().map(|item| (item.item_type, item.text.as_bytes())),
+                                        )
+                                        .item_no()
+                                        .unwrap_or(0)
+                                    }
+                                    None => configured_cancel.unwrap_or(0),
+                                };
+                                bus.write_word(params.out_cancel_item_ptr(), cancel_item as u16);
+                                crate::dialog_manager::DIALOG_NO_ERR
                             }
                             Err(err) => err,
                         };
