@@ -608,6 +608,8 @@ pub enum PpcImportDispatcherTarget {
     LAutoScroll,
     LSearch,
     FlushEvents,
+    GetMainEventQueue,
+    FlushEventQueue,
     SetEventMask,
     CloseDialog,
     DisposeDialog,
@@ -3079,6 +3081,8 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LAutoScroll") => PpcImportDispatcherTarget::LAutoScroll,
         ("InterfaceLib", "LSearch") => PpcImportDispatcherTarget::LSearch,
         ("InterfaceLib", "FlushEvents") => PpcImportDispatcherTarget::FlushEvents,
+        ("InterfaceLib", "GetMainEventQueue") => PpcImportDispatcherTarget::GetMainEventQueue,
+        ("InterfaceLib", "FlushEventQueue") => PpcImportDispatcherTarget::FlushEventQueue,
         ("InterfaceLib", "SetEventMask") => PpcImportDispatcherTarget::SetEventMask,
         ("InterfaceLib", "CloseDialog") => PpcImportDispatcherTarget::CloseDialog,
         ("InterfaceLib", "DisposeDialog" | "DisposDialog") => {

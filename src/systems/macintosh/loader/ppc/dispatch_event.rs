@@ -2,6 +2,10 @@
 
 use super::*;
 
+// EventQueueRef is an opaque Carbon handle. The HLE has one application event
+// queue, so this stable non-null token identifies that queue to guest calls.
+pub(super) const PPC_MAIN_EVENT_QUEUE_REF: u32 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcEventPollOperation {
     GetNextEvent,
@@ -420,6 +424,21 @@ pub(super) fn dispatch_event_import(
         tick_count,
     } = context;
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::GetMainEventQueue => {
+            // Carbon Event Manager Programming Guide (2005), "Posting Events":
+            // GetMainEventQueue returns the main application's EventQueueRef.
+            Some(PpcImportAction::Return(PPC_MAIN_EVENT_QUEUE_REF))
+        }
+        PpcImportDispatcherTarget::FlushEventQueue => {
+            // Carbon Event Manager: FlushEventQueue(inQueue) removes all
+            // pending events from the selected queue. This HLE has one main
+            // queue shared with classic Event Manager calls.
+            if cpu.gpr[3] != PPC_MAIN_EVENT_QUEUE_REF {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            event_queue.clear();
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
         PpcImportDispatcherTarget::FlushEvents => {
             // FlushEvents removes matching low-level events before the first
             // event selected by stopMask; non-low-level events remain queued.
