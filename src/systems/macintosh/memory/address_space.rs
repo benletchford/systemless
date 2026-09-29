@@ -1738,6 +1738,69 @@ impl GuestAddressSpace {
     }
 
     /// Copy `src` into a fully mapped, writable range.
+    /// Whether `len` bytes at `addr` are either one ordinary writable region
+    /// span or wholly within writable shared mappings: the ranges
+    /// `write_bytes_unpresented` stores. Changes nothing.
+    fn plain_writable(&mut self, addr: u32, len: usize) -> bool {
+        let Some(end) = range_end(addr, len) else {
+            return false;
+        };
+        if !self.state().overlaps_shared(u64::from(addr), end) {
+            return self.route(addr, len, None) == GuestMemoryRoute::Sparse
+                && self.state_mut().regions.writable_span(addr, len).is_some();
+        }
+        for_each_shared_run(self.state(), addr, len, |mapping, _, _, _| mapping.writable.then_some(()))
+            .is_some()
+    }
+
+    /// Store a range `plain_writable` admits without telling the
+    /// presentation, whose caller updates it for the same bytes; writable
+    /// code tokens are still retired.
+    fn write_bytes_unpresented(&mut self, addr: u32, src: &[u8]) -> Option<()> {
+        let end = range_end(addr, src.len())?;
+        let state = self.state_mut();
+        if !state.overlaps_shared(u64::from(addr), end) {
+            state.regions.write_bytes(addr, src)?;
+        } else {
+            for_each_shared_run(state, addr, src.len(), |mapping, offset, consumed, span| {
+                // SAFETY: see `read_shared_bytes`; `plain_writable` proved
+                // every span of this range writable.
+                unsafe { mapping.region.write_from(offset, &src[consumed..consumed + span]) }
+            })?;
+        }
+        let start = u64::from(addr);
+        if state.executed_pages.may_overlap(start, end) {
+            state.retire_code_tokens(start, end);
+        }
+        Some(())
+    }
+
+    /// CopyBits rows carrying retained text through the presentation's span
+    /// copy (see `MacMemoryBus::copy_detail_spans`), when every destination
+    /// row is plain writable memory. Returns false, having changed nothing,
+    /// otherwise.
+    pub(crate) fn copy_detail_rows(
+        &mut self,
+        rows: &[(u32, u32)],
+        pixels: &[u8],
+        row_len: usize,
+        palette: Option<&[u8; 256]>,
+    ) -> bool {
+        if rows.is_empty() || row_len == 0 {
+            return false;
+        }
+        if !rows.iter().all(|&(_, destination)| self.plain_writable(destination, row_len)) {
+            return false;
+        }
+        let spans: Vec<(u32, u32, usize)> =
+            rows.iter().map(|&(source, destination)| (source, destination, row_len)).collect();
+        let presentation = self.presentation();
+        presentation.copy_detail_spans(&spans, pixels, palette, |destination, row| {
+            self.write_bytes_unpresented(destination, row)
+                .expect("plain_writable proved the row writable");
+        })
+    }
+
     pub fn write_bytes(&mut self, addr: u32, src: &[u8]) -> Option<()> {
         if src.is_empty() {
             return Some(());

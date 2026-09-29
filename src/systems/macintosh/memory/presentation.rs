@@ -108,6 +108,118 @@ impl std::fmt::Debug for PresentationSlot {
     }
 }
 impl PresentationSlot {
+    /// The presentation half of a span copy (see
+    /// `MacMemoryBus::copy_detail_spans`): copy `spans` (source,
+    /// destination, length), whose source bytes are `pixels` laid end to
+    /// end, through `palette`, exactly as a per-pixel copy would. `store`
+    /// writes a destination span's bytes to guest memory; the caller has
+    /// proved every destination writable and that no diagnostic observes
+    /// individual stores. Declines, changing nothing, unless every span
+    /// qualifies for `can_copy_detail_row`.
+    pub(crate) fn copy_detail_spans(
+        &self,
+        spans: &[(u32, u32, usize)],
+        pixels: &[u8],
+        palette: Option<&[u8; 256]>,
+        mut store: impl FnMut(u32, &[u8]),
+    ) -> bool {
+        let total: usize = spans.iter().map(|&(_, _, len)| len).sum();
+        if spans.is_empty() || total != pixels.len() || spans.iter().any(|&(_, _, len)| len == 0) {
+            return false;
+        }
+        let Some(mut p) = self.as_mut() else {
+            return false;
+        };
+        if !spans
+            .iter()
+            .all(|&(source, destination, len)| p.can_copy_detail_row(source, destination, len))
+        {
+            return false;
+        }
+        let mut copied = std::mem::take(&mut p.copied);
+        p.capture_copied_detail(
+            spans.iter().map(|&(source, _, len)| (source, len)),
+            palette,
+            &mut copied,
+        );
+        p.paste_copied_spans(
+            spans
+                .iter()
+                .map(|&(_, destination, len)| (destination, len)),
+            pixels,
+            palette,
+            &mut copied,
+            &mut store,
+        );
+        p.copied = copied;
+        true
+    }
+
+    /// `copy_detail_spans` from a saved snapshot instead of live memory:
+    /// copy the snapshot's `spans` (destination, offset in `saved`, length)
+    /// exactly as `copy_saved_pixel` through `palette` would per pixel, in
+    /// order.
+    pub(crate) fn copy_saved_spans(
+        &self,
+        spans: &[(u32, usize, usize)],
+        saved: &SavedPixels,
+        palette: Option<&[u8; 256]>,
+        mut store: impl FnMut(u32, &[u8]),
+    ) -> bool {
+        if spans.is_empty()
+            || spans
+                .iter()
+                .any(|&(_, offset, len)| len == 0 || offset + len > saved.len())
+        {
+            return false;
+        }
+        let Some(mut p) = self.as_mut() else {
+            return false;
+        };
+        if !spans
+            .iter()
+            .all(|&(destination, _, len)| p.can_paste_copied_row(destination, len))
+        {
+            return false;
+        }
+        let mut copied = std::mem::take(&mut p.copied);
+        copied.capture_saved(
+            spans.iter().map(|&(_, offset, len)| (offset, len)),
+            saved,
+            palette,
+        );
+        let mut first = 0;
+        let fits = spans.iter().all(|&(destination, _, len)| {
+            let from = copied
+                .cells
+                .partition_point(|cell| (cell.offset as usize) < first);
+            let to = copied
+                .cells
+                .partition_point(|cell| (cell.offset as usize) < first + len);
+            first += len;
+            p.copied_cells_fit(destination, len, &copied.cells[from..to])
+        });
+        if fits {
+            let mut values = Vec::with_capacity(first);
+            for &(_, offset, len) in spans {
+                values.extend_from_slice(&saved[offset..offset + len]);
+            }
+            p.paste_copied_spans(
+                spans
+                    .iter()
+                    .map(|&(destination, _, len)| (destination, len)),
+                &values,
+                palette,
+                &mut copied,
+                &mut store,
+            );
+        }
+        copied.cells.clear();
+        copied.inks.clear();
+        p.copied = copied;
+        fits
+    }
+
     pub fn as_ref(&self) -> Option<std::cell::Ref<'_, Presentation>> {
         std::cell::Ref::filter_map(self.0.borrow(), |p| p.as_ref()).ok()
     }
@@ -2100,6 +2212,50 @@ impl Presentation {
     /// `inks`) takes that cell as `put_detail` would, leaving an identical
     /// destination untouched; any other byte is a plain store, as `write`
     /// would make it. The cells' ink is moved out of `inks`.
+    /// Store and paste each destination span of a copy in order: its bytes
+    /// (`pixels` laid end to end, mapped through `palette`) go to guest
+    /// memory through `store`, then its cells from `copied` are pasted.
+    /// Leaves `copied` empty.
+    fn paste_copied_spans(
+        &mut self,
+        spans: impl Iterator<Item = (u32, usize)>,
+        pixels: &[u8],
+        palette: Option<&[u8; 256]>,
+        copied: &mut CopiedDetail,
+        store: &mut impl FnMut(u32, &[u8]),
+    ) {
+        let mut row = Vec::new();
+        let (mut first, mut next_cell, mut next_ink) = (0, 0, 0);
+        for (destination, len) in spans {
+            row.clear();
+            row.extend_from_slice(&pixels[first..first + len]);
+            if let Some(palette) = palette {
+                for pixel in &mut row {
+                    *pixel = palette[*pixel as usize];
+                }
+            }
+            store(destination, &row);
+            let end = (first + len) as u32;
+            let cell_end =
+                next_cell + copied.cells[next_cell..].partition_point(|cell| cell.offset < end);
+            let ink_end = next_ink
+                + copied.cells[next_cell..cell_end]
+                    .iter()
+                    .map(|cell| usize::from(cell.inks))
+                    .sum::<usize>();
+            self.paste_copied_row(
+                destination,
+                &row,
+                first,
+                &copied.cells[next_cell..cell_end],
+                &mut copied.inks[next_ink..ink_end],
+            );
+            (first, next_cell, next_ink) = (first + len, cell_end, ink_end);
+        }
+        copied.cells.clear();
+        copied.inks.clear();
+    }
+
     fn paste_copied_row(
         &mut self,
         destination: u32,
@@ -2550,50 +2706,6 @@ impl MacMemoryBus {
     /// Store `pixels` (laid end to end) through `palette` at each span
     /// (destination, length) and paste the spans' cells from `copied`, then
     /// hand the scratch back to the presentation.
-    fn paste_copied_spans(
-        &mut self,
-        spans: impl Iterator<Item = (u32, usize)>,
-        pixels: &[u8],
-        palette: Option<&[u8; 256]>,
-        mut copied: CopiedDetail,
-    ) {
-        let mut row = Vec::new();
-        let (mut first, mut next_cell, mut next_ink) = (0, 0, 0);
-        for (destination, len) in spans {
-            row.clear();
-            row.extend_from_slice(&pixels[first..first + len]);
-            if let Some(palette) = palette {
-                for pixel in &mut row {
-                    *pixel = palette[*pixel as usize];
-                }
-            }
-            self.write_presented_ram(destination, &row);
-            let end = (first + len) as u32;
-            let cell_end =
-                next_cell + copied.cells[next_cell..].partition_point(|cell| cell.offset < end);
-            let ink_end = next_ink
-                + copied.cells[next_cell..cell_end]
-                    .iter()
-                    .map(|cell| usize::from(cell.inks))
-                    .sum::<usize>();
-            if let Some(mut p) = self.presentation.as_mut() {
-                p.paste_copied_row(
-                    destination,
-                    &row,
-                    first,
-                    &copied.cells[next_cell..cell_end],
-                    &mut copied.inks[next_ink..ink_end],
-                );
-            }
-            (first, next_cell, next_ink) = (first + len, cell_end, ink_end);
-        }
-        copied.cells.clear();
-        copied.inks.clear();
-        if let Some(mut p) = self.presentation.as_mut() {
-            p.copied = copied;
-        }
-    }
-
     /// `copy_detail_spans` from a saved snapshot instead of live memory:
     /// copy the snapshot's `spans` (destination, offset in `saved`, length)
     /// exactly as `copy_saved_pixel` through `palette` would per pixel, in
@@ -2605,70 +2717,21 @@ impl MacMemoryBus {
         saved: &SavedPixels,
         palette: Option<&[u8; 256]>,
     ) -> bool {
-        if spans.is_empty()
-            || spans
-                .iter()
-                .any(|&(_, offset, len)| len == 0 || offset + len > saved.len())
-            || !self.presented_bytes_gates_open()
-        {
+        if spans.is_empty() || !self.presented_bytes_gates_open() {
             return false;
         }
-        let eligible = self.presentation.as_ref().is_some_and(|p| {
-            spans.iter().all(|&(destination, _, len)| {
-                self.range_translates_contiguously(destination, len) == Some(destination)
-                    && self.presented_bytes_writable(destination, len)
-                    && p.can_paste_copied_row(destination, len)
-            })
+        let eligible = spans.iter().all(|&(destination, _, len)| {
+            self.range_translates_contiguously(destination, len) == Some(destination)
+                && self.presented_bytes_writable(destination, len)
         });
         if !eligible {
             return false;
         }
-        let Some(mut copied) = self
-            .presentation
-            .as_mut()
-            .map(|mut p| std::mem::take(&mut p.copied))
-        else {
-            return false;
-        };
-        copied.capture_saved(
-            spans.iter().map(|&(_, offset, len)| (offset, len)),
-            saved,
-            palette,
-        );
-        let fits = self.presentation.as_ref().is_some_and(|p| {
-            let mut first = 0;
-            spans.iter().all(|&(destination, _, len)| {
-                let from = copied
-                    .cells
-                    .partition_point(|cell| (cell.offset as usize) < first);
-                let to = copied
-                    .cells
-                    .partition_point(|cell| (cell.offset as usize) < first + len);
-                first += len;
-                p.copied_cells_fit(destination, len, &copied.cells[from..to])
+        self.with_presentation_and_ram(|presentation, store| {
+            presentation.copy_saved_spans(spans, saved, palette, |destination, row| {
+                store(destination, row)
             })
-        });
-        if !fits {
-            copied.cells.clear();
-            copied.inks.clear();
-            if let Some(mut p) = self.presentation.as_mut() {
-                p.copied = copied;
-            }
-            return false;
-        }
-        let mut values = Vec::with_capacity(spans.iter().map(|span| span.2).sum());
-        for &(_, offset, len) in spans {
-            values.extend_from_slice(&saved[offset..offset + len]);
-        }
-        self.paste_copied_spans(
-            spans
-                .iter()
-                .map(|&(destination, _, len)| (destination, len)),
-            &values,
-            palette,
-            copied,
-        );
-        true
+        })
     }
 
     /// Copy `rows` (source, destination), `row_len` bytes each, whose source
@@ -2701,48 +2764,22 @@ impl MacMemoryBus {
         pixels: &[u8],
         palette: Option<&[u8; 256]>,
     ) -> bool {
-        let total: usize = spans.iter().map(|&(_, _, len)| len).sum();
-        if spans.is_empty()
-            || total != pixels.len()
-            || spans.iter().any(|&(_, _, len)| len == 0)
-            || !self.presented_bytes_gates_open()
-        {
+        if spans.is_empty() || !self.presented_bytes_gates_open() {
             return false;
         }
-        let eligible = self.presentation.as_ref().is_some_and(|p| {
-            spans.iter().all(|&(source, destination, len)| {
-                self.range_translates_contiguously(source, len) == Some(source)
-                    && self.range_translates_contiguously(destination, len) == Some(destination)
-                    && self.presented_bytes_writable(destination, len)
-                    && p.can_copy_detail_row(source, destination, len)
-            })
+        let eligible = spans.iter().all(|&(source, destination, len)| {
+            self.range_translates_contiguously(source, len) == Some(source)
+                && self.range_translates_contiguously(destination, len) == Some(destination)
+                && self.presented_bytes_writable(destination, len)
         });
         if !eligible {
             return false;
         }
-        let Some(mut copied) = self
-            .presentation
-            .as_mut()
-            .map(|mut p| std::mem::take(&mut p.copied))
-        else {
-            return false;
-        };
-        if let Some(p) = self.presentation.as_ref() {
-            p.capture_copied_detail(
-                spans.iter().map(|&(source, _, len)| (source, len)),
-                palette,
-                &mut copied,
-            );
-        }
-        self.paste_copied_spans(
-            spans
-                .iter()
-                .map(|&(_, destination, len)| (destination, len)),
-            pixels,
-            palette,
-            copied,
-        );
-        true
+        self.with_presentation_and_ram(|presentation, store| {
+            presentation.copy_detail_spans(spans, pixels, palette, |destination, row| {
+                store(destination, row)
+            })
+        })
     }
 
     pub(crate) fn write_plain_copy_span(
@@ -4834,6 +4871,94 @@ mod tests {
                 assert_eq!(
                     moved.outline_presentation_rgb(),
                     bytes.outline_presentation_rgb(),
+                    "{context}: rendered"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn powerpc_rows_copy_like_the_per_pixel_copy() {
+        use crate::copy_bits::CopyBitsMemory;
+        use crate::memory::GuestAddressSpace;
+        let inverted: [u8; 256] = std::array::from_fn(|i| (255 - i) as u8);
+        let (row_len, rows) = (6usize, 3u32);
+        // (source row, destination row): offscreen to screen, and a screen
+        // scroll that overlaps itself.
+        type Row = fn(u32) -> u32;
+        let cases: [(&str, Row, Row); 2] = [
+            (
+                "offscreen to screen",
+                |r| 0x3_0000 + r * 10,
+                |r| 0x1000 + (2 + r) * 10 + 1,
+            ),
+            (
+                "screen up (overlap)",
+                |r| 0x1000 + (1 + r) * 10,
+                |r| 0x1000 + r * 10,
+            ),
+        ];
+        for (name, source, destination) in cases {
+            for palette in [None, Some(&inverted)] {
+                let setup = || {
+                    let mut bus = padded_bus(10, 8, 6, 2);
+                    for row in 0..rows {
+                        paint_detail(&mut bus, source(row) + 1);
+                        paint_detail(&mut bus, source(row) + 4 - row);
+                    }
+                    paint_detail(&mut bus, destination(0) + 3);
+                    // The PowerPC memory holds the bytes the text was drawn on,
+                    // as it would had the program drawn it there.
+                    let mut memory = GuestAddressSpace::new();
+                    memory.add_region(0x1000, bus.read_bytes(0x1000, 60));
+                    memory.add_region(0x3_0000, bus.read_bytes(0x3_0000, 60));
+                    memory
+                        .shared_view()
+                        .set_presentation(bus.presentation.clone());
+                    (bus, memory)
+                };
+                let context = format!("{name}, palette {}", palette.is_some());
+                let (direct_bus, mut direct) = setup();
+                let (oracle_bus, mut oracle) = setup();
+                let pairs: Vec<(u32, u32)> = (0..rows)
+                    .map(|row| (source(row), destination(row)))
+                    .collect();
+                let mut pixels = vec![0u8; row_len * rows as usize];
+                for (row, &(from, _)) in pairs.iter().enumerate() {
+                    direct
+                        .read_copy_row(from, &mut pixels[row * row_len..][..row_len])
+                        .unwrap();
+                }
+                assert!(
+                    direct.copy_rows_with_detail(&pairs, &pixels, row_len, palette),
+                    "{context}: applies"
+                );
+                // The PowerPC fallback: capture every row, then write each.
+                let mut saved: SavedPixels = pixels.clone().into();
+                for (row, &(from, _)) in pairs.iter().enumerate() {
+                    oracle.capture_copy_detail(from, &mut saved, row * row_len, row_len);
+                }
+                for (row, &(_, to)) in pairs.iter().enumerate() {
+                    oracle
+                        .write_copy_pixels(to, &saved, row * row_len, row_len, palette)
+                        .expect("writable");
+                }
+                for base in [0x1000u32, 0x3_0000] {
+                    let (mut a, mut b) = (vec![0u8; 60], vec![0u8; 60]);
+                    direct.read_bytes_into(base, &mut a).unwrap();
+                    oracle.read_bytes_into(base, &mut b).unwrap();
+                    assert_eq!(a, b, "{context}: memory {base:#x}");
+                    for row in 0..6 {
+                        assert_eq!(
+                            direct_bus.save_pixel_bytes(base + row * 10, 10).detail,
+                            oracle_bus.save_pixel_bytes(base + row * 10, 10).detail,
+                            "{context}: detail {base:#x} row {row}"
+                        );
+                    }
+                }
+                assert_eq!(
+                    direct_bus.outline_presentation_rgb(),
+                    oracle_bus.outline_presentation_rgb(),
                     "{context}: rendered"
                 );
             }
