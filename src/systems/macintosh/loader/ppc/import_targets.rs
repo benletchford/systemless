@@ -2851,15 +2851,30 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SetWRefCon") => PpcImportDispatcherTarget::SetWRefCon,
         ("InterfaceLib", "SizeWindow") => PpcImportDispatcherTarget::SizeWindow,
         ("InterfaceLib", "MoveWindow") => PpcImportDispatcherTarget::MoveWindow,
-        ("InterfaceLib", "ShowWindow") => PpcImportDispatcherTarget::ShowWindow,
-        ("InterfaceLib", "HideWindow") => PpcImportDispatcherTarget::HideWindow,
-        ("InterfaceLib", "ShowHide") => PpcImportDispatcherTarget::ShowHide,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ShowWindow" | "showwindow",
+        ) => PpcImportDispatcherTarget::ShowWindow,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "HideWindow" | "hidewindow",
+        ) => PpcImportDispatcherTarget::HideWindow,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ShowHide" | "showhide",
+        ) => PpcImportDispatcherTarget::ShowHide,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "CloseWindow" | "closewindow",
         ) => PpcImportDispatcherTarget::CloseWindow,
-        ("InterfaceLib", "SelectWindow") => PpcImportDispatcherTarget::SelectWindow,
-        ("InterfaceLib", "FrontWindow") => PpcImportDispatcherTarget::FrontWindow,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SelectWindow" | "selectwindow",
+        ) => PpcImportDispatcherTarget::SelectWindow,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "FrontWindow" | "frontwindow",
+        ) => PpcImportDispatcherTarget::FrontWindow,
         ("InterfaceLib", "SetWinColor") => PpcImportDispatcherTarget::SetWinColor,
         ("InterfaceLib", "PaintOne") => PpcImportDispatcherTarget::PaintOne,
         ("InterfaceLib", "PaintBehind") => PpcImportDispatcherTarget::PaintBehind,
@@ -3931,7 +3946,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "TrackControl") => {
             PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TrackControl)
         }
-        ("InterfaceLib", "BringToFront") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "BringToFront" | "bringtofront",
+        ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::BringToFront)
         }
         ("InterfaceLib", "CalcVis") => PpcImportDispatcherTarget::LegacyWindow(
@@ -3967,7 +3985,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GrowWindow") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GrowWindow)
         }
-        ("InterfaceLib", "HiliteWindow") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "HiliteWindow" | "hilitewindow" | "HighlightWindow" | "highlightwindow",
+        ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::HighlightWindow)
         }
         (
@@ -3979,7 +4000,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "RepositionWindow") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RepositionWindow)
         }
-        ("InterfaceLib", "SendBehind") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SendBehind" | "sendbehind",
+        ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SendBehind)
         }
         ("InterfaceLib", "SetWTitle") => {
