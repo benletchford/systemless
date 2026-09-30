@@ -1519,42 +1519,57 @@ fn import_bindings_classify_dialog_imports() {
         dispatcher_target_for_import("CarbonLib", "AutoSizeDialog"),
         PpcImportDispatcherTarget::AutoSizeDialog
     );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "StdFilterProc"),
-        PpcImportDispatcherTarget::StdFilterProc
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "GetStdFilterProc"),
-        PpcImportDispatcherTarget::GetStdFilterProc
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "GetAlertStage"),
-        PpcImportDispatcherTarget::GetAlertStage
-    );
-    assert_eq!(
-        dispatcher_target_for_import("DialogsLib", "GetAlertStage"),
-        PpcImportDispatcherTarget::GetAlertStage
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "SetDialogFont"),
-        PpcImportDispatcherTarget::SetDialogFont
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "SetDAFont"),
-        PpcImportDispatcherTarget::SetDialogFont
-    );
-    assert_eq!(
-        dispatcher_target_for_import("DialogsLib", "SetDialogFont"),
-        PpcImportDispatcherTarget::SetDialogFont
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "InitDialogs"),
-        PpcImportDispatcherTarget::InitDialogs
-    );
-    assert_eq!(
-        dispatcher_target_for_import("DialogsLib", "InitDialogs"),
-        PpcImportDispatcherTarget::InitDialogs
-    );
+    for (lib, symbol, expected_target) in [
+        ("InterfaceLib", "CouldDialog", PpcImportDispatcherTarget::CouldDialog),
+        ("AppearanceLib", "CouldDialog", PpcImportDispatcherTarget::CouldDialog),
+        ("DialogsLib", "CouldDialog", PpcImportDispatcherTarget::CouldDialog),
+        ("CarbonLib", "CouldDialog", PpcImportDispatcherTarget::CouldDialog),
+        ("InterfaceLib", "FreeDialog", PpcImportDispatcherTarget::FreeDialog),
+        ("AppearanceLib", "FreeDialog", PpcImportDispatcherTarget::FreeDialog),
+        ("DialogsLib", "FreeDialog", PpcImportDispatcherTarget::FreeDialog),
+        ("CarbonLib", "FreeDialog", PpcImportDispatcherTarget::FreeDialog),
+        ("InterfaceLib", "CouldAlert", PpcImportDispatcherTarget::CouldAlert),
+        ("AppearanceLib", "CouldAlert", PpcImportDispatcherTarget::CouldAlert),
+        ("DialogsLib", "CouldAlert", PpcImportDispatcherTarget::CouldAlert),
+        ("CarbonLib", "CouldAlert", PpcImportDispatcherTarget::CouldAlert),
+        ("InterfaceLib", "FreeAlert", PpcImportDispatcherTarget::FreeAlert),
+        ("AppearanceLib", "FreeAlert", PpcImportDispatcherTarget::FreeAlert),
+        ("DialogsLib", "FreeAlert", PpcImportDispatcherTarget::FreeAlert),
+        ("CarbonLib", "FreeAlert", PpcImportDispatcherTarget::FreeAlert),
+        ("InterfaceLib", "ErrorSound", PpcImportDispatcherTarget::ErrorSound),
+        ("AppearanceLib", "ErrorSound", PpcImportDispatcherTarget::ErrorSound),
+        ("DialogsLib", "ErrorSound", PpcImportDispatcherTarget::ErrorSound),
+        ("CarbonLib", "ErrorSound", PpcImportDispatcherTarget::ErrorSound),
+        ("InterfaceLib", "StdFilterProc", PpcImportDispatcherTarget::StdFilterProc),
+        ("AppearanceLib", "StdFilterProc", PpcImportDispatcherTarget::StdFilterProc),
+        ("DialogsLib", "StdFilterProc", PpcImportDispatcherTarget::StdFilterProc),
+        ("CarbonLib", "StdFilterProc", PpcImportDispatcherTarget::StdFilterProc),
+        ("InterfaceLib", "GetStdFilterProc", PpcImportDispatcherTarget::GetStdFilterProc),
+        ("AppearanceLib", "GetStdFilterProc", PpcImportDispatcherTarget::GetStdFilterProc),
+        ("DialogsLib", "GetStdFilterProc", PpcImportDispatcherTarget::GetStdFilterProc),
+        ("CarbonLib", "GetStdFilterProc", PpcImportDispatcherTarget::GetStdFilterProc),
+        ("InterfaceLib", "InitDialogs", PpcImportDispatcherTarget::InitDialogs),
+        ("AppearanceLib", "InitDialogs", PpcImportDispatcherTarget::InitDialogs),
+        ("DialogsLib", "InitDialogs", PpcImportDispatcherTarget::InitDialogs),
+        ("CarbonLib", "InitDialogs", PpcImportDispatcherTarget::InitDialogs),
+        ("InterfaceLib", "GetAlertStage", PpcImportDispatcherTarget::GetAlertStage),
+        ("AppearanceLib", "GetAlertStage", PpcImportDispatcherTarget::GetAlertStage),
+        ("DialogsLib", "GetAlertStage", PpcImportDispatcherTarget::GetAlertStage),
+        ("CarbonLib", "GetAlertStage", PpcImportDispatcherTarget::GetAlertStage),
+        ("InterfaceLib", "SetDialogFont", PpcImportDispatcherTarget::SetDialogFont),
+        ("AppearanceLib", "SetDialogFont", PpcImportDispatcherTarget::SetDialogFont),
+        ("DialogsLib", "SetDialogFont", PpcImportDispatcherTarget::SetDialogFont),
+        ("CarbonLib", "SetDialogFont", PpcImportDispatcherTarget::SetDialogFont),
+        ("InterfaceLib", "SetDAFont", PpcImportDispatcherTarget::SetDialogFont),
+        ("AppearanceLib", "SetDAFont", PpcImportDispatcherTarget::SetDialogFont),
+        ("DialogsLib", "SetDAFont", PpcImportDispatcherTarget::SetDialogFont),
+        ("CarbonLib", "SetDAFont", PpcImportDispatcherTarget::SetDialogFont),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import(lib, symbol),
+            expected_target,
+        );
+    }
     for (lib, symbol, expected_target) in [
         ("InterfaceLib", "DrawDialog", PpcImportDispatcherTarget::DrawDialog),
         ("AppearanceLib", "DrawDialog", PpcImportDispatcherTarget::DrawDialog),
@@ -4671,6 +4686,100 @@ fn dialog_creation_commands_dispatch_with_canonical_evaluation() {
         (b"CarbonLib".as_slice(), b"NewCDialog".as_slice()),
         (b"DialogsLib".as_slice(), b"NewFeaturesDialog".as_slice()),
         (b"CarbonLib".as_slice(), b"NewFeaturesDialog".as_slice()),
+    ] {
+        let pef = synthetic_pef_with_library_import(lib, symbol);
+        let mut loaded_app = load_pef_application(&pef).unwrap();
+        loaded_app.cpu.gpr[3] = 0;
+        let probe = loaded_app.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+    }
+}
+
+#[test]
+fn dialog_preloading_filter_sound_and_init_commands_dispatch_with_canonical_evaluation() {
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"InitDialogs");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 128]);
+
+    // 1. CouldDialog and FreeDialog
+    loaded.cpu.gpr[3] = 128;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CouldDialog);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FreeDialog);
+
+    // 2. CouldAlert and FreeAlert
+    loaded.cpu.gpr[3] = 128;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CouldAlert);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FreeAlert);
+
+    // 3. ErrorSound:
+    // 3a. Set sound procedure pointer
+    loaded.cpu.gpr[3] = 0x1122_3344;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ErrorSound);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(crate::memory::globals::addr::DA_BEEPER),
+        Some(0x1122_3344)
+    );
+
+    // 3b. Set sound procedure pointer to 0 (silent)
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ErrorSound);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(crate::memory::globals::addr::DA_BEEPER),
+        Some(0)
+    );
+
+    // 4. GetStdFilterProc:
+    loaded.cpu.gpr[3] = scratch;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetStdFilterProc);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(
+        loaded.memory.read_u32_be(scratch),
+        Some(PPC_STD_FILTER_TVECTOR)
+    );
+
+    // 5. StdFilterProc:
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::StdFilterProc);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 6. InitDialogs:
+    use crate::memory::globals::addr;
+    loaded.memory.write_u32_be(addr::RESUME_PROC, 0xDEAD_BEEF).unwrap();
+    loaded.memory.write_u32_be(addr::DA_BEEPER, 0x00AA_BBCC).unwrap();
+    loaded.memory.write_u16_be(addr::ALERT_STAGE, 3).unwrap();
+    loaded.memory.write_u16_be(addr::DLG_FONT, 5).unwrap();
+    loaded.cpu.gpr[3] = 0x5566_7788;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InitDialogs);
+    assert_eq!(loaded.memory.read_u32_be(addr::RESUME_PROC), Some(0x5566_7788));
+    assert_eq!(loaded.memory.read_u32_be(addr::DA_BEEPER), Some(0));
+    assert_eq!(
+        loaded.memory.read_u16_be(addr::ALERT_STAGE),
+        Some(crate::dialog_manager::INITIAL_ALERT_STAGE)
+    );
+    assert_eq!(loaded.memory.read_u16_be(addr::DLG_FONT), Some(0));
+
+    // 7. Verify PEF execution using DialogsLib and CarbonLib
+    for (lib, symbol) in [
+        (b"DialogsLib".as_slice(), b"CouldDialog".as_slice()),
+        (b"CarbonLib".as_slice(), b"CouldDialog".as_slice()),
+        (b"DialogsLib".as_slice(), b"FreeDialog".as_slice()),
+        (b"CarbonLib".as_slice(), b"FreeDialog".as_slice()),
+        (b"DialogsLib".as_slice(), b"CouldAlert".as_slice()),
+        (b"CarbonLib".as_slice(), b"CouldAlert".as_slice()),
+        (b"DialogsLib".as_slice(), b"FreeAlert".as_slice()),
+        (b"CarbonLib".as_slice(), b"FreeAlert".as_slice()),
+        (b"DialogsLib".as_slice(), b"ErrorSound".as_slice()),
+        (b"CarbonLib".as_slice(), b"ErrorSound".as_slice()),
+        (b"DialogsLib".as_slice(), b"StdFilterProc".as_slice()),
+        (b"CarbonLib".as_slice(), b"StdFilterProc".as_slice()),
+        (b"DialogsLib".as_slice(), b"GetStdFilterProc".as_slice()),
+        (b"CarbonLib".as_slice(), b"GetStdFilterProc".as_slice()),
+        (b"DialogsLib".as_slice(), b"InitDialogs".as_slice()),
+        (b"CarbonLib".as_slice(), b"InitDialogs".as_slice()),
     ] {
         let pef = synthetic_pef_with_library_import(lib, symbol);
         let mut loaded_app = load_pef_application(&pef).unwrap();

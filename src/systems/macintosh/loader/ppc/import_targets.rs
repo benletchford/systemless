@@ -2590,7 +2590,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LMSetMenuFlash") | ("InterfaceLib", "SetMenuFlash") => {
             PpcImportDispatcherTarget::SetMenuFlash
         }
-        ("InterfaceLib", "ErrorSound") => PpcImportDispatcherTarget::ErrorSound,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "ErrorSound",
+        ) => PpcImportDispatcherTarget::ErrorSound,
         ("InterfaceLib", "ClearMenuBar") => PpcImportDispatcherTarget::ClearMenuBar,
         ("InterfaceLib", "SetMenuBar") => PpcImportDispatcherTarget::SetMenuBar,
         ("InterfaceLib", "GetMenuHandle") => PpcImportDispatcherTarget::GetMenuHandle,
@@ -3054,17 +3057,40 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "AutoSizeDialog") => {
             PpcImportDispatcherTarget::AutoSizeDialog
         }
-        ("InterfaceLib", "CouldDialog") => PpcImportDispatcherTarget::CouldDialog,
-        ("InterfaceLib", "FreeDialog") => PpcImportDispatcherTarget::FreeDialog,
-        ("InterfaceLib", "CouldAlert") => PpcImportDispatcherTarget::CouldAlert,
-        ("InterfaceLib", "FreeAlert") => PpcImportDispatcherTarget::FreeAlert,
-        ("InterfaceLib", "StdFilterProc") => PpcImportDispatcherTarget::StdFilterProc,
-        ("InterfaceLib", "GetStdFilterProc") => PpcImportDispatcherTarget::GetStdFilterProc,
-        ("InterfaceLib" | "DialogsLib" | "CarbonLib", "GetAlertStage") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "CouldDialog",
+        ) => PpcImportDispatcherTarget::CouldDialog,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "FreeDialog",
+        ) => PpcImportDispatcherTarget::FreeDialog,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "CouldAlert",
+        ) => PpcImportDispatcherTarget::CouldAlert,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "FreeAlert",
+        ) => PpcImportDispatcherTarget::FreeAlert,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "StdFilterProc",
+        ) => PpcImportDispatcherTarget::StdFilterProc,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetStdFilterProc",
+        ) => PpcImportDispatcherTarget::GetStdFilterProc,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetAlertStage",
+        ) => {
             PpcImportDispatcherTarget::GetAlertStage
         }
-        ("InterfaceLib" | "DialogsLib" | "CarbonLib", "SetDialogFont")
-        | ("InterfaceLib" | "DialogsLib" | "CarbonLib", "SetDAFont") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "SetDialogFont" | "SetDAFont",
+        ) => {
             PpcImportDispatcherTarget::SetDialogFont
         }
         ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "GetDialogPort") => {
@@ -3178,7 +3204,10 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "SelectDialogItemText" | "SelIText" | "selectdialogitemtext" | "selitext",
         ) => PpcImportDispatcherTarget::SelectDialogItemText,
-        ("InterfaceLib" | "DialogsLib", "InitDialogs") => PpcImportDispatcherTarget::InitDialogs,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "InitDialogs",
+        ) => PpcImportDispatcherTarget::InitDialogs,
         ("InterfaceLib", "SystemTask") => PpcImportDispatcherTarget::SystemTask,
         ("InterfaceLib", "SystemClick") => PpcImportDispatcherTarget::SystemClick,
         ("InterfaceLib", "OpenDeskAcc") => PpcImportDispatcherTarget::OpenDeskAcc,
