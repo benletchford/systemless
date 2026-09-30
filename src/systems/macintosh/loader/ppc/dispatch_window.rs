@@ -843,8 +843,10 @@ pub(super) fn dispatch_window_import(
             };
             // Apple Game Sprockets Guide, DrawSprocket (1996), p. 2-14:
             // an active context's blanking window covers the entire display.
-            let (part, window) = if fullscreen_context_active && in_screen {
-                (3, draw_sprocket.blanking_window.unwrap_or(0))
+            let (part, window) = if in_screen && draw_sprocket.blanking_window.is_some() {
+                (3, draw_sprocket.blanking_window.unwrap())
+            } else if fullscreen_context_active && in_screen && part == 0 {
+                (3, 0)
             } else {
                 (part, window)
             };
