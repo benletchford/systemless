@@ -2587,7 +2587,10 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "CalcMenuSize" | "calcmenusize",
         ) => PpcImportDispatcherTarget::CalcMenuSize,
-        ("InterfaceLib", "PopUpMenuSelect") => PpcImportDispatcherTarget::PopUpMenuSelect,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "PopUpMenuSelect" | "popupmenuselect",
+        ) => PpcImportDispatcherTarget::PopUpMenuSelect,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "InsertMenu" | "insertmenu",
@@ -2753,10 +2756,22 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GlobalToLocal") => PpcImportDispatcherTarget::GlobalToLocal,
         ("InterfaceLib", "AddPt") => PpcImportDispatcherTarget::AddPt,
         ("InterfaceLib", "SubPt") => PpcImportDispatcherTarget::SubPt,
-        ("InterfaceLib", "MenuKey") => PpcImportDispatcherTarget::MenuKey,
-        ("AppearanceLib" | "InterfaceLib", "MenuEvent") => PpcImportDispatcherTarget::MenuEvent,
-        ("InterfaceLib", "MenuChoice") => PpcImportDispatcherTarget::MenuChoice,
-        ("InterfaceLib", "MenuSelect") => PpcImportDispatcherTarget::MenuSelect,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "MenuKey" | "menukey",
+        ) => PpcImportDispatcherTarget::MenuKey,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "MenuEvent" | "menuevent",
+        ) => PpcImportDispatcherTarget::MenuEvent,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "MenuChoice" | "menuchoice",
+        ) => PpcImportDispatcherTarget::MenuChoice,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "MenuSelect" | "menuselect",
+        ) => PpcImportDispatcherTarget::MenuSelect,
         ("InterfaceLib", "MoveTo") => PpcImportDispatcherTarget::MoveTo,
         ("InterfaceLib", "Move") => PpcImportDispatcherTarget::Move,
         ("InterfaceLib", "LineTo") => PpcImportDispatcherTarget::LineTo,

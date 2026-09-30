@@ -9471,3 +9471,165 @@ fn menu_item_attributes_commands_dispatch_with_canonical_evaluation() {
         }
     }
 }
+
+#[test]
+fn import_bindings_classify_menu_selection_and_tracking_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // MenuSelect / menuselect
+        assert_eq!(
+            dispatcher_target_for_import(lib, "MenuSelect"),
+            PpcImportDispatcherTarget::MenuSelect
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "menuselect"),
+            PpcImportDispatcherTarget::MenuSelect
+        );
+
+        // MenuKey / menukey
+        assert_eq!(
+            dispatcher_target_for_import(lib, "MenuKey"),
+            PpcImportDispatcherTarget::MenuKey
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "menukey"),
+            PpcImportDispatcherTarget::MenuKey
+        );
+
+        // MenuEvent / menuevent
+        assert_eq!(
+            dispatcher_target_for_import(lib, "MenuEvent"),
+            PpcImportDispatcherTarget::MenuEvent
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "menuevent"),
+            PpcImportDispatcherTarget::MenuEvent
+        );
+
+        // MenuChoice / menuchoice
+        assert_eq!(
+            dispatcher_target_for_import(lib, "MenuChoice"),
+            PpcImportDispatcherTarget::MenuChoice
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "menuchoice"),
+            PpcImportDispatcherTarget::MenuChoice
+        );
+
+        // PopUpMenuSelect / popupmenuselect
+        assert_eq!(
+            dispatcher_target_for_import(lib, "PopUpMenuSelect"),
+            PpcImportDispatcherTarget::PopUpMenuSelect
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "popupmenuselect"),
+            PpcImportDispatcherTarget::PopUpMenuSelect
+        );
+    }
+}
+
+#[test]
+fn menu_selection_and_tracking_commands_dispatch_with_canonical_evaluation() {
+    for lib in [
+        b"InterfaceLib".as_slice(),
+        b"AppearanceLib".as_slice(),
+        b"CarbonLib".as_slice(),
+    ] {
+        // 1. MenuChoice
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"MenuChoice");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let test_val = (199u32 << 16) | 7;
+            loaded
+                .memory
+                .write_u32_be(crate::memory::globals::addr::MENU_DISABLE, test_val)
+                .unwrap();
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], test_val);
+        }
+
+        // 2. MenuKey
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"MenuKey");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            install_test_menu(&mut loaded, 0x60000, 201, b"File", b"Open/O");
+            loaded.cpu.gpr[3] = u32::from(b'o');
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], (201 << 16) | 1);
+            assert_eq!(
+                loaded.memory.read_u16_be(PPC_THE_MENU_ADDR),
+                Some(201)
+            );
+        }
+
+        // 3. MenuEvent
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"MenuEvent");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            install_test_menu(&mut loaded, 0x60000, 202, b"File", b"Save/S");
+            let event = 0x61000;
+            loaded.memory.add_region(event, vec![0; 16]);
+            // what = 3 (keyDown)
+            loaded.memory.write_u16_be(event, 3).unwrap();
+            // message = 's'
+            loaded.memory.write_u32_be(event + 2, u32::from(b's')).unwrap();
+            // modifiers = 0x0100 (cmdKey)
+            loaded.memory.write_u16_be(event + 14, 0x0100).unwrap();
+            loaded.cpu.gpr[3] = event;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], (202 << 16) | 1);
+
+            // Without cmdKey, returns 0
+            loaded.memory.write_u16_be(event + 14, 0).unwrap();
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = event;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+
+        // 4. MenuSelect
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"MenuSelect");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            install_test_menu(&mut loaded, 0x60000, 203, b"File", b"Item1;Item2");
+            loaded
+                .toolbox_startup
+                .pending_native_menu_selection
+                .stage((203, 2));
+            loaded.cpu.gpr[3] = (10 << 16) | 100; // Point(10, 100)
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], (203 << 16) | 2);
+            assert_eq!(
+                loaded.memory.read_u16_be(PPC_THE_MENU_ADDR),
+                Some(203)
+            );
+        }
+
+        // 5. PopUpMenuSelect
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"PopUpMenuSelect");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let popup_menu =
+                install_test_popup_menu(&mut loaded, 0x60000, 204, b"Options", b"Choice");
+            loaded.cpu.gpr[3] = popup_menu;
+            loaded.cpu.gpr[4] = 50;
+            loaded.cpu.gpr[5] = 50;
+            loaded.cpu.gpr[6] = 0;
+            // Without mouse pressed, PopUpMenuSelect returns 0
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+    }
+}
