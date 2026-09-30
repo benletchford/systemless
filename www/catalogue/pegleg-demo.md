@@ -88,4 +88,5 @@ references:
 ![PegLeg arcade playfield](https://assets.systemless.org/catalogue/media/sha256/88/88d8bb51048389470081b228e80908784defdd7e1156142f9e1e0da8e995c92d.png)
 
 Choose **New Game** on the title screen. Move the mouse to steer your ship
-through the arcade playfield.
+through the arcade playfield as enemies cross the screen. The status strip
+tracks your remaining ships, sector, score, and bonus.
