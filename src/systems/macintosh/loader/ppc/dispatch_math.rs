@@ -39,6 +39,10 @@ pub(super) fn dispatch_math_import(
             cpu.fpr[1] = value.round().to_bits();
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::MathRint => {
+            ppc_math_rint(cpu);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::MathAsin => {
             // Inside Macintosh: PowerPC Numerics (1994), pp. 10-34--10-35:
             // asin returns the arc sine in radians through the floating-point
@@ -214,6 +218,48 @@ pub(crate) fn ppc_math_ceil(cpu: &mut PpcCpu) {
         }
     } else {
         cpu.fpr[1] = f64::from_bits(bits).ceil().to_bits();
+    }
+}
+
+pub(crate) fn ppc_math_rint(cpu: &mut PpcCpu) {
+    // Inside Macintosh: PowerPC Numerics (1994), pp. 6-13--6-14:
+    // rint rounds in the current direction, defaults to ties-to-even, and
+    // raises inexact for finite nonintegral inputs. The PowerPC FPSCR RN
+    // field selects nearest, zero, +infinity, or -infinity in that order.
+    const EXPONENT_MASK: u64 = 0x7ff0_0000_0000_0000;
+    const FRACTION_MASK: u64 = 0x000f_ffff_ffff_ffff;
+    const QUIET_NAN_BIT: u64 = 0x0008_0000_0000_0000;
+    let bits = cpu.fpr[1];
+    let signaling_nan = bits & EXPONENT_MASK == EXPONENT_MASK
+        && bits & FRACTION_MASK != 0
+        && bits & QUIET_NAN_BIT == 0;
+    if signaling_nan {
+        cpu.fpr[1] = bits | QUIET_NAN_BIT;
+        cpu.set_fpscr_bit(0, true);
+        cpu.set_fpscr_bit(2, true);
+        cpu.set_fpscr_bit(7, true);
+        if cpu.fpscr_bit(24) {
+            cpu.set_fpscr_bit(1, true);
+        }
+        return;
+    }
+
+    let value = f64::from_bits(bits);
+    let rounded = match cpu.fpscr & 0x3 {
+        0 => value.round_ties_even(),
+        1 => value.trunc(),
+        2 => value.ceil(),
+        _ => value.floor(),
+    };
+    cpu.fpr[1] = rounded.to_bits();
+    let inexact = value.is_finite() && value != rounded;
+    cpu.set_fpscr_bit(14, inexact);
+    if inexact {
+        cpu.set_fpscr_bit(0, true);
+        cpu.set_fpscr_bit(6, true);
+        if cpu.fpscr_bit(28) {
+            cpu.set_fpscr_bit(1, true);
+        }
     }
 }
 
