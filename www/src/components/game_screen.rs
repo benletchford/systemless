@@ -1732,6 +1732,7 @@ mod tests {
         assert_eq!(super::map_key("[", "BracketLeft"), Some((0x21, b'[')));
         assert_eq!(super::map_key("]", "BracketRight"), Some((0x1E, b']')));
         assert_eq!(super::map_key("\\", "Backslash"), Some((0x2A, b'\\')));
+        assert_eq!(super::map_key("/", "Slash"), Some((0x2C, b'/')));
     }
 
     #[test]
@@ -4615,7 +4616,7 @@ fn map_key(key: &str, code: &str) -> Option<(u8, u8)> {
         k if k.len() == 1 => {
             let c = k.as_bytes()[0];
             if c.is_ascii_alphanumeric()
-                || matches!(c, b'.' | b',' | b'-' | b'=' | b'[' | b']' | b'\\')
+                || matches!(c, b'.' | b',' | b'-' | b'=' | b'[' | b']' | b'\\' | b'/')
             {
                 let lower = c.to_ascii_lowercase();
                 let mac = match lower {
@@ -4662,6 +4663,8 @@ fn map_key(key: &str, code: &str) -> Option<(u8, u8)> {
                     b'[' => 0x21,
                     b']' => 0x1E,
                     b'\\' => 0x2A,
+                    // Inside Macintosh: Text, Appendix C; HIToolbox Events.h kVK_ANSI_Slash.
+                    b'/' => 0x2C,
                     _ => return None,
                 };
                 Some((mac, c))
