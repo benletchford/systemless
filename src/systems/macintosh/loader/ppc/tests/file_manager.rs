@@ -1827,7 +1827,7 @@ fn pb_read_async_queues_completion_on_eof() {
         assert_eq!(loaded.memory.read_u32_be(spec_ptr + 2), Some(app_dir_id));
         assert_eq!(
             ppc_read_pstring_bytes(&mut loaded.memory, spec_ptr + 6).as_deref(),
-            Some(b":Gridz_ Data:".as_slice())
+            Some(b"Gridz_ Data".as_slice())
         );
     }
 
@@ -1925,6 +1925,73 @@ fn pb_read_async_queues_completion_on_eof() {
     }
 
     #[test]
+    fn hle_import_runner_resolves_missing_partial_leaf_to_its_existing_parent() {
+        let pef = synthetic_pef_with_import(b"FSMakeFSSpec");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let app_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
+        let player_dir_id = app_dir_id + 1;
+        let mut directories = initial_ppc_vfs_directories();
+        directories.push(PpcVfsDirectory {
+            dir_id: app_dir_id,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: "Game Folder".to_string(),
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: false,
+        });
+        directories.push(PpcVfsDirectory {
+            dir_id: player_dir_id,
+            parent_dir_id: app_dir_id,
+            path: "Game Folder/Player".to_string(),
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.seed_vfs_directories(directories, app_dir_id, player_dir_id + 1);
+        let scratch = PPC_HEAP_BASE;
+        loaded.memory.add_region(scratch, vec![0; 128]);
+        write_ppc_pstring(&mut loaded.memory, scratch, b":Player:New Save");
+        let spec_ptr = scratch + 32;
+        loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+        loaded.cpu.gpr[4] = app_dir_id;
+        loaded.cpu.gpr[5] = scratch;
+        loaded.cpu.gpr[6] = spec_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_FNF_ERR));
+        assert_eq!(loaded.memory.read_u32_be(spec_ptr + 2), Some(player_dir_id));
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, spec_ptr + 6).as_deref(),
+            Some(b"New Save".as_slice())
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_zeroes_fsspec_when_partial_parent_is_missing() {
+        let pef = synthetic_pef_with_import(b"FSMakeFSSpec");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE;
+        loaded.memory.add_region(scratch, vec![0xff; 128]);
+        write_ppc_pstring(&mut loaded.memory, scratch, b":Missing:New Save");
+        let spec_ptr = scratch + 32;
+        loaded.cpu.gpr[4] = PPC_ROOT_DIR_ID;
+        loaded.cpu.gpr[5] = scratch;
+        loaded.cpu.gpr[6] = spec_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_DIR_NF_ERR));
+        for offset in 0..PPC_FSSPEC_SIZE as u32 {
+            assert_eq!(loaded.memory.read_u8(spec_ptr + offset), Some(0));
+        }
+    }
+
+    #[test]
     fn hle_import_runner_makes_fsspec_and_reports_missing_parent() {
         let pef = synthetic_pef_with_import(b"FSMakeFSSpec");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -1942,8 +2009,8 @@ fn pb_read_async_queues_completion_on_eof() {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_DIR_NF_ERR));
-        assert_eq!(loaded.memory.read_u32_be(spec_ptr + 2), Some(999_999));
-        assert_eq!(loaded.memory.read_u8(spec_ptr + 6), Some(14));
+        assert_eq!(loaded.memory.read_u32_be(spec_ptr + 2), Some(0));
+        assert_eq!(loaded.memory.read_u8(spec_ptr + 6), Some(0));
     }
 
     #[test]
