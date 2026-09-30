@@ -58,6 +58,7 @@ artifacts:
     notes: >-
       Unchanged 6,271,214-byte StuffIt archive, SHA-256
       e8cfa21cb38fdacb70e5eeb53b13b3ef95204e0f6585b57596bb5548da568947.
+      The promoted public asset was fetched back and matched this hash.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -78,6 +79,7 @@ artifacts:
       640-by-478 direct Chrome capture of the active playfield, without website
       framing or Mac desktop. PNG SHA-256
       40d106b2074b466a45beb5961764137300e87420b577f83943652642b6e5ce40, 37,812 bytes.
+      The promoted public asset was fetched back and matched this hash.
 references:
 - https://classicmacdemos.com/astrorock
 - https://static.classicmacdemos.com/demos/astrorock/README.txt
