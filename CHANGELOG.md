@@ -1,5 +1,90 @@
 # Changelog
 
+## [0.71.0](https://github.com/benletchford/systemless/compare/v0.70.1...v0.71.0) (2026-09-30)
+
+
+### Features
+
+* **catalogue:** add Absolute Solitaire demo ([#3588](https://github.com/benletchford/systemless/issues/3588)) ([694fca1](https://github.com/benletchford/systemless/commit/694fca1270c8226db47b28b5b96950ee9d09dfb5))
+* **catalogue:** add Aqua Blooper Piper demo ([#3638](https://github.com/benletchford/systemless/issues/3638)) ([c1be01a](https://github.com/benletchford/systemless/commit/c1be01a13a6cec7726c942e191bbf3919288e0f2))
+* **catalogue:** add AstroRock demo ([#3614](https://github.com/benletchford/systemless/issues/3614)) ([afc57fd](https://github.com/benletchford/systemless/commit/afc57fd4dfde174c01e9925b0c94605a82befc54))
+* **catalogue:** add Checkers Deluxe demo ([#3642](https://github.com/benletchford/systemless/issues/3642)) ([3b3591a](https://github.com/benletchford/systemless/commit/3b3591ac272584b72e0e600452163d6fc5c2c892))
+* **catalogue:** add Diamonds 2.0 demo ([#3594](https://github.com/benletchford/systemless/issues/3594)) ([4a8505e](https://github.com/benletchford/systemless/commit/4a8505e2080a0bbfb807b13364f792abbfa3de56))
+* **catalogue:** add Eric’s Ultimate Solitaire sample ([#3635](https://github.com/benletchford/systemless/issues/3635)) ([c9df890](https://github.com/benletchford/systemless/commit/c9df8909267dfd10d9799fdf23ebf2793060fd70))
+* **catalogue:** add Fokker Triplane demo ([#3628](https://github.com/benletchford/systemless/issues/3628)) ([b08eb9c](https://github.com/benletchford/systemless/commit/b08eb9c2209f33e01877b7f8a428e6fbc8abefdd))
+* **catalogue:** add MacAttack demo ([#3632](https://github.com/benletchford/systemless/issues/3632)) ([79aa114](https://github.com/benletchford/systemless/commit/79aa1148f055a2255c76751a9eb0ab08a1a58bf9))
+* **catalogue:** add Shell Game demo ([#3623](https://github.com/benletchford/systemless/issues/3623)) ([703eeaa](https://github.com/benletchford/systemless/commit/703eeaa4c91a60fc15b1146a75441ff80370bd9a))
+* **catalogue:** add Spin Doctor demo ([#3646](https://github.com/benletchford/systemless/issues/3646)) ([3276b42](https://github.com/benletchford/systemless/commit/3276b42561c0294e447078f64be71e5492ddb5a0))
+* **catalogue:** add Step On It demo ([#3653](https://github.com/benletchford/systemless/issues/3653)) ([99c608a](https://github.com/benletchford/systemless/commit/99c608a364731e2bfe81f5368dc64f1db2540a3f))
+* **catalogue:** add Strategic Leap checkers demo ([#3578](https://github.com/benletchford/systemless/issues/3578)) ([0871d44](https://github.com/benletchford/systemless/commit/0871d440a1577412e18f64460e35eb942ce31918))
+* **catalogue:** add Super Mines demo ([#3624](https://github.com/benletchford/systemless/issues/3624)) ([23601d2](https://github.com/benletchford/systemless/commit/23601d26d4834e2692932ee224ef90dd2ac46bbf))
+* **catalogue:** add Triazzle demo ([#3649](https://github.com/benletchford/systemless/issues/3649)) ([f671836](https://github.com/benletchford/systemless/commit/f67183650e985f33177af68d5235645dc8cb3e11))
+* **catalogue:** enable Loony Labyrinth demo browser play ([#3564](https://github.com/benletchford/systemless/issues/3564)) ([03092b6](https://github.com/benletchford/systemless/commit/03092b611bfb0029a65bc2d1897324733602bd64))
+* **catalogue:** enable Oh No! More Lemmings browser play ([#3570](https://github.com/benletchford/systemless/issues/3570)) ([f7396d1](https://github.com/benletchford/systemless/commit/f7396d1cb7acc07ba257b7f4e0255de0302aa269))
+
+
+### Bug Fixes
+
+* bind Carbon event handler UPP construction ([#3461](https://github.com/benletchford/systemless/issues/3461)) ([a0c1b18](https://github.com/benletchford/systemless/commit/a0c1b18cbd32a167acfbcde3400dfa36eafba4c5))
+* bind PowerPC Carbon round import ([#3574](https://github.com/benletchford/systemless/issues/3574)) ([cb3e561](https://github.com/benletchford/systemless/commit/cb3e561fe2089fb64dc1ace469b1391f4f83dc0d))
+* bind PowerPC control callback UPPs ([#3568](https://github.com/benletchford/systemless/issues/3568)) ([ae03511](https://github.com/benletchford/systemless/commit/ae0351181780420cf73751418213a46fc2962f59))
+* bind PowerPC MathLib rint to FPSCR rounding ([#3602](https://github.com/benletchford/systemless/issues/3602)) ([6b57619](https://github.com/benletchford/systemless/commit/6b57619c84f406a415f38ae7535fbc43ee9ce2f4))
+* **macintosh:** prefer games over bundled document viewers ([#3621](https://github.com/benletchford/systemless/issues/3621)) ([b271c7b](https://github.com/benletchford/systemless/commit/b271c7b1516c366f4ad7633316b0a99cbc6b7a87))
+* **macintosh:** resume long PowerPC file completions ([#3643](https://github.com/benletchford/systemless/issues/3643)) ([f193cd7](https://github.com/benletchford/systemless/commit/f193cd7194e37232458e3e2b74bb917864d6dde5))
+* model DrawSprocket blanking window ownership ([#3629](https://github.com/benletchford/systemless/issues/3629)) ([94a9f18](https://github.com/benletchford/systemless/commit/94a9f188837db6cd31854064e612d5de31a2584a))
+* preserve contiguous PowerPC application partitions ([#3587](https://github.com/benletchford/systemless/issues/3587)) ([54c5124](https://github.com/benletchford/systemless/commit/54c51243c08a4411bccfa1e53ba62f60ac9dc5ab))
+* report configured RAM through Gestalt ([#3571](https://github.com/benletchford/systemless/issues/3571)) ([b842e19](https://github.com/benletchford/systemless/commit/b842e195ea3cf545b92bad097f96a1a8b921e8e7))
+* resolve CarbonLib cosine imports ([#3557](https://github.com/benletchford/systemless/issues/3557)) ([3719399](https://github.com/benletchford/systemless/commit/3719399ba334e131f3bca0a02d908ded29eb6842))
+* route PPC dialog input through the front process window ([#3618](https://github.com/benletchford/systemless/issues/3618)) ([f8db103](https://github.com/benletchford/systemless/commit/f8db103a86452e18687a3a6e6520b24399e3eda1))
+* **textedit:** keep style runs on their characters through TEInsert and TEDelete ([#3537](https://github.com/benletchford/systemless/issues/3537)) ([45fae27](https://github.com/benletchford/systemless/commit/45fae27c25a9b710da468be3fdd93ede46ce7acc))
+* **web:** map browser Meta to Mac Command ([#3584](https://github.com/benletchford/systemless/issues/3584)) ([883f3cc](https://github.com/benletchford/systemless/commit/883f3cc3ae65ff7504bb20df1e40e65b87d2d48d))
+* **web:** map slash key to Macintosh keyboard input ([#3561](https://github.com/benletchford/systemless/issues/3561)) ([b0d1f3e](https://github.com/benletchford/systemless/commit/b0d1f3ee267209233dfe4554b4caa507e7190e14))
+* write InputSprocket event availability to its Boolean output ([#3597](https://github.com/benletchford/systemless/issues/3597)) ([7f646b9](https://github.com/benletchford/systemless/commit/7f646b9d4db453af8212c1dc9085856ee98a157b))
+
+
+### Performance Improvements
+
+* **desktop:** reuse released compact presentation snapshots ([#3528](https://github.com/benletchford/systemless/issues/3528)) ([6a7d25b](https://github.com/benletchford/systemless/commit/6a7d25bbaf60e43a738f38f1e983d85d624bb905))
+* **text:** share outline glyph masks and look up plain glyph coverage directly ([#3576](https://github.com/benletchford/systemless/issues/3576)) ([035ae51](https://github.com/benletchford/systemless/commit/035ae51ffd1e35960ec991a2114df2c0fa23e921))
+* **trap:** skip the full table lookup for traps still at their default gateway ([#3560](https://github.com/benletchford/systemless/issues/3560)) ([37c3a05](https://github.com/benletchford/systemless/commit/37c3a05121bb23de2ab9dcb151a5693e9d9bf51d))
+
+
+### Code Refactoring
+
+* **control:** centralize Control creation, template loading, and disposal evaluation ([#3627](https://github.com/benletchford/systemless/issues/3627)) ([7b64f46](https://github.com/benletchford/systemless/commit/7b64f463c3d3e1009f4dba5e053310676d632c18))
+* **control:** centralize Control display, positioning, sizing, and redrawing evaluation ([#3633](https://github.com/benletchford/systemless/issues/3633)) ([f132613](https://github.com/benletchford/systemless/commit/f132613ccece610614c5039e3df463232bc73c57))
+* **control:** centralize Control hit-testing, part detection, and interactive tracking evaluation ([#3647](https://github.com/benletchford/systemless/issues/3647)) ([dce3a36](https://github.com/benletchford/systemless/commit/dce3a36162cf97d4667303cdacbbc8237b24fd54))
+* **control:** centralize Control values, ranges, state, and highlighting evaluation ([#3639](https://github.com/benletchford/systemless/issues/3639)) ([0615f35](https://github.com/benletchford/systemless/commit/0615f3578b5dc5b5894e1ac4634e25547fdd0894))
+* **dialog:** centralize AppendDialogItemList evaluation ([#3514](https://github.com/benletchford/systemless/issues/3514)) ([eaa64b6](https://github.com/benletchford/systemless/commit/eaa64b63ea492f8fa661615da46754a33fbfa194))
+* **dialog:** centralize AutoSizeDialog evaluation ([#3517](https://github.com/benletchford/systemless/issues/3517)) ([586c35a](https://github.com/benletchford/systemless/commit/586c35a823aace2add2c9e6fcf90e2146fe77c26))
+* **dialog:** centralize Dialog Manager alert and ParamText evaluation ([#3545](https://github.com/benletchford/systemless/issues/3545)) ([fd936e0](https://github.com/benletchford/systemless/commit/fd936e020da35755822f355d88b12742a4d76546))
+* **dialog:** centralize Dialog Manager clipboard text editing evaluation ([#3527](https://github.com/benletchford/systemless/issues/3527)) ([8598d25](https://github.com/benletchford/systemless/commit/8598d25cbab25b98fc0380596f24d64c12f1b91d))
+* **dialog:** centralize Dialog Manager control conversion and low-memory evaluation ([#3551](https://github.com/benletchford/systemless/issues/3551)) ([a121e9a](https://github.com/benletchford/systemless/commit/a121e9a9a0ff9f322d420ee9dada4244b2774093))
+* **dialog:** centralize Dialog Manager creation evaluation ([#3547](https://github.com/benletchford/systemless/issues/3547)) ([bb008fd](https://github.com/benletchford/systemless/commit/bb008fd297364ed85140109fc5a3b01e1ec718f8))
+* **dialog:** centralize Dialog Manager default/cancel items and cursor tracking evaluation ([#3541](https://github.com/benletchford/systemless/issues/3541)) ([e0028c7](https://github.com/benletchford/systemless/commit/e0028c7906674f31137182716dba5e209a528d80))
+* **dialog:** centralize Dialog Manager event loop and rendering evaluation ([#3534](https://github.com/benletchford/systemless/issues/3534)) ([6a2d57b](https://github.com/benletchford/systemless/commit/6a2d57be4c9badd60f289ded7d9f07f9bddf8143))
+* **dialog:** centralize Dialog Manager item and text access evaluation ([#3539](https://github.com/benletchford/systemless/issues/3539)) ([f5465c3](https://github.com/benletchford/systemless/commit/f5465c35f591134ed61800dae266b4060d1c8e7f))
+* **dialog:** centralize Dialog Manager item list manipulation and query evaluation ([#3530](https://github.com/benletchford/systemless/issues/3530)) ([2e57280](https://github.com/benletchford/systemless/commit/2e57280f60de1b0699ae928b898684a0bb684bd3))
+* **dialog:** centralize Dialog Manager item positioning and geometry evaluation ([#3543](https://github.com/benletchford/systemless/issues/3543)) ([0a2a4ac](https://github.com/benletchford/systemless/commit/0a2a4ac80e19334cd86c0d344095784a597921b5))
+* **dialog:** centralize Dialog Manager item visibility, query, and update evaluation ([#3532](https://github.com/benletchford/systemless/issues/3532)) ([21b416f](https://github.com/benletchford/systemless/commit/21b416f3d89d5fe7ea1f7d58a06cedfc221deb48))
+* **dialog:** centralize Dialog Manager low-memory evaluation and accessors ([#3523](https://github.com/benletchford/systemless/issues/3523)) ([d05743a](https://github.com/benletchford/systemless/commit/d05743a593305b943f5564d2f9c35016c7bf33a6))
+* **dialog:** centralize Dialog Manager preloading, filter, sound, and init evaluation ([#3549](https://github.com/benletchford/systemless/issues/3549)) ([942123d](https://github.com/benletchford/systemless/commit/942123dc87bd7ab6a4d4e6d4f2eda1c9cdc07569))
+* **dialog:** centralize Dialog Manager teardown evaluation ([#3536](https://github.com/benletchford/systemless/issues/3536)) ([0c182e2](https://github.com/benletchford/systemless/commit/0c182e2a9462742790b615b78eef903de6478de2))
+* **dialog:** centralize Dialog Manager window and port accessors ([#3525](https://github.com/benletchford/systemless/issues/3525)) ([6aa681a](https://github.com/benletchford/systemless/commit/6aa681a02bf7994e1b4345995321fb1bee44b8ea))
+* **dialog:** centralize GetAlertStage and SetDialogFont evaluation ([#3519](https://github.com/benletchford/systemless/issues/3519)) ([771c877](https://github.com/benletchford/systemless/commit/771c877d4d51784f9f1b6a712d88158fce46f239))
+* **dialog:** centralize InitDialogs low-memory defaults and font initialization ([#3521](https://github.com/benletchford/systemless/issues/3521)) ([7b70041](https://github.com/benletchford/systemless/commit/7b70041e6c5182fab60a2a9826d36f67847a0605))
+* **menu:** centralize Menu Bar lifecycle, manipulation, and low-memory evaluation ([#3553](https://github.com/benletchford/systemless/issues/3553)) ([08b9c01](https://github.com/benletchford/systemless/commit/08b9c01bd5bb4b0cefbc9ebea411d109927d8194))
+* **menu:** centralize Menu Item insertion, deletion, and resource population evaluation ([#3562](https://github.com/benletchford/systemless/issues/3562)) ([d076ff5](https://github.com/benletchford/systemless/commit/d076ff5062645c867ba8078308760173f71917e0))
+* **menu:** centralize Menu Item text, mark, command, and attribute evaluation ([#3580](https://github.com/benletchford/systemless/issues/3580)) ([0d6e15b](https://github.com/benletchford/systemless/commit/0d6e15b78e9b039a83bd2263eff2f24664d04454))
+* **menu:** centralize Menu Manager creation, disposal, loading, and sizing evaluation ([#3555](https://github.com/benletchford/systemless/issues/3555)) ([2eb81ff](https://github.com/benletchford/systemless/commit/2eb81ffb8a66fa1f82390476290a167446aff683))
+* **menu:** centralize Menu Selection and Tracking evaluation ([#3582](https://github.com/benletchford/systemless/issues/3582)) ([f226514](https://github.com/benletchford/systemless/commit/f2265141389beb3b3d47ceb39c73dc3c824abf4c))
+* **window:** centralize Window creation, template loading, and disposal evaluation ([#3590](https://github.com/benletchford/systemless/issues/3590)) ([2d86db1](https://github.com/benletchford/systemless/commit/2d86db1626e79e69bf79d85feb94ca6fcc64f1eb))
+* **window:** centralize Window hit-testing, clipping, variant, and region evaluation ([#3620](https://github.com/benletchford/systemless/issues/3620)) ([d14edbc](https://github.com/benletchford/systemless/commit/d14edbcebd75699886501e7e97a83a450cbc55f5))
+* **window:** centralize Window invalidation, update, and drawing evaluation ([#3607](https://github.com/benletchford/systemless/issues/3607)) ([80ebff8](https://github.com/benletchford/systemless/commit/80ebff8fa1fdd40d51f61b718720b10e9483c5b6))
+* **window:** centralize Window property, title, picture, and low-memory evaluation ([#3612](https://github.com/benletchford/systemless/issues/3612)) ([798975e](https://github.com/benletchford/systemless/commit/798975e6754a89460f5a60d630415e6c5104894c))
+* **window:** centralize Window sizing, positioning, and zooming evaluation ([#3601](https://github.com/benletchford/systemless/issues/3601)) ([80c7598](https://github.com/benletchford/systemless/commit/80c759897a661e2c415f4c85e49940639885512b))
+* **window:** centralize Window visibility, Z-ordering, and activation evaluation ([#3595](https://github.com/benletchford/systemless/issues/3595)) ([3a0ba3e](https://github.com/benletchford/systemless/commit/3a0ba3e286393d9d211bac51b8c92fdf4be76157))
+
 ## [0.70.1](https://github.com/benletchford/systemless/compare/v0.70.0...v0.70.1) (2026-09-29)
 
 
