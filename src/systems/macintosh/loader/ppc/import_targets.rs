@@ -2555,14 +2555,30 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetMenu" | "getmenu",
         ) => PpcImportDispatcherTarget::GetMenu,
-        ("InterfaceLib", "GetItemCmd") => PpcImportDispatcherTarget::GetItemCmd,
-        ("InterfaceLib", "SetItemCmd") => PpcImportDispatcherTarget::SetItemCmd,
-        ("InterfaceLib", "GetItemMark") => PpcImportDispatcherTarget::GetItemMark,
-        ("InterfaceLib", "CountMItems") => PpcImportDispatcherTarget::CountMItems,
-        ("InterfaceLib", "GetMenuItemText") => PpcImportDispatcherTarget::GetMenuItemText,
-        ("InterfaceLib", "SetMenuItemText") | ("InterfaceLib", "SetItem") => {
-            PpcImportDispatcherTarget::SetMenuItemText
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetItemCmd" | "getitemcmd" | "GetMenuItemCmd" | "getmenuitemcmd",
+        ) => PpcImportDispatcherTarget::GetItemCmd,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetItemCmd" | "setitemcmd" | "SetMenuItemCmd" | "setmenuitemcmd",
+        ) => PpcImportDispatcherTarget::SetItemCmd,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetItemMark" | "getitemmark" | "GetMenuItemMark" | "getmenuitemmark",
+        ) => PpcImportDispatcherTarget::GetItemMark,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "CountMItems" | "countmitems" | "CountMenuItems" | "countmenuitems",
+        ) => PpcImportDispatcherTarget::CountMItems,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetMenuItemText" | "getmenuitemtext" | "GetItem" | "getitem",
+        ) => PpcImportDispatcherTarget::GetMenuItemText,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetMenuItemText" | "setmenuitemtext" | "SetItem" | "setitem",
+        ) => PpcImportDispatcherTarget::SetMenuItemText,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "DeleteMenuItem" | "deletemenuitem" | "DelMenuItem" | "delmenuitem",
@@ -2596,14 +2612,22 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "InsertResMenu" | "insertresmenu",
         ) => PpcImportDispatcherTarget::InsertResMenu,
-        ("InterfaceLib", "EnableItem" | "EnableMenuItem") => {
-            PpcImportDispatcherTarget::EnableMenuItem
-        }
-        ("InterfaceLib", "DisableItem" | "DisableMenuItem") => {
-            PpcImportDispatcherTarget::DisableMenuItem
-        }
-        ("InterfaceLib", "SetItemMark") => PpcImportDispatcherTarget::SetItemMark,
-        ("InterfaceLib", "CheckItem") => PpcImportDispatcherTarget::CheckItem,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "EnableItem" | "enableitem" | "EnableMenuItem" | "enablemenuitem",
+        ) => PpcImportDispatcherTarget::EnableMenuItem,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "DisableItem" | "disableitem" | "DisableMenuItem" | "disablemenuitem",
+        ) => PpcImportDispatcherTarget::DisableMenuItem,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetItemMark" | "setitemmark" | "SetMenuItemMark" | "setmenuitemmark",
+        ) => PpcImportDispatcherTarget::SetItemMark,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "CheckItem" | "checkitem" | "CheckMenuItem" | "checkmenuitem",
+        ) => PpcImportDispatcherTarget::CheckItem,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetMenuBar" | "getmenubar",
@@ -4067,10 +4091,16 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetEntryUsage") => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::GetEntryUsage,
         ),
-        ("InterfaceLib", "GetItemIcon") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetItemIcon" | "getitemicon" | "GetMenuItemIcon" | "getmenuitemicon",
+        ) => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::GetItemIcon,
         ),
-        ("InterfaceLib", "GetItemStyle") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetItemStyle" | "getitemstyle" | "GetMenuItemStyle" | "getmenuitemstyle",
+        ) => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::GetItemStyle,
         ),
         ("InterfaceLib", "GetNewPalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(
@@ -4106,10 +4136,16 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SetEntryUsage") => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::SetEntryUsage,
         ),
-        ("InterfaceLib", "SetItemIcon") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetItemIcon" | "setitemicon" | "SetMenuItemIcon" | "setmenuitemicon",
+        ) => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::SetItemIcon,
         ),
-        ("InterfaceLib", "SetItemStyle") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetItemStyle" | "setitemstyle" | "SetMenuItemStyle" | "setmenuitemstyle",
+        ) => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::SetItemStyle,
         ),
         ("InterfaceLib", "SetStdCProcs") => PpcImportDispatcherTarget::QuickDrawCompatibility(
