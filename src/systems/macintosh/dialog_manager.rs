@@ -20,6 +20,14 @@ pub const DIALOG_EDIT_OPEN_OFFSET: u32 = 166;
 pub const DIALOG_DEFAULT_ITEM_OFFSET: u32 = 168;
 pub const DIALOG_RESOURCE_ID_OFFSET: u32 = 170;
 
+/// Canonical DialogRecord GrafPort text font offset (`txFont`).
+/// Inside Macintosh Volume I, pp. I-148, I-412.
+pub const DIALOG_TX_FONT_OFFSET: u32 = 68;
+
+/// Canonical default dialog font family number (0 = system font / Chicago).
+/// Inside Macintosh Volume I, p. I-411.
+pub const DIALOG_INITIAL_FONT: i16 = 0;
+
 /// Canonical initial value for `editField` in a newly created DialogRecord (-1 = no edit field active).
 /// Inside Macintosh Volume I, p. I-411.
 pub const DIALOG_INITIAL_EDIT_FIELD: i16 = -1;
@@ -3877,7 +3885,8 @@ pub fn evaluate_param_text(
 /// `PROCEDURE InitDialogs(resumeProc: ProcPtr);`
 /// Initializes the Dialog Manager. Saves the application resume procedure (if non-null),
 /// resets the sound beeper procedure to default (NIL), resets the alert stage count to 0
-/// (so the next alert begins at stage 1), and clears the four `DAStrings` `ParamText` handles.
+/// (so the next alert begins at stage 1), clears the four `DAStrings` `ParamText` handles,
+/// and resets the dialog font to the system font (stores 0 into `DlgFont` at `$0AFA`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InitDialogsEvaluation {
     resume_proc: u32,
@@ -3903,11 +3912,24 @@ impl InitDialogsEvaluation {
     pub const fn da_strings_count(&self) -> usize {
         PARAM_TEXT_SLOT_COUNT
     }
+
+    /// The initial dialog font written to low memory (`DlgFont` at `$0AFA`), which is 0 (system font).
+    /// Inside Macintosh Volume I, pp. I-411..I-412.
+    pub const fn initial_dialog_font(&self) -> i16 {
+        DIALOG_INITIAL_FONT
+    }
 }
 
 /// Evaluates an `InitDialogs` invocation with the given `resumeProc` pointer.
 pub const fn evaluate_init_dialogs(resume_proc: u32) -> InitDialogsEvaluation {
     InitDialogsEvaluation { resume_proc }
+}
+
+/// Evaluates the dialog text font from the raw `DlgFont` low-memory word.
+#[inline]
+#[must_use]
+pub const fn evaluate_dialog_font(raw_dlg_font: u16) -> i16 {
+    raw_dlg_font as i16
 }
 
 /// Canonical Macintosh key codes for modal dialog navigation.
@@ -9105,12 +9127,16 @@ mod tests {
         assert_eq!(init_null.initial_alert_stage(), 0);
         assert_eq!(init_null.da_beeper(), 0);
         assert_eq!(init_null.da_strings_count(), 4);
+        assert_eq!(init_null.initial_dialog_font(), DIALOG_INITIAL_FONT);
 
         let init_custom = evaluate_init_dialogs(0x0012_3456);
         assert_eq!(init_custom.resume_proc(), 0x0012_3456);
         assert_eq!(init_custom.initial_alert_stage(), 0);
         assert_eq!(init_custom.da_beeper(), 0);
         assert_eq!(init_custom.da_strings_count(), 4);
+        assert_eq!(init_custom.initial_dialog_font(), 0);
+        assert_eq!(evaluate_dialog_font(3), 3);
+        assert_eq!(evaluate_dialog_font(0), 0);
 
         // ParamText evaluation: all NIL
         let all_nil = evaluate_param_text([None, None, None, None]);
