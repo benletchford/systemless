@@ -1145,10 +1145,13 @@ pub(crate) fn dispatcher_target_for_import(
     // CFM Carbon applications link CarbonLib in place of InterfaceLib for
     // supported Toolbox APIs. An exact symbol match uses the same PPC ABI.
     // Carbon Porting Guide (2002), pp. 42–43 and 53–54.
-    let library_name = if library_name == "CarbonLib" {
-        "InterfaceLib"
-    } else {
-        library_name
+    let library_name = match (library_name, symbol_name) {
+        // Inside Macintosh: PowerPC Numerics (1994), pp. 10-29--10-30:
+        // cos accepts and returns a double_t angle in radians. CarbonLib
+        // exports the same C math symbol and PowerPC floating-point ABI.
+        ("CarbonLib", "cos") => "MathLib",
+        ("CarbonLib", _) => "InterfaceLib",
+        _ => library_name,
     };
     match (library_name, symbol_name) {
         ("InterfaceLib", "_MPIsFullyInitialized" | "MPProcessors") => {
