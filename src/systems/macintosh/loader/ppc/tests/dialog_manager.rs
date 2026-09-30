@@ -1571,6 +1571,53 @@ fn import_bindings_classify_dialog_imports() {
             expected_target,
         );
     }
+    for (lib, symbol, expected_target) in [
+        ("InterfaceLib", "GetDialogItem", PpcImportDispatcherTarget::GetDialogItem),
+        ("AppearanceLib", "GetDialogItem", PpcImportDispatcherTarget::GetDialogItem),
+        ("DialogsLib", "GetDialogItem", PpcImportDispatcherTarget::GetDialogItem),
+        ("CarbonLib", "GetDialogItem", PpcImportDispatcherTarget::GetDialogItem),
+        ("InterfaceLib", "GetDItem", PpcImportDispatcherTarget::GetDialogItem),
+        ("AppearanceLib", "GetDItem", PpcImportDispatcherTarget::GetDialogItem),
+        ("DialogsLib", "GetDItem", PpcImportDispatcherTarget::GetDialogItem),
+        ("CarbonLib", "GetDItem", PpcImportDispatcherTarget::GetDialogItem),
+        ("InterfaceLib", "SetDialogItem", PpcImportDispatcherTarget::SetDialogItem),
+        ("AppearanceLib", "SetDialogItem", PpcImportDispatcherTarget::SetDialogItem),
+        ("DialogsLib", "SetDialogItem", PpcImportDispatcherTarget::SetDialogItem),
+        ("CarbonLib", "SetDialogItem", PpcImportDispatcherTarget::SetDialogItem),
+        ("InterfaceLib", "SetDItem", PpcImportDispatcherTarget::SetDialogItem),
+        ("AppearanceLib", "SetDItem", PpcImportDispatcherTarget::SetDialogItem),
+        ("DialogsLib", "SetDItem", PpcImportDispatcherTarget::SetDialogItem),
+        ("CarbonLib", "SetDItem", PpcImportDispatcherTarget::SetDialogItem),
+        ("InterfaceLib", "GetDialogItemText", PpcImportDispatcherTarget::GetDialogItemText),
+        ("AppearanceLib", "GetDialogItemText", PpcImportDispatcherTarget::GetDialogItemText),
+        ("DialogsLib", "GetDialogItemText", PpcImportDispatcherTarget::GetDialogItemText),
+        ("CarbonLib", "GetDialogItemText", PpcImportDispatcherTarget::GetDialogItemText),
+        ("InterfaceLib", "GetIText", PpcImportDispatcherTarget::GetDialogItemText),
+        ("AppearanceLib", "GetIText", PpcImportDispatcherTarget::GetDialogItemText),
+        ("DialogsLib", "GetIText", PpcImportDispatcherTarget::GetDialogItemText),
+        ("CarbonLib", "GetIText", PpcImportDispatcherTarget::GetDialogItemText),
+        ("InterfaceLib", "SetDialogItemText", PpcImportDispatcherTarget::SetDialogItemText),
+        ("AppearanceLib", "SetDialogItemText", PpcImportDispatcherTarget::SetDialogItemText),
+        ("DialogsLib", "SetDialogItemText", PpcImportDispatcherTarget::SetDialogItemText),
+        ("CarbonLib", "SetDialogItemText", PpcImportDispatcherTarget::SetDialogItemText),
+        ("InterfaceLib", "SetIText", PpcImportDispatcherTarget::SetDialogItemText),
+        ("AppearanceLib", "SetIText", PpcImportDispatcherTarget::SetDialogItemText),
+        ("DialogsLib", "SetIText", PpcImportDispatcherTarget::SetDialogItemText),
+        ("CarbonLib", "SetIText", PpcImportDispatcherTarget::SetDialogItemText),
+        ("InterfaceLib", "SelectDialogItemText", PpcImportDispatcherTarget::SelectDialogItemText),
+        ("AppearanceLib", "SelectDialogItemText", PpcImportDispatcherTarget::SelectDialogItemText),
+        ("DialogsLib", "SelectDialogItemText", PpcImportDispatcherTarget::SelectDialogItemText),
+        ("CarbonLib", "SelectDialogItemText", PpcImportDispatcherTarget::SelectDialogItemText),
+        ("InterfaceLib", "SelIText", PpcImportDispatcherTarget::SelectDialogItemText),
+        ("AppearanceLib", "SelIText", PpcImportDispatcherTarget::SelectDialogItemText),
+        ("DialogsLib", "SelIText", PpcImportDispatcherTarget::SelectDialogItemText),
+        ("CarbonLib", "SelIText", PpcImportDispatcherTarget::SelectDialogItemText),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import(lib, symbol),
+            expected_target,
+        );
+    }
     for (symbol, expected_target) in [
         ("LMSetResumeProc", PpcImportDispatcherTarget::LMSetResumeProc),
         ("LMGetResumeProc", PpcImportDispatcherTarget::LMGetResumeProc),
@@ -3245,20 +3292,31 @@ fn dialog_clipboard_editing_commands_dispatch_with_canonical_evaluation() {
     assert_eq!(probe.unsupported_import_index, None);
 }
 
-fn make_test_ditl_item(top: i16, left: i16, bottom: i16, right: i16, title: &[u8]) -> Vec<u8> {
+fn make_test_ditl_item_typed(
+    top: i16,
+    left: i16,
+    bottom: i16,
+    right: i16,
+    item_type: u8,
+    title: &[u8],
+) -> Vec<u8> {
     let mut item = Vec::new();
     item.extend_from_slice(&0u32.to_be_bytes()); // handle placeholder
     item.extend_from_slice(&top.to_be_bytes());
     item.extend_from_slice(&left.to_be_bytes());
     item.extend_from_slice(&bottom.to_be_bytes());
     item.extend_from_slice(&right.to_be_bytes());
-    item.push(PPC_DIALOG_ITEM_BUTTON);
+    item.push(item_type);
     item.push(title.len() as u8);
     item.extend_from_slice(title);
     if title.len() % 2 != 0 {
         item.push(0); // word alignment pad
     }
     item
+}
+
+fn make_test_ditl_item(top: i16, left: i16, bottom: i16, right: i16, title: &[u8]) -> Vec<u8> {
+    make_test_ditl_item_typed(top, left, bottom, right, PPC_DIALOG_ITEM_BUTTON, title)
 }
 
 fn make_test_ditl(items: &[Vec<u8>]) -> Vec<u8> {
@@ -3766,6 +3824,230 @@ fn dialog_teardown_commands_dispatch_with_canonical_evaluation() {
     let mut loaded_dispos = load_pef_application(&pef_dispos).unwrap();
     loaded_dispos.cpu.gpr[3] = 0;
     let probe = loaded_dispos.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+}
+
+#[test]
+fn dialog_item_and_text_access_commands_dispatch_with_canonical_evaluation() {
+    let dialog_ptr = PPC_DATA_BASE + 0x1000;
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"GetDialogItem");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(dialog_ptr, vec![0; 1024]);
+
+    // Memory layout for test buffers:
+    // type_out: dialog_ptr + 0x200 (u16)
+    // handle_out: dialog_ptr + 0x204 (u32)
+    // rect_out: dialog_ptr + 0x208 (8 bytes: top, left, bottom, right)
+    // text_out: dialog_ptr + 0x220 (Str255: 1 byte len + up to 255 bytes)
+    // text_in: dialog_ptr + 0x330 (Str255)
+    let type_out = dialog_ptr + 0x200;
+    let handle_out = dialog_ptr + 0x204;
+    let rect_out = dialog_ptr + 0x208;
+    let text_out = dialog_ptr + 0x220;
+    let text_in = dialog_ptr + 0x330;
+
+    // 1. Create text handles:
+    // text_handle for item 1 ("Systemless")
+    // edit_text_handle for item 2 ("Edit")
+    let text_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        b"Systemless",
+    );
+    let edit_text_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        b"Edit",
+    );
+
+    // 2. Set up dialog with 2 items:
+    // Item 1: StatText, rect (10, 20, 30, 80), handle = text_handle
+    // Item 2: EditText, rect (40, 20, 60, 180), handle = edit_text_handle
+    let item1 = make_test_ditl_item_typed(10, 20, 30, 80, PPC_DIALOG_ITEM_STATIC_TEXT, b"OK");
+    let item2 = make_test_ditl_item_typed(40, 20, 60, 180, PPC_DIALOG_ITEM_EDIT_TEXT, b"Edit");
+    let ditl_bytes = make_test_ditl(&[item1, item2]);
+    let items_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &ditl_bytes,
+    );
+    loaded
+        .memory
+        .write_u32_be(dialog_ptr + PPC_DIALOG_ITEMS_OFFSET, items_handle)
+        .unwrap();
+
+    // Attach text handles to items in DITL:
+    // Item 1 starts at offset 2; handle is at offset 2 + 0
+    // Item 1 length = 4 + 8 + 1 + 1 + 2 = 16 bytes.
+    // Item 2 starts at offset 2 + 16 = 18; handle is at offset 18 + 0
+    let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+    loaded.memory.write_u32_be(items_ptr + 2, text_handle).unwrap();
+    loaded.memory.write_u32_be(items_ptr + 18, edit_text_handle).unwrap();
+
+    // 3. Test GetDialogItem:
+    // 3a. Safe no-op on NULL dialog
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = type_out;
+    loaded.cpu.gpr[6] = handle_out;
+    loaded.cpu.gpr[7] = rect_out;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogItem);
+    assert_eq!(loaded.memory.read_u16_be(type_out).unwrap(), 0);
+
+    // 3b. Safe no-op on invalid item number 0
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogItem);
+    assert_eq!(loaded.memory.read_u16_be(type_out).unwrap(), 0);
+
+    // 3c. Valid GetDialogItem for item 1
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogItem);
+    assert_eq!(
+        loaded.memory.read_u16_be(type_out).unwrap(),
+        u16::from(PPC_DIALOG_ITEM_STATIC_TEXT)
+    );
+    assert_eq!(loaded.memory.read_u32_be(handle_out).unwrap(), text_handle);
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, rect_out),
+        Some((10, 20, 30, 80))
+    );
+
+    // 4. Test SetDialogItem:
+    // Write new rect into rect_out: (15, 25, 35, 85)
+    let new_rect_ptr = rect_out;
+    assert!(ppc_write_rect(&mut loaded.memory, new_rect_ptr, 15, 25, 35, 85).is_some());
+
+    let new_handle = 0xABCD_1234;
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = u32::from(PPC_DIALOG_ITEM_BUTTON);
+    loaded.cpu.gpr[6] = new_handle;
+    loaded.cpu.gpr[7] = new_rect_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogItem);
+
+    // Read back with GetDialogItem
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = type_out;
+    loaded.cpu.gpr[6] = handle_out;
+    loaded.cpu.gpr[7] = rect_out;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogItem);
+    assert_eq!(
+        loaded.memory.read_u16_be(type_out).unwrap(),
+        u16::from(PPC_DIALOG_ITEM_BUTTON)
+    );
+    assert_eq!(loaded.memory.read_u32_be(handle_out).unwrap(), new_handle);
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, rect_out),
+        Some((15, 25, 35, 85))
+    );
+
+    // 5. Test GetDialogItemText:
+    // 5a. Safe no-op on NULL text_out_ptr
+    loaded.cpu.gpr[3] = text_handle;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogItemText);
+
+    // 5b. Read text from text_handle ("Systemless") into text_out
+    loaded.cpu.gpr[3] = text_handle;
+    loaded.cpu.gpr[4] = text_out;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogItemText);
+    let out_len = loaded.memory.read_u8(text_out).unwrap() as usize;
+    assert_eq!(out_len, 10);
+    let mut out_str = vec![0u8; out_len];
+    for (i, b) in out_str.iter_mut().enumerate() {
+        *b = loaded.memory.read_u8(text_out + 1 + i as u32).unwrap();
+    }
+    assert_eq!(out_str.as_slice(), b"Systemless");
+
+    // 6. Test SetDialogItemText:
+    // Write Pascal string "\x07Classic" to text_in
+    loaded.memory.write_u8(text_in, 7).unwrap();
+    for (i, &b) in b"Classic".iter().enumerate() {
+        loaded.memory.write_u8(text_in + 1 + i as u32, b).unwrap();
+    }
+
+    // SetDialogItemText on text_handle
+    loaded.cpu.gpr[3] = text_handle;
+    loaded.cpu.gpr[4] = text_in;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogItemText);
+
+    // Read back with GetDialogItemText into text_out
+    loaded.cpu.gpr[3] = text_handle;
+    loaded.cpu.gpr[4] = text_out;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogItemText);
+    let out_len2 = loaded.memory.read_u8(text_out).unwrap() as usize;
+    assert_eq!(out_len2, 7);
+    let mut out_str2 = vec![0u8; out_len2];
+    for (i, b) in out_str2.iter_mut().enumerate() {
+        *b = loaded.memory.read_u8(text_out + 1 + i as u32).unwrap();
+    }
+    assert_eq!(out_str2.as_slice(), b"Classic");
+
+    // 7. Test SelectDialogItemText:
+    // 7a. Safe no-op on NULL dialog
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 2; // item 2
+    loaded.cpu.gpr[5] = 0; // selStart
+    loaded.cpu.gpr[6] = 3; // selEnd
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectDialogItemText);
+
+    // 7b. Safe no-op on non-edit item (item 1 was changed to button)
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 3;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectDialogItemText);
+
+    // 7c. Select item 2 (editText):
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 2; // item 2
+    loaded.cpu.gpr[5] = 1;
+    loaded.cpu.gpr[6] = 4;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectDialogItemText);
+    // DialogRecord.editField at offset PPC_DIALOG_EDIT_FIELD_OFFSET is 0-indexed item index = 1
+    assert_eq!(
+        loaded.memory.read_u16_be(dialog_ptr + PPC_DIALOG_EDIT_FIELD_OFFSET).unwrap(),
+        1
+    );
+
+    // 8. Verify PEF execution using AppearanceLib, DialogsLib, and CarbonLib
+    let pef_get = synthetic_pef_with_library_import(b"AppearanceLib", b"GetDItem");
+    let mut loaded_get = load_pef_application(&pef_get).unwrap();
+    loaded_get.cpu.gpr[3] = 0;
+    let probe = loaded_get.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_set = synthetic_pef_with_library_import(b"DialogsLib", b"SetDItem");
+    let mut loaded_set = load_pef_application(&pef_set).unwrap();
+    loaded_set.cpu.gpr[3] = 0;
+    let probe = loaded_set.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_get_text = synthetic_pef_with_library_import(b"CarbonLib", b"GetIText");
+    let mut loaded_get_text = load_pef_application(&pef_get_text).unwrap();
+    loaded_get_text.cpu.gpr[3] = 0;
+    let probe = loaded_get_text.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_set_text = synthetic_pef_with_library_import(b"CarbonLib", b"SetIText");
+    let mut loaded_set_text = load_pef_application(&pef_set_text).unwrap();
+    loaded_set_text.cpu.gpr[3] = 0;
+    let probe = loaded_set_text.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_sel_text = synthetic_pef_with_library_import(b"CarbonLib", b"SelIText");
+    let mut loaded_sel_text = load_pef_application(&pef_sel_text).unwrap();
+    loaded_sel_text.cpu.gpr[3] = 0;
+    let probe = loaded_sel_text.run_with_hle_imports(64);
     assert_eq!(probe.unsupported_import_index, None);
 }
 

@@ -2994,19 +2994,25 @@ pub(crate) fn dispatcher_target_for_import(
         ("AppearanceLib", "NewFeaturesDialog") | ("InterfaceLib", "NewFeaturesDialog") => {
             PpcImportDispatcherTarget::NewFeaturesDialog
         }
-        ("InterfaceLib", "GetDialogItem") => PpcImportDispatcherTarget::GetDialogItem,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetDialogItem" | "GetDItem" | "getdialogitem" | "getditem",
+        ) => PpcImportDispatcherTarget::GetDialogItem,
         ("AppearanceLib", "GetDialogItemAsControl") => {
             PpcImportDispatcherTarget::GetDialogItemAsControl
         }
-        ("InterfaceLib", "SetDialogItem") | ("InterfaceLib", "SetDItem") => {
-            PpcImportDispatcherTarget::SetDialogItem
-        }
-        ("InterfaceLib", "GetDialogItemText") | ("InterfaceLib", "getdialogitemtext") => {
-            PpcImportDispatcherTarget::GetDialogItemText
-        }
-        ("InterfaceLib", "SetDialogItemText") | ("InterfaceLib", "setdialogitemtext") => {
-            PpcImportDispatcherTarget::SetDialogItemText
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "SetDialogItem" | "SetDItem" | "setdialogitem" | "setditem",
+        ) => PpcImportDispatcherTarget::SetDialogItem,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetDialogItemText" | "getdialogitemtext" | "GetIText" | "getitext",
+        ) => PpcImportDispatcherTarget::GetDialogItemText,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "SetDialogItemText" | "setdialogitemtext" | "SetIText" | "setitext",
+        ) => PpcImportDispatcherTarget::SetDialogItemText,
         ("InterfaceLib" | "AppearanceLib", "SetDialogDefaultItem") => {
             PpcImportDispatcherTarget::SetDialogDefaultItem
         }
@@ -3154,7 +3160,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LMSetTEScrpLength") => {
             PpcImportDispatcherTarget::TEScrapLength { set: true }
         }
-        ("InterfaceLib", "SelectDialogItemText") => PpcImportDispatcherTarget::SelectDialogItemText,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "SelectDialogItemText" | "SelIText" | "selectdialogitemtext" | "selitext",
+        ) => PpcImportDispatcherTarget::SelectDialogItemText,
         ("InterfaceLib" | "DialogsLib", "InitDialogs") => PpcImportDispatcherTarget::InitDialogs,
         ("InterfaceLib", "SystemTask") => PpcImportDispatcherTarget::SystemTask,
         ("InterfaceLib", "SystemClick") => PpcImportDispatcherTarget::SystemClick,
