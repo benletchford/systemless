@@ -3745,10 +3745,16 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "DialogSelect") => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::DialogSelect,
         ),
-        ("InterfaceLib", "FindDialogItem") => PpcImportDispatcherTarget::DialogCompatibility(
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "FindDialogItem" | "FindDItem",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::FindDialogItem,
         ),
-        ("InterfaceLib", "HideDialogItem") => PpcImportDispatcherTarget::DialogCompatibility(
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "HideDialogItem" | "HideDItem",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::HideDialogItem,
         ),
         ("InterfaceLib", "IsDialogEvent") => PpcImportDispatcherTarget::DialogCompatibility(
@@ -3760,10 +3766,16 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::ShortenDitl,
         ),
-        ("InterfaceLib", "ShowDialogItem") => PpcImportDispatcherTarget::DialogCompatibility(
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "ShowDialogItem" | "ShowDItem",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::ShowDialogItem,
         ),
-        ("InterfaceLib", "UpdateDialog") => PpcImportDispatcherTarget::DialogCompatibility(
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "UpdateDialog" | "UpdtDialog",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::UpdateDialog,
         ),
         ("InterfaceLib", "AnimateEntry") => PpcImportDispatcherTarget::QuickDrawCompatibility(
