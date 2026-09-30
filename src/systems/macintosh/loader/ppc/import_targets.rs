@@ -2975,10 +2975,14 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "HCreate") => PpcImportDispatcherTarget::HCreate,
         ("InterfaceLib", "HRename") => PpcImportDispatcherTarget::HRename,
         ("InterfaceLib", "Create") => PpcImportDispatcherTarget::Create,
-        ("InterfaceLib", "GetNewDialog") => PpcImportDispatcherTarget::GetNewDialog,
-        ("InterfaceLib", "NewDialog")
-        | ("InterfaceLib", "NewColorDialog")
-        | ("InterfaceLib", "NewCDialog") => PpcImportDispatcherTarget::NewDialog,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetNewDialog",
+        ) => PpcImportDispatcherTarget::GetNewDialog,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "NewDialog" | "NewColorDialog" | "NewCDialog",
+        ) => PpcImportDispatcherTarget::NewDialog,
         ("InterfaceLib" | "AppearanceLib", "RegisterAppearanceClient") => {
             PpcImportDispatcherTarget::RegisterAppearanceClient
         }
@@ -2991,7 +2995,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("AppearanceLib", "CollapseWindow") => PpcImportDispatcherTarget::CollapseWindow,
         ("AppearanceLib", "IsWindowCollapsed") => PpcImportDispatcherTarget::IsWindowCollapsed,
         ("AppearanceLib", "SetControlFontStyle") => PpcImportDispatcherTarget::SetControlFontStyle,
-        ("AppearanceLib", "NewFeaturesDialog") | ("InterfaceLib", "NewFeaturesDialog") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "NewFeaturesDialog",
+        ) => {
             PpcImportDispatcherTarget::NewFeaturesDialog
         }
         (
