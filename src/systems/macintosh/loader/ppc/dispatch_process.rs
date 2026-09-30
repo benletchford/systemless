@@ -6,6 +6,7 @@ pub(super) struct PpcProcessDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
     pub(super) memory: &'a mut PpcSectionMem,
+    pub(super) stack_top: u32,
     pub(super) vfs_directories: &'a [PpcVfsDirectory],
     pub(super) vfs_files: &'a [PpcVfsFileRecord],
     pub(super) vfs_resource_files: &'a [PpcVfsResourceFileRecord],
@@ -19,6 +20,7 @@ pub(super) fn dispatch_process_import(
         binding,
         cpu,
         memory,
+        stack_top,
         vfs_directories,
         vfs_files,
         vfs_resource_files,
@@ -32,6 +34,7 @@ pub(super) fn dispatch_process_import(
         PpcImportDispatcherTarget::GetProcessInformation => ppc_get_process_information(
             cpu,
             memory,
+            stack_top,
             vfs_directories,
             vfs_files,
             vfs_resource_files,
@@ -120,6 +123,7 @@ fn ppc_same_process(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
 fn ppc_get_process_information(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
+    stack_top: u32,
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
     vfs_resource_files: &[PpcVfsResourceFileRecord],
@@ -171,7 +175,7 @@ fn ppc_get_process_information(
         return PPC_PARAM_ERR;
     }
 
-    let process_size = PPC_STACK_TOP - PPC_CODE_BASE;
+    let process_size = stack_top - PPC_CODE_BASE;
     let process_free_mem = process_size / 2;
     if memory
         .write_u32_be(info_ptr + 8, ProcessSerialNumber::CURRENT.high)

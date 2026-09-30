@@ -4259,12 +4259,12 @@ pub fn ppc_q3_software_projected_line_midpoint(
 
 // --- QuickDraw 3D Acceleration (RAVE) Constants ---
 
-pub const PPC_QA_ENGINE: u32 = 0x0500_0100;
-pub const PPC_QA_DRAW_CONTEXT: u32 = 0x0500_0110;
-pub const PPC_QA_DRAW_CONTEXT_PRIVATE: u32 = 0x0500_0190;
+pub const PPC_QA_ENGINE: u32 = 0x4000_0100;
+pub const PPC_QA_DRAW_CONTEXT: u32 = 0x4000_0110;
+pub const PPC_QA_DRAW_CONTEXT_PRIVATE: u32 = 0x4000_0190;
 pub const PPC_QA_DRAW_CONTEXT_METHOD_SLOT_COUNT: u32 = 31;
-pub const PPC_QA_METHOD_RETURN_ZERO_TVECTOR: u32 = 0x0500_0200;
-pub const PPC_QA_METHOD_RETURN_ZERO_ENTRY: u32 = 0x0500_0210;
+pub const PPC_QA_METHOD_RETURN_ZERO_TVECTOR: u32 = 0x4000_0200;
+pub const PPC_QA_METHOD_RETURN_ZERO_ENTRY: u32 = 0x4000_0210;
 pub const PPC_QA_OBJECTS_SIZE: usize = 16 * 1024;
 pub const PPC_QA_OPTIONAL_TEXTURE: u32 = 1 << 1;
 pub const PPC_QA_OPTIONAL_TEXTURE_COLOR: u32 = 1 << 3;

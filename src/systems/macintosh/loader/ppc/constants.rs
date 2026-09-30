@@ -28,7 +28,7 @@ pub(crate) const PPC_IMPORT_CUR_AP_NAME: u32 = PPC_IMPORT_DATA_BASE + 0x900;
 pub const PPC_CFM_MAIN_STUB_BASE: u32 = 0x01d8_0000;
 pub const PPC_MAIN_GWORLD: u32 = 0x02f0_0000;
 pub const PPC_MAIN_GDEVICE: u32 = 0x02f0_0100;
-pub const PPC_DSP_BACK_GWORLD: u32 = 0x0501_0000;
+pub const PPC_DSP_BACK_GWORLD: u32 = 0x4001_0000;
 pub const PPC_DATA_BASE: u32 = 0x0200_0000;
 pub const PPC_HEAP_BASE: u32 = 0x0300_0000;
 pub(crate) const PPC_HEAP_ALIGNMENT: u32 = 16;
@@ -353,8 +353,8 @@ pub(crate) const PPC_TICK_COUNT_IDLE_POLL_FAST_FORWARD_THRESHOLD: u32 =
     PPC_GETKEYS_IDLE_POLL_FAST_FORWARD_THRESHOLD;
 pub(crate) const PPC_FIXED_MAC_TIME: u32 = 3_786_912_000;
 pub const PPC_MICROSECONDS_PER_TICK: u64 = 16_625;
-pub const PPC_QT_GRAPHICS_IMPORTER: u32 = 0x0500_3000;
-pub(crate) const PPC_QT_MOVIE: u32 = 0x0500_3010;
+pub const PPC_QT_GRAPHICS_IMPORTER: u32 = 0x4000_3000;
+pub(crate) const PPC_QT_MOVIE: u32 = 0x4000_3010;
 pub const PPC_QT_MOVIE_TASKS_PER_SECOND: u64 = 60;
 
 pub(crate) fn ppc_interrupt_callback_stack_pointer(interrupted_sp: u32) -> u32 {

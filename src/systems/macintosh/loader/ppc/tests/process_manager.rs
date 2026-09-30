@@ -310,6 +310,42 @@ fn hle_import_runner_handles_get_process_information() {
 }
 
 #[test]
+fn process_information_reports_the_loaded_stack_boundary() {
+    let bus = MacMemoryBus::new(128 * 1024 * 1024);
+    let reservation = bus.synthetic_reservation_range().unwrap();
+    let mut loaded = load_pef_application_with_config_and_system_reservation(
+        &synthetic_pef_with_import(b"GetProcessInformation"),
+        PpcLoadConfig::default(),
+        reservation,
+    )
+    .unwrap();
+    let psn_ptr = PPC_DATA_BASE + 0x1000;
+    let info_ptr = PPC_DATA_BASE + 0x1100;
+    loaded.memory.add_region(psn_ptr, vec![0; 8]);
+    loaded.memory.add_region(info_ptr, vec![0; 60]);
+    loaded
+        .memory
+        .write_u32_be(psn_ptr, ProcessSerialNumber::CURRENT.high)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(psn_ptr + 4, ProcessSerialNumber::CURRENT.low)
+        .unwrap();
+    loaded.memory.write_u16_be(info_ptr, 60).unwrap();
+    loaded.cpu.gpr[3] = psn_ptr;
+    loaded.cpu.gpr[4] = info_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(info_ptr + 32),
+        Some(reservation.0 - PPC_CODE_BASE)
+    );
+}
+
+#[test]
 fn import_bindings_classify_process_manager_imports() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "GetCurrentProcess"),

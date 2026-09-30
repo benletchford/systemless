@@ -2443,7 +2443,7 @@ fn sprocket_trace_formatter_includes_draw_sprocket_state() {
             &PpcInputSprocketState::default(),
             &[],
         ),
-        "[SPROCKET-TRACE] DrawSprocketLib:DSpContext_SwapBuffers pc=$01F01000 lr=$01002000 rtoc=$02003000 sp=$03FEF000 r3=$00ABCDEF r4=$00000000 r5=$00000000 r6=$00000000 r7=$00000000 r8=$00000000 action=return($00000000) dsp started=true reserved=$00ABCDEF active=$00ABCDEF state=active attrs=800x600 display_depth=16 back_depth=16 pages=2 front=$02F00000 back=$05010000 swaps=3 last_swap=$00ABCDEF fades=1 last_fade=out context=$00ABCDEF percent=0 zero=$1111/$2222/$3333"
+        "[SPROCKET-TRACE] DrawSprocketLib:DSpContext_SwapBuffers pc=$01F01000 lr=$01002000 rtoc=$02003000 sp=$03FEF000 r3=$00ABCDEF r4=$00000000 r5=$00000000 r6=$00000000 r7=$00000000 r8=$00000000 action=return($00000000) dsp started=true reserved=$00ABCDEF active=$00ABCDEF state=active attrs=800x600 display_depth=16 back_depth=16 pages=2 front=$02F00000 back=$40010000 swaps=3 last_swap=$00ABCDEF fades=1 last_fade=out context=$00ABCDEF percent=0 zero=$1111/$2222/$3333"
     );
 }
 

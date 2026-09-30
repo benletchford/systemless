@@ -15,7 +15,7 @@ pub(crate) fn ppc_main_screen_fits() -> bool {
         .is_some_and(|end| end <= PPC_MAIN_GWORLD)
         && PPC_DSP_BACK_SCREEN_BASE
             .checked_add(size)
-            .is_some_and(|end| end <= PPC_STACK_TOP.saturating_add(PPC_DSP_BACK_SCREEN_SPAN))
+            .is_some_and(|end| end <= PPC_DSP_CONTEXT.saturating_add(PPC_DSP_BACK_SCREEN_SPAN))
 }
 
 pub(crate) fn ppc_main_screen_buffer_size() -> u32 {
