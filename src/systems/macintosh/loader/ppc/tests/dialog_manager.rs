@@ -746,6 +746,10 @@ fn get_new_dialog_installs_owned_control_records_in_the_live_ditl() {
             popup_title_width: None,
             active: true,
             font_style: None,
+            is_root: false,
+            parent: 0,
+            sub_controls: Vec::new(),
+            properties: Vec::new(),
         }]
     );
     // The dialog item hit test only accepts control items whose record

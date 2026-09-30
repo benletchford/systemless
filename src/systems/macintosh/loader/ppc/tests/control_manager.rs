@@ -167,6 +167,10 @@ fn hle_import_runner_creates_and_links_a_classic_control_record() {
             popup_title_width: None,
             active: true,
             font_style: None,
+            is_root: false,
+            parent: 0,
+            sub_controls: Vec::new(),
+            properties: Vec::new(),
         }]
     );
 }
@@ -2259,6 +2263,452 @@ fn control_hit_testing_and_tracking_commands_dispatch_with_canonical_evaluation(
     }
 }
 
+#[test]
+fn import_bindings_classify_control_hierarchy_and_property_imports() {
+    for library in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        assert_eq!(
+            dispatcher_target_for_import(library, "AutoEmbedControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::AutoEmbedControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "autoembedcontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::AutoEmbedControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "ChangeControlPropertyAttributes"),
+            PpcImportDispatcherTarget::LegacyControl(
+                PpcLegacyControlOperation::ChangeControlPropertyAttributes
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "changecontrolpropertyattributes"),
+            PpcImportDispatcherTarget::LegacyControl(
+                PpcLegacyControlOperation::ChangeControlPropertyAttributes
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "CountSubControls"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::CountSubControls)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "countsubcontrols"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::CountSubControls)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "CreateRootControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::CreateRootControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "createrootcontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::CreateRootControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "EmbedControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::EmbedControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "embedcontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::EmbedControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "GetControlProperty"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlProperty)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "getcontrolproperty"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlProperty)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "GetControlPropertyAttributes"),
+            PpcImportDispatcherTarget::LegacyControl(
+                PpcLegacyControlOperation::GetControlPropertyAttributes
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "getcontrolpropertyattributes"),
+            PpcImportDispatcherTarget::LegacyControl(
+                PpcLegacyControlOperation::GetControlPropertyAttributes
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "GetControlPropertySize"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlPropertySize)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "getcontrolpropertysize"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlPropertySize)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "GetIndexedSubControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetIndexedSubControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "getindexedsubcontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetIndexedSubControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "GetRootControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetRootControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "getrootcontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetRootControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "GetSuperControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetSuperControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "getsupercontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetSuperControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "RemoveControlProperty"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::RemoveControlProperty)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "removecontrolproperty"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::RemoveControlProperty)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "SetControlProperty"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlProperty)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "setcontrolproperty"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlProperty)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "SetControlSupervisor"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlSupervisor)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "setcontrolsupervisor"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlSupervisor)
+        );
+    }
+}
 
+#[test]
+fn control_hierarchy_and_property_commands_dispatch_with_canonical_evaluation() {
+    for lib in [b"InterfaceLib".as_slice(), b"AppearanceLib".as_slice(), b"CarbonLib".as_slice()] {
+        let pef = synthetic_pef_with_library_import(lib, b"CreateRootControl");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let lib_str = std::str::from_utf8(lib).unwrap();
 
+        let out_ref_ptr = PPC_DATA_BASE + 0x3000;
+        let out_attr_ptr = PPC_DATA_BASE + 0x3010;
+        let out_size_ptr = PPC_DATA_BASE + 0x3014;
+        let out_data_buf = PPC_DATA_BASE + 0x3020;
+        let in_data_buf = PPC_DATA_BASE + 0x3040;
+        let bounds1_ptr = PPC_DATA_BASE + 0x3060;
+        let bounds2_ptr = PPC_DATA_BASE + 0x3070;
+        let title_ptr = PPC_DATA_BASE + 0x3080;
+        loaded.memory.add_region(out_ref_ptr, vec![0; 0x1000]);
+        let window = PPC_MAIN_GWORLD;
 
+        // 1. CreateRootControl(window, out_ref_ptr) -> creates root control
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "CreateRootControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = window;
+        loaded.cpu.gpr[4] = out_ref_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        let root_handle = loaded.memory.read_u32_be(out_ref_ptr).unwrap();
+        assert_ne!(root_handle, 0);
+
+        // 2. CreateRootControl again -> returns -30587 (errRootAlreadyExists)
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = window;
+        loaded.cpu.gpr[4] = out_ref_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -30587);
+        assert_eq!(loaded.memory.read_u32_be(out_ref_ptr), Some(root_handle));
+
+        // 3. GetRootControl(window, out_ref_ptr) -> returns 0 and root_handle
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetRootControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = window;
+        loaded.cpu.gpr[4] = out_ref_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_ref_ptr), Some(root_handle));
+
+        // Create child controls 1 and 2
+        ppc_write_rect(&mut loaded.memory, bounds1_ptr, 10, 10, 50, 100);
+        ppc_write_rect(&mut loaded.memory, bounds2_ptr, 60, 10, 100, 100);
+        ppc_write_pstring_bytes(&mut loaded.memory, title_ptr, b"Item");
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "NewControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = window;
+        loaded.cpu.gpr[4] = bounds1_ptr;
+        loaded.cpu.gpr[5] = title_ptr;
+        loaded.cpu.gpr[6] = 1;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        loaded.cpu.gpr[9] = 100;
+        loaded.cpu.gpr[10] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        let child1 = loaded.cpu.gpr[3];
+        assert_ne!(child1, 0);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = window;
+        loaded.cpu.gpr[4] = bounds2_ptr;
+        loaded.cpu.gpr[5] = title_ptr;
+        loaded.cpu.gpr[6] = 1;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        loaded.cpu.gpr[9] = 100;
+        loaded.cpu.gpr[10] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        let child2 = loaded.cpu.gpr[3];
+        assert_ne!(child2, 0);
+
+        // 4. CountSubControls(root_handle, out_size_ptr) -> initially 0
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "CountSubControls");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = root_handle;
+        loaded.cpu.gpr[4] = out_size_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u16_be(out_size_ptr), Some(0));
+
+        // 5. EmbedControl(child1, root_handle) -> embeds child1 into root
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "EmbedControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = child1;
+        loaded.cpu.gpr[4] = root_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        // 6. EmbedControl(child1, child1) -> returns -30594 (errCantEmbedIntoSelf)
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = child1;
+        loaded.cpu.gpr[4] = child1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -30594);
+
+        // 7. AutoEmbedControl(child2, window) -> automatically embeds into root
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "AutoEmbedControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = child2;
+        loaded.cpu.gpr[4] = window;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        // 8. CountSubControls(root_handle) -> now 2
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "CountSubControls");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = root_handle;
+        loaded.cpu.gpr[4] = out_size_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u16_be(out_size_ptr), Some(2));
+
+        // 9. GetIndexedSubControl(root, 1) -> child1, GetIndexedSubControl(root, 2) -> child2
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetIndexedSubControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = root_handle;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = out_ref_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_ref_ptr), Some(child1));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = root_handle;
+        loaded.cpu.gpr[4] = 2;
+        loaded.cpu.gpr[5] = out_ref_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_ref_ptr), Some(child2));
+
+        // Out of range index 3 -> -30590 (errControlIsNotEmbedder)
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = root_handle;
+        loaded.cpu.gpr[4] = 3;
+        loaded.cpu.gpr[5] = out_ref_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -30590);
+
+        // 10. GetSuperControl(child1) -> root_handle
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetSuperControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = child1;
+        loaded.cpu.gpr[4] = out_ref_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_ref_ptr), Some(root_handle));
+
+        // 11. SetControlSupervisor(child1, 0) -> unparent child1
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlSupervisor");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = child1;
+        loaded.cpu.gpr[4] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        // Child1 has no parent now -> GetSuperControl returns -30592
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetSuperControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = child1;
+        loaded.cpu.gpr[4] = out_ref_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -30592);
+
+        // 12. SetControlProperty(child1, 'TEST', 'TAG1', 4, data)
+        let prop_creator = 0x5445_5354; // 'TEST'
+        let prop_tag = 0x5441_4731;     // 'TAG1'
+        let _ = loaded.memory.write_bytes(in_data_buf, &[0xDE, 0xAD, 0xBE, 0xEF]);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlProperty");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = child1;
+        loaded.cpu.gpr[4] = prop_creator;
+        loaded.cpu.gpr[5] = prop_tag;
+        loaded.cpu.gpr[6] = 4;
+        loaded.cpu.gpr[7] = in_data_buf;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        // 13. GetControlPropertySize(child1, 'TEST', 'TAG1', out_size_ptr) -> 4
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlPropertySize");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = child1;
+        loaded.cpu.gpr[4] = prop_creator;
+        loaded.cpu.gpr[5] = prop_tag;
+        loaded.cpu.gpr[6] = out_size_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_size_ptr), Some(4));
+
+        // 14. GetControlProperty(child1, 'TEST', 'TAG1', 16, out_size_ptr, out_data_buf) -> data
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlProperty");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = child1;
+        loaded.cpu.gpr[4] = prop_creator;
+        loaded.cpu.gpr[5] = prop_tag;
+        loaded.cpu.gpr[6] = 16;
+        loaded.cpu.gpr[7] = out_size_ptr;
+        loaded.cpu.gpr[8] = out_data_buf;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_size_ptr), Some(4));
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, out_data_buf, 4),
+            Some(vec![0xDE, 0xAD, 0xBE, 0xEF])
+        );
+
+        // 15. ChangeControlPropertyAttributes(child1, 'TEST', 'TAG1', 0x20, 0)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ChangeControlPropertyAttributes");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = child1;
+        loaded.cpu.gpr[4] = prop_creator;
+        loaded.cpu.gpr[5] = prop_tag;
+        loaded.cpu.gpr[6] = 0x20;
+        loaded.cpu.gpr[7] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        // 16. GetControlPropertyAttributes(child1, 'TEST', 'TAG1', out_attr_ptr) -> 0x20
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlPropertyAttributes");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = child1;
+        loaded.cpu.gpr[4] = prop_creator;
+        loaded.cpu.gpr[5] = prop_tag;
+        loaded.cpu.gpr[6] = out_attr_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_attr_ptr), Some(0x20));
+
+        // 17. RemoveControlProperty(child1, 'TEST', 'TAG1')
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "RemoveControlProperty");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = child1;
+        loaded.cpu.gpr[4] = prop_creator;
+        loaded.cpu.gpr[5] = prop_tag;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        // 18. GetControlProperty after removal -> -5604 (controlPropertyNotFoundErr)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlProperty");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = child1;
+        loaded.cpu.gpr[4] = prop_creator;
+        loaded.cpu.gpr[5] = prop_tag;
+        loaded.cpu.gpr[6] = 16;
+        loaded.cpu.gpr[7] = out_size_ptr;
+        loaded.cpu.gpr[8] = out_data_buf;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -5604);
+    }
+}

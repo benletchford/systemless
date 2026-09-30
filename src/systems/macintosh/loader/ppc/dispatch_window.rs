@@ -3,6 +3,7 @@
 use super::*;
 use std::collections::VecDeque;
 
+pub(crate) const PPC_CWINDOW_PORT_RECT_OFFSET: u32 = 16;
 pub(crate) const PPC_CWINDOW_WINDOW_KIND_OFFSET: u32 = 108;
 pub(crate) const PPC_CWINDOW_VISIBLE_OFFSET: u32 = 110;
 pub(crate) const PPC_CWINDOW_HILITED_OFFSET: u32 = 111;
