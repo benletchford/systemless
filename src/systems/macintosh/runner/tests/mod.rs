@@ -198,6 +198,7 @@ pub(super) fn halted_ppc_app_with_sound(sound: PpcSoundState) -> LoadedApp {
         dialog_callback_stack: Vec::new(),
         collection_callback_stack: Vec::new(),
         pending_file_completions: VecDeque::new(),
+        file_completion_context: None,
         apple_events: Default::default(),
         cfm: Some(crate::cfm::CfmState::default()),
         controls: Default::default(),

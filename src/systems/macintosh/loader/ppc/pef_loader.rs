@@ -957,6 +957,7 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
         dialog_callback_stack: Vec::new(),
         collection_callback_stack: Vec::new(),
         pending_file_completions: VecDeque::new(),
+        file_completion_context: None,
         apple_events: PpcAppleEventState::default(),
         cfm: Some(PpcCfmState {
             connections: cfm_connections,

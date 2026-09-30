@@ -7424,7 +7424,8 @@ impl FixtureRunner {
         }
         let mut file_completion_cycles = 0u64;
         for _ in 0..16 {
-            let Some((parameter_block, completion)) = ppc_app.pending_file_completions.pop_front() else {
+            let Some(&(parameter_block, completion)) = ppc_app.pending_file_completions.front()
+            else {
                 break;
             };
             let callback = self.process_context.with_memory_and_cfm(|memory_manager, cfm| {
@@ -7449,6 +7450,10 @@ impl FixtureRunner {
             }
             file_completion_cycles = file_completion_cycles
                 .saturating_add(ppc_run_result_cycles(callback.result));
+            if matches!(callback.result, PpcRunResult::CycleLimit { .. }) {
+                break;
+            }
+            ppc_app.pending_file_completions.pop_front();
         }
         let resumed_m68k = self.resume_m68k_after_powerpc(&mut ppc_app);
         let mixed_mode_budget =
