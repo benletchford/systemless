@@ -3730,10 +3730,16 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "AESend") => PpcImportDispatcherTarget::AppleEventCompatibility(
             PpcAppleEventCompatibilityOperation::Send,
         ),
-        ("InterfaceLib", "AppendDITL") => PpcImportDispatcherTarget::DialogCompatibility(
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "AppendDITL" | "AppendDitl",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::AppendDitl,
         ),
-        ("InterfaceLib", "CountDITL") => PpcImportDispatcherTarget::DialogCompatibility(
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "CountDITL" | "CountDitl",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::CountDitl,
         ),
         ("InterfaceLib", "DialogSelect") => PpcImportDispatcherTarget::DialogCompatibility(
@@ -3748,7 +3754,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "IsDialogEvent") => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::IsDialogEvent,
         ),
-        ("InterfaceLib", "ShortenDITL") => PpcImportDispatcherTarget::DialogCompatibility(
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "ShortenDITL" | "ShortenDitl",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::ShortenDitl,
         ),
         ("InterfaceLib", "ShowDialogItem") => PpcImportDispatcherTarget::DialogCompatibility(

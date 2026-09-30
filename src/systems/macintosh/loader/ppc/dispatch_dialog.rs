@@ -1716,7 +1716,24 @@ fn ppc_dispatch_dialog_compatibility(
         PpcDialogCompatibilityOperation::CountDitl => {
             let count = evaluate_count_ditl_parameters(dialog).map_or(0, |params| {
                 let items = ppc_dialog_items_for_dialog(memory, handles, params.dialog_ptr());
-                evaluate_count_ditl(None, items.map_or(0, |i| i.len()))
+                let ditl_word = memory
+                    .read_u32_be(params.dialog_ptr().wrapping_add(DIALOG_ITEMS_OFFSET))
+                    .and_then(|items_handle| {
+                        if items_handle != 0 {
+                            memory.read_u32_be(items_handle)
+                        } else {
+                            None
+                        }
+                    })
+                    .and_then(|ditl_ptr| {
+                        if ditl_ptr != 0 {
+                            memory.read_u16_be(ditl_ptr)
+                        } else {
+                            None
+                        }
+                    });
+                let tracked_count = items.map_or(0, |i| i.len());
+                evaluate_count_ditl(ditl_word, tracked_count)
             });
             PpcImportAction::Return(u32::from(count))
         }
