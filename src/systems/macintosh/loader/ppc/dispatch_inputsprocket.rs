@@ -211,10 +211,17 @@ pub(super) fn ppc_dispatch_input_sprocket_compatibility(
             PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }
         PpcInputSprocketCompatibilityOperation::ElementGetNextEvent => {
-            if cpu.gpr[4] != 0 {
-                let _ = memory.write_u32_be(cpu.gpr[4], 0);
-            }
-            PpcImportAction::Return(0)
+            // Apple Game Sprockets Legacy Reference (2003), p. 62:
+            // OSStatus ISpElement_GetNextEvent(ISpElementReference inElement,
+            //     UInt32 bufSize, ISpElementEventPtr event, Boolean *wasEvent).
+            // An idle element leaves the event buffer untouched and clears the
+            // Boolean output, which is the fourth argument, not bufSize.
+            let result = if cpu.gpr[6] != 0 && memory.write_u8(cpu.gpr[6], 0).is_some() {
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            PpcImportAction::Return(ppc_i16_result(result))
         }
         PpcInputSprocketCompatibilityOperation::ElementFlush
         | PpcInputSprocketCompatibilityOperation::Tickle => {

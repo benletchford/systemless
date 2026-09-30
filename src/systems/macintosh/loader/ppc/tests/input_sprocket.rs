@@ -96,6 +96,28 @@ fn hle_import_runner_polls_empty_input_sprocket_element_list() {
 }
 
 #[test]
+fn hle_import_runner_polls_empty_input_sprocket_element_without_writing_size() {
+    let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpElement_GetNextEvent");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let event_ptr = PPC_DATA_BASE + 0x1000;
+    let was_event_ptr = PPC_DATA_BASE + 0x1100;
+    loaded.memory.add_region(event_ptr, vec![0x5a; 20]);
+    loaded.memory.add_region(was_event_ptr, vec![0xff]);
+    loaded.cpu.gpr[3] = PPC_HEAP_BASE;
+    loaded.cpu.gpr[4] = 20;
+    loaded.cpu.gpr[5] = event_ptr;
+    loaded.cpu.gpr[6] = was_event_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u8(was_event_ptr), Some(0));
+    assert_eq!(loaded.memory.read_u8(event_ptr), Some(0x5a));
+}
+
+#[test]
 fn input_sprocket_element_list_delivers_button_press_and_release_once() {
     let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpGetVersion");
     let mut loaded = load_pef_application(&pef).unwrap();
