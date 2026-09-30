@@ -245,6 +245,7 @@ fn is_dialog_event_routes_front_dialog_input_and_rejects_foreign_updates() {
         .memory
         .write_u8(PPC_MAIN_GWORLD + PPC_CWINDOW_VISIBLE_OFFSET, 1)
         .unwrap();
+    loaded.window_list.push(PPC_MAIN_GWORLD);
     ppc_write_event_record(&mut loaded.memory, event_ptr, 3, b'G' as u32, 0, 20, 30, 0);
     loaded.cpu.gpr[3] = event_ptr;
 
@@ -272,6 +273,43 @@ fn is_dialog_event_routes_front_dialog_input_and_rejects_foreign_updates() {
 }
 
 #[test]
+fn is_dialog_event_ignores_dialog_behind_front_window() {
+    let pef = synthetic_pef_with_import(b"IsDialogEvent");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let event_ptr = PPC_DATA_BASE + 0x1000;
+    let overlay = PPC_DATA_BASE + 0x1100;
+    loaded.memory.add_region(event_ptr, vec![0; 16]);
+    loaded.memory.add_region(overlay, vec![0; 256]);
+    loaded
+        .memory
+        .write_u16_be(PPC_MAIN_GWORLD + PPC_CWINDOW_WINDOW_KIND_OFFSET, 2)
+        .unwrap();
+    loaded
+        .memory
+        .write_u8(PPC_MAIN_GWORLD + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+        .unwrap();
+    loaded
+        .memory
+        .write_u8(overlay + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+        .unwrap();
+    loaded.window_list.with_mut(|windows| {
+        windows.retain(|window| *window != PPC_MAIN_GWORLD);
+        windows.insert(0, PPC_MAIN_GWORLD);
+    });
+    ppc_write_event_record(&mut loaded.memory, event_ptr, 3, b'G' as u32, 0, 20, 30, 0);
+    loaded.cpu.gpr[3] = event_ptr;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    loaded.window_list.with_mut(|windows| windows.insert(0, overlay));
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = event_ptr;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
 fn dialog_select_reports_enabled_item_hit_in_front_dialog() {
     let pef = synthetic_pef_with_import(b"DialogSelect");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -288,6 +326,7 @@ fn dialog_select_reports_enabled_item_hit_in_front_dialog() {
         .memory
         .write_u8(PPC_MAIN_GWORLD + PPC_CWINDOW_VISIBLE_OFFSET, 1)
         .unwrap();
+    loaded.window_list.push(PPC_MAIN_GWORLD);
     let mut ditl = vec![0; 18];
     ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
     ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
@@ -4945,4 +4984,3 @@ fn dialog_control_conversion_and_lowmem_commands_dispatch_with_canonical_evaluat
         assert_eq!(probe.unsupported_import_index, None);
     }
 }
-
