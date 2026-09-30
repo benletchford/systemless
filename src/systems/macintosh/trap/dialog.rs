@@ -2085,7 +2085,18 @@ impl super::TrapDispatcher {
             merged.insert(0, (0, Self::te_style_at_offset(&existing_runs, 0)));
         }
 
-        let run_count = merged.len().min(u16::MAX as usize);
+        Self::te_write_style_runs(bus, te_handle, &merged, text_len)
+    }
+
+    /// Replace a styled record's runs with `runs` (start, style), one style
+    /// table entry per run, and end them at `text_len`.
+    fn te_write_style_runs(
+        bus: &mut MacMemoryBus,
+        te_handle: u32,
+        runs: &[(usize, TeResolvedStyle)],
+        text_len: usize,
+    ) -> bool {
+        let run_count = runs.len().min(u16::MAX as usize);
         let style_handle = Self::te_style_handle(bus, te_handle);
         if style_handle == 0 {
             return false;
@@ -2118,7 +2129,7 @@ impl super::TrapDispatcher {
 
         bus.write_word(style_ptr + Self::TE_STYLE_N_RUNS_OFFSET, run_count as u16);
         bus.write_word(style_ptr + Self::TE_STYLE_N_STYLES_OFFSET, run_count as u16);
-        for (index, (start, style)) in merged.iter().take(run_count).enumerate() {
+        for (index, (start, style)) in runs.iter().take(run_count).enumerate() {
             let style_element_ptr = style_table_ptr + (index as u32 * Self::ST_ELEMENT_SIZE);
             Self::te_write_style_table_element(bus, style_element_ptr, *style);
             let run_ptr = style_ptr + Self::TE_STYLE_RUNS_OFFSET + (index as u32 * 4);
@@ -2127,6 +2138,87 @@ impl super::TrapDispatcher {
         }
         Self::te_update_styled_run_sentinel(bus, te_handle, text_len);
         true
+    }
+
+    /// A styled record's runs after the `deleted` characters at `start` were
+    /// replaced by `inserted` characters in `inserted_style`, leaving
+    /// `new_len`: every other character keeps its style, because TextEdit's
+    /// style runs move with the text they cover.
+    fn te_runs_after_edit(
+        runs: &[TeStyleRun],
+        (start, deleted, inserted): (usize, usize, usize),
+        inserted_style: TeResolvedStyle,
+        new_len: usize,
+    ) -> Vec<(usize, TeResolvedStyle)> {
+        let following = Self::te_style_at_offset(runs, start + deleted);
+        let mut edited: Vec<(usize, TeResolvedStyle)> = Vec::with_capacity(runs.len() + 2);
+        for run in runs {
+            if run.start < start {
+                edited.push((run.start, run.style));
+            } else if run.start > start + deleted {
+                edited.push((run.start - deleted + inserted, run.style));
+            }
+        }
+        if inserted > 0 {
+            edited.push((start, inserted_style));
+        }
+        edited.push((start + inserted, following));
+        edited.sort_by_key(|(run_start, _)| *run_start);
+        let mut folded: Vec<(usize, TeResolvedStyle)> = Vec::with_capacity(edited.len());
+        for (run_start, style) in edited {
+            if run_start >= new_len && run_start != 0 {
+                continue;
+            }
+            match folded.last_mut() {
+                Some((last_start, last_style)) if *last_start == run_start => *last_style = style,
+                Some((_, last_style)) if *last_style == style => {}
+                _ => folded.push((run_start, style)),
+            }
+        }
+        if let Some(first) = folded.first_mut() {
+            first.0 = 0;
+        }
+        folded
+    }
+
+    /// Keep a styled record's runs on their characters across an edit of
+    /// its text from `old` to `new`, before the new text is stored (storing
+    /// it lays the lines out from the runs). The edit is the span between
+    /// the texts' common prefix, which starts no later than the selection
+    /// start the edit was made at, and their common suffix. Inserted text
+    /// takes the null style when one is set, otherwise the style of the
+    /// character before it, as TEContinuousStyle reports for an insertion
+    /// point (Inside Macintosh Volume VI, 15-34).
+    fn te_restyle_for_edit(
+        &self,
+        bus: &mut MacMemoryBus,
+        te_handle: u32,
+        (old, new): (&[u8], &[u8]),
+        selection_start: usize,
+    ) {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if old == new || !Self::te_is_styled_record(bus, te_ptr) {
+            return;
+        }
+        let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+        let start = prefix.min(selection_start);
+        let room = old.len().min(new.len()) - start;
+        let suffix = old[start..]
+            .iter()
+            .rev()
+            .zip(new[start..].iter().rev())
+            .take(room)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let (deleted, inserted) = (old.len() - start - suffix, new.len() - start - suffix);
+        let runs = self.te_style_runs(bus, te_handle, old.len());
+        let inserted_style =
+            Self::te_null_style_resolved_style(bus, te_handle).unwrap_or_else(|| {
+                Self::te_style_at_offset(&runs, start.checked_sub(1).unwrap_or(start + deleted))
+            });
+        let edited =
+            Self::te_runs_after_edit(&runs, (start, deleted, inserted), inserted_style, new.len());
+        Self::te_write_style_runs(bus, te_handle, &edited, new.len());
     }
 
     fn te_set_style_for_range(
@@ -2231,44 +2323,7 @@ impl super::TrapDispatcher {
             }
             folded.push((start, style));
         }
-        let merged = folded;
-
-        let run_count = merged.len().min(u16::MAX as usize);
-        let style_handle = Self::te_style_handle(bus, te_handle);
-        if style_handle == 0 {
-            return false;
-        }
-        let style_ptr = Self::ensure_handle_capacity(
-            bus,
-            style_handle,
-            Self::TE_STYLE_RUNS_OFFSET + ((run_count as u32 + 1) * 4),
-        );
-        if style_ptr == 0 {
-            return false;
-        }
-        let style_table_handle = bus.read_long(style_ptr + Self::TE_STYLE_STYLE_TABLE_OFFSET);
-        let style_table_ptr = Self::ensure_handle_capacity(
-            bus,
-            style_table_handle,
-            (run_count as u32) * Self::ST_ELEMENT_SIZE,
-        );
-        if style_table_ptr == 0 {
-            return false;
-        }
-        bus.write_word(style_ptr + Self::TE_STYLE_N_RUNS_OFFSET, run_count as u16);
-        bus.write_word(style_ptr + Self::TE_STYLE_N_STYLES_OFFSET, run_count as u16);
-        for (index, (start, style)) in merged.iter().take(run_count).enumerate() {
-            Self::te_write_style_table_element(
-                bus,
-                style_table_ptr + (index as u32 * Self::ST_ELEMENT_SIZE),
-                *style,
-            );
-            let run_ptr = style_ptr + Self::TE_STYLE_RUNS_OFFSET + (index as u32 * 4);
-            bus.write_word(run_ptr, (*start).min(u16::MAX as usize) as u16);
-            bus.write_word(run_ptr + 2, index as u16);
-        }
-        Self::te_update_styled_run_sentinel(bus, te_handle, text_len);
-        true
+        Self::te_write_style_runs(bus, te_handle, &folded, text_len)
     }
 
     #[allow(dead_code)]
@@ -2568,6 +2623,12 @@ impl super::TrapDispatcher {
         te_handle: u32,
         buffer: &crate::text_edit::TextEditBuffer,
     ) {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr != 0 {
+            let old = Self::te_text_bytes(bus, te_handle);
+            let selection_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
+            self.te_restyle_for_edit(bus, te_handle, (&old, buffer.text()), selection_start);
+        }
         self.te_set_text_contents(bus, te_handle, buffer.text());
         let te_ptr = Self::te_record_ptr(bus, te_handle);
         if te_ptr == 0 {
@@ -15889,6 +15950,7 @@ impl super::TrapDispatcher {
                         merged.extend_from_slice(&existing[..sel_start]);
                         merged.extend_from_slice(&text);
                         merged.extend_from_slice(&existing[sel_start..]);
+                        self.te_restyle_for_edit(bus, te_handle, (&existing, &merged), sel_start);
                         self.te_set_text_contents(bus, te_handle, &merged);
                         let shifted_start = (sel_start + text.len()).min(u16::MAX as usize) as u16;
                         let shifted_end = (sel_end + text.len()).min(u16::MAX as usize) as u16;
