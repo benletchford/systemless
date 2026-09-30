@@ -356,6 +356,7 @@ pub enum PpcLegacyControlOperation {
     GetControlMinimum,
     GetControlTitle,
     GetControlValue,
+    GetControlVariant,
     GetNewControl,
     HideControl,
     KillControls,
@@ -583,6 +584,14 @@ pub(super) fn ppc_dispatch_legacy_control(
                 .and_then(|control| memory.read_u32_be(control + PPC_CONTROL_ACTION_OFFSET))
                 .unwrap_or(0);
             Some(PpcImportAction::Return(action))
+        }
+        PpcLegacyControlOperation::GetControlVariant => {
+            let handle = cpu.gpr[3];
+            let variant = controls
+                .iter()
+                .find(|record| record.handle == handle)
+                .map_or(0, |record| record.proc_id & 0x0F);
+            Some(PpcImportAction::Return(ppc_i16_result(variant)))
         }
         PpcLegacyControlOperation::SetControlMinimum
         | PpcLegacyControlOperation::SetControlMaximum => {

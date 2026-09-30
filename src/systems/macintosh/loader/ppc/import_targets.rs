@@ -4012,9 +4012,10 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "Draw1Control" | "draw1control" | "DrawOneControl" | "drawonecontrol",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl),
-        ("InterfaceLib", "FindControl") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::FindControl)
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "FindControl" | "findcontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::FindControl),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetControlMaximum"
@@ -4049,6 +4050,13 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetControlValue" | "getcontrolvalue" | "GetCtlValue" | "getctlvalue",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlValue),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlVariant"
+                | "getcontrolvariant"
+                | "GetCVariant"
+                | "getcvariant",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlVariant),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetNewControl" | "getnewcontrol",
@@ -4103,12 +4111,14 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SizeControl" | "sizecontrol",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SizeControl),
-        ("InterfaceLib", "TestControl") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TestControl)
-        }
-        ("InterfaceLib", "TrackControl") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TrackControl)
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "TestControl" | "testcontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TestControl),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "TrackControl" | "trackcontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TrackControl),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "BringToFront" | "bringtofront",
