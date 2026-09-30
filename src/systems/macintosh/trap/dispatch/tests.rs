@@ -4,6 +4,57 @@
     use crate::trap::test_helpers::{setup, setup_with_trap_tables};
     use std::collections::VecDeque;
 
+    /// The default-cell shortcut answers exactly as the full table lookup:
+    /// for every slot of a fresh table (every cell holds its default
+    /// gateway, or a come-from head where the profile has one), after a
+    /// patch, and after the patch is removed again.
+    #[test]
+    fn default_table_cells_skip_the_full_lookup_with_the_same_answer() {
+        let (mut dispatcher, _cpu, mut bus) = setup_with_trap_tables();
+        let full = |dispatcher: &TrapDispatcher, bus: &MacMemoryBus, word: u16| {
+            let logical = dispatcher.trap_table_address(bus, word);
+            logical.filter(|&logical| dispatcher.default_trap_gateway(bus, word) != Some(logical))
+        };
+        let words = (0..OS_TRAP_TABLE_SLOTS)
+            .map(|slot| 0xA000 | slot)
+            .chain((0..TOOLBOX_TRAP_TABLE_SLOTS).map(|slot| 0xA800 | slot));
+        let mut shortcut = 0;
+        for word in words {
+            if dispatcher.trap_table_cell_is_default(&bus, word) {
+                shortcut += 1;
+                assert_eq!(full(&dispatcher, &bus, word), None, "{word:#06X}");
+                let gateway = dispatcher.default_trap_gateway(&bus, word).unwrap();
+                assert!(
+                    !(bus.protected_code_contains(gateway)
+                        && bus.try_read_trap_manager_long(gateway)
+                            == Some(crate::trap::manager::COME_FROM_PATCH_SIGNATURE)),
+                    "a default gateway is never a come-from head: {word:#06X}"
+                );
+            }
+            assert_eq!(
+                dispatcher.native_trap_handler(&bus, word),
+                full(&dispatcher, &bus, word),
+                "{word:#06X}"
+            );
+        }
+        assert!(shortcut > 1000, "most fresh cells hold their default");
+
+        let original = dispatcher.trap_table_address(&bus, 0xA9EB).unwrap();
+        dispatcher
+            .install_trap_address(&mut bus, 0xA9EB, 0x0030_0000)
+            .unwrap();
+        assert!(!dispatcher.trap_table_cell_is_default(&bus, 0xA9EB));
+        assert_eq!(
+            dispatcher.native_trap_handler(&bus, 0xA9EB),
+            Some(0x0030_0000)
+        );
+        dispatcher
+            .install_trap_address(&mut bus, 0xA9EB, original)
+            .unwrap();
+        assert!(dispatcher.trap_table_cell_is_default(&bus, 0xA9EB));
+        assert_eq!(dispatcher.native_trap_handler(&bus, 0xA9EB), None);
+    }
+
     #[test]
     fn generated_raw_trap_routes_cover_every_a_line_word_exactly() {
         for low_word in 0u16..0x1000 {
