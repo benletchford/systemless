@@ -2703,12 +2703,14 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LMGetCurStackBase
         | PpcImportDispatcherTarget::LMSetPaintWhite
         | PpcImportDispatcherTarget::LMSetResumeProc
+        | PpcImportDispatcherTarget::LMGetResumeProc
         | PpcImportDispatcherTarget::LMSetACount
         | PpcImportDispatcherTarget::LMGetACount
         | PpcImportDispatcherTarget::LMSetANumber
         | PpcImportDispatcherTarget::LMGetANumber
         | PpcImportDispatcherTarget::LMSetDABeeper
         | PpcImportDispatcherTarget::LMGetDABeeper
+        | PpcImportDispatcherTarget::LMGetDAStrings
         | PpcImportDispatcherTarget::LMSetDlgFont
         | PpcImportDispatcherTarget::LMGetDlgFont
         | PpcImportDispatcherTarget::SetMenuFlash

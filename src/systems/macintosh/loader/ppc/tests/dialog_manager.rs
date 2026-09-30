@@ -1541,6 +1541,24 @@ fn import_bindings_classify_dialog_imports() {
         dispatcher_target_for_import("InterfaceLib", "ModalDialog"),
         PpcImportDispatcherTarget::ModalDialog
     );
+    for (symbol, expected_target) in [
+        ("LMSetResumeProc", PpcImportDispatcherTarget::LMSetResumeProc),
+        ("LMGetResumeProc", PpcImportDispatcherTarget::LMGetResumeProc),
+        ("LMSetACount", PpcImportDispatcherTarget::LMSetACount),
+        ("LMGetACount", PpcImportDispatcherTarget::LMGetACount),
+        ("LMSetANumber", PpcImportDispatcherTarget::LMSetANumber),
+        ("LMGetANumber", PpcImportDispatcherTarget::LMGetANumber),
+        ("LMSetDABeeper", PpcImportDispatcherTarget::LMSetDABeeper),
+        ("LMGetDABeeper", PpcImportDispatcherTarget::LMGetDABeeper),
+        ("LMGetDAStrings", PpcImportDispatcherTarget::LMGetDAStrings),
+        ("LMSetDlgFont", PpcImportDispatcherTarget::LMSetDlgFont),
+        ("LMGetDlgFont", PpcImportDispatcherTarget::LMGetDlgFont),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            expected_target,
+        );
+    }
     for (symbol, operation) in [
         ("AppendDITL", PpcDialogCompatibilityOperation::AppendDitl),
         ("CountDITL", PpcDialogCompatibilityOperation::CountDitl),
@@ -2152,6 +2170,15 @@ fn lm_acount_and_anumber_accessors_manage_dialog_globals() {
     let probe = loaded_get_anumber.run_with_hle_imports(64);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded_get_anumber.cpu.gpr[3], 256);
+
+    let mut loaded_get_anumber_neg = load_pef_application(&pef_get_anumber).unwrap();
+    loaded_get_anumber_neg
+        .memory
+        .write_u16_be(addr::ANUMBER, 0xFF80)
+        .unwrap();
+    let probe = loaded_get_anumber_neg.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_get_anumber_neg.cpu.gpr[3], ppc_i16_result(-128));
 }
 
 #[test]
@@ -2174,6 +2201,49 @@ fn lm_dlgfont_accessors_manage_dlg_font_global() {
     let probe = loaded_get.run_with_hle_imports(64);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded_get.cpu.gpr[3], 7);
+
+    let mut loaded_get_neg = load_pef_application(&pef_get).unwrap();
+    loaded_get_neg
+        .memory
+        .write_u16_be(addr::DLG_FONT, 0xFFFF)
+        .unwrap();
+    let probe = loaded_get_neg.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_get_neg.cpu.gpr[3], ppc_i16_result(-1));
+}
+
+#[test]
+fn lm_resumeproc_and_dastrings_accessors_manage_dialog_globals() {
+    use crate::memory::globals::addr;
+
+    // LMSetResumeProc
+    let pef_set = synthetic_pef_with_library_import(b"InterfaceLib", b"LMSetResumeProc");
+    let mut loaded_set = load_pef_application(&pef_set).unwrap();
+    loaded_set.cpu.gpr[3] = 0x0034_5678;
+    let probe = loaded_set.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded_set.memory.read_u32_be(addr::RESUME_PROC),
+        Some(0x0034_5678)
+    );
+
+    // LMGetResumeProc
+    let pef_get = synthetic_pef_with_library_import(b"InterfaceLib", b"LMGetResumeProc");
+    let mut loaded_get = load_pef_application(&pef_get).unwrap();
+    loaded_get
+        .memory
+        .write_u32_be(addr::RESUME_PROC, 0x0034_5678)
+        .unwrap();
+    let probe = loaded_get.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_get.cpu.gpr[3], 0x0034_5678);
+
+    // LMGetDAStrings
+    let pef_dastrings = synthetic_pef_with_library_import(b"InterfaceLib", b"LMGetDAStrings");
+    let mut loaded_dastrings = load_pef_application(&pef_dastrings).unwrap();
+    let probe = loaded_dastrings.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_dastrings.cpu.gpr[3], addr::DA_STRINGS);
 }
 
 #[test]

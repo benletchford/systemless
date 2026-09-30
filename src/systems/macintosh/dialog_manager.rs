@@ -3153,6 +3153,16 @@ pub const fn evaluate_get_alert_stage(raw_acount: u16) -> i16 {
     raw_acount as i16
 }
 
+/// Evaluates setting the active alert stage into low-memory global `AlertStage` / `ACount` ($0A9A).
+///
+/// Universal Interfaces 3.4.1 `LowMem.h`:
+/// `EXTERN_API( void ) LMSetACount(short value);`
+#[inline]
+#[must_use]
+pub const fn evaluate_set_alert_stage(stage: i16) -> u16 {
+    stage as u16
+}
+
 /// Evaluated alert stage state including sound number, default item, and stage counter progression.
 ///
 /// Inside Macintosh Volume I, pp. I-417--I-424;
@@ -5869,6 +5879,76 @@ impl SetDialogFontParameters {
 #[must_use]
 pub const fn evaluate_set_dialog_font_parameters(font_num: i16) -> SetDialogFontParameters {
     SetDialogFontParameters::new(font_num)
+}
+
+/// Evaluates reading the `ResumeProc` low-memory global ($0A8C).
+///
+/// Universal Interfaces 3.4.1 `LowMem.h`:
+/// `EXTERN_API( Handle ) LMGetResumeProc(void);`
+#[inline]
+#[must_use]
+pub const fn evaluate_get_resume_proc(raw: u32) -> u32 {
+    raw
+}
+
+/// Evaluates writing the `ResumeProc` low-memory global ($0A8C).
+///
+/// Universal Interfaces 3.4.1 `LowMem.h`:
+/// `EXTERN_API( void ) LMSetResumeProc(Handle value);`
+#[inline]
+#[must_use]
+pub const fn evaluate_set_resume_proc(resume_proc: u32) -> u32 {
+    resume_proc
+}
+
+/// Evaluates reading the `ANumber` low-memory global ($0A98).
+///
+/// Universal Interfaces 3.4.1 `LowMem.h`:
+/// `EXTERN_API( short ) LMGetANumber(void);`
+#[inline]
+#[must_use]
+pub const fn evaluate_get_anumber(raw_anumber: u16) -> i16 {
+    raw_anumber as i16
+}
+
+/// Evaluates writing the `ANumber` low-memory global ($0A98).
+///
+/// Universal Interfaces 3.4.1 `LowMem.h`:
+/// `EXTERN_API( void ) LMSetANumber(short value);`
+#[inline]
+#[must_use]
+pub const fn evaluate_set_anumber(anumber: i16) -> u16 {
+    anumber as u16
+}
+
+/// Evaluates reading the `DABeeper` low-memory global ($0A9C).
+///
+/// Universal Interfaces 3.4.1 `LowMem.h`:
+/// `EXTERN_API( SoundProcPtr ) LMGetDABeeper(void);`
+#[inline]
+#[must_use]
+pub const fn evaluate_get_da_beeper(raw: u32) -> u32 {
+    raw
+}
+
+/// Evaluates writing the `DABeeper` low-memory global ($0A9C).
+///
+/// Universal Interfaces 3.4.1 `LowMem.h`:
+/// `EXTERN_API( void ) LMSetDABeeper(SoundProcPtr value);`
+#[inline]
+#[must_use]
+pub const fn evaluate_set_da_beeper(sound_proc: u32) -> u32 {
+    evaluate_error_sound(sound_proc).sound_proc()
+}
+
+/// Returns the low-memory address of the `DAStrings` handles array ($0AA0).
+///
+/// Universal Interfaces 3.4.1 `LowMem.h`:
+/// `EXTERN_API( Ptr ) LMGetDAStrings(void);`
+#[inline]
+#[must_use]
+pub const fn evaluate_get_da_strings_addr() -> u32 {
+    crate::memory::globals::addr::DA_STRINGS
 }
 
 /// Canonical evaluated parameters for `ShortenDITL`.
@@ -9934,6 +10014,40 @@ mod tests {
 
         let direct = SetDialogFontParameters::new(-1);
         assert_eq!(direct.font_num(), -1);
+    }
+
+    #[test]
+    fn dialog_low_memory_globals_evaluation() {
+        assert_eq!(evaluate_get_resume_proc(0), 0);
+        assert_eq!(evaluate_get_resume_proc(0x0012_3456), 0x0012_3456);
+        assert_eq!(evaluate_set_resume_proc(0), 0);
+        assert_eq!(evaluate_set_resume_proc(0x0012_3456), 0x0012_3456);
+
+        assert_eq!(evaluate_get_anumber(0), 0);
+        assert_eq!(evaluate_get_anumber(128), 128);
+        assert_eq!(evaluate_get_anumber(0xFF80), -128);
+        assert_eq!(evaluate_set_anumber(0), 0);
+        assert_eq!(evaluate_set_anumber(128), 128);
+        assert_eq!(evaluate_set_anumber(-128), 0xFF80);
+
+        assert_eq!(evaluate_get_alert_stage(0), 0);
+        assert_eq!(evaluate_get_alert_stage(3), 3);
+        assert_eq!(evaluate_set_alert_stage(0), 0);
+        assert_eq!(evaluate_set_alert_stage(3), 3);
+        assert_eq!(evaluate_set_alert_stage(-1), 0xFFFF);
+
+        assert_eq!(evaluate_get_da_beeper(0), 0);
+        assert_eq!(evaluate_get_da_beeper(0x00AB_CDEF), 0x00AB_CDEF);
+        assert_eq!(evaluate_set_da_beeper(0), 0);
+        assert_eq!(evaluate_set_da_beeper(0x00AB_CDEF), 0x00AB_CDEF);
+
+        assert_eq!(
+            evaluate_get_da_strings_addr(),
+            crate::memory::globals::addr::DA_STRINGS
+        );
+        assert_eq!(evaluate_dialog_font(0), 0);
+        assert_eq!(evaluate_dialog_font(3), 3);
+        assert_eq!(evaluate_dialog_font(0xFFFF), -1);
     }
 
     #[test]

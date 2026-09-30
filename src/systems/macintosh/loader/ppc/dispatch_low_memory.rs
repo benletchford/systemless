@@ -89,12 +89,21 @@ pub(super) fn dispatch_low_memory_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LMSetResumeProc => {
-            let _ = memory.write_u32_be(crate::memory::globals::addr::RESUME_PROC, cpu.gpr[3]);
+            let resume_proc = crate::dialog_manager::evaluate_set_resume_proc(cpu.gpr[3]);
+            let _ = memory.write_u32_be(crate::memory::globals::addr::RESUME_PROC, resume_proc);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::LMGetResumeProc => {
+            let raw_proc = memory
+                .read_u32_be(crate::memory::globals::addr::RESUME_PROC)
+                .unwrap_or(0);
+            let resume_proc = crate::dialog_manager::evaluate_get_resume_proc(raw_proc);
+            Some(PpcImportAction::Return(resume_proc))
+        }
         PpcImportDispatcherTarget::LMSetACount => {
+            let stage = crate::dialog_manager::evaluate_set_alert_stage(cpu.gpr[3] as u16 as i16);
             let _ =
-                memory.write_u16_be(crate::memory::globals::addr::ALERT_STAGE, cpu.gpr[3] as u16);
+                memory.write_u16_be(crate::memory::globals::addr::ALERT_STAGE, stage);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LMGetACount => {
@@ -105,24 +114,33 @@ pub(super) fn dispatch_low_memory_import(
             Some(PpcImportAction::Return(ppc_i16_result(stage)))
         }
         PpcImportDispatcherTarget::LMSetANumber => {
-            let _ = memory.write_u16_be(crate::memory::globals::addr::ANUMBER, cpu.gpr[3] as u16);
+            let anumber = crate::dialog_manager::evaluate_set_anumber(cpu.gpr[3] as u16 as i16);
+            let _ = memory.write_u16_be(crate::memory::globals::addr::ANUMBER, anumber);
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::LMGetANumber => Some(PpcImportAction::Return(ppc_i16_result(
-            memory
+        PpcImportDispatcherTarget::LMGetANumber => {
+            let raw_anumber = memory
                 .read_u16_be(crate::memory::globals::addr::ANUMBER)
-                .unwrap_or(0) as i16,
-        ))),
+                .unwrap_or(0);
+            let anumber = crate::dialog_manager::evaluate_get_anumber(raw_anumber);
+            Some(PpcImportAction::Return(ppc_i16_result(anumber)))
+        }
         PpcImportDispatcherTarget::LMSetDABeeper => {
-            let eval = crate::dialog_manager::evaluate_error_sound(cpu.gpr[3]);
-            let _ = memory.write_u32_be(crate::memory::globals::addr::DA_BEEPER, eval.sound_proc());
+            let sound_proc = crate::dialog_manager::evaluate_set_da_beeper(cpu.gpr[3]);
+            let _ = memory.write_u32_be(crate::memory::globals::addr::DA_BEEPER, sound_proc);
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::LMGetDABeeper => Some(PpcImportAction::Return(
-            memory
+        PpcImportDispatcherTarget::LMGetDABeeper => {
+            let raw_beeper = memory
                 .read_u32_be(crate::memory::globals::addr::DA_BEEPER)
-                .unwrap_or(0),
-        )),
+                .unwrap_or(0);
+            let sound_proc = crate::dialog_manager::evaluate_get_da_beeper(raw_beeper);
+            Some(PpcImportAction::Return(sound_proc))
+        }
+        PpcImportDispatcherTarget::LMGetDAStrings => {
+            let addr = crate::dialog_manager::evaluate_get_da_strings_addr();
+            Some(PpcImportAction::Return(addr))
+        }
         PpcImportDispatcherTarget::LMSetDlgFont => {
             let params = crate::dialog_manager::evaluate_set_dialog_font_parameters(
                 cpu.gpr[3] as u16 as i16,
@@ -133,11 +151,13 @@ pub(super) fn dispatch_low_memory_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::LMGetDlgFont => Some(PpcImportAction::Return(ppc_i16_result(
-            memory
+        PpcImportDispatcherTarget::LMGetDlgFont => {
+            let raw_font = memory
                 .read_u16_be(crate::memory::globals::addr::DLG_FONT)
-                .unwrap_or(0) as i16,
-        ))),
+                .unwrap_or(0);
+            let font = crate::dialog_manager::evaluate_dialog_font(raw_font);
+            Some(PpcImportAction::Return(ppc_i16_result(font)))
+        }
         PpcImportDispatcherTarget::SetMenuFlash => {
             // Macintosh Toolbox Essentials (1992), p. 3-142: SetMenuFlash
             // stores the selected-menu blink count in the MenuFlash global.
