@@ -91,5 +91,7 @@ references:
 
 ![Firefall Arcade playfield](https://assets.systemless.org/catalogue/media/sha256/ee/ee34d58a9612420bbf60b298f6eea5eaca376e13001547c940b6440b99d0a6ac.png)
 
-Click through the splash and title screens, then choose a play mode. Use
-the arrow keys to steer and Space to fire through the approaching waves.
+Click through the splash and title screens, then briefly hold **Play Normal**
+to start the demo round. Use the arrow keys to steer and Space to fire through
+the approaching waves. The short round ends with information about the full
+version.
