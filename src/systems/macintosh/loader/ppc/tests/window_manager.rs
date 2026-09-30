@@ -4162,3 +4162,338 @@ fn window_sizing_positioning_and_zooming_commands_dispatch_with_canonical_evalua
         }
     }
 }
+
+#[test]
+fn import_bindings_classify_window_invalidation_update_and_drawing_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // BeginUpdate / beginupdate
+        assert_eq!(
+            dispatcher_target_for_import(lib, "BeginUpdate"),
+            PpcImportDispatcherTarget::BeginUpdate
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "beginupdate"),
+            PpcImportDispatcherTarget::BeginUpdate
+        );
+
+        // EndUpdate / endupdate
+        assert_eq!(
+            dispatcher_target_for_import(lib, "EndUpdate"),
+            PpcImportDispatcherTarget::EndUpdate
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "endupdate"),
+            PpcImportDispatcherTarget::EndUpdate
+        );
+
+        // InvalRect / invalrect
+        assert_eq!(
+            dispatcher_target_for_import(lib, "InvalRect"),
+            PpcImportDispatcherTarget::InvalRect
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "invalrect"),
+            PpcImportDispatcherTarget::InvalRect
+        );
+
+        // InvalRgn / invalrgn
+        assert_eq!(
+            dispatcher_target_for_import(lib, "InvalRgn"),
+            PpcImportDispatcherTarget::InvalRgn
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "invalrgn"),
+            PpcImportDispatcherTarget::InvalRgn
+        );
+
+        // ValidRect / validrect
+        assert_eq!(
+            dispatcher_target_for_import(lib, "ValidRect"),
+            PpcImportDispatcherTarget::ValidRect
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "validrect"),
+            PpcImportDispatcherTarget::ValidRect
+        );
+
+        // ValidRgn / validrgn
+        assert_eq!(
+            dispatcher_target_for_import(lib, "ValidRgn"),
+            PpcImportDispatcherTarget::ValidRgn
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "validrgn"),
+            PpcImportDispatcherTarget::ValidRgn
+        );
+
+        // DrawGrowIcon / drawgrowicon
+        assert_eq!(
+            dispatcher_target_for_import(lib, "DrawGrowIcon"),
+            PpcImportDispatcherTarget::DrawGrowIcon
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "drawgrowicon"),
+            PpcImportDispatcherTarget::DrawGrowIcon
+        );
+
+        // CheckUpdate / checkupdate
+        assert_eq!(
+            dispatcher_target_for_import(lib, "CheckUpdate"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CheckUpdate)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "checkupdate"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CheckUpdate)
+        );
+
+        // PaintOne / paintone
+        assert_eq!(
+            dispatcher_target_for_import(lib, "PaintOne"),
+            PpcImportDispatcherTarget::PaintOne
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "paintone"),
+            PpcImportDispatcherTarget::PaintOne
+        );
+
+        // PaintBehind / paintbehind
+        assert_eq!(
+            dispatcher_target_for_import(lib, "PaintBehind"),
+            PpcImportDispatcherTarget::PaintBehind
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "paintbehind"),
+            PpcImportDispatcherTarget::PaintBehind
+        );
+
+        // CalcVis / calcvis
+        assert_eq!(
+            dispatcher_target_for_import(lib, "CalcVis"),
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::CalculateVisibleRegion,
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "calcvis"),
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::CalculateVisibleRegion,
+            )
+        );
+
+        // CalcVisBehind / calcvisbehind
+        assert_eq!(
+            dispatcher_target_for_import(lib, "CalcVisBehind"),
+            PpcImportDispatcherTarget::CalcVisBehind
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "calcvisbehind"),
+            PpcImportDispatcherTarget::CalcVisBehind
+        );
+    }
+}
+
+#[test]
+fn window_invalidation_update_and_drawing_commands_dispatch_with_canonical_evaluation() {
+    for lib in [
+        b"InterfaceLib".as_slice(),
+        b"AppearanceLib".as_slice(),
+        b"CarbonLib".as_slice(),
+    ] {
+        // 1. InvalRect & ValidRect
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"InvalRect");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            let rect_ptr = PPC_DATA_BASE + 0x1030;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            loaded.memory.add_region(rect_ptr, vec![0; 32]);
+            ppc_write_rect(&mut loaded.memory, rect_ptr, 20, 20, 80, 80).unwrap();
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+            loaded.current_gworld.with_mut(|cg| *cg = window);
+            let update_rgn = loaded.memory.read_u32_be(window + PPC_CWINDOW_UPDATE_RGN_OFFSET).unwrap();
+            ppc_set_empty_rgn(&mut loaded.memory, update_rgn).unwrap();
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "InvalRect");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = rect_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((20, 20, 80, 80)));
+
+            // ValidRect removes it
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "ValidRect");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = rect_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((0, 0, 0, 0)));
+        }
+
+        // 2. InvalRgn & ValidRgn
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"InvalRgn");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            let rgn_ptr = PPC_DATA_BASE + 0x1040;
+            let rgn_handle = PPC_DATA_BASE + 0x1060;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            loaded.memory.add_region(rgn_ptr, vec![0; 32]);
+            loaded.memory.add_region(rgn_handle, vec![0; 4]);
+            loaded.memory.write_u32_be(rgn_handle, rgn_ptr).unwrap();
+            ppc_write_rgn_bbox(&mut loaded.memory, rgn_handle, 15, 15, 75, 75).unwrap();
+
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+            loaded.current_gworld.with_mut(|cg| *cg = window);
+            let update_rgn = loaded.memory.read_u32_be(window + PPC_CWINDOW_UPDATE_RGN_OFFSET).unwrap();
+            ppc_set_empty_rgn(&mut loaded.memory, update_rgn).unwrap();
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "InvalRgn");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = rgn_handle;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((15, 15, 75, 75)));
+
+            // ValidRgn removes it
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "ValidRgn");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = rgn_handle;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((0, 0, 0, 0)));
+        }
+
+        // 3. BeginUpdate & EndUpdate
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"BeginUpdate");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+            let update_rgn = loaded.memory.read_u32_be(window + PPC_CWINDOW_UPDATE_RGN_OFFSET).unwrap();
+            ppc_write_rgn_bbox(&mut loaded.memory, update_rgn, 10, 10, 50, 50).unwrap();
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "BeginUpdate");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(*loaded.current_gworld, window);
+
+            // EndUpdate empties update region
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "EndUpdate");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((0, 0, 0, 0)));
+        }
+
+        // 4. DrawGrowIcon
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"DrawGrowIcon");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "DrawGrowIcon");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+        }
+
+        // 5. CheckUpdate
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"CheckUpdate");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            let event_record_ptr = PPC_DATA_BASE + 0x1040;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            loaded.memory.add_region(event_record_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+            let update_rgn = loaded.memory.read_u32_be(window + PPC_CWINDOW_UPDATE_RGN_OFFSET).unwrap();
+            ppc_write_rgn_bbox(&mut loaded.memory, update_rgn, 5, 5, 25, 25).unwrap();
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "CheckUpdate");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = event_record_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 1);
+            assert_eq!(loaded.memory.read_u16_be(event_record_ptr), Some(6));
+            assert_eq!(loaded.memory.read_u32_be(event_record_ptr + 2), Some(window));
+        }
+
+        // 6. CalcVis & CalcVisBehind
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"CalcVis");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "CalcVis");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            // CalcVisBehind
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "CalcVisBehind");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+        }
+
+        // 7. PaintOne & PaintBehind
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"PaintOne");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "PaintOne");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            // PaintBehind
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "PaintBehind");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+        }
+    }
+}

@@ -1822,7 +1822,9 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
         }
         PpcImportDispatcherTarget::InvalRect
+        | PpcImportDispatcherTarget::InvalRgn
         | PpcImportDispatcherTarget::ValidRect
+        | PpcImportDispatcherTarget::ValidRgn
         | PpcImportDispatcherTarget::BeginUpdate
         | PpcImportDispatcherTarget::EndUpdate => {
             unreachable!("window imports return through dispatch_window_import")

@@ -200,7 +200,9 @@ pub enum PpcImportDispatcherTarget {
     FrameRoundRect,
     PaintRoundRect,
     InvalRect,
+    InvalRgn,
     ValidRect,
+    ValidRgn,
     BeginUpdate,
     EndUpdate,
     ClipRect,
@@ -2750,7 +2752,10 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "InvalMenuBar" | "invalmenubar",
         ) => PpcImportDispatcherTarget::InvalMenuBar,
-        ("InterfaceLib", "DrawGrowIcon") => PpcImportDispatcherTarget::DrawGrowIcon,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "DrawGrowIcon" | "drawgrowicon",
+        ) => PpcImportDispatcherTarget::DrawGrowIcon,
         ("InterfaceLib", "OpenCPicture") | ("InterfaceLib", "DebugStr") => {
             PpcImportDispatcherTarget::MenuNoop
         }
@@ -2801,10 +2806,30 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "FillCRect") => PpcImportDispatcherTarget::FillCRect,
         ("InterfaceLib", "FrameRoundRect") => PpcImportDispatcherTarget::FrameRoundRect,
         ("InterfaceLib", "PaintRoundRect") => PpcImportDispatcherTarget::PaintRoundRect,
-        ("InterfaceLib", "InvalRect") => PpcImportDispatcherTarget::InvalRect,
-        ("InterfaceLib", "ValidRect") => PpcImportDispatcherTarget::ValidRect,
-        ("InterfaceLib", "BeginUpdate") => PpcImportDispatcherTarget::BeginUpdate,
-        ("InterfaceLib", "EndUpdate") => PpcImportDispatcherTarget::EndUpdate,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "InvalRect" | "invalrect",
+        ) => PpcImportDispatcherTarget::InvalRect,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "InvalRgn" | "invalrgn",
+        ) => PpcImportDispatcherTarget::InvalRgn,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ValidRect" | "validrect",
+        ) => PpcImportDispatcherTarget::ValidRect,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ValidRgn" | "validrgn",
+        ) => PpcImportDispatcherTarget::ValidRgn,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "BeginUpdate" | "beginupdate",
+        ) => PpcImportDispatcherTarget::BeginUpdate,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "EndUpdate" | "endupdate",
+        ) => PpcImportDispatcherTarget::EndUpdate,
         ("InterfaceLib", "ClipRect") => PpcImportDispatcherTarget::ClipRect,
         ("InterfaceLib", "GetClip") => PpcImportDispatcherTarget::GetClip,
         ("InterfaceLib", "SetClip") => PpcImportDispatcherTarget::SetClip,
@@ -2884,9 +2909,18 @@ pub(crate) fn dispatcher_target_for_import(
             "FrontWindow" | "frontwindow",
         ) => PpcImportDispatcherTarget::FrontWindow,
         ("InterfaceLib", "SetWinColor") => PpcImportDispatcherTarget::SetWinColor,
-        ("InterfaceLib", "PaintOne") => PpcImportDispatcherTarget::PaintOne,
-        ("InterfaceLib", "PaintBehind") => PpcImportDispatcherTarget::PaintBehind,
-        ("InterfaceLib", "CalcVisBehind") => PpcImportDispatcherTarget::CalcVisBehind,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "PaintOne" | "paintone",
+        ) => PpcImportDispatcherTarget::PaintOne,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "PaintBehind" | "paintbehind",
+        ) => PpcImportDispatcherTarget::PaintBehind,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "CalcVisBehind" | "calcvisbehind",
+        ) => PpcImportDispatcherTarget::CalcVisBehind,
         ("InterfaceLib", "GetMouse") => PpcImportDispatcherTarget::GetMouse,
         ("InterfaceLib", "ActivatePalette") => PpcImportDispatcherTarget::ActivatePalette,
         ("InterfaceLib", "SetPalette") | ("InterfaceLib", "NSetPalette") => {
@@ -3960,10 +3994,16 @@ pub(crate) fn dispatcher_target_for_import(
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::BringToFront)
         }
-        ("InterfaceLib", "CalcVis") => PpcImportDispatcherTarget::LegacyWindow(
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "CalcVis" | "calcvis",
+        ) => PpcImportDispatcherTarget::LegacyWindow(
             PpcLegacyWindowOperation::CalculateVisibleRegion,
         ),
-        ("InterfaceLib", "CheckUpdate") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "CheckUpdate" | "checkupdate",
+        ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CheckUpdate)
         }
         (
