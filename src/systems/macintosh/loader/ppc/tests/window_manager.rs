@@ -3596,3 +3596,289 @@ fn window_creation_and_disposal_commands_dispatch_with_canonical_evaluation() {
         }
     }
 }
+
+#[test]
+fn import_bindings_classify_window_visibility_and_activation_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // ShowWindow / showwindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "ShowWindow"),
+            PpcImportDispatcherTarget::ShowWindow
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "showwindow"),
+            PpcImportDispatcherTarget::ShowWindow
+        );
+
+        // HideWindow / hidewindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "HideWindow"),
+            PpcImportDispatcherTarget::HideWindow
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "hidewindow"),
+            PpcImportDispatcherTarget::HideWindow
+        );
+
+        // ShowHide / showhide
+        assert_eq!(
+            dispatcher_target_for_import(lib, "ShowHide"),
+            PpcImportDispatcherTarget::ShowHide
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "showhide"),
+            PpcImportDispatcherTarget::ShowHide
+        );
+
+        // SelectWindow / selectwindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SelectWindow"),
+            PpcImportDispatcherTarget::SelectWindow
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "selectwindow"),
+            PpcImportDispatcherTarget::SelectWindow
+        );
+
+        // FrontWindow / frontwindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "FrontWindow"),
+            PpcImportDispatcherTarget::FrontWindow
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "frontwindow"),
+            PpcImportDispatcherTarget::FrontWindow
+        );
+
+        // BringToFront / bringtofront
+        assert_eq!(
+            dispatcher_target_for_import(lib, "BringToFront"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::BringToFront)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "bringtofront"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::BringToFront)
+        );
+
+        // SendBehind / sendbehind
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SendBehind"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SendBehind)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "sendbehind"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SendBehind)
+        );
+
+        // HiliteWindow / hilitewindow / HighlightWindow / highlightwindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "HiliteWindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::HighlightWindow)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "hilitewindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::HighlightWindow)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "HighlightWindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::HighlightWindow)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "highlightwindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::HighlightWindow)
+        );
+    }
+}
+
+#[test]
+fn window_visibility_and_activation_commands_dispatch_with_canonical_evaluation() {
+    for lib in [
+        b"InterfaceLib".as_slice(),
+        b"AppearanceLib".as_slice(),
+        b"CarbonLib".as_slice(),
+    ] {
+        // 1. ShowWindow
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"ShowWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, false, u32::MAX);
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "ShowWindow");
+            assert!(!ppc_window_is_visible(&mut loaded.memory, window));
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert!(ppc_window_is_visible(&mut loaded.memory, window));
+        }
+
+        // 2. HideWindow
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"HideWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "HideWindow");
+            assert!(ppc_window_is_visible(&mut loaded.memory, window));
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert!(!ppc_window_is_visible(&mut loaded.memory, window));
+        }
+
+        // 3. ShowHide
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"ShowHide");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "ShowHide");
+            assert!(ppc_window_is_visible(&mut loaded.memory, window));
+
+            // Hide with ShowHide(window, 0)
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert!(!ppc_window_is_visible(&mut loaded.memory, window));
+
+            // Show with ShowHide(window, 1)
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert!(ppc_window_is_visible(&mut loaded.memory, window));
+        }
+
+        // 4. FrontWindow
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"FrontWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let _w1 = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+            let bounds2_ptr = PPC_DATA_BASE + 0x1040;
+            loaded.memory.add_region(bounds2_ptr, vec![0; 32]);
+            let w2 = create_test_cwindow(&mut loaded, bounds2_ptr, (40, 40, 140, 240), 0, true, u32::MAX);
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "FrontWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], w2);
+        }
+
+        // 5. SelectWindow
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"SelectWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let w1 = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+            let bounds2_ptr = PPC_DATA_BASE + 0x1040;
+            loaded.memory.add_region(bounds2_ptr, vec![0; 32]);
+            let w2 = create_test_cwindow(&mut loaded, bounds2_ptr, (40, 40, 140, 240), 0, true, u32::MAX);
+            assert_eq!(ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list), Some(w2));
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "SelectWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = w1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list), Some(w1));
+            assert_eq!(loaded.memory.read_u8(w1 + PPC_CWINDOW_HILITED_OFFSET), Some(1));
+        }
+
+        // 6. BringToFront
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"BringToFront");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let w1 = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+            let bounds2_ptr = PPC_DATA_BASE + 0x1040;
+            loaded.memory.add_region(bounds2_ptr, vec![0; 32]);
+            let w2 = create_test_cwindow(&mut loaded, bounds2_ptr, (40, 40, 140, 240), 0, true, u32::MAX);
+            assert_eq!(ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list), Some(w2));
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "BringToFront");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = w1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list), Some(w1));
+        }
+
+        // 7. SendBehind
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"SendBehind");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let w1 = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+            let bounds2_ptr = PPC_DATA_BASE + 0x1040;
+            loaded.memory.add_region(bounds2_ptr, vec![0; 32]);
+            let w2 = create_test_cwindow(&mut loaded, bounds2_ptr, (40, 40, 140, 240), 0, true, u32::MAX);
+            assert_eq!(ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list), Some(w2));
+
+            // Send w2 to the back (behind = 0)
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "SendBehind");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = w2;
+            loaded.cpu.gpr[4] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list), Some(w1));
+        }
+
+        // 8. HiliteWindow
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"HiliteWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "HiliteWindow");
+            // Un-highlight window with HiliteWindow(window, 0)
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.memory.read_u8(window + PPC_CWINDOW_HILITED_OFFSET), Some(0));
+
+            // Re-highlight window with HiliteWindow(window, 1)
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.memory.read_u8(window + PPC_CWINDOW_HILITED_OFFSET), Some(1));
+        }
+    }
+}
