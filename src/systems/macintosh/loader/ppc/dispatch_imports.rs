@@ -2025,6 +2025,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::MoveDialogItem
         | PpcImportDispatcherTarget::SizeDialogItem
         | PpcImportDispatcherTarget::AppendDialogItemList
+        | PpcImportDispatcherTarget::AutoSizeDialog
         | PpcImportDispatcherTarget::CouldDialog
         | PpcImportDispatcherTarget::FreeDialog
         | PpcImportDispatcherTarget::CouldAlert
