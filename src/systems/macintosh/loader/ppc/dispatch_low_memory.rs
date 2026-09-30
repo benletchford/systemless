@@ -97,11 +97,13 @@ pub(super) fn dispatch_low_memory_import(
                 memory.write_u16_be(crate::memory::globals::addr::ALERT_STAGE, cpu.gpr[3] as u16);
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::LMGetACount => Some(PpcImportAction::Return(ppc_i16_result(
-            memory
+        PpcImportDispatcherTarget::LMGetACount => {
+            let raw_stage = memory
                 .read_u16_be(crate::memory::globals::addr::ALERT_STAGE)
-                .unwrap_or(0) as i16,
-        ))),
+                .unwrap_or(0);
+            let stage = crate::dialog_manager::evaluate_get_alert_stage(raw_stage);
+            Some(PpcImportAction::Return(ppc_i16_result(stage)))
+        }
         PpcImportDispatcherTarget::LMSetANumber => {
             let _ = memory.write_u16_be(crate::memory::globals::addr::ANUMBER, cpu.gpr[3] as u16);
             Some(PpcImportAction::ReturnPreserve)
@@ -122,7 +124,13 @@ pub(super) fn dispatch_low_memory_import(
                 .unwrap_or(0),
         )),
         PpcImportDispatcherTarget::LMSetDlgFont => {
-            let _ = memory.write_u16_be(crate::memory::globals::addr::DLG_FONT, cpu.gpr[3] as u16);
+            let params = crate::dialog_manager::evaluate_set_dialog_font_parameters(
+                cpu.gpr[3] as u16 as i16,
+            );
+            let _ = memory.write_u16_be(
+                crate::memory::globals::addr::DLG_FONT,
+                params.font_num() as u16,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LMGetDlgFont => Some(PpcImportAction::Return(ppc_i16_result(

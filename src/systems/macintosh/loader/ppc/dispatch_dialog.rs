@@ -35,6 +35,7 @@ use crate::dialog_manager::{
     evaluate_size_dialog_item_parameters, evaluate_size_dialog_item_rect,
     evaluate_append_dialog_item_list_parameters, evaluate_appended_dialog_bounds,
     evaluate_auto_size_dialog_parameters, evaluate_auto_size_dialog_bounds,
+    evaluate_get_alert_stage, evaluate_set_dialog_font_parameters,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -859,6 +860,26 @@ pub(super) fn dispatch_dialog_import(
                 Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(os_err)))
+        }
+        PpcImportDispatcherTarget::GetAlertStage => {
+            // Universal Interfaces 3.4.1 Dialogs.h:
+            // SInt16 GetAlertStage(void);
+            let raw_stage = memory
+                .read_u16_be(crate::memory::globals::addr::ALERT_STAGE)
+                .unwrap_or(0);
+            let stage = evaluate_get_alert_stage(raw_stage);
+            Some(PpcImportAction::Return(ppc_i16_result(stage)))
+        }
+        PpcImportDispatcherTarget::SetDialogFont => {
+            // Universal Interfaces 3.4.1 Dialogs.h:
+            // void SetDialogFont(SInt16 value);
+            let font_num = cpu.gpr[3] as u16 as i16;
+            let params = evaluate_set_dialog_font_parameters(font_num);
+            let _ = memory.write_u16_be(
+                crate::memory::globals::addr::DLG_FONT,
+                params.font_num() as u16,
+            );
+            Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DrawDialog => {
             if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {

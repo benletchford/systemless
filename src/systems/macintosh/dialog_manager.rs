@@ -3132,6 +3132,19 @@ pub const fn evaluate_reset_alert_stage() -> u16 {
     INITIAL_ALERT_STAGE
 }
 
+/// Evaluates querying the active alert stage from low-memory global `AlertStage` / `ACount` ($0A9A).
+///
+/// Universal Interfaces 3.4.1 `Dialogs.h`:
+/// `EXTERN_API( SInt16 ) GetAlertStage(void);`
+/// `#define GetAlertStage() (* (short*) 0x0A9A)`
+///
+/// Inside Macintosh Volume I, p. I-422.
+#[inline]
+#[must_use]
+pub const fn evaluate_get_alert_stage(raw_acount: u16) -> i16 {
+    raw_acount as i16
+}
+
 /// Evaluated alert stage state including sound number, default item, and stage counter progression.
 ///
 /// Inside Macintosh Volume I, pp. I-417--I-424;
@@ -5801,6 +5814,39 @@ pub fn evaluate_auto_size_dialog_bounds(
     } else {
         current_bounds
     }
+}
+
+/// Canonical evaluated parameters for `SetDialogFont` / `SetDAFont`.
+///
+/// Universal Interfaces 3.4.1 `Dialogs.h`:
+/// `EXTERN_API( void ) SetDialogFont(SInt16 value);`
+/// `#define SetDAFont(fontNum) SetDialogFont(fontNum)`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SetDialogFontParameters {
+    font_num: i16,
+}
+
+impl SetDialogFontParameters {
+    /// Constructs a new `SetDialogFontParameters`.
+    #[inline]
+    #[must_use]
+    pub const fn new(font_num: i16) -> Self {
+        Self { font_num }
+    }
+
+    /// The target dialog font family ID to store in `DlgFont` ($0AFA).
+    #[inline]
+    #[must_use]
+    pub const fn font_num(&self) -> i16 {
+        self.font_num
+    }
+}
+
+/// Evaluates and validates input parameters for `SetDialogFont` / `SetDAFont`.
+#[inline]
+#[must_use]
+pub const fn evaluate_set_dialog_font_parameters(font_num: i16) -> SetDialogFontParameters {
+    SetDialogFontParameters::new(font_num)
 }
 
 /// Canonical evaluated parameters for `ShortenDITL`.
@@ -9318,6 +9364,13 @@ mod tests {
         assert_eq!(evaluate_reset_alert_stage(), 0);
         let init_eval = evaluate_init_dialogs(0x1234);
         assert_eq!(init_eval.initial_alert_stage(), 0);
+
+        // GetAlertStage evaluation
+        assert_eq!(evaluate_get_alert_stage(0), 0);
+        assert_eq!(evaluate_get_alert_stage(1), 1);
+        assert_eq!(evaluate_get_alert_stage(2), 2);
+        assert_eq!(evaluate_get_alert_stage(3), 3);
+        assert_eq!(evaluate_get_alert_stage(10), 10);
     }
 
     #[test]
@@ -9843,6 +9896,18 @@ mod tests {
             evaluate_auto_size_dialog_bounds(offset_bounds, items_offset),
             (50, 40, 180, 220)
         );
+    }
+
+    #[test]
+    fn set_dialog_font_parameters_evaluation() {
+        let params = evaluate_set_dialog_font_parameters(0);
+        assert_eq!(params.font_num(), 0);
+
+        let geneva = evaluate_set_dialog_font_parameters(3);
+        assert_eq!(geneva.font_num(), 3);
+
+        let direct = SetDialogFontParameters::new(-1);
+        assert_eq!(direct.font_num(), -1);
     }
 
     #[test]

@@ -1504,6 +1504,26 @@ fn import_bindings_classify_dialog_imports() {
         PpcImportDispatcherTarget::GetStdFilterProc
     );
     assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetAlertStage"),
+        PpcImportDispatcherTarget::GetAlertStage
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DialogsLib", "GetAlertStage"),
+        PpcImportDispatcherTarget::GetAlertStage
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetDialogFont"),
+        PpcImportDispatcherTarget::SetDialogFont
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetDAFont"),
+        PpcImportDispatcherTarget::SetDialogFont
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DialogsLib", "SetDialogFont"),
+        PpcImportDispatcherTarget::SetDialogFont
+    );
+    assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "ModalDialog"),
         PpcImportDispatcherTarget::ModalDialog
     );
@@ -2604,4 +2624,37 @@ fn auto_size_dialog_resizes_bounds_and_rejects_nil_dialog() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
 }
+
+#[test]
+fn get_alert_stage_and_set_dialog_font_dispatch_with_canonical_evaluation() {
+    use crate::memory::globals::addr;
+
+    // 1. SetDialogFont writes DLG_FONT
+    let pef_set = synthetic_pef_with_library_import(b"InterfaceLib", b"SetDialogFont");
+    let mut loaded_set = load_pef_application(&pef_set).unwrap();
+    loaded_set.cpu.gpr[3] = 4;
+    let probe = loaded_set.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_set.memory.read_u16_be(addr::DLG_FONT), Some(4));
+
+    // 2. SetDAFont writes DLG_FONT
+    let pef_da = synthetic_pef_with_library_import(b"InterfaceLib", b"SetDAFont");
+    let mut loaded_da = load_pef_application(&pef_da).unwrap();
+    loaded_da.cpu.gpr[3] = 12;
+    let probe = loaded_da.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_da.memory.read_u16_be(addr::DLG_FONT), Some(12));
+
+    // 3. GetAlertStage reads ALERT_STAGE
+    let pef_get_stage = synthetic_pef_with_library_import(b"InterfaceLib", b"GetAlertStage");
+    let mut loaded_get_stage = load_pef_application(&pef_get_stage).unwrap();
+    loaded_get_stage
+        .memory
+        .write_u16_be(addr::ALERT_STAGE, 2)
+        .unwrap();
+    let probe = loaded_get_stage.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_get_stage.cpu.gpr[3], 2);
+}
+
 
