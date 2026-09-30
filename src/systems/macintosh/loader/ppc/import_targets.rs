@@ -3033,12 +3033,14 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "SetDialogTracksCursor" | "setdialogtrackscursor",
         ) => PpcImportDispatcherTarget::SetDialogTracksCursor,
-        ("InterfaceLib" | "AppearanceLib", "MoveDialogItem") => {
-            PpcImportDispatcherTarget::MoveDialogItem
-        }
-        ("InterfaceLib" | "AppearanceLib", "SizeDialogItem") => {
-            PpcImportDispatcherTarget::SizeDialogItem
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "MoveDialogItem" | "movedialogitem",
+        ) => PpcImportDispatcherTarget::MoveDialogItem,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "SizeDialogItem" | "sizedialogitem",
+        ) => PpcImportDispatcherTarget::SizeDialogItem,
         ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "AppendDialogItemList") => {
             PpcImportDispatcherTarget::AppendDialogItemList
         }
