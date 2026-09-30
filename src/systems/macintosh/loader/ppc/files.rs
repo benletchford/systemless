@@ -68,8 +68,7 @@ pub(super) fn ppc_fs_make_fsspec(
 
     let mut output_dir_id = effective_dir_id;
     let mut output_name_bytes = name_bytes.clone();
-    let result = if !name_bytes.is_empty()
-        && effective_dir_id > 1
+    let result = if effective_dir_id > 1
         && ppc_directory_path_for_id(vfs_directories, effective_dir_id).is_none()
     {
         PPC_DIR_NF_ERR
@@ -86,17 +85,31 @@ pub(super) fn ppc_fs_make_fsspec(
         }
         PPC_NO_ERR
     } else {
-        PPC_FNF_ERR
+        // Inside Macintosh: Files (1992), pp. 2-28 and 2-35, 1-54:
+        // a partial pathname names a leaf relative to the supplied directory;
+        // fnfErr still returns a valid spec only when its parent exists.
+        match ppc_missing_partial_fsspec_leaf(vfs_directories, effective_dir_id, &name_bytes) {
+            Ok((parent_dir_id, leaf_name)) => {
+                output_dir_id = parent_dir_id;
+                output_name_bytes = leaf_name;
+                PPC_FNF_ERR
+            }
+            Err(error) => error,
+        }
     };
-    if ppc_write_fsspec(
-        memory,
-        spec_ptr,
-        effective_vref,
-        output_dir_id,
-        &output_name_bytes,
-    )
-    .is_none()
-    {
+    let wrote_spec = if matches!(result, PPC_NO_ERR | PPC_FNF_ERR) {
+        ppc_write_fsspec(
+            memory,
+            spec_ptr,
+            effective_vref,
+            output_dir_id,
+            &output_name_bytes,
+        )
+        .is_some()
+    } else {
+        ppc_zero_guest_bytes(memory, spec_ptr, PPC_FSSPEC_SIZE as u32)
+    };
+    if !wrote_spec {
         return PPC_PARAM_ERR;
     }
     if ppc_hle_trace_enabled() {
@@ -111,6 +124,37 @@ pub(super) fn ppc_fs_make_fsspec(
         );
     }
     result
+}
+
+fn ppc_missing_partial_fsspec_leaf(
+    vfs_directories: &[PpcVfsDirectory],
+    starting_dir_id: u32,
+    name_bytes: &[u8],
+) -> Result<(u32, Vec<u8>), i16> {
+    if !name_bytes.starts_with(b":") || !name_bytes.contains(&b':') {
+        return Ok((starting_dir_id, name_bytes.to_vec()));
+    }
+    // An interior empty component means parent traversal, which this VFS
+    // cannot resolve as a missing-leaf spec from a flat normalized path.
+    if name_bytes.windows(2).any(|pair| pair == b"::") {
+        return Err(PPC_DIR_NF_ERR);
+    }
+    let components = name_bytes
+        .split(|byte| *byte == b':')
+        .filter(|component| !component.is_empty())
+        .collect::<Vec<_>>();
+    let Some((&leaf_name, parents)) = components.split_last() else {
+        return Err(PPC_PARAM_ERR);
+    };
+    let mut parent_dir_id = starting_dir_id;
+    for parent_name in parents {
+        let parent_path =
+            ppc_directory_path_for_id(vfs_directories, parent_dir_id).ok_or(PPC_DIR_NF_ERR)?;
+        let child_path = ppc_join_vfs_path(parent_path, &decode_mac_roman(parent_name));
+        parent_dir_id =
+            ppc_directory_id_for_path(vfs_directories, &child_path).ok_or(PPC_DIR_NF_ERR)?;
+    }
+    Ok((parent_dir_id, leaf_name.to_vec()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
