@@ -12,9 +12,27 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
+runtime:
+  runtime_pacing:
+    cpu_mhz: 10
 compatibility:
-  status: boots
+  status: playable
   verified:
+  - date: "2026-09-30"
+    tester: Catalogue maintainer
+    systemless_version: "952774ad + local 10 MHz catalogue preview"
+    architecture: 68k
+    environment: >-
+      Release-mode Chrome browser preview of the unchanged BinHex demo. Operation >
+      Insert Coin and New Game opened the full table after How to Play. Z and /
+      raised their respective flippers and release returned them. The second
+      ball remained in the launch lane during a Shift hold, then moved to the
+      top of the table within 500 ms of release. Two active-table samples ran at
+      60.1/60.2 host FPS and 59.5/58.2 guest ticks per second at 10 MHz, with
+      maximum measured frames of 15.7/15.9 ms. The demo's 90-second limit applies.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3184
   - date: "2026-09-28"
     tester: Catalogue maintainer
     systemless_version: 73f7a32ef9adc30eb2e49872852e9d33a2fa387a
@@ -85,5 +103,8 @@ labyrinth motif. The original notice identifies this as a promotional demo:
 some functions are disabled and play is limited to 90 seconds. It also includes
 the contemporary instructions and ordering information.
 
-Systemless reaches the table from the unchanged 68K demo archive. Browser
-launch remains disabled until a manual check is complete.
+Systemless plays the unchanged 68K demo in the browser. To start, click through
+the opening screens, choose **Operation > Insert Coin**, then **Operation > New
+Game**, and dismiss **How to Play**. Press **Z** and **/** for the flippers; hold
+and release **Shift** to launch a ball. The original demo ends play after 90
+seconds.
