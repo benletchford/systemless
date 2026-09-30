@@ -213,6 +213,7 @@ pub mod addr {
 
     // File Manager globals
     pub const SF_SAVE_DISK: u32 = 0x0214; // Negative of volume reference number (word) - Inside Macintosh Volume IV, IV-72
+    pub const DRV_Q_HDR: u32 = 0x0308; // Drive queue header - Inside Macintosh Volume III, low-memory globals appendix
     pub const FCB_S_PTR: u32 = 0x034E; // FCB array pointer
     pub const DEF_VCB_PTR: u32 = 0x0352; // Default VCB pointer
     pub const VCB_Q_HDR: u32 = 0x0356; // VCB queue header

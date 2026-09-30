@@ -2226,7 +2226,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CfBundleGetMainBundle
         | PpcImportDispatcherTarget::CfBundleCopyPrivateFrameworksUrl
         | PpcImportDispatcherTarget::CfUrlCreateCopyAppendingPathComponent
-        | PpcImportDispatcherTarget::CfBundleCreate => {
+        | PpcImportDispatcherTarget::CfBundleCreate
+        | PpcImportDispatcherTarget::CfBundleLoadExecutable => {
             unreachable!("Core Foundation imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::GetCurrentProcess
@@ -2736,6 +2737,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LMGetSysMap
         | PpcImportDispatcherTarget::LMGetCurApRefNum
         | PpcImportDispatcherTarget::GetVCBQHdr
+        | PpcImportDispatcherTarget::GetDrvQHdr
         | PpcImportDispatcherTarget::LMGetSysEvtMask
         | PpcImportDispatcherTarget::LMSetSysEvtMask
         | PpcImportDispatcherTarget::LMGetDefltStack

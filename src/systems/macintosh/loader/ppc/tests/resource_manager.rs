@@ -264,6 +264,22 @@ fn hle_import_runner_get_vcbq_hdr_returns_low_memory_queue_address() {
 }
 
 #[test]
+fn hle_import_runner_get_drvq_hdr_returns_low_memory_queue_address() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetDrvQHdr"),
+        PpcImportDispatcherTarget::GetDrvQHdr
+    );
+    let pef = synthetic_pef_with_import(b"GetDrvQHdr");
+    let mut loaded = load_pef_application(&pef).unwrap();
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], crate::memory::globals::addr::DRV_Q_HDR);
+}
+
+#[test]
 fn hle_import_runner_reports_resource_autoload_state() {
     let pef = synthetic_pef_with_import(b"LMGetResLoad");
     let mut loaded = load_pef_application(&pef).unwrap();
