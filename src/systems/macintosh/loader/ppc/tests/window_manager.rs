@@ -3882,3 +3882,283 @@ fn window_visibility_and_activation_commands_dispatch_with_canonical_evaluation(
         }
     }
 }
+
+#[test]
+fn import_bindings_classify_window_sizing_positioning_and_zooming_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // SizeWindow / sizewindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SizeWindow"),
+            PpcImportDispatcherTarget::SizeWindow
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "sizewindow"),
+            PpcImportDispatcherTarget::SizeWindow
+        );
+
+        // MoveWindow / movewindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "MoveWindow"),
+            PpcImportDispatcherTarget::MoveWindow
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "movewindow"),
+            PpcImportDispatcherTarget::MoveWindow
+        );
+
+        // DragWindow / dragwindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "DragWindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::DragWindow)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "dragwindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::DragWindow)
+        );
+
+        // GrowWindow / growwindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GrowWindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GrowWindow)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "growwindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GrowWindow)
+        );
+
+        // RepositionWindow / repositionwindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "RepositionWindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RepositionWindow)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "repositionwindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RepositionWindow)
+        );
+
+        // TrackBox / trackbox
+        assert_eq!(
+            dispatcher_target_for_import(lib, "TrackBox"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::TrackBox)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "trackbox"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::TrackBox)
+        );
+
+        // TrackGoAway / trackgoaway
+        assert_eq!(
+            dispatcher_target_for_import(lib, "TrackGoAway"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::TrackGoAway)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "trackgoaway"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::TrackGoAway)
+        );
+
+        // ZoomWindow / zoomwindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "ZoomWindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ZoomWindow)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "zoomwindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ZoomWindow)
+        );
+    }
+}
+
+#[test]
+fn window_sizing_positioning_and_zooming_commands_dispatch_with_canonical_evaluation() {
+    for lib in [
+        b"InterfaceLib".as_slice(),
+        b"AppearanceLib".as_slice(),
+        b"CarbonLib".as_slice(),
+    ] {
+        // 1. MoveWindow
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"MoveWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "MoveWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 60; // hGlobal
+            loaded.cpu.gpr[5] = 70; // vGlobal
+            loaded.cpu.gpr[6] = 1;  // front
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let bounds = ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window).unwrap();
+            assert_eq!(bounds.0, 70);
+            assert_eq!(bounds.1, 60);
+        }
+
+        // 2. SizeWindow
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"SizeWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "SizeWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 300; // w
+            loaded.cpu.gpr[5] = 200; // h
+            loaded.cpu.gpr[6] = 1;   // fUpdate
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let bounds = ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window).unwrap();
+            assert_eq!(bounds.3 - bounds.1, 300);
+            assert_eq!(bounds.2 - bounds.0, 200);
+        }
+
+        // 3. ZoomWindow
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"ZoomWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (100, 100, 240, 300), 8, true, u32::MAX);
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "ZoomWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 8; // inZoomOut
+            loaded.cpu.gpr[5] = 1; // front
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(
+                ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
+                Some((20, 0, ppc_main_screen_height() as i16, ppc_main_screen_width() as i16)),
+            );
+        }
+
+        // 4. RepositionWindow
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"RepositionWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (40, 50, 240, 350), 0, false, u32::MAX);
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "RepositionWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = 1; // kWindowCenterOnMainScreen
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0); // noErr
+        }
+
+        // 5. TrackGoAway
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"TrackGoAway");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (50, 50, 200, 300), 0, true, u32::MAX);
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "TrackGoAway");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = (60u32 << 16) | 60;
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: false,
+                mouse_v: 60,
+                mouse_h: 60,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+        }
+
+        // 6. TrackBox
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"TrackBox");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (50, 50, 200, 300), 8, true, u32::MAX);
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "TrackBox");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = (60u32 << 16) | 60;
+            loaded.cpu.gpr[5] = 8; // inZoomOut
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: false,
+                mouse_v: 60,
+                mouse_h: 60,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+        }
+
+        // 7. DragWindow
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"DragWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            let bounds_limit_ptr = PPC_DATA_BASE + 0x1030;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            loaded.memory.add_region(bounds_limit_ptr, vec![0; 32]);
+            ppc_write_rect(&mut loaded.memory, bounds_limit_ptr, 0, 0, 1000, 1000).unwrap();
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (50, 50, 200, 300), 0, true, u32::MAX);
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "DragWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = (60u32 << 16) | 100;
+            loaded.cpu.gpr[5] = bounds_limit_ptr;
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: false,
+                mouse_v: 60,
+                mouse_h: 100,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+        }
+
+        // 8. GrowWindow
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"GrowWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            let size_rect_ptr = PPC_DATA_BASE + 0x1030;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            loaded.memory.add_region(size_rect_ptr, vec![0; 32]);
+            ppc_write_rect(&mut loaded.memory, size_rect_ptr, 50, 50, 500, 500).unwrap();
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (50, 50, 200, 300), 0, true, u32::MAX);
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "GrowWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = (195u32 << 16) | 295;
+            loaded.cpu.gpr[5] = size_rect_ptr;
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: false,
+                mouse_v: 195,
+                mouse_h: 295,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+        }
+    }
+}

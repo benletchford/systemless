@@ -2849,8 +2849,14 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::GetNewCWindow,
         ("InterfaceLib", "GetWRefCon") => PpcImportDispatcherTarget::GetWRefCon,
         ("InterfaceLib", "SetWRefCon") => PpcImportDispatcherTarget::SetWRefCon,
-        ("InterfaceLib", "SizeWindow") => PpcImportDispatcherTarget::SizeWindow,
-        ("InterfaceLib", "MoveWindow") => PpcImportDispatcherTarget::MoveWindow,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SizeWindow" | "sizewindow",
+        ) => PpcImportDispatcherTarget::SizeWindow,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "MoveWindow" | "movewindow",
+        ) => PpcImportDispatcherTarget::MoveWindow,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "ShowWindow" | "showwindow",
@@ -3970,7 +3976,10 @@ pub(crate) fn dispatcher_target_for_import(
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::DisposeWindow)
         }
-        ("InterfaceLib", "DragWindow") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "DragWindow" | "dragwindow",
+        ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::DragWindow)
         }
         (
@@ -3982,7 +3991,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetWTitle") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowTitle)
         }
-        ("InterfaceLib", "GrowWindow") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GrowWindow" | "growwindow",
+        ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GrowWindow)
         }
         (
@@ -3997,7 +4009,10 @@ pub(crate) fn dispatcher_target_for_import(
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::NewWindow)
         }
-        ("InterfaceLib", "RepositionWindow") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "RepositionWindow" | "repositionwindow",
+        ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RepositionWindow)
         }
         (
@@ -4009,13 +4024,22 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SetWTitle") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle)
         }
-        ("InterfaceLib", "TrackBox") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "TrackBox" | "trackbox",
+        ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::TrackBox)
         }
-        ("InterfaceLib", "TrackGoAway") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "TrackGoAway" | "trackgoaway",
+        ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::TrackGoAway)
         }
-        ("InterfaceLib", "ZoomWindow") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ZoomWindow" | "zoomwindow",
+        ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ZoomWindow)
         }
         ("InterfaceLib", "AECountItems") => PpcImportDispatcherTarget::AppleEventCompatibility(
