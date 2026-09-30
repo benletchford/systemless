@@ -10,9 +10,24 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
   status: playable
   verified:
+  - date: "2026-09-30"
+    tester: Catalogue maintainer
+    systemless_version: "d076ff5 + local launch-enabled catalogue preview"
+    architecture: 68k
+    environment: >-
+      Release-mode Chrome browser preview of the unchanged StuffIt demo. Two
+      clicks passed the promotional screens; Let's Go and the Level 1 briefing
+      opened Citizen Lemming. The timer advanced and lemmings walked. Selecting
+      Blocker and clicking a lemming changed its status to BLOCKER and reduced
+      the available count from 20 to 19. A 10-second active-level sample
+      measured 60.0 host FPS, 60.1 guest ticks per second, maximum measured
+      frame 15.2 ms, and minimum audio queue 146 ms.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3566
   - date: "2026-09-28"
     tester: Catalogue maintainer
     systemless_version: 341e1c18dd0cf271b5f75a964206a123c0c89466
@@ -89,6 +104,7 @@ first lemming walking after the level begins.
 
 This is Psygnosis's original four-level Macintosh demonstration, not the
 100-level retail expansion. Its included Read Me calls it The Demo Disk and
-explains the difference. Systemless reached the menu, level briefing, and
-live gameplay using the unchanged 68K archive. Browser launch remains disabled
-until a manual check is complete.
+explains the difference. To play in Systemless, click through the two opening
+screens, choose **Let's Go**, and dismiss the Level 1 briefing. Click a skill
+icon, then a lemming to assign that skill. The unchanged 68K demo includes four
+levels.
