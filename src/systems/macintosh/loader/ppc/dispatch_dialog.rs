@@ -119,6 +119,7 @@ pub(super) struct PpcDialogDispatchContext<'a> {
     pub(super) current_gworld: &'a mut u32,
     pub(super) current_gdevice: &'a mut u32,
     pub(super) window_list: &'a SharedProcessWindowList,
+    pub(super) blanking_window: Option<u32>,
     pub(super) toolbox_startup: &'a mut PpcToolboxStartupState,
     pub(super) event_queue: &'a mut EventQueue,
     pub(super) dialog_callback_stack: &'a mut Vec<PpcDialogCallbackState>,
@@ -154,6 +155,7 @@ pub(super) fn dispatch_dialog_import(
         current_gworld,
         current_gdevice,
         window_list,
+        blanking_window,
         toolbox_startup,
         event_queue,
         dialog_callback_stack,
@@ -1325,6 +1327,7 @@ pub(super) fn dispatch_dialog_import(
                 controls,
                 gworlds,
                 window_list,
+                blanking_window,
                 screen_clut,
                 current_gworld,
                 current_gdevice,
@@ -1531,6 +1534,7 @@ fn ppc_dispatch_dialog_compatibility(
     controls: &[PpcControlRecord],
     gworlds: &mut Vec<PpcGWorldRecord>,
     window_list: &SharedProcessWindowList,
+    blanking_window: Option<u32>,
     screen_clut: &[[u16; 3]; 256],
     current_gworld: &mut u32,
     current_gdevice: &mut u32,
@@ -1546,7 +1550,13 @@ fn ppc_dispatch_dialog_compatibility(
                 return PpcImportAction::Return(0);
             };
             let result = ppc_read_dialog_event(memory, params.event_ptr()).is_some_and(|event| {
-                let dialog = ppc_dialog_for_event(memory, window_list, event.what, event.message);
+                let dialog = ppc_dialog_for_event(
+                    memory,
+                    window_list,
+                    blanking_window,
+                    event.what,
+                    event.message,
+                );
                 let bounds = dialog.and_then(|d| ppc_dialog_global_bounds(memory, gworlds, d));
                 crate::dialog_manager::is_dialog_event(
                     event.what,
@@ -1573,7 +1583,13 @@ fn ppc_dispatch_dialog_compatibility(
             let Some(event) = ppc_read_dialog_event(memory, params.event_ptr()) else {
                 return PpcImportAction::Return(0);
             };
-            let Some(dialog) = ppc_dialog_for_event(memory, window_list, event.what, event.message)
+            let Some(dialog) = ppc_dialog_for_event(
+                memory,
+                window_list,
+                blanking_window,
+                event.what,
+                event.message,
+            )
             else {
                 return PpcImportAction::Return(0);
             };
@@ -3214,16 +3230,19 @@ pub(super) fn ppc_standard_filter_proc(cpu: &PpcCpu, memory: &mut PpcSectionMem)
 fn ppc_dialog_for_event(
     memory: &mut PpcSectionMem,
     window_list: &SharedProcessWindowList,
+    blanking_window: Option<u32>,
     what: u16,
     message: u32,
 ) -> Option<u32> {
     // Inside Macintosh Volume I (1985), pp. I-416--I-417: update and
     // activate events name their window in `message`; other dialog events
     // are routed to the active dialog only when it is the front window.
-    let front_dialog = ppc_front_visible_process_window(memory, window_list).filter(|window| {
-        memory.read_u16_be(window.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET))
-            == Some(crate::dialog_manager::DIALOG_WINDOW_KIND)
-    });
+    let front_dialog = blanking_window
+        .or_else(|| ppc_front_visible_process_window(memory, window_list))
+        .filter(|window| {
+            memory.read_u16_be(window.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET))
+                == Some(crate::dialog_manager::DIALOG_WINDOW_KIND)
+        });
     dialog_target_for_event(
         what,
         message,

@@ -600,7 +600,10 @@ pub(super) fn dispatch_window_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::FrontWindow => {
-            let window = ppc_front_visible_process_window(memory, window_list).unwrap_or(0);
+            let window = draw_sprocket
+                .blanking_window
+                .or_else(|| ppc_front_visible_process_window(memory, window_list))
+                .unwrap_or(0);
             Some(PpcImportAction::Return(window))
         }
         PpcImportDispatcherTarget::SetWinColor => {
@@ -838,9 +841,11 @@ pub(super) fn dispatch_window_import(
             } else {
                 (0, 0)
             };
-            // An active DrawSprocket context covers the display without a
-            // WindowPtr. Full-screen games still receive content clicks.
-            let (part, window) = if fullscreen_context_active && in_screen && part == 0 {
+            // Apple Game Sprockets Guide, DrawSprocket (1996), p. 2-14:
+            // an active context's blanking window covers the entire display.
+            let (part, window) = if in_screen && draw_sprocket.blanking_window.is_some() {
+                (3, draw_sprocket.blanking_window.unwrap())
+            } else if fullscreen_context_active && in_screen && part == 0 {
                 (3, 0)
             } else {
                 (part, window)
@@ -1068,8 +1073,63 @@ pub(super) fn ppc_update_window_manager_regions(
     Some(())
 }
 
+pub(super) struct PpcNewCWindowParameters {
+    pub storage_ptr: u32,
+    pub bounds: (i16, i16, i16, i16),
+    pub visible: bool,
+    pub proc_id: i16,
+    pub behind: u32,
+    pub go_away: bool,
+    pub ref_con: u32,
+}
+
 pub(super) fn ppc_new_cwindow(
     cpu: &PpcCpu,
+    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    gworlds: &mut Vec<PpcGWorldRecord>,
+    window_list: &SharedProcessWindowList,
+    current_gdevice: u32,
+) -> u32 {
+    let bounds_ptr = cpu.gpr[4];
+    if bounds_ptr == 0 {
+        *last_mem_error = PPC_PARAM_ERR;
+        return 0;
+    }
+
+    let Some((top, left, bottom, right)) = ppc_read_rect(memory, bounds_ptr) else {
+        *last_mem_error = PPC_PARAM_ERR;
+        return 0;
+    };
+    ppc_new_cwindow_with_parameters(
+        PpcNewCWindowParameters {
+            storage_ptr: cpu.gpr[3],
+            bounds: (top, left, bottom, right),
+            visible: cpu.gpr[6] != 0,
+            proc_id: cpu.gpr[7] as u16 as i16,
+            behind: cpu.gpr[8],
+            go_away: cpu.gpr[9] != 0,
+            ref_con: cpu.gpr[10],
+        },
+        allocator,
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        gworlds,
+        window_list,
+        current_gdevice,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_new_cwindow_with_parameters(
+    params: PpcNewCWindowParameters,
     mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -1080,23 +1140,15 @@ pub(super) fn ppc_new_cwindow(
     window_list: &SharedProcessWindowList,
     current_gdevice: u32,
 ) -> u32 {
-    let storage_ptr = cpu.gpr[3];
-    let bounds_ptr = cpu.gpr[4];
-    let _title_ptr = cpu.gpr[5];
-    let visible = cpu.gpr[6] != 0;
-    let proc_id = cpu.gpr[7] as u16 as i16;
-    let behind = cpu.gpr[8];
-    let go_away = cpu.gpr[9] != 0;
-    let ref_con = cpu.gpr[10];
-    if bounds_ptr == 0 {
-        *last_mem_error = PPC_PARAM_ERR;
-        return 0;
-    }
-
-    let Some((top, left, bottom, right)) = ppc_read_rect(memory, bounds_ptr) else {
-        *last_mem_error = PPC_PARAM_ERR;
-        return 0;
-    };
+    let PpcNewCWindowParameters {
+        storage_ptr,
+        bounds: (top, left, bottom, right),
+        visible,
+        proc_id,
+        behind,
+        go_away,
+        ref_con,
+    } = params;
     let (width, height) = ppc_rect_dimensions(top, left, bottom, right);
     // Inside Macintosh: Imaging With QuickDraw 1994, "Pixel Images": the
     // pixel map for a window's color graphics port always uses the pixel
