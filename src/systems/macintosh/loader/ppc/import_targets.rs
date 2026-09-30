@@ -3059,9 +3059,15 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "SetPortDialogPort") => {
             PpcImportDispatcherTarget::SetPortDialogPort
         }
-        ("InterfaceLib", "DrawDialog") => PpcImportDispatcherTarget::DrawDialog,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "DrawDialog",
+        ) => PpcImportDispatcherTarget::DrawDialog,
         ("InterfaceLib", "DrawControls") => PpcImportDispatcherTarget::DrawControls,
-        ("InterfaceLib", "ModalDialog") => PpcImportDispatcherTarget::ModalDialog,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "ModalDialog",
+        ) => PpcImportDispatcherTarget::ModalDialog,
         ("InterfaceLib", "SetControlTitle") | ("InterfaceLib", "SetCTitle") => {
             PpcImportDispatcherTarget::SetControlTitle
         }
@@ -3742,7 +3748,10 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::CountDitl,
         ),
-        ("InterfaceLib", "DialogSelect") => PpcImportDispatcherTarget::DialogCompatibility(
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "DialogSelect",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::DialogSelect,
         ),
         (
@@ -3757,7 +3766,10 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::HideDialogItem,
         ),
-        ("InterfaceLib", "IsDialogEvent") => PpcImportDispatcherTarget::DialogCompatibility(
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "IsDialogEvent",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::IsDialogEvent,
         ),
         (

@@ -1537,10 +1537,21 @@ fn import_bindings_classify_dialog_imports() {
         dispatcher_target_for_import("DialogsLib", "InitDialogs"),
         PpcImportDispatcherTarget::InitDialogs
     );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "ModalDialog"),
-        PpcImportDispatcherTarget::ModalDialog
-    );
+    for (lib, symbol, expected_target) in [
+        ("InterfaceLib", "DrawDialog", PpcImportDispatcherTarget::DrawDialog),
+        ("AppearanceLib", "DrawDialog", PpcImportDispatcherTarget::DrawDialog),
+        ("DialogsLib", "DrawDialog", PpcImportDispatcherTarget::DrawDialog),
+        ("CarbonLib", "DrawDialog", PpcImportDispatcherTarget::DrawDialog),
+        ("InterfaceLib", "ModalDialog", PpcImportDispatcherTarget::ModalDialog),
+        ("AppearanceLib", "ModalDialog", PpcImportDispatcherTarget::ModalDialog),
+        ("DialogsLib", "ModalDialog", PpcImportDispatcherTarget::ModalDialog),
+        ("CarbonLib", "ModalDialog", PpcImportDispatcherTarget::ModalDialog),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import(lib, symbol),
+            expected_target,
+        );
+    }
     for (symbol, expected_target) in [
         ("LMSetResumeProc", PpcImportDispatcherTarget::LMSetResumeProc),
         ("LMGetResumeProc", PpcImportDispatcherTarget::LMGetResumeProc),
@@ -1705,6 +1716,14 @@ fn import_bindings_classify_dialog_imports() {
         ("AppearanceLib", "UpdtDialog", PpcDialogCompatibilityOperation::UpdateDialog),
         ("DialogsLib", "UpdtDialog", PpcDialogCompatibilityOperation::UpdateDialog),
         ("CarbonLib", "UpdtDialog", PpcDialogCompatibilityOperation::UpdateDialog),
+        ("InterfaceLib", "DialogSelect", PpcDialogCompatibilityOperation::DialogSelect),
+        ("AppearanceLib", "DialogSelect", PpcDialogCompatibilityOperation::DialogSelect),
+        ("DialogsLib", "DialogSelect", PpcDialogCompatibilityOperation::DialogSelect),
+        ("CarbonLib", "DialogSelect", PpcDialogCompatibilityOperation::DialogSelect),
+        ("InterfaceLib", "IsDialogEvent", PpcDialogCompatibilityOperation::IsDialogEvent),
+        ("AppearanceLib", "IsDialogEvent", PpcDialogCompatibilityOperation::IsDialogEvent),
+        ("DialogsLib", "IsDialogEvent", PpcDialogCompatibilityOperation::IsDialogEvent),
+        ("CarbonLib", "IsDialogEvent", PpcDialogCompatibilityOperation::IsDialogEvent),
     ] {
         assert_eq!(
             dispatcher_target_for_import(lib, symbol),
@@ -3540,6 +3559,111 @@ fn dialog_item_visibility_query_and_update_commands_dispatch_with_canonical_eval
     let mut loaded_updt = load_pef_application(&pef_updt).unwrap();
     loaded_updt.cpu.gpr[3] = 0;
     let probe = loaded_updt.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+}
+
+#[test]
+fn dialog_event_loop_and_rendering_commands_dispatch_with_canonical_evaluation() {
+    let dialog_ptr = PPC_DATA_BASE + 0x1000;
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"DrawDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(dialog_ptr, vec![0; 256]);
+
+    loaded.gworlds.push(PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: dialog_ptr,
+        pixmap_handle: 0,
+        pixmap: 0,
+        base_addr: 0,
+        gdevice: PPC_MAIN_GDEVICE,
+        width: 300,
+        height: 200,
+        depth: 8,
+        row_bytes: 300,
+        pixels_locked: false,
+        pixels_no_purge: false,
+    });
+    loaded.window_list.push(dialog_ptr);
+
+    // 1. DrawDialog: Safe no-op on NULL dialog
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawDialog);
+
+    // 1b. DrawDialog with valid dialog pointer
+    loaded.cpu.gpr[3] = dialog_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawDialog);
+
+    // 2. IsDialogEvent:
+    // 2a. Safe false (0) on NULL event pointer
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::IsDialogEvent),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 2b. True (1) for event targeted at front dialog window
+    let event_ptr = PPC_DATA_BASE + 0x2000;
+    loaded.memory.add_region(event_ptr, vec![0; 16]);
+    loaded
+        .memory
+        .write_u16_be(dialog_ptr + PPC_CWINDOW_WINDOW_KIND_OFFSET, 2) // dialogKind
+        .unwrap();
+    loaded
+        .memory
+        .write_u8(dialog_ptr + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+        .unwrap();
+    ppc_write_event_record(&mut loaded.memory, event_ptr, 3, b'A' as u32, 0, 20, 30, 0); // keyDown
+    loaded.cpu.gpr[3] = event_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::IsDialogEvent),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    // 3. DialogSelect:
+    // 3a. Safe false (0) on NULL event pointer
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::DialogSelect),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 4. ModalDialog:
+    // Safe completion when item_hit pointer is NULL
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ModalDialog);
+
+    // 5. Verify PEF execution using AppearanceLib, DialogsLib, and CarbonLib
+    let pef_draw = synthetic_pef_with_library_import(b"AppearanceLib", b"DrawDialog");
+    let mut loaded_draw = load_pef_application(&pef_draw).unwrap();
+    loaded_draw.cpu.gpr[3] = 0;
+    let probe = loaded_draw.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_modal = synthetic_pef_with_library_import(b"DialogsLib", b"ModalDialog");
+    let mut loaded_modal = load_pef_application(&pef_modal).unwrap();
+    let hit_ptr = PPC_DATA_BASE + 0x2100;
+    loaded_modal.memory.add_region(hit_ptr, vec![0; 2]);
+    loaded_modal.cpu.gpr[3] = 0;
+    loaded_modal.cpu.gpr[4] = hit_ptr;
+    let probe = loaded_modal.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_select = synthetic_pef_with_library_import(b"CarbonLib", b"DialogSelect");
+    let mut loaded_select = load_pef_application(&pef_select).unwrap();
+    loaded_select.cpu.gpr[3] = 0;
+    let probe = loaded_select.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_is_dlg = synthetic_pef_with_library_import(b"CarbonLib", b"IsDialogEvent");
+    let mut loaded_is_dlg = load_pef_application(&pef_is_dlg).unwrap();
+    loaded_is_dlg.cpu.gpr[3] = 0;
+    let probe = loaded_is_dlg.run_with_hle_imports(64);
     assert_eq!(probe.unsupported_import_index, None);
 }
 
