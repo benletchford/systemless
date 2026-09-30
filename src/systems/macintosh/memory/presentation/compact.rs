@@ -598,7 +598,7 @@ mod tests {
                 let value = bus.read_byte(0x1000);
                 bus.presentation.as_mut().unwrap().glyph = Some((
                     super::super::OutlineGlyph {
-                        pixels: vec![64, 255, 0, 128],
+                        pixels: vec![64, 255, 0, 128].into(),
                         width: 2,
                         height: 2,
                         left: 0,

@@ -340,7 +340,7 @@ impl PresentationSlot {
 
 #[derive(Clone)]
 pub(crate) struct OutlineGlyph {
-    pub pixels: Vec<u8>,
+    pub pixels: std::sync::Arc<[u8]>,
     pub width: i32,
     pub height: i32,
     pub left: i32,
@@ -3882,7 +3882,7 @@ impl PresentationSlot {
                         .copy_from_slice(&outline.pixels[src..src + outline.width as usize]);
                 }
                 outline.width = width;
-                outline.pixels = pixels;
+                outline.pixels = pixels.into();
             }
             if bold && outline.width > 0 {
                 let width = outline.width + p.scale as i32;
@@ -3897,7 +3897,7 @@ impl PresentationSlot {
                     }
                 }
                 outline.width = width;
-                outline.pixels = pixels;
+                outline.pixels = pixels.into();
             }
             if let Some((advance, thickness)) = underline {
                 let scale = p.scale as i32;
@@ -3932,7 +3932,7 @@ impl PresentationSlot {
                     }
                 }
                 outline = OutlineGlyph {
-                    pixels,
+                    pixels: pixels.into(),
                     width,
                     height,
                     left,
@@ -3990,7 +3990,7 @@ impl PresentationSlot {
         glyph.top += style.glyph_y_offset() * scale - pad;
         glyph.width = width;
         glyph.height = height;
-        glyph.pixels = pixels;
+        glyph.pixels = pixels.into();
     }
 
     pub(crate) fn end_outline_glyph(&mut self) {
@@ -4016,7 +4016,7 @@ mod tests {
     pub(super) fn paint_detail(bus: &mut MacMemoryBus, address: u32) {
         bus.presentation.as_mut().unwrap().glyph = Some((
             OutlineGlyph {
-                pixels: vec![64, 255, 0, 128],
+                pixels: vec![64, 255, 0, 128].into(),
                 width: 2,
                 height: 2,
                 left: 0,
@@ -5064,7 +5064,7 @@ mod tests {
                         // Text over text of another colour: blended ink.
                         bus.presentation.as_mut().unwrap().glyph = Some((
                             OutlineGlyph {
-                                pixels: vec![64, 255, 0, 128],
+                                pixels: vec![64, 255, 0, 128].into(),
                                 width: 2,
                                 height: 2,
                                 left: 0,
@@ -6674,7 +6674,7 @@ mod tests {
         paint_detail(&mut bus, 0x1000);
         bus.presentation.as_mut().unwrap().glyph = Some((
             OutlineGlyph {
-                pixels: vec![255],
+                pixels: vec![255].into(),
                 width: 1,
                 height: 1,
                 left: 0,
@@ -6838,7 +6838,7 @@ mod tests {
         bus.write_byte(0x2002, 255);
         bus.presentation.as_mut().unwrap().glyph = Some((
             OutlineGlyph {
-                pixels: vec![0; 4],
+                pixels: vec![0; 4].into(),
                 width: 2,
                 height: 2,
                 left: 0,
@@ -6894,7 +6894,7 @@ mod tests {
         let mut p = bus.presentation.as_mut().unwrap();
         p.glyph = Some((
             OutlineGlyph {
-                pixels: vec![128, 255, 0, 0],
+                pixels: vec![128, 255, 0, 0].into(),
                 width: 4,
                 height: 1,
                 left: 0,
@@ -6904,7 +6904,10 @@ mod tests {
             0,
         ));
         p.glyph_pixel(0x1000, 0, 0, 0, 255);
-        p.glyph.as_mut().unwrap().0.pixels[1] = 0;
+        let glyph = &mut p.glyph.as_mut().unwrap().0;
+        let mut pixels = glyph.pixels.to_vec();
+        pixels[1] = 0;
+        glyph.pixels = pixels.into();
         p.glyph_pixel(0x1000, 0, 0, 2, 255);
         p.glyph = None;
         drop(p);
@@ -6956,7 +6959,7 @@ mod tests {
         let mut p = bus.presentation.as_mut().unwrap();
         p.glyph = Some((
             OutlineGlyph {
-                pixels: vec![128; 8],
+                pixels: vec![128; 8].into(),
                 width: 4,
                 height: 2,
                 left: 0,
@@ -6987,7 +6990,7 @@ mod tests {
         let mut p = bus.presentation.as_mut().unwrap();
         p.glyph = Some((
             OutlineGlyph {
-                pixels: vec![128; 4],
+                pixels: vec![128; 4].into(),
                 width: 2,
                 height: 2,
                 left: 2,
@@ -7051,7 +7054,7 @@ mod tests {
                 let mut p = bus.presentation.as_mut().unwrap();
                 p.glyph = Some((
                     OutlineGlyph {
-                        pixels: vec![128; 16],
+                        pixels: vec![128; 16].into(),
                         width: 4,
                         height: 4,
                         left: 0,
