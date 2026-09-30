@@ -290,7 +290,7 @@ pub(crate) fn presentation_glyph(
         .inspect(|format, w, h| pixels.resize(format.buffer_size(w, h), 0))
         .render_into(&mut pixels, None);
     let mask = crate::memory::presentation::OutlineGlyph {
-        pixels,
+        pixels: pixels.into(),
         width: placement.width as i32,
         height: placement.height as i32,
         left: placement.left,
