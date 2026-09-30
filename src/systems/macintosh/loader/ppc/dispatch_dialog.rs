@@ -36,10 +36,11 @@ use crate::dialog_manager::{
     evaluate_append_dialog_item_list_parameters, evaluate_appended_dialog_bounds,
     evaluate_auto_size_dialog_parameters, evaluate_auto_size_dialog_bounds,
     evaluate_get_alert_stage, evaluate_set_dialog_font_parameters,
+    evaluate_get_dialog_port, evaluate_get_dialog_window, evaluate_get_dialog_from_window,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
-    DIALOG_ITEMS_OFFSET, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX, DIALOG_ITEM_DISABLED_FLAG,
+    DIALOG_ITEMS_OFFSET, DIALOG_WINDOW_KIND_OFFSET, DIALOG_ITEM_BUTTON, DIALOG_ITEM_CHECKBOX, DIALOG_ITEM_DISABLED_FLAG,
     DIALOG_ITEM_EDIT_TEXT, DIALOG_ITEM_ICON, DIALOG_ITEM_PICTURE, DIALOG_ITEM_RADIO,
     DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT,
     DIALOG_RECORD_SIZE, DIALOG_RESOURCE_ID_OFFSET, DIALOG_STANDARD_ALERT_OUTPUT_OFFSET,
@@ -882,6 +883,34 @@ pub(super) fn dispatch_dialog_import(
                 params.font_num() as u16,
             );
             Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::GetDialogPort => {
+            // Universal Interfaces 3.4.1 Dialogs.h:
+            // CGrafPtr GetDialogPort(DialogRef dialog);
+            let port = evaluate_get_dialog_port(cpu.gpr[3]);
+            Some(PpcImportAction::Return(port))
+        }
+        PpcImportDispatcherTarget::GetDialogWindow => {
+            // Universal Interfaces 3.4.1 Dialogs.h:
+            // WindowRef GetDialogWindow(DialogRef dialog);
+            let window = evaluate_get_dialog_window(cpu.gpr[3]);
+            Some(PpcImportAction::Return(window))
+        }
+        PpcImportDispatcherTarget::GetDialogFromWindow => {
+            // Universal Interfaces 3.4.1 Dialogs.h:
+            // DialogRef GetDialogFromWindow(WindowRef window);
+            let window_ptr = cpu.gpr[3];
+            let window_kind = if window_ptr != 0
+                && ppc_memory_can_read_bytes(memory, window_ptr + DIALOG_WINDOW_KIND_OFFSET, 2)
+            {
+                memory
+                    .read_u16_be(window_ptr + DIALOG_WINDOW_KIND_OFFSET)
+                    .map(|kind| kind as i16)
+            } else {
+                None
+            };
+            let dialog = evaluate_get_dialog_from_window(window_ptr, window_kind);
+            Some(PpcImportAction::Return(dialog))
         }
         PpcImportDispatcherTarget::DrawDialog => {
             if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {

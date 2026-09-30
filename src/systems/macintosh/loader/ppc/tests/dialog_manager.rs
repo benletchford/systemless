@@ -1559,6 +1559,29 @@ fn import_bindings_classify_dialog_imports() {
             expected_target,
         );
     }
+    for (lib, symbol, expected_target) in [
+        ("InterfaceLib", "GetDialogPort", PpcImportDispatcherTarget::GetDialogPort),
+        ("AppearanceLib", "GetDialogPort", PpcImportDispatcherTarget::GetDialogPort),
+        ("DialogsLib", "GetDialogPort", PpcImportDispatcherTarget::GetDialogPort),
+        ("CarbonLib", "GetDialogPort", PpcImportDispatcherTarget::GetDialogPort),
+        ("InterfaceLib", "GetDialogWindow", PpcImportDispatcherTarget::GetDialogWindow),
+        ("AppearanceLib", "GetDialogWindow", PpcImportDispatcherTarget::GetDialogWindow),
+        ("DialogsLib", "GetDialogWindow", PpcImportDispatcherTarget::GetDialogWindow),
+        ("CarbonLib", "GetDialogWindow", PpcImportDispatcherTarget::GetDialogWindow),
+        ("InterfaceLib", "GetDialogFromWindow", PpcImportDispatcherTarget::GetDialogFromWindow),
+        ("AppearanceLib", "GetDialogFromWindow", PpcImportDispatcherTarget::GetDialogFromWindow),
+        ("DialogsLib", "GetDialogFromWindow", PpcImportDispatcherTarget::GetDialogFromWindow),
+        ("CarbonLib", "GetDialogFromWindow", PpcImportDispatcherTarget::GetDialogFromWindow),
+        ("InterfaceLib", "SetPortDialogPort", PpcImportDispatcherTarget::SetPortDialogPort),
+        ("AppearanceLib", "SetPortDialogPort", PpcImportDispatcherTarget::SetPortDialogPort),
+        ("DialogsLib", "SetPortDialogPort", PpcImportDispatcherTarget::SetPortDialogPort),
+        ("CarbonLib", "SetPortDialogPort", PpcImportDispatcherTarget::SetPortDialogPort),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import(lib, symbol),
+            expected_target,
+        );
+    }
     for (symbol, operation) in [
         ("AppendDITL", PpcDialogCompatibilityOperation::AppendDitl),
         ("CountDITL", PpcDialogCompatibilityOperation::CountDitl),
@@ -2809,6 +2832,88 @@ fn get_alert_stage_and_set_dialog_font_dispatch_with_canonical_evaluation() {
     let probe = loaded_get_stage.run_with_hle_imports(64);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded_get_stage.cpu.gpr[3], 2);
+}
+
+#[test]
+fn get_dialog_port_and_window_accessors_manage_dialog_references() {
+    let dialog_ptr = PPC_DATA_BASE + 0x1000;
+    let window_ptr = PPC_DATA_BASE + 0x2000;
+
+    // 1. GetDialogPort returns dialog pointer, or 0 for NULL
+    let pef_port = synthetic_pef_with_library_import(b"InterfaceLib", b"GetDialogPort");
+    let mut loaded_port = load_pef_application(&pef_port).unwrap();
+    loaded_port.cpu.gpr[3] = dialog_ptr;
+    let probe = loaded_port.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_port.cpu.gpr[3], dialog_ptr);
+
+    let mut loaded_null_port = load_pef_application(&pef_port).unwrap();
+    loaded_null_port.cpu.gpr[3] = 0;
+    let probe = loaded_null_port.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_null_port.cpu.gpr[3], 0);
+
+    // 2. GetDialogWindow returns dialog pointer, or 0 for NULL
+    let pef_window = synthetic_pef_with_library_import(b"AppearanceLib", b"GetDialogWindow");
+    let mut loaded_window = load_pef_application(&pef_window).unwrap();
+    loaded_window.cpu.gpr[3] = dialog_ptr;
+    let probe = loaded_window.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_window.cpu.gpr[3], dialog_ptr);
+
+    let mut loaded_null_window = load_pef_application(&pef_window).unwrap();
+    loaded_null_window.cpu.gpr[3] = 0;
+    let probe = loaded_null_window.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_null_window.cpu.gpr[3], 0);
+
+    // 3. GetDialogFromWindow: validates windowKind == dialogKind (2)
+    let pef_from_window = synthetic_pef_with_library_import(b"CarbonLib", b"GetDialogFromWindow");
+
+    // NULL window returns 0
+    let mut loaded_null_win = load_pef_application(&pef_from_window).unwrap();
+    loaded_null_win.cpu.gpr[3] = 0;
+    let probe = loaded_null_win.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_null_win.cpu.gpr[3], 0);
+
+    // Non-dialog window (windowKind == 8) returns 0
+    let mut loaded_doc_win = load_pef_application(&pef_from_window).unwrap();
+    loaded_doc_win.memory.add_region(window_ptr, vec![0; 256]);
+    loaded_doc_win
+        .memory
+        .write_u16_be(
+            window_ptr + crate::dialog_manager::DIALOG_WINDOW_KIND_OFFSET,
+            8,
+        )
+        .unwrap();
+    loaded_doc_win.cpu.gpr[3] = window_ptr;
+    let probe = loaded_doc_win.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_doc_win.cpu.gpr[3], 0);
+
+    // Dialog window (windowKind == 2) returns dialog pointer
+    let mut loaded_dlg_win = load_pef_application(&pef_from_window).unwrap();
+    loaded_dlg_win.memory.add_region(dialog_ptr, vec![0; 256]);
+    loaded_dlg_win
+        .memory
+        .write_u16_be(
+            dialog_ptr + crate::dialog_manager::DIALOG_WINDOW_KIND_OFFSET,
+            crate::dialog_manager::DIALOG_WINDOW_KIND,
+        )
+        .unwrap();
+    loaded_dlg_win.cpu.gpr[3] = dialog_ptr;
+    let probe = loaded_dlg_win.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_dlg_win.cpu.gpr[3], dialog_ptr);
+
+    // 4. SetPortDialogPort makes dialog port current
+    let pef_set_port = synthetic_pef_with_library_import(b"DialogsLib", b"SetPortDialogPort");
+    let mut loaded_set_port = load_pef_application(&pef_set_port).unwrap();
+    loaded_set_port.cpu.gpr[3] = dialog_ptr;
+    let probe = loaded_set_port.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(*loaded_set_port.current_gworld, dialog_ptr);
 }
 
 

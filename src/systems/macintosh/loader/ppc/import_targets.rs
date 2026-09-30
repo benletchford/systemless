@@ -565,6 +565,10 @@ pub enum PpcImportDispatcherTarget {
     GetStdFilterProc,
     GetAlertStage,
     SetDialogFont,
+    GetDialogPort,
+    GetDialogWindow,
+    GetDialogFromWindow,
+    SetPortDialogPort,
     DrawDialog,
     DrawControls,
     ModalDialog,
@@ -3042,6 +3046,18 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "DialogsLib" | "CarbonLib", "SetDialogFont")
         | ("InterfaceLib" | "DialogsLib" | "CarbonLib", "SetDAFont") => {
             PpcImportDispatcherTarget::SetDialogFont
+        }
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "GetDialogPort") => {
+            PpcImportDispatcherTarget::GetDialogPort
+        }
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "GetDialogWindow") => {
+            PpcImportDispatcherTarget::GetDialogWindow
+        }
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "GetDialogFromWindow") => {
+            PpcImportDispatcherTarget::GetDialogFromWindow
+        }
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "SetPortDialogPort") => {
+            PpcImportDispatcherTarget::SetPortDialogPort
         }
         ("InterfaceLib", "DrawDialog") => PpcImportDispatcherTarget::DrawDialog,
         ("InterfaceLib", "DrawControls") => PpcImportDispatcherTarget::DrawControls,

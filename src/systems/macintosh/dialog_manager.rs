@@ -5951,6 +5951,57 @@ pub const fn evaluate_get_da_strings_addr() -> u32 {
     crate::memory::globals::addr::DA_STRINGS
 }
 
+/// Evaluates `GetDialogPort` (Universal Interfaces 3.4.1 `Dialogs.h`).
+///
+/// In classic Mac OS, `DialogRecord` begins with `WindowRecord`, which begins
+/// with `GrafPort` / `CGrafPort`. Therefore `GetDialogPort` returns the dialog's
+/// port pointer directly, or 0 if NULL.
+#[inline]
+#[must_use]
+pub const fn evaluate_get_dialog_port(dialog_ptr: u32) -> u32 {
+    dialog_ptr
+}
+
+/// Evaluates `GetDialogWindow` (Universal Interfaces 3.4.1 `Dialogs.h`).
+///
+/// In classic Mac OS, `DialogRecord` begins with `WindowRecord`, so the dialog
+/// pointer is also the window pointer. Returns 0 if NULL.
+#[inline]
+#[must_use]
+pub const fn evaluate_get_dialog_window(dialog_ptr: u32) -> u32 {
+    dialog_ptr
+}
+
+/// Evaluates `GetDialogFromWindow` (Universal Interfaces 3.4.1 `Dialogs.h`).
+///
+/// Inside Macintosh Volume I, p. I-274: `dialogKind` is 2 (`DIALOG_WINDOW_KIND`).
+/// If `window_ptr` is non-NULL and `window_kind` is `Some(DIALOG_WINDOW_KIND as i16)`,
+/// the window is an active dialog and `window_ptr` is returned as `DialogRef`.
+/// Otherwise, returns 0 (NULL).
+#[inline]
+#[must_use]
+pub const fn evaluate_get_dialog_from_window(
+    window_ptr: u32,
+    window_kind: Option<i16>,
+) -> u32 {
+    if window_ptr == 0 {
+        return 0;
+    }
+    match window_kind {
+        Some(kind) if kind == DIALOG_WINDOW_KIND as i16 => window_ptr,
+        _ => 0,
+    }
+}
+
+/// Evaluates `SetPortDialogPort` (Universal Interfaces 3.4.1 `Dialogs.h`).
+///
+/// Returns the target port pointer to make current.
+#[inline]
+#[must_use]
+pub const fn evaluate_set_port_dialog_port(dialog_ptr: u32) -> u32 {
+    evaluate_get_dialog_port(dialog_ptr)
+}
+
 /// Canonical evaluated parameters for `ShortenDITL`.
 ///
 /// Macintosh Toolbox Essentials (1992), pp. 6-153--6-154.
@@ -10048,6 +10099,36 @@ mod tests {
         assert_eq!(evaluate_dialog_font(0), 0);
         assert_eq!(evaluate_dialog_font(3), 3);
         assert_eq!(evaluate_dialog_font(0xFFFF), -1);
+    }
+
+    #[test]
+    fn dialog_window_and_port_accessors_evaluation() {
+        assert_eq!(evaluate_get_dialog_port(0), 0);
+        assert_eq!(evaluate_get_dialog_port(0x0012_3456), 0x0012_3456);
+
+        assert_eq!(evaluate_get_dialog_window(0), 0);
+        assert_eq!(evaluate_get_dialog_window(0x0012_3456), 0x0012_3456);
+
+        // GetDialogFromWindow: NULL window returns 0
+        assert_eq!(evaluate_get_dialog_from_window(0, None), 0);
+        assert_eq!(
+            evaluate_get_dialog_from_window(0, Some(DIALOG_WINDOW_KIND as i16)),
+            0
+        );
+
+        // GetDialogFromWindow: non-dialog window returns 0
+        assert_eq!(evaluate_get_dialog_from_window(0x0012_3456, None), 0);
+        assert_eq!(evaluate_get_dialog_from_window(0x0012_3456, Some(8)), 0);
+        assert_eq!(evaluate_get_dialog_from_window(0x0012_3456, Some(0)), 0);
+
+        // GetDialogFromWindow: dialog window returns window pointer
+        assert_eq!(
+            evaluate_get_dialog_from_window(0x0012_3456, Some(DIALOG_WINDOW_KIND as i16)),
+            0x0012_3456
+        );
+
+        assert_eq!(evaluate_set_port_dialog_port(0), 0);
+        assert_eq!(evaluate_set_port_dialog_port(0x0012_3456), 0x0012_3456);
     }
 
     #[test]
