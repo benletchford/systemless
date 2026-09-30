@@ -4006,12 +4006,34 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "AutoEmbedControl" | "autoembedcontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::AutoEmbedControl),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ChangeControlPropertyAttributes" | "changecontrolpropertyattributes",
+        ) => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::ChangeControlPropertyAttributes,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "CountSubControls" | "countsubcontrols",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::CountSubControls),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "CreateRootControl" | "createrootcontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::CreateRootControl),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "DisposeControl" | "disposecontrol" | "DisposControl" | "disposcontrol",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisposeControl),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "Draw1Control" | "draw1control" | "DrawOneControl" | "drawonecontrol",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "EmbedControl" | "embedcontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::EmbedControl),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "FindControl" | "findcontrol",
@@ -4059,8 +4081,38 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlVariant),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlProperty" | "getcontrolproperty",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlProperty),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlPropertyAttributes" | "getcontrolpropertyattributes",
+        ) => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::GetControlPropertyAttributes,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlPropertySize" | "getcontrolpropertysize",
+        ) => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::GetControlPropertySize,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetIndexedSubControl" | "getindexedsubcontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::GetIndexedSubControl,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetNewControl" | "getnewcontrol",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetNewControl),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetRootControl" | "getrootcontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetRootControl),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetSuperControl" | "getsupercontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetSuperControl),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "HideControl" | "hidecontrol",
@@ -4077,6 +4129,12 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "NewControl" | "newcontrol",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "RemoveControlProperty" | "removecontrolproperty",
+        ) => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::RemoveControlProperty,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetControlMaximum"
@@ -4103,6 +4161,16 @@ pub(crate) fn dispatcher_target_for_import(
                 | "SetControlMin"
                 | "setcontrolmin",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMinimum),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetControlProperty" | "setcontrolproperty",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlProperty),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetControlSupervisor" | "setcontrolsupervisor",
+        ) => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::SetControlSupervisor,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "ShowControl" | "showcontrol",

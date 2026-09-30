@@ -1,6 +1,8 @@
 //! PowerPC graphics, GWorld, and color representation records.
 
-pub(crate) use crate::control_manager::ProcessControlRecord as PpcControlRecord;
+pub(crate) use crate::control_manager::{
+    ProcessControlProperty, ProcessControlRecord as PpcControlRecord,
+};
 use crate::menu_manager::MenuTrackingSurface;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

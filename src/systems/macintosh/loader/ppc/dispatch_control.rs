@@ -347,25 +347,39 @@ fn ppc_dispatch_popup_track_control(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcLegacyControlOperation {
+    AutoEmbedControl,
+    ChangeControlPropertyAttributes,
+    CountSubControls,
+    CreateRootControl,
     DisposeControl,
     DrawOneControl,
+    EmbedControl,
     FindControl,
-    GetControlMaximum,
     GetControlAction,
-    GetControlReference,
+    GetControlMaximum,
     GetControlMinimum,
+    GetControlProperty,
+    GetControlPropertyAttributes,
+    GetControlPropertySize,
+    GetControlReference,
     GetControlTitle,
     GetControlValue,
     GetControlVariant,
+    GetIndexedSubControl,
     GetNewControl,
+    GetRootControl,
+    GetSuperControl,
     HideControl,
     KillControls,
     MoveControl,
     NewControl,
-    SetControlMaximum,
+    RemoveControlProperty,
     SetControlAction,
-    SetControlReference,
+    SetControlMaximum,
     SetControlMinimum,
+    SetControlProperty,
+    SetControlReference,
+    SetControlSupervisor,
     ShowControl,
     SizeControl,
     TestControl,
@@ -506,6 +520,236 @@ pub(super) fn ppc_dispatch_legacy_control(
                 );
             }
             Some(PpcImportAction::Return(handle))
+        }
+        PpcLegacyControlOperation::EmbedControl => {
+            let control = cpu.gpr[3];
+            let container = cpu.gpr[4];
+            let result = ppc_embed_control(controls, control, container);
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::SetControlSupervisor => {
+            let control = cpu.gpr[3];
+            let boss = cpu.gpr[4];
+            let result = ppc_embed_control(controls, control, boss);
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::AutoEmbedControl => {
+            let control = cpu.gpr[3];
+            let window = cpu.gpr[4];
+            let root = ppc_window_root_control(memory, controls, window);
+            let result = if let Some(root_handle) = root {
+                ppc_embed_control(controls, control, root_handle)
+            } else {
+                PPC_NO_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::GetSuperControl => {
+            let control = cpu.gpr[3];
+            let out_super = cpu.gpr[4];
+            let parent = ppc_control_parent(controls, control);
+            let result = if parent != 0 {
+                if out_super != 0 {
+                    let _ = memory.write_u32_be(out_super, parent);
+                }
+                PPC_NO_ERR
+            } else {
+                if out_super != 0 {
+                    let _ = memory.write_u32_be(out_super, 0);
+                }
+                PPC_ERR_CONTROL_IS_NOT_SUB_CONTROL
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::CountSubControls => {
+            let control = cpu.gpr[3];
+            let out_count = cpu.gpr[4];
+            let count = ppc_count_sub_controls(controls, control);
+            if out_count != 0 {
+                let _ = memory.write_u16_be(out_count, count);
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcLegacyControlOperation::GetIndexedSubControl => {
+            let control = cpu.gpr[3];
+            let index = cpu.gpr[4] as u16;
+            let out_sub = cpu.gpr[5];
+            let sub = ppc_indexed_sub_control(controls, control, index);
+            let result = if let Some(sub_handle) = sub {
+                if out_sub != 0 {
+                    let _ = memory.write_u32_be(out_sub, sub_handle);
+                }
+                PPC_NO_ERR
+            } else {
+                if out_sub != 0 {
+                    let _ = memory.write_u32_be(out_sub, 0);
+                }
+                PPC_ERR_CONTROL_IS_NOT_EMBEDDER
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::CreateRootControl => {
+            let window = cpu.gpr[3];
+            let out_control = cpu.gpr[4];
+            let existing = ppc_window_root_control(memory, controls, window);
+            if let Some(existing_handle) = existing {
+                if out_control != 0 {
+                    let _ = memory.write_u32_be(out_control, existing_handle);
+                }
+                Some(PpcImportAction::Return(ppc_i16_result(PPC_ERR_ROOT_ALREADY_EXISTS)))
+            } else {
+                let bounds = ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
+                    .unwrap_or((0, 0, 400, 600));
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                let handle = ppc_new_control_record_values(
+                    Some(&mut allocator),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    controls,
+                    window,
+                    bounds,
+                    b"",
+                    true,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                );
+                if handle != 0 {
+                    if let Some(rec) = controls.iter_mut().find(|r| r.handle == handle) {
+                        rec.is_root = true;
+                    }
+                    if out_control != 0 {
+                        let _ = memory.write_u32_be(out_control, handle);
+                    }
+                    Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+                } else {
+                    if out_control != 0 {
+                        let _ = memory.write_u32_be(out_control, 0);
+                    }
+                    Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)))
+                }
+            }
+        }
+        PpcLegacyControlOperation::GetRootControl => {
+            let window = cpu.gpr[3];
+            let out_control = cpu.gpr[4];
+            let existing = ppc_window_root_control(memory, controls, window);
+            let result = if let Some(root_handle) = existing {
+                if out_control != 0 {
+                    let _ = memory.write_u32_be(out_control, root_handle);
+                }
+                PPC_NO_ERR
+            } else {
+                if out_control != 0 {
+                    let _ = memory.write_u32_be(out_control, 0);
+                }
+                PPC_ERR_NO_ROOT_CONTROL
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::SetControlProperty => {
+            let control = cpu.gpr[3];
+            let creator = cpu.gpr[4];
+            let tag = cpu.gpr[5];
+            let size = cpu.gpr[6];
+            let data_ptr = cpu.gpr[7];
+            let data = if data_ptr != 0 && size > 0 {
+                ppc_memory_read_bytes(memory, data_ptr, size).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            ppc_set_control_property(controls, control, creator, tag, 0, data);
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcLegacyControlOperation::GetControlProperty => {
+            let control = cpu.gpr[3];
+            let creator = cpu.gpr[4];
+            let tag = cpu.gpr[5];
+            let buffer_size = cpu.gpr[6] as usize;
+            let actual_size_ptr = cpu.gpr[7];
+            let data_ptr = cpu.gpr[8];
+            let result = if let Some(prop) = ppc_get_control_property(controls, control, creator, tag) {
+                if actual_size_ptr != 0 {
+                    let _ = memory.write_u32_be(actual_size_ptr, prop.data.len() as u32);
+                }
+                if data_ptr != 0 && buffer_size > 0 {
+                    let copy_len = buffer_size.min(prop.data.len());
+                    let _ = memory.write_bytes(data_ptr, &prop.data[..copy_len]);
+                }
+                PPC_NO_ERR
+            } else {
+                if actual_size_ptr != 0 {
+                    let _ = memory.write_u32_be(actual_size_ptr, 0);
+                }
+                PPC_CONTROL_PROPERTY_NOT_FOUND_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::GetControlPropertySize => {
+            let control = cpu.gpr[3];
+            let creator = cpu.gpr[4];
+            let tag = cpu.gpr[5];
+            let actual_size_ptr = cpu.gpr[6];
+            let result = if let Some(prop) = ppc_get_control_property(controls, control, creator, tag) {
+                if actual_size_ptr != 0 {
+                    let _ = memory.write_u32_be(actual_size_ptr, prop.data.len() as u32);
+                }
+                PPC_NO_ERR
+            } else {
+                if actual_size_ptr != 0 {
+                    let _ = memory.write_u32_be(actual_size_ptr, 0);
+                }
+                PPC_CONTROL_PROPERTY_NOT_FOUND_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::RemoveControlProperty => {
+            let control = cpu.gpr[3];
+            let creator = cpu.gpr[4];
+            let tag = cpu.gpr[5];
+            let removed = ppc_remove_control_property(controls, control, creator, tag);
+            let result = if removed {
+                PPC_NO_ERR
+            } else {
+                PPC_CONTROL_PROPERTY_NOT_FOUND_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::GetControlPropertyAttributes => {
+            let control = cpu.gpr[3];
+            let creator = cpu.gpr[4];
+            let tag = cpu.gpr[5];
+            let attributes_ptr = cpu.gpr[6];
+            let result = if let Some(prop) = ppc_get_control_property(controls, control, creator, tag) {
+                if attributes_ptr != 0 {
+                    let _ = memory.write_u32_be(attributes_ptr, prop.attributes);
+                }
+                PPC_NO_ERR
+            } else {
+                if attributes_ptr != 0 {
+                    let _ = memory.write_u32_be(attributes_ptr, 0);
+                }
+                PPC_CONTROL_PROPERTY_NOT_FOUND_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::ChangeControlPropertyAttributes => {
+            let control = cpu.gpr[3];
+            let creator = cpu.gpr[4];
+            let tag = cpu.gpr[5];
+            let to_set = cpu.gpr[6];
+            let to_clear = cpu.gpr[7];
+            let result = ppc_change_control_property_attributes(
+                controls, control, creator, tag, to_set, to_clear,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyControlOperation::DisposeControl => {
             let mut allocator = PpcProcessAllocatorView {
@@ -970,6 +1214,10 @@ pub(super) fn ppc_new_control_record_values(
         popup_title_width: popup.then_some(max),
         active: true,
         font_style: None,
+        is_root: false,
+        parent: 0,
+        sub_controls: Vec::new(),
+        properties: Vec::new(),
     });
     *last_mem_error = PPC_NO_ERR;
     handle
@@ -1119,7 +1367,226 @@ pub(super) fn ppc_dispose_control(
             free_handle_blocks.push(record);
         }
     }
+    let parent = controls.iter().find(|r| r.handle == handle).map_or(0, |r| r.parent);
+    if parent != 0 {
+        if let Some(parent_rec) = controls.iter_mut().find(|r| r.handle == parent) {
+            parent_rec.sub_controls.retain(|h| *h != handle);
+        }
+    }
+    for record in controls.iter_mut() {
+        if record.parent == handle {
+            record.parent = 0;
+        }
+        record.sub_controls.retain(|h| *h != handle);
+    }
     controls.retain(|record| record.handle != handle);
+}
+
+pub(super) const PPC_ERR_NO_ROOT_CONTROL: i16 = -30586;
+pub(super) const PPC_ERR_ROOT_ALREADY_EXISTS: i16 = -30587;
+pub(super) const PPC_ERR_CONTROL_IS_NOT_EMBEDDER: i16 = -30590;
+pub(super) const PPC_ERR_CONTROL_IS_NOT_SUB_CONTROL: i16 = -30592;
+pub(super) const PPC_ERR_CANT_EMBED_INTO_SELF: i16 = -30594;
+pub(super) const PPC_CONTROL_PROPERTY_NOT_FOUND_ERR: i16 = -5604;
+
+pub(super) fn ppc_window_root_control(
+    memory: &mut PpcSectionMem,
+    controls: &[PpcControlRecord],
+    window: u32,
+) -> Option<u32> {
+    if window == 0 {
+        return None;
+    }
+    for record in controls {
+        if record.is_root {
+            let ptr = if record.pointer != 0 {
+                Some(record.pointer)
+            } else {
+                ppc_control_ptr(memory, record.handle)
+            };
+            if let Some(ptr) = ptr {
+                let owner = memory
+                    .read_u32_be(ptr.wrapping_add(PPC_CONTROL_OWNER_OFFSET))
+                    .unwrap_or(0);
+                if owner == window {
+                    return Some(record.handle);
+                }
+            }
+        }
+    }
+    None
+}
+
+pub(super) fn ppc_embed_control(
+    controls: &mut Vec<PpcControlRecord>,
+    control: u32,
+    container: u32,
+) -> i16 {
+    if control == 0 {
+        return PPC_PARAM_ERR;
+    }
+    if control == container {
+        return PPC_ERR_CANT_EMBED_INTO_SELF;
+    }
+    let mut curr = container;
+    while curr != 0 {
+        if curr == control {
+            return PPC_ERR_CANT_EMBED_INTO_SELF;
+        }
+        curr = controls
+            .iter()
+            .find(|r| r.handle == curr)
+            .map_or(0, |r| r.parent);
+    }
+
+    let old_parent = controls
+        .iter()
+        .find(|r| r.handle == control)
+        .map_or(0, |r| r.parent);
+    if old_parent != 0 {
+        if let Some(old_rec) = controls.iter_mut().find(|r| r.handle == old_parent) {
+            old_rec.sub_controls.retain(|h| *h != control);
+        }
+    }
+
+    if let Some(rec) = controls.iter_mut().find(|r| r.handle == control) {
+        rec.parent = container;
+    } else {
+        controls.push(PpcControlRecord {
+            handle: control,
+            parent: container,
+            ..Default::default()
+        });
+    }
+
+    if container != 0 {
+        if let Some(container_rec) = controls.iter_mut().find(|r| r.handle == container) {
+            if !container_rec.sub_controls.contains(&control) {
+                container_rec.sub_controls.push(control);
+            }
+        } else {
+            controls.push(PpcControlRecord {
+                handle: container,
+                sub_controls: vec![control],
+                ..Default::default()
+            });
+        }
+    }
+    PPC_NO_ERR
+}
+
+pub(super) fn ppc_control_parent(controls: &[PpcControlRecord], control: u32) -> u32 {
+    controls
+        .iter()
+        .find(|r| r.handle == control)
+        .map_or(0, |r| r.parent)
+}
+
+pub(super) fn ppc_count_sub_controls(controls: &[PpcControlRecord], control: u32) -> u16 {
+    controls
+        .iter()
+        .find(|r| r.handle == control)
+        .map_or(0, |r| r.sub_controls.len() as u16)
+}
+
+pub(super) fn ppc_indexed_sub_control(
+    controls: &[PpcControlRecord],
+    control: u32,
+    index: u16,
+) -> Option<u32> {
+    if index == 0 {
+        return None;
+    }
+    controls
+        .iter()
+        .find(|r| r.handle == control)
+        .and_then(|r| r.sub_controls.get((index - 1) as usize).copied())
+}
+
+pub(super) fn ppc_set_control_property(
+    controls: &mut Vec<PpcControlRecord>,
+    control: u32,
+    creator: u32,
+    tag: u32,
+    attributes: u32,
+    data: Vec<u8>,
+) {
+    if control == 0 {
+        return;
+    }
+    let record = if let Some(rec) = controls.iter_mut().find(|r| r.handle == control) {
+        rec
+    } else {
+        controls.push(PpcControlRecord {
+            handle: control,
+            ..Default::default()
+        });
+        controls.last_mut().unwrap()
+    };
+
+    if let Some(prop) = record
+        .properties
+        .iter_mut()
+        .find(|p| p.creator == creator && p.tag == tag)
+    {
+        prop.attributes = attributes;
+        prop.data = data;
+    } else {
+        record.properties.push(ProcessControlProperty {
+            creator,
+            tag,
+            attributes,
+            data,
+        });
+    }
+}
+
+pub(super) fn ppc_get_control_property(
+    controls: &[PpcControlRecord],
+    control: u32,
+    creator: u32,
+    tag: u32,
+) -> Option<&ProcessControlProperty> {
+    controls
+        .iter()
+        .find(|r| r.handle == control)
+        .and_then(|r| r.properties.iter().find(|p| p.creator == creator && p.tag == tag))
+}
+
+pub(super) fn ppc_remove_control_property(
+    controls: &mut Vec<PpcControlRecord>,
+    control: u32,
+    creator: u32,
+    tag: u32,
+) -> bool {
+    if let Some(record) = controls.iter_mut().find(|r| r.handle == control) {
+        let before = record.properties.len();
+        record.properties.retain(|p| !(p.creator == creator && p.tag == tag));
+        record.properties.len() < before
+    } else {
+        false
+    }
+}
+
+pub(super) fn ppc_change_control_property_attributes(
+    controls: &mut Vec<PpcControlRecord>,
+    control: u32,
+    creator: u32,
+    tag: u32,
+    to_set: u32,
+    to_clear: u32,
+) -> i16 {
+    if let Some(record) = controls.iter_mut().find(|r| r.handle == control) {
+        if let Some(prop) = record
+            .properties
+            .iter_mut()
+            .find(|p| p.creator == creator && p.tag == tag)
+        {
+            prop.attributes = (prop.attributes | to_set) & !to_clear;
+            return PPC_NO_ERR;
+        }
+    }
+    PPC_CONTROL_PROPERTY_NOT_FOUND_ERR
 }
 
 pub(super) fn ppc_clamp_control_value(memory: &mut PpcSectionMem, control: u32) {

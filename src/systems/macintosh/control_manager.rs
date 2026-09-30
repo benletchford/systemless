@@ -1,13 +1,23 @@
 //! Architecture-neutral Control Manager records and list operations.
 
+/// Tagged property associated with a ControlRef in Appearance Manager / Carbon.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProcessControlProperty {
+    pub(crate) creator: u32,
+    pub(crate) tag: u32,
+    pub(crate) attributes: u32,
+    pub(crate) data: Vec<u8>,
+}
+
 /// Host metadata for one guest `ControlRecord`.
 ///
 /// The relocatable record and its window-list link remain canonical guest
 /// memory. This process-owned entry retains only information that the HLE
 /// cannot recover reliably from the record, including the original control
-/// definition ID and pop-up definition private values. Inside Macintosh
-/// Volume I (1985), pp. I-316--I-319 and I-328--I-333.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// definition ID, pop-up definition private values, embedding hierarchy,
+/// and Carbon custom properties. Inside Macintosh Volume I (1985),
+/// pp. I-316--I-319 and I-328--I-333; Mac OS 8.5 Appearance Manager (1998).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ProcessControlRecord {
     pub(crate) handle: u32,
     pub(crate) pointer: u32,
@@ -16,6 +26,10 @@ pub(crate) struct ProcessControlRecord {
     pub(crate) popup_title_width: Option<i16>,
     pub(crate) active: bool,
     pub(crate) font_style: Option<ControlFontStyle>,
+    pub(crate) is_root: bool,
+    pub(crate) parent: u32,
+    pub(crate) sub_controls: Vec<u32>,
+    pub(crate) properties: Vec<ProcessControlProperty>,
 }
 
 /// The Appearance Manager style override associated with a ControlRef.
@@ -66,6 +80,10 @@ impl ProcessControlManagerState {
             popup_title_width: None,
             active: true,
             font_style: None,
+            is_root: false,
+            parent: 0,
+            sub_controls: Vec::new(),
+            properties: Vec::new(),
         });
     }
 
@@ -129,12 +147,207 @@ impl ProcessControlManagerState {
     }
 
     pub(crate) fn remove_pointer(&mut self, pointer: u32) {
-        self.records.retain(|record| record.pointer != pointer);
+        let handle = self
+            .records
+            .iter()
+            .find(|record| record.pointer == pointer)
+            .map_or(0, |record| record.handle);
+        if handle != 0 {
+            self.remove_handle(handle);
+        } else {
+            self.records.retain(|record| record.pointer != pointer);
+        }
     }
 
-    #[cfg(test)]
     pub(crate) fn remove_handle(&mut self, handle: u32) {
+        let parent = self.parent(handle);
+        if parent != 0 {
+            if let Some(parent_rec) = self.records.iter_mut().find(|r| r.handle == parent) {
+                parent_rec.sub_controls.retain(|h| *h != handle);
+            }
+        }
+        for record in self.records.iter_mut() {
+            if record.parent == handle {
+                record.parent = 0;
+            }
+            record.sub_controls.retain(|h| *h != handle);
+        }
         self.records.retain(|record| record.handle != handle);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn is_root(&self, handle: u32) -> bool {
+        self.records
+            .iter()
+            .find(|record| record.handle == handle)
+            .is_some_and(|record| record.is_root)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_is_root(&mut self, handle: u32, is_root: bool) {
+        if let Some(record) = self.records.iter_mut().find(|record| record.handle == handle) {
+            record.is_root = is_root;
+        }
+    }
+
+    pub(crate) fn parent(&self, handle: u32) -> u32 {
+        self.records
+            .iter()
+            .find(|record| record.handle == handle)
+            .map_or(0, |record| record.parent)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn count_sub_controls(&self, handle: u32) -> u16 {
+        self.records
+            .iter()
+            .find(|record| record.handle == handle)
+            .map_or(0, |record| record.sub_controls.len() as u16)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn indexed_sub_control(&self, handle: u32, index: u16) -> Option<u32> {
+        if index == 0 {
+            return None;
+        }
+        self.records
+            .iter()
+            .find(|record| record.handle == handle)
+            .and_then(|record| record.sub_controls.get((index - 1) as usize).copied())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn embed_control(&mut self, control: u32, container: u32) -> Result<(), i16> {
+        if control == 0 {
+            return Err(-30582);
+        }
+        if control == container {
+            return Err(-30594);
+        }
+        let mut curr = container;
+        while curr != 0 {
+            if curr == control {
+                return Err(-30594);
+            }
+            curr = self.parent(curr);
+        }
+
+        let old_parent = self.parent(control);
+        if old_parent != 0 {
+            if let Some(old_rec) = self.records.iter_mut().find(|r| r.handle == old_parent) {
+                old_rec.sub_controls.retain(|h| *h != control);
+            }
+        }
+
+        if let Some(rec) = self.records.iter_mut().find(|r| r.handle == control) {
+            rec.parent = container;
+        } else {
+            self.records.push(ProcessControlRecord {
+                handle: control,
+                parent: container,
+                ..Default::default()
+            });
+        }
+
+        if container != 0 {
+            if let Some(container_rec) = self.records.iter_mut().find(|r| r.handle == container) {
+                if !container_rec.sub_controls.contains(&control) {
+                    container_rec.sub_controls.push(control);
+                }
+            } else {
+                self.records.push(ProcessControlRecord {
+                    handle: container,
+                    sub_controls: vec![control],
+                    ..Default::default()
+                });
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_property(
+        &mut self,
+        control: u32,
+        creator: u32,
+        tag: u32,
+        attributes: u32,
+        data: Vec<u8>,
+    ) {
+        if control == 0 {
+            return;
+        }
+        let record = if let Some(rec) = self.records.iter_mut().find(|r| r.handle == control) {
+            rec
+        } else {
+            self.records.push(ProcessControlRecord {
+                handle: control,
+                ..Default::default()
+            });
+            self.records.last_mut().unwrap()
+        };
+
+        if let Some(prop) = record
+            .properties
+            .iter_mut()
+            .find(|p| p.creator == creator && p.tag == tag)
+        {
+            prop.attributes = attributes;
+            prop.data = data;
+        } else {
+            record.properties.push(ProcessControlProperty {
+                creator,
+                tag,
+                attributes,
+                data,
+            });
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn get_property(
+        &self,
+        control: u32,
+        creator: u32,
+        tag: u32,
+    ) -> Option<&ProcessControlProperty> {
+        self.records
+            .iter()
+            .find(|r| r.handle == control)
+            .and_then(|r| r.properties.iter().find(|p| p.creator == creator && p.tag == tag))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn remove_property(&mut self, control: u32, creator: u32, tag: u32) -> bool {
+        if let Some(rec) = self.records.iter_mut().find(|r| r.handle == control) {
+            let before = rec.properties.len();
+            rec.properties.retain(|p| !(p.creator == creator && p.tag == tag));
+            rec.properties.len() < before
+        } else {
+            false
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn change_property_attributes(
+        &mut self,
+        control: u32,
+        creator: u32,
+        tag: u32,
+        set: u32,
+        clear: u32,
+    ) -> Result<u32, i16> {
+        if let Some(rec) = self.records.iter_mut().find(|r| r.handle == control) {
+            if let Some(prop) = rec
+                .properties
+                .iter_mut()
+                .find(|p| p.creator == creator && p.tag == tag)
+            {
+                prop.attributes = (prop.attributes | set) & !clear;
+                return Ok(prop.attributes);
+            }
+        }
+        Err(-5604)
     }
 }
 
@@ -334,5 +547,61 @@ mod tests {
                 label_left: 268,
             }
         );
+    }
+
+    #[test]
+    fn process_control_manager_state_evaluates_embedding_hierarchy() {
+        let mut state = ProcessControlManagerState::default();
+        state.register(10, 0x1000, 0, 0);
+        state.register(20, 0x2000, 0, 0);
+        state.register(30, 0x3000, 0, 0);
+
+        state.set_is_root(10, true);
+        assert!(state.is_root(10));
+        assert!(!state.is_root(20));
+
+        assert_eq!(state.count_sub_controls(10), 0);
+        assert_eq!(state.embed_control(20, 10), Ok(()));
+        assert_eq!(state.embed_control(30, 10), Ok(()));
+        assert_eq!(state.embed_control(20, 20), Err(-30594));
+
+        assert_eq!(state.count_sub_controls(10), 2);
+        assert_eq!(state.indexed_sub_control(10, 1), Some(20));
+        assert_eq!(state.indexed_sub_control(10, 2), Some(30));
+        assert_eq!(state.indexed_sub_control(10, 3), None);
+
+        assert_eq!(state.parent(20), 10);
+        assert_eq!(state.parent(10), 0);
+
+        state.remove_handle(20);
+        assert_eq!(state.count_sub_controls(10), 1);
+        assert_eq!(state.indexed_sub_control(10, 1), Some(30));
+    }
+
+    #[test]
+    fn process_control_manager_state_evaluates_tagged_properties() {
+        let mut state = ProcessControlManagerState::default();
+        state.register(10, 0x1000, 0, 0);
+
+        let creator = 0x5445_5354;
+        let tag = 0x5441_4731;
+        state.set_property(10, creator, tag, 0x01, vec![1, 2, 3]);
+
+        let prop = state.get_property(10, creator, tag).unwrap();
+        assert_eq!(prop.creator, creator);
+        assert_eq!(prop.tag, tag);
+        assert_eq!(prop.attributes, 0x01);
+        assert_eq!(prop.data, vec![1, 2, 3]);
+
+        assert_eq!(
+            state.change_property_attributes(10, creator, tag, 0x10, 0x01),
+            Ok(0x10)
+        );
+        let prop = state.get_property(10, creator, tag).unwrap();
+        assert_eq!(prop.attributes, 0x10);
+
+        assert!(state.remove_property(10, creator, tag));
+        assert!(state.get_property(10, creator, tag).is_none());
+        assert!(!state.remove_property(10, creator, tag));
     }
 }
