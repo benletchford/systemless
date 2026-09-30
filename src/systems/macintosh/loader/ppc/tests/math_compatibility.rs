@@ -675,6 +675,10 @@ fn import_bindings_classify_mathlib_imports() {
         PpcImportDispatcherTarget::MathCos
     );
     assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "round"),
+        PpcImportDispatcherTarget::MathRound
+    );
+    assert_eq!(
         dispatcher_target_for_import("MathLib", "atan2"),
         PpcImportDispatcherTarget::MathAtan2
     );
@@ -690,4 +694,22 @@ fn import_bindings_classify_mathlib_imports() {
         dispatcher_target_for_import("MathLib", "dtox80"),
         PpcImportDispatcherTarget::MathDtox80
     );
+}
+
+#[test]
+fn carbon_round_uses_nearest_integer_with_halfway_values_away_from_zero() {
+    let mut cpu = PpcCpu::new();
+    let mut memory = PpcSectionMem::new();
+    for (input, expected) in [(2.5_f64, 3.0_f64), (-2.5, -3.0), (2.49, 2.0), (-0.0, -0.0)] {
+        cpu.fpr[1] = input.to_bits();
+        assert_eq!(
+            super::super::dispatch_math::dispatch_math_import(
+                &PpcImportDispatcherTarget::MathRound,
+                &mut cpu,
+                &mut memory,
+            ),
+            Some(PpcImportAction::ReturnPreserve)
+        );
+        assert_eq!(cpu.fpr[1], expected.to_bits());
+    }
 }

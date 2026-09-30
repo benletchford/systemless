@@ -1737,6 +1737,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::MathExp
         | PpcImportDispatcherTarget::MathSin
         | PpcImportDispatcherTarget::MathCos
+        | PpcImportDispatcherTarget::MathRound
         | PpcImportDispatcherTarget::MathAsin
         | PpcImportDispatcherTarget::MathTan
         | PpcImportDispatcherTarget::MathAtan

@@ -810,6 +810,7 @@ pub enum PpcImportDispatcherTarget {
     MathExp,
     MathSin,
     MathCos,
+    MathRound,
     MathAsin,
     MathTan,
     MathAtan,
@@ -1155,7 +1156,7 @@ pub(crate) fn dispatcher_target_for_import(
         // Inside Macintosh: PowerPC Numerics (1994), pp. 10-29--10-30:
         // cos accepts and returns a double_t angle in radians. CarbonLib
         // exports the same C math symbol and PowerPC floating-point ABI.
-        ("CarbonLib", "cos") => "MathLib",
+        ("CarbonLib", "cos" | "round") => "MathLib",
         ("CarbonLib", _) => "InterfaceLib",
         _ => library_name,
     };
@@ -1980,6 +1981,7 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("MathLib", "sin") => PpcImportDispatcherTarget::MathSin,
         ("MathLib", "cos") => PpcImportDispatcherTarget::MathCos,
+        ("MathLib", "round") => PpcImportDispatcherTarget::MathRound,
         ("MathLib", "asin") => PpcImportDispatcherTarget::MathAsin,
         ("MathLib", "tan") => PpcImportDispatcherTarget::MathTan,
         ("MathLib", "atan") => PpcImportDispatcherTarget::MathAtan,
