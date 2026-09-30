@@ -1644,6 +1644,69 @@ fn import_bindings_classify_dialog_imports() {
             expected_target,
         );
     }
+    for (lib, symbol, expected_target) in [
+        ("InterfaceLib", "ParamText", PpcImportDispatcherTarget::ParamText),
+        ("AppearanceLib", "ParamText", PpcImportDispatcherTarget::ParamText),
+        ("DialogsLib", "ParamText", PpcImportDispatcherTarget::ParamText),
+        ("CarbonLib", "ParamText", PpcImportDispatcherTarget::ParamText),
+        ("InterfaceLib", "paramtext", PpcImportDispatcherTarget::ParamText),
+        ("AppearanceLib", "paramtext", PpcImportDispatcherTarget::ParamText),
+        ("DialogsLib", "paramtext", PpcImportDispatcherTarget::ParamText),
+        ("CarbonLib", "paramtext", PpcImportDispatcherTarget::ParamText),
+        ("InterfaceLib", "Alert", PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Alert)),
+        ("AppearanceLib", "Alert", PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Alert)),
+        ("DialogsLib", "Alert", PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Alert)),
+        ("CarbonLib", "Alert", PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Alert)),
+        ("InterfaceLib", "StopAlert", PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Stop)),
+        ("AppearanceLib", "StopAlert", PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Stop)),
+        ("DialogsLib", "StopAlert", PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Stop)),
+        ("CarbonLib", "StopAlert", PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Stop)),
+        ("InterfaceLib", "NoteAlert", PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Note)),
+        ("AppearanceLib", "NoteAlert", PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Note)),
+        ("DialogsLib", "NoteAlert", PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Note)),
+        ("CarbonLib", "NoteAlert", PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Note)),
+        ("InterfaceLib", "CautionAlert", PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Caution)),
+        ("AppearanceLib", "CautionAlert", PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Caution)),
+        ("DialogsLib", "CautionAlert", PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Caution)),
+        ("CarbonLib", "CautionAlert", PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Caution)),
+        ("InterfaceLib", "StandardAlert", PpcImportDispatcherTarget::StandardAlert),
+        ("AppearanceLib", "StandardAlert", PpcImportDispatcherTarget::StandardAlert),
+        ("DialogsLib", "StandardAlert", PpcImportDispatcherTarget::StandardAlert),
+        ("CarbonLib", "StandardAlert", PpcImportDispatcherTarget::StandardAlert),
+        (
+            "InterfaceLib",
+            "ResetAlertStage",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::ResetAlertStage,
+            ),
+        ),
+        (
+            "AppearanceLib",
+            "ResetAlertStage",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::ResetAlertStage,
+            ),
+        ),
+        (
+            "DialogsLib",
+            "ResetAlertStage",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::ResetAlertStage,
+            ),
+        ),
+        (
+            "CarbonLib",
+            "ResetAlertStage",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::ResetAlertStage,
+            ),
+        ),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import(lib, symbol),
+            expected_target,
+        );
+    }
     for (symbol, expected_target) in [
         ("LMSetResumeProc", PpcImportDispatcherTarget::LMSetResumeProc),
         ("LMGetResumeProc", PpcImportDispatcherTarget::LMGetResumeProc),
@@ -4404,6 +4467,104 @@ fn dialog_item_positioning_and_geometry_commands_dispatch_with_canonical_evaluat
     assert_eq!(probe.unsupported_import_index, None);
 }
 
+#[test]
+fn dialog_alert_and_param_text_commands_dispatch_with_canonical_evaluation() {
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"ParamText");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_HEAP_BASE;
+    loaded.memory.add_region(scratch, vec![0; 256]);
 
+    // 1. ParamText:
+    // 1a. Write 4 Pascal strings to scratch memory
+    let strings: [&[u8]; 4] = [b"FirstParam", b"SecondParam", b"ThirdParam", b"FourthParam"];
+    for (i, text) in strings.iter().enumerate() {
+        let ptr = scratch + i as u32 * 32;
+        write_ppc_pstring(&mut loaded.memory, ptr, text);
+        loaded.cpu.gpr[3 + i] = ptr;
+    }
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ParamText);
+    assert_eq!(loaded.param_text.slot(0).as_deref(), Some(b"FirstParam".as_slice()));
+    assert_eq!(loaded.param_text.slot(1).as_deref(), Some(b"SecondParam".as_slice()));
+    assert_eq!(loaded.param_text.slot(2).as_deref(), Some(b"ThirdParam".as_slice()));
+    assert_eq!(loaded.param_text.slot(3).as_deref(), Some(b"FourthParam".as_slice()));
 
+    // 1b. Verify NULL pointer retains existing slot, and empty string updates to empty
+    let empty_ptr = scratch + 128;
+    write_ppc_pstring(&mut loaded.memory, empty_ptr, b"");
+    loaded.cpu.gpr[3] = 0;         // NULL: preserves FirstParam
+    loaded.cpu.gpr[4] = empty_ptr; // empty: updates to empty
+    loaded.cpu.gpr[5] = 0;         // NULL: preserves ThirdParam
+    loaded.cpu.gpr[6] = 0;         // NULL: preserves FourthParam
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ParamText);
+    assert_eq!(loaded.param_text.slot(0).as_deref(), Some(b"FirstParam".as_slice()));
+    assert_eq!(loaded.param_text.slot(1).as_deref(), Some(b"".as_slice()));
+    assert_eq!(loaded.param_text.slot(2).as_deref(), Some(b"ThirdParam".as_slice()));
+    assert_eq!(loaded.param_text.slot(3).as_deref(), Some(b"FourthParam".as_slice()));
 
+    // 2. AlertReturnDefault (Alert, StopAlert, NoteAlert, CautionAlert) with missing resource ID:
+    for kind in [
+        crate::dialog_manager::AlertKind::Alert,
+        crate::dialog_manager::AlertKind::Stop,
+        crate::dialog_manager::AlertKind::Note,
+        crate::dialog_manager::AlertKind::Caution,
+    ] {
+        loaded.cpu.gpr[3] = 999; // non-existent alert ID
+        loaded.cpu.gpr[4] = 0;   // filterProc = NULL
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::AlertReturnDefault(kind));
+        assert_eq!(loaded.cpu.gpr[3] as i16, -1);
+    }
+
+    // 3. StandardAlert:
+    // Safe error on NULL outItemHit
+    loaded.cpu.gpr[3] = 0; // kAlertStopAlert
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 0; // NULL outItemHit
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::StandardAlert);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 4. ResetAlertStage:
+    loaded
+        .memory
+        .write_u16_be(crate::memory::globals::addr::ALERT_STAGE, 3)
+        .unwrap();
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::ResetAlertStage,
+        ),
+    );
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(crate::memory::globals::addr::ALERT_STAGE),
+        Some(crate::dialog_manager::INITIAL_ALERT_STAGE)
+    );
+
+    // 5. Verify PEF execution using DialogsLib and CarbonLib
+    for (lib, symbol) in [
+        (b"DialogsLib".as_slice(), b"ParamText".as_slice()),
+        (b"CarbonLib".as_slice(), b"ParamText".as_slice()),
+        (b"DialogsLib".as_slice(), b"paramtext".as_slice()),
+        (b"CarbonLib".as_slice(), b"paramtext".as_slice()),
+        (b"DialogsLib".as_slice(), b"Alert".as_slice()),
+        (b"CarbonLib".as_slice(), b"Alert".as_slice()),
+        (b"DialogsLib".as_slice(), b"StopAlert".as_slice()),
+        (b"CarbonLib".as_slice(), b"StopAlert".as_slice()),
+        (b"DialogsLib".as_slice(), b"NoteAlert".as_slice()),
+        (b"CarbonLib".as_slice(), b"NoteAlert".as_slice()),
+        (b"DialogsLib".as_slice(), b"CautionAlert".as_slice()),
+        (b"CarbonLib".as_slice(), b"CautionAlert".as_slice()),
+        (b"DialogsLib".as_slice(), b"StandardAlert".as_slice()),
+        (b"CarbonLib".as_slice(), b"StandardAlert".as_slice()),
+        (b"DialogsLib".as_slice(), b"ResetAlertStage".as_slice()),
+        (b"CarbonLib".as_slice(), b"ResetAlertStage".as_slice()),
+    ] {
+        let pef = synthetic_pef_with_library_import(lib, symbol);
+        let mut loaded_app = load_pef_application(&pef).unwrap();
+        loaded_app.cpu.gpr[3] = 0;
+        let probe = loaded_app.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+    }
+}
