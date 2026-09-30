@@ -1552,6 +1552,25 @@ fn import_bindings_classify_dialog_imports() {
             expected_target,
         );
     }
+    for (lib, symbol, expected_target) in [
+        ("InterfaceLib", "CloseDialog", PpcImportDispatcherTarget::CloseDialog),
+        ("AppearanceLib", "CloseDialog", PpcImportDispatcherTarget::CloseDialog),
+        ("DialogsLib", "CloseDialog", PpcImportDispatcherTarget::CloseDialog),
+        ("CarbonLib", "CloseDialog", PpcImportDispatcherTarget::CloseDialog),
+        ("InterfaceLib", "DisposeDialog", PpcImportDispatcherTarget::DisposeDialog),
+        ("AppearanceLib", "DisposeDialog", PpcImportDispatcherTarget::DisposeDialog),
+        ("DialogsLib", "DisposeDialog", PpcImportDispatcherTarget::DisposeDialog),
+        ("CarbonLib", "DisposeDialog", PpcImportDispatcherTarget::DisposeDialog),
+        ("InterfaceLib", "DisposDialog", PpcImportDispatcherTarget::DisposeDialog),
+        ("AppearanceLib", "DisposDialog", PpcImportDispatcherTarget::DisposeDialog),
+        ("DialogsLib", "DisposDialog", PpcImportDispatcherTarget::DisposeDialog),
+        ("CarbonLib", "DisposDialog", PpcImportDispatcherTarget::DisposeDialog),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import(lib, symbol),
+            expected_target,
+        );
+    }
     for (symbol, expected_target) in [
         ("LMSetResumeProc", PpcImportDispatcherTarget::LMSetResumeProc),
         ("LMGetResumeProc", PpcImportDispatcherTarget::LMGetResumeProc),
@@ -3664,6 +3683,89 @@ fn dialog_event_loop_and_rendering_commands_dispatch_with_canonical_evaluation()
     let mut loaded_is_dlg = load_pef_application(&pef_is_dlg).unwrap();
     loaded_is_dlg.cpu.gpr[3] = 0;
     let probe = loaded_is_dlg.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+}
+
+#[test]
+fn dialog_teardown_commands_dispatch_with_canonical_evaluation() {
+    let dialog_ptr = PPC_DATA_BASE + 0x1000;
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"CloseDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(dialog_ptr, vec![0; 256]);
+
+    loaded.gworlds.push(PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: dialog_ptr,
+        pixmap_handle: 0,
+        pixmap: 0,
+        base_addr: 0,
+        gdevice: PPC_MAIN_GDEVICE,
+        width: 300,
+        height: 200,
+        depth: 8,
+        row_bytes: 300,
+        pixels_locked: false,
+        pixels_no_purge: false,
+    });
+    loaded.window_list.push(dialog_ptr);
+
+    // 1. CloseDialog: Safe no-op on NULL dialog pointer
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CloseDialog);
+    assert!(loaded.window_list.contains(&dialog_ptr));
+
+    // 2. DisposeDialog: Safe no-op on NULL dialog pointer
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeDialog);
+    assert!(loaded.window_list.contains(&dialog_ptr));
+
+    // 3. CloseDialog with valid dialog pointer removes from window_list
+    loaded.cpu.gpr[3] = dialog_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CloseDialog);
+    assert!(!loaded.window_list.contains(&dialog_ptr));
+
+    // 4. DisposeDialog with second dialog removes from window_list and gworlds
+    let dialog2_ptr = PPC_DATA_BASE + 0x2000;
+    loaded.memory.add_region(dialog2_ptr, vec![0; 256]);
+    loaded.gworlds.push(PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: dialog2_ptr,
+        pixmap_handle: 0,
+        pixmap: 0,
+        base_addr: 0,
+        gdevice: PPC_MAIN_GDEVICE,
+        width: 300,
+        height: 200,
+        depth: 8,
+        row_bytes: 300,
+        pixels_locked: false,
+        pixels_no_purge: false,
+    });
+    loaded.window_list.push(dialog2_ptr);
+    assert!(loaded.window_list.contains(&dialog2_ptr));
+
+    loaded.cpu.gpr[3] = dialog2_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeDialog);
+    assert!(!loaded.window_list.contains(&dialog2_ptr));
+    assert!(!loaded.gworlds.iter().any(|gw| gw.port == dialog2_ptr));
+
+    // 5. Verify PEF execution using AppearanceLib, DialogsLib, and CarbonLib
+    let pef_close = synthetic_pef_with_library_import(b"AppearanceLib", b"CloseDialog");
+    let mut loaded_close = load_pef_application(&pef_close).unwrap();
+    loaded_close.cpu.gpr[3] = 0;
+    let probe = loaded_close.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_dispose = synthetic_pef_with_library_import(b"DialogsLib", b"DisposeDialog");
+    let mut loaded_dispose = load_pef_application(&pef_dispose).unwrap();
+    loaded_dispose.cpu.gpr[3] = 0;
+    let probe = loaded_dispose.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_dispos = synthetic_pef_with_library_import(b"CarbonLib", b"DisposDialog");
+    let mut loaded_dispos = load_pef_application(&pef_dispos).unwrap();
+    loaded_dispos.cpu.gpr[3] = 0;
+    let probe = loaded_dispos.run_with_hle_imports(64);
     assert_eq!(probe.unsupported_import_index, None);
 }
 

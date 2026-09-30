@@ -3180,8 +3180,14 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetMainEventQueue") => PpcImportDispatcherTarget::GetMainEventQueue,
         ("InterfaceLib", "FlushEventQueue") => PpcImportDispatcherTarget::FlushEventQueue,
         ("InterfaceLib", "SetEventMask") => PpcImportDispatcherTarget::SetEventMask,
-        ("InterfaceLib", "CloseDialog") => PpcImportDispatcherTarget::CloseDialog,
-        ("InterfaceLib", "DisposeDialog" | "DisposDialog") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "CloseDialog",
+        ) => PpcImportDispatcherTarget::CloseDialog,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "DisposeDialog" | "DisposDialog",
+        ) => {
             PpcImportDispatcherTarget::DisposeDialog
         }
         ("InterfaceLib", "GetNextEvent") => {
