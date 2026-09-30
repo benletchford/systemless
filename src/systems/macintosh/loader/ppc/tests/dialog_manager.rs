@@ -495,6 +495,12 @@ fn hle_import_runner_handles_get_new_dialog_allocation() {
             .read_u32_be(dialog + PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET),
         Some(0x1234_5678)
     );
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(dialog + crate::dialog_manager::DIALOG_TX_FONT_OFFSET),
+        Some(0)
+    );
 }
 
 #[test]
@@ -1524,6 +1530,14 @@ fn import_bindings_classify_dialog_imports() {
         PpcImportDispatcherTarget::SetDialogFont
     );
     assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "InitDialogs"),
+        PpcImportDispatcherTarget::InitDialogs
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DialogsLib", "InitDialogs"),
+        PpcImportDispatcherTarget::InitDialogs
+    );
+    assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "ModalDialog"),
         PpcImportDispatcherTarget::ModalDialog
     );
@@ -1849,9 +1863,11 @@ fn init_dialogs_initializes_dialog_globals_in_memory() {
     loaded.memory.write_u32_be(addr::RESUME_PROC, 0xDEAD_BEEF).unwrap();
     loaded.memory.write_u32_be(addr::DA_BEEPER, 0x00AA_BBCC).unwrap();
     loaded.memory.write_u16_be(addr::ALERT_STAGE, 3).unwrap();
+    loaded.memory.write_u16_be(addr::DLG_FONT, 5).unwrap();
     for i in 0..4u32 {
         loaded.memory.write_u32_be(addr::DA_STRINGS + i * 4, 0x00D0_0000 | i).unwrap();
     }
+    loaded.param_text.set_slot(0, b"InitialParamText".to_vec());
     loaded.cpu.gpr[3] = 0x1234_5678;
 
     let probe = loaded.run_with_hle_imports(64);
@@ -1865,9 +1881,14 @@ fn init_dialogs_initializes_dialog_globals_in_memory() {
         loaded.memory.read_u16_be(addr::ALERT_STAGE),
         Some(crate::dialog_manager::INITIAL_ALERT_STAGE)
     );
+    assert_eq!(
+        loaded.memory.read_u16_be(addr::DLG_FONT),
+        Some(0)
+    );
     for i in 0..4u32 {
         assert_eq!(loaded.memory.read_u32_be(addr::DA_STRINGS + i * 4), Some(0));
     }
+    assert!(loaded.param_text.is_empty());
 }
 
 #[test]
@@ -1964,6 +1985,69 @@ fn alert_stage_progression_suppression_and_anumber_recording() {
     );
     let dialog = *loaded.current_gworld;
     assert!(ppc_window_is_visible(&mut loaded.memory, dialog));
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(dialog + crate::dialog_manager::DIALOG_TX_FONT_OFFSET),
+        Some(0)
+    );
+}
+
+#[test]
+fn dialog_and_alert_creation_initializes_tx_font_from_dlg_font() {
+    let pef = synthetic_pef_with_import(b"GetNewDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    use crate::memory::globals::addr;
+    loaded.memory.write_u16_be(addr::DLG_FONT, 4).unwrap(); // Monaco font (4)
+
+    let mut dlog = vec![0; 22];
+    dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
+    dlog[6..8].copy_from_slice(&200i16.to_be_bytes());
+    dlog[10] = 1;
+    dlog[12] = 1;
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    dlog[20] = 1;
+    dlog[21] = b'T';
+    let mut ditl = vec![0; 22];
+    ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&10i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&26i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&190i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_STATIC_TEXT;
+    ditl[15] = 4;
+    ditl[16..20].copy_from_slice(b"Font");
+    for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    let dialog = loaded.cpu.gpr[3];
+    assert_ne!(dialog, 0);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(dialog + crate::dialog_manager::DIALOG_TX_FONT_OFFSET),
+        Some(4),
+        "GetNewDialog must initialize txFont from low-memory DlgFont ($0AFA)"
+    );
 }
 
 #[test]

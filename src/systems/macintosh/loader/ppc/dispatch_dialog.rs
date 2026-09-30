@@ -177,9 +177,11 @@ pub(super) fn dispatch_dialog_import(
             let _ = memory.write_u32_be(crate::memory::globals::addr::RESUME_PROC, eval.resume_proc());
             let _ = memory.write_u32_be(crate::memory::globals::addr::DA_BEEPER, eval.da_beeper());
             let _ = memory.write_u16_be(crate::memory::globals::addr::ALERT_STAGE, eval.initial_alert_stage() as u16);
+            let _ = memory.write_u16_be(crate::memory::globals::addr::DLG_FONT, eval.initial_dialog_font() as u16);
             for i in 0..eval.da_strings_count() as u32 {
                 let _ = memory.write_u32_be(crate::memory::globals::addr::DA_STRINGS + i * 4, 0);
             }
+            param_text.clear();
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ErrorSound => {
@@ -2241,6 +2243,15 @@ fn ppc_new_alert_dialog(
         let _ = memory.write_u16_be(dialog + DIALOG_DEFAULT_ITEM_OFFSET, init.default_item() as u16);
         let _ = memory.write_u16_be(dialog + DIALOG_ALERT_HIT_OFFSET, init.alert_hit() as u16);
         let _ = memory.write_u16_be(dialog + DIALOG_CANCEL_ITEM_OFFSET, init.cancel_item() as u16);
+        let dialog_font = crate::dialog_manager::evaluate_dialog_font(
+            memory
+                .read_u16_be(crate::memory::globals::addr::DLG_FONT)
+                .unwrap_or(0),
+        );
+        let _ = memory.write_u16_be(
+            dialog + crate::dialog_manager::DIALOG_TX_FONT_OFFSET,
+            dialog_font as u16,
+        );
         if standard {
             let _ = memory.write_u32_be(dialog + DIALOG_STANDARD_ALERT_OUTPUT_OFFSET, cpu.gpr[7]);
             let _ = memory.write_u32_be(dialog + DIALOG_STANDARD_ALERT_STACK_OFFSET, cpu.gpr[1]);
@@ -2537,6 +2548,16 @@ fn ppc_new_dialog(
         };
         return 0;
     }
+
+    let dialog_font = crate::dialog_manager::evaluate_dialog_font(
+        memory
+            .read_u16_be(crate::memory::globals::addr::DLG_FONT)
+            .unwrap_or(0),
+    );
+    let _ = memory.write_u16_be(
+        dialog + crate::dialog_manager::DIALOG_TX_FONT_OFFSET,
+        dialog_font as u16,
+    );
 
     // Macintosh Toolbox Essentials (1992), pp. 6-115--6-118: NewDialog's
     // first eight parameters construct its window; the ninth installs the

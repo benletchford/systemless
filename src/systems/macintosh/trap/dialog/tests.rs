@@ -3832,6 +3832,35 @@
         );
     }
 
+    #[test]
+    fn init_dialogs_resets_dlg_font_at_lowmem_afa() {
+        // Inside Macintosh Volume I, pp. I-411..I-412: InitDialogs sets the
+        // font to the system font (stores 0 into DlgFont at $0AFA).
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(crate::memory::globals::addr::DLG_FONT, 3); // Geneva
+        bus.write_long(TEST_SP, 0);
+        let _ = disp.dispatch_dialog(true, 0x17B, &mut cpu, &mut bus);
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::DLG_FONT),
+            0,
+            "InitDialogs must reset DlgFont at $0AFA to 0 (system font)"
+        );
+    }
+
+    #[test]
+    fn init_dialogs_clears_param_text_slots() {
+        // Inside Macintosh Volume I, p. I-411: InitDialogs passes empty
+        // strings to ParamText, clearing active substitution text.
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.param_text.set_slot(0, b"Alpha".to_vec());
+        disp.param_text.set_slot(1, b"Beta".to_vec());
+        bus.write_long(TEST_SP, 0);
+        let _ = disp.dispatch_dialog(true, 0x17B, &mut cpu, &mut bus);
+        assert_eq!(disp.param_text.slot(0), Some(Vec::new()));
+        assert_eq!(disp.param_text.slot(1), Some(Vec::new()));
+        assert!(disp.param_text.is_empty());
+    }
+
     // ---- ErrorSound ($A98C) ----
 
     #[test]

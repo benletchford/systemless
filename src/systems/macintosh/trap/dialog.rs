@@ -5202,8 +5202,13 @@ impl super::TrapDispatcher {
         // SetDAFont / SetDialogFont affect subsequently created dialog and
         // alert grafPorts; assembly callers may set DlgFont directly.
         // Inside Macintosh Volume I, I-412; MTE 1992 p. 6-104.
-        let dialog_font = bus.read_word(crate::memory::globals::addr::DLG_FONT) as i16;
-        bus.write_word(dlg_ptr + 68, dialog_font as u16);
+        let dialog_font = crate::dialog_manager::evaluate_dialog_font(
+            bus.read_word(crate::memory::globals::addr::DLG_FONT),
+        );
+        bus.write_word(
+            dlg_ptr + crate::dialog_manager::DIALOG_TX_FONT_OFFSET,
+            dialog_font as u16,
+        );
         self.tx_font = dialog_font;
         if let Some(state) = self.port_draw_states.get_mut(&dlg_ptr) {
             state.tx_font = dialog_font;
@@ -10667,10 +10672,12 @@ impl super::TrapDispatcher {
                 bus.write_long(addr::RESUME_PROC, eval.resume_proc());
                 bus.write_long(addr::DA_BEEPER, eval.da_beeper());
                 bus.write_word(addr::ALERT_STAGE, eval.initial_alert_stage() as u16);
+                bus.write_word(addr::DLG_FONT, eval.initial_dialog_font() as u16);
                 // Zero the 4-handle DAStrings array (16 bytes).
                 for i in 0..eval.da_strings_count() as u32 {
                     bus.write_long(addr::DA_STRINGS + i * 4, 0);
                 }
+                self.param_text.clear();
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }

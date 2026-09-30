@@ -3120,7 +3120,7 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::TEScrapLength { set: true }
         }
         ("InterfaceLib", "SelectDialogItemText") => PpcImportDispatcherTarget::SelectDialogItemText,
-        ("InterfaceLib", "InitDialogs") => PpcImportDispatcherTarget::InitDialogs,
+        ("InterfaceLib" | "DialogsLib", "InitDialogs") => PpcImportDispatcherTarget::InitDialogs,
         ("InterfaceLib", "SystemTask") => PpcImportDispatcherTarget::SystemTask,
         ("InterfaceLib", "SystemClick") => PpcImportDispatcherTarget::SystemClick,
         ("InterfaceLib", "OpenDeskAcc") => PpcImportDispatcherTarget::OpenDeskAcc,
