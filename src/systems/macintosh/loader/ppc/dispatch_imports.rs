@@ -1433,7 +1433,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::TESetText
         | PpcImportDispatcherTarget::TECalText
         | PpcImportDispatcherTarget::TEInsert { .. }
-        | PpcImportDispatcherTarget::TEDelete
+        | PpcImportDispatcherTarget::TEDelete { .. }
         | PpcImportDispatcherTarget::TEKey
         | PpcImportDispatcherTarget::TEClick
         | PpcImportDispatcherTarget::TEIdle

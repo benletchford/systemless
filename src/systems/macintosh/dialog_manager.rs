@@ -6002,6 +6002,51 @@ pub const fn evaluate_set_port_dialog_port(dialog_ptr: u32) -> u32 {
     evaluate_get_dialog_port(dialog_ptr)
 }
 
+/// Canonical evaluated parameters for a dialog clipboard editing command (`DialogCut`, `DialogCopy`, `DialogPaste`, and `DialogDelete`).
+///
+/// Inside Macintosh Volume I, p. I-418; Macintosh Toolbox Essentials 1992, pp. 6-132..6-134:
+/// Checks whether the dialog has an active editable text item (`editField >= 0`).
+/// If so, retrieves the `TEHandle` from `textH` (offset 160) to target the TextEdit editing command.
+/// If `theDialog` is NULL (0), `editField < 0`, or `textH == 0`, no editing command is performed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DialogEditCommandEvaluation {
+    text_handle: u32,
+}
+
+impl DialogEditCommandEvaluation {
+    /// Constructs a new `DialogEditCommandEvaluation` with the target `TEHandle`.
+    #[inline]
+    #[must_use]
+    pub const fn new(text_handle: u32) -> Self {
+        Self { text_handle }
+    }
+
+    /// The target `TEHandle` for the TextEdit editing command.
+    #[inline]
+    #[must_use]
+    pub const fn text_handle(&self) -> u32 {
+        self.text_handle
+    }
+}
+
+/// Evaluates a dialog clipboard editing command (`DialogCut`, `DialogCopy`, `DialogPaste`, and `DialogDelete`).
+///
+/// Returns `Some(DialogEditCommandEvaluation)` with the target `TEHandle` if `dialog_ptr != 0`, `edit_field >= 0`, and `text_handle != 0`.
+/// Returns `None` if the dialog is NULL, no editable text item is active, or the text handle is NULL.
+#[inline]
+#[must_use]
+pub const fn evaluate_dialog_edit_command(
+    dialog_ptr: u32,
+    edit_field: i16,
+    text_handle: u32,
+) -> Option<DialogEditCommandEvaluation> {
+    if dialog_ptr == 0 || edit_field < 0 || text_handle == 0 {
+        None
+    } else {
+        Some(DialogEditCommandEvaluation::new(text_handle))
+    }
+}
+
 /// Canonical evaluated parameters for `ShortenDITL`.
 ///
 /// Macintosh Toolbox Essentials (1992), pp. 6-153--6-154.
@@ -10129,6 +10174,39 @@ mod tests {
 
         assert_eq!(evaluate_set_port_dialog_port(0), 0);
         assert_eq!(evaluate_set_port_dialog_port(0x0012_3456), 0x0012_3456);
+    }
+
+    #[test]
+    fn dialog_edit_command_evaluation() {
+        // NULL dialog pointer returns None
+        assert_eq!(evaluate_dialog_edit_command(0, 0, 0x0001_0000), None);
+        assert_eq!(evaluate_dialog_edit_command(0, -1, 0x0001_0000), None);
+
+        // Negative edit_field returns None (e.g. DIALOG_INITIAL_EDIT_FIELD = -1)
+        assert_eq!(
+            evaluate_dialog_edit_command(0x0012_3456, -1, 0x0001_0000),
+            None
+        );
+        assert_eq!(
+            evaluate_dialog_edit_command(0x0012_3456, -10, 0x0001_0000),
+            None
+        );
+
+        // Zero text_handle returns None
+        assert_eq!(evaluate_dialog_edit_command(0x0012_3456, 0, 0), None);
+        assert_eq!(evaluate_dialog_edit_command(0x0012_3456, 2, 0), None);
+
+        // Valid dialog with active editText item (edit_field >= 0) and non-zero text_handle returns Some
+        let eval = evaluate_dialog_edit_command(0x0012_3456, 0, 0x0002_0000)
+            .expect("active edit text command should evaluate");
+        assert_eq!(eval.text_handle(), 0x0002_0000);
+
+        let eval2 = evaluate_dialog_edit_command(0x0012_3456, 3, 0x0003_5555)
+            .expect("active edit text command should evaluate");
+        assert_eq!(eval2.text_handle(), 0x0003_5555);
+
+        let direct = DialogEditCommandEvaluation::new(0x0004_1111);
+        assert_eq!(direct.text_handle(), 0x0004_1111);
     }
 
     #[test]

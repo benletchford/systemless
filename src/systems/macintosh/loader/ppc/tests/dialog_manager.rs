@@ -1576,6 +1576,38 @@ fn import_bindings_classify_dialog_imports() {
         ("AppearanceLib", "SetPortDialogPort", PpcImportDispatcherTarget::SetPortDialogPort),
         ("DialogsLib", "SetPortDialogPort", PpcImportDispatcherTarget::SetPortDialogPort),
         ("CarbonLib", "SetPortDialogPort", PpcImportDispatcherTarget::SetPortDialogPort),
+        ("InterfaceLib", "DialogCut", PpcImportDispatcherTarget::TECopy { cut: true, dialog: true }),
+        ("AppearanceLib", "DialogCut", PpcImportDispatcherTarget::TECopy { cut: true, dialog: true }),
+        ("DialogsLib", "DialogCut", PpcImportDispatcherTarget::TECopy { cut: true, dialog: true }),
+        ("CarbonLib", "DialogCut", PpcImportDispatcherTarget::TECopy { cut: true, dialog: true }),
+        ("InterfaceLib", "DlgCut", PpcImportDispatcherTarget::TECopy { cut: true, dialog: true }),
+        ("AppearanceLib", "DlgCut", PpcImportDispatcherTarget::TECopy { cut: true, dialog: true }),
+        ("DialogsLib", "DlgCut", PpcImportDispatcherTarget::TECopy { cut: true, dialog: true }),
+        ("CarbonLib", "DlgCut", PpcImportDispatcherTarget::TECopy { cut: true, dialog: true }),
+        ("InterfaceLib", "DialogCopy", PpcImportDispatcherTarget::TECopy { cut: false, dialog: true }),
+        ("AppearanceLib", "DialogCopy", PpcImportDispatcherTarget::TECopy { cut: false, dialog: true }),
+        ("DialogsLib", "DialogCopy", PpcImportDispatcherTarget::TECopy { cut: false, dialog: true }),
+        ("CarbonLib", "DialogCopy", PpcImportDispatcherTarget::TECopy { cut: false, dialog: true }),
+        ("InterfaceLib", "DlgCopy", PpcImportDispatcherTarget::TECopy { cut: false, dialog: true }),
+        ("AppearanceLib", "DlgCopy", PpcImportDispatcherTarget::TECopy { cut: false, dialog: true }),
+        ("DialogsLib", "DlgCopy", PpcImportDispatcherTarget::TECopy { cut: false, dialog: true }),
+        ("CarbonLib", "DlgCopy", PpcImportDispatcherTarget::TECopy { cut: false, dialog: true }),
+        ("InterfaceLib", "DialogPaste", PpcImportDispatcherTarget::TEPaste { dialog: true }),
+        ("AppearanceLib", "DialogPaste", PpcImportDispatcherTarget::TEPaste { dialog: true }),
+        ("DialogsLib", "DialogPaste", PpcImportDispatcherTarget::TEPaste { dialog: true }),
+        ("CarbonLib", "DialogPaste", PpcImportDispatcherTarget::TEPaste { dialog: true }),
+        ("InterfaceLib", "DlgPaste", PpcImportDispatcherTarget::TEPaste { dialog: true }),
+        ("AppearanceLib", "DlgPaste", PpcImportDispatcherTarget::TEPaste { dialog: true }),
+        ("DialogsLib", "DlgPaste", PpcImportDispatcherTarget::TEPaste { dialog: true }),
+        ("CarbonLib", "DlgPaste", PpcImportDispatcherTarget::TEPaste { dialog: true }),
+        ("InterfaceLib", "DialogDelete", PpcImportDispatcherTarget::TEDelete { dialog: true }),
+        ("AppearanceLib", "DialogDelete", PpcImportDispatcherTarget::TEDelete { dialog: true }),
+        ("DialogsLib", "DialogDelete", PpcImportDispatcherTarget::TEDelete { dialog: true }),
+        ("CarbonLib", "DialogDelete", PpcImportDispatcherTarget::TEDelete { dialog: true }),
+        ("InterfaceLib", "DlgDelete", PpcImportDispatcherTarget::TEDelete { dialog: true }),
+        ("AppearanceLib", "DlgDelete", PpcImportDispatcherTarget::TEDelete { dialog: true }),
+        ("DialogsLib", "DlgDelete", PpcImportDispatcherTarget::TEDelete { dialog: true }),
+        ("CarbonLib", "DlgDelete", PpcImportDispatcherTarget::TEDelete { dialog: true }),
     ] {
         assert_eq!(
             dispatcher_target_for_import(lib, symbol),
@@ -2914,6 +2946,202 @@ fn get_dialog_port_and_window_accessors_manage_dialog_references() {
     let probe = loaded_set_port.run_with_hle_imports(64);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(*loaded_set_port.current_gworld, dialog_ptr);
+}
+
+#[test]
+fn dialog_clipboard_editing_commands_dispatch_with_canonical_evaluation() {
+    let dialog_ptr = PPC_DATA_BASE + 0x1000;
+    let rects = PPC_DATA_BASE + 0x2000;
+
+    // 1. Safe no-ops on NULL dialog, inactive edit field, and NULL text handle
+    let pef_cut = synthetic_pef_with_library_import(b"InterfaceLib", b"DialogCut");
+    let mut loaded_cut = load_pef_application(&pef_cut).unwrap();
+    loaded_cut.memory.add_region(dialog_ptr, vec![0; 256]);
+    loaded_cut.memory.add_region(rects, vec![0; 64]);
+    ppc_write_rect(&mut loaded_cut.memory, rects, 0, 0, 80, 200).unwrap();
+    ppc_write_rect(&mut loaded_cut.memory, rects + 8, 0, 0, 80, 200).unwrap();
+
+    // 1a. NULL dialog pointer
+    loaded_cut.cpu.gpr[3] = 0;
+    let probe = loaded_cut.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    // 1b. Inactive edit field (editField == -1 / 0xFFFF)
+    loaded_cut
+        .memory
+        .write_u16_be(dialog_ptr + PPC_DIALOG_EDIT_FIELD_OFFSET, 0xFFFF)
+        .unwrap();
+    loaded_cut.cpu.gpr[3] = dialog_ptr;
+    let probe = loaded_cut.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    // 1c. Active edit field (editField == 0), but NULL text handle
+    loaded_cut
+        .memory
+        .write_u16_be(dialog_ptr + PPC_DIALOG_EDIT_FIELD_OFFSET, 0)
+        .unwrap();
+    loaded_cut
+        .memory
+        .write_u32_be(dialog_ptr + PPC_DIALOG_TEXT_HANDLE_OFFSET, 0)
+        .unwrap();
+    loaded_cut.cpu.gpr[3] = dialog_ptr;
+    let probe = loaded_cut.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    // 2. Active editing workflow: Copy, Paste, Cut, Delete with legacy aliases
+    let mut last_mem_error = PPC_NO_ERR;
+    let te_handle = ppc_te_initialize_record(
+        None,
+        &mut loaded_cut.memory,
+        test_heap_cursor!(loaded_cut),
+        test_heap_limit!(loaded_cut),
+        &mut last_mem_error,
+        test_handles!(loaded_cut),
+        rects,
+        rects + 8,
+        PPC_MAIN_GWORLD,
+        0,
+        PPC_QD_TEXT_MODE_SRC_OR,
+        12,
+        PPC_RGB_BLACK,
+        false,
+    );
+    ppc_te_set_text(
+        None,
+        &mut loaded_cut.memory,
+        test_heap_cursor!(loaded_cut),
+        test_heap_limit!(loaded_cut),
+        &mut last_mem_error,
+        test_handles!(loaded_cut),
+        te_handle,
+        b"Systemless",
+    );
+    loaded_cut
+        .memory
+        .write_u32_be(dialog_ptr + PPC_DIALOG_TEXT_HANDLE_OFFSET, te_handle)
+        .unwrap();
+
+    let te_ptr = loaded_cut.memory.read_u32_be(te_handle).unwrap();
+    // Select first 6 bytes: "System"
+    loaded_cut
+        .memory
+        .write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, 0)
+        .unwrap();
+    loaded_cut
+        .memory
+        .write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, 6)
+        .unwrap();
+
+    // 2a. DialogCopy copies selection to scrap without modifying text
+    loaded_cut.cpu.gpr[3] = dialog_ptr;
+    run_test_import(
+        &mut loaded_cut,
+        PpcImportDispatcherTarget::TECopy {
+            cut: false,
+            dialog: true,
+        },
+    );
+    assert_eq!(ppc_te_scrap_bytes(&mut loaded_cut.memory), b"System");
+    assert_eq!(
+        ppc_te_text_bytes(
+            &mut loaded_cut.memory,
+            &test_handle_records!(loaded_cut),
+            te_handle
+        ),
+        Some(b"Systemless".to_vec())
+    );
+
+    // 2b. DialogCut removes selected text and copies to scrap
+    loaded_cut.cpu.gpr[3] = dialog_ptr;
+    run_test_import(
+        &mut loaded_cut,
+        PpcImportDispatcherTarget::TECopy {
+            cut: true,
+            dialog: true,
+        },
+    );
+    assert_eq!(ppc_te_scrap_bytes(&mut loaded_cut.memory), b"System");
+    assert_eq!(
+        ppc_te_text_bytes(
+            &mut loaded_cut.memory,
+            &test_handle_records!(loaded_cut),
+            te_handle
+        ),
+        Some(b"less".to_vec())
+    );
+
+    // 2c. DialogPaste pastes scrap ("System") at insertion point
+    loaded_cut
+        .memory
+        .write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, 0)
+        .unwrap();
+    loaded_cut
+        .memory
+        .write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, 0)
+        .unwrap();
+    loaded_cut.cpu.gpr[3] = dialog_ptr;
+    run_test_import(
+        &mut loaded_cut,
+        PpcImportDispatcherTarget::TEPaste { dialog: true },
+    );
+    assert_eq!(
+        ppc_te_text_bytes(
+            &mut loaded_cut.memory,
+            &test_handle_records!(loaded_cut),
+            te_handle
+        ),
+        Some(b"Systemless".to_vec())
+    );
+
+    // 2d. DialogDelete removes selection without modifying scrap
+    loaded_cut
+        .memory
+        .write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, 6)
+        .unwrap();
+    loaded_cut
+        .memory
+        .write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, 10)
+        .unwrap();
+    loaded_cut.cpu.gpr[3] = dialog_ptr;
+    run_test_import(
+        &mut loaded_cut,
+        PpcImportDispatcherTarget::TEDelete { dialog: true },
+    );
+    assert_eq!(
+        ppc_te_text_bytes(
+            &mut loaded_cut.memory,
+            &test_handle_records!(loaded_cut),
+            te_handle
+        ),
+        Some(b"System".to_vec())
+    );
+    // Scrap still contains "System", untouched by DialogDelete!
+    assert_eq!(ppc_te_scrap_bytes(&mut loaded_cut.memory), b"System");
+
+    // 3. Verify PEF execution using legacy Dlg* aliases from AppearanceLib and CarbonLib
+    let pef_dlg_delete = synthetic_pef_with_library_import(b"CarbonLib", b"DlgDelete");
+    let mut loaded_dlg_del = load_pef_application(&pef_dlg_delete).unwrap();
+    loaded_dlg_del.cpu.gpr[3] = 0;
+    let probe = loaded_dlg_del.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_dlg_paste = synthetic_pef_with_library_import(b"AppearanceLib", b"DlgPaste");
+    let mut loaded_dlg_paste = load_pef_application(&pef_dlg_paste).unwrap();
+    loaded_dlg_paste.cpu.gpr[3] = 0;
+    let probe = loaded_dlg_paste.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_dlg_copy = synthetic_pef_with_library_import(b"DialogsLib", b"DlgCopy");
+    let mut loaded_dlg_copy = load_pef_application(&pef_dlg_copy).unwrap();
+    loaded_dlg_copy.cpu.gpr[3] = 0;
+    let probe = loaded_dlg_copy.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_dlg_cut = synthetic_pef_with_library_import(b"InterfaceLib", b"DlgCut");
+    let mut loaded_dlg_cut = load_pef_application(&pef_dlg_cut).unwrap();
+    loaded_dlg_cut.cpu.gpr[3] = 0;
+    let probe = loaded_dlg_cut.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
 }
 
 
