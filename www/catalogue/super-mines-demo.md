@@ -61,6 +61,7 @@ artifacts:
     notes: >-
       Unchanged 282,312-byte StuffIt archive, SHA-256
       73902066c74800d7fbc7550572284adf86612d9dd8a8b69ea59423444b39345e.
+      The promoted public asset was fetched back and matched this hash.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -81,6 +82,7 @@ artifacts:
       489-by-287 direct Chrome capture of the active minefield after a click. PNG
       SHA-256 8b70cff89497d94b8a2561fe9af9311f5cb9e8b2e31f0b9b82c2f56ca19b6c27, 6,343
       bytes.
+      The promoted public asset was fetched back and matched this hash.
 references:
 - https://classicmacdemos.com/super-mines
 - https://www.keystonemac.com/pdfs/Catalog_Jul05.pdf
