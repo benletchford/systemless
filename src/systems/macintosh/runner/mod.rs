@@ -4479,6 +4479,7 @@ impl FixtureRunner {
         self.bus.write_byte(addr::SD_VOLUME, 1);
         self.bus.write_word(0x09dc, 1); // PaintWhite
         let ram_size = self.bus.ram_size();
+        ppc_app.toolbox_startup.physical_ram_size = ram_size;
         self.bus.write_long(addr::MEM_TOP, ram_size);
         self.bus.write_long(addr::TICKS, launch_ticks);
         self.dispatcher.read_tick_count(&self.bus);

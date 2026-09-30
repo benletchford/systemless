@@ -5,6 +5,8 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcToolboxStartupState {
     pub(crate) gestalt_values: HashMap<u32, u32>,
+    /// Installed physical memory of the process's machine.
+    pub(crate) physical_ram_size: u32,
     pub init_graf_count: u32,
     pub init_graf_global_ptr: u32,
     pub fonts_initialized: bool,
@@ -83,6 +85,7 @@ impl Default for PpcToolboxStartupState {
     fn default() -> Self {
         Self {
             gestalt_values: HashMap::new(),
+            physical_ram_size: REFERENCE_MACHINE_PROFILE.ram_size_bytes,
             init_graf_count: 0,
             init_graf_global_ptr: 0,
             fonts_initialized: false,

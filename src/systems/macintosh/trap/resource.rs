@@ -3864,7 +3864,7 @@ impl super::TrapDispatcher {
                     }
                     // gestaltPhysicalRAMSize ('ram ') -> emulated physical RAM
                     b"ram " => {
-                        cpu.write_reg(Register::A0, REFERENCE_MACHINE_PROFILE.ram_size_bytes);
+                        cpu.write_reg(Register::A0, bus.ram_size());
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltLogicalRAMSize ('lram') -> logical memory.
@@ -3872,7 +3872,7 @@ impl super::TrapDispatcher {
                     // p. 1-19: when virtual memory is not installed, this is
                     // the same value as gestaltPhysicalRAMSize.
                     b"lram" => {
-                        cpu.write_reg(Register::A0, REFERENCE_MACHINE_PROFILE.ram_size_bytes);
+                        cpu.write_reg(Register::A0, bus.ram_size());
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltLogicalPageSize ('pgsz') -> logical page size.

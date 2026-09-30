@@ -5891,7 +5891,7 @@ fn gestalt_logical_memory_selectors_match_68040_profile() {
     call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
     assert_eq!(
         cpu.read_reg(Register::A0),
-        crate::machine_profile::REFERENCE_MACHINE_PROFILE.ram_size_bytes
+        bus.ram_size()
     );
     assert_eq!(cpu.read_reg(Register::D0), 0);
 

@@ -43,6 +43,7 @@ fn new_gestalt_value_registers_selector_and_rejects_duplicates() {
 fn gestalt_logical_ram_matches_physical_ram_without_virtual_memory() {
     let pef = synthetic_pef_with_import(b"Gestalt");
     let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.toolbox_startup.physical_ram_size = 256 * 1024 * 1024;
     let response_ptr = PPC_HEAP_BASE;
     loaded.memory.add_region(response_ptr, vec![0; 4]);
 
@@ -54,7 +55,7 @@ fn gestalt_logical_ram_matches_physical_ram_without_virtual_memory() {
         let probe = loaded.run_with_hle_imports(64);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-        assert_eq!(loaded.memory.read_u32_be(response_ptr), Some(REFERENCE_MACHINE_PROFILE.ram_size_bytes));
+        assert_eq!(loaded.memory.read_u32_be(response_ptr), Some(256 * 1024 * 1024));
     }
 }
 
