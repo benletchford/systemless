@@ -26,7 +26,8 @@ pub(super) fn dispatch_gestalt_import(
         PpcImportDispatcherTarget::NewGestaltValue => {
             let selector = cpu.gpr[3];
             let value = cpu.gpr[4];
-            let error = if ppc_gestalt_response(selector).is_some()
+            let error = if ppc_gestalt_response(selector, toolbox_startup.physical_ram_size)
+                .is_some()
                 || toolbox_startup.gestalt_values.contains_key(&selector)
             {
                 PPC_GESTALT_DUP_SELECTOR_ERR
@@ -51,13 +52,15 @@ fn ppc_gestalt(
         return PPC_PARAM_ERR;
     }
 
-    let Some((response, err)) = ppc_gestalt_response(selector).or_else(|| {
-        toolbox_startup
-            .gestalt_values
-            .get(&selector)
-            .copied()
-            .map(|value| (value, PPC_NO_ERR))
-    }) else {
+    let Some((response, err)) = ppc_gestalt_response(selector, toolbox_startup.physical_ram_size)
+        .or_else(|| {
+            toolbox_startup
+                .gestalt_values
+                .get(&selector)
+                .copied()
+                .map(|value| (value, PPC_NO_ERR))
+        })
+    else {
         if ppc_hle_trace_enabled() {
             eprintln!(
                 "[PPC-TRACE] Gestalt({:?}) -> gestaltUndefSelectorErr",
@@ -82,7 +85,7 @@ fn ppc_gestalt(
     err
 }
 
-fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
+fn ppc_gestalt_response(selector: u32, physical_ram_size: u32) -> Option<(u32, i16)> {
     match &selector.to_be_bytes() {
         b"vers" => Some((0x0001, PPC_NO_ERR)),
         b"sysv" => Some((u32::from(POWERPC_SYSTEM_VERSION_BCD), PPC_NO_ERR)),
@@ -126,9 +129,9 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
         // PPC applications select obsolete monochrome-GWorld fallbacks.
         b"qd  " => Some((0x0230, PPC_NO_ERR)),
         b"qdrw" => Some((0x000F, PPC_NO_ERR)),
-        b"ram " => Some((REFERENCE_MACHINE_PROFILE.ram_size_bytes, PPC_NO_ERR)),
+        b"ram " => Some((physical_ram_size, PPC_NO_ERR)),
         // With virtual memory disabled, logical and physical RAM are equal.
-        b"lram" => Some((REFERENCE_MACHINE_PROFILE.ram_size_bytes, PPC_NO_ERR)),
+        b"lram" => Some((physical_ram_size, PPC_NO_ERR)),
         b"fpu " => Some((
             REFERENCE_POWERPC_EXECUTION_CAPABILITIES.fpu_type,
             PPC_NO_ERR,
