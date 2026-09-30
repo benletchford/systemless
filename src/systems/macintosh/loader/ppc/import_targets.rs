@@ -2528,9 +2528,18 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "WideWideDivide") => PpcImportDispatcherTarget::WideWideDivide,
         ("InterfaceLib", "WideSquareRoot") => PpcImportDispatcherTarget::WideSquareRoot,
         ("InterfaceLib", "WideCompare") => PpcImportDispatcherTarget::WideCompare,
-        ("InterfaceLib", "NewMenu") => PpcImportDispatcherTarget::NewMenu,
-        ("InterfaceLib", "DisposeMenu") => PpcImportDispatcherTarget::DisposeMenu,
-        ("InterfaceLib", "GetMenu") => PpcImportDispatcherTarget::GetMenu,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "NewMenu" | "newmenu",
+        ) => PpcImportDispatcherTarget::NewMenu,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "DisposeMenu" | "disposemenu" | "DisposMenu" | "disposmenu",
+        ) => PpcImportDispatcherTarget::DisposeMenu,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetMenu" | "getmenu",
+        ) => PpcImportDispatcherTarget::GetMenu,
         ("InterfaceLib", "GetItemCmd") => PpcImportDispatcherTarget::GetItemCmd,
         ("InterfaceLib", "SetItemCmd") => PpcImportDispatcherTarget::SetItemCmd,
         ("InterfaceLib", "GetItemMark") => PpcImportDispatcherTarget::GetItemMark,
@@ -2542,7 +2551,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "DeleteMenuItem") | ("InterfaceLib", "DelMenuItem") => {
             PpcImportDispatcherTarget::DeleteMenuItem
         }
-        ("InterfaceLib", "CalcMenuSize") => PpcImportDispatcherTarget::CalcMenuSize,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "CalcMenuSize" | "calcmenusize",
+        ) => PpcImportDispatcherTarget::CalcMenuSize,
         ("InterfaceLib", "PopUpMenuSelect") => PpcImportDispatcherTarget::PopUpMenuSelect,
         ("InterfaceLib", "InsertMenu") => PpcImportDispatcherTarget::InsertMenu,
         ("InterfaceLib", "DeleteMenu") => PpcImportDispatcherTarget::DeleteMenu,

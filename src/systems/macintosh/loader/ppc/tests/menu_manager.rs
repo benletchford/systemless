@@ -8314,3 +8314,148 @@ fn menu_bar_lifecycle_and_lowmem_commands_dispatch_with_canonical_evaluation() {
         }
     }
 }
+
+#[test]
+fn import_bindings_classify_menu_creation_and_sizing_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        assert_eq!(
+            dispatcher_target_for_import(lib, "NewMenu"),
+            PpcImportDispatcherTarget::NewMenu
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "newmenu"),
+            PpcImportDispatcherTarget::NewMenu
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "DisposeMenu"),
+            PpcImportDispatcherTarget::DisposeMenu
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "disposemenu"),
+            PpcImportDispatcherTarget::DisposeMenu
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "DisposMenu"),
+            PpcImportDispatcherTarget::DisposeMenu
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "disposmenu"),
+            PpcImportDispatcherTarget::DisposeMenu
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetMenu"),
+            PpcImportDispatcherTarget::GetMenu
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getmenu"),
+            PpcImportDispatcherTarget::GetMenu
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "CalcMenuSize"),
+            PpcImportDispatcherTarget::CalcMenuSize
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "calcmenusize"),
+            PpcImportDispatcherTarget::CalcMenuSize
+        );
+    }
+}
+
+#[test]
+fn menu_creation_disposal_loading_and_sizing_commands_dispatch_with_canonical_evaluation() {
+    for lib in [b"CarbonLib".as_slice(), b"AppearanceLib".as_slice()] {
+        // 1. NewMenu
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"NewMenu");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let title_addr = 0x60000;
+            loaded.memory.add_region(title_addr, vec![0; 0x100]);
+            assert!(ppc_write_pstring_bytes(&mut loaded.memory, title_addr, b"File"));
+            loaded.cpu.gpr[3] = 200;
+            loaded.cpu.gpr[4] = title_addr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let menu = loaded.cpu.gpr[3];
+            assert_ne!(menu, 0);
+            let menu_ptr = loaded.memory.read_u32_be(menu).unwrap();
+            assert_eq!(loaded.memory.read_u16_be(menu_ptr), Some(200));
+        }
+
+        // 2. CalcMenuSize
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"CalcMenuSize");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 201, b"\x04Edit", b"Cut;Copy;Paste");
+            loaded.cpu.gpr[3] = menu;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let menu_ptr = loaded.memory.read_u32_be(menu).unwrap();
+            let menu_width = loaded.memory.read_u16_be(menu_ptr + 2).unwrap() as i16;
+            let menu_height = loaded.memory.read_u16_be(menu_ptr + 4).unwrap() as i16;
+            assert!(menu_width > 0);
+            assert!(menu_height > 0);
+        }
+
+        // 3. GetMenu
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"GetMenu");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let ref_num = *loaded.process_file_system.current_resource_file;
+            loaded.process_file_system.extend_vfs_resources([
+                PpcVfsResourceRecord {
+                    ref_num,
+                    path: "Test App".to_string(),
+                    res_type: u32::from_be_bytes(*b"MENU"),
+                    res_id: 300,
+                    name: Vec::new(),
+                    data: test_menu_resource(300, b"Window"),
+                    raw_data: None,
+                    raw_attrs: None,
+                    attrs: 0,
+                    handle: 0,
+                },
+            ]);
+            loaded.cpu.gpr[3] = 300;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let menu = loaded.cpu.gpr[3];
+            assert_ne!(menu, 0);
+            let menu_ptr = loaded.memory.read_u32_be(menu).unwrap();
+            assert_eq!(loaded.memory.read_u16_be(menu_ptr), Some(300));
+
+            // Absent ID returns 0
+            let pef = synthetic_pef_with_library_import(lib, b"GetMenu");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 999;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+
+        // 4. DisposeMenu & DisposMenu
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"DisposeMenu");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 202, b"\x04Help", b"");
+            loaded.cpu.gpr[3] = menu;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.memory.read_u32_be(menu), Some(0));
+
+            let pef = synthetic_pef_with_library_import(lib, b"DisposMenu");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 203, b"\x04Help", b"");
+            loaded.cpu.gpr[3] = menu;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.memory.read_u32_be(menu), Some(0));
+        }
+    }
+}
+
