@@ -1978,7 +1978,13 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DisposePixMap => {
             unreachable!("color-table imports return through dispatch_color_table_import")
         }
-        PpcImportDispatcherTarget::FindWindow => {
+        PpcImportDispatcherTarget::FindWindow
+        | PpcImportDispatcherTarget::PinRect
+        | PpcImportDispatcherTarget::GetWVariant
+        | PpcImportDispatcherTarget::ClipAbove
+        | PpcImportDispatcherTarget::SaveOld
+        | PpcImportDispatcherTarget::DrawNew
+        | PpcImportDispatcherTarget::DragGrayRgn => {
             unreachable!("window imports return through dispatch_window_import")
         }
         PpcImportDispatcherTarget::GetDCtlEntry

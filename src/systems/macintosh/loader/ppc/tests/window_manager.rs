@@ -4838,3 +4838,268 @@ fn window_property_title_picture_and_low_memory_commands_dispatch_with_canonical
     }
 }
 
+#[test]
+fn import_bindings_classify_window_hit_testing_clipping_and_region_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // FindWindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "FindWindow"),
+            PpcImportDispatcherTarget::FindWindow
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "findwindow"),
+            PpcImportDispatcherTarget::FindWindow
+        );
+
+        // PinRect
+        assert_eq!(
+            dispatcher_target_for_import(lib, "PinRect"),
+            PpcImportDispatcherTarget::PinRect
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "pinrect"),
+            PpcImportDispatcherTarget::PinRect
+        );
+
+        // GetWVariant
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWVariant"),
+            PpcImportDispatcherTarget::GetWVariant
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwvariant"),
+            PpcImportDispatcherTarget::GetWVariant
+        );
+
+        // ClipAbove
+        assert_eq!(
+            dispatcher_target_for_import(lib, "ClipAbove"),
+            PpcImportDispatcherTarget::ClipAbove
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "clipabove"),
+            PpcImportDispatcherTarget::ClipAbove
+        );
+
+        // SaveOld
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SaveOld"),
+            PpcImportDispatcherTarget::SaveOld
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "saveold"),
+            PpcImportDispatcherTarget::SaveOld
+        );
+
+        // DrawNew
+        assert_eq!(
+            dispatcher_target_for_import(lib, "DrawNew"),
+            PpcImportDispatcherTarget::DrawNew
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "drawnew"),
+            PpcImportDispatcherTarget::DrawNew
+        );
+
+        // DragGrayRgn
+        assert_eq!(
+            dispatcher_target_for_import(lib, "DragGrayRgn"),
+            PpcImportDispatcherTarget::DragGrayRgn
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "draggrayrgn"),
+            PpcImportDispatcherTarget::DragGrayRgn
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "DragTheRgn"),
+            PpcImportDispatcherTarget::DragGrayRgn
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "dragthergn"),
+            PpcImportDispatcherTarget::DragGrayRgn
+        );
+    }
+}
+
+#[test]
+fn window_hit_testing_clipping_and_region_commands_dispatch_with_canonical_evaluation() {
+    for lib in [b"InterfaceLib".as_slice(), b"AppearanceLib".as_slice(), b"CarbonLib".as_slice()] {
+        // 1. FindWindow
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"FindWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            let window_out = PPC_DATA_BASE + 0x1100;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            loaded.memory.add_region(window_out, vec![0xff; 4]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (40, 50, 140, 250), 0, true, u32::MAX);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "FindWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = (80 << 16) | 100;
+            loaded.cpu.gpr[4] = window_out;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 3);
+            assert_eq!(loaded.memory.read_u32_be(window_out), Some(window));
+        }
+
+        // 2. PinRect
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"PinRect");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let rect_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(rect_ptr, vec![0; 32]);
+            ppc_write_rect(&mut loaded.memory, rect_ptr, 20, 30, 100, 200).unwrap();
+
+            // Point inside: returned unchanged
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "PinRect");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = rect_ptr;
+            loaded.cpu.gpr[4] = (50 << 16) | 80;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], (50 << 16) | 80);
+
+            // Point outside top-right: clamped to top (20) and right - 1 (199)
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = rect_ptr;
+            loaded.cpu.gpr[4] = (10 << 16) | 250;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], (20 << 16) | 199);
+
+            // Point outside bottom-left: clamped to bottom - 1 (99) and left (30)
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = rect_ptr;
+            loaded.cpu.gpr[4] = (150 << 16) | 5;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], (99 << 16) | 30);
+        }
+
+        // 3. GetWVariant
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"GetWVariant");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0x0023, true, u32::MAX);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "GetWVariant");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 3);
+        }
+
+        // 4. ClipAbove
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"ClipAbove");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds1_ptr = PPC_DATA_BASE + 0x1000;
+            let bounds2_ptr = PPC_DATA_BASE + 0x1100;
+            loaded.memory.add_region(bounds1_ptr, vec![0; 32]);
+            loaded.memory.add_region(bounds2_ptr, vec![0; 32]);
+
+            let window2 = create_test_cwindow(&mut loaded, bounds2_ptr, (50, 50, 150, 150), 0, true, u32::MAX);
+            let window1 = create_test_cwindow(&mut loaded, bounds1_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+
+            loaded.current_gworld.with_mut(|cg| *cg = PPC_MAIN_GWORLD);
+            let clip_rgn = loaded.memory.read_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_CLIP_RGN_OFFSET).unwrap();
+            let win1_struct = ppc_window_global_structure_bounds(&mut loaded.memory, &loaded.gworlds, window1).unwrap();
+            ppc_write_rgn_bbox(&mut loaded.memory, clip_rgn, win1_struct.0, win1_struct.1, win1_struct.2 + 50, win1_struct.3).unwrap();
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "ClipAbove");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window2;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let updated_bbox = ppc_read_rgn_bbox(&mut loaded.memory, clip_rgn).unwrap();
+            assert_eq!(updated_bbox, (win1_struct.2, win1_struct.1, win1_struct.2 + 50, win1_struct.3));
+        }
+
+        // 5. SaveOld & DrawNew
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"SaveOld");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "SaveOld");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], window);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "DrawNew");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], window);
+        }
+
+        // 6. DragGrayRgn
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"DragGrayRgn");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let slop_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(slop_ptr, vec![0; 32]);
+            ppc_write_rect(&mut loaded.memory, slop_ptr, 0, 0, 200, 200).unwrap();
+
+            // Mouse inside slop: delta (mouse - start)
+            loaded.process_input.set_mouse_state((70, 95), false);
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "DragGrayRgn");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = (50 << 16) | 60;
+            loaded.cpu.gpr[5] = 0;
+            loaded.cpu.gpr[6] = slop_ptr;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], (20 << 16) | 35);
+
+            // Mouse outside slop: 0x8000_8000
+            loaded.process_input.set_mouse_state((250, 250), false);
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = (50 << 16) | 60;
+            loaded.cpu.gpr[5] = 0;
+            loaded.cpu.gpr[6] = slop_ptr;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0x8000_8000);
+        }
+    }
+}
+
+
