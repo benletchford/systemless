@@ -30,6 +30,7 @@ pub(crate) struct ProcessControlRecord {
     pub(crate) parent: u32,
     pub(crate) sub_controls: Vec<u32>,
     pub(crate) properties: Vec<ProcessControlProperty>,
+    pub(crate) color_proc: u32,
 }
 
 /// The Appearance Manager style override associated with a ControlRef.
@@ -84,7 +85,23 @@ impl ProcessControlManagerState {
             parent: 0,
             sub_controls: Vec::new(),
             properties: Vec::new(),
+            color_proc: 0,
         });
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn color_proc(&self, handle: u32) -> u32 {
+        self.records
+            .iter()
+            .find(|record| record.handle == handle)
+            .map_or(0, |record| record.color_proc)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_color_proc(&mut self, handle: u32, proc: u32) {
+        if let Some(record) = self.records.iter_mut().find(|record| record.handle == handle) {
+            record.color_proc = proc;
+        }
     }
 
     pub(crate) fn proc_id(&self, pointer: u32) -> i16 {
@@ -348,6 +365,68 @@ impl ProcessControlManagerState {
             }
         }
         Err(-5604)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_control_data(
+        &mut self,
+        control: u32,
+        _part: i16,
+        tag: u32,
+        data: Vec<u8>,
+    ) {
+        if control == 0 {
+            return;
+        }
+        let record = if let Some(rec) = self.records.iter_mut().find(|r| r.handle == control) {
+            rec
+        } else {
+            self.records.push(ProcessControlRecord {
+                handle: control,
+                ..Default::default()
+            });
+            self.records.last_mut().unwrap()
+        };
+
+        if let Some(prop) = record.properties.iter_mut().find(|p| p.tag == tag) {
+            prop.data = data;
+        } else {
+            record.properties.push(ProcessControlProperty {
+                creator: 0,
+                tag,
+                attributes: 0,
+                data,
+            });
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn get_control_data(
+        &self,
+        control: u32,
+        _part: i16,
+        tag: u32,
+    ) -> Option<&[u8]> {
+        self.records
+            .iter()
+            .find(|r| r.handle == control)
+            .and_then(|r| {
+                r.properties
+                    .iter()
+                    .find(|p| p.creator == 0 && p.tag == tag)
+                    .or_else(|| r.properties.iter().find(|p| p.tag == tag))
+            })
+            .map(|p| p.data.as_slice())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn get_control_data_size(
+        &self,
+        control: u32,
+        part: i16,
+        tag: u32,
+    ) -> Option<usize> {
+        self.get_control_data(control, part, tag).map(|d| d.len())
     }
 }
 

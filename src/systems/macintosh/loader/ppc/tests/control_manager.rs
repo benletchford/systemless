@@ -171,6 +171,7 @@ fn hle_import_runner_creates_and_links_a_classic_control_record() {
             parent: 0,
             sub_controls: Vec::new(),
             properties: Vec::new(),
+            color_proc: 0,
         }]
     );
 }
@@ -3128,5 +3129,346 @@ fn control_activation_styling_and_bounds_commands_dispatch_with_canonical_evalua
         let probe = loaded.run_with_hle_imports(64);
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
+    }
+}
+
+#[test]
+fn import_bindings_classify_control_data_features_and_rendering_imports() {
+    for library in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        for (symbol, expected) in [
+            (
+                "GetControlData",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlData),
+            ),
+            (
+                "getcontroldata",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlData),
+            ),
+            (
+                "SetControlData",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlData),
+            ),
+            (
+                "setcontroldata",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlData),
+            ),
+            (
+                "GetControlDataSize",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlDataSize),
+            ),
+            (
+                "getcontroldatasize",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlDataSize),
+            ),
+            (
+                "GetControlFeatures",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlFeatures),
+            ),
+            (
+                "getcontrolfeatures",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlFeatures),
+            ),
+            (
+                "GetBestControlRect",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetBestControlRect),
+            ),
+            (
+                "getbestcontrolrect",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetBestControlRect),
+            ),
+            (
+                "SetControlVisibility",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlVisibility),
+            ),
+            (
+                "setcontrolvisibility",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlVisibility),
+            ),
+            (
+                "SetControlColorProc",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlColorProc),
+            ),
+            (
+                "setcontrolcolorproc",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlColorProc),
+            ),
+            (
+                "GetControlColorProc",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlColorProc),
+            ),
+            (
+                "getcontrolcolorproc",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlColorProc),
+            ),
+            (
+                "DrawControlInCurrentPort",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawControlInCurrentPort),
+            ),
+            (
+                "drawcontrolincurrentport",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawControlInCurrentPort),
+            ),
+            (
+                "SetUpControlBackground",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetUpControlBackground),
+            ),
+            (
+                "setupcontrolbackground",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetUpControlBackground),
+            ),
+        ] {
+            assert_eq!(
+                dispatcher_target_for_import(library, symbol),
+                expected,
+                "library={library} symbol={symbol}"
+            );
+        }
+    }
+}
+
+#[test]
+fn control_data_features_and_rendering_commands_dispatch_with_canonical_evaluation() {
+    for lib in [b"InterfaceLib".as_slice(), b"AppearanceLib".as_slice(), b"CarbonLib".as_slice()] {
+        let pef = synthetic_pef_with_library_import(lib, b"NewControl");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let lib_str = std::str::from_utf8(lib).unwrap();
+
+        let data_in_ptr = PPC_DATA_BASE + 0x3000;
+        let data_out_ptr = PPC_DATA_BASE + 0x3020;
+        let size_out_ptr = PPC_DATA_BASE + 0x3040;
+        let features_out_ptr = PPC_DATA_BASE + 0x3060;
+        let best_rect_out_ptr = PPC_DATA_BASE + 0x3080;
+        let baseline_out_ptr = PPC_DATA_BASE + 0x30A0;
+        let color_proc_out_ptr = PPC_DATA_BASE + 0x30C0;
+        let rect_ptr = PPC_DATA_BASE + 0x30E0;
+        let title_ptr = PPC_DATA_BASE + 0x3100;
+        loaded.memory.add_region(PPC_DATA_BASE + 0x3000, vec![0; 0x1000]);
+
+        ppc_write_rect(&mut loaded.memory, rect_ptr, 10, 20, 30, 80);
+        ppc_write_pstring_bytes(&mut loaded.memory, title_ptr, b"Button");
+
+        // 1. Create control
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = rect_ptr;
+        loaded.cpu.gpr[5] = title_ptr;
+        loaded.cpu.gpr[6] = 1; // visible
+        loaded.cpu.gpr[7] = 0; // value
+        loaded.cpu.gpr[8] = 0; // min
+        loaded.cpu.gpr[9] = 1; // max
+        loaded.cpu.gpr[10] = 0; // procID
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let ctrl_handle = loaded.cpu.gpr[3];
+        assert_ne!(ctrl_handle, 0);
+
+        // 2. GetControlFeatures
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlFeatures");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        loaded.cpu.gpr[4] = features_out_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(features_out_ptr), Some(3));
+
+        // Invalid control features query
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = features_out_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+        // 3. SetControlData
+        let test_payload = b"SystemlessData";
+        let _ = loaded.memory.write_bytes(data_in_ptr, test_payload);
+        let tag = u32::from_be_bytes(*b"data");
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlData");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        loaded.cpu.gpr[4] = 0; // part
+        loaded.cpu.gpr[5] = tag;
+        loaded.cpu.gpr[6] = test_payload.len() as u32;
+        loaded.cpu.gpr[7] = data_in_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        // 4. GetControlDataSize
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlDataSize");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = tag;
+        loaded.cpu.gpr[6] = size_out_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(size_out_ptr), Some(test_payload.len() as u32));
+
+        // GetControlDataSize for missing tag
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = u32::from_be_bytes(*b"none");
+        loaded.cpu.gpr[6] = size_out_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, PPC_CONTROL_PROPERTY_NOT_FOUND_ERR);
+        assert_eq!(loaded.memory.read_u32_be(size_out_ptr), Some(0));
+
+        // 5. GetControlData
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlData");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = tag;
+        loaded.cpu.gpr[6] = 32; // buffer size
+        loaded.cpu.gpr[7] = data_out_ptr;
+        loaded.cpu.gpr[8] = size_out_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(size_out_ptr), Some(test_payload.len() as u32));
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, data_out_ptr, test_payload.len() as u32).as_deref(),
+            Some(test_payload.as_slice())
+        );
+
+        // GetControlData for missing tag
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = u32::from_be_bytes(*b"none");
+        loaded.cpu.gpr[6] = 32;
+        loaded.cpu.gpr[7] = data_out_ptr;
+        loaded.cpu.gpr[8] = size_out_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, PPC_CONTROL_PROPERTY_NOT_FOUND_ERR);
+
+        // 6. GetBestControlRect
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetBestControlRect");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        loaded.cpu.gpr[4] = best_rect_out_ptr;
+        loaded.cpu.gpr[5] = baseline_out_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(ppc_read_rect(&mut loaded.memory, best_rect_out_ptr), Some((10, 20, 30, 80)));
+        assert_eq!(loaded.memory.read_u16_be(baseline_out_ptr), Some(0));
+
+        // GetBestControlRect invalid handle
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = best_rect_out_ptr;
+        loaded.cpu.gpr[5] = baseline_out_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+        // 7. SetControlColorProc
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlColorProc");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        loaded.cpu.gpr[4] = 0x1234_5678;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        // 8. GetControlColorProc
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlColorProc");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        loaded.cpu.gpr[4] = color_proc_out_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(color_proc_out_ptr), Some(0x1234_5678));
+
+        // 9. SetControlVisibility
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlVisibility");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        loaded.cpu.gpr[4] = 0; // invisible
+        loaded.cpu.gpr[5] = 0; // doDraw = false
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        let ctrl_ptr = loaded.memory.read_u32_be(ctrl_handle).unwrap();
+        assert_eq!(loaded.memory.read_u8(ctrl_ptr + PPC_CONTROL_VISIBLE_OFFSET), Some(0));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        loaded.cpu.gpr[4] = 1; // visible
+        loaded.cpu.gpr[5] = 0; // doDraw = false
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u8(ctrl_ptr + PPC_CONTROL_VISIBLE_OFFSET), Some(0xFF));
+
+        // 10. DrawControlInCurrentPort
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "DrawControlInCurrentPort");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+
+        // 11. SetUpControlBackground
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetUpControlBackground");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        loaded.cpu.gpr[4] = 8; // depth
+        loaded.cpu.gpr[5] = 1; // isColorDevice
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        // SetUpControlBackground invalid handle
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 8;
+        loaded.cpu.gpr[5] = 1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
     }
 }

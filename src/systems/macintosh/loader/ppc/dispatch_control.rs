@@ -354,12 +354,18 @@ pub enum PpcLegacyControlOperation {
     DisableControl,
     DisposeControl,
     DragControl,
+    DrawControlInCurrentPort,
     DrawOneControl,
     EmbedControl,
     EnableControl,
     FindControl,
+    GetBestControlRect,
     GetControlAction,
     GetControlBounds,
+    GetControlColorProc,
+    GetControlData,
+    GetControlDataSize,
+    GetControlFeatures,
     GetControlHilite,
     GetControlMaximum,
     GetControlMinimum,
@@ -386,11 +392,15 @@ pub enum PpcLegacyControlOperation {
     RemoveControlProperty,
     SetControlAction,
     SetControlBounds,
+    SetControlColorProc,
+    SetControlData,
     SetControlMaximum,
     SetControlMinimum,
     SetControlProperty,
     SetControlReference,
     SetControlSupervisor,
+    SetControlVisibility,
+    SetUpControlBackground,
     ShowControl,
     SizeControl,
     TestControl,
@@ -1139,6 +1149,163 @@ pub(super) fn ppc_dispatch_legacy_control(
         PpcLegacyControlOperation::IdleControls | PpcLegacyControlOperation::DragControl => {
             Some(PpcImportAction::Return(0))
         }
+        PpcLegacyControlOperation::GetControlData => {
+            let control = cpu.gpr[3];
+            let part = cpu.gpr[4] as u16 as i16;
+            let tag = cpu.gpr[5];
+            let buffer_size = cpu.gpr[6] as usize;
+            let buffer_ptr = cpu.gpr[7];
+            let actual_size_ptr = cpu.gpr[8];
+            let result = if let Some(data) = ppc_get_control_data(controls, control, part, tag) {
+                if actual_size_ptr != 0 {
+                    let _ = memory.write_u32_be(actual_size_ptr, data.len() as u32);
+                }
+                if buffer_ptr != 0 && buffer_size > 0 {
+                    let copy_len = buffer_size.min(data.len());
+                    let _ = memory.write_bytes(buffer_ptr, &data[..copy_len]);
+                }
+                PPC_NO_ERR
+            } else {
+                if actual_size_ptr != 0 {
+                    let _ = memory.write_u32_be(actual_size_ptr, 0);
+                }
+                PPC_CONTROL_PROPERTY_NOT_FOUND_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::SetControlData => {
+            let control = cpu.gpr[3];
+            let part = cpu.gpr[4] as u16 as i16;
+            let tag = cpu.gpr[5];
+            let size = cpu.gpr[6];
+            let data_ptr = cpu.gpr[7];
+            let data = if data_ptr != 0 && size > 0 {
+                ppc_memory_read_bytes(memory, data_ptr, size).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let result = ppc_set_control_data(controls, control, part, tag, data);
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::GetControlDataSize => {
+            let control = cpu.gpr[3];
+            let part = cpu.gpr[4] as u16 as i16;
+            let tag = cpu.gpr[5];
+            let actual_size_ptr = cpu.gpr[6];
+            let result = if let Some(data) = ppc_get_control_data(controls, control, part, tag) {
+                if actual_size_ptr != 0 {
+                    let _ = memory.write_u32_be(actual_size_ptr, data.len() as u32);
+                }
+                PPC_NO_ERR
+            } else {
+                if actual_size_ptr != 0 {
+                    let _ = memory.write_u32_be(actual_size_ptr, 0);
+                }
+                PPC_CONTROL_PROPERTY_NOT_FOUND_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::GetControlFeatures => {
+            let control = cpu.gpr[3];
+            let out_features = cpu.gpr[4];
+            let result = if control != 0
+                && (ppc_control_ptr(memory, control).is_some()
+                    || controls.iter().any(|r| r.handle == control))
+            {
+                if out_features != 0 {
+                    let _ = memory.write_u32_be(out_features, 3);
+                }
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::GetBestControlRect => {
+            let control = cpu.gpr[3];
+            let out_rect = cpu.gpr[4];
+            let out_baseline_offset = cpu.gpr[5];
+            let result = ppc_get_best_control_rect(memory, control, out_rect, out_baseline_offset);
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::SetControlVisibility => {
+            let control = cpu.gpr[3];
+            let visible = cpu.gpr[4] != 0;
+            let do_draw = cpu.gpr[5] != 0;
+            let result = ppc_set_control_visibility(
+                memory,
+                handles,
+                controls,
+                gworlds,
+                vfs_resources,
+                current_resource_refnum,
+                control,
+                visible,
+                do_draw,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::SetControlColorProc => {
+            let control = cpu.gpr[3];
+            let proc = cpu.gpr[4];
+            let result = if control != 0 {
+                if let Some(record) = controls.iter_mut().find(|r| r.handle == control) {
+                    record.color_proc = proc;
+                } else {
+                    controls.push(PpcControlRecord {
+                        handle: control,
+                        color_proc: proc,
+                        ..Default::default()
+                    });
+                }
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::GetControlColorProc => {
+            let control = cpu.gpr[3];
+            let out_proc = cpu.gpr[4];
+            let result = if control != 0 {
+                let proc = controls
+                    .iter()
+                    .find(|r| r.handle == control)
+                    .map_or(0, |r| r.color_proc);
+                if out_proc != 0 {
+                    let _ = memory.write_u32_be(out_proc, proc);
+                }
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::DrawControlInCurrentPort => {
+            let control = cpu.gpr[3];
+            let _ = ppc_draw_control(
+                memory,
+                handles,
+                controls,
+                gworlds,
+                vfs_resources,
+                current_resource_refnum,
+                control,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcLegacyControlOperation::SetUpControlBackground => {
+            let control = cpu.gpr[3];
+            let result = if control != 0
+                && (ppc_control_ptr(memory, control).is_some()
+                    || controls.iter().any(|r| r.handle == control))
+            {
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
     }
 }
 
@@ -1306,6 +1473,7 @@ pub(super) fn ppc_new_control_record_values(
         parent: 0,
         sub_controls: Vec::new(),
         properties: Vec::new(),
+        color_proc: 0,
     });
     *last_mem_error = PPC_NO_ERR;
     handle
@@ -1806,6 +1974,119 @@ pub(super) fn ppc_set_control_enabled(
             vfs_resources,
             current_resource_refnum,
             handle,
+        );
+    }
+    PPC_NO_ERR
+}
+
+pub(super) fn ppc_set_control_data(
+    controls: &mut Vec<PpcControlRecord>,
+    control: u32,
+    _part: i16,
+    tag: u32,
+    data: Vec<u8>,
+) -> i16 {
+    if control == 0 {
+        return PPC_PARAM_ERR;
+    }
+    let record = if let Some(rec) = controls.iter_mut().find(|r| r.handle == control) {
+        rec
+    } else {
+        controls.push(PpcControlRecord {
+            handle: control,
+            ..Default::default()
+        });
+        controls.last_mut().unwrap()
+    };
+
+    if let Some(prop) = record.properties.iter_mut().find(|p| p.tag == tag) {
+        prop.data = data;
+    } else {
+        record.properties.push(ProcessControlProperty {
+            creator: 0,
+            tag,
+            attributes: 0,
+            data,
+        });
+    }
+    PPC_NO_ERR
+}
+
+pub(super) fn ppc_get_control_data(
+    controls: &[PpcControlRecord],
+    control: u32,
+    _part: i16,
+    tag: u32,
+) -> Option<&[u8]> {
+    controls
+        .iter()
+        .find(|r| r.handle == control)
+        .and_then(|r| {
+            r.properties
+                .iter()
+                .find(|p| p.creator == 0 && p.tag == tag)
+                .or_else(|| r.properties.iter().find(|p| p.tag == tag))
+        })
+        .map(|p| p.data.as_slice())
+}
+
+pub(super) fn ppc_get_best_control_rect(
+    memory: &mut PpcSectionMem,
+    control: u32,
+    out_rect: u32,
+    out_baseline_offset: u32,
+) -> i16 {
+    let Some(control_ptr) = ppc_control_ptr(memory, control) else {
+        return PPC_PARAM_ERR;
+    };
+    if out_rect != 0 {
+        let Some(bytes) = ppc_memory_read_bytes(
+            memory,
+            control_ptr.wrapping_add(PPC_CONTROL_RECT_OFFSET),
+            8,
+        ) else {
+            return PPC_PARAM_ERR;
+        };
+        if memory.write_bytes(out_rect, &bytes).is_none() {
+            return PPC_PARAM_ERR;
+        }
+    }
+    if out_baseline_offset != 0 {
+        if memory.write_u16_be(out_baseline_offset, 0).is_none() {
+            return PPC_PARAM_ERR;
+        }
+    }
+    PPC_NO_ERR
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_set_control_visibility(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    controls: &mut [PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    control: u32,
+    visible: bool,
+    do_draw: bool,
+) -> i16 {
+    let Some(control_ptr) = ppc_control_ptr(memory, control) else {
+        return PPC_PARAM_ERR;
+    };
+    let _ = memory.write_u8(
+        control_ptr.wrapping_add(PPC_CONTROL_VISIBLE_OFFSET),
+        if visible { 0xff } else { 0 },
+    );
+    if visible && do_draw {
+        let _ = ppc_draw_control(
+            memory,
+            handles,
+            controls,
+            gworlds,
+            vfs_resources,
+            current_resource_refnum,
+            control,
         );
     }
     PPC_NO_ERR

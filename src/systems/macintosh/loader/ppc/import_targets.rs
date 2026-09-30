@@ -3350,6 +3350,46 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "DragControl" | "dragcontrol",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DragControl),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlData" | "getcontroldata",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlData),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetControlData" | "setcontroldata",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlData),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlDataSize" | "getcontroldatasize",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlDataSize),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlFeatures" | "getcontrolfeatures",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlFeatures),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetBestControlRect" | "getbestcontrolrect",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetBestControlRect),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetControlVisibility" | "setcontrolvisibility",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlVisibility),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetControlColorProc" | "setcontrolcolorproc",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlColorProc),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlColorProc" | "getcontrolcolorproc",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlColorProc),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "DrawControlInCurrentPort" | "drawcontrolincurrentport",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawControlInCurrentPort),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetUpControlBackground" | "setupcontrolbackground",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetUpControlBackground),
         ("AppearanceLib", "CollapseWindow") => PpcImportDispatcherTarget::CollapseWindow,
         ("AppearanceLib", "IsWindowCollapsed") => PpcImportDispatcherTarget::IsWindowCollapsed,
         (
