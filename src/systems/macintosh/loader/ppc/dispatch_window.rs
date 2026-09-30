@@ -850,6 +850,127 @@ pub(super) fn dispatch_window_import(
             }
             Some(PpcImportAction::Return(part as u32))
         }
+        PpcImportDispatcherTarget::PinRect => {
+            let rect_ptr = cpu.gpr[3];
+            let pt = cpu.gpr[4];
+            let (top, left, bottom, right) = if rect_ptr != 0 {
+                ppc_read_rect(memory, rect_ptr)
+                    .unwrap_or((i16::MIN, i16::MIN, i16::MAX, i16::MAX))
+            } else {
+                (i16::MIN, i16::MIN, i16::MAX, i16::MAX)
+            };
+            let pt_v = (pt >> 16) as u16 as i16;
+            let pt_h = pt as u16 as i16;
+            let pinned_v = pt_v.max(top).min(bottom.saturating_sub(1));
+            let pinned_h = pt_h.max(left).min(right.saturating_sub(1));
+            let result = ((pinned_v as u16 as u32) << 16) | (pinned_h as u16 as u32);
+            Some(PpcImportAction::Return(result))
+        }
+        PpcImportDispatcherTarget::GetWVariant => {
+            let window = cpu.gpr[3];
+            let variant = if window != 0 {
+                (ppc_window_proc_id(memory, window) & 0x0F) as u32
+            } else {
+                0
+            };
+            Some(PpcImportAction::Return(variant))
+        }
+        PpcImportDispatcherTarget::ClipAbove => {
+            let start_window = cpu.gpr[3];
+            if start_window != 0 {
+                let target_port = if *current_gworld != 0 {
+                    *current_gworld
+                } else {
+                    PPC_MAIN_GWORLD
+                };
+                let clip_rgn = memory
+                    .read_u32_be(target_port.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+                    .unwrap_or(0);
+                if clip_rgn != 0 {
+                    if let Some(mut clip_rect) = ppc_read_rgn_bbox(memory, clip_rgn) {
+                        window_list.with_ref(|windows| {
+                            if let Some(start_idx) = windows.iter().position(|&w| w == start_window)
+                            {
+                                for &front in windows.iter().take(start_idx) {
+                                    if !ppc_window_is_visible(memory, front) {
+                                        continue;
+                                    }
+                                    if let Some(front_rect) =
+                                        ppc_window_global_structure_bounds(memory, gworlds, front)
+                                    {
+                                        clip_rect = ppc_rect_difference_bbox(clip_rect, front_rect)
+                                            .unwrap_or((0, 0, 0, 0));
+                                        if clip_rect == (0, 0, 0, 0) {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                        let _ = ppc_write_rgn_bbox(
+                            memory,
+                            clip_rgn,
+                            clip_rect.0,
+                            clip_rect.1,
+                            clip_rect.2,
+                            clip_rect.3,
+                        );
+                    }
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::SaveOld => {
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::DrawNew => {
+            let window = cpu.gpr[3];
+            let f_update = cpu.gpr[4] != 0;
+            if window != 0 && f_update {
+                ppc_redraw_visible_window_frame(
+                    memory,
+                    gworlds,
+                    window_list,
+                    window,
+                    toolbox_startup.host_menu_bar_hidden,
+                );
+                if let Some(content) = ppc_window_global_content_bounds(memory, gworlds, window) {
+                    ppc_union_window_update_rect(memory, window, content);
+                    ppc_enqueue_window_update_event(event_queue, window, tick_count, input);
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::DragGrayRgn => {
+            let _rgn = cpu.gpr[3];
+            let start_pt = cpu.gpr[4];
+            let _limit_rect_ptr = cpu.gpr[5];
+            let slop_rect_ptr = cpu.gpr[6];
+            let _axis = cpu.gpr[7] as i16;
+            let _action_proc = cpu.gpr[8];
+
+            let start_v = (start_pt >> 16) as u16 as i16;
+            let start_h = start_pt as u16 as i16;
+            let mouse_v = input.mouse_v;
+            let mouse_h = input.mouse_h;
+
+            let in_slop = if slop_rect_ptr != 0 {
+                ppc_read_rect(memory, slop_rect_ptr)
+                    .map(|rect| ppc_point_in_rect((mouse_v, mouse_h), rect))
+                    .unwrap_or(true)
+            } else {
+                true
+            };
+
+            let result = if in_slop {
+                let delta_v = mouse_v.wrapping_sub(start_v);
+                let delta_h = mouse_h.wrapping_sub(start_h);
+                ((delta_v as u16 as u32) << 16) | (delta_h as u16 as u32)
+            } else {
+                0x8000_8000
+            };
+            Some(PpcImportAction::Return(result))
+        }
         PpcImportDispatcherTarget::LegacyWindow(operation) => ppc_dispatch_legacy_window(
             operation,
             cpu,
@@ -3917,6 +4038,39 @@ pub(super) fn ppc_drag_window_call(cpu: &PpcCpu) -> PpcDragWindowCall {
 
 pub(super) fn ppc_point_in_rect(point: (i16, i16), rect: (i16, i16, i16, i16)) -> bool {
     point.0 >= rect.0 && point.0 < rect.2 && point.1 >= rect.1 && point.1 < rect.3
+}
+
+pub(super) fn ppc_rect_intersection(
+    a: (i16, i16, i16, i16),
+    b: (i16, i16, i16, i16),
+) -> Option<(i16, i16, i16, i16)> {
+    let rect = (a.0.max(b.0), a.1.max(b.1), a.2.min(b.2), a.3.min(b.3));
+    (rect.0 < rect.2 && rect.1 < rect.3).then_some(rect)
+}
+
+pub(super) fn ppc_rect_difference_bbox(
+    src: (i16, i16, i16, i16),
+    cut: (i16, i16, i16, i16),
+) -> Option<(i16, i16, i16, i16)> {
+    let Some(intersection) = ppc_rect_intersection(src, cut) else {
+        return Some(src);
+    };
+
+    let mut remaining: Option<(i16, i16, i16, i16)> = None;
+    for rect in [
+        (src.0, src.1, intersection.0, src.3),
+        (intersection.2, src.1, src.2, src.3),
+        (intersection.0, src.1, intersection.2, intersection.1),
+        (intersection.0, intersection.3, intersection.2, src.3),
+    ] {
+        if rect.0 < rect.2 && rect.1 < rect.3 {
+            remaining = match remaining {
+                Some(r) => Some((r.0.min(rect.0), r.1.min(rect.1), r.2.max(rect.2), r.3.max(rect.3))),
+                None => Some(rect),
+            };
+        }
+    }
+    remaining
 }
 
 pub(super) fn ppc_offset_rect_bounds(

@@ -399,6 +399,12 @@ pub enum PpcImportDispatcherTarget {
     MapRect,
     InsetRect,
     FindWindow,
+    PinRect,
+    GetWVariant,
+    ClipAbove,
+    SaveOld,
+    DrawNew,
+    DragGrayRgn,
     GetGrayRgn,
     LMSetGrayRgn,
     GetDCtlEntry,
@@ -3083,7 +3089,34 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "OffsetRect") => PpcImportDispatcherTarget::OffsetRect,
         ("InterfaceLib", "MapRect") => PpcImportDispatcherTarget::MapRect,
         ("InterfaceLib", "InsetRect") => PpcImportDispatcherTarget::InsetRect,
-        ("InterfaceLib", "FindWindow") => PpcImportDispatcherTarget::FindWindow,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "FindWindow" | "findwindow",
+        ) => PpcImportDispatcherTarget::FindWindow,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "PinRect" | "pinrect",
+        ) => PpcImportDispatcherTarget::PinRect,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWVariant" | "getwvariant",
+        ) => PpcImportDispatcherTarget::GetWVariant,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ClipAbove" | "clipabove",
+        ) => PpcImportDispatcherTarget::ClipAbove,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SaveOld" | "saveold",
+        ) => PpcImportDispatcherTarget::SaveOld,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "DrawNew" | "drawnew",
+        ) => PpcImportDispatcherTarget::DrawNew,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "DragGrayRgn" | "draggrayrgn" | "DragTheRgn" | "dragthergn",
+        ) => PpcImportDispatcherTarget::DragGrayRgn,
         ("InterfaceLib", "GetGrayRgn") | ("InterfaceLib", "LMGetGrayRgn") => {
             PpcImportDispatcherTarget::GetGrayRgn
         }
