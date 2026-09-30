@@ -51,8 +51,9 @@ artifacts:
     - https://classicmacdemos.com/diamonds
     rights_holder: Varcon Systems / das softwarehaus GmbH
     permission: >-
-      The original Diamonds 2.0 Demo launcher states in German that this demo version
-      may be copied and passed on without restriction. The archive contains only the
+      The original Diamonds 2.0 Demo launcher states, "Diese Demo-Version kann
+      unbeschränkt kopiert und weitergegeben werden" (this demo version may be
+      copied and passed on without restriction). The archive contains only the
       demo application and its two background files.
     notes: >-
       Unchanged 184,315-byte StuffIt archive, SHA-256
