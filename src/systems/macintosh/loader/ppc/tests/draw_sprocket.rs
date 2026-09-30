@@ -43,6 +43,65 @@ fn draw_sprocket_blit_fastest_copies_plain_pixels_and_marks_completion() {
 }
 
 #[test]
+fn active_draw_sprocket_blanking_window_owns_clicks_and_is_disposed() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetState");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.draw_sprocket.started = true;
+    loaded.draw_sprocket.reserved_context = Some(PPC_DSP_CONTEXT);
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_ACTIVE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+
+    let blanking = loaded
+        .draw_sprocket
+        .blanking_window
+        .expect("blanking WindowPtr");
+    assert!(ppc_window_is_visible(&mut loaded.memory, blanking));
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(blanking + PPC_CWINDOW_WINDOW_KIND_OFFSET),
+        Some(8)
+    );
+    assert!(loaded.window_list.contains_window(blanking));
+
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let later_dialog = scratch + 0x100;
+    loaded.memory.add_region(scratch, vec![0; 0x200]);
+    loaded
+        .memory
+        .write_u8(later_dialog + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(later_dialog + PPC_CWINDOW_WINDOW_KIND_OFFSET, 2)
+        .unwrap();
+    loaded.window_list.insert(0, later_dialog);
+
+    loaded.cpu.gpr[3] = (100 << 16) | 100;
+    loaded.cpu.gpr[4] = scratch + 16;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FindWindow);
+    assert_eq!(loaded.cpu.gpr[3], 3);
+    assert_eq!(loaded.memory.read_u32_be(scratch + 16), Some(blanking));
+
+    ppc_write_event_record(&mut loaded.memory, scratch, 1, 0, 0, 100, 100, 0);
+    loaded.cpu.gpr[3] = scratch;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::IsDialogEvent,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_INACTIVE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.draw_sprocket.blanking_window, None);
+    assert!(!loaded.window_list.contains_window(blanking));
+}
+
+#[test]
 fn draw_sprocket_temporary_context_restores_desktop_mode_and_pixels() {
     let pef = synthetic_pef_with_import(b"SetPort");
     let mut loaded = load_pef_application(&pef).unwrap();

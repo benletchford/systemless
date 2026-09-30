@@ -11,9 +11,12 @@ pub(super) struct PpcDrawSprocketDispatchContext<'a> {
     pub(super) heap_limit: u32,
     pub(super) last_mem_error: &'a mut i16,
     pub(super) handles: &'a mut Vec<PpcHandleRecord>,
+    pub(super) controls: &'a mut Vec<PpcControlRecord>,
     pub(super) gworlds: &'a mut Vec<PpcGWorldRecord>,
+    pub(super) window_list: &'a SharedProcessWindowList,
     pub(super) gworld_allocations: &'a mut HashMap<u32, PpcGWorldAllocationRecord>,
-    pub(super) current_gdevice: u32,
+    pub(super) current_gworld: &'a mut u32,
+    pub(super) current_gdevice: &'a mut u32,
     pub(super) draw_sprocket: &'a mut PpcDrawSprocketState,
     pub(super) input: PpcInputSnapshot,
     pub(super) screen_clut: &'a mut [[u16; 3]; 256],
@@ -33,8 +36,11 @@ pub(super) fn dispatch_drawsprocket_import(
         heap_limit,
         last_mem_error,
         handles,
+        controls,
         gworlds,
+        window_list,
         gworld_allocations,
+        current_gworld,
         current_gdevice,
         draw_sprocket,
         input,
@@ -59,6 +65,20 @@ pub(super) fn dispatch_drawsprocket_import(
             if !ppc_dsp_restore_desktop(memory, gworlds, screen_clut, draw_sprocket) {
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
             }
+            ppc_dsp_dispose_blanking_window(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                controls,
+                gworlds,
+                window_list,
+                current_gworld,
+                current_gdevice,
+                draw_sprocket,
+            );
             *draw_sprocket = PpcDrawSprocketState::default();
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
@@ -119,7 +139,7 @@ pub(super) fn dispatch_drawsprocket_import(
                 handles,
                 gworlds,
                 gworld_allocations,
-                current_gdevice,
+                *current_gdevice,
                 draw_sprocket,
             )),
         )),
@@ -130,21 +150,97 @@ pub(super) fn dispatch_drawsprocket_import(
             ppc_i16_result(ppc_dsp_context_reserve(cpu, memory, draw_sprocket, gworlds)),
         )),
         PpcImportDispatcherTarget::DSpContextRelease => {
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_dsp_context_release(cpu, memory, gworlds, screen_clut, draw_sprocket),
-            )))
+            let result = ppc_dsp_context_release(cpu, memory, gworlds, screen_clut, draw_sprocket);
+            if result == PPC_NO_ERR {
+                ppc_dsp_dispose_blanking_window(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    controls,
+                    gworlds,
+                    window_list,
+                    current_gworld,
+                    current_gdevice,
+                    draw_sprocket,
+                );
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::DSpContextSetState => {
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_dsp_context_set_state(
-                    cpu,
-                    memory,
-                    gworlds,
-                    screen_clut,
-                    screen_bits,
-                    draw_sprocket,
-                ),
-            )))
+            let result = ppc_dsp_context_set_state(
+                cpu,
+                memory,
+                gworlds,
+                screen_clut,
+                screen_bits,
+                draw_sprocket,
+            );
+            if result == PPC_NO_ERR {
+                if draw_sprocket.active_context.is_some() && draw_sprocket.blanking_window.is_none()
+                {
+                    let (width, height) = (
+                        ppc_u32_to_i16_saturating(draw_sprocket.context_attributes.width),
+                        ppc_u32_to_i16_saturating(draw_sprocket.context_attributes.height),
+                    );
+                    let mut allocator = PpcProcessAllocatorView {
+                        memory_manager: process_memory_manager,
+                    };
+                    let window = ppc_new_cwindow_with_parameters(
+                        PpcNewCWindowParameters {
+                            storage_ptr: 0,
+                            bounds: (0, 0, height, width),
+                            visible: true,
+                            proc_id: 0,
+                            behind: u32::MAX,
+                            go_away: false,
+                            ref_con: 0,
+                        },
+                        Some(&mut allocator),
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        gworlds,
+                        window_list,
+                        *current_gdevice,
+                    );
+                    if window == 0 {
+                        let allocation_error = *last_mem_error;
+                        let mut inactive_cpu = cpu.clone();
+                        inactive_cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_INACTIVE;
+                        let _ = ppc_dsp_context_set_state(
+                            &inactive_cpu,
+                            memory,
+                            gworlds,
+                            screen_clut,
+                            screen_bits,
+                            draw_sprocket,
+                        );
+                        return Some(PpcImportAction::Return(ppc_i16_result(allocation_error)));
+                    }
+                    draw_sprocket.blanking_window = Some(window);
+                } else if draw_sprocket.active_context.is_none() {
+                    ppc_dsp_dispose_blanking_window(
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        controls,
+                        gworlds,
+                        window_list,
+                        current_gworld,
+                        current_gdevice,
+                        draw_sprocket,
+                    );
+                }
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::DSpContextGetState => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_context_get_state(cpu, memory, draw_sprocket)),
@@ -230,11 +326,9 @@ pub(super) fn dispatch_drawsprocket_import(
                 Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
             }
         }
-        PpcImportDispatcherTarget::DSpContextGetFlattenedSize => {
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_dsp_context_get_flattened_size(cpu, memory),
-            )))
-        }
+        PpcImportDispatcherTarget::DSpContextGetFlattenedSize => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_dsp_context_get_flattened_size(cpu, memory)),
+        )),
         PpcImportDispatcherTarget::DSpContextFlatten => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_context_flatten(cpu, memory, draw_sprocket)),
         )),
@@ -293,4 +387,41 @@ pub(super) fn dispatch_drawsprocket_import(
         }
         _ => None,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_dsp_dispose_blanking_window(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    controls: &mut Vec<PpcControlRecord>,
+    gworlds: &mut Vec<PpcGWorldRecord>,
+    window_list: &SharedProcessWindowList,
+    current_gworld: &mut u32,
+    current_gdevice: &mut u32,
+    draw_sprocket: &mut PpcDrawSprocketState,
+) {
+    let Some(window) = draw_sprocket.blanking_window.take() else {
+        return;
+    };
+    let mut allocator = PpcProcessAllocatorView {
+        memory_manager: process_memory_manager,
+    };
+    ppc_dispose_window(
+        &mut allocator,
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        controls,
+        gworlds,
+        window_list,
+        current_gworld,
+        current_gdevice,
+        window,
+    );
 }
