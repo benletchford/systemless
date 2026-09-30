@@ -2576,17 +2576,50 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LMGetDefltStack") => PpcImportDispatcherTarget::LMGetDefltStack,
         ("InterfaceLib", "LMGetCurStackBase") => PpcImportDispatcherTarget::LMGetCurStackBase,
         ("InterfaceLib", "LMSetPaintWhite") => PpcImportDispatcherTarget::LMSetPaintWhite,
-        ("InterfaceLib", "LMSetResumeProc") => PpcImportDispatcherTarget::LMSetResumeProc,
-        ("InterfaceLib", "LMGetResumeProc") => PpcImportDispatcherTarget::LMGetResumeProc,
-        ("InterfaceLib", "LMSetACount") => PpcImportDispatcherTarget::LMSetACount,
-        ("InterfaceLib", "LMGetACount") => PpcImportDispatcherTarget::LMGetACount,
-        ("InterfaceLib", "LMSetANumber") => PpcImportDispatcherTarget::LMSetANumber,
-        ("InterfaceLib", "LMGetANumber") => PpcImportDispatcherTarget::LMGetANumber,
-        ("InterfaceLib", "LMSetDABeeper") => PpcImportDispatcherTarget::LMSetDABeeper,
-        ("InterfaceLib", "LMGetDABeeper") => PpcImportDispatcherTarget::LMGetDABeeper,
-        ("InterfaceLib", "LMGetDAStrings") => PpcImportDispatcherTarget::LMGetDAStrings,
-        ("InterfaceLib", "LMSetDlgFont") => PpcImportDispatcherTarget::LMSetDlgFont,
-        ("InterfaceLib", "LMGetDlgFont") => PpcImportDispatcherTarget::LMGetDlgFont,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "LMSetResumeProc" | "lmsetresumeproc",
+        ) => PpcImportDispatcherTarget::LMSetResumeProc,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "LMGetResumeProc" | "lmgetresumeproc",
+        ) => PpcImportDispatcherTarget::LMGetResumeProc,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "LMSetACount" | "lmsetacount",
+        ) => PpcImportDispatcherTarget::LMSetACount,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "LMGetACount" | "lmgetacount",
+        ) => PpcImportDispatcherTarget::LMGetACount,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "LMSetANumber" | "lmsetanumber",
+        ) => PpcImportDispatcherTarget::LMSetANumber,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "LMGetANumber" | "lmgetanumber",
+        ) => PpcImportDispatcherTarget::LMGetANumber,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "LMSetDABeeper" | "lmsetdabeeper",
+        ) => PpcImportDispatcherTarget::LMSetDABeeper,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "LMGetDABeeper" | "lmgetdabeeper",
+        ) => PpcImportDispatcherTarget::LMGetDABeeper,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "LMGetDAStrings" | "lmgetdastrings",
+        ) => PpcImportDispatcherTarget::LMGetDAStrings,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "LMSetDlgFont" | "lmsetdlgfont",
+        ) => PpcImportDispatcherTarget::LMSetDlgFont,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "LMGetDlgFont" | "lmgetdlgfont",
+        ) => PpcImportDispatcherTarget::LMGetDlgFont,
         ("InterfaceLib", "LMSetMenuFlash") | ("InterfaceLib", "SetMenuFlash") => {
             PpcImportDispatcherTarget::SetMenuFlash
         }
@@ -3008,9 +3041,10 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "GetDialogItem" | "GetDItem" | "getdialogitem" | "getditem",
         ) => PpcImportDispatcherTarget::GetDialogItem,
-        ("AppearanceLib", "GetDialogItemAsControl") => {
-            PpcImportDispatcherTarget::GetDialogItemAsControl
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetDialogItemAsControl" | "getdialogitemascontrol",
+        ) => PpcImportDispatcherTarget::GetDialogItemAsControl,
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "SetDialogItem" | "SetDItem" | "setdialogitem" | "setditem",
