@@ -60,6 +60,7 @@ artifacts:
     notes: >-
       Unchanged 325,203-byte StuffIt archive, SHA-256
       5ce2086af1b3a7865830b78548ec8afe5b725e65f50ba7d0a4eec514736e7378.
+      The promoted public asset was fetched back and matched this hash.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -80,6 +81,7 @@ artifacts:
       511-by-301 direct Chrome capture of the active cockpit after mouse input and
       firing, without website framing or Mac desktop. PNG SHA-256
       21bc328d294888ca79772b257453a23d792f697d3528eacc56218524cacb9e53, 11,983 bytes.
+      The promoted public asset was fetched back and matched this hash.
 references:
 - https://classicmacdemos.com/fokker-triplane
 ---
