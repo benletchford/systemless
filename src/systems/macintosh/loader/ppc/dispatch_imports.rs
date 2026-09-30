@@ -1899,6 +1899,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::SetPort
         | PpcImportDispatcherTarget::GetWindowPort
         | PpcImportDispatcherTarget::SetPortWindowPort
+        | PpcImportDispatcherTarget::SetPortDialogPort
         | PpcImportDispatcherTarget::NewGWorld
         | PpcImportDispatcherTarget::UpdateGWorld
         | PpcImportDispatcherTarget::DisposeGWorld
@@ -2034,6 +2035,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetStdFilterProc
         | PpcImportDispatcherTarget::GetAlertStage
         | PpcImportDispatcherTarget::SetDialogFont
+        | PpcImportDispatcherTarget::GetDialogPort
+        | PpcImportDispatcherTarget::GetDialogWindow
+        | PpcImportDispatcherTarget::GetDialogFromWindow
         | PpcImportDispatcherTarget::DrawDialog
         | PpcImportDispatcherTarget::ModalDialog => {
             unreachable!("dialog imports return through dispatch_dialog_import")

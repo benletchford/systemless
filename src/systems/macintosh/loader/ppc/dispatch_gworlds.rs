@@ -65,9 +65,17 @@ pub(super) fn dispatch_gworld_import(
             // the classic WindowRecord begins with that GrafPort.
             Some(PpcImportAction::Return(cpu.gpr[3]))
         }
-        PpcImportDispatcherTarget::SetPort | PpcImportDispatcherTarget::SetPortWindowPort => {
+        PpcImportDispatcherTarget::SetPort
+        | PpcImportDispatcherTarget::SetPortWindowPort
+        | PpcImportDispatcherTarget::SetPortDialogPort => {
             // MacWindows.h: SetPortWindowPort makes the window port current.
-            *current_gworld = cpu.gpr[3];
+            // Dialogs.h: SetPortDialogPort makes the dialog port current.
+            let port = if binding.dispatcher_target == PpcImportDispatcherTarget::SetPortDialogPort {
+                crate::dialog_manager::evaluate_set_port_dialog_port(cpu.gpr[3])
+            } else {
+                cpu.gpr[3]
+            };
+            *current_gworld = port;
             *current_gdevice =
                 ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
             ppc_register_gdevice(toolbox_startup, *current_gdevice);
