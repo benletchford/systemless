@@ -1039,56 +1039,21 @@ fn ppc_heap_allocation_skips_shared_system_reservation() {
 }
 
 #[test]
-fn ppc_loader_excludes_system_reservation_before_initializer_allocations() {
+fn ppc_loader_rejects_system_reservation_inside_application_partition() {
     let reservation_base = PPC_HEAP_BASE + PPC_HEAP_ALIGNMENT;
-    let mut bus = MacMemoryBus::new((reservation_base + 0x0009_0000) as usize);
+    let bus = MacMemoryBus::new((reservation_base + 0x0009_0000) as usize);
     let reservation = bus.synthetic_reservation_range().unwrap();
     assert_eq!(reservation.0, reservation_base);
-    bus.write_byte(reservation_base, 0x5a);
 
-    let mut loaded = load_pef_application_with_config_and_system_reservation(
-        &synthetic_pef_with_initializer(),
-        PpcLoadConfig::default(),
-        reservation,
-    )
-    .unwrap();
-    let reservation_end = reservation.0 + reservation.1;
-
-    assert!(loaded.heap_cursor() > reservation_end);
-    assert!(loaded
-        .memory
-        .has_readonly_allocation_exclusion(reservation.0, reservation.1));
     assert_eq!(
-        loaded.memory.read_u32_be(PPC_APPLICATION_ZONE + 12),
-        Some(
-            ppc_heap_free_capacity(
-                &loaded.memory,
-                loaded.heap_cursor(),
-                test_heap_limit!(loaded)
-            )
-            .0
+        load_pef_application_with_config_and_system_reservation(
+            &synthetic_pef_with_initializer(),
+            PpcLoadConfig::default(),
+            reservation,
         )
+        .unwrap_err(),
+        PpcLoadError::AddressOverflow
     );
-    assert_eq!(bus.read_byte(reservation_base), 0x5a);
-
-    let mut installed = loaded.clone();
-    assert!(installed.prepare_shared_system_reservation(reservation.0, reservation.1));
-    let (shared_base, shared) = bus.shared_synthetic_reservation().unwrap();
-    // SAFETY: this focused fixture serializes both adapters.
-    unsafe {
-        installed
-            .memory
-            .add_shared_readonly_region(Some(GuestIsa::M68k), shared_base, shared)
-    };
-    assert!(!installed
-        .memory
-        .has_readonly_allocation_exclusion(reservation.0, reservation.1));
-    assert!(installed
-        .memory
-        .shared_view()
-        .is_shared_readonly_range(reservation.0, 1));
-    assert_eq!(installed.memory.write_u8(reservation.0, 0xff), None);
-    assert_eq!(bus.read_byte(reservation_base), 0x5a);
 }
 
 #[test]
@@ -1262,6 +1227,84 @@ fn ppc_loader_rejects_system_reservation_layout_collisions() {
         .unwrap_err(),
         PpcLoadError::AddressOverflow
     );
+}
+
+#[test]
+fn ppc_loader_keeps_large_native_allocation_below_system_reservation() {
+    let bus = MacMemoryBus::new(128 * 1024 * 1024);
+    let (reservation_base, reservation_len) = bus.synthetic_reservation_range().unwrap();
+    let mut loaded = load_pef_application_with_config_and_system_reservation(
+        &synthetic_pef(),
+        PpcLoadConfig::default(),
+        (reservation_base, reservation_len),
+    )
+    .unwrap();
+    assert_eq!(loaded.stack_base + loaded.stack_size, reservation_base);
+    assert!(!loaded
+        .memory
+        .mapping_overlaps(reservation_base, reservation_len));
+
+    let mut cursor = loaded.heap_cursor();
+    let first = ppc_heap_alloc(
+        &mut loaded.memory,
+        &mut cursor,
+        loaded.stack_base,
+        10_489_856,
+        true,
+    );
+    assert_ne!(first, 0);
+    let second = ppc_heap_alloc(
+        &mut loaded.memory,
+        &mut cursor,
+        loaded.stack_base,
+        58_724_352,
+        true,
+    );
+    assert_ne!(second, 0);
+    assert!(cursor < loaded.stack_base);
+}
+
+#[test]
+fn ppc_loader_places_small_ram_stack_below_system_reservation() {
+    let bus = MacMemoryBus::new(64 * 1024 * 1024);
+    let (reservation_base, reservation_len) = bus.synthetic_reservation_range().unwrap();
+    let loaded = load_pef_application_with_config_and_system_reservation(
+        &synthetic_pef(),
+        PpcLoadConfig::default(),
+        (reservation_base, reservation_len),
+    )
+    .unwrap();
+    assert_eq!(loaded.stack_base + loaded.stack_size, reservation_base);
+    assert!(loaded.stack_base > PPC_HEAP_BASE);
+    assert!(!loaded
+        .memory
+        .mapping_overlaps(reservation_base, reservation_len));
+}
+
+#[test]
+fn ppc_loader_preserves_large_stack_and_partition_capacity_with_more_ram() {
+    let bus = MacMemoryBus::new(256 * 1024 * 1024);
+    let (reservation_base, reservation_len) = bus.synthetic_reservation_range().unwrap();
+    let loaded = load_pef_application_with_config_and_system_reservation(
+        &synthetic_pef(),
+        PpcLoadConfig {
+            stack_size: 8 * 1024 * 1024,
+            ..PpcLoadConfig::default()
+        },
+        (reservation_base, reservation_len),
+    )
+    .unwrap();
+    assert_eq!(loaded.stack_base + loaded.stack_size, reservation_base);
+    assert!(!loaded
+        .memory
+        .mapping_overlaps(reservation_base, reservation_len));
+    let largest = ppc_heap_free_capacity(
+        &loaded.memory,
+        loaded.heap_cursor(),
+        loaded.stack_base,
+    )
+    .1;
+    assert!(largest >= 173_997_056);
 }
 
 #[test]

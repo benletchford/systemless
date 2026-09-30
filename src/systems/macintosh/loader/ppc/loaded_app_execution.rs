@@ -161,6 +161,8 @@ impl PpcLoadedApp {
         let tick_state = self.tick_state.shared_handle();
         let clock_cycles_per_tick = self.clock_cycles_per_tick;
         let clock_cycle_phase = self.clock_cycle_phase;
+        let stack_base = self.stack_base;
+        let stack_top = self.stack_base + self.stack_size;
         let mut process_file_system = self.process_file_system.shared_handle();
         let current_resource_refnum = process_file_system.current_resource_file.shared_handle();
         let mut last_resource_error = self
@@ -1174,6 +1176,8 @@ impl PpcLoadedApp {
                                             process_memory_manager: &mut *process_memory_manager,
                                             heap_cursor: &mut heap_cursor,
                                             heap_limit,
+                                            stack_base,
+                                            stack_top,
                                             native_heap_ceiling,
                                             last_mem_error: &mut last_mem_error,
                                             tick_count: &mut import_tick_count,

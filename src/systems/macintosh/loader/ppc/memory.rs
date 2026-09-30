@@ -1246,13 +1246,14 @@ pub(crate) fn ppc_heap_free_capacity(
 pub(crate) fn ppc_exempt_fragment_from_partition(
     memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
+    stack_base: u32,
     bytes: u32,
 ) {
     let Some(heap) = memory_manager.native_heap_state() else {
         return;
     };
     let old_limit = memory_manager.native_allocation_limit(heap.heap_limit);
-    if bytes == 0 || old_limit < PPC_STACK_TOP {
+    if bytes == 0 || old_limit <= stack_base {
         return;
     }
     let Some(bytes) = bytes

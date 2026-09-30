@@ -2416,6 +2416,8 @@ fn hle_import_runner_call_universal_proc_passes_all_hit_test_arguments() {
     );
 
     let arguments: Vec<u32> = (0..9).map(|index| 0x1000 + index).collect();
+    // The ninth argument extends beyond the loader's initial caller frame.
+    loaded.cpu.gpr[1] -= PPC_INITIAL_STACK_FRAME_SIZE;
     loaded.cpu.gpr[2] = caller_rtoc;
     loaded.cpu.gpr[3] = descriptor;
     loaded.cpu.gpr[4] = proc_info;

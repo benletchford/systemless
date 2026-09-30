@@ -344,19 +344,20 @@ pub struct PpcInputSprocketSimpleStateTraceEntry {
 pub const PPC_DSP_CONTEXT_ALREADY_RESERVED_ERR: i16 = -30444;
 pub const PPC_DSP_CONTEXT_NOT_RESERVED_ERR: i16 = -30445;
 pub const PPC_DSP_CONTEXT_NOT_FOUND_ERR: i16 = -30446;
-pub const PPC_DSP_BACK_PIXMAP_HANDLE: u32 = 0x0501_0300;
-pub const PPC_DSP_BACK_PIXMAP: u32 = 0x0501_0400;
-pub const PPC_DSP_BACK_VIS_RGN_HANDLE: u32 = 0x0501_0500;
-pub const PPC_DSP_BACK_VIS_RGN: u32 = 0x0501_0600;
-pub const PPC_DSP_BACK_CLIP_RGN_HANDLE: u32 = 0x0501_0700;
-pub const PPC_DSP_BACK_CLIP_RGN: u32 = 0x0501_0800;
-pub const PPC_DSP_BACK_SCREEN_BASE: u32 = 0x0502_0000;
-/// Span available to the DrawSprocket back buffer above [`PPC_STACK_TOP`].
+pub const PPC_DSP_BACK_PIXMAP_HANDLE: u32 = 0x4001_0300;
+pub const PPC_DSP_BACK_PIXMAP: u32 = 0x4001_0400;
+pub const PPC_DSP_BACK_VIS_RGN_HANDLE: u32 = 0x4001_0500;
+pub const PPC_DSP_BACK_VIS_RGN: u32 = 0x4001_0600;
+pub const PPC_DSP_BACK_CLIP_RGN_HANDLE: u32 = 0x4001_0700;
+pub const PPC_DSP_BACK_CLIP_RGN: u32 = 0x4001_0800;
+pub const PPC_DSP_BACK_SCREEN_BASE: u32 = 0x4002_0000;
+/// Span available to the DrawSprocket back buffer above [`PPC_DSP_CONTEXT`].
 pub const PPC_DSP_BACK_SCREEN_SPAN: u32 = 0x0080_0000;
 pub const PPC_DSP_CONTEXT_STATE_ACTIVE: u32 = 0;
 pub const PPC_DSP_CONTEXT_STATE_PAUSED: u32 = 1;
 pub const PPC_DSP_CONTEXT_STATE_INACTIVE: u32 = 2;
-pub const PPC_DSP_CONTEXT: u32 = 0x0500_0000;
+// Keep synthetic device storage outside the guest RAM-backed application partition.
+pub const PPC_DSP_CONTEXT: u32 = 0x4000_0000;
 pub const PPC_DSP_CONTEXT_ATTRIBUTES_SIZE: u32 = 72;
 /// Private, versioned DrawSprocket context blob used for HLE save/restore.
 pub const PPC_DSP_FLAT_CONTEXT_SIZE: u32 = 12 + PPC_DSP_CONTEXT_ATTRIBUTES_SIZE;
@@ -367,12 +368,12 @@ pub const PPC_DSP_DISPLAY_ID: u32 = 1;
 pub const PPC_DSP_BUFFER_KIND_NORMAL: u32 = 0;
 pub const PPC_DSP_MAX_REQUESTED_PAGE_COUNT: u32 = 2;
 pub const PPC_ISP_DEVICE_COUNT: u32 = 2;
-pub const PPC_ISP_KEYBOARD_DEVICE: u32 = 0x0500_2000;
-pub const PPC_ISP_MOUSE_DEVICE: u32 = 0x0500_2010;
-pub const PPC_ISP_KEYBOARD_ELEMENT: u32 = 0x0500_2020;
-pub const PPC_ISP_MOUSE_X_ELEMENT: u32 = 0x0500_2030;
-pub const PPC_ISP_MOUSE_Y_ELEMENT: u32 = 0x0500_2040;
-pub const PPC_ISP_MOUSE_BUTTON_ELEMENT: u32 = 0x0500_2050;
+pub const PPC_ISP_KEYBOARD_DEVICE: u32 = 0x4000_2000;
+pub const PPC_ISP_MOUSE_DEVICE: u32 = 0x4000_2010;
+pub const PPC_ISP_KEYBOARD_ELEMENT: u32 = 0x4000_2020;
+pub const PPC_ISP_MOUSE_X_ELEMENT: u32 = 0x4000_2030;
+pub const PPC_ISP_MOUSE_Y_ELEMENT: u32 = 0x4000_2040;
+pub const PPC_ISP_MOUSE_BUTTON_ELEMENT: u32 = 0x4000_2050;
 pub const PPC_ISP_DEVICE_DEFINITION_SIZE: u32 = 92;
 pub const PPC_ISP_ELEMENT_INFO_SIZE: u32 = 80;
 pub const PPC_ISP_DEVICE_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyd");

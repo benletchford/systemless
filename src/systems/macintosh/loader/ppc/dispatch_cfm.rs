@@ -11,6 +11,7 @@ pub(super) struct PpcCfmDispatchContext<'a> {
     pub(super) memory: &'a mut PpcSectionMem,
     pub(super) heap_cursor: &'a mut u32,
     pub(super) heap_limit: u32,
+    pub(super) stack_base: u32,
     pub(super) cfm_connections: &'a mut Vec<PpcCfmConnection>,
     pub(super) cfm_library_fragments: &'a mut Vec<PpcCfmLibraryFragment>,
     pub(super) vfs_files: &'a [PpcVfsFileRecord],
@@ -29,6 +30,7 @@ pub(super) fn dispatch_cfm_import(context: PpcCfmDispatchContext<'_>) -> Option<
         memory,
         heap_cursor,
         heap_limit,
+        stack_base,
         cfm_connections,
         cfm_library_fragments,
         vfs_files,
@@ -46,6 +48,7 @@ pub(super) fn dispatch_cfm_import(context: PpcCfmDispatchContext<'_>) -> Option<
             memory,
             heap_cursor,
             heap_limit,
+            stack_base,
             cfm_connections,
             cfm_library_fragments,
             next_cfm_connection_id,
@@ -98,6 +101,7 @@ pub(super) fn dispatch_cfm_import(context: PpcCfmDispatchContext<'_>) -> Option<
             memory,
             heap_cursor,
             heap_limit,
+            stack_base,
             cfm_connections,
             next_cfm_connection_id,
             import_run_state,
@@ -110,6 +114,7 @@ pub(super) fn dispatch_cfm_import(context: PpcCfmDispatchContext<'_>) -> Option<
             memory,
             heap_cursor,
             heap_limit,
+            stack_base,
             cfm_connections,
             next_cfm_connection_id,
             import_run_state,
@@ -128,6 +133,7 @@ pub(super) fn ppc_get_shared_library(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
+    stack_base: u32,
     cfm_connections: &mut Vec<PpcCfmConnection>,
     cfm_library_fragments: &mut Vec<PpcCfmLibraryFragment>,
     next_cfm_connection_id: &mut u32,
@@ -245,6 +251,7 @@ pub(super) fn ppc_get_shared_library(
                 ppc_exempt_fragment_from_partition(
                     process_memory_manager,
                     memory,
+                    stack_base,
                     fragment_size.saturating_add(prepared.code_size),
                 );
                 let connection = PpcCfmConnection {
@@ -354,6 +361,7 @@ pub(super) fn ppc_get_disk_fragment(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
+    stack_base: u32,
     cfm_connections: &mut Vec<PpcCfmConnection>,
     next_cfm_connection_id: &mut u32,
     import_run_state: &mut PpcImportRunState,
@@ -428,6 +436,7 @@ pub(super) fn ppc_get_disk_fragment(
         memory,
         heap_cursor,
         heap_limit,
+        stack_base,
         cfm_connections,
         next_cfm_connection_id,
         import_run_state,
@@ -442,6 +451,7 @@ pub(super) fn ppc_get_mem_fragment(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
+    stack_base: u32,
     cfm_connections: &mut Vec<PpcCfmConnection>,
     next_cfm_connection_id: &mut u32,
     import_run_state: &mut PpcImportRunState,
@@ -538,6 +548,7 @@ pub(super) fn ppc_get_mem_fragment(
                 ppc_exempt_fragment_from_partition(
                     process_memory_manager,
                     memory,
+                    stack_base,
                     container_size.saturating_add(prepared.code_size),
                 );
             }

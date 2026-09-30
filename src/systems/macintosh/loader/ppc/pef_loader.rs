@@ -368,8 +368,25 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
     let resolved_imports = resolve_pef_imports(data).unwrap_or_default();
     let imported_symbols = parse_pef_imported_symbols(data).unwrap_or_default();
     let stack_size = normalize_stack_size(config.stack_size)?;
+    // When physical RAM can hold the native heap and stack, place their
+    // contiguous partition below the system reservation. Standalone loaders
+    // retain their default layout.
+    // Inside Macintosh: Processes (1994), pp. 1-7--1-8.
+    let stack_top = system_reservation
+        .map(|(base, _)| {
+            let candidate = base.min(PPC_DSP_CONTEXT);
+            if candidate
+                .checked_sub(stack_size)
+                .is_some_and(|bottom| bottom > PPC_HEAP_BASE)
+            {
+                candidate
+            } else {
+                PPC_STACK_TOP
+            }
+        })
+        .unwrap_or(PPC_STACK_TOP);
     let stack_base =
-        PPC_STACK_TOP
+        stack_top
             .checked_sub(stack_size)
             .ok_or(PpcLoadError::StackSizeOutOfRange {
                 requested: config.stack_size,
@@ -378,6 +395,13 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
         return Err(PpcLoadError::StackSizeOutOfRange {
             requested: config.stack_size,
         });
+    }
+    if system_reservation.is_some_and(|(base, len)| {
+        let start = u64::from(base);
+        let end = start + u64::from(len);
+        start < u64::from(stack_top) && u64::from(PPC_HEAP_BASE) < end
+    }) {
+        return Err(PpcLoadError::AddressOverflow);
     }
     let import_plan = PpcImportBindingPlan::prepare(
         resolved_imports.clone(),
@@ -513,7 +537,7 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
         rtoc,
         stack_base,
         stack_size,
-        stack_top: PPC_STACK_TOP,
+        stack_top,
     });
     let PpcInitialCfmPlan {
         libraries: initial_library_plans,
@@ -708,11 +732,7 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
     // their non-purgeable mirror; NewGWorld records are registered eagerly.
     let gworld_pixel_states = SharedProcessQuickDrawPixelStates::default();
     if let Some((base, len)) = system_reservation {
-        let reservation_start = u64::from(base);
-        let reservation_end = reservation_start + u64::from(len);
-        let overlaps_stack =
-            reservation_start < u64::from(PPC_STACK_TOP) && u64::from(stack_base) < reservation_end;
-        if overlaps_stack || memory.mapping_overlaps(base, len) {
+        if memory.mapping_overlaps(base, len) {
             return Err(PpcLoadError::AddressOverflow);
         }
     }
@@ -863,7 +883,7 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
         Some((PPC_INITIALIZERS_TRAMPOLINE_BASE, rtoc, 0, PPC_HALT_PC))
     };
 
-    let stack_pointer = PPC_STACK_TOP - PPC_INITIAL_STACK_FRAME_SIZE;
+    let stack_pointer = stack_top - PPC_INITIAL_STACK_FRAME_SIZE;
     let mut stack = vec![0u8; stack_size as usize];
     let sp_offset = usize::try_from(stack_pointer - stack_base).unwrap();
     stack[sp_offset..sp_offset + 4].copy_from_slice(&0u32.to_be_bytes());
