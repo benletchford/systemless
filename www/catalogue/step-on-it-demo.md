@@ -19,8 +19,8 @@ compatibility:
     systemless_version: 0.70.1 + deterministic play runner
     architecture: 68k
     environment: >-
-      Replayed the unchanged StuffIt demo, started Board 001, and held the
-      documented L key to move Ted right compared with a matched no-input run.
+      Replayed the unchanged StuffIt demo, started Board 001, and held the documented
+      L key to move Ted right compared with a matched no-input run.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3652
   - date: "2026-10-01"
@@ -28,10 +28,10 @@ compatibility:
     systemless_version: 0.70.1 + release-mode browser build
     architecture: 68k
     environment: >-
-      In Chrome, fetched the unchanged archive once, clicked Start, reached
-      Board 001, and moved Ted with the documented L key. A five-second active
-      sample measured 59.8 host frames/s and 59.8 guest ticks/s, with a
-      24.8 ms maximum frame and 293 ms minimum audio queue.
+      In Chrome, fetched the unchanged archive once, clicked Start, reached Board
+      001, and moved Ted with the documented L key. A five-second active sample measured
+      59.8 host frames/s and 59.8 guest ticks/s, with a 24.8 ms maximum frame and 293 ms
+      minimum audio queue.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3652
 artifacts:
@@ -39,10 +39,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Step%20On%20It%20Demo.sit
-    expected_sha256: cfcd26cbe874c5d64b3f27a54ebe62864e7e3b69f02db4dedf986668a60a19a5
-    expected_size: 1737871
+    type: sha256
+    sha256: cfcd26cbe874c5d64b3f27a54ebe62864e7e3b69f02db4dedf986668a60a19a5
+    size_bytes: 1737871
   provenance:
     redistribution: permitted
     original: true
@@ -50,9 +49,9 @@ artifacts:
     - https://classicmacdemos.com/step-on-it
     rights_holder: Casady & Greene
     permission: >-
-      The unchanged archive contains Step On It! DEMO and its ReadMe, which
-      expressly identifies the demonstration version and promotes the full game.
-      No bundled redistribution restriction was found; no retail application is included.
+      The unchanged archive contains Step On It! DEMO and its ReadMe, which expressly
+      identifies the demonstration version and promotes the full game. No bundled
+      redistribution restriction was found; no retail application is included.
     notes: >-
       Original 1,737,871-byte StuffIt archive, SHA-256
       cfcd26cbe874c5d64b3f27a54ebe62864e7e3b69f02db4dedf986668a60a19a5.
@@ -60,8 +59,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/step-on-it-demo/screenshot.png
+    type: sha256
+    sha256: b63866a61d898300b8422fcdb64e3505fadbd112fbf293663052bb46fe8026dd
+    size_bytes: 35680
   provenance:
     redistribution: permitted
     original: true
@@ -77,7 +77,7 @@ references:
 
 ## Build a path to the key
 
-![Step On It! first board](incoming/step-on-it-demo/screenshot.png)
+![Step On It! first board](https://assets.systemless.org/catalogue/media/sha256/b6/b63866a61d898300b8422fcdb64e3505fadbd112fbf293663052bb46fe8026dd.png)
 
 Click Start to enter the first board. By default, J and L run left and right,
 I jumps, A and Z switch blocks, and S and X use weapons. You can inspect or
