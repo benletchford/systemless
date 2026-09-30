@@ -19493,6 +19493,101 @@
         assert_eq!(bus.read_long(TEST_SP + 18), 0xCAFE_BABE);
     }
 
+    /// A styled template whose `^0` placeholders are replaced with
+    /// TESetSelect/TEDelete/TEInsert keeps every character's style: the
+    /// substituted name takes the style around it, and the runs after each
+    /// edit move with their text (Text 1993, 2-84 to 2-86).
+    #[test]
+    fn styled_runs_follow_text_through_tedelete_and_teinsert() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.tx_font = 0;
+        disp.tx_face = 0;
+        disp.tx_size = 12;
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+        disp.initialize_styled_te_record(&mut bus, te_handle, (0, 0, 80, 400), (0, 0, 80, 400));
+
+        // A bold first line, then plain text with a bold word.
+        let template = b"Note: ^0 is not free.\r^0 is shareware, so register now.";
+        let text_ptr = bus.alloc(template.len() as u32);
+        bus.write_bytes(text_ptr, template);
+        let bold_line = 0;
+        let plain = 21;
+        let bold_word = 42; // "register"
+        let plain_again = 50;
+        let style_scrap = make_style_scrap(
+            &mut bus,
+            &[
+                (bold_line, 12, 9, 0, 1, 12, (0, 0, 0)),
+                (plain, 12, 9, 0, 0, 12, (0, 0, 0)),
+                (bold_word, 12, 9, 0, 1, 12, (0, 0, 0)),
+                (plain_again, 12, 9, 0, 0, 12, (0, 0, 0)),
+            ],
+        );
+        bus.write_word(TEST_SP, 0x0007);
+        bus.write_long(TEST_SP + 2, te_handle);
+        bus.write_long(TEST_SP + 6, style_scrap);
+        bus.write_long(TEST_SP + 10, template.len() as u32);
+        bus.write_long(TEST_SP + 14, text_ptr);
+        assert!(disp
+            .dispatch_dialog(true, 0x03D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        let name = b"EV Override";
+        let name_ptr = bus.alloc(name.len() as u32);
+        bus.write_bytes(name_ptr, name);
+        let te_ptr = bus.read_long(te_handle);
+        while let Some(at) = TrapDispatcher::te_text_bytes(&bus, te_handle)
+            .windows(2)
+            .position(|pair| pair == b"^0")
+        {
+            bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, at as u16);
+            bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, at as u16 + 2);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, te_handle);
+            assert!(disp
+                .dispatch_dialog(true, 0x1D7, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok());
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, te_handle);
+            bus.write_long(TEST_SP + 4, name.len() as u32);
+            bus.write_long(TEST_SP + 8, name_ptr);
+            assert!(disp
+                .dispatch_dialog(true, 0x1DE, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok());
+        }
+
+        let text = TrapDispatcher::te_text_bytes(&bus, te_handle);
+        assert_eq!(
+            text,
+            b"Note: EV Override is not free.\rEV Override is shareware, so register now."
+        );
+        let runs = disp.te_style_runs(&bus, te_handle, text.len());
+        let faces: String = (0..text.len())
+            .map(|offset| {
+                if TrapDispatcher::te_style_at_offset(&runs, offset).face & 1 != 0 {
+                    'B'
+                } else {
+                    '.'
+                }
+            })
+            .collect();
+        let line = "Note: EV Override is not free.".len();
+        let word = text.windows(8).position(|w| w == b"register").unwrap();
+        let expected: String = (0..text.len())
+            .map(|offset| {
+                if offset < line || (word..word + 8).contains(&offset) {
+                    'B'
+                } else {
+                    '.'
+                }
+            })
+            .collect();
+        assert_eq!(faces, expected);
+    }
+
     #[test]
     fn testyleinsert_applies_style_scrap_runs_and_line_metrics() {
         let (mut disp, mut cpu, mut bus) = setup();
