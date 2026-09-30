@@ -2087,5 +2087,178 @@ fn control_values_ranges_and_state_commands_dispatch_with_canonical_evaluation()
     }
 }
 
+#[test]
+fn import_bindings_classify_control_hit_testing_and_tracking_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // FindControl
+        assert_eq!(
+            dispatcher_target_for_import(lib, "FindControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::FindControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "findcontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::FindControl)
+        );
+
+        // TestControl
+        assert_eq!(
+            dispatcher_target_for_import(lib, "TestControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TestControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "testcontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TestControl)
+        );
+
+        // TrackControl
+        assert_eq!(
+            dispatcher_target_for_import(lib, "TrackControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TrackControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "trackcontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TrackControl)
+        );
+
+        // GetControlVariant / GetCVariant
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetControlVariant"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlVariant)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getcontrolvariant"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlVariant)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetCVariant"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlVariant)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getcvariant"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlVariant)
+        );
+    }
+}
+
+#[test]
+fn control_hit_testing_and_tracking_commands_dispatch_with_canonical_evaluation() {
+    for lib in [b"InterfaceLib".as_slice(), b"AppearanceLib".as_slice(), b"CarbonLib".as_slice()] {
+        let pef = synthetic_pef_with_library_import(lib, b"FindControl");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let lib_str = std::str::from_utf8(lib).unwrap();
+
+        let mut last_mem_error = loaded.last_mem_error();
+        let handle = with_test_controls!(
+            loaded,
+            |controls| ppc_new_control_record_values(
+                None,
+                &mut loaded.memory,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                &mut last_mem_error,
+                test_handles!(loaded),
+                controls,
+                PPC_MAIN_GWORLD,
+                (10, 20, 40, 140),
+                b"HitTestCtl",
+                true,
+                0,
+                0,
+                100,
+                0x0033,
+                0x9999_8888,
+            )
+        );
+        assert_ne!(handle, 0);
+
+        // 1. GetControlVariant(handle) -> 3 (since proc_id 0x0033 & 0x0F == 3)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlVariant");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 3);
+
+        // 2. TestControl(handle, point)
+        // Hit inside bounds (v=15, h=25) -> part 10
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "TestControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = (15 << 16) | 25;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 10);
+
+        // Miss outside bounds (v=5, h=5) -> part 0
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = (5 << 16) | 5;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+        // 3. FindControl(point, window, &out_ctl)
+        let out_ctl_ptr = PPC_DATA_BASE + 0x3000;
+        loaded.memory.add_region(out_ctl_ptr, vec![0; 16]);
+
+        // Hit inside bounds
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "FindControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = (15 << 16) | 25;
+        loaded.cpu.gpr[4] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[5] = out_ctl_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 10);
+        assert_eq!(loaded.memory.read_u32_be(out_ctl_ptr), Some(handle));
+
+        // Miss outside bounds
+        loaded.memory.write_u32_be(out_ctl_ptr, 0).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = (5 << 16) | 5;
+        loaded.cpu.gpr[4] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[5] = out_ctl_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_ctl_ptr), Some(0));
+
+        // 4. TrackControl(handle, start_point, action_proc)
+        // Hit with nil action_proc (0) -> part 10
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "TrackControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = (15 << 16) | 25;
+        loaded.cpu.gpr[5] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 10);
+
+        // Miss with nil action_proc (0) -> part 0
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = (5 << 16) | 5;
+        loaded.cpu.gpr[5] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+    }
+}
+
+
 
 
