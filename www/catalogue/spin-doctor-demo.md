@@ -19,9 +19,9 @@ compatibility:
     systemless_version: 0.70.1 + deterministic play runner
     architecture: 68k
     environment: >-
-      Replayed the unchanged StuffIt demo, entered a doctor name, and reached
-      the live Level 1 Grid board. Matched-tick replays with Space and Command
-      input changed the wand pose against the no-input baseline.
+      Replayed the unchanged StuffIt demo, entered a doctor name, and reached the
+      live Level 1 Grid board. Matched-tick replays with Space and Command input changed
+      the wand pose against the no-input baseline.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3644
   - date: "2026-10-01"
@@ -30,10 +30,10 @@ compatibility:
     architecture: 68k
     environment: >-
       Fetched the exact archive once in a release-mode browser, entered a name,
-      started Grid, and observed its live rotating wand. At 10 MHz a five-second
-      active sample measured 60.0 host FPS and 60.0 guest ticks/sec, with a 9.8 ms
-      maximum measured frame and 120 ms minimum audio queue. The 518-by-386
-      screenshot is a direct capture of the game board.
+      started Grid, and observed its live rotating wand. At 10 MHz a five-second active
+      sample measured 60.0 host FPS and 60.0 guest ticks/sec, with a 9.8 ms maximum
+      measured frame and 120 ms minimum audio queue. The 518-by-386 screenshot is a direct
+      capture of the game board.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3644
 runtime:
@@ -44,10 +44,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Spin%20Doctor%20Demo.sit
-    expected_sha256: ea9e96aaf4295dd632c6435a1d672d85980e802352fabe10eb3332758013425a
-    expected_size: 273811
+    type: sha256
+    sha256: ea9e96aaf4295dd632c6435a1d672d85980e802352fabe10eb3332758013425a
+    size_bytes: 273811
   provenance:
     redistribution: permitted
     original: true
@@ -56,8 +55,8 @@ artifacts:
     rights_holder: Callisto Corporation
     permission: >-
       The unchanged archive contains only the purpose-built Spin Doctor Demo
-      application and no bundled redistribution restriction. Contemporary 1994
-      shareware and cover-disc records identify the demo; no retail files are included.
+      application and no bundled redistribution restriction. Contemporary 1994 shareware and
+      cover-disc records identify the demo; no retail files are included.
     notes: >-
       Original 273,811-byte StuffIt archive, SHA-256
       ea9e96aaf4295dd632c6435a1d672d85980e802352fabe10eb3332758013425a.
@@ -65,8 +64,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/spin-doctor-demo/screenshot.png
+    type: sha256
+    sha256: 2f3642461572043c6f7ae0b98771b9b617651e1c6203a3137bf6987fc07b653a
+    size_bytes: 9063
   provenance:
     redistribution: permitted
     original: true
@@ -77,8 +77,8 @@ artifacts:
       Fresh gameplay capture made from the original demo for this catalogue entry.
       The underlying game artwork remains its owners' property.
     notes: >-
-      Direct 518-by-386 release-browser capture of the Grid board, excluding
-      website framing and the Mac menu bar.
+      Direct 518-by-386 release-browser capture of the Grid board, excluding website
+      framing and the Mac menu bar.
 references:
 - https://groups.google.com/g/comp.sys.mac.games/c/JyAhTlLNCgA
 - https://www.macintoshrepository.org/16255--the-mac-magazine-cover-floppy-disks
@@ -86,7 +86,7 @@ references:
 
 ## Swing to the goal
 
-![Spin Doctor Level 1 Grid board](incoming/spin-doctor-demo/screenshot.png)
+![Spin Doctor Level 1 Grid board](https://assets.systemless.org/catalogue/media/sha256/2f/2f3642461572043c6f7ae0b98771b9b617651e1c6203a3137bf6987fc07b653a.png)
 
 Enter a doctor name and start the Grid level. You are the white spinning wand:
 press Command to swing to a neighboring node, Option to bounce, and Space to
