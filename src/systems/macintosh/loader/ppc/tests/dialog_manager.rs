@@ -1618,6 +1618,33 @@ fn import_bindings_classify_dialog_imports() {
             expected_target,
         );
     }
+    for (lib, symbol, expected_target) in [
+        ("InterfaceLib", "SetDialogDefaultItem", PpcImportDispatcherTarget::SetDialogDefaultItem),
+        ("AppearanceLib", "SetDialogDefaultItem", PpcImportDispatcherTarget::SetDialogDefaultItem),
+        ("DialogsLib", "SetDialogDefaultItem", PpcImportDispatcherTarget::SetDialogDefaultItem),
+        ("CarbonLib", "SetDialogDefaultItem", PpcImportDispatcherTarget::SetDialogDefaultItem),
+        ("InterfaceLib", "GetDialogDefaultItem", PpcImportDispatcherTarget::GetDialogDefaultItem),
+        ("AppearanceLib", "GetDialogDefaultItem", PpcImportDispatcherTarget::GetDialogDefaultItem),
+        ("DialogsLib", "GetDialogDefaultItem", PpcImportDispatcherTarget::GetDialogDefaultItem),
+        ("CarbonLib", "GetDialogDefaultItem", PpcImportDispatcherTarget::GetDialogDefaultItem),
+        ("InterfaceLib", "SetDialogCancelItem", PpcImportDispatcherTarget::SetDialogCancelItem),
+        ("AppearanceLib", "SetDialogCancelItem", PpcImportDispatcherTarget::SetDialogCancelItem),
+        ("DialogsLib", "SetDialogCancelItem", PpcImportDispatcherTarget::SetDialogCancelItem),
+        ("CarbonLib", "SetDialogCancelItem", PpcImportDispatcherTarget::SetDialogCancelItem),
+        ("InterfaceLib", "GetDialogCancelItem", PpcImportDispatcherTarget::GetDialogCancelItem),
+        ("AppearanceLib", "GetDialogCancelItem", PpcImportDispatcherTarget::GetDialogCancelItem),
+        ("DialogsLib", "GetDialogCancelItem", PpcImportDispatcherTarget::GetDialogCancelItem),
+        ("CarbonLib", "GetDialogCancelItem", PpcImportDispatcherTarget::GetDialogCancelItem),
+        ("InterfaceLib", "SetDialogTracksCursor", PpcImportDispatcherTarget::SetDialogTracksCursor),
+        ("AppearanceLib", "SetDialogTracksCursor", PpcImportDispatcherTarget::SetDialogTracksCursor),
+        ("DialogsLib", "SetDialogTracksCursor", PpcImportDispatcherTarget::SetDialogTracksCursor),
+        ("CarbonLib", "SetDialogTracksCursor", PpcImportDispatcherTarget::SetDialogTracksCursor),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import(lib, symbol),
+            expected_target,
+        );
+    }
     for (symbol, expected_target) in [
         ("LMSetResumeProc", PpcImportDispatcherTarget::LMSetResumeProc),
         ("LMGetResumeProc", PpcImportDispatcherTarget::LMGetResumeProc),
@@ -4048,6 +4075,189 @@ fn dialog_item_and_text_access_commands_dispatch_with_canonical_evaluation() {
     let mut loaded_sel_text = load_pef_application(&pef_sel_text).unwrap();
     loaded_sel_text.cpu.gpr[3] = 0;
     let probe = loaded_sel_text.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+}
+
+#[test]
+fn dialog_default_cancel_and_cursor_tracking_commands_dispatch_with_canonical_evaluation() {
+    let dialog_ptr = PPC_DATA_BASE + 0x1000;
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"SetDialogDefaultItem");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(dialog_ptr, vec![0; 512]);
+
+    let out_default_ptr = dialog_ptr + 0x180;
+    let out_cancel_ptr = dialog_ptr + 0x184;
+
+    // 1. Set up dialog with items:
+    // item 1: "OK" (button)
+    // item 2: "Cancel" (button)
+    // item 3: "Help" (button)
+    let item1 = make_test_ditl_item_typed(10, 10, 30, 80, PPC_DIALOG_ITEM_BUTTON, b"OK");
+    let item2 = make_test_ditl_item_typed(10, 90, 30, 160, PPC_DIALOG_ITEM_BUTTON, b"Cancel");
+    let item3 = make_test_ditl_item_typed(40, 10, 60, 80, PPC_DIALOG_ITEM_BUTTON, b"Help");
+    let ditl_bytes = make_test_ditl(&[item1, item2, item3]);
+    let items_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &ditl_bytes,
+    );
+    loaded
+        .memory
+        .write_u32_be(dialog_ptr + PPC_DIALOG_ITEMS_OFFSET, items_handle)
+        .unwrap();
+
+    // 2. SetDialogDefaultItem:
+    // 2a. Safe error on NULL dialog
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogDefaultItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 2b. Valid SetDialogDefaultItem to 3
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 3;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogDefaultItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(
+        loaded.memory.read_u16_be(dialog_ptr + PPC_DIALOG_DEFAULT_ITEM_OFFSET).unwrap(),
+        3
+    );
+
+    // 3. GetDialogDefaultItem:
+    // 3a. Safe error on NULL dialog
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = out_default_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogDefaultItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 3b. Safe error on NULL output pointer
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogDefaultItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 3c. Valid GetDialogDefaultItem (returns configured 3)
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = out_default_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogDefaultItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u16_be(out_default_ptr).unwrap(), 3);
+
+    // 3d. Clear default item via SetDialogDefaultItem(dialog, 0)
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogDefaultItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(
+        loaded.memory.read_u16_be(dialog_ptr + PPC_DIALOG_DEFAULT_ITEM_OFFSET).unwrap(),
+        0
+    );
+
+    // 3e. GetDialogDefaultItem when default is 0 falls back to item 1
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = out_default_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogDefaultItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u16_be(out_default_ptr).unwrap(), 1);
+
+    // 4. SetDialogCancelItem:
+    // 4a. Safe error on NULL dialog
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 2;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogCancelItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 4b. Valid SetDialogCancelItem to 3
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 3;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogCancelItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(
+        loaded.memory.read_u16_be(dialog_ptr + PPC_DIALOG_CANCEL_ITEM_OFFSET).unwrap(),
+        3
+    );
+
+    // 5. GetDialogCancelItem:
+    // 5a. Safe error on NULL dialog
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = out_cancel_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogCancelItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 5b. Safe error on NULL out pointer
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogCancelItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 5c. Valid GetDialogCancelItem (returns configured 3)
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = out_cancel_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogCancelItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u16_be(out_cancel_ptr).unwrap(), 3);
+
+    // 5d. Clear cancel item via SetDialogCancelItem(dialog, 0)
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogCancelItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(
+        loaded.memory.read_u16_be(dialog_ptr + PPC_DIALOG_CANCEL_ITEM_OFFSET).unwrap(),
+        0
+    );
+
+    // 5e. GetDialogCancelItem auto-resolves item with title "Cancel" (item 2)
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = out_cancel_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogCancelItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u16_be(out_cancel_ptr).unwrap(), 2);
+
+    // 6. SetDialogTracksCursor:
+    // 6a. Global cursor tracking with NULL dialog
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogTracksCursor);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+
+    // 6b. Dialog-specific cursor tracking
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogTracksCursor);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+
+    // 7. Verify PEF execution using AppearanceLib, DialogsLib, and CarbonLib
+    let pef_set_def = synthetic_pef_with_library_import(b"DialogsLib", b"SetDialogDefaultItem");
+    let mut loaded_set_def = load_pef_application(&pef_set_def).unwrap();
+    loaded_set_def.cpu.gpr[3] = 0;
+    let probe = loaded_set_def.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_get_def = synthetic_pef_with_library_import(b"CarbonLib", b"GetDialogDefaultItem");
+    let mut loaded_get_def = load_pef_application(&pef_get_def).unwrap();
+    loaded_get_def.cpu.gpr[3] = 0;
+    let probe = loaded_get_def.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_set_can = synthetic_pef_with_library_import(b"CarbonLib", b"SetDialogCancelItem");
+    let mut loaded_set_can = load_pef_application(&pef_set_can).unwrap();
+    loaded_set_can.cpu.gpr[3] = 0;
+    let probe = loaded_set_can.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_get_can = synthetic_pef_with_library_import(b"DialogsLib", b"GetDialogCancelItem");
+    let mut loaded_get_can = load_pef_application(&pef_get_can).unwrap();
+    loaded_get_can.cpu.gpr[3] = 0;
+    let probe = loaded_get_can.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_tracks = synthetic_pef_with_library_import(b"AppearanceLib", b"SetDialogTracksCursor");
+    let mut loaded_tracks = load_pef_application(&pef_tracks).unwrap();
+    loaded_tracks.cpu.gpr[3] = 0;
+    let probe = loaded_tracks.run_with_hle_imports(64);
     assert_eq!(probe.unsupported_import_index, None);
 }
 

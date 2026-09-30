@@ -3013,21 +3013,26 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "SetDialogItemText" | "setdialogitemtext" | "SetIText" | "setitext",
         ) => PpcImportDispatcherTarget::SetDialogItemText,
-        ("InterfaceLib" | "AppearanceLib", "SetDialogDefaultItem") => {
-            PpcImportDispatcherTarget::SetDialogDefaultItem
-        }
-        ("InterfaceLib" | "AppearanceLib", "GetDialogDefaultItem") => {
-            PpcImportDispatcherTarget::GetDialogDefaultItem
-        }
-        ("InterfaceLib" | "AppearanceLib", "SetDialogCancelItem") => {
-            PpcImportDispatcherTarget::SetDialogCancelItem
-        }
-        ("InterfaceLib" | "AppearanceLib", "GetDialogCancelItem") => {
-            PpcImportDispatcherTarget::GetDialogCancelItem
-        }
-        ("InterfaceLib" | "AppearanceLib", "SetDialogTracksCursor") => {
-            PpcImportDispatcherTarget::SetDialogTracksCursor
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "SetDialogDefaultItem" | "setdialogdefaultitem",
+        ) => PpcImportDispatcherTarget::SetDialogDefaultItem,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetDialogDefaultItem" | "getdialogdefaultitem",
+        ) => PpcImportDispatcherTarget::GetDialogDefaultItem,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "SetDialogCancelItem" | "setdialogcancelitem",
+        ) => PpcImportDispatcherTarget::SetDialogCancelItem,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetDialogCancelItem" | "getdialogcancelitem",
+        ) => PpcImportDispatcherTarget::GetDialogCancelItem,
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "SetDialogTracksCursor" | "setdialogtrackscursor",
+        ) => PpcImportDispatcherTarget::SetDialogTracksCursor,
         ("InterfaceLib" | "AppearanceLib", "MoveDialogItem") => {
             PpcImportDispatcherTarget::MoveDialogItem
         }
