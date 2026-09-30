@@ -351,11 +351,16 @@ pub enum PpcLegacyControlOperation {
     ChangeControlPropertyAttributes,
     CountSubControls,
     CreateRootControl,
+    DisableControl,
     DisposeControl,
+    DragControl,
     DrawOneControl,
     EmbedControl,
+    EnableControl,
     FindControl,
     GetControlAction,
+    GetControlBounds,
+    GetControlHilite,
     GetControlMaximum,
     GetControlMinimum,
     GetControlProperty,
@@ -370,11 +375,17 @@ pub enum PpcLegacyControlOperation {
     GetRootControl,
     GetSuperControl,
     HideControl,
+    IdleControls,
+    IsControlEnabled,
+    IsControlHilited,
+    IsControlVisible,
+    IsValidControlHandle,
     KillControls,
     MoveControl,
     NewControl,
     RemoveControlProperty,
     SetControlAction,
+    SetControlBounds,
     SetControlMaximum,
     SetControlMinimum,
     SetControlProperty,
@@ -1051,6 +1062,83 @@ pub(super) fn ppc_dispatch_legacy_control(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcLegacyControlOperation::IsControlVisible => {
+            let control = cpu.gpr[3];
+            let visible = ppc_control_visible(memory, control);
+            Some(PpcImportAction::Return(u32::from(visible)))
+        }
+        PpcLegacyControlOperation::IsControlEnabled => {
+            let control = cpu.gpr[3];
+            let enabled = ppc_control_enabled(memory, control);
+            Some(PpcImportAction::Return(u32::from(enabled)))
+        }
+        PpcLegacyControlOperation::EnableControl => {
+            let control = cpu.gpr[3];
+            let result = ppc_set_control_enabled(
+                memory,
+                handles,
+                controls,
+                gworlds,
+                vfs_resources,
+                current_resource_refnum,
+                control,
+                true,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::DisableControl => {
+            let control = cpu.gpr[3];
+            let result = ppc_set_control_enabled(
+                memory,
+                handles,
+                controls,
+                gworlds,
+                vfs_resources,
+                current_resource_refnum,
+                control,
+                false,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::IsControlHilited => {
+            let control = cpu.gpr[3];
+            let hilited = ppc_control_hilited(memory, control);
+            Some(PpcImportAction::Return(u32::from(hilited)))
+        }
+        PpcLegacyControlOperation::GetControlHilite => {
+            let control = cpu.gpr[3];
+            let hilite = ppc_control_hilite_code(memory, control);
+            Some(PpcImportAction::Return(u32::from(hilite)))
+        }
+        PpcLegacyControlOperation::IsValidControlHandle => {
+            let control = cpu.gpr[3];
+            let valid = ppc_is_valid_control_handle(memory, controls, control);
+            Some(PpcImportAction::Return(u32::from(valid)))
+        }
+        PpcLegacyControlOperation::GetControlBounds => {
+            let control = cpu.gpr[3];
+            let out_rect = cpu.gpr[4];
+            let result = ppc_get_control_bounds(memory, control, out_rect);
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::SetControlBounds => {
+            let control = cpu.gpr[3];
+            let in_rect = cpu.gpr[4];
+            let result = ppc_set_control_bounds(
+                memory,
+                handles,
+                controls,
+                gworlds,
+                vfs_resources,
+                current_resource_refnum,
+                control,
+                in_rect,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::IdleControls | PpcLegacyControlOperation::DragControl => {
+            Some(PpcImportAction::Return(0))
+        }
     }
 }
 
@@ -1587,6 +1675,140 @@ pub(super) fn ppc_change_control_property_attributes(
         }
     }
     PPC_CONTROL_PROPERTY_NOT_FOUND_ERR
+}
+
+pub(super) fn ppc_control_visible(memory: &mut PpcSectionMem, handle: u32) -> bool {
+    ppc_control_ptr(memory, handle)
+        .and_then(|ptr| memory.read_u8(ptr.wrapping_add(PPC_CONTROL_VISIBLE_OFFSET)))
+        .is_some_and(|vis| vis != 0)
+}
+
+pub(super) fn ppc_control_enabled(memory: &mut PpcSectionMem, handle: u32) -> bool {
+    ppc_control_ptr(memory, handle)
+        .and_then(|ptr| memory.read_u8(ptr.wrapping_add(PPC_CONTROL_HILITE_OFFSET)))
+        .is_some_and(|hilite| hilite != 255)
+}
+
+pub(super) fn ppc_control_hilited(memory: &mut PpcSectionMem, handle: u32) -> bool {
+    ppc_control_ptr(memory, handle)
+        .and_then(|ptr| memory.read_u8(ptr.wrapping_add(PPC_CONTROL_HILITE_OFFSET)))
+        .is_some_and(|hilite| hilite > 0 && hilite < 255)
+}
+
+pub(super) fn ppc_control_hilite_code(memory: &mut PpcSectionMem, handle: u32) -> u8 {
+    ppc_control_ptr(memory, handle)
+        .and_then(|ptr| memory.read_u8(ptr.wrapping_add(PPC_CONTROL_HILITE_OFFSET)))
+        .unwrap_or(0)
+}
+
+pub(super) fn ppc_is_valid_control_handle(
+    memory: &mut PpcSectionMem,
+    controls: &[PpcControlRecord],
+    handle: u32,
+) -> bool {
+    handle != 0
+        && controls.iter().any(|r| r.handle == handle)
+        && ppc_control_ptr(memory, handle).is_some()
+}
+
+pub(super) fn ppc_get_control_bounds(
+    memory: &mut PpcSectionMem,
+    handle: u32,
+    out_rect: u32,
+) -> i16 {
+    let Some(control_ptr) = ppc_control_ptr(memory, handle) else {
+        return PPC_PARAM_ERR;
+    };
+    if out_rect == 0 {
+        return PPC_PARAM_ERR;
+    }
+    let Some(bytes) = ppc_memory_read_bytes(memory, control_ptr.wrapping_add(PPC_CONTROL_RECT_OFFSET), 8) else {
+        return PPC_PARAM_ERR;
+    };
+    if memory.write_bytes(out_rect, &bytes).is_none() {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_set_control_bounds(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    controls: &mut [PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    handle: u32,
+    in_rect: u32,
+) -> i16 {
+    let Some(control_ptr) = ppc_control_ptr(memory, handle) else {
+        return PPC_PARAM_ERR;
+    };
+    if in_rect == 0 {
+        return PPC_PARAM_ERR;
+    }
+    let Some(bytes) = ppc_memory_read_bytes(memory, in_rect, 8) else {
+        return PPC_PARAM_ERR;
+    };
+    if memory.write_bytes(control_ptr.wrapping_add(PPC_CONTROL_RECT_OFFSET), &bytes).is_none() {
+        return PPC_PARAM_ERR;
+    }
+    if ppc_control_visible(memory, handle) {
+        let _ = ppc_draw_control(
+            memory,
+            handles,
+            controls,
+            gworlds,
+            vfs_resources,
+            current_resource_refnum,
+            handle,
+        );
+    }
+    PPC_NO_ERR
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_set_control_enabled(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    controls: &mut [PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    handle: u32,
+    enabled: bool,
+) -> i16 {
+    let Some(control_ptr) = ppc_control_ptr(memory, handle) else {
+        return PPC_PARAM_ERR;
+    };
+    let current_hilite = memory
+        .read_u8(control_ptr.wrapping_add(PPC_CONTROL_HILITE_OFFSET))
+        .unwrap_or(0);
+    let new_hilite = if enabled {
+        if current_hilite == 255 {
+            0
+        } else {
+            current_hilite
+        }
+    } else {
+        255
+    };
+    if memory.write_u8(control_ptr.wrapping_add(PPC_CONTROL_HILITE_OFFSET), new_hilite).is_none() {
+        return PPC_PARAM_ERR;
+    }
+    if ppc_control_visible(memory, handle) {
+        let _ = ppc_draw_control(
+            memory,
+            handles,
+            controls,
+            gworlds,
+            vfs_resources,
+            current_resource_refnum,
+            handle,
+        );
+    }
+    PPC_NO_ERR
 }
 
 pub(super) fn ppc_clamp_control_value(memory: &mut PpcSectionMem, control: u32) {
