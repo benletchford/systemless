@@ -1091,6 +1091,10 @@ pub enum PpcImportDispatcherTarget {
     DisposeControlUserPaneDrawUPP,
     NewAEEventHandlerUPP,
     DisposeAEEventHandlerUPP,
+    NewEventHandlerUPP,
+    DisposeEventHandlerUPP,
+    NewEventLoopTimerUPP,
+    DisposeEventLoopTimerUPP,
     NewFatRoutineDescriptor,
     DisposeRoutineDescriptor,
     CallUniversalProc,
@@ -3670,6 +3674,18 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "NewAEEventHandlerUPP") => PpcImportDispatcherTarget::NewAEEventHandlerUPP,
         ("InterfaceLib", "DisposeAEEventHandlerUPP") => {
             PpcImportDispatcherTarget::DisposeAEEventHandlerUPP
+        }
+        ("InterfaceLib", "NewEventHandlerUPP") => {
+            PpcImportDispatcherTarget::NewEventHandlerUPP
+        }
+        ("InterfaceLib", "DisposeEventHandlerUPP") => {
+            PpcImportDispatcherTarget::DisposeEventHandlerUPP
+        }
+        ("InterfaceLib", "NewEventLoopTimerUPP") => {
+            PpcImportDispatcherTarget::NewEventLoopTimerUPP
+        }
+        ("InterfaceLib", "DisposeEventLoopTimerUPP") => {
+            PpcImportDispatcherTarget::DisposeEventLoopTimerUPP
         }
         ("InterfaceLib", "NewFatRoutineDescriptor") => {
             PpcImportDispatcherTarget::NewFatRoutineDescriptor
