@@ -94,8 +94,8 @@ references:
 
 ![Checkers Deluxe board after a checker move](https://assets.systemless.org/catalogue/media/sha256/0f/0f66383c7e7c4b0fb93be0112938d471527967e61ca1844eb8650c22043131f9.png)
 
-The original demo appears as **Checkers Deluxe** when launched. Choose a
-board and play against a friend or the computer. Select a checker, then click a
-diagonal square to move it. Its bundled Read Me says
-games stop after six pieces are removed; saving, loading, and board editing
-are disabled. This catalogue entry preserves that original limited demonstration.
+The original demo appears as **Checkers Deluxe** when launched. Choose **New**,
+select **Basic Setup**, and enter two player names to reach the board. Select a
+checker, then click a diagonal square to move it. The demo supports play against
+a friend or the computer. Its bundled Read Me says games stop after six pieces
+are removed; saving, loading, and board editing are disabled.
