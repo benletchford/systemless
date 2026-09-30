@@ -8764,4 +8764,710 @@ fn menu_item_insertion_deletion_and_resource_commands_dispatch_with_canonical_ev
     }
 }
 
+#[test]
+fn import_bindings_classify_menu_item_attribute_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // CountMItems / CountMenuItems
+        assert_eq!(
+            dispatcher_target_for_import(lib, "CountMItems"),
+            PpcImportDispatcherTarget::CountMItems
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "countmitems"),
+            PpcImportDispatcherTarget::CountMItems
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "CountMenuItems"),
+            PpcImportDispatcherTarget::CountMItems
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "countmenuitems"),
+            PpcImportDispatcherTarget::CountMItems
+        );
 
+        // GetMenuItemText / GetItem
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetMenuItemText"),
+            PpcImportDispatcherTarget::GetMenuItemText
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getmenuitemtext"),
+            PpcImportDispatcherTarget::GetMenuItemText
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetItem"),
+            PpcImportDispatcherTarget::GetMenuItemText
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getitem"),
+            PpcImportDispatcherTarget::GetMenuItemText
+        );
+
+        // SetMenuItemText / SetItem
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetMenuItemText"),
+            PpcImportDispatcherTarget::SetMenuItemText
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setmenuitemtext"),
+            PpcImportDispatcherTarget::SetMenuItemText
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetItem"),
+            PpcImportDispatcherTarget::SetMenuItemText
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setitem"),
+            PpcImportDispatcherTarget::SetMenuItemText
+        );
+
+        // EnableMenuItem / EnableItem
+        assert_eq!(
+            dispatcher_target_for_import(lib, "EnableMenuItem"),
+            PpcImportDispatcherTarget::EnableMenuItem
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "enablemenuitem"),
+            PpcImportDispatcherTarget::EnableMenuItem
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "EnableItem"),
+            PpcImportDispatcherTarget::EnableMenuItem
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "enableitem"),
+            PpcImportDispatcherTarget::EnableMenuItem
+        );
+
+        // DisableMenuItem / DisableItem
+        assert_eq!(
+            dispatcher_target_for_import(lib, "DisableMenuItem"),
+            PpcImportDispatcherTarget::DisableMenuItem
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "disablemenuitem"),
+            PpcImportDispatcherTarget::DisableMenuItem
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "DisableItem"),
+            PpcImportDispatcherTarget::DisableMenuItem
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "disableitem"),
+            PpcImportDispatcherTarget::DisableMenuItem
+        );
+
+        // SetItemMark / SetMenuItemMark
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetItemMark"),
+            PpcImportDispatcherTarget::SetItemMark
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setitemmark"),
+            PpcImportDispatcherTarget::SetItemMark
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetMenuItemMark"),
+            PpcImportDispatcherTarget::SetItemMark
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setmenuitemmark"),
+            PpcImportDispatcherTarget::SetItemMark
+        );
+
+        // GetItemMark / GetMenuItemMark
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetItemMark"),
+            PpcImportDispatcherTarget::GetItemMark
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getitemmark"),
+            PpcImportDispatcherTarget::GetItemMark
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetMenuItemMark"),
+            PpcImportDispatcherTarget::GetItemMark
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getmenuitemmark"),
+            PpcImportDispatcherTarget::GetItemMark
+        );
+
+        // CheckItem / CheckMenuItem
+        assert_eq!(
+            dispatcher_target_for_import(lib, "CheckItem"),
+            PpcImportDispatcherTarget::CheckItem
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "checkitem"),
+            PpcImportDispatcherTarget::CheckItem
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "CheckMenuItem"),
+            PpcImportDispatcherTarget::CheckItem
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "checkmenuitem"),
+            PpcImportDispatcherTarget::CheckItem
+        );
+
+        // SetItemCmd / SetMenuItemCmd
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetItemCmd"),
+            PpcImportDispatcherTarget::SetItemCmd
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setitemcmd"),
+            PpcImportDispatcherTarget::SetItemCmd
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetMenuItemCmd"),
+            PpcImportDispatcherTarget::SetItemCmd
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setmenuitemcmd"),
+            PpcImportDispatcherTarget::SetItemCmd
+        );
+
+        // GetItemCmd / GetMenuItemCmd
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetItemCmd"),
+            PpcImportDispatcherTarget::GetItemCmd
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getitemcmd"),
+            PpcImportDispatcherTarget::GetItemCmd
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetMenuItemCmd"),
+            PpcImportDispatcherTarget::GetItemCmd
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getmenuitemcmd"),
+            PpcImportDispatcherTarget::GetItemCmd
+        );
+
+        // GetItemIcon / GetMenuItemIcon
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetItemIcon"),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::GetItemIcon,
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getitemicon"),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::GetItemIcon,
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetMenuItemIcon"),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::GetItemIcon,
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getmenuitemicon"),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::GetItemIcon,
+            )
+        );
+
+        // SetItemIcon / SetMenuItemIcon
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetItemIcon"),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::SetItemIcon,
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setitemicon"),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::SetItemIcon,
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetMenuItemIcon"),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::SetItemIcon,
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setmenuitemicon"),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::SetItemIcon,
+            )
+        );
+
+        // GetItemStyle / GetMenuItemStyle
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetItemStyle"),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::GetItemStyle,
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getitemstyle"),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::GetItemStyle,
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetMenuItemStyle"),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::GetItemStyle,
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getmenuitemstyle"),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::GetItemStyle,
+            )
+        );
+
+        // SetItemStyle / SetMenuItemStyle
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetItemStyle"),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::SetItemStyle,
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setitemstyle"),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::SetItemStyle,
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetMenuItemStyle"),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::SetItemStyle,
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setmenuitemstyle"),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::SetItemStyle,
+            )
+        );
+    }
+}
+
+#[test]
+fn menu_item_attributes_commands_dispatch_with_canonical_evaluation() {
+    for lib in [b"InterfaceLib".as_slice(), b"AppearanceLib".as_slice(), b"CarbonLib".as_slice()] {
+        // 1. CountMItems / CountMenuItems
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"CountMItems");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 201, b"\x04File", b"New;Open;Save;Quit");
+            loaded.cpu.gpr[3] = menu;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 4);
+
+            let pef = synthetic_pef_with_library_import(lib, b"CountMenuItems");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 202, b"\x04File", b"One;Two");
+            loaded.cpu.gpr[3] = menu;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 2);
+        }
+
+        // 2. GetMenuItemText, SetMenuItemText, GetItem, SetItem
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"GetMenuItemText");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 203, b"\x04Edit", b"Cut;Copy;Paste");
+            let out_ptr = 0x60100;
+            loaded.memory.add_region(out_ptr, vec![0; 0x100]);
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 2;
+            loaded.cpu.gpr[5] = out_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let bytes = ppc_read_pstring_bytes(&mut loaded.memory, out_ptr).unwrap();
+            assert_eq!(bytes, b"Copy");
+
+            let pef = synthetic_pef_with_library_import(lib, b"SetMenuItemText");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 204, b"\x04Edit", b"Cut;Copy;Paste");
+            let in_ptr = 0x60100;
+            loaded.memory.add_region(in_ptr, vec![0; 0x100]);
+            assert!(ppc_write_pstring_bytes(&mut loaded.memory, in_ptr, b"Duplicate"));
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 2;
+            loaded.cpu.gpr[5] = in_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let items = ppc_menu_items_from_memory(&mut loaded.memory, menu).unwrap().items;
+            assert_eq!(items[1].text, b"Duplicate");
+
+            let pef = synthetic_pef_with_library_import(lib, b"GetItem");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 205, b"\x04Edit", b"Cut;Copy;Paste");
+            let out_ptr = 0x60100;
+            loaded.memory.add_region(out_ptr, vec![0; 0x100]);
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = out_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let bytes = ppc_read_pstring_bytes(&mut loaded.memory, out_ptr).unwrap();
+            assert_eq!(bytes, b"Cut");
+
+            let pef = synthetic_pef_with_library_import(lib, b"SetItem");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 206, b"\x04Edit", b"Cut;Copy;Paste");
+            let in_ptr = 0x60100;
+            loaded.memory.add_region(in_ptr, vec![0; 0x100]);
+            assert!(ppc_write_pstring_bytes(&mut loaded.memory, in_ptr, b"Trim"));
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = in_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let items = ppc_menu_items_from_memory(&mut loaded.memory, menu).unwrap().items;
+            assert_eq!(items[0].text, b"Trim");
+        }
+
+        // 3. EnableMenuItem, DisableMenuItem, EnableItem, DisableItem
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"DisableMenuItem");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 207, b"\x04Edit", b"Cut;Copy");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            let pef = synthetic_pef_with_library_import(lib, b"EnableMenuItem");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 208, b"\x04Edit", b"Cut;Copy");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            let pef = synthetic_pef_with_library_import(lib, b"DisableItem");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 209, b"\x04Edit", b"Cut;Copy");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            let pef = synthetic_pef_with_library_import(lib, b"EnableItem");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 210, b"\x04Edit", b"Cut;Copy");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+        }
+
+        // 4. CheckItem & CheckMenuItem
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"CheckItem");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 211, b"\x04View", b"Show;Hide");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = 1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(
+                ppc_menu_item_attribute_address(&mut loaded.memory, menu, 1, 2)
+                    .and_then(|addr| loaded.memory.read_u8(addr)),
+                Some(0x12)
+            );
+
+            let pef = synthetic_pef_with_library_import(lib, b"CheckMenuItem");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 212, b"\x04View", b"Show;Hide");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(
+                ppc_menu_item_attribute_address(&mut loaded.memory, menu, 1, 2)
+                    .and_then(|addr| loaded.memory.read_u8(addr)),
+                Some(0)
+            );
+        }
+
+        // 5. SetItemMark, SetMenuItemMark, GetItemMark, GetMenuItemMark
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"SetItemMark");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 213, b"\x04View", b"Show;Hide");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 2;
+            loaded.cpu.gpr[5] = b'-' as u32;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(
+                ppc_menu_item_attribute_address(&mut loaded.memory, menu, 2, 2)
+                    .and_then(|addr| loaded.memory.read_u8(addr)),
+                Some(b'-')
+            );
+
+            let pef = synthetic_pef_with_library_import(lib, b"GetItemMark");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 213, b"\x04View", b"Show;Hide");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 2;
+            loaded.cpu.gpr[5] = b'-' as u32;
+            ppc_set_item_mark(&loaded.cpu, &mut loaded.memory, &test_handle_records!(loaded));
+            let out_ptr = 0x60100;
+            loaded.memory.add_region(out_ptr, vec![0; 4]);
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 2;
+            loaded.cpu.gpr[5] = out_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.memory.read_u16_be(out_ptr), Some(b'-' as u16));
+
+            let pef = synthetic_pef_with_library_import(lib, b"SetMenuItemMark");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 214, b"\x04View", b"Show;Hide");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = b'*' as u32;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(
+                ppc_menu_item_attribute_address(&mut loaded.memory, menu, 1, 2)
+                    .and_then(|addr| loaded.memory.read_u8(addr)),
+                Some(b'*')
+            );
+
+            let pef = synthetic_pef_with_library_import(lib, b"GetMenuItemMark");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 214, b"\x04View", b"Show;Hide");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = b'*' as u32;
+            ppc_set_item_mark(&loaded.cpu, &mut loaded.memory, &test_handle_records!(loaded));
+            let out_ptr = 0x60100;
+            loaded.memory.add_region(out_ptr, vec![0; 4]);
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = out_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.memory.read_u16_be(out_ptr), Some(b'*' as u16));
+        }
+
+        // 6. SetItemCmd, SetMenuItemCmd, GetItemCmd, GetMenuItemCmd
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"SetItemCmd");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 215, b"\x04File", b"New;Open");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = b'N' as u32;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(
+                ppc_menu_item_attribute_address(&mut loaded.memory, menu, 1, 1)
+                    .and_then(|addr| loaded.memory.read_u8(addr)),
+                Some(b'N')
+            );
+
+            let pef = synthetic_pef_with_library_import(lib, b"GetItemCmd");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 215, b"\x04File", b"New;Open");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = b'N' as u32;
+            ppc_set_item_cmd(&loaded.cpu, &mut loaded.memory, &test_handle_records!(loaded));
+            let out_ptr = 0x60100;
+            loaded.memory.add_region(out_ptr, vec![0; 4]);
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = out_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.memory.read_u16_be(out_ptr), Some(b'N' as u16));
+
+            let pef = synthetic_pef_with_library_import(lib, b"SetMenuItemCmd");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 216, b"\x04File", b"New;Open");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 2;
+            loaded.cpu.gpr[5] = b'O' as u32;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(
+                ppc_menu_item_attribute_address(&mut loaded.memory, menu, 2, 1)
+                    .and_then(|addr| loaded.memory.read_u8(addr)),
+                Some(b'O')
+            );
+
+            let pef = synthetic_pef_with_library_import(lib, b"GetMenuItemCmd");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 216, b"\x04File", b"New;Open");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 2;
+            loaded.cpu.gpr[5] = b'O' as u32;
+            ppc_set_item_cmd(&loaded.cpu, &mut loaded.memory, &test_handle_records!(loaded));
+            let out_ptr = 0x60100;
+            loaded.memory.add_region(out_ptr, vec![0; 4]);
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 2;
+            loaded.cpu.gpr[5] = out_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.memory.read_u16_be(out_ptr), Some(b'O' as u16));
+        }
+
+        // 7. GetItemIcon, SetItemIcon, GetMenuItemIcon, SetMenuItemIcon
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"SetItemIcon");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 217, b"\x04File", b"New");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = 17;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(
+                ppc_menu_item_attribute_address(&mut loaded.memory, menu, 1, 0)
+                    .and_then(|addr| loaded.memory.read_u8(addr)),
+                Some(17)
+            );
+
+            let pef = synthetic_pef_with_library_import(lib, b"GetItemIcon");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 217, b"\x04File", b"New");
+            let icon_addr = ppc_menu_item_attribute_address(&mut loaded.memory, menu, 1, 0).unwrap();
+            loaded.memory.write_u8(icon_addr, 17).unwrap();
+            let out_ptr = 0x60100;
+            loaded.memory.add_region(out_ptr, vec![0; 4]);
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = out_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.memory.read_u8(out_ptr), Some(17));
+
+            let pef = synthetic_pef_with_library_import(lib, b"SetMenuItemIcon");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 218, b"\x04File", b"New");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = 42;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(
+                ppc_menu_item_attribute_address(&mut loaded.memory, menu, 1, 0)
+                    .and_then(|addr| loaded.memory.read_u8(addr)),
+                Some(42)
+            );
+
+            let pef = synthetic_pef_with_library_import(lib, b"GetMenuItemIcon");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 218, b"\x04File", b"New");
+            let icon_addr = ppc_menu_item_attribute_address(&mut loaded.memory, menu, 1, 0).unwrap();
+            loaded.memory.write_u8(icon_addr, 42).unwrap();
+            let out_ptr = 0x60100;
+            loaded.memory.add_region(out_ptr, vec![0; 4]);
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = out_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.memory.read_u8(out_ptr), Some(42));
+        }
+
+        // 8. GetItemStyle, SetItemStyle, GetMenuItemStyle, SetMenuItemStyle
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"SetItemStyle");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 219, b"\x04File", b"New");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = 1; // Bold
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(
+                ppc_menu_item_attribute_address(&mut loaded.memory, menu, 1, 3)
+                    .and_then(|addr| loaded.memory.read_u8(addr)),
+                Some(1)
+            );
+
+            let pef = synthetic_pef_with_library_import(lib, b"GetItemStyle");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 219, b"\x04File", b"New");
+            let style_addr = ppc_menu_item_attribute_address(&mut loaded.memory, menu, 1, 3).unwrap();
+            loaded.memory.write_u8(style_addr, 1).unwrap();
+            let out_ptr = 0x60100;
+            loaded.memory.add_region(out_ptr, vec![0; 4]);
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = out_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.memory.read_u8(out_ptr), Some(1));
+
+            let pef = synthetic_pef_with_library_import(lib, b"SetMenuItemStyle");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 220, b"\x04File", b"New");
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = 2; // Italic
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(
+                ppc_menu_item_attribute_address(&mut loaded.memory, menu, 1, 3)
+                    .and_then(|addr| loaded.memory.read_u8(addr)),
+                Some(2)
+            );
+
+            let pef = synthetic_pef_with_library_import(lib, b"GetMenuItemStyle");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 220, b"\x04File", b"New");
+            let style_addr = ppc_menu_item_attribute_address(&mut loaded.memory, menu, 1, 3).unwrap();
+            loaded.memory.write_u8(style_addr, 2).unwrap();
+            let out_ptr = 0x60100;
+            loaded.memory.add_region(out_ptr, vec![0; 4]);
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 1;
+            loaded.cpu.gpr[5] = out_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.memory.read_u8(out_ptr), Some(2));
+        }
+    }
+}
