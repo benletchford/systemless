@@ -1673,6 +1673,38 @@ fn import_bindings_classify_dialog_imports() {
         ("AppearanceLib", "ShortenDitl", PpcDialogCompatibilityOperation::ShortenDitl),
         ("DialogsLib", "ShortenDitl", PpcDialogCompatibilityOperation::ShortenDitl),
         ("CarbonLib", "ShortenDitl", PpcDialogCompatibilityOperation::ShortenDitl),
+        ("InterfaceLib", "FindDialogItem", PpcDialogCompatibilityOperation::FindDialogItem),
+        ("AppearanceLib", "FindDialogItem", PpcDialogCompatibilityOperation::FindDialogItem),
+        ("DialogsLib", "FindDialogItem", PpcDialogCompatibilityOperation::FindDialogItem),
+        ("CarbonLib", "FindDialogItem", PpcDialogCompatibilityOperation::FindDialogItem),
+        ("InterfaceLib", "FindDItem", PpcDialogCompatibilityOperation::FindDialogItem),
+        ("AppearanceLib", "FindDItem", PpcDialogCompatibilityOperation::FindDialogItem),
+        ("DialogsLib", "FindDItem", PpcDialogCompatibilityOperation::FindDialogItem),
+        ("CarbonLib", "FindDItem", PpcDialogCompatibilityOperation::FindDialogItem),
+        ("InterfaceLib", "HideDialogItem", PpcDialogCompatibilityOperation::HideDialogItem),
+        ("AppearanceLib", "HideDialogItem", PpcDialogCompatibilityOperation::HideDialogItem),
+        ("DialogsLib", "HideDialogItem", PpcDialogCompatibilityOperation::HideDialogItem),
+        ("CarbonLib", "HideDialogItem", PpcDialogCompatibilityOperation::HideDialogItem),
+        ("InterfaceLib", "HideDItem", PpcDialogCompatibilityOperation::HideDialogItem),
+        ("AppearanceLib", "HideDItem", PpcDialogCompatibilityOperation::HideDialogItem),
+        ("DialogsLib", "HideDItem", PpcDialogCompatibilityOperation::HideDialogItem),
+        ("CarbonLib", "HideDItem", PpcDialogCompatibilityOperation::HideDialogItem),
+        ("InterfaceLib", "ShowDialogItem", PpcDialogCompatibilityOperation::ShowDialogItem),
+        ("AppearanceLib", "ShowDialogItem", PpcDialogCompatibilityOperation::ShowDialogItem),
+        ("DialogsLib", "ShowDialogItem", PpcDialogCompatibilityOperation::ShowDialogItem),
+        ("CarbonLib", "ShowDialogItem", PpcDialogCompatibilityOperation::ShowDialogItem),
+        ("InterfaceLib", "ShowDItem", PpcDialogCompatibilityOperation::ShowDialogItem),
+        ("AppearanceLib", "ShowDItem", PpcDialogCompatibilityOperation::ShowDialogItem),
+        ("DialogsLib", "ShowDItem", PpcDialogCompatibilityOperation::ShowDialogItem),
+        ("CarbonLib", "ShowDItem", PpcDialogCompatibilityOperation::ShowDialogItem),
+        ("InterfaceLib", "UpdateDialog", PpcDialogCompatibilityOperation::UpdateDialog),
+        ("AppearanceLib", "UpdateDialog", PpcDialogCompatibilityOperation::UpdateDialog),
+        ("DialogsLib", "UpdateDialog", PpcDialogCompatibilityOperation::UpdateDialog),
+        ("CarbonLib", "UpdateDialog", PpcDialogCompatibilityOperation::UpdateDialog),
+        ("InterfaceLib", "UpdtDialog", PpcDialogCompatibilityOperation::UpdateDialog),
+        ("AppearanceLib", "UpdtDialog", PpcDialogCompatibilityOperation::UpdateDialog),
+        ("DialogsLib", "UpdtDialog", PpcDialogCompatibilityOperation::UpdateDialog),
+        ("CarbonLib", "UpdtDialog", PpcDialogCompatibilityOperation::UpdateDialog),
     ] {
         assert_eq!(
             dispatcher_target_for_import(lib, symbol),
@@ -3366,6 +3398,151 @@ fn ditl_manipulation_and_query_commands_dispatch_with_canonical_evaluation() {
     let probe = loaded_shorten.run_with_hle_imports(64);
     assert_eq!(probe.unsupported_import_index, None);
 }
+
+#[test]
+fn dialog_item_visibility_query_and_update_commands_dispatch_with_canonical_evaluation() {
+    let dialog_ptr = PPC_DATA_BASE + 0x1000;
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"FindDialogItem");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(dialog_ptr, vec![0; 256]);
+
+    loaded.gworlds.push(PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: dialog_ptr,
+        pixmap_handle: 0,
+        pixmap: 0,
+        base_addr: 0,
+        gdevice: PPC_MAIN_GDEVICE,
+        width: 300,
+        height: 200,
+        depth: 8,
+        row_bytes: 300,
+        pixels_locked: false,
+        pixels_no_purge: false,
+    });
+
+    // 1. FindDialogItem: Safe no-op / miss on NULL dialog
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0x0014_0028; // pt (20, 40)
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::FindDialogItem),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0xFFFF_FFFF); // -1 as u32
+
+    // 2. Set up dialog with 2 items:
+    // item 1: rect (top: 10, left: 10, bottom: 30, right: 80), title "OK"
+    // item 2: rect (top: 10, left: 90, bottom: 30, right: 160), title "Cancel"
+    let item1 = make_test_ditl_item(10, 10, 30, 80, b"OK");
+    let item2 = make_test_ditl_item(10, 90, 30, 160, b"Cancel");
+    let ditl_bytes = make_test_ditl(&[item1, item2]);
+    let items_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &ditl_bytes,
+    );
+    loaded
+        .memory
+        .write_u32_be(dialog_ptr + PPC_DIALOG_ITEMS_OFFSET, items_handle)
+        .unwrap();
+
+    // 2a. FindDialogItem hit item 1 at point (20, 40) -> returns 0 (0-indexed)
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0x0014_0028; // (20, 40)
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::FindDialogItem),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 2b. FindDialogItem hit item 2 at point (20, 120) -> returns 1
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0x0014_0078; // (20, 120)
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::FindDialogItem),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    // 2c. FindDialogItem miss at point (200, 200) -> returns -1 (0xFFFF_FFFF)
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0x00C8_00C8; // (200, 200)
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::FindDialogItem),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0xFFFF_FFFF);
+
+    // 3. HideDialogItem & ShowDialogItem
+    // 3a. HideDialogItem(dialog_ptr, 1) moves item 1 offscreen
+    let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+    // In DITL: header is 2 bytes; item 1 starts at offset 2; rect is offset + 4..+ 12 (top, left, bottom, right)
+    // So item 1 left is at items_ptr + 2 + 6 = items_ptr + 8
+    assert_eq!(
+        loaded.memory.read_u16_be(items_ptr + 8).map(|v| v as i16),
+        Some(10)
+    );
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 1; // itemNo 1 (1-indexed)
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::HideDialogItem),
+    );
+    // After hiding, left is offset by +16384 (10 + 16384 = 16394)
+    assert_eq!(
+        loaded.memory.read_u16_be(items_ptr + 8).map(|v| v as i16),
+        Some(16394)
+    );
+
+    // 3b. ShowDialogItem(dialog_ptr, 1) restores item 1 onscreen
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 1; // itemNo 1
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::ShowDialogItem),
+    );
+    // After showing, left is restored to 10
+    assert_eq!(
+        loaded.memory.read_u16_be(items_ptr + 8).map(|v| v as i16),
+        Some(10)
+    );
+
+    // 4. UpdateDialog redraws dialog cleanly
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0; // updateRgn
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::UpdateDialog),
+    );
+
+    // 5. Verify PEF execution using classic aliases across AppearanceLib, DialogsLib, and CarbonLib
+    let pef_find = synthetic_pef_with_library_import(b"AppearanceLib", b"FindDItem");
+    let mut loaded_find = load_pef_application(&pef_find).unwrap();
+    loaded_find.cpu.gpr[3] = 0;
+    let probe = loaded_find.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_hide = synthetic_pef_with_library_import(b"DialogsLib", b"HideDItem");
+    let mut loaded_hide = load_pef_application(&pef_hide).unwrap();
+    loaded_hide.cpu.gpr[3] = 0;
+    let probe = loaded_hide.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_show = synthetic_pef_with_library_import(b"CarbonLib", b"ShowDItem");
+    let mut loaded_show = load_pef_application(&pef_show).unwrap();
+    loaded_show.cpu.gpr[3] = 0;
+    let probe = loaded_show.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_updt = synthetic_pef_with_library_import(b"CarbonLib", b"UpdtDialog");
+    let mut loaded_updt = load_pef_application(&pef_updt).unwrap();
+    loaded_updt.cpu.gpr[3] = 0;
+    let probe = loaded_updt.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+}
+
 
 
 
