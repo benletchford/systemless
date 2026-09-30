@@ -1421,14 +1421,33 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
 
 #[test]
 fn import_bindings_classify_dialog_imports() {
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "GetNewDialog"),
-        PpcImportDispatcherTarget::GetNewDialog
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "NewDialog"),
-        PpcImportDispatcherTarget::NewDialog
-    );
+    for (lib, symbol, expected_target) in [
+        ("InterfaceLib", "GetNewDialog", PpcImportDispatcherTarget::GetNewDialog),
+        ("AppearanceLib", "GetNewDialog", PpcImportDispatcherTarget::GetNewDialog),
+        ("DialogsLib", "GetNewDialog", PpcImportDispatcherTarget::GetNewDialog),
+        ("CarbonLib", "GetNewDialog", PpcImportDispatcherTarget::GetNewDialog),
+        ("InterfaceLib", "NewDialog", PpcImportDispatcherTarget::NewDialog),
+        ("AppearanceLib", "NewDialog", PpcImportDispatcherTarget::NewDialog),
+        ("DialogsLib", "NewDialog", PpcImportDispatcherTarget::NewDialog),
+        ("CarbonLib", "NewDialog", PpcImportDispatcherTarget::NewDialog),
+        ("InterfaceLib", "NewColorDialog", PpcImportDispatcherTarget::NewDialog),
+        ("AppearanceLib", "NewColorDialog", PpcImportDispatcherTarget::NewDialog),
+        ("DialogsLib", "NewColorDialog", PpcImportDispatcherTarget::NewDialog),
+        ("CarbonLib", "NewColorDialog", PpcImportDispatcherTarget::NewDialog),
+        ("InterfaceLib", "NewCDialog", PpcImportDispatcherTarget::NewDialog),
+        ("AppearanceLib", "NewCDialog", PpcImportDispatcherTarget::NewDialog),
+        ("DialogsLib", "NewCDialog", PpcImportDispatcherTarget::NewDialog),
+        ("CarbonLib", "NewCDialog", PpcImportDispatcherTarget::NewDialog),
+        ("InterfaceLib", "NewFeaturesDialog", PpcImportDispatcherTarget::NewFeaturesDialog),
+        ("AppearanceLib", "NewFeaturesDialog", PpcImportDispatcherTarget::NewFeaturesDialog),
+        ("DialogsLib", "NewFeaturesDialog", PpcImportDispatcherTarget::NewFeaturesDialog),
+        ("CarbonLib", "NewFeaturesDialog", PpcImportDispatcherTarget::NewFeaturesDialog),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import(lib, symbol),
+            expected_target,
+        );
+    }
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "GetDialogItem"),
         PpcImportDispatcherTarget::GetDialogItem
@@ -4560,6 +4579,98 @@ fn dialog_alert_and_param_text_commands_dispatch_with_canonical_evaluation() {
         (b"CarbonLib".as_slice(), b"StandardAlert".as_slice()),
         (b"DialogsLib".as_slice(), b"ResetAlertStage".as_slice()),
         (b"CarbonLib".as_slice(), b"ResetAlertStage".as_slice()),
+    ] {
+        let pef = synthetic_pef_with_library_import(lib, symbol);
+        let mut loaded_app = load_pef_application(&pef).unwrap();
+        loaded_app.cpu.gpr[3] = 0;
+        let probe = loaded_app.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+    }
+}
+
+#[test]
+fn dialog_creation_commands_dispatch_with_canonical_evaluation() {
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"GetNewDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 128]);
+
+    // 1. GetNewDialog:
+    // Safe return 0 (NULL) when DLOG resource does not exist
+    loaded.cpu.gpr[3] = 999; // non-existent dialog ID
+    loaded.cpu.gpr[4] = 0;   // storage = NULL
+    loaded.cpu.gpr[5] = u32::MAX; // behind = -1
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 2. NewDialog:
+    // Setup programmatic bounds, title, and empty items handle
+    let bounds_ptr = scratch;
+    let title_ptr = scratch + 8;
+    ppc_write_rect(&mut loaded.memory, bounds_ptr, 40, 60, 180, 300).unwrap();
+    write_ppc_pstring(&mut loaded.memory, title_ptr, b"CreationTest");
+    let items = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &[0xff, 0xff],
+    );
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = bounds_ptr;
+    loaded.cpu.gpr[5] = title_ptr;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = 5;
+    loaded.cpu.gpr[8] = u32::MAX;
+    loaded.cpu.gpr[9] = 1;
+    loaded.cpu.gpr[10] = 0x1234_5678;
+    loaded
+        .memory
+        .write_u32_be(
+            ppc_parameter_area_slot_addr(loaded.cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
+                .unwrap(),
+            items,
+        )
+        .unwrap();
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewDialog);
+    let dialog = loaded.cpu.gpr[3];
+    assert_ne!(dialog, 0);
+    assert_eq!(*loaded.current_gworld, dialog);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(dialog + PPC_CWINDOW_WINDOW_KIND_OFFSET),
+        Some(2)
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET),
+        Some(items)
+    );
+
+    // 3. NewFeaturesDialog:
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewFeaturesDialog);
+    let feat_dialog = loaded.cpu.gpr[3];
+    assert_ne!(feat_dialog, 0);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(feat_dialog + PPC_CWINDOW_WINDOW_KIND_OFFSET),
+        Some(2)
+    );
+
+    // 4. Verify PEF execution using DialogsLib and CarbonLib
+    for (lib, symbol) in [
+        (b"DialogsLib".as_slice(), b"GetNewDialog".as_slice()),
+        (b"CarbonLib".as_slice(), b"GetNewDialog".as_slice()),
+        (b"DialogsLib".as_slice(), b"NewDialog".as_slice()),
+        (b"CarbonLib".as_slice(), b"NewDialog".as_slice()),
+        (b"DialogsLib".as_slice(), b"NewColorDialog".as_slice()),
+        (b"CarbonLib".as_slice(), b"NewColorDialog".as_slice()),
+        (b"DialogsLib".as_slice(), b"NewCDialog".as_slice()),
+        (b"CarbonLib".as_slice(), b"NewCDialog".as_slice()),
+        (b"DialogsLib".as_slice(), b"NewFeaturesDialog".as_slice()),
+        (b"CarbonLib".as_slice(), b"NewFeaturesDialog".as_slice()),
     ] {
         let pef = synthetic_pef_with_library_import(lib, symbol);
         let mut loaded_app = load_pef_application(&pef).unwrap();
