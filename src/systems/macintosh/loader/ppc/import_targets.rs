@@ -593,7 +593,7 @@ pub enum PpcImportDispatcherTarget {
     TESetText,
     TECalText,
     TEInsert { styled: bool },
-    TEDelete,
+    TEDelete { dialog: bool },
     TEKey,
     TEClick,
     TEIdle,
@@ -3092,7 +3092,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "TECalText") => PpcImportDispatcherTarget::TECalText,
         ("InterfaceLib", "TEInsert") => PpcImportDispatcherTarget::TEInsert { styled: false },
         ("InterfaceLib", "TEStyleInsert") => PpcImportDispatcherTarget::TEInsert { styled: true },
-        ("InterfaceLib", "TEDelete") => PpcImportDispatcherTarget::TEDelete,
+        ("InterfaceLib", "TEDelete") => PpcImportDispatcherTarget::TEDelete { dialog: false },
         ("InterfaceLib", "TEKey") => PpcImportDispatcherTarget::TEKey,
         ("InterfaceLib", "TEClick") => PpcImportDispatcherTarget::TEClick,
         ("InterfaceLib", "TEIdle") => PpcImportDispatcherTarget::TEIdle,
@@ -3114,18 +3114,27 @@ pub(crate) fn dispatcher_target_for_import(
             cut: true,
             dialog: false,
         },
-        ("InterfaceLib", "DialogCopy") => PpcImportDispatcherTarget::TECopy {
-            cut: false,
-            dialog: true,
-        },
-        ("InterfaceLib", "DialogCut") => PpcImportDispatcherTarget::TECopy {
-            cut: true,
-            dialog: true,
-        },
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "DialogCopy" | "DlgCopy") => {
+            PpcImportDispatcherTarget::TECopy {
+                cut: false,
+                dialog: true,
+            }
+        }
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "DialogCut" | "DlgCut") => {
+            PpcImportDispatcherTarget::TECopy {
+                cut: true,
+                dialog: true,
+            }
+        }
         ("InterfaceLib", "TEPaste" | "TEStylePaste") => {
             PpcImportDispatcherTarget::TEPaste { dialog: false }
         }
-        ("InterfaceLib", "DialogPaste") => PpcImportDispatcherTarget::TEPaste { dialog: true },
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "DialogPaste" | "DlgPaste") => {
+            PpcImportDispatcherTarget::TEPaste { dialog: true }
+        }
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "DialogDelete" | "DlgDelete") => {
+            PpcImportDispatcherTarget::TEDelete { dialog: true }
+        }
         ("InterfaceLib", "TEToScrap") => PpcImportDispatcherTarget::TETransferScrap {
             from_desktop: false,
         },

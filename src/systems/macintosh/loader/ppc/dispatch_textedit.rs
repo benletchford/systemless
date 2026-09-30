@@ -394,7 +394,31 @@ pub(super) fn dispatch_textedit_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::TEDelete => {
+        PpcImportDispatcherTarget::TEDelete { dialog } => {
+            let te_handle = if dialog {
+                let dialog_ptr = cpu.gpr[3];
+                let edit_field = memory
+                    .read_u16_be(
+                        dialog_ptr.wrapping_add(crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET),
+                    )
+                    .map(|val| val as i16)
+                    .unwrap_or(-1);
+                let text_handle = memory
+                    .read_u32_be(
+                        dialog_ptr.wrapping_add(crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET),
+                    )
+                    .unwrap_or(0);
+                match crate::dialog_manager::evaluate_dialog_edit_command(
+                    dialog_ptr,
+                    edit_field,
+                    text_handle,
+                ) {
+                    Some(eval) => eval.text_handle(),
+                    None => return Some(PpcImportAction::ReturnPreserve),
+                }
+            } else {
+                cpu.gpr[3]
+            };
             // Text (1993), p. 2-58: deleting is selection replacement with an
             // empty byte sequence and does not alter either scrap.
             let mut allocator = PpcProcessAllocatorView {
@@ -407,7 +431,7 @@ pub(super) fn dispatch_textedit_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                cpu.gpr[3],
+                te_handle,
                 &[],
             );
             *last_mem_error = result;
@@ -415,7 +439,7 @@ pub(super) fn dispatch_textedit_import(
                 memory,
                 handles,
                 gworlds,
-                cpu.gpr[3],
+                te_handle,
                 current_gworld,
                 *quickdraw_fore_color,
                 quickdraw_fore_indices,
@@ -718,11 +742,26 @@ pub(super) fn dispatch_textedit_import(
         }
         PpcImportDispatcherTarget::TECopy { cut, dialog } => {
             let te_handle = if dialog {
-                memory
-                    .read_u32_be(
-                        cpu.gpr[3].wrapping_add(crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET),
+                let dialog_ptr = cpu.gpr[3];
+                let edit_field = memory
+                    .read_u16_be(
+                        dialog_ptr.wrapping_add(crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET),
                     )
-                    .unwrap_or(0)
+                    .map(|val| val as i16)
+                    .unwrap_or(-1);
+                let text_handle = memory
+                    .read_u32_be(
+                        dialog_ptr.wrapping_add(crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET),
+                    )
+                    .unwrap_or(0);
+                match crate::dialog_manager::evaluate_dialog_edit_command(
+                    dialog_ptr,
+                    edit_field,
+                    text_handle,
+                ) {
+                    Some(eval) => eval.text_handle(),
+                    None => return Some(PpcImportAction::ReturnPreserve),
+                }
             } else {
                 cpu.gpr[3]
             };
@@ -753,11 +792,26 @@ pub(super) fn dispatch_textedit_import(
         }
         PpcImportDispatcherTarget::TEPaste { dialog } => {
             let te_handle = if dialog {
-                memory
-                    .read_u32_be(
-                        cpu.gpr[3].wrapping_add(crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET),
+                let dialog_ptr = cpu.gpr[3];
+                let edit_field = memory
+                    .read_u16_be(
+                        dialog_ptr.wrapping_add(crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET),
                     )
-                    .unwrap_or(0)
+                    .map(|val| val as i16)
+                    .unwrap_or(-1);
+                let text_handle = memory
+                    .read_u32_be(
+                        dialog_ptr.wrapping_add(crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET),
+                    )
+                    .unwrap_or(0);
+                match crate::dialog_manager::evaluate_dialog_edit_command(
+                    dialog_ptr,
+                    edit_field,
+                    text_handle,
+                ) {
+                    Some(eval) => eval.text_handle(),
+                    None => return Some(PpcImportAction::ReturnPreserve),
+                }
             } else {
                 cpu.gpr[3]
             };
