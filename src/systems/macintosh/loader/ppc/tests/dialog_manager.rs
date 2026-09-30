@@ -1648,6 +1648,37 @@ fn import_bindings_classify_dialog_imports() {
             PpcImportDispatcherTarget::DialogCompatibility(operation),
         );
     }
+    for (lib, symbol, operation) in [
+        ("InterfaceLib", "AppendDITL", PpcDialogCompatibilityOperation::AppendDitl),
+        ("AppearanceLib", "AppendDITL", PpcDialogCompatibilityOperation::AppendDitl),
+        ("DialogsLib", "AppendDITL", PpcDialogCompatibilityOperation::AppendDitl),
+        ("CarbonLib", "AppendDITL", PpcDialogCompatibilityOperation::AppendDitl),
+        ("InterfaceLib", "AppendDitl", PpcDialogCompatibilityOperation::AppendDitl),
+        ("AppearanceLib", "AppendDitl", PpcDialogCompatibilityOperation::AppendDitl),
+        ("DialogsLib", "AppendDitl", PpcDialogCompatibilityOperation::AppendDitl),
+        ("CarbonLib", "AppendDitl", PpcDialogCompatibilityOperation::AppendDitl),
+        ("InterfaceLib", "CountDITL", PpcDialogCompatibilityOperation::CountDitl),
+        ("AppearanceLib", "CountDITL", PpcDialogCompatibilityOperation::CountDitl),
+        ("DialogsLib", "CountDITL", PpcDialogCompatibilityOperation::CountDitl),
+        ("CarbonLib", "CountDITL", PpcDialogCompatibilityOperation::CountDitl),
+        ("InterfaceLib", "CountDitl", PpcDialogCompatibilityOperation::CountDitl),
+        ("AppearanceLib", "CountDitl", PpcDialogCompatibilityOperation::CountDitl),
+        ("DialogsLib", "CountDitl", PpcDialogCompatibilityOperation::CountDitl),
+        ("CarbonLib", "CountDitl", PpcDialogCompatibilityOperation::CountDitl),
+        ("InterfaceLib", "ShortenDITL", PpcDialogCompatibilityOperation::ShortenDitl),
+        ("AppearanceLib", "ShortenDITL", PpcDialogCompatibilityOperation::ShortenDitl),
+        ("DialogsLib", "ShortenDITL", PpcDialogCompatibilityOperation::ShortenDitl),
+        ("CarbonLib", "ShortenDITL", PpcDialogCompatibilityOperation::ShortenDitl),
+        ("InterfaceLib", "ShortenDitl", PpcDialogCompatibilityOperation::ShortenDitl),
+        ("AppearanceLib", "ShortenDitl", PpcDialogCompatibilityOperation::ShortenDitl),
+        ("DialogsLib", "ShortenDitl", PpcDialogCompatibilityOperation::ShortenDitl),
+        ("CarbonLib", "ShortenDitl", PpcDialogCompatibilityOperation::ShortenDitl),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import(lib, symbol),
+            PpcImportDispatcherTarget::DialogCompatibility(operation),
+        );
+    }
 }
 
 #[test]
@@ -3143,5 +3174,198 @@ fn dialog_clipboard_editing_commands_dispatch_with_canonical_evaluation() {
     let probe = loaded_dlg_cut.run_with_hle_imports(64);
     assert_eq!(probe.unsupported_import_index, None);
 }
+
+fn make_test_ditl_item(top: i16, left: i16, bottom: i16, right: i16, title: &[u8]) -> Vec<u8> {
+    let mut item = Vec::new();
+    item.extend_from_slice(&0u32.to_be_bytes()); // handle placeholder
+    item.extend_from_slice(&top.to_be_bytes());
+    item.extend_from_slice(&left.to_be_bytes());
+    item.extend_from_slice(&bottom.to_be_bytes());
+    item.extend_from_slice(&right.to_be_bytes());
+    item.push(PPC_DIALOG_ITEM_BUTTON);
+    item.push(title.len() as u8);
+    item.extend_from_slice(title);
+    if title.len() % 2 != 0 {
+        item.push(0); // word alignment pad
+    }
+    item
+}
+
+fn make_test_ditl(items: &[Vec<u8>]) -> Vec<u8> {
+    let count_minus_one = items.len().saturating_sub(1) as i16;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&count_minus_one.to_be_bytes());
+    for item in items {
+        bytes.extend_from_slice(item);
+    }
+    bytes
+}
+
+#[test]
+fn ditl_manipulation_and_query_commands_dispatch_with_canonical_evaluation() {
+    let dialog_ptr = PPC_DATA_BASE + 0x1000;
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"CountDITL");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(dialog_ptr, vec![0; 256]);
+
+    loaded.gworlds.push(PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: dialog_ptr,
+        pixmap_handle: 0,
+        pixmap: 0,
+        base_addr: 0,
+        gdevice: PPC_MAIN_GDEVICE,
+        width: 300,
+        height: 200,
+        depth: 8,
+        row_bytes: 300,
+        pixels_locked: false,
+        pixels_no_purge: false,
+    });
+
+    // 1. Safe no-ops and zero counts on empty or NULL dialogs
+    // 1a. NULL dialog pointer
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::CountDitl),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 1b. Non-null dialog, but items_handle == 0
+    loaded.cpu.gpr[3] = dialog_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::CountDitl),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 1c. AppendDITL with NULL dialog or NULL ditl_handle is a safe no-op
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::AppendDitl),
+    );
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::AppendDitl),
+    );
+
+    // 1d. ShortenDITL with NULL dialog is a safe no-op
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::ShortenDitl),
+    );
+
+    // 2. Install initial DITL with 2 items ("OK", "Cancel")
+    let item1 = make_test_ditl_item(10, 10, 30, 80, b"OK");
+    let item2 = make_test_ditl_item(10, 90, 30, 160, b"Cancel");
+    let ditl_bytes = make_test_ditl(&[item1, item2]);
+    let items_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &ditl_bytes,
+    );
+    loaded
+        .memory
+        .write_u32_be(dialog_ptr + PPC_DIALOG_ITEMS_OFFSET, items_handle)
+        .unwrap();
+
+    // 2a. CountDITL reports 2 items
+    loaded.cpu.gpr[3] = dialog_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::CountDitl),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 2);
+
+    // 3. AppendDITL: Append 1 item ("Help")
+    let item3 = make_test_ditl_item(10, 170, 30, 240, b"Help");
+    let append_ditl_bytes = make_test_ditl(&[item3]);
+    let append_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &append_ditl_bytes,
+    );
+
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = append_handle;
+    loaded.cpu.gpr[5] = 0; // overlayDITL
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::AppendDitl),
+    );
+
+    // 3a. CountDITL reports 3 items after AppendDITL
+    loaded.cpu.gpr[3] = dialog_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::CountDitl),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 3);
+
+    // 4. ShortenDITL: Remove 1 item from the end
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::ShortenDitl),
+    );
+
+    // 4a. CountDITL reports 2 items
+    loaded.cpu.gpr[3] = dialog_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::CountDitl),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 2);
+
+    // 4b. ShortenDITL: Remove remaining 2 items
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 2;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::ShortenDitl),
+    );
+
+    // 4c. CountDITL reports 0 items
+    loaded.cpu.gpr[3] = dialog_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::CountDitl),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 5. Verify PEF execution using mixed-case aliases from AppearanceLib, DialogsLib, and CarbonLib
+    let pef_count = synthetic_pef_with_library_import(b"AppearanceLib", b"CountDitl");
+    let mut loaded_count = load_pef_application(&pef_count).unwrap();
+    loaded_count.cpu.gpr[3] = 0;
+    let probe = loaded_count.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded_count.cpu.gpr[3], 0);
+
+    let pef_append = synthetic_pef_with_library_import(b"DialogsLib", b"AppendDitl");
+    let mut loaded_append = load_pef_application(&pef_append).unwrap();
+    loaded_append.cpu.gpr[3] = 0;
+    let probe = loaded_append.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_shorten = synthetic_pef_with_library_import(b"CarbonLib", b"ShortenDitl");
+    let mut loaded_shorten = load_pef_application(&pef_shorten).unwrap();
+    loaded_shorten.cpu.gpr[3] = 0;
+    let probe = loaded_shorten.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+}
+
 
 
