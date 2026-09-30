@@ -1877,6 +1877,11 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetNewCWindow
         | PpcImportDispatcherTarget::GetWRefCon
         | PpcImportDispatcherTarget::SetWRefCon
+        | PpcImportDispatcherTarget::GetWindowPic
+        | PpcImportDispatcherTarget::SetWindowPic
+        | PpcImportDispatcherTarget::GetAuxWin
+        | PpcImportDispatcherTarget::LMGetWindowList
+        | PpcImportDispatcherTarget::LMSetWindowList
         | PpcImportDispatcherTarget::SizeWindow
         | PpcImportDispatcherTarget::MoveWindow => {
             unreachable!("window imports return through dispatch_window_import")

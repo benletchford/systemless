@@ -278,6 +278,61 @@ pub(super) fn dispatch_window_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::GetWindowPic => Some(PpcImportAction::Return(
+            memory
+                .read_u32_be(cpu.gpr[3].wrapping_add(PPC_CWINDOW_WINDOW_PIC_OFFSET))
+                .unwrap_or(0),
+        )),
+        PpcImportDispatcherTarget::SetWindowPic => {
+            let window_ptr = cpu.gpr[3];
+            let pic = cpu.gpr[4];
+            if ppc_memory_can_write_bytes(
+                memory,
+                window_ptr.wrapping_add(PPC_CWINDOW_WINDOW_PIC_OFFSET),
+                4,
+            ) {
+                let _ = memory.write_u32_be(
+                    window_ptr.wrapping_add(PPC_CWINDOW_WINDOW_PIC_OFFSET),
+                    pic,
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::GetAuxWin => {
+            let window_ptr = cpu.gpr[3];
+            let aw_ctable_ptr = cpu.gpr[4];
+            let is_tracked = window_list.contains_window(window_ptr);
+            let color_table = if window_ptr != 0 {
+                memory
+                    .read_u32_be(window_ptr.wrapping_add(PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET))
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            if aw_ctable_ptr != 0 && ppc_memory_can_write_bytes(memory, aw_ctable_ptr, 4) {
+                let _ = memory.write_u32_be(aw_ctable_ptr, color_table);
+            }
+            let success = if color_table != 0 || is_tracked { 1 } else { 0 };
+            Some(PpcImportAction::Return(success))
+        }
+        PpcImportDispatcherTarget::LMGetWindowList => {
+            let head = window_list.first().unwrap_or(0);
+            let window = if head != 0 {
+                head
+            } else {
+                memory.read_u32_be(0x09D6).unwrap_or(0)
+            };
+            Some(PpcImportAction::Return(window))
+        }
+        PpcImportDispatcherTarget::LMSetWindowList => {
+            let window = cpu.gpr[3];
+            if window != 0 {
+                window_list.bring_to_front(window);
+            }
+            ppc_sync_process_window_list(memory, window_list);
+            let _ = memory.write_u32_be(0x09D6, window);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::SizeWindow => {
             let window = cpu.gpr[3];
             let was_visible = ppc_window_is_visible(memory, window);

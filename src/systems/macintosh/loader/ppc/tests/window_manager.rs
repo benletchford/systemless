@@ -4497,3 +4497,344 @@ fn window_invalidation_update_and_drawing_commands_dispatch_with_canonical_evalu
         }
     }
 }
+
+#[test]
+fn import_bindings_classify_window_property_title_picture_and_low_memory_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // GetWTitle / SetWTitle
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWTitle"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowTitle)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwtitle"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowTitle)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowTitle"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowTitle)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowtitle"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowTitle)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWTitle"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwtitle"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWindowTitle"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwindowtitle"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle)
+        );
+
+        // GetWRefCon / SetWRefCon
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWRefCon"),
+            PpcImportDispatcherTarget::GetWRefCon
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwrefcon"),
+            PpcImportDispatcherTarget::GetWRefCon
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowRefCon"),
+            PpcImportDispatcherTarget::GetWRefCon
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowrefcon"),
+            PpcImportDispatcherTarget::GetWRefCon
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWRefCon"),
+            PpcImportDispatcherTarget::SetWRefCon
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwrefcon"),
+            PpcImportDispatcherTarget::SetWRefCon
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWindowRefCon"),
+            PpcImportDispatcherTarget::SetWRefCon
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwindowrefcon"),
+            PpcImportDispatcherTarget::SetWRefCon
+        );
+
+        // GetWindowPic / SetWindowPic
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowPic"),
+            PpcImportDispatcherTarget::GetWindowPic
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowpic"),
+            PpcImportDispatcherTarget::GetWindowPic
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWindowPic"),
+            PpcImportDispatcherTarget::SetWindowPic
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwindowpic"),
+            PpcImportDispatcherTarget::SetWindowPic
+        );
+
+        // SetWinColor / GetAuxWin
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWinColor"),
+            PpcImportDispatcherTarget::SetWinColor
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwincolor"),
+            PpcImportDispatcherTarget::SetWinColor
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetAuxWin"),
+            PpcImportDispatcherTarget::GetAuxWin
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getauxwin"),
+            PpcImportDispatcherTarget::GetAuxWin
+        );
+
+        // LMGetWindowList / LMSetWindowList
+        assert_eq!(
+            dispatcher_target_for_import(lib, "LMGetWindowList"),
+            PpcImportDispatcherTarget::LMGetWindowList
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "lmgetwindowlist"),
+            PpcImportDispatcherTarget::LMGetWindowList
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "LMSetWindowList"),
+            PpcImportDispatcherTarget::LMSetWindowList
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "lmsetwindowlist"),
+            PpcImportDispatcherTarget::LMSetWindowList
+        );
+    }
+}
+
+#[test]
+fn window_property_title_picture_and_low_memory_commands_dispatch_with_canonical_evaluation() {
+    for lib in [b"InterfaceLib".as_slice(), b"AppearanceLib".as_slice(), b"CarbonLib".as_slice()] {
+        // 1. GetWTitle & SetWTitle
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"GetWTitle");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            let title_in_ptr = PPC_DATA_BASE + 0x1100;
+            let title_out_ptr = PPC_DATA_BASE + 0x1200;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            loaded.memory.add_region(title_in_ptr, vec![0; 256]);
+            loaded.memory.add_region(title_out_ptr, vec![0; 256]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+
+            assert!(ppc_write_pstring_bytes(&mut loaded.memory, title_in_ptr, b"Test Window Title"));
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "SetWTitle");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = title_in_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "GetWTitle");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = title_out_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(
+                ppc_read_pstring_bytes(&mut loaded.memory, title_out_ptr).as_deref(),
+                Some(b"Test Window Title".as_slice())
+            );
+        }
+
+        // 2. GetWRefCon & SetWRefCon
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"GetWRefCon");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "GetWRefCon");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "SetWRefCon");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0x1234_5678;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "GetWRefCon");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
+        }
+
+        // 3. SetWindowPic & GetWindowPic
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"GetWindowPic");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "GetWindowPic");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "SetWindowPic");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0xABCD_EF01;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "GetWindowPic");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0xABCD_EF01);
+        }
+
+        // 4. SetWinColor & GetAuxWin
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"GetAuxWin");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            let aw_out = PPC_DATA_BASE + 0x1300;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            loaded.memory.add_region(aw_out, vec![0; 16]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+
+            // Fresh window is tracked, GetAuxWin returns TRUE
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "GetAuxWin");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = aw_out;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 1);
+
+            // SetWinColor installs color table
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "SetWinColor");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0x5555_4444;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            // GetAuxWin returns color table
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "GetAuxWin");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = aw_out;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 1);
+            assert_eq!(loaded.memory.read_u32_be(aw_out), Some(0x5555_4444));
+
+            // Untracked window returns FALSE
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0x9999_8888;
+            loaded.cpu.gpr[4] = aw_out;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.memory.read_u32_be(aw_out), Some(0));
+        }
+
+        // 5. LMGetWindowList & LMSetWindowList
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"LMGetWindowList");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds1_ptr = PPC_DATA_BASE + 0x1000;
+            let bounds2_ptr = PPC_DATA_BASE + 0x1400;
+            loaded.memory.add_region(bounds1_ptr, vec![0; 32]);
+            loaded.memory.add_region(bounds2_ptr, vec![0; 32]);
+            let window1 = create_test_cwindow(&mut loaded, bounds1_ptr, (20, 20, 120, 220), 0, true, u32::MAX);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "LMGetWindowList");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], window1);
+
+            let window2 = create_test_cwindow(&mut loaded, bounds2_ptr, (30, 30, 130, 230), 0, true, u32::MAX);
+
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], window2);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "LMSetWindowList");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "LMGetWindowList");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], window1);
+        }
+    }
+}
+

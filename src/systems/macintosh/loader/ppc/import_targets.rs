@@ -245,6 +245,11 @@ pub enum PpcImportDispatcherTarget {
     GetNewCWindow,
     GetWRefCon,
     SetWRefCon,
+    GetWindowPic,
+    SetWindowPic,
+    GetAuxWin,
+    LMGetWindowList,
+    LMSetWindowList,
     SizeWindow,
     MoveWindow,
     ShowWindow,
@@ -2874,8 +2879,34 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetNewCWindow" | "getnewcwindow",
         ) => PpcImportDispatcherTarget::GetNewCWindow,
-        ("InterfaceLib", "GetWRefCon") => PpcImportDispatcherTarget::GetWRefCon,
-        ("InterfaceLib", "SetWRefCon") => PpcImportDispatcherTarget::SetWRefCon,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWRefCon" | "getwrefcon" | "GetWindowRefCon" | "getwindowrefcon",
+        ) => PpcImportDispatcherTarget::GetWRefCon,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetWRefCon" | "setwrefcon" | "SetWindowRefCon" | "setwindowrefcon",
+        ) => PpcImportDispatcherTarget::SetWRefCon,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWindowPic" | "getwindowpic",
+        ) => PpcImportDispatcherTarget::GetWindowPic,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetWindowPic" | "setwindowpic",
+        ) => PpcImportDispatcherTarget::SetWindowPic,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetAuxWin" | "getauxwin",
+        ) => PpcImportDispatcherTarget::GetAuxWin,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "LMGetWindowList" | "lmgetwindowlist",
+        ) => PpcImportDispatcherTarget::LMGetWindowList,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "LMSetWindowList" | "lmsetwindowlist",
+        ) => PpcImportDispatcherTarget::LMSetWindowList,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SizeWindow" | "sizewindow",
@@ -2908,7 +2939,10 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "FrontWindow" | "frontwindow",
         ) => PpcImportDispatcherTarget::FrontWindow,
-        ("InterfaceLib", "SetWinColor") => PpcImportDispatcherTarget::SetWinColor,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetWinColor" | "setwincolor",
+        ) => PpcImportDispatcherTarget::SetWinColor,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "PaintOne" | "paintone",
@@ -4030,7 +4064,10 @@ pub(crate) fn dispatcher_target_for_import(
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetNewWindow)
         }
-        ("InterfaceLib", "GetWTitle") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWTitle" | "getwtitle" | "GetWindowTitle" | "getwindowtitle",
+        ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowTitle)
         }
         (
@@ -4063,7 +4100,10 @@ pub(crate) fn dispatcher_target_for_import(
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SendBehind)
         }
-        ("InterfaceLib", "SetWTitle") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetWTitle" | "setwtitle" | "SetWindowTitle" | "setwindowtitle",
+        ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle)
         }
         (
