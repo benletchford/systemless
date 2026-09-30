@@ -3488,23 +3488,41 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "ClearMoviesStickyError") => {
             PpcImportDispatcherTarget::QtClearMoviesStickyError
         }
-        ("InterfaceLib", "ParamText") | ("InterfaceLib", "paramtext") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "ParamText" | "paramtext",
+        ) => {
             PpcImportDispatcherTarget::ParamText
         }
         ("InterfaceLib", "X2Fix") => PpcImportDispatcherTarget::X2Fix,
-        ("InterfaceLib", "Alert") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "Alert",
+        ) => {
             PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Alert)
         }
-        ("InterfaceLib", "StopAlert") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "StopAlert",
+        ) => {
             PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Stop)
         }
-        ("InterfaceLib", "NoteAlert") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "NoteAlert",
+        ) => {
             PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Note)
         }
-        ("InterfaceLib", "CautionAlert") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "CautionAlert",
+        ) => {
             PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Caution)
         }
-        ("InterfaceLib" | "AppearanceLib", "StandardAlert") => {
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "StandardAlert",
+        ) => {
             PpcImportDispatcherTarget::StandardAlert
         }
         ("InterfaceLib", "PurgeMem") => PpcImportDispatcherTarget::PurgeMem,
@@ -4006,7 +4024,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "OpenDefaultComponent") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::OpenDefaultComponent,
         ),
-        ("InterfaceLib", "ResetAlertStage") => PpcImportDispatcherTarget::SystemCompatibility(
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "ResetAlertStage",
+        ) => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::ResetAlertStage,
         ),
         ("InterfaceLib", "SetFrontProcess") => PpcImportDispatcherTarget::SystemCompatibility(
