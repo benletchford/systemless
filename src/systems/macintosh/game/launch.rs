@@ -3203,9 +3203,11 @@ fn is_documentation_executable(name: &str) -> bool {
     words.iter().any(|word| {
         matches!(
             *word,
-            "documentation" | "docs" | "help" | "manual" | "readme"
+            "documentation" | "docs" | "help" | "manual" | "readme" | "review"
         )
-    }) || words.windows(2).any(|words| words == ["read", "me"])
+    }) || words
+        .windows(2)
+        .any(|words| matches!(words, ["read", "me"] | ["order", "form"]))
 }
 
 fn is_registration_executable(name: &str) -> bool {
@@ -4661,6 +4663,33 @@ mod tests {
                 selected.expect("expected an executable candidate").name,
                 "Game Folder/Game Demo"
             );
+        }
+    }
+
+    #[test]
+    fn executable_selection_prefers_demo_game_over_review_and_order_form() {
+        let game_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let viewer_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 256]);
+
+        for viewer_name in ["Super Mines Review", "Order Form"] {
+            for viewer_first in [false, true] {
+                let mut selected = None;
+                let mut candidates = [
+                    ("Game Folder/Game Demo", &game_rsrc),
+                    (viewer_name, &viewer_rsrc),
+                ];
+                if viewer_first {
+                    candidates.reverse();
+                }
+                for (name, rsrc) in candidates {
+                    maybe_select_executable(&mut selected, name, &[], rsrc, true, 0, *b"GAME", 1);
+                }
+
+                assert_eq!(
+                    selected.expect("expected an executable candidate").name,
+                    "Game Folder/Game Demo"
+                );
+            }
         }
     }
 
