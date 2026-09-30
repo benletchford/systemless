@@ -34,6 +34,11 @@ pub(super) fn dispatch_math_import(
             cpu.fpr[1] = value.cos().to_bits();
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::MathRound => {
+            let value = f64::from_bits(cpu.fpr[1]);
+            cpu.fpr[1] = value.round().to_bits();
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::MathAsin => {
             // Inside Macintosh: PowerPC Numerics (1994), pp. 10-34--10-35:
             // asin returns the arc sine in radians through the floating-point
