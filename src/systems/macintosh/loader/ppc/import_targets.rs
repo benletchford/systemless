@@ -3417,11 +3417,18 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "ModalDialog",
         ) => PpcImportDispatcherTarget::ModalDialog,
-        ("InterfaceLib", "SetControlTitle") | ("InterfaceLib", "SetCTitle") => {
-            PpcImportDispatcherTarget::SetControlTitle
-        }
-        ("InterfaceLib", "SetControlValue") => PpcImportDispatcherTarget::SetControlValue,
-        ("InterfaceLib", "HiliteControl") => PpcImportDispatcherTarget::HiliteControl,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetControlTitle" | "setcontroltitle" | "SetCTitle" | "setctitle",
+        ) => PpcImportDispatcherTarget::SetControlTitle,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetControlValue" | "setcontrolvalue" | "SetCtlValue" | "setctlvalue",
+        ) => PpcImportDispatcherTarget::SetControlValue,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "HiliteControl" | "hilitecontrol",
+        ) => PpcImportDispatcherTarget::HiliteControl,
         ("InterfaceLib", "InitGraf") => PpcImportDispatcherTarget::InitGraf,
         ("InterfaceLib", "InitFonts") => PpcImportDispatcherTarget::InitFonts,
         (
@@ -4008,24 +4015,40 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "FindControl") => {
             PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::FindControl)
         }
-        ("InterfaceLib", "GetControlMaximum") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMaximum)
-        }
-        ("InterfaceLib", "GetControlAction") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlAction)
-        }
-        ("InterfaceLib", "GetControlReference") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlReference)
-        }
-        ("InterfaceLib", "GetControlMinimum") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMinimum)
-        }
-        ("InterfaceLib", "GetControlTitle") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlTitle)
-        }
-        ("InterfaceLib", "GetControlValue") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlValue)
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlMaximum"
+                | "getcontrolmaximum"
+                | "GetCtlMax"
+                | "getctlmax"
+                | "GetControlMax"
+                | "getcontrolmax",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMaximum),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlAction" | "getcontrolaction",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlAction),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlReference" | "getcontrolreference" | "GetCRefCon" | "getcrefcon",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlReference),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlMinimum"
+                | "getcontrolminimum"
+                | "GetCtlMin"
+                | "getctlmin"
+                | "GetControlMin"
+                | "getcontrolmin",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMinimum),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlTitle" | "getcontroltitle" | "GetCTitle" | "getctitle",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlTitle),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlValue" | "getcontrolvalue" | "GetCtlValue" | "getctlvalue",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlValue),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetNewControl" | "getnewcontrol",
@@ -4046,18 +4069,32 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "NewControl" | "newcontrol",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl),
-        ("InterfaceLib", "SetControlMaximum") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMaximum)
-        }
-        ("InterfaceLib", "SetControlAction") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlAction)
-        }
-        ("InterfaceLib", "SetControlReference") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlReference)
-        }
-        ("InterfaceLib", "SetControlMinimum") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMinimum)
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetControlMaximum"
+                | "setcontrolmaximum"
+                | "SetCtlMax"
+                | "setctlmax"
+                | "SetControlMax"
+                | "setcontrolmax",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMaximum),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetControlAction" | "setcontrolaction",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlAction),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetControlReference" | "setcontrolreference" | "SetCRefCon" | "setcrefcon",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlReference),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetControlMinimum"
+                | "setcontrolminimum"
+                | "SetCtlMin"
+                | "setctlmin"
+                | "SetControlMin"
+                | "setcontrolmin",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMinimum),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "ShowControl" | "showcontrol",

@@ -1664,4 +1664,428 @@ fn control_display_and_geometry_commands_dispatch_with_canonical_evaluation() {
     }
 }
 
+#[test]
+fn import_bindings_classify_control_values_ranges_and_state_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // SetControlValue / SetCtlValue
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetControlValue"),
+            PpcImportDispatcherTarget::SetControlValue
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setcontrolvalue"),
+            PpcImportDispatcherTarget::SetControlValue
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetCtlValue"),
+            PpcImportDispatcherTarget::SetControlValue
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setctlvalue"),
+            PpcImportDispatcherTarget::SetControlValue
+        );
+
+        // GetControlValue / GetCtlValue
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetControlValue"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlValue)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getcontrolvalue"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlValue)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetCtlValue"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlValue)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getctlvalue"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlValue)
+        );
+
+        // SetControlMinimum / SetCtlMin
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetControlMinimum"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMinimum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setcontrolminimum"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMinimum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetCtlMin"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMinimum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setctlmin"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMinimum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetControlMin"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMinimum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setcontrolmin"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMinimum)
+        );
+
+        // GetControlMinimum / GetCtlMin
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetControlMinimum"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMinimum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getcontrolminimum"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMinimum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetCtlMin"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMinimum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getctlmin"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMinimum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetControlMin"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMinimum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getcontrolmin"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMinimum)
+        );
+
+        // SetControlMaximum / SetCtlMax
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetControlMaximum"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMaximum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setcontrolmaximum"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMaximum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetCtlMax"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMaximum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setctlmax"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMaximum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetControlMax"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMaximum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setcontrolmax"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMaximum)
+        );
+
+        // GetControlMaximum / GetCtlMax
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetControlMaximum"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMaximum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getcontrolmaximum"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMaximum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetCtlMax"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMaximum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getctlmax"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMaximum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetControlMax"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMaximum)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getcontrolmax"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMaximum)
+        );
+
+        // HiliteControl
+        assert_eq!(
+            dispatcher_target_for_import(lib, "HiliteControl"),
+            PpcImportDispatcherTarget::HiliteControl
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "hilitecontrol"),
+            PpcImportDispatcherTarget::HiliteControl
+        );
+
+        // SetControlAction
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetControlAction"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlAction)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setcontrolaction"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlAction)
+        );
+
+        // GetControlAction
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetControlAction"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlAction)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getcontrolaction"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlAction)
+        );
+
+        // SetControlReference / SetCRefCon
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetControlReference"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlReference)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setcontrolreference"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlReference)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetCRefCon"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlReference)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setcrefcon"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlReference)
+        );
+
+        // GetControlReference / GetCRefCon
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetControlReference"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlReference)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getcontrolreference"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlReference)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetCRefCon"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlReference)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getcrefcon"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlReference)
+        );
+
+        // SetControlTitle / SetCTitle
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetControlTitle"),
+            PpcImportDispatcherTarget::SetControlTitle
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setcontroltitle"),
+            PpcImportDispatcherTarget::SetControlTitle
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetCTitle"),
+            PpcImportDispatcherTarget::SetControlTitle
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setctitle"),
+            PpcImportDispatcherTarget::SetControlTitle
+        );
+
+        // GetControlTitle / GetCTitle
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetControlTitle"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlTitle)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getcontroltitle"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlTitle)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetCTitle"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlTitle)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getctitle"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlTitle)
+        );
+    }
+}
+
+#[test]
+fn control_values_ranges_and_state_commands_dispatch_with_canonical_evaluation() {
+    for lib in [b"InterfaceLib".as_slice(), b"AppearanceLib".as_slice(), b"CarbonLib".as_slice()] {
+        let pef = synthetic_pef_with_library_import(lib, b"SetControlValue");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let lib_str = std::str::from_utf8(lib).unwrap();
+
+        let mut last_mem_error = loaded.last_mem_error();
+        let handle = with_test_controls!(
+            loaded,
+            |controls| ppc_new_control_record_values(
+                None,
+                &mut loaded.memory,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                &mut last_mem_error,
+                test_handles!(loaded),
+                controls,
+                PPC_MAIN_GWORLD,
+                (10, 20, 40, 140),
+                b"OldTitle",
+                true,
+                5,
+                0,
+                10,
+                1,
+                0x1111_2222,
+            )
+        );
+        assert_ne!(handle, 0);
+        let ctrl_ptr = loaded.memory.read_u32_be(handle).unwrap();
+        assert_ne!(ctrl_ptr, 0);
+
+        // 1. SetControlMinimum(handle, 2)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlMinimum");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 2;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+
+        // GetControlMinimum(handle) -> 2
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlMinimum");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 2);
+
+        // 2. SetControlMaximum(handle, 20)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlMaximum");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 20;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+
+        // GetControlMaximum(handle) -> 20
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlMaximum");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 20);
+
+        // 3. SetControlValue(handle, 15)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlValue");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 15;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+
+        // GetControlValue(handle) -> 15
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlValue");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 15);
+
+        // 4. SetControlReference(handle, 0xcafe_babe)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlReference");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 0xcafe_babe;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+
+        // GetControlReference(handle) -> 0xcafe_babe
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlReference");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0xcafe_babe);
+
+        // 5. SetControlAction(handle, 0x5555_6666)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlAction");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 0x5555_6666;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+
+        // GetControlAction(handle) -> 0x5555_6666
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlAction");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0x5555_6666);
+
+        // 6. SetControlTitle(handle, "NewTitle")
+        let title_in = PPC_DATA_BASE + 0x2000;
+        let title_out = PPC_DATA_BASE + 0x2100;
+        loaded.memory.add_region(title_in, vec![0; 64]);
+        loaded.memory.add_region(title_out, vec![0; 64]);
+        write_ppc_pstring(&mut loaded.memory, title_in, b"NewTitle");
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlTitle");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = title_in;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+
+        // GetControlTitle(handle, title_out)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlTitle");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = title_out;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, title_out),
+            Some(b"NewTitle".to_vec())
+        );
+
+        // 7. HiliteControl(handle, 255)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "HiliteControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 255;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u8(ctrl_ptr + 17), Some(255));
+    }
+}
+
+
 
