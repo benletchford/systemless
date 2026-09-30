@@ -60,6 +60,7 @@ artifacts:
     notes: >-
       Unchanged 235,125-byte StuffIt archive, SHA-256
       75c545953c0d685361b7ec39b8cc90ddce84ccca6fe1b415c4ea178ce2e68a05.
+      The promoted public asset was fetched back and matched this hash.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -80,6 +81,7 @@ artifacts:
       408-by-313 direct Chrome capture of the board and tools after a tile slide. PNG
       SHA-256 65f39223d9dc77306484c4705031f15f7d07ddf56ba559c7027a649a776192ad, 67,011
       bytes.
+      The promoted public asset was fetched back and matched this hash.
 references:
 - https://classicmacdemos.com/shell-game
 - https://static.classicmacdemos.com/demos/shell-game/README.txt
