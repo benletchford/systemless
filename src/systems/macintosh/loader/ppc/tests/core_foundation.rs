@@ -2,6 +2,76 @@ use super::*;
 use crate::process_context::ProcessVfsFileRecord;
 
 #[test]
+fn classic_cfbundle_load_executable_rejects_mach_o_code() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "CFBundleLoadExecutable"),
+        PpcImportDispatcherTarget::CfBundleLoadExecutable
+    );
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"CFBundleLoadExecutable")).unwrap();
+    loaded.set_launched_app_path("Demo.app/Contents/MacOSClassic/Demo");
+    loaded.seed_vfs_files_and_resources(
+        vec![
+            ProcessVfsFileRecord {
+                path: "Demo.app/Contents/Frameworks/Input.bundle/Contents/Info.plist"
+                    .to_string(),
+                data: b"<plist><dict><key>CFBundleExecutable</key><string>libInput.dylib</string></dict></plist>"
+                    .to_vec()
+                    .into(),
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                dirty: false,
+            },
+            ProcessVfsFileRecord {
+                path: "Demo.app/Contents/Frameworks/Input.bundle/Contents/MacOS/libInput.dylib"
+                    .to_string(),
+                data: vec![0xfe, 0xed, 0xfa, 0xce, 0, 0, 0, 18].into(),
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                dirty: false,
+            },
+        ],
+        vec![],
+        vec![],
+    );
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfBundleGetMainBundle);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfBundleCopyPrivateFrameworksUrl,
+    );
+    let frameworks = loaded.cpu.gpr[3];
+    let source = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(source, vec![0; 64]);
+    loaded.memory.write_bytes(source, b"Input.bundle\0").unwrap();
+    loaded.cpu.gpr[3] = source;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfStringMakeConstantString,
+    );
+    let component = loaded.cpu.gpr[3];
+    loaded.cpu.gpr[4] = frameworks;
+    loaded.cpu.gpr[5] = component;
+    loaded.cpu.gpr[6] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfUrlCreateCopyAppendingPathComponent,
+    );
+    let bundle_url = loaded.cpu.gpr[3];
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = bundle_url;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfBundleCreate);
+    let bundle = loaded.cpu.gpr[3];
+    assert_ne!(bundle, 0);
+
+    loaded.cpu.gpr[3] = bundle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfBundleLoadExecutable);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
 fn carbon_cfbundle_create_opens_nested_bundle_and_registers_identifier() {
     assert_eq!(
         dispatcher_target_for_import("CarbonLib", "CFBundleCreate"),

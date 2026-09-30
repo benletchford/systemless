@@ -294,6 +294,7 @@ pub enum PpcAppleEventCompatibilityOperation {
     GetNthPtr,
     GetParamDesc,
     GetParamPtr,
+    SizeOfParam,
     PutParamDesc,
     PutParamPtr,
     Send,
@@ -492,6 +493,32 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
                 if cpu.gpr[9] != 0 {
                     let _ = memory.write_u32_be(cpu.gpr[9], 0);
                 }
+                PPC_ERR_AE_DESC_NOT_FOUND
+            }
+        }
+        PpcAppleEventCompatibilityOperation::SizeOfParam => {
+            // Inside Macintosh: Interapplication Communication (1993),
+            // 4-89: report the stored parameter's descriptor type and
+            // data length without coercing or copying its data.
+            let value = apple_events
+                .descriptors
+                .events
+                .get(&cpu.gpr[3])
+                .and_then(|event| event.params.get(&cpu.gpr[4]).cloned())
+                .or_else(|| {
+                    ppc_ae_descriptor(memory, &apple_events.descriptors, cpu.gpr[3])
+                        .and_then(|descriptor| descriptor.fields.get(&cpu.gpr[4]).cloned())
+                });
+            if let Some(value) = value {
+                let size = u32::try_from(value.data.len()).unwrap_or(u32::MAX);
+                if cpu.gpr[5] != 0 {
+                    let _ = memory.write_u32_be(cpu.gpr[5], value.desc_type);
+                }
+                if cpu.gpr[6] != 0 {
+                    let _ = memory.write_u32_be(cpu.gpr[6], size);
+                }
+                PPC_NO_ERR
+            } else {
                 PPC_ERR_AE_DESC_NOT_FOUND
             }
         }

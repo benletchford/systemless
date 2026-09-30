@@ -1000,6 +1000,10 @@ fn hle_import_runner_fast_forwards_microseconds_poll_loops() {
 
 #[test]
 fn driver_services_uptime_uses_deterministic_virtual_clock() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "UpTime"),
+        PpcImportDispatcherTarget::Microseconds
+    );
     let pef = synthetic_pef_with_library_import(b"DriverServicesLib", b"UpTime");
     let mut loaded = load_pef_application(&pef).unwrap();
     let time_ptr = PPC_DATA_BASE + 0x1000;
@@ -1020,6 +1024,10 @@ fn driver_services_uptime_uses_deterministic_virtual_clock() {
 
 #[test]
 fn driver_services_absolute_time_converts_to_nanoseconds() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "AbsoluteToNanoseconds"),
+        PpcImportDispatcherTarget::AbsoluteToNanoseconds
+    );
     let pef = synthetic_pef_with_library_import(b"DriverServicesLib", b"AbsoluteToNanoseconds");
     let mut loaded = load_pef_application(&pef).unwrap();
     let output = PPC_DATA_BASE + 0x1000;

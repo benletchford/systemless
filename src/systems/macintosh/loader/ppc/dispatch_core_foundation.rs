@@ -198,15 +198,23 @@ fn bundle_info<'a>(bundle_path: &str, files: &'a ProcessVfsFileRecords) -> Optio
 }
 
 fn bundle_identifier(bundle_path: &str, files: &ProcessVfsFileRecords) -> Option<String> {
-    let bytes = bundle_info(bundle_path, files)?;
-    let text = std::str::from_utf8(bytes).ok()?;
-    let key = text.find("<key>CFBundleIdentifier</key>")?;
-    let following = &text[key + "<key>CFBundleIdentifier</key>".len()..];
+    bundle_info_string(bundle_path, files, "CFBundleIdentifier")
+}
+
+fn bundle_info_string(
+    bundle_path: &str,
+    files: &ProcessVfsFileRecords,
+    key_name: &str,
+) -> Option<String> {
+    let text = std::str::from_utf8(bundle_info(bundle_path, files)?).ok()?;
+    let key_tag = format!("<key>{key_name}</key>");
+    let key = text.find(&key_tag)?;
+    let following = &text[key + key_tag.len()..];
     let start = following.find("<string>")? + "<string>".len();
     let value = &following[start..];
     let end = value.find("</string>")?;
-    let identifier = value[..end].trim();
-    (!identifier.is_empty() && !identifier.contains('&')).then(|| identifier.to_string())
+    let result = value[..end].trim();
+    (!result.is_empty() && !result.contains('&')).then(|| result.to_string())
 }
 
 fn main_bundle_identifier(path: &str, files: &ProcessVfsFileRecords) -> Option<String> {
@@ -681,6 +689,42 @@ pub(super) fn dispatch_core_foundation_import(
                 },
             );
             Some(PpcImportAction::Return(reference))
+        }
+        PpcImportDispatcherTarget::CfBundleLoadExecutable => {
+            // CFBundleLoadExecutable returns true only after loading and
+            // dynamically linking executable code. The classic CFM guest
+            // cannot load an OS X Mach-O image, even when it shares the PPC
+            // CPU type. Apple Core Foundation CFBundle Reference (2007),
+            // "CFBundleLoadExecutable"; Carbon Porting Guide (2002),
+            // "Preparing Your Code in OS X".
+            let Some(bundle) = state.bundles.get(&cpu.gpr[3]).or_else(|| {
+                state
+                    .main_bundle
+                    .as_ref()
+                    .filter(|bundle| bundle.reference == cpu.gpr[3])
+            }) else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let Some(executable) = bundle_info_string(&bundle.path, vfs_files, "CFBundleExecutable")
+                .filter(|name| !name.contains(['/', ':']) && name != "." && name != "..")
+            else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let executable_path = format!("{}/Contents/MacOS/{executable}", bundle.path);
+            let Some(bytes) = vfs_files
+                .iter()
+                .find(|file| file.path.eq_ignore_ascii_case(&executable_path))
+                .map(|file| file.data.as_ref())
+            else {
+                return Some(PpcImportAction::Return(0));
+            };
+            if matches!(
+                bytes.get(..4),
+                Some([0xfe, 0xed, 0xfa, 0xce] | [0xce, 0xfa, 0xed, 0xfe] | [0xca, 0xfe, 0xba, 0xbe])
+            ) {
+                return Some(PpcImportAction::Return(0));
+            }
+            None
         }
         PpcImportDispatcherTarget::CfBundleGetBundleWithIdentifier => {
             // CFBundleGetBundleWithIdentifier only searches bundle objects

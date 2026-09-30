@@ -312,6 +312,7 @@ pub enum PpcImportDispatcherTarget {
     LMGetSysMap,
     LMGetCurApRefNum,
     GetVCBQHdr,
+    GetDrvQHdr,
     LMGetSysEvtMask,
     LMSetSysEvtMask,
     LMGetDefltStack,
@@ -780,6 +781,7 @@ pub enum PpcImportDispatcherTarget {
     CfBundleCopyPrivateFrameworksUrl,
     CfUrlCreateCopyAppendingPathComponent,
     CfBundleCreate,
+    CfBundleLoadExecutable,
     UpperText,
     GetCurrentThread,
     MpCreateSemaphore,
@@ -2671,6 +2673,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LMGetSysMap") => PpcImportDispatcherTarget::LMGetSysMap,
         ("InterfaceLib", "LMGetCurApRefNum") => PpcImportDispatcherTarget::LMGetCurApRefNum,
         ("InterfaceLib", "GetVCBQHdr") => PpcImportDispatcherTarget::GetVCBQHdr,
+        ("InterfaceLib", "GetDrvQHdr") => PpcImportDispatcherTarget::GetDrvQHdr,
         ("InterfaceLib", "LMGetSysEvtMask") => PpcImportDispatcherTarget::LMGetSysEvtMask,
         ("InterfaceLib", "LMSetSysEvtMask") => PpcImportDispatcherTarget::LMSetSysEvtMask,
         ("InterfaceLib", "LMGetDefltStack") => PpcImportDispatcherTarget::LMGetDefltStack,
@@ -3656,8 +3659,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "Microseconds") => PpcImportDispatcherTarget::Microseconds,
         // AbsoluteTime is hardware-relative. Use the virtual microsecond
         // clock as its unit so this struct-returning call stays deterministic.
-        ("DriverServicesLib", "UpTime") => PpcImportDispatcherTarget::Microseconds,
-        ("DriverServicesLib", "AbsoluteToNanoseconds") => {
+        ("InterfaceLib" | "DriverServicesLib", "UpTime") => {
+            PpcImportDispatcherTarget::Microseconds
+        }
+        ("InterfaceLib" | "DriverServicesLib", "AbsoluteToNanoseconds") => {
             PpcImportDispatcherTarget::AbsoluteToNanoseconds
         }
         ("InterfaceLib", "LMGetTicks") => PpcImportDispatcherTarget::TickCount,
@@ -3729,6 +3734,9 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::CfUrlCreateCopyAppendingPathComponent
         }
         ("InterfaceLib", "CFBundleCreate") => PpcImportDispatcherTarget::CfBundleCreate,
+        ("InterfaceLib", "CFBundleLoadExecutable") => {
+            PpcImportDispatcherTarget::CfBundleLoadExecutable
+        }
         ("InterfaceLib", "UpperText") => PpcImportDispatcherTarget::UpperText,
         // Native Thread Manager exports also live in ThreadsLib.
         // Inside Macintosh: Thread Manager (1999), pp. 15, 62.
@@ -4375,6 +4383,9 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         ("InterfaceLib", "AEGetParamPtr") => PpcImportDispatcherTarget::AppleEventCompatibility(
             PpcAppleEventCompatibilityOperation::GetParamPtr,
+        ),
+        ("InterfaceLib", "AESizeOfParam") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::SizeOfParam,
         ),
         ("InterfaceLib", "AEPutParamDesc") => PpcImportDispatcherTarget::AppleEventCompatibility(
             PpcAppleEventCompatibilityOperation::PutParamDesc,

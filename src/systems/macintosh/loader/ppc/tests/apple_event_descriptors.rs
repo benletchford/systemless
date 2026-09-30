@@ -36,6 +36,10 @@ fn apple_event_compatibility_imports_pre_resolve_to_typed_operations() {
             PpcAppleEventCompatibilityOperation::GetParamPtr,
         ),
         (
+            "AESizeOfParam",
+            PpcAppleEventCompatibilityOperation::SizeOfParam,
+        ),
+        (
             "AEPutParamDesc",
             PpcAppleEventCompatibilityOperation::PutParamDesc,
         ),
@@ -150,6 +154,7 @@ fn apple_event_descriptor_handles_are_immediately_process_owned_and_cross_isa_vi
     );
 
     assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_NO_ERR);
+
     let handle = native.memory.read_u32_be(descriptor + 4).unwrap();
     let allocation = context
         .memory_manager_mut()
@@ -299,6 +304,33 @@ fn native_apple_event_parameters_round_trip_through_process_semantics() {
         ),
     );
     assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_NO_ERR);
+
+    native.cpu.gpr[3] = event_desc;
+    native.cpu.gpr[4] = keyword;
+    native.cpu.gpr[5] = scratch + 0x70;
+    native.cpu.gpr[6] = scratch + 0x74;
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::SizeOfParam,
+        ),
+    );
+    assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_NO_ERR);
+    assert_eq!(
+        native.memory.read_u32_be(scratch + 0x70),
+        Some(u32::from_be_bytes(*b"TEXT"))
+    );
+    assert_eq!(native.memory.read_u32_be(scratch + 0x74), Some(12));
+
+    native.cpu.gpr[3] = event_desc;
+    native.cpu.gpr[4] = u32::from_be_bytes(*b"none");
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::SizeOfParam,
+        ),
+    );
+    assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_ERR_AE_DESC_NOT_FOUND);
 
     native.cpu.gpr[3] = event_desc;
     native.cpu.gpr[4] = keyword;

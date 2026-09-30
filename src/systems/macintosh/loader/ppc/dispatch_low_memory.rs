@@ -60,6 +60,13 @@ pub(super) fn dispatch_low_memory_import(
                 crate::memory::globals::addr::VCB_Q_HDR,
             ))
         }
+        PpcImportDispatcherTarget::GetDrvQHdr => {
+            // Inside Macintosh: Files (1992), 2-236: GetDrvQHdr returns
+            // the address of the drive queue header in low memory.
+            Some(PpcImportAction::Return(
+                crate::memory::globals::addr::DRV_Q_HDR,
+            ))
+        }
         PpcImportDispatcherTarget::LMGetSysEvtMask => Some(PpcImportAction::Return(
             u32::from(memory.read_u16_be(crate::memory::globals::addr::SYS_EVT_MASK)
                 .unwrap_or(crate::memory::globals::DEFAULT_SYS_EVT_MASK)),
