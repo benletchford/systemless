@@ -58,6 +58,7 @@ artifacts:
     notes: >-
       Original 222,937-byte StuffIt archive, SHA-256
       bc947326f58026703be05e9fa99b9ab7f3af5b0f3360b174eac61f97033a13e3.
+      The launch splash credits Glenn Seemann, Varcon Systems, and MacSoft.
 - id: gameplay-screenshot
   role: screenshot
   format: png
