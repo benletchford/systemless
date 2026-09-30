@@ -4763,42 +4763,184 @@ fn menu_tracking_rejects_disabled_items_and_dividers_and_clears_cancellation() {
 
 #[test]
 fn import_bindings_classify_menu_bar_imports() {
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "GetMenuBar"),
-        PpcImportDispatcherTarget::GetMenuBar
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "GetNewMBar"),
-        PpcImportDispatcherTarget::GetNewMBar
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "ClearMenuBar"),
-        PpcImportDispatcherTarget::ClearMenuBar
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "SetMenuBar"),
-        PpcImportDispatcherTarget::SetMenuBar
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "GetMenuHandle"),
-        PpcImportDispatcherTarget::GetMenuHandle
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "DrawMenuBar"),
-        PpcImportDispatcherTarget::DrawMenuBar
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "FlashMenuBar"),
-        PpcImportDispatcherTarget::FlashMenuBar
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "SetMenuFlash"),
-        PpcImportDispatcherTarget::SetMenuFlash
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "LMGetMenuFlash"),
-        PpcImportDispatcherTarget::LMGetMenuFlash
-    );
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetMenuBar"),
+            PpcImportDispatcherTarget::GetMenuBar
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getmenubar"),
+            PpcImportDispatcherTarget::GetMenuBar
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetNewMBar"),
+            PpcImportDispatcherTarget::GetNewMBar
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getnewmbar"),
+            PpcImportDispatcherTarget::GetNewMBar
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "ClearMenuBar"),
+            PpcImportDispatcherTarget::ClearMenuBar
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "clearmenubar"),
+            PpcImportDispatcherTarget::ClearMenuBar
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetMenuBar"),
+            PpcImportDispatcherTarget::SetMenuBar
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setmenubar"),
+            PpcImportDispatcherTarget::SetMenuBar
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetMenuHandle"),
+            PpcImportDispatcherTarget::GetMenuHandle
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getmenuhandle"),
+            PpcImportDispatcherTarget::GetMenuHandle
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetMHandle"),
+            PpcImportDispatcherTarget::GetMenuHandle
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getmhandle"),
+            PpcImportDispatcherTarget::GetMenuHandle
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "DrawMenuBar"),
+            PpcImportDispatcherTarget::DrawMenuBar
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "drawmenubar"),
+            PpcImportDispatcherTarget::DrawMenuBar
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "FlashMenuBar"),
+            PpcImportDispatcherTarget::FlashMenuBar
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "flashmenubar"),
+            PpcImportDispatcherTarget::FlashMenuBar
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetMenuFlash"),
+            PpcImportDispatcherTarget::SetMenuFlash
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setmenuflash"),
+            PpcImportDispatcherTarget::SetMenuFlash
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "LMSetMenuFlash"),
+            PpcImportDispatcherTarget::SetMenuFlash
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "lmsetmenuflash"),
+            PpcImportDispatcherTarget::SetMenuFlash
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "LMGetMenuFlash"),
+            PpcImportDispatcherTarget::LMGetMenuFlash
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "lmgetmenuflash"),
+            PpcImportDispatcherTarget::LMGetMenuFlash
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "LMGetMenuList"),
+            PpcImportDispatcherTarget::LMGetMenuList
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "lmgetmenulist"),
+            PpcImportDispatcherTarget::LMGetMenuList
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "LMSetMenuHook"),
+            PpcImportDispatcherTarget::LMSetMenuHook
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "lmsetmenuhook"),
+            PpcImportDispatcherTarget::LMSetMenuHook
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "InvalMenuBar"),
+            PpcImportDispatcherTarget::InvalMenuBar
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "invalmenubar"),
+            PpcImportDispatcherTarget::InvalMenuBar
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "HiliteMenu"),
+            PpcImportDispatcherTarget::HiliteMenu
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "hilitemenu"),
+            PpcImportDispatcherTarget::HiliteMenu
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "HMGetHelpMenuHandle"),
+            PpcImportDispatcherTarget::HMGetHelpMenuHandle
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "hmgethelpmenuhandle"),
+            PpcImportDispatcherTarget::HMGetHelpMenuHandle
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "HMGetBalloons"),
+            PpcImportDispatcherTarget::HMGetBalloons
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "hmgetballoons"),
+            PpcImportDispatcherTarget::HMGetBalloons
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "InitMenus"),
+            PpcImportDispatcherTarget::InitMenus
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "initmenus"),
+            PpcImportDispatcherTarget::InitMenus
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetMBarHeight"),
+            PpcImportDispatcherTarget::GetMBarHeight
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getmbarheight"),
+            PpcImportDispatcherTarget::GetMBarHeight
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "LMGetMBarHeight"),
+            PpcImportDispatcherTarget::GetMBarHeight
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "lmgetmbarheight"),
+            PpcImportDispatcherTarget::GetMBarHeight
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetMBarHeight"),
+            PpcImportDispatcherTarget::SetMBarHeight
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setmbarheight"),
+            PpcImportDispatcherTarget::SetMBarHeight
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "LMSetMBarHeight"),
+            PpcImportDispatcherTarget::SetMBarHeight
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "lmsetmbarheight"),
+            PpcImportDispatcherTarget::SetMBarHeight
+        );
+    }
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "LMGetDefltStack"),
         PpcImportDispatcherTarget::LMGetDefltStack
@@ -4806,14 +4948,6 @@ fn import_bindings_classify_menu_bar_imports() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "LMGetCurStackBase"),
         PpcImportDispatcherTarget::LMGetCurStackBase
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "LMSetMenuFlash"),
-        PpcImportDispatcherTarget::SetMenuFlash
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "InvalMenuBar"),
-        PpcImportDispatcherTarget::InvalMenuBar
     );
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "AppendResMenu"),
@@ -4826,10 +4960,6 @@ fn import_bindings_classify_menu_bar_imports() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "InsertResMenu"),
         PpcImportDispatcherTarget::InsertResMenu
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "HMGetHelpMenuHandle"),
-        PpcImportDispatcherTarget::HMGetHelpMenuHandle
     );
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "MenuChoice"),
@@ -7988,5 +8118,199 @@ fn carbon_menu_item_accessors_bind_weak_imports() {
         let probe = loaded.run_with_hle_imports(64);
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
+    }
+}
+
+#[test]
+fn menu_bar_lifecycle_and_lowmem_commands_dispatch_with_canonical_evaluation() {
+    for lib in [b"CarbonLib".as_slice(), b"AppearanceLib".as_slice()] {
+        // 1. InitMenus
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"InitMenus");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert!(loaded.toolbox_startup.menus_initialized);
+            assert_ne!(ppc_current_menu_list(&mut loaded.memory), 0);
+            assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(0));
+        }
+
+        // 2. InvalMenuBar & DrawMenuBar
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"InvalMenuBar");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert!(loaded.event_queue.menu_bar_is_invalid());
+
+            let pef = synthetic_pef_with_library_import(lib, b"DrawMenuBar");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.event_queue.invalidate_menu_bar();
+            assert!(loaded.event_queue.menu_bar_is_invalid());
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert!(!loaded.event_queue.menu_bar_is_invalid());
+        }
+
+        // 3. GetMBarHeight & SetMBarHeight
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"SetMBarHeight");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 25;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR), Some(25));
+
+            let pef = synthetic_pef_with_library_import(lib, b"GetMBarHeight");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 25).unwrap();
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 25);
+
+            let pef = synthetic_pef_with_library_import(lib, b"LMGetMBarHeight");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 22).unwrap();
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 22);
+
+            let pef = synthetic_pef_with_library_import(lib, b"LMSetMBarHeight");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 30;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR), Some(30));
+        }
+
+        // 4. SetMenuFlash, LMSetMenuFlash & LMGetMenuFlash
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"SetMenuFlash");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 5;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(
+                loaded.memory.read_u16_be(crate::memory::globals::addr::MENU_FLASH),
+                Some(5)
+            );
+
+            let pef = synthetic_pef_with_library_import(lib, b"LMGetMenuFlash");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded
+                .memory
+                .write_u16_be(crate::memory::globals::addr::MENU_FLASH, 7)
+                .unwrap();
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 7);
+
+            let pef = synthetic_pef_with_library_import(lib, b"LMSetMenuFlash");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 2;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(
+                loaded.memory.read_u16_be(crate::memory::globals::addr::MENU_FLASH),
+                Some(2)
+            );
+        }
+
+        // 5. LMGetMenuList
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"LMGetMenuList");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            ppc_set_current_menu_list(&mut loaded.memory, 0x55443322);
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 0x55443322);
+        }
+
+        // 6. LMSetMenuHook
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"LMSetMenuHook");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 0x88776655;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.memory.read_u32_be(0x0a30), Some(0x88776655));
+        }
+
+        // 7. GetMenuBar, ClearMenuBar & SetMenuBar
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"GetMenuBar");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            let snapshot = loaded.cpu.gpr[3];
+            assert_ne!(snapshot, 0);
+
+            let pef = synthetic_pef_with_library_import(lib, b"ClearMenuBar");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+
+            let pef = synthetic_pef_with_library_import(lib, b"SetMenuBar");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = snapshot;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+        }
+
+        // 8. GetMenuHandle & GetMHandle
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"GetMenuHandle");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 101, b"\x04Test", b"");
+            loaded.cpu.gpr[3] = 101;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], menu);
+
+            let pef = synthetic_pef_with_library_import(lib, b"GetMHandle");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let menu = install_test_menu(&mut loaded, 0x60000, 102, b"\x04Test", b"");
+            loaded.cpu.gpr[3] = 102;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], menu);
+
+            // Absent ID returns 0
+            let pef = synthetic_pef_with_library_import(lib, b"GetMHandle");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 999;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+
+        // 9. HiliteMenu & FlashMenuBar
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"HiliteMenu");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+
+            let pef = synthetic_pef_with_library_import(lib, b"FlashMenuBar");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+        }
+
+        // 10. HMGetHelpMenuHandle & HMGetBalloons
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"HMGetHelpMenuHandle");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+
+            let pef = synthetic_pef_with_library_import(lib, b"HMGetBalloons");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+        }
     }
 }

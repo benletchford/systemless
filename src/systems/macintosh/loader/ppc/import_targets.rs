@@ -2562,11 +2562,26 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "SetItemMark") => PpcImportDispatcherTarget::SetItemMark,
         ("InterfaceLib", "CheckItem") => PpcImportDispatcherTarget::CheckItem,
-        ("InterfaceLib", "GetMenuBar") => PpcImportDispatcherTarget::GetMenuBar,
-        ("InterfaceLib", "GetNewMBar") => PpcImportDispatcherTarget::GetNewMBar,
-        ("InterfaceLib", "LMGetMenuList") => PpcImportDispatcherTarget::LMGetMenuList,
-        ("InterfaceLib", "LMSetMenuHook") => PpcImportDispatcherTarget::LMSetMenuHook,
-        ("InterfaceLib", "LMGetMenuFlash") => PpcImportDispatcherTarget::LMGetMenuFlash,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetMenuBar" | "getmenubar",
+        ) => PpcImportDispatcherTarget::GetMenuBar,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetNewMBar" | "getnewmbar",
+        ) => PpcImportDispatcherTarget::GetNewMBar,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "LMGetMenuList" | "lmgetmenulist",
+        ) => PpcImportDispatcherTarget::LMGetMenuList,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "LMSetMenuHook" | "lmsetmenuhook",
+        ) => PpcImportDispatcherTarget::LMSetMenuHook,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "LMGetMenuFlash" | "lmgetmenuflash",
+        ) => PpcImportDispatcherTarget::LMGetMenuFlash,
         ("InterfaceLib", "LMGetPaintWhite") => PpcImportDispatcherTarget::LMGetPaintWhite,
         ("InterfaceLib", "LMGetSysMap") => PpcImportDispatcherTarget::LMGetSysMap,
         ("InterfaceLib", "LMGetCurApRefNum") => PpcImportDispatcherTarget::LMGetCurApRefNum,
@@ -2620,22 +2635,50 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "LMGetDlgFont" | "lmgetdlgfont",
         ) => PpcImportDispatcherTarget::LMGetDlgFont,
-        ("InterfaceLib", "LMSetMenuFlash") | ("InterfaceLib", "SetMenuFlash") => {
-            PpcImportDispatcherTarget::SetMenuFlash
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "LMSetMenuFlash" | "lmsetmenuflash" | "SetMenuFlash" | "setmenuflash",
+        ) => PpcImportDispatcherTarget::SetMenuFlash,
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "ErrorSound",
         ) => PpcImportDispatcherTarget::ErrorSound,
-        ("InterfaceLib", "ClearMenuBar") => PpcImportDispatcherTarget::ClearMenuBar,
-        ("InterfaceLib", "SetMenuBar") => PpcImportDispatcherTarget::SetMenuBar,
-        ("InterfaceLib", "GetMenuHandle") => PpcImportDispatcherTarget::GetMenuHandle,
-        ("InterfaceLib", "DrawMenuBar") => PpcImportDispatcherTarget::DrawMenuBar,
-        ("InterfaceLib", "FlashMenuBar") => PpcImportDispatcherTarget::FlashMenuBar,
-        ("InterfaceLib", "HMGetHelpMenuHandle") => PpcImportDispatcherTarget::HMGetHelpMenuHandle,
-        ("InterfaceLib", "HMGetBalloons") => PpcImportDispatcherTarget::HMGetBalloons,
-        ("InterfaceLib", "HiliteMenu") => PpcImportDispatcherTarget::HiliteMenu,
-        ("InterfaceLib", "InvalMenuBar") => PpcImportDispatcherTarget::InvalMenuBar,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ClearMenuBar" | "clearmenubar",
+        ) => PpcImportDispatcherTarget::ClearMenuBar,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetMenuBar" | "setmenubar",
+        ) => PpcImportDispatcherTarget::SetMenuBar,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetMenuHandle" | "getmenuhandle" | "GetMHandle" | "getmhandle",
+        ) => PpcImportDispatcherTarget::GetMenuHandle,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "DrawMenuBar" | "drawmenubar",
+        ) => PpcImportDispatcherTarget::DrawMenuBar,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "FlashMenuBar" | "flashmenubar",
+        ) => PpcImportDispatcherTarget::FlashMenuBar,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "HMGetHelpMenuHandle" | "hmgethelpmenuhandle",
+        ) => PpcImportDispatcherTarget::HMGetHelpMenuHandle,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "HMGetBalloons" | "hmgetballoons",
+        ) => PpcImportDispatcherTarget::HMGetBalloons,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "HiliteMenu" | "hilitemenu",
+        ) => PpcImportDispatcherTarget::HiliteMenu,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "InvalMenuBar" | "invalmenubar",
+        ) => PpcImportDispatcherTarget::InvalMenuBar,
         ("InterfaceLib", "DrawGrowIcon") => PpcImportDispatcherTarget::DrawGrowIcon,
         ("InterfaceLib", "OpenCPicture") | ("InterfaceLib", "DebugStr") => {
             PpcImportDispatcherTarget::MenuNoop
@@ -2752,10 +2795,14 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetAppFont") => PpcImportDispatcherTarget::GetAppFont,
         ("InterfaceLib", "GetDefFontSize") => PpcImportDispatcherTarget::GetDefFontSize,
         ("InterfaceLib", "GetFontName") => PpcImportDispatcherTarget::GetFontName,
-        ("InterfaceLib", "GetMBarHeight") | ("InterfaceLib", "LMGetMBarHeight") => {
-            PpcImportDispatcherTarget::GetMBarHeight
-        }
-        ("InterfaceLib", "LMSetMBarHeight") => PpcImportDispatcherTarget::SetMBarHeight,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetMBarHeight" | "getmbarheight" | "LMGetMBarHeight" | "lmgetmbarheight",
+        ) => PpcImportDispatcherTarget::GetMBarHeight,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetMBarHeight" | "setmbarheight" | "LMSetMBarHeight" | "lmsetmbarheight",
+        ) => PpcImportDispatcherTarget::SetMBarHeight,
         ("InterfaceLib", "TestDeviceAttribute") => PpcImportDispatcherTarget::TestDeviceAttribute,
         ("InterfaceLib", "SetDeviceAttribute") => PpcImportDispatcherTarget::SetDeviceAttribute,
         ("InterfaceLib", "HasDepth") => PpcImportDispatcherTarget::HasDepth,
@@ -3156,7 +3203,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "InitGraf") => PpcImportDispatcherTarget::InitGraf,
         ("InterfaceLib", "InitFonts") => PpcImportDispatcherTarget::InitFonts,
         ("InterfaceLib", "InitWindows") => PpcImportDispatcherTarget::InitWindows,
-        ("InterfaceLib", "InitMenus") => PpcImportDispatcherTarget::InitMenus,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "InitMenus" | "initmenus",
+        ) => PpcImportDispatcherTarget::InitMenus,
         ("InterfaceLib", "TEInit") => PpcImportDispatcherTarget::TEInit,
         ("InterfaceLib", "TENew") => PpcImportDispatcherTarget::TENew,
         ("InterfaceLib", "TEStyleNew") => PpcImportDispatcherTarget::TEStyleNew,
