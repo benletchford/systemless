@@ -25,6 +25,9 @@ pub(super) struct GuiDriver {
     snapshot_screen_mode: Option<(u32, u32, u16, u16, u16)>,
     compact_cache: systemless::memory::CompactPresentationCache,
     compact_snapshot: Option<std::sync::Arc<systemless::memory::CompactPresentation>>,
+    /// Snapshots retired by later frames, kept for reuse once the presenter
+    /// and renderer have let go of them.
+    compact_spares: Vec<std::sync::Arc<systemless::memory::CompactPresentation>>,
     pub(super) runner: Option<FixtureRunner>,
     pub(super) debug_server: Option<debug_server::DebugServer>,
     pub(super) save_store: Option<DesktopSaveStore>,
@@ -59,6 +62,10 @@ pub(super) struct GuiDriver {
     ui_theme: UiThemeId,
 }
 
+/// Retired compact snapshots kept for reuse: the presenter holds the previous
+/// frame's and the renderer may still hold an older one.
+const COMPACT_SPARES: usize = 3;
+
 impl GuiDriver {
     pub(super) fn new(
         game_path: PathBuf,
@@ -89,6 +96,7 @@ impl GuiDriver {
             snapshot_screen_mode: None,
             compact_cache: Default::default(),
             compact_snapshot: None,
+            compact_spares: Vec::new(),
             runner: None,
             debug_server: None,
             save_store: None,
@@ -339,8 +347,15 @@ impl GuiDriver {
             {
                 Some(changed) => {
                     if changed || self.compact_snapshot.is_none() {
-                        self.compact_snapshot =
-                            Some(std::sync::Arc::new(self.compact_cache.frame().clone()));
+                        let snapshot = Self::next_compact_snapshot(
+                            self.compact_cache.frame(),
+                            &mut self.compact_spares,
+                        );
+                        if let Some(retired) = self.compact_snapshot.replace(snapshot) {
+                            if self.compact_spares.len() < COMPACT_SPARES {
+                                self.compact_spares.push(retired);
+                            }
+                        }
                     }
                     output.retained = self.compact_snapshot.clone();
                 }
@@ -383,6 +398,24 @@ impl GuiDriver {
         #[cfg(not(target_os = "macos"))]
         let _ = (capture_crop, learning_crop);
         true
+    }
+
+    /// A snapshot of the compact cache's frame. A spare no one else still
+    /// holds takes the frame in its existing buffers: exporting a new
+    /// multi-megabyte image every frame otherwise allocates it here and
+    /// frees the previous one once presented, and each such free returns
+    /// the pages to the system.
+    fn next_compact_snapshot(
+        frame: &systemless::memory::CompactPresentation,
+        spares: &mut Vec<std::sync::Arc<systemless::memory::CompactPresentation>>,
+    ) -> std::sync::Arc<systemless::memory::CompactPresentation> {
+        for index in 0..spares.len() {
+            if let Some(spare) = std::sync::Arc::get_mut(&mut spares[index]) {
+                spare.clone_from(frame);
+                return spares.swap_remove(index);
+            }
+        }
+        std::sync::Arc::new(frame.clone())
     }
 
     pub(super) fn sync_save_files(&mut self, force: bool) {
@@ -759,6 +792,55 @@ mod snapshot_tests {
         runner.bus_mut().fill_bytes(address, 32 * 32, 1);
         driver.runner = Some(runner);
         driver
+    }
+
+    /// A retired compact snapshot no one else holds takes the next frame in
+    /// place; one still held by a presented frame is left alone.
+    #[test]
+    fn compact_snapshots_reuse_only_released_spares() {
+        use std::sync::Arc;
+        use systemless::memory::CompactPresentation;
+        let mut driver = driver();
+        let stale = || CompactPresentation {
+            width: 9,
+            height: 9,
+            scale: 2,
+            cells: vec![7; 81],
+            detail: vec![5; 16],
+        };
+        *driver.compact_cache.frame_mut() = CompactPresentation {
+            width: 4,
+            height: 4,
+            scale: 4,
+            cells: (0..16).collect(),
+            detail: vec![0x0012_3456; 16],
+        };
+        let expected = driver.compact_cache.frame().clone();
+
+        let held = Arc::new(stale());
+        let presented = Arc::clone(&held);
+        driver.compact_spares.push(held);
+        let fresh = GuiDriver::next_compact_snapshot(
+            driver.compact_cache.frame(),
+            &mut driver.compact_spares,
+        );
+        assert!(
+            !Arc::ptr_eq(&fresh, &presented),
+            "a held spare is not reused"
+        );
+        assert_eq!(*presented, stale(), "and is not overwritten");
+        assert_eq!(*fresh, expected);
+        assert_eq!(driver.compact_spares.len(), 1);
+
+        drop(presented);
+        let released = Arc::as_ptr(&driver.compact_spares[0]);
+        let reused = GuiDriver::next_compact_snapshot(
+            driver.compact_cache.frame(),
+            &mut driver.compact_spares,
+        );
+        assert_eq!(Arc::as_ptr(&reused), released, "a released spare is reused");
+        assert_eq!(*reused, expected, "holding exactly the new frame");
+        assert!(driver.compact_spares.is_empty());
     }
 
     #[test]

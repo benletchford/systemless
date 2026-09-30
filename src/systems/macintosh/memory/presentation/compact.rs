@@ -6,13 +6,35 @@ use super::{screen_tiles_per_row, MacMemoryBus, Presentation, ScreenMark};
 /// A cell with bit 31 clear stores RGB in bits 0..23; with bit 31 set, bits
 /// 0..30 index its row-major scale × scale tile in `detail`. This is host
 /// presentation data, never guest memory or a source for guest CopyBits.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct CompactPresentation {
     pub width: u32,
     pub height: u32,
     pub scale: u32,
     pub cells: Vec<u32>,
     pub detail: Vec<u32>,
+}
+
+impl Clone for CompactPresentation {
+    fn clone(&self) -> Self {
+        Self {
+            width: self.width,
+            height: self.height,
+            scale: self.scale,
+            cells: self.cells.clone(),
+            detail: self.detail.clone(),
+        }
+    }
+
+    /// Copy into this image's existing buffers, so a recycled snapshot takes
+    /// a new frame without allocating.
+    fn clone_from(&mut self, source: &Self) {
+        self.width = source.width;
+        self.height = source.height;
+        self.scale = source.scale;
+        self.cells.clone_from(&source.cells);
+        self.detail.clone_from(&source.detail);
+    }
 }
 
 impl CompactPresentation {
