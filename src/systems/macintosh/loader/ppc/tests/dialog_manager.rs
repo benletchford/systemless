@@ -1741,23 +1741,45 @@ fn import_bindings_classify_dialog_imports() {
             expected_target,
         );
     }
-    for (symbol, expected_target) in [
-        ("LMSetResumeProc", PpcImportDispatcherTarget::LMSetResumeProc),
-        ("LMGetResumeProc", PpcImportDispatcherTarget::LMGetResumeProc),
-        ("LMSetACount", PpcImportDispatcherTarget::LMSetACount),
-        ("LMGetACount", PpcImportDispatcherTarget::LMGetACount),
-        ("LMSetANumber", PpcImportDispatcherTarget::LMSetANumber),
-        ("LMGetANumber", PpcImportDispatcherTarget::LMGetANumber),
-        ("LMSetDABeeper", PpcImportDispatcherTarget::LMSetDABeeper),
-        ("LMGetDABeeper", PpcImportDispatcherTarget::LMGetDABeeper),
-        ("LMGetDAStrings", PpcImportDispatcherTarget::LMGetDAStrings),
-        ("LMSetDlgFont", PpcImportDispatcherTarget::LMSetDlgFont),
-        ("LMGetDlgFont", PpcImportDispatcherTarget::LMGetDlgFont),
-    ] {
-        assert_eq!(
-            dispatcher_target_for_import("InterfaceLib", symbol),
-            expected_target,
-        );
+    for lib in ["InterfaceLib", "AppearanceLib", "DialogsLib", "CarbonLib"] {
+        for (symbol, expected_target) in [
+            ("LMSetResumeProc", PpcImportDispatcherTarget::LMSetResumeProc),
+            ("lmsetresumeproc", PpcImportDispatcherTarget::LMSetResumeProc),
+            ("LMGetResumeProc", PpcImportDispatcherTarget::LMGetResumeProc),
+            ("lmgetresumeproc", PpcImportDispatcherTarget::LMGetResumeProc),
+            ("LMSetACount", PpcImportDispatcherTarget::LMSetACount),
+            ("lmsetacount", PpcImportDispatcherTarget::LMSetACount),
+            ("LMGetACount", PpcImportDispatcherTarget::LMGetACount),
+            ("lmgetacount", PpcImportDispatcherTarget::LMGetACount),
+            ("LMSetANumber", PpcImportDispatcherTarget::LMSetANumber),
+            ("lmsetanumber", PpcImportDispatcherTarget::LMSetANumber),
+            ("LMGetANumber", PpcImportDispatcherTarget::LMGetANumber),
+            ("lmgetanumber", PpcImportDispatcherTarget::LMGetANumber),
+            ("LMSetDABeeper", PpcImportDispatcherTarget::LMSetDABeeper),
+            ("lmsetdabeeper", PpcImportDispatcherTarget::LMSetDABeeper),
+            ("LMGetDABeeper", PpcImportDispatcherTarget::LMGetDABeeper),
+            ("lmgetdabeeper", PpcImportDispatcherTarget::LMGetDABeeper),
+            ("LMGetDAStrings", PpcImportDispatcherTarget::LMGetDAStrings),
+            ("lmgetdastrings", PpcImportDispatcherTarget::LMGetDAStrings),
+            ("LMSetDlgFont", PpcImportDispatcherTarget::LMSetDlgFont),
+            ("lmsetdlgfont", PpcImportDispatcherTarget::LMSetDlgFont),
+            ("LMGetDlgFont", PpcImportDispatcherTarget::LMGetDlgFont),
+            ("lmgetdlgfont", PpcImportDispatcherTarget::LMGetDlgFont),
+            (
+                "GetDialogItemAsControl",
+                PpcImportDispatcherTarget::GetDialogItemAsControl,
+            ),
+            (
+                "getdialogitemascontrol",
+                PpcImportDispatcherTarget::GetDialogItemAsControl,
+            ),
+        ] {
+            assert_eq!(
+                dispatcher_target_for_import(lib, symbol),
+                expected_target,
+                "classification failed for {lib}::{symbol}",
+            );
+        }
     }
     for (lib, symbol, expected_target) in [
         ("InterfaceLib", "GetDialogPort", PpcImportDispatcherTarget::GetDialogPort),
@@ -4788,3 +4810,139 @@ fn dialog_preloading_filter_sound_and_init_commands_dispatch_with_canonical_eval
         assert_eq!(probe.unsupported_import_index, None);
     }
 }
+
+#[test]
+fn dialog_control_conversion_and_lowmem_commands_dispatch_with_canonical_evaluation() {
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"GetDialogItemAsControl");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let output = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(output, vec![0; 4]);
+
+    // Construct dialog DITL with 2 items:
+    // Item 1: Button with control handle 0x1234
+    // Item 2: StaticText (non-control)
+    let mut ditl = 1i16.to_be_bytes().to_vec();
+    let mut item1 = vec![0; 16];
+    item1[0..4].copy_from_slice(&0x1234u32.to_be_bytes());
+    item1[12] = PPC_DIALOG_ITEM_BUTTON;
+    item1[13] = 2;
+    item1[14..16].copy_from_slice(b"OK");
+    ditl.extend(item1);
+
+    let mut item2 = vec![0; 18];
+    item2[0..4].copy_from_slice(&0u32.to_be_bytes());
+    item2[12] = PPC_DIALOG_ITEM_STATIC_TEXT;
+    item2[13] = 4;
+    item2[14..18].copy_from_slice(b"Text");
+    ditl.extend(item2);
+
+    let items = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &ditl,
+    );
+    loaded
+        .memory
+        .write_u32_be(PPC_MAIN_GWORLD + PPC_DIALOG_ITEMS_OFFSET, items)
+        .unwrap();
+
+    // 1. GetDialogItemAsControl on button item (item 1) -> success
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = output;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogItemAsControl);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u32_be(output), Some(0x1234));
+
+    // 2. GetDialogItemAsControl on static text item (item 2) -> paramErr
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = 2;
+    loaded.cpu.gpr[5] = output;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogItemAsControl);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 3. GetDialogItemAsControl on invalid item (item 99) -> paramErr
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = 99;
+    loaded.cpu.gpr[5] = output;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogItemAsControl);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 4. GetDialogItemAsControl with NULL dialog -> paramErr
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = output;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogItemAsControl);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 5. LMSetResumeProc / LMGetResumeProc
+    loaded.cpu.gpr[3] = 0x1122_3344;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMSetResumeProc);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetResumeProc);
+    assert_eq!(loaded.cpu.gpr[3], 0x1122_3344);
+
+    // 6. LMSetACount / LMGetACount
+    loaded.cpu.gpr[3] = 3;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMSetACount);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetACount);
+    assert_eq!(loaded.cpu.gpr[3] as i16, 3);
+
+    // 7. LMSetANumber / LMGetANumber
+    loaded.cpu.gpr[3] = 42;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMSetANumber);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetANumber);
+    assert_eq!(loaded.cpu.gpr[3] as i16, 42);
+
+    // 8. LMSetDABeeper / LMGetDABeeper
+    loaded.cpu.gpr[3] = 0xAABB_CCDD;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMSetDABeeper);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetDABeeper);
+    assert_eq!(loaded.cpu.gpr[3], 0xAABB_CCDD);
+
+    // 9. LMGetDAStrings
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetDAStrings);
+    assert_eq!(loaded.cpu.gpr[3], crate::memory::globals::addr::DA_STRINGS);
+
+    // 10. LMSetDlgFont / LMGetDlgFont
+    loaded.cpu.gpr[3] = 12;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMSetDlgFont);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetDlgFont);
+    assert_eq!(loaded.cpu.gpr[3] as i16, 12);
+
+    // 11. Synthetic PEF execution for all 12 symbols across DialogsLib and CarbonLib
+    for (lib, symbol) in [
+        (b"DialogsLib".as_slice(), b"GetDialogItemAsControl".as_slice()),
+        (b"CarbonLib".as_slice(), b"GetDialogItemAsControl".as_slice()),
+        (b"DialogsLib".as_slice(), b"LMSetResumeProc".as_slice()),
+        (b"CarbonLib".as_slice(), b"LMSetResumeProc".as_slice()),
+        (b"DialogsLib".as_slice(), b"LMGetResumeProc".as_slice()),
+        (b"CarbonLib".as_slice(), b"LMGetResumeProc".as_slice()),
+        (b"DialogsLib".as_slice(), b"LMSetACount".as_slice()),
+        (b"CarbonLib".as_slice(), b"LMSetACount".as_slice()),
+        (b"DialogsLib".as_slice(), b"LMGetACount".as_slice()),
+        (b"CarbonLib".as_slice(), b"LMGetACount".as_slice()),
+        (b"DialogsLib".as_slice(), b"LMSetANumber".as_slice()),
+        (b"CarbonLib".as_slice(), b"LMSetANumber".as_slice()),
+        (b"DialogsLib".as_slice(), b"LMGetANumber".as_slice()),
+        (b"CarbonLib".as_slice(), b"LMGetANumber".as_slice()),
+        (b"DialogsLib".as_slice(), b"LMSetDABeeper".as_slice()),
+        (b"CarbonLib".as_slice(), b"LMSetDABeeper".as_slice()),
+        (b"DialogsLib".as_slice(), b"LMGetDABeeper".as_slice()),
+        (b"CarbonLib".as_slice(), b"LMGetDABeeper".as_slice()),
+        (b"DialogsLib".as_slice(), b"LMGetDAStrings".as_slice()),
+        (b"CarbonLib".as_slice(), b"LMGetDAStrings".as_slice()),
+        (b"DialogsLib".as_slice(), b"LMSetDlgFont".as_slice()),
+        (b"CarbonLib".as_slice(), b"LMSetDlgFont".as_slice()),
+        (b"DialogsLib".as_slice(), b"LMGetDlgFont".as_slice()),
+        (b"CarbonLib".as_slice(), b"LMGetDlgFont".as_slice()),
+    ] {
+        let pef = synthetic_pef_with_library_import(lib, symbol);
+        let mut loaded_app = load_pef_application(&pef).unwrap();
+        loaded_app.cpu.gpr[3] = 0;
+        let probe = loaded_app.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+    }
+}
+
