@@ -708,10 +708,29 @@ pub(super) fn dispatch_window_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::InvalRgn => {
+            let window = *current_gworld;
+            if window != PPC_MAIN_GWORLD {
+                if let Some(rect) = ppc_read_rgn_bbox(memory, cpu.gpr[3]) {
+                    ppc_invalidate_window_local_rect(memory, window, rect);
+                    ppc_enqueue_window_update_event(event_queue, window, tick_count, input);
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::ValidRect => {
             let window = *current_gworld;
             if window != PPC_MAIN_GWORLD {
                 if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+                    ppc_validate_window_local_rect(memory, window, rect);
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::ValidRgn => {
+            let window = *current_gworld;
+            if window != PPC_MAIN_GWORLD {
+                if let Some(rect) = ppc_read_rgn_bbox(memory, cpu.gpr[3]) {
                     ppc_validate_window_local_rect(memory, window, rect);
                 }
             }
