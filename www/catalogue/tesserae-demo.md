@@ -95,4 +95,5 @@ references:
 
 Choose **Start**, accept the first mosaic, and dismiss the dealer information
 dialog. Select a tile, then click a highlighted destination to jump it across
-the board and clear matching pieces.
+the board and clear matching pieces. This demo includes two mosaics; saved
+games and best scores are disabled in the original application.
