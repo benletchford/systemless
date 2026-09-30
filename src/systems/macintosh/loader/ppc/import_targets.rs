@@ -3287,12 +3287,71 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "AppearanceLib", "UnregisterAppearanceClient") => {
             PpcImportDispatcherTarget::UnregisterAppearanceClient
         }
-        ("AppearanceLib", "ActivateControl") => PpcImportDispatcherTarget::ActivateControl,
-        ("AppearanceLib", "DeactivateControl") => PpcImportDispatcherTarget::DeactivateControl,
-        ("AppearanceLib", "IsControlActive") => PpcImportDispatcherTarget::IsControlActive,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ActivateControl" | "activatecontrol",
+        ) => PpcImportDispatcherTarget::ActivateControl,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "DeactivateControl" | "deactivatecontrol",
+        ) => PpcImportDispatcherTarget::DeactivateControl,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "IsControlActive" | "iscontrolactive",
+        ) => PpcImportDispatcherTarget::IsControlActive,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetControlFontStyle" | "setcontrolfontstyle",
+        ) => PpcImportDispatcherTarget::SetControlFontStyle,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "IsControlVisible" | "iscontrolvisible",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsControlVisible),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "IsControlEnabled" | "iscontrolenabled",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsControlEnabled),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "EnableControl" | "enablecontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::EnableControl),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "DisableControl" | "disablecontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisableControl),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "IsControlHilited" | "iscontrolhilited",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsControlHilited),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlHilite" | "getcontrolhilite",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlHilite),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "IsValidControlHandle"
+            | "isvalidcontrolhandle"
+            | "IsValidControlRef"
+            | "isvalidcontrolref",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsValidControlHandle),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlBounds" | "getcontrolbounds",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlBounds),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetControlBounds" | "setcontrolbounds",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlBounds),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "IdleControls" | "idlecontrols",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IdleControls),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "DragControl" | "dragcontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DragControl),
         ("AppearanceLib", "CollapseWindow") => PpcImportDispatcherTarget::CollapseWindow,
         ("AppearanceLib", "IsWindowCollapsed") => PpcImportDispatcherTarget::IsWindowCollapsed,
-        ("AppearanceLib", "SetControlFontStyle") => PpcImportDispatcherTarget::SetControlFontStyle,
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "NewFeaturesDialog",

@@ -2712,3 +2712,421 @@ fn control_hierarchy_and_property_commands_dispatch_with_canonical_evaluation() 
         assert_eq!(loaded.cpu.gpr[3] as i16, -5604);
     }
 }
+
+#[test]
+fn import_bindings_classify_control_activation_styling_and_bounds_imports() {
+    for library in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        for (symbol, expected) in [
+            ("ActivateControl", PpcImportDispatcherTarget::ActivateControl),
+            ("activatecontrol", PpcImportDispatcherTarget::ActivateControl),
+            ("DeactivateControl", PpcImportDispatcherTarget::DeactivateControl),
+            ("deactivatecontrol", PpcImportDispatcherTarget::DeactivateControl),
+            ("IsControlActive", PpcImportDispatcherTarget::IsControlActive),
+            ("iscontrolactive", PpcImportDispatcherTarget::IsControlActive),
+            ("SetControlFontStyle", PpcImportDispatcherTarget::SetControlFontStyle),
+            ("setcontrolfontstyle", PpcImportDispatcherTarget::SetControlFontStyle),
+            (
+                "IsControlVisible",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsControlVisible),
+            ),
+            (
+                "iscontrolvisible",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsControlVisible),
+            ),
+            (
+                "IsControlEnabled",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsControlEnabled),
+            ),
+            (
+                "iscontrolenabled",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsControlEnabled),
+            ),
+            (
+                "EnableControl",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::EnableControl),
+            ),
+            (
+                "enablecontrol",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::EnableControl),
+            ),
+            (
+                "DisableControl",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisableControl),
+            ),
+            (
+                "disablecontrol",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisableControl),
+            ),
+            (
+                "IsControlHilited",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsControlHilited),
+            ),
+            (
+                "iscontrolhilited",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsControlHilited),
+            ),
+            (
+                "GetControlHilite",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlHilite),
+            ),
+            (
+                "getcontrolhilite",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlHilite),
+            ),
+            (
+                "IsValidControlHandle",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsValidControlHandle),
+            ),
+            (
+                "isvalidcontrolhandle",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsValidControlHandle),
+            ),
+            (
+                "IsValidControlRef",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsValidControlHandle),
+            ),
+            (
+                "isvalidcontrolref",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsValidControlHandle),
+            ),
+            (
+                "GetControlBounds",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlBounds),
+            ),
+            (
+                "getcontrolbounds",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlBounds),
+            ),
+            (
+                "SetControlBounds",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlBounds),
+            ),
+            (
+                "setcontrolbounds",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlBounds),
+            ),
+            (
+                "IdleControls",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IdleControls),
+            ),
+            (
+                "idlecontrols",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IdleControls),
+            ),
+            (
+                "DragControl",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DragControl),
+            ),
+            (
+                "dragcontrol",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DragControl),
+            ),
+        ] {
+            assert_eq!(
+                dispatcher_target_for_import(library, symbol),
+                expected,
+                "library={library} symbol={symbol}"
+            );
+        }
+    }
+}
+
+#[test]
+fn control_activation_styling_and_bounds_commands_dispatch_with_canonical_evaluation() {
+    for lib in [b"InterfaceLib".as_slice(), b"AppearanceLib".as_slice(), b"CarbonLib".as_slice()] {
+        let pef = synthetic_pef_with_library_import(lib, b"NewControl");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let lib_str = std::str::from_utf8(lib).unwrap();
+
+        let out_rect_ptr = PPC_DATA_BASE + 0x3000;
+        let in_rect_ptr = PPC_DATA_BASE + 0x3020;
+        let style_ptr = PPC_DATA_BASE + 0x3040;
+        let rect_ptr = PPC_DATA_BASE + 0x3060;
+        let title_ptr = PPC_DATA_BASE + 0x3080;
+        loaded.memory.add_region(PPC_DATA_BASE + 0x3000, vec![0; 0x1000]);
+
+        ppc_write_rect(&mut loaded.memory, rect_ptr, 10, 20, 30, 80);
+        ppc_write_pstring_bytes(&mut loaded.memory, title_ptr, b"Button");
+        ppc_write_rect(&mut loaded.memory, in_rect_ptr, 15, 25, 35, 95);
+
+        // Write ControlFontStyleRec (24 bytes)
+        let _ = loaded.memory.write_bytes(
+            style_ptr,
+            &[
+                0x00, 0x01, // flags = 1
+                0x00, 0x00, // font = 0
+                0x00, 0x0C, // size = 12
+                0x00, 0x00, // style = 0
+                0x00, 0x00, // mode = 0
+                0x00, 0x00, // just = 0
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // fore = 0,0,0
+                0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // back = white
+            ],
+        );
+
+        // 1. Create control
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = rect_ptr;
+        loaded.cpu.gpr[5] = title_ptr;
+        loaded.cpu.gpr[6] = 1; // visible
+        loaded.cpu.gpr[7] = 0; // value
+        loaded.cpu.gpr[8] = 0; // min
+        loaded.cpu.gpr[9] = 1; // max
+        loaded.cpu.gpr[10] = 0; // procID
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let ctrl_handle = loaded.cpu.gpr[3];
+        assert_ne!(ctrl_handle, 0);
+
+        // 2. IsValidControlHandle
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "IsValidControlHandle");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0xDEAD_BEEF;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        // 3. IsControlVisible
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "IsControlVisible");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+
+        // 4. IsControlActive (initially active)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "IsControlActive");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+
+        // 5. DeactivateControl
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "DeactivateControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "IsControlActive");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        // 6. ActivateControl
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ActivateControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "IsControlActive");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+
+        // 7. SetControlFontStyle
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlFontStyle");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        loaded.cpu.gpr[4] = style_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        // 8. GetControlBounds -> (10, 20, 30, 80)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlBounds");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        loaded.cpu.gpr[4] = out_rect_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(ppc_read_rect(&mut loaded.memory, out_rect_ptr), Some((10, 20, 30, 80)));
+
+        // 9. SetControlBounds -> (15, 25, 35, 95)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlBounds");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        loaded.cpu.gpr[4] = in_rect_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlBounds");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        loaded.cpu.gpr[4] = out_rect_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(ppc_read_rect(&mut loaded.memory, out_rect_ptr), Some((15, 25, 35, 95)));
+
+        // 10. IsControlEnabled (initially enabled)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "IsControlEnabled");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+
+        // 11. DisableControl
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "DisableControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "IsControlEnabled");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        // 12. GetControlHilite -> 255
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlHilite");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 255);
+
+        // 13. EnableControl
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "EnableControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "IsControlEnabled");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlHilite");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        // 14. IsControlHilited
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "IsControlHilited");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        // Write hilite = 10
+        let ctrl_ptr = loaded.memory.read_u32_be(ctrl_handle).unwrap();
+        let _ = loaded.memory.write_u8(ctrl_ptr + PPC_CONTROL_HILITE_OFFSET, 10);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlHilite");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 10);
+
+        // 15. IdleControls and DragControl (safe no-ops)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "IdleControls");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "DragControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl_handle;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+    }
+}
