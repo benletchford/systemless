@@ -1453,22 +1453,21 @@ fn import_bindings_classify_dialog_imports() {
         dispatcher_target_for_import("InterfaceLib", "SetDialogTracksCursor"),
         PpcImportDispatcherTarget::SetDialogTracksCursor
     );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "MoveDialogItem"),
-        PpcImportDispatcherTarget::MoveDialogItem
-    );
-    assert_eq!(
-        dispatcher_target_for_import("AppearanceLib", "MoveDialogItem"),
-        PpcImportDispatcherTarget::MoveDialogItem
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "SizeDialogItem"),
-        PpcImportDispatcherTarget::SizeDialogItem
-    );
-    assert_eq!(
-        dispatcher_target_for_import("AppearanceLib", "SizeDialogItem"),
-        PpcImportDispatcherTarget::SizeDialogItem
-    );
+    for (lib, symbol, expected_target) in [
+        ("InterfaceLib", "MoveDialogItem", PpcImportDispatcherTarget::MoveDialogItem),
+        ("AppearanceLib", "MoveDialogItem", PpcImportDispatcherTarget::MoveDialogItem),
+        ("DialogsLib", "MoveDialogItem", PpcImportDispatcherTarget::MoveDialogItem),
+        ("CarbonLib", "MoveDialogItem", PpcImportDispatcherTarget::MoveDialogItem),
+        ("InterfaceLib", "SizeDialogItem", PpcImportDispatcherTarget::SizeDialogItem),
+        ("AppearanceLib", "SizeDialogItem", PpcImportDispatcherTarget::SizeDialogItem),
+        ("DialogsLib", "SizeDialogItem", PpcImportDispatcherTarget::SizeDialogItem),
+        ("CarbonLib", "SizeDialogItem", PpcImportDispatcherTarget::SizeDialogItem),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import(lib, symbol),
+            expected_target,
+        );
+    }
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "AppendDialogItemList"),
         PpcImportDispatcherTarget::AppendDialogItemList
@@ -4258,6 +4257,150 @@ fn dialog_default_cancel_and_cursor_tracking_commands_dispatch_with_canonical_ev
     let mut loaded_tracks = load_pef_application(&pef_tracks).unwrap();
     loaded_tracks.cpu.gpr[3] = 0;
     let probe = loaded_tracks.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+}
+
+#[test]
+fn dialog_item_positioning_and_geometry_commands_dispatch_with_canonical_evaluation() {
+    let dialog_ptr = PPC_DATA_BASE + 0x1000;
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"MoveDialogItem");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(dialog_ptr, vec![0; 512]);
+
+    // Set up item 1 with control handle:
+    // Initial rect: (top: 10, left: 20, bottom: 50, right: 100) -> width 80, height 40
+    let mut ditl = vec![0; 18];
+    ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&50i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&100i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_BUTTON;
+    ditl[15] = 2;
+    ditl[16..18].copy_from_slice(b"OK");
+
+    let mut control_rec = vec![0u8; 40];
+    control_rec[8..10].copy_from_slice(&10i16.to_be_bytes());
+    control_rec[10..12].copy_from_slice(&20i16.to_be_bytes());
+    control_rec[12..14].copy_from_slice(&50i16.to_be_bytes());
+    control_rec[14..16].copy_from_slice(&100i16.to_be_bytes());
+    let ctrl_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &control_rec,
+    );
+    ditl[2..6].copy_from_slice(&ctrl_handle.to_be_bytes());
+
+    let items_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &ditl,
+    );
+    loaded
+        .memory
+        .write_u32_be(dialog_ptr + PPC_DIALOG_ITEMS_OFFSET, items_handle)
+        .unwrap();
+
+    // 1. MoveDialogItem:
+    // 1a. Safe error on NULL dialog
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = 150;
+    loaded.cpu.gpr[6] = 120;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MoveDialogItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 1b. Safe error on invalid item 0
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 150;
+    loaded.cpu.gpr[6] = 120;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MoveDialogItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 1c. Valid MoveDialogItem: move item 1 to inHoriz=150, inVert=120
+    // Width was 80, height was 40.
+    // New rect: top = 120, left = 150, bottom = 120 + 40 = 160, right = 150 + 80 = 230
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = 150;
+    loaded.cpu.gpr[6] = 120;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MoveDialogItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+
+    let ditl_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, ditl_ptr + 6),
+        Some((120, 150, 160, 230))
+    );
+    let ctrl_ptr = loaded.memory.read_u32_be(ctrl_handle).unwrap();
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, ctrl_ptr + PPC_CONTROL_RECT_OFFSET),
+        Some((120, 150, 160, 230))
+    );
+
+    // 2. SizeDialogItem:
+    // 2a. Safe error on NULL dialog
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = 200;
+    loaded.cpu.gpr[6] = 80;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SizeDialogItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 2b. Safe error on invalid item 2 (does not exist in 1-item DITL)
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 2;
+    loaded.cpu.gpr[5] = 200;
+    loaded.cpu.gpr[6] = 80;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SizeDialogItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 2c. Valid SizeDialogItem: resize item 1 to inWidth=200, inHeight=80
+    // Origin was (120, 150).
+    // New rect: top = 120, left = 150, bottom = 120 + 80 = 200, right = 150 + 200 = 350
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = 200;
+    loaded.cpu.gpr[6] = 80;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SizeDialogItem);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, ditl_ptr + 6),
+        Some((120, 150, 200, 350))
+    );
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, ctrl_ptr + PPC_CONTROL_RECT_OFFSET),
+        Some((120, 150, 200, 350))
+    );
+
+    // 3. Verify PEF execution using DialogsLib and CarbonLib
+    let pef_move_dlg = synthetic_pef_with_library_import(b"DialogsLib", b"MoveDialogItem");
+    let mut loaded_move_dlg = load_pef_application(&pef_move_dlg).unwrap();
+    loaded_move_dlg.cpu.gpr[3] = 0;
+    let probe = loaded_move_dlg.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_move_carb = synthetic_pef_with_library_import(b"CarbonLib", b"MoveDialogItem");
+    let mut loaded_move_carb = load_pef_application(&pef_move_carb).unwrap();
+    loaded_move_carb.cpu.gpr[3] = 0;
+    let probe = loaded_move_carb.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_size_dlg = synthetic_pef_with_library_import(b"DialogsLib", b"SizeDialogItem");
+    let mut loaded_size_dlg = load_pef_application(&pef_size_dlg).unwrap();
+    loaded_size_dlg.cpu.gpr[3] = 0;
+    let probe = loaded_size_dlg.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_size_carb = synthetic_pef_with_library_import(b"CarbonLib", b"SizeDialogItem");
+    let mut loaded_size_carb = load_pef_application(&pef_size_carb).unwrap();
+    loaded_size_carb.cpu.gpr[3] = 0;
+    let probe = loaded_size_carb.run_with_hle_imports(64);
     assert_eq!(probe.unsupported_import_index, None);
 }
 
