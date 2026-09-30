@@ -2552,24 +2552,39 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SetMenuItemText") | ("InterfaceLib", "SetItem") => {
             PpcImportDispatcherTarget::SetMenuItemText
         }
-        ("InterfaceLib", "DeleteMenuItem") | ("InterfaceLib", "DelMenuItem") => {
-            PpcImportDispatcherTarget::DeleteMenuItem
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "DeleteMenuItem" | "deletemenuitem" | "DelMenuItem" | "delmenuitem",
+        ) => PpcImportDispatcherTarget::DeleteMenuItem,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "CalcMenuSize" | "calcmenusize",
         ) => PpcImportDispatcherTarget::CalcMenuSize,
         ("InterfaceLib", "PopUpMenuSelect") => PpcImportDispatcherTarget::PopUpMenuSelect,
-        ("InterfaceLib", "InsertMenu") => PpcImportDispatcherTarget::InsertMenu,
-        ("InterfaceLib", "DeleteMenu") => PpcImportDispatcherTarget::DeleteMenu,
-        ("InterfaceLib", "AppendMenu") => PpcImportDispatcherTarget::AppendMenu,
-        ("InterfaceLib", "InsertMenuItem") | ("InterfaceLib", "InsMenuItem") => {
-            PpcImportDispatcherTarget::InsertMenuItem
-        }
-        ("InterfaceLib", "AppendResMenu") | ("InterfaceLib", "AddResMenu") => {
-            PpcImportDispatcherTarget::AppendResMenu
-        }
-        ("InterfaceLib", "InsertResMenu") => PpcImportDispatcherTarget::InsertResMenu,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "InsertMenu" | "insertmenu",
+        ) => PpcImportDispatcherTarget::InsertMenu,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "DeleteMenu" | "deletemenu" | "DelMenu" | "delmenu",
+        ) => PpcImportDispatcherTarget::DeleteMenu,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "AppendMenu" | "appendmenu",
+        ) => PpcImportDispatcherTarget::AppendMenu,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "InsertMenuItem" | "insertmenuitem" | "InsMenuItem" | "insmenuitem",
+        ) => PpcImportDispatcherTarget::InsertMenuItem,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "AppendResMenu" | "appendresmenu" | "AddResMenu" | "addresmenu",
+        ) => PpcImportDispatcherTarget::AppendResMenu,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "InsertResMenu" | "insertresmenu",
+        ) => PpcImportDispatcherTarget::InsertResMenu,
         ("InterfaceLib", "EnableItem" | "EnableMenuItem") => {
             PpcImportDispatcherTarget::EnableMenuItem
         }
