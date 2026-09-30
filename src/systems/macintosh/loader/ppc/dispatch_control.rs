@@ -74,6 +74,21 @@ pub(super) fn dispatch_control_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::UpdateControls => {
+            let window = cpu.gpr[3];
+            let update_rgn = cpu.gpr[4];
+            let _ = ppc_update_window_controls(
+                memory,
+                handles,
+                controls,
+                gworlds,
+                vfs_resources,
+                current_resource_refnum,
+                window,
+                update_rgn,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::SetControlTitle => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
@@ -1399,6 +1414,61 @@ pub(super) fn ppc_draw_window_controls(
     });
     let mut drew = false;
     for handle in control_handles {
+        drew |= ppc_draw_control(
+            memory,
+            handles,
+            controls,
+            gworlds,
+            vfs_resources,
+            current_resource_refnum,
+            handle,
+        );
+    }
+    drew
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_update_window_controls(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    controls: &[PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    window: u32,
+    update_rgn: u32,
+) -> bool {
+    // Macintosh Toolbox Essentials (1992), p. 5-88: UpdateControls draws
+    // those controls in theWindow whose bounding rectangles intersect updateRgn.
+    if window == 0 || update_rgn == 0 {
+        return false;
+    }
+    let Some((ut, ul, ub, ur)) = regions::ppc_read_rgn_bbox(memory, update_rgn) else {
+        return false;
+    };
+    if ut >= ub || ul >= ur {
+        return false;
+    }
+    let head = memory
+        .read_u32_be(window.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET))
+        .unwrap_or(0);
+    let control_handles = crate::control_manager::control_draw_order(head, |handle| {
+        ppc_control_ptr(memory, handle)
+            .and_then(|control| memory.read_u32_be(control.wrapping_add(PPC_CONTROL_NEXT_OFFSET)))
+    });
+    let mut drew = false;
+    for handle in control_handles {
+        let Some(ctrl_ptr) = ppc_control_ptr(memory, handle) else {
+            continue;
+        };
+        let Some((ct, cl, cb, cr)) =
+            ppc_read_rect(memory, ctrl_ptr.wrapping_add(PPC_CONTROL_RECT_OFFSET))
+        else {
+            continue;
+        };
+        if cb <= ut || cr <= ul || ct >= ub || cl >= ur {
+            continue;
+        }
         drew |= ppc_draw_control(
             memory,
             handles,

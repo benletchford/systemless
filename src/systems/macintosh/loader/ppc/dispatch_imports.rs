@@ -2063,7 +2063,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::ModalDialog => {
             unreachable!("dialog imports return through dispatch_dialog_import")
         }
-        PpcImportDispatcherTarget::DrawControls => {
+        PpcImportDispatcherTarget::DrawControls | PpcImportDispatcherTarget::UpdateControls => {
             unreachable!("control imports return through dispatch_control_import")
         }
         PpcImportDispatcherTarget::SetControlTitle

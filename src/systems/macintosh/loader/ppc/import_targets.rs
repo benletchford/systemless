@@ -584,6 +584,7 @@ pub enum PpcImportDispatcherTarget {
     SetPortDialogPort,
     DrawDialog,
     DrawControls,
+    UpdateControls,
     ModalDialog,
     SetControlTitle,
     SetControlValue,
@@ -3404,7 +3405,14 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "DrawDialog",
         ) => PpcImportDispatcherTarget::DrawDialog,
-        ("InterfaceLib", "DrawControls") => PpcImportDispatcherTarget::DrawControls,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "DrawControls" | "drawcontrols",
+        ) => PpcImportDispatcherTarget::DrawControls,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "UpdateControls" | "updatecontrols",
+        ) => PpcImportDispatcherTarget::UpdateControls,
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "ModalDialog",
@@ -3993,9 +4001,10 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "DisposeControl" | "disposecontrol" | "DisposControl" | "disposcontrol",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisposeControl),
-        ("InterfaceLib", "Draw1Control") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl)
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "Draw1Control" | "draw1control" | "DrawOneControl" | "drawonecontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl),
         ("InterfaceLib", "FindControl") => {
             PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::FindControl)
         }
@@ -4021,16 +4030,18 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetNewControl" | "getnewcontrol",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetNewControl),
-        ("InterfaceLib", "HideControl") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::HideControl)
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "HideControl" | "hidecontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::HideControl),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "KillControls" | "killcontrols",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::KillControls),
-        ("InterfaceLib", "MoveControl") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::MoveControl)
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "MoveControl" | "movecontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::MoveControl),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "NewControl" | "newcontrol",
@@ -4047,12 +4058,14 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SetControlMinimum") => {
             PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMinimum)
         }
-        ("InterfaceLib", "ShowControl") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ShowControl)
-        }
-        ("InterfaceLib", "SizeControl") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SizeControl)
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ShowControl" | "showcontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ShowControl),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SizeControl" | "sizecontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SizeControl),
         ("InterfaceLib", "TestControl") => {
             PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TestControl)
         }

@@ -1449,3 +1449,219 @@ fn control_creation_and_disposal_commands_dispatch_with_canonical_evaluation() {
     }
 }
 
+#[test]
+fn import_bindings_classify_control_display_and_geometry_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // ShowControl
+        assert_eq!(
+            dispatcher_target_for_import(lib, "ShowControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ShowControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "showcontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ShowControl)
+        );
+
+        // HideControl
+        assert_eq!(
+            dispatcher_target_for_import(lib, "HideControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::HideControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "hidecontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::HideControl)
+        );
+
+        // Draw1Control / DrawOneControl
+        assert_eq!(
+            dispatcher_target_for_import(lib, "Draw1Control"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "draw1control"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "DrawOneControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "drawonecontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl)
+        );
+
+        // DrawControls
+        assert_eq!(
+            dispatcher_target_for_import(lib, "DrawControls"),
+            PpcImportDispatcherTarget::DrawControls
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "drawcontrols"),
+            PpcImportDispatcherTarget::DrawControls
+        );
+
+        // UpdateControls
+        assert_eq!(
+            dispatcher_target_for_import(lib, "UpdateControls"),
+            PpcImportDispatcherTarget::UpdateControls
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "updatecontrols"),
+            PpcImportDispatcherTarget::UpdateControls
+        );
+
+        // MoveControl
+        assert_eq!(
+            dispatcher_target_for_import(lib, "MoveControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::MoveControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "movecontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::MoveControl)
+        );
+
+        // SizeControl
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SizeControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SizeControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "sizecontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SizeControl)
+        );
+    }
+}
+
+#[test]
+fn control_display_and_geometry_commands_dispatch_with_canonical_evaluation() {
+    for lib in [b"InterfaceLib".as_slice(), b"AppearanceLib".as_slice(), b"CarbonLib".as_slice()] {
+        let pef = synthetic_pef_with_library_import(lib, b"ShowControl");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let lib_str = std::str::from_utf8(lib).unwrap();
+
+        let mut last_mem_error = loaded.last_mem_error();
+        let handle = with_test_controls!(
+            loaded,
+            |controls| ppc_new_control_record_values(
+                None,
+                &mut loaded.memory,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                &mut last_mem_error,
+                test_handles!(loaded),
+                controls,
+                PPC_MAIN_GWORLD,
+                (10, 20, 40, 140),
+                b"TestBtn",
+                true,
+                0,
+                0,
+                1,
+                0,
+                0,
+            )
+        );
+        assert_ne!(handle, 0);
+        let ctrl_ptr = loaded.memory.read_u32_be(handle).unwrap();
+        assert_ne!(ctrl_ptr, 0);
+
+        // 1. HideControl
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "HideControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded.memory.read_u8(ctrl_ptr + PPC_CONTROL_VISIBLE_OFFSET),
+            Some(0)
+        );
+
+        // 2. ShowControl
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ShowControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded.memory.read_u8(ctrl_ptr + PPC_CONTROL_VISIBLE_OFFSET),
+            Some(0xff)
+        );
+
+        // 3. MoveControl(theControl, h, v)
+        // contrlRect initially: top=10, left=20, bottom=40, right=140. Width = 120, Height = 30.
+        // Move to h=50, v=60 -> top=60, left=50, bottom=90, right=170.
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "MoveControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 50;
+        loaded.cpu.gpr[5] = 60;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            ppc_read_rect(&mut loaded.memory, ctrl_ptr + PPC_CONTROL_RECT_OFFSET),
+            Some((60, 50, 90, 170))
+        );
+
+        // 4. SizeControl(theControl, w, h)
+        // Size to w=80, h=50 -> top=60, left=50, bottom=110, right=130.
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SizeControl");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 80;
+        loaded.cpu.gpr[5] = 50;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            ppc_read_rect(&mut loaded.memory, ctrl_ptr + PPC_CONTROL_RECT_OFFSET),
+            Some((60, 50, 110, 130))
+        );
+
+        // 5. Draw1Control(theControl)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "Draw1Control");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+
+        // 6. DrawControls(theWindow)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "DrawControls");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+
+        // 7. UpdateControls(theWindow, updateRgn)
+        let update_rgn = ppc_new_rgn(
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+        );
+        assert_ne!(update_rgn, 0);
+        ppc_write_rgn_bbox(&mut loaded.memory, update_rgn, 50, 40, 120, 140).unwrap();
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "UpdateControls");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = update_rgn;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+    }
+}
+
+
