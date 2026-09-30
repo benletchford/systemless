@@ -55,6 +55,7 @@ artifacts:
     notes: >-
       Original 1,737,871-byte StuffIt archive, SHA-256
       cfcd26cbe874c5d64b3f27a54ebe62864e7e3b69f02db4dedf986668a60a19a5.
+      The promoted public object was fetched back and matched this size and hash.
 - id: gameplay-screenshot
   role: screenshot
   format: png
