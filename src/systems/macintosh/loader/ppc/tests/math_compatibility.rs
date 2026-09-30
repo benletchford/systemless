@@ -679,6 +679,10 @@ fn import_bindings_classify_mathlib_imports() {
         PpcImportDispatcherTarget::MathRound
     );
     assert_eq!(
+        dispatcher_target_for_import("MathLib", "rint"),
+        PpcImportDispatcherTarget::MathRint
+    );
+    assert_eq!(
         dispatcher_target_for_import("MathLib", "atan2"),
         PpcImportDispatcherTarget::MathAtan2
     );
@@ -712,4 +716,57 @@ fn carbon_round_uses_nearest_integer_with_halfway_values_away_from_zero() {
         );
         assert_eq!(cpu.fpr[1], expected.to_bits());
     }
+}
+
+#[test]
+fn mathlib_rint_respects_fpscr_rounding_and_exception_flags() {
+    let mut cpu = PpcCpu::new();
+    let mut memory = PpcSectionMem::new();
+    for (mode, input, expected) in [
+        (0, 1.5_f64, 2.0_f64),
+        (0, 2.5, 2.0),
+        (0, -0.5, -0.0),
+        (1, -2.9, -2.0),
+        (2, 2.1, 3.0),
+        (2, -0.2, -0.0),
+        (3, -2.1, -3.0),
+    ] {
+        cpu.fpscr = mode;
+        cpu.fpr[1] = input.to_bits();
+        assert_eq!(
+            super::super::dispatch_math::dispatch_math_import(
+                &PpcImportDispatcherTarget::MathRint,
+                &mut cpu,
+                &mut memory,
+            ),
+            Some(PpcImportAction::ReturnPreserve)
+        );
+        assert_eq!(cpu.fpr[1], expected.to_bits());
+        assert!(cpu.fpscr_bit(0));
+        assert!(cpu.fpscr_bit(6));
+        assert!(cpu.fpscr_bit(14));
+    }
+    for input in [0.0_f64, -0.0, 2.0, f64::INFINITY, f64::NEG_INFINITY] {
+        cpu.fpscr = 0;
+        cpu.fpr[1] = input.to_bits();
+        super::super::dispatch_math::ppc_math_rint(&mut cpu);
+        assert_eq!(cpu.fpr[1], input.to_bits());
+        assert!(!cpu.fpscr_bit(6));
+        assert!(!cpu.fpscr_bit(14));
+    }
+
+    let quiet_nan = 0x7ff8_0000_0000_0042_u64;
+    cpu.fpscr = 0;
+    cpu.fpr[1] = quiet_nan;
+    super::super::dispatch_math::ppc_math_rint(&mut cpu);
+    assert_eq!(cpu.fpr[1], quiet_nan);
+    assert!(!cpu.fpscr_bit(2));
+
+    let signaling_nan = 0x7ff0_0000_0000_0042_u64;
+    cpu.fpscr = 0;
+    cpu.fpr[1] = signaling_nan;
+    super::super::dispatch_math::ppc_math_rint(&mut cpu);
+    assert_eq!(cpu.fpr[1], quiet_nan);
+    assert!(cpu.fpscr_bit(2));
+    assert!(cpu.fpscr_bit(7));
 }
