@@ -1504,6 +1504,81 @@
     }
 
     #[test]
+    fn dialogdispatch_autosizedialog_selector_0d_resizes_bounds_and_returns_noerr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(256);
+
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 300);
+        bus.write_word(dialog_ptr + 22, 400);
+
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 4,
+                    rect: (10, 20, 50, 100),
+                    text: "OK".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+                DialogItem {
+                    item_type: 4,
+                    rect: (60, 20, 90, 180),
+                    text: "Cancel".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+            ],
+        );
+
+        disp.dialog_tracking = Some(DialogTrackingState {
+            dialog_ptr,
+            bounds: (0, 0, 300, 400),
+            default_item: 1,
+            cancel_item: 2,
+            ..Default::default()
+        });
+
+        // 1. AutoSizeDialog(dialog_ptr)
+        // Stack: SP+0=dialog_ptr(4).
+        // Result slot at SP+4 (pre-pushed by caller).
+        bus.write_long(TEST_SP, dialog_ptr);
+        bus.write_word(TEST_SP + 4, 0xBEEF);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x020D);
+
+        let result = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 4), 0); // noErr
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+
+        // Content bounds tightened to enclosing items: bottom=90, right=180
+        assert_eq!(bus.read_word(dialog_ptr + 20) as i16, 90);
+        assert_eq!(bus.read_word(dialog_ptr + 22) as i16, 180);
+        assert_eq!(
+            disp.dialog_tracking.as_ref().unwrap().bounds,
+            (0, 0, 90, 180)
+        );
+
+        // 2. Reject NIL dialog
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x020D);
+        let _ = disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus);
+        assert_eq!(
+            bus.read_word(TEST_SP + 4) as i16,
+            crate::dialog_manager::DIALOG_PARAM_ERR
+        );
+    }
+
+    #[test]
     fn dialogdispatch_modal_dialog_first_entry_honors_preserved_default_and_cancel_items() {
         let (mut disp, mut cpu, mut bus) = setup();
         let dialog_ptr = 0x200000u32;

@@ -34,6 +34,7 @@ use crate::dialog_manager::{
     evaluate_move_dialog_item_parameters, evaluate_move_dialog_item_rect,
     evaluate_size_dialog_item_parameters, evaluate_size_dialog_item_rect,
     evaluate_append_dialog_item_list_parameters, evaluate_appended_dialog_bounds,
+    evaluate_auto_size_dialog_parameters, evaluate_auto_size_dialog_bounds,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -764,6 +765,45 @@ pub(super) fn dispatch_dialog_import(
                         *last_resource_error = PPC_RES_NOT_FOUND_ERR;
                         PPC_RES_NOT_FOUND_ERR
                     }
+                }
+                Err(err) => err,
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(os_err)))
+        }
+        PpcImportDispatcherTarget::AutoSizeDialog => {
+            let dialog = cpu.gpr[3];
+            let os_err = match evaluate_auto_size_dialog_parameters(dialog) {
+                Ok(params) => {
+                    let items = ppc_dialog_items_for_dialog(memory, handles, params.dialog_ptr())
+                        .unwrap_or_default();
+                    let current_bounds = if let Some(gworld) =
+                        gworlds.iter().find(|gw| gw.port == params.dialog_ptr())
+                    {
+                        (0, 0, gworld.height as i16, gworld.width as i16)
+                    } else if let Some(rect) = ppc_read_rect(memory, params.dialog_ptr() + 16) {
+                        rect
+                    } else {
+                        (0, 0, 0, 0)
+                    };
+                    let new_bounds = evaluate_auto_size_dialog_bounds(
+                        current_bounds,
+                        items.iter().map(|item| item.rect),
+                    );
+                    if let Some(gworld) =
+                        gworlds.iter_mut().find(|gw| gw.port == params.dialog_ptr())
+                    {
+                        gworld.height = (new_bounds.2.max(0)) as u32;
+                        gworld.width = (new_bounds.3.max(0)) as u32;
+                    }
+                    let _ = ppc_write_rect(
+                        memory,
+                        params.dialog_ptr() + 16,
+                        new_bounds.0,
+                        new_bounds.1,
+                        new_bounds.2,
+                        new_bounds.3,
+                    );
+                    PPC_NO_ERR
                 }
                 Err(err) => err,
             };

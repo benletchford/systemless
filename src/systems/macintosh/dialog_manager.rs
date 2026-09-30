@@ -513,6 +513,7 @@ pub const DIALOG_DISPATCH_SET_DIALOG_DEFAULT_ITEM: u16 = 0x0004;
 pub const DIALOG_DISPATCH_SET_DIALOG_CANCEL_ITEM: u16 = 0x0005;
 pub const DIALOG_DISPATCH_SET_DIALOG_TRACKS_CURSOR: u16 = 0x0006;
 pub const DIALOG_DISPATCH_NEW_FEATURES_DIALOG: u16 = 0x000C;
+pub const DIALOG_DISPATCH_AUTO_SIZE_DIALOG: u16 = 0x000D;
 pub const DIALOG_DISPATCH_GET_DIALOG_ITEM_AS_CONTROL: u16 = 0x000F;
 pub const DIALOG_DISPATCH_MOVE_DIALOG_ITEM: u16 = 0x0010;
 pub const DIALOG_DISPATCH_SIZE_DIALOG_ITEM: u16 = 0x0011;
@@ -5736,6 +5737,72 @@ pub fn evaluate_appended_dialog_bounds(
     bounds
 }
 
+/// Canonical evaluated parameters for `AutoSizeDialog`.
+///
+/// Universal Interfaces 3.4.1 `Dialogs.h`:
+/// `EXTERN_API( OSStatus ) AutoSizeDialog(DialogRef inDialog);`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AutoSizeDialogParameters {
+    dialog_ptr: u32,
+}
+
+impl AutoSizeDialogParameters {
+    /// Constructs a new `AutoSizeDialogParameters`.
+    #[inline]
+    #[must_use]
+    pub const fn new(dialog_ptr: u32) -> Self {
+        Self { dialog_ptr }
+    }
+
+    /// The target dialog pointer.
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+}
+
+/// Evaluates and validates input parameters for `AutoSizeDialog`.
+///
+/// Returns `Ok(AutoSizeDialogParameters)` if `dialog_ptr != 0`, or `Err(DIALOG_PARAM_ERR)` otherwise.
+#[inline]
+#[must_use]
+pub const fn evaluate_auto_size_dialog_parameters(
+    dialog_ptr: u32,
+) -> Result<AutoSizeDialogParameters, i16> {
+    if dialog_ptr == 0 {
+        Err(DIALOG_PARAM_ERR)
+    } else {
+        Ok(AutoSizeDialogParameters::new(dialog_ptr))
+    }
+}
+
+/// Evaluates resized dialog window bounds to tightly encompass all dialog item rectangles.
+///
+/// Universal Interfaces 3.4.1 `Dialogs.h`: `AutoSizeDialog` calculates the minimum content bounds
+/// required to enclose all items in the dialog box, preserving the top-left origin.
+/// If the item list is empty, the current bounds are preserved.
+#[inline]
+#[must_use]
+pub fn evaluate_auto_size_dialog_bounds(
+    current_bounds: (i16, i16, i16, i16),
+    item_rects: impl IntoIterator<Item = (i16, i16, i16, i16)>,
+) -> (i16, i16, i16, i16) {
+    let mut max_bottom = current_bounds.0;
+    let mut max_right = current_bounds.1;
+    let mut has_items = false;
+    for rect in item_rects {
+        has_items = true;
+        max_bottom = max_bottom.max(rect.2);
+        max_right = max_right.max(rect.3);
+    }
+    if has_items {
+        (current_bounds.0, current_bounds.1, max_bottom, max_right)
+    } else {
+        current_bounds
+    }
+}
+
 /// Canonical evaluated parameters for `ShortenDITL`.
 ///
 /// Macintosh Toolbox Essentials (1992), pp. 6-153--6-154.
@@ -7181,6 +7248,7 @@ mod tests {
         assert_eq!(DIALOG_DISPATCH_SET_DIALOG_CANCEL_ITEM, 0x0005);
         assert_eq!(DIALOG_DISPATCH_SET_DIALOG_TRACKS_CURSOR, 0x0006);
         assert_eq!(DIALOG_DISPATCH_NEW_FEATURES_DIALOG, 0x000C);
+        assert_eq!(DIALOG_DISPATCH_AUTO_SIZE_DIALOG, 0x000D);
         assert_eq!(DIALOG_DISPATCH_GET_DIALOG_ITEM_AS_CONTROL, 0x000F);
         assert_eq!(DIALOG_DISPATCH_MOVE_DIALOG_ITEM, 0x0010);
         assert_eq!(DIALOG_DISPATCH_SIZE_DIALOG_ITEM, 0x0011);
@@ -9720,6 +9788,60 @@ mod tests {
         assert_eq!(
             evaluate_appended_dialog_bounds(initial_bounds, items_expanding),
             (0, 0, 150, 250)
+        );
+    }
+
+    #[test]
+    fn auto_size_dialog_parameters_and_bounds_evaluation() {
+        assert_eq!(
+            evaluate_auto_size_dialog_parameters(0),
+            Err(DIALOG_PARAM_ERR)
+        );
+
+        let params = evaluate_auto_size_dialog_parameters(0x0001_2345)
+            .expect("valid dialog pointer should evaluate");
+        assert_eq!(params.dialog_ptr(), 0x0001_2345);
+
+        let direct = AutoSizeDialogParameters::new(0x0005_6789);
+        assert_eq!(direct.dialog_ptr(), 0x0005_6789);
+
+        // evaluate_auto_size_dialog_bounds
+        // Empty items preserves initial bounds
+        let initial_bounds = (0, 0, 100, 200);
+        assert_eq!(
+            evaluate_auto_size_dialog_bounds(initial_bounds, []),
+            (0, 0, 100, 200)
+        );
+
+        // Enclosing items shrinks bounds to tight bounding rect
+        let items_shrinking = [
+            (10, 10, 40, 80),
+            (20, 30, 50, 90),
+        ];
+        assert_eq!(
+            evaluate_auto_size_dialog_bounds(initial_bounds, items_shrinking),
+            (0, 0, 50, 90)
+        );
+
+        // Expanding items expands bounds
+        let items_expanding = [
+            (10, 10, 120, 80),
+            (20, 30, 50, 250),
+        ];
+        assert_eq!(
+            evaluate_auto_size_dialog_bounds(initial_bounds, items_expanding),
+            (0, 0, 120, 250)
+        );
+
+        // Non-zero origin is preserved
+        let offset_bounds = (50, 40, 200, 300);
+        let items_offset = [
+            (60, 50, 150, 220),
+            (70, 80, 180, 210),
+        ];
+        assert_eq!(
+            evaluate_auto_size_dialog_bounds(offset_bounds, items_offset),
+            (50, 40, 180, 220)
         );
     }
 

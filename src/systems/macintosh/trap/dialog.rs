@@ -24,6 +24,7 @@ use crate::dialog_manager::{
     evaluate_move_dialog_item_parameters, evaluate_move_dialog_item_rect,
     evaluate_size_dialog_item_parameters, evaluate_size_dialog_item_rect,
     evaluate_append_dialog_item_list_parameters, evaluate_appended_dialog_bounds,
+    evaluate_auto_size_dialog_parameters, evaluate_auto_size_dialog_bounds,
     evaluate_get_new_dialog_parameters,
     evaluate_get_std_filter_proc_parameters, evaluate_is_dialog_event_parameters,
     evaluate_dialog_default_item, evaluate_get_dialog_cancel_item_parameters,
@@ -16899,6 +16900,52 @@ impl super::TrapDispatcher {
                         let dialog_ptr = bus.read_long(sp + 2);
                         let os_err = match evaluate_set_dialog_tracks_cursor_parameters(dialog_ptr, tracks) {
                             Ok(_params) => crate::dialog_manager::DIALOG_NO_ERR,
+                            Err(err) => err,
+                        };
+                        bus.write_word(sp + param_bytes, os_err as u16);
+                        cpu.write_reg(Register::A7, sp + param_bytes);
+                    }
+                    // AutoSizeDialog (selector $0D, param_bytes=4)
+                    // FUNCTION AutoSizeDialog(inDialog: DialogRef): OSStatus;
+                    // Universal Interfaces 3.4.1 Dialogs.h (THREEWORDINLINE 0x303C, 0x020D, 0xAA68).
+                    //
+                    // Stack: SP+0=inDialog(4).
+                    // Result slot at SP+param_bytes (pre-pushed by caller).
+                    crate::dialog_manager::DIALOG_DISPATCH_AUTO_SIZE_DIALOG => {
+                        let dialog_ptr = bus.read_long(sp);
+                        let result = evaluate_auto_size_dialog_parameters(dialog_ptr);
+                        let os_err = match result {
+                            Ok(params) => {
+                                if let Some(items) = self.dialog_items.get(&params.dialog_ptr()) {
+                                    let old_bottom = if bus.get_alloc_size(params.dialog_ptr()).unwrap_or(0) >= 24 {
+                                        bus.read_word(params.dialog_ptr() + 20) as i16
+                                    } else {
+                                        0
+                                    };
+                                    let old_right = if bus.get_alloc_size(params.dialog_ptr()).unwrap_or(0) >= 24 {
+                                        bus.read_word(params.dialog_ptr() + 22) as i16
+                                    } else {
+                                        0
+                                    };
+                                    let new_bounds = evaluate_auto_size_dialog_bounds(
+                                        (0, 0, old_bottom, old_right),
+                                        items.iter().map(|item| item.rect),
+                                    );
+                                    if bus.get_alloc_size(params.dialog_ptr()).unwrap_or(0) >= 24 {
+                                        bus.write_word(params.dialog_ptr() + 20, new_bounds.2 as u16);
+                                        bus.write_word(params.dialog_ptr() + 22, new_bounds.3 as u16);
+                                    }
+                                    if let Some(tracking) = self.dialog_tracking.as_mut() {
+                                        if tracking.dialog_ptr == params.dialog_ptr() {
+                                            tracking.bounds = evaluate_auto_size_dialog_bounds(
+                                                tracking.bounds,
+                                                items.iter().map(|item| item.rect),
+                                            );
+                                        }
+                                    }
+                                }
+                                crate::dialog_manager::DIALOG_NO_ERR
+                            }
                             Err(err) => err,
                         };
                         bus.write_word(sp + param_bytes, os_err as u16);

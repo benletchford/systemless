@@ -1480,6 +1480,22 @@ fn import_bindings_classify_dialog_imports() {
         PpcImportDispatcherTarget::AppendDialogItemList
     );
     assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "AutoSizeDialog"),
+        PpcImportDispatcherTarget::AutoSizeDialog
+    );
+    assert_eq!(
+        dispatcher_target_for_import("AppearanceLib", "AutoSizeDialog"),
+        PpcImportDispatcherTarget::AutoSizeDialog
+    );
+    assert_eq!(
+        dispatcher_target_for_import("DialogsLib", "AutoSizeDialog"),
+        PpcImportDispatcherTarget::AutoSizeDialog
+    );
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "AutoSizeDialog"),
+        PpcImportDispatcherTarget::AutoSizeDialog
+    );
+    assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "StdFilterProc"),
         PpcImportDispatcherTarget::StdFilterProc
     );
@@ -2523,3 +2539,69 @@ fn append_dialog_item_list_appends_items_and_rejects_missing_resources_and_inval
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_RES_NOT_FOUND_ERR));
 }
+
+#[test]
+fn auto_size_dialog_resizes_bounds_and_rejects_nil_dialog() {
+    let pef = synthetic_pef_with_library_import(b"AppearanceLib", b"AutoSizeDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+
+    let mut ditl = vec![0; 36];
+    ditl[0..2].copy_from_slice(&1i16.to_be_bytes()); // 2 items (count - 1 = 1)
+    // Item 1: rect (10, 20, 50, 100), Button "OK"
+    ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&50i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&100i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_BUTTON;
+    ditl[15] = 2;
+    ditl[16..18].copy_from_slice(b"OK");
+    // Item 2: rect (60, 20, 90, 180), Button "More"
+    ditl[22..24].copy_from_slice(&60i16.to_be_bytes());
+    ditl[24..26].copy_from_slice(&20i16.to_be_bytes());
+    ditl[26..28].copy_from_slice(&90i16.to_be_bytes());
+    ditl[28..30].copy_from_slice(&180i16.to_be_bytes());
+    ditl[30] = PPC_DIALOG_ITEM_BUTTON;
+    ditl[31] = 4;
+    ditl[32..36].copy_from_slice(b"More");
+
+    let items_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &ditl,
+    );
+    loaded
+        .memory
+        .write_u32_be(PPC_MAIN_GWORLD + PPC_DIALOG_ITEMS_OFFSET, items_handle)
+        .unwrap();
+
+    // Initial gworld dimensions: 300x400
+    if let Some(gw) = loaded.gworlds.iter_mut().find(|gw| gw.port == PPC_MAIN_GWORLD) {
+        gw.height = 300;
+        gw.width = 400;
+    }
+    let _ = ppc_write_rect(&mut loaded.memory, PPC_MAIN_GWORLD + 16, 0, 0, 300, 400);
+
+    // 1. Valid call: AutoSizeDialog(PPC_MAIN_GWORLD)
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    // Bounds tightened to enclosing items: bottom=90, right=180
+    let gw = loaded.gworlds.iter().find(|gw| gw.port == PPC_MAIN_GWORLD).unwrap();
+    assert_eq!(gw.height, 90);
+    assert_eq!(gw.width, 180);
+
+    assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_GWORLD + 20), Some(90));
+    assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_GWORLD + 22), Some(180));
+
+    // 2. Reject NIL dialog
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+}
+
