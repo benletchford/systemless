@@ -751,6 +751,9 @@ fn get_new_dialog_installs_owned_control_records_in_the_live_ditl() {
             sub_controls: Vec::new(),
             properties: Vec::new(),
             color_proc: 0,
+            control_id: (0, 0),
+            command_id: 0,
+            has_focus: false,
         }]
     );
     // The dialog item hit test only accepts control items whose record
