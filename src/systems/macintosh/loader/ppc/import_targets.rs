@@ -561,6 +561,8 @@ pub enum PpcImportDispatcherTarget {
     FreeAlert,
     StdFilterProc,
     GetStdFilterProc,
+    GetAlertStage,
+    SetDialogFont,
     DrawDialog,
     DrawControls,
     ModalDialog,
@@ -3030,6 +3032,13 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "FreeAlert") => PpcImportDispatcherTarget::FreeAlert,
         ("InterfaceLib", "StdFilterProc") => PpcImportDispatcherTarget::StdFilterProc,
         ("InterfaceLib", "GetStdFilterProc") => PpcImportDispatcherTarget::GetStdFilterProc,
+        ("InterfaceLib" | "DialogsLib" | "CarbonLib", "GetAlertStage") => {
+            PpcImportDispatcherTarget::GetAlertStage
+        }
+        ("InterfaceLib" | "DialogsLib" | "CarbonLib", "SetDialogFont")
+        | ("InterfaceLib" | "DialogsLib" | "CarbonLib", "SetDAFont") => {
+            PpcImportDispatcherTarget::SetDialogFont
+        }
         ("InterfaceLib", "DrawDialog") => PpcImportDispatcherTarget::DrawDialog,
         ("InterfaceLib", "DrawControls") => PpcImportDispatcherTarget::DrawControls,
         ("InterfaceLib", "ModalDialog") => PpcImportDispatcherTarget::ModalDialog,

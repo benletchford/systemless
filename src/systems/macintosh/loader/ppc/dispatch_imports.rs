@@ -2032,6 +2032,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::FreeAlert
         | PpcImportDispatcherTarget::StdFilterProc
         | PpcImportDispatcherTarget::GetStdFilterProc
+        | PpcImportDispatcherTarget::GetAlertStage
+        | PpcImportDispatcherTarget::SetDialogFont
         | PpcImportDispatcherTarget::DrawDialog
         | PpcImportDispatcherTarget::ModalDialog => {
             unreachable!("dialog imports return through dispatch_dialog_import")
