@@ -185,6 +185,7 @@ impl PpcLoadedApp {
     ) -> PpcHleRunProbe {
         self.assert_cfm_execution_owner(Some(cfm));
         let saved_context = self.cpu.capture_execution_context();
+        let continuing = self.file_completion_context.take();
         let default_rtoc = if saved_context.architectural().gpr[2] != 0 {
             saved_context.architectural().gpr[2]
         } else {
@@ -206,7 +207,16 @@ impl PpcLoadedApp {
                 self.memory.read_u32_be(completion.wrapping_add(4)),
             );
         }
-        let probe = if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
+        let probe = if let Some(context) = continuing {
+            self.cpu.install_execution_context(context);
+            self.run_with_hle_imports_with_trace(
+                max_cycles,
+                trace_imports,
+                trace_fetches,
+                Some(memory_manager),
+                Some(cfm),
+            )
+        } else if let Some(callback_sp) = self.prepare_interrupt_callback_frame(default_rtoc) {
             self.cpu.invalidate_reservation();
             self.cpu.pc = target.entry;
             self.cpu.lr = self.halt_pc;
@@ -224,6 +234,11 @@ impl PpcLoadedApp {
         } else {
             self.interrupt_callback_stack_fault()
         };
+        // Inside Macintosh: Files (1992), "Completion Routines": the callback
+        // completes after I/O; a runner slice is not a callback completion.
+        if matches!(probe.result, PpcRunResult::CycleLimit { .. }) {
+            self.file_completion_context = Some(self.cpu.capture_execution_context());
+        }
         self.cpu.install_execution_context(saved_context);
         probe
     }

@@ -31,6 +31,8 @@ pub struct PpcLoadedApp {
     pub(crate) dialog_callback_stack: Vec<PpcDialogCallbackState>,
     pub(crate) collection_callback_stack: Vec<PpcCollectionCallbackState>,
     pub(crate) pending_file_completions: VecDeque<(u32, u32)>,
+    /// A callback that exhausted its current runner slice, in queue-front order.
+    pub(crate) file_completion_context: Option<PpcExecutionContext>,
     pub(crate) apple_events: PpcAppleEventState,
     /// Standalone CFM seed; None after a runner moves it into its process.
     /// Installed execution must receive the process service explicitly.

@@ -1,6 +1,70 @@
 use super::*;
 
 #[test]
+fn long_file_completion_resumes_without_changing_foreground_context() {
+    let pef = synthetic_pef_with_import(b"PBReadAsync");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let parameter_block = PPC_DATA_BASE + 0x1000;
+    let callback = PPC_DATA_BASE + 0x2000;
+    loaded.memory.add_region(parameter_block, vec![0xff; 0x100]);
+    loaded.memory.add_region(callback, vec![0; 0x100]);
+    // 131,072 iterations exceed one 250,000-cycle runner slice.
+    for (index, instruction) in [
+        0x3c80_0002u32, // lis r4, 2
+        0x3884_ffff,    // addi r4, r4, -1
+        0x2c04_0000,    // cmpwi r4, 0
+        0x4082_fff8,    // bne to addi
+        0x9083_0000,    // stw r4, 0(r3)
+        0x4e80_0020,    // blr
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        loaded
+            .memory
+            .write_u32_be(callback + (index as u32) * 4, instruction)
+            .unwrap();
+    }
+    let foreground = loaded.cpu.capture_execution_context();
+    let mut cfm = loaded.cfm.take().unwrap();
+    let mut memory_manager = ProcessMemoryManager::default();
+
+    let first = loaded.run_file_completion_callback_with_process_services(
+        parameter_block,
+        callback,
+        250_000,
+        false,
+        false,
+        &mut memory_manager,
+        &mut cfm,
+    );
+    assert!(matches!(first.result, PpcRunResult::CycleLimit { .. }));
+    assert!(loaded.file_completion_context.is_some());
+    assert_eq!(
+        loaded.cpu.capture_execution_context().architectural(),
+        foreground.architectural()
+    );
+    assert_eq!(loaded.memory.read_u32_be(parameter_block), Some(0xffff_ffff));
+
+    let second = loaded.run_file_completion_callback_with_process_services(
+        parameter_block,
+        callback,
+        250_000,
+        false,
+        false,
+        &mut memory_manager,
+        &mut cfm,
+    );
+    assert!(matches!(second.result, PpcRunResult::Halted { .. }));
+    assert!(loaded.file_completion_context.is_none());
+    assert_eq!(
+        loaded.cpu.capture_execution_context().architectural(),
+        foreground.architectural()
+    );
+    assert_eq!(loaded.memory.read_u32_be(parameter_block), Some(0));
+}
+
+#[test]
 fn pb_read_async_queues_completion_on_eof() {
     let pef = synthetic_pef_with_import(b"PBReadAsync");
     let mut loaded = load_pef_application(&pef).unwrap();

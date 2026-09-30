@@ -120,6 +120,7 @@ fn ppc_loaded_app_runs_through_fixture_runner() {
         dialog_callback_stack: Vec::new(),
         collection_callback_stack: Vec::new(),
         pending_file_completions: VecDeque::new(),
+        file_completion_context: None,
         apple_events: Default::default(),
         cfm: Some(crate::cfm::CfmState::default()),
         controls: Default::default(),
