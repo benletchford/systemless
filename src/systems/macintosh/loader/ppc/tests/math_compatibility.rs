@@ -671,6 +671,10 @@ fn import_bindings_classify_mathlib_imports() {
         PpcImportDispatcherTarget::MathCos
     );
     assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "cos"),
+        PpcImportDispatcherTarget::MathCos
+    );
+    assert_eq!(
         dispatcher_target_for_import("MathLib", "atan2"),
         PpcImportDispatcherTarget::MathAtan2
     );
