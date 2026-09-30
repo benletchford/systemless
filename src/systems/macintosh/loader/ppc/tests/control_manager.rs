@@ -1221,3 +1221,231 @@ fn control_title_style_resolves_appearance_meta_fonts() {
     assert_eq!(resolve(0x0005, 21, 18), (21, 18, 0));
     assert_eq!(resolve(0x0105, -2, -1), (3, 9, 0));
 }
+
+#[test]
+fn import_bindings_classify_control_creation_and_disposal_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // NewControl
+        assert_eq!(
+            dispatcher_target_for_import(lib, "NewControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "newcontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl)
+        );
+
+        // GetNewControl
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetNewControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetNewControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getnewcontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetNewControl)
+        );
+
+        // DisposeControl / DisposControl
+        assert_eq!(
+            dispatcher_target_for_import(lib, "DisposeControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisposeControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "disposecontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisposeControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "DisposControl"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisposeControl)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "disposcontrol"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisposeControl)
+        );
+
+        // KillControls
+        assert_eq!(
+            dispatcher_target_for_import(lib, "KillControls"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::KillControls)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "killcontrols"),
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::KillControls)
+        );
+    }
+}
+
+#[test]
+fn control_creation_and_disposal_commands_dispatch_with_canonical_evaluation() {
+    for lib in [b"InterfaceLib".as_slice(), b"AppearanceLib".as_slice(), b"CarbonLib".as_slice()] {
+        // 1. NewControl & DisposeControl
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"NewControl");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let scratch = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(scratch, vec![0; 64]);
+            ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 40, 140).unwrap();
+            write_ppc_pstring(&mut loaded.memory, scratch + 8, b"Button");
+            let ref_con_slot =
+                ppc_parameter_area_slot_addr(loaded.cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
+                    .unwrap();
+            loaded
+                .memory
+                .write_u32_be(ref_con_slot, 0x1234_5678)
+                .unwrap();
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "NewControl");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+            loaded.cpu.gpr[4] = scratch;
+            loaded.cpu.gpr[5] = scratch + 8;
+            loaded.cpu.gpr[6] = 1;
+            loaded.cpu.gpr[7] = 3;
+            loaded.cpu.gpr[8] = 1;
+            loaded.cpu.gpr[9] = 9;
+            loaded.cpu.gpr[10] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            let handle = loaded.cpu.gpr[3];
+            assert_ne!(handle, 0);
+            assert_eq!(
+                loaded.memory.read_u32_be(PPC_MAIN_GWORLD + PPC_CWINDOW_CONTROL_LIST_OFFSET),
+                Some(handle)
+            );
+            assert!(loaded.controls.records().iter().any(|c| c.handle == handle));
+
+            // Now test DisposeControl on this control
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "DisposeControl");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = handle;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            assert_eq!(
+                loaded.memory.read_u32_be(PPC_MAIN_GWORLD + PPC_CWINDOW_CONTROL_LIST_OFFSET),
+                Some(0)
+            );
+            assert!(!loaded.controls.records().iter().any(|c| c.handle == handle));
+        }
+
+        // 2. GetNewControl
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"GetNewControl");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let mut cntl = vec![0; 23];
+            for (index, value) in [10i16, 10, 30, 90].into_iter().enumerate() {
+                cntl[index * 2..index * 2 + 2].copy_from_slice(&value.to_be_bytes());
+            }
+            cntl[10] = 1; // visible
+            cntl[12..14].copy_from_slice(&100i16.to_be_bytes()); // max
+            cntl[14..16].copy_from_slice(&0i16.to_be_bytes()); // min
+            cntl[18..22].copy_from_slice(&0xABCD_EF01u32.to_be_bytes()); // refCon
+            let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+            loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(*b"CNTL"),
+                res_id: 200,
+                name: Vec::new(),
+                data: cntl,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "GetNewControl");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 200;
+            loaded.cpu.gpr[4] = PPC_MAIN_GWORLD;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            let handle = loaded.cpu.gpr[3];
+            assert_ne!(handle, 0);
+            assert_eq!(
+                loaded.memory.read_u32_be(PPC_MAIN_GWORLD + PPC_CWINDOW_CONTROL_LIST_OFFSET),
+                Some(handle)
+            );
+            assert!(loaded.controls.records().iter().any(|c| c.handle == handle));
+        }
+
+        // 3. KillControls
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"KillControls");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let scratch1 = PPC_DATA_BASE + 0x1000;
+            let scratch2 = PPC_DATA_BASE + 0x1100;
+            loaded.memory.add_region(scratch1, vec![0; 64]);
+            loaded.memory.add_region(scratch2, vec![0; 64]);
+            ppc_write_rect(&mut loaded.memory, scratch1, 10, 20, 40, 140).unwrap();
+            ppc_write_rect(&mut loaded.memory, scratch2, 50, 20, 80, 140).unwrap();
+
+            let ref_con_slot =
+                ppc_parameter_area_slot_addr(loaded.cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
+                    .unwrap();
+            loaded.memory.write_u32_be(ref_con_slot, 0).unwrap();
+
+            // Create first control
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "NewControl");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+            loaded.cpu.gpr[4] = scratch1;
+            loaded.cpu.gpr[5] = scratch1 + 8;
+            loaded.cpu.gpr[6] = 1;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+            loaded.cpu.gpr[9] = 1;
+            loaded.cpu.gpr[10] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            let handle1 = loaded.cpu.gpr[3];
+            assert_ne!(handle1, 0);
+
+            // Create second control
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+            loaded.cpu.gpr[4] = scratch2;
+            loaded.cpu.gpr[5] = scratch2 + 8;
+            loaded.cpu.gpr[6] = 1;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+            loaded.cpu.gpr[9] = 1;
+            loaded.cpu.gpr[10] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            let handle2 = loaded.cpu.gpr[3];
+            assert_ne!(handle2, 0);
+
+            assert_ne!(
+                loaded.memory.read_u32_be(PPC_MAIN_GWORLD + PPC_CWINDOW_CONTROL_LIST_OFFSET),
+                Some(0)
+            );
+
+            // Now KillControls
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "KillControls");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+
+            assert_eq!(
+                loaded.memory.read_u32_be(PPC_MAIN_GWORLD + PPC_CWINDOW_CONTROL_LIST_OFFSET),
+                Some(0)
+            );
+            assert!(!loaded.controls.records().iter().any(|c| c.handle == handle1 || c.handle == handle2));
+        }
+    }
+}
+

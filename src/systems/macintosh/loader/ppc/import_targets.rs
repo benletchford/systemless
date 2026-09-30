@@ -3989,9 +3989,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "UnlockMemory") => PpcImportDispatcherTarget::LegacyMemoryUtility(
             PpcLegacyMemoryUtilityOperation::UnlockMemory,
         ),
-        ("InterfaceLib", "DisposeControl") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisposeControl)
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "DisposeControl" | "disposecontrol" | "DisposControl" | "disposcontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisposeControl),
         ("InterfaceLib", "Draw1Control") => {
             PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl)
         }
@@ -4016,21 +4017,24 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetControlValue") => {
             PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlValue)
         }
-        ("InterfaceLib", "GetNewControl") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetNewControl)
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetNewControl" | "getnewcontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetNewControl),
         ("InterfaceLib", "HideControl") => {
             PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::HideControl)
         }
-        ("InterfaceLib", "KillControls") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::KillControls)
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "KillControls" | "killcontrols",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::KillControls),
         ("InterfaceLib", "MoveControl") => {
             PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::MoveControl)
         }
-        ("InterfaceLib", "NewControl") => {
-            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl)
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "NewControl" | "newcontrol",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl),
         ("InterfaceLib", "SetControlMaximum") => {
             PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMaximum)
         }
