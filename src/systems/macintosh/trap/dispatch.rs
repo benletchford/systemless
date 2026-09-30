@@ -7401,11 +7401,31 @@ impl TrapDispatcher {
         )
     }
 
+    /// Whether a canonical slot's raw table cell still names its default
+    /// gateway, so nothing is patched. Resolving such a cell returns the
+    /// gateway itself: a default gateway is read-only system code, never a
+    /// come-from head, so the full lookup is not needed for the usual case.
+    fn trap_table_cell_is_default(&self, bus: &MacMemoryBus, trap_word: u16) -> bool {
+        let Some(default) = self.default_trap_gateway(bus, trap_word) else {
+            return false;
+        };
+        let canonical = Self::canonical_trap_word(trap_word);
+        let kind = if raw_trap_route(canonical).is_toolbox {
+            TrapTableKind::Toolbox
+        } else {
+            TrapTableKind::OperatingSystem
+        };
+        bus.try_read_trap_manager_long(TrapManager::table_address(canonical, kind)) == Some(default)
+    }
+
     /// Return the current non-default handler for a canonical trap slot.
     /// Once low-memory tables exist, their bytes are the source of truth so a
     /// guest can patch a trap with an ordinary longword store.
     pub(crate) fn native_trap_handler(&self, bus: &MacMemoryBus, trap_word: u16) -> Option<u32> {
         let canonical = Self::canonical_trap_word(trap_word);
+        if self.trap_table_cell_is_default(bus, canonical) {
+            return None;
+        }
         let logical = self.trap_table_address(bus, canonical)?;
         (self.default_trap_gateway(bus, canonical) != Some(logical)).then_some(logical)
     }
@@ -8322,7 +8342,10 @@ impl TrapDispatcher {
             // caller state until D1 is restored after the routine returns.
             deliver_os_trap_word(cpu, effective_trap);
         }
-        if !default_os_gateway_call && !default_tool_gateway_call {
+        if !default_os_gateway_call
+            && !default_tool_gateway_call
+            && !self.trap_table_cell_is_default(bus, base_trap)
+        {
             let handler_addr = self
                 .trap_table_address(bus, base_trap)
                 .ok_or(Error::TrapTableLookup(base_trap))?;
