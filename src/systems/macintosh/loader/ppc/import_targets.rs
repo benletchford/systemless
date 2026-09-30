@@ -1095,6 +1095,12 @@ pub enum PpcImportDispatcherTarget {
     DisposeEventHandlerUPP,
     NewEventLoopTimerUPP,
     DisposeEventLoopTimerUPP,
+    NewControlActionUPP,
+    DisposeControlActionUPP,
+    NewControlKeyFilterUPP,
+    DisposeControlKeyFilterUPP,
+    NewControlEditTextValidationUPP,
+    DisposeControlEditTextValidationUPP,
     NewFatRoutineDescriptor,
     DisposeRoutineDescriptor,
     CallUniversalProc,
@@ -3716,6 +3722,24 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "DisposeEventLoopTimerUPP") => {
             PpcImportDispatcherTarget::DisposeEventLoopTimerUPP
+        }
+        ("InterfaceLib", "NewControlActionUPP") => {
+            PpcImportDispatcherTarget::NewControlActionUPP
+        }
+        ("InterfaceLib", "DisposeControlActionUPP") => {
+            PpcImportDispatcherTarget::DisposeControlActionUPP
+        }
+        ("InterfaceLib", "NewControlKeyFilterUPP") => {
+            PpcImportDispatcherTarget::NewControlKeyFilterUPP
+        }
+        ("InterfaceLib", "DisposeControlKeyFilterUPP") => {
+            PpcImportDispatcherTarget::DisposeControlKeyFilterUPP
+        }
+        ("InterfaceLib", "NewControlEditTextValidationUPP") => {
+            PpcImportDispatcherTarget::NewControlEditTextValidationUPP
+        }
+        ("InterfaceLib", "DisposeControlEditTextValidationUPP") => {
+            PpcImportDispatcherTarget::DisposeControlEditTextValidationUPP
         }
         ("InterfaceLib", "NewFatRoutineDescriptor") => {
             PpcImportDispatcherTarget::NewFatRoutineDescriptor

@@ -15,6 +15,16 @@ pub(super) const PPC_EVENT_HANDLER_PROC_INFO: u32 = 0x0FF0;
 // CarbonEvents.h (QuickTime 6.0.2): void EventLoopTimerProcPtr(
 // EventLoopTimerRef, void *). Pascal stack, void result, two pointers.
 pub(super) const PPC_EVENT_LOOP_TIMER_PROC_INFO: u32 = 0x03C0;
+// Inside Macintosh: PowerPC System Software (1994), pp. 1-15--1-16:
+// ControlActionProcPtr takes a ControlHandle and a 2-byte part code,
+// returns void, and uses the Pascal stack convention.
+pub(super) const PPC_CONTROL_ACTION_PROC_INFO: u32 = 0x02C0;
+// Apple Control Manager Reference (Controls.h): ControlKeyFilterProcPtr
+// returns a 2-byte result and takes four pointers using Pascal stack calling.
+pub(super) const PPC_CONTROL_KEY_FILTER_PROC_INFO: u32 = 0x3FE0;
+// Apple Control Manager Reference (HITextViews.h):
+// ControlEditTextValidationProcPtr returns void and takes one ControlRef.
+pub(super) const PPC_CONTROL_EDIT_TEXT_VALIDATION_PROC_INFO: u32 = 0x00C0;
 
 pub(super) const PPC_SYSTEM_ALLOCATION_POOL_SIZE: u32 = 64 * 1024;
 
@@ -188,6 +198,42 @@ pub(super) fn dispatch_mixed_mode_import(
                 &mut toolbox_startup.system_allocations,
             ))))
         }
+        PpcImportDispatcherTarget::NewControlActionUPP => {
+            Some(Some(PpcImportAction::Return(ppc_new_routine_descriptor(
+                cpu.gpr[3],
+                PPC_CONTROL_ACTION_PROC_INFO,
+                PPC_ROUTINE_RECORD_POWERPC_ISA,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                &mut toolbox_startup.system_allocations,
+            ))))
+        }
+        PpcImportDispatcherTarget::NewControlKeyFilterUPP => {
+            Some(Some(PpcImportAction::Return(ppc_new_routine_descriptor(
+                cpu.gpr[3],
+                PPC_CONTROL_KEY_FILTER_PROC_INFO,
+                PPC_ROUTINE_RECORD_POWERPC_ISA,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                &mut toolbox_startup.system_allocations,
+            ))))
+        }
+        PpcImportDispatcherTarget::NewControlEditTextValidationUPP => {
+            Some(Some(PpcImportAction::Return(ppc_new_routine_descriptor(
+                cpu.gpr[3],
+                PPC_CONTROL_EDIT_TEXT_VALIDATION_PROC_INFO,
+                PPC_ROUTINE_RECORD_POWERPC_ISA,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                &mut toolbox_startup.system_allocations,
+            ))))
+        }
         PpcImportDispatcherTarget::NewFatRoutineDescriptor => Some(Some(PpcImportAction::Return(
             ppc_new_fat_routine_descriptor(
                 cpu,
@@ -203,7 +249,10 @@ pub(super) fn dispatch_mixed_mode_import(
         | PpcImportDispatcherTarget::DisposeControlUserPaneDrawUPP
         | PpcImportDispatcherTarget::DisposeAEEventHandlerUPP
         | PpcImportDispatcherTarget::DisposeEventHandlerUPP
-        | PpcImportDispatcherTarget::DisposeEventLoopTimerUPP => {
+        | PpcImportDispatcherTarget::DisposeEventLoopTimerUPP
+        | PpcImportDispatcherTarget::DisposeControlActionUPP
+        | PpcImportDispatcherTarget::DisposeControlKeyFilterUPP
+        | PpcImportDispatcherTarget::DisposeControlEditTextValidationUPP => {
             // DisposeRoutineDescriptor(theProcPtr: UniversalProcPtr): void.
             // PowerPC ABI: r3 carries the descriptor and is preserved on return.
             // The Mixed Mode Manager releases only creation-allocated heap storage.

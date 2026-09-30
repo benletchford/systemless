@@ -2507,6 +2507,12 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DisposeEventHandlerUPP
         | PpcImportDispatcherTarget::NewEventLoopTimerUPP
         | PpcImportDispatcherTarget::DisposeEventLoopTimerUPP
+        | PpcImportDispatcherTarget::NewControlActionUPP
+        | PpcImportDispatcherTarget::DisposeControlActionUPP
+        | PpcImportDispatcherTarget::NewControlKeyFilterUPP
+        | PpcImportDispatcherTarget::DisposeControlKeyFilterUPP
+        | PpcImportDispatcherTarget::NewControlEditTextValidationUPP
+        | PpcImportDispatcherTarget::DisposeControlEditTextValidationUPP
         | PpcImportDispatcherTarget::NewFatRoutineDescriptor
         | PpcImportDispatcherTarget::DisposeRoutineDescriptor
         | PpcImportDispatcherTarget::CallUniversalProc
