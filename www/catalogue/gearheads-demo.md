@@ -60,6 +60,7 @@ artifacts:
     notes: >-
       Original 896,532-byte StuffIt archive, SHA-256
       244483a9cfff44858a6d510a2e21d14a4d71dbd644b0ae257b9dd1759fb4cb7e.
+      The promoted public object matched this hash and byte count.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -76,6 +77,7 @@ artifacts:
     permission: >-
       Fresh gameplay capture made from the original demo for this catalogue entry.
       The underlying game artwork remains its owners' property.
+    notes: The promoted public screenshot matched its recorded SHA-256 and byte count.
 references:
 - https://classicmacdemos.com/gearheads
 ---
