@@ -3190,11 +3190,9 @@ pub(super) fn ppc_dispatch_legacy_window(
         PpcLegacyWindowOperation::RepositionWindow => {
             // Apple, Handling Carbon Windows and Controls, "Window and Control
             // Tasks": RepositionWindow accepts a WindowPositionMethod.
-            // kWindowCenterOnMainScreen is 1.
             let window = cpu.gpr[3];
-            if cpu.gpr[5] != 1 {
-                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
-            }
+            let parent_window = cpu.gpr[4];
+            let method = cpu.gpr[5] as u16;
             let Some(content) = ppc_window_global_content_bounds(memory, gworlds, window) else {
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
             };
@@ -3202,19 +3200,32 @@ pub(super) fn ppc_dispatch_legacy_window(
             else {
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
             };
+            let parent_structure = if parent_window != 0 {
+                let Some(parent_bounds) =
+                    ppc_window_global_structure_bounds(memory, gworlds, parent_window)
+                else {
+                    return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+                };
+                Some(parent_bounds)
+            } else {
+                None
+            };
             let menu_height = i32::from(memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20));
             let screen_width = ppc_main_screen_width() as i32;
             let screen_height = ppc_main_screen_height() as i32;
-            let structure_width = i32::from(structure.3) - i32::from(structure.1);
-            let structure_height = i32::from(structure.2) - i32::from(structure.0);
-            let centered_left = (screen_width - structure_width) / 2;
-            let centered_top = menu_height + (screen_height - menu_height - structure_height) / 2;
-            let new_left = ppc_i32_to_i16_saturating(
-                i32::from(content.1) + centered_left - i32::from(structure.1),
-            );
-            let new_top = ppc_i32_to_i16_saturating(
-                i32::from(content.0) + centered_top - i32::from(structure.0),
-            );
+            let Some(new_bounds) = crate::window_manager::evaluate_reposition_window_bounds(
+                content,
+                structure,
+                parent_structure,
+                method,
+                screen_width,
+                screen_height,
+                menu_height,
+            ) else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let new_left = new_bounds.1;
+            let new_top = new_bounds.0;
             let was_visible = ppc_window_is_visible(memory, window);
             let mut move_cpu = cpu.clone();
             move_cpu.gpr[4] = new_left as u16 as u32;
