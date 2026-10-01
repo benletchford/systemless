@@ -2794,6 +2794,10 @@ pub(crate) fn dispatch_supported_import(
             // systems, NewOTNotifyUPP(userRoutine) returns the routine pointer.
             Some(PpcImportAction::Return(cpu.gpr[3]))
         }
+        PpcImportDispatcherTarget::AglGetVersion => {
+            ppc_agl_get_version(memory, cpu.gpr[3], cpu.gpr[4])
+                .then_some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::AglChoosePixelFormat => Some(PpcImportAction::Return(
             ppc_agl_choose_pixel_format(cpu, memory, agl, gworlds),
         )),
@@ -3124,6 +3128,24 @@ pub(crate) fn dispatch_supported_import(
     }
 }
 
+fn ppc_agl_get_version(memory: &mut PpcSectionMem, major: u32, minor: u32) -> bool {
+    // void aglGetVersion(GLint *major, GLint *minor);
+    // Mac OS 9 OpenGLLibrary's aglGetVersion export writes 1 to each non-null
+    // pointer (PEF code offset 0x148D8). This is the AGL library version,
+    // separate from the renderer version returned by glGetString(GL_VERSION).
+    // Apple AGL Reference, aglGetVersion.
+    // https://leopard-adc.pepas.com/documentation/GraphicsImaging/Reference/AGL_OpenGL/Reference/reference.html
+    if [major, minor]
+        .into_iter()
+        .any(|pointer| pointer != 0 && !ppc_memory_can_write_bytes(memory, pointer, 4))
+    {
+        return false;
+    }
+    [major, minor]
+        .into_iter()
+        .all(|pointer| pointer == 0 || memory.write_u32_be(pointer, 1).is_some())
+}
+
 fn ppc_agl_choose_pixel_format(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
@@ -3331,6 +3353,22 @@ mod agl_choose_tests {
             ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]),
             0
         );
+    }
+
+    #[test]
+    fn imported_agl_version_writes_classic_library_numbers() {
+        assert_eq!(
+            dispatcher_target_for_import("OpenGLLibrary", "aglGetVersion"),
+            PpcImportDispatcherTarget::AglGetVersion
+        );
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x1000, vec![0; 8]);
+        assert!(!ppc_agl_get_version(&mut memory, 0x1000, 0x2000));
+        assert_eq!(memory.read_u32_be(0x1000), Some(0));
+        assert!(ppc_agl_get_version(&mut memory, 0x1000, 0x1004));
+        assert_eq!(memory.read_u32_be(0x1000), Some(1));
+        assert_eq!(memory.read_u32_be(0x1004), Some(1));
+        assert!(ppc_agl_get_version(&mut memory, 0, 0));
     }
 
     #[test]

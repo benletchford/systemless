@@ -1154,6 +1154,7 @@ pub enum PpcImportDispatcherTarget {
     MathCompatibility(PpcMathCompatibilityOperation),
     StdCCompatibility(PpcStdCCompatibilityOperation),
     ObjectSupportCompatibility,
+    AglGetVersion,
     AglChoosePixelFormat,
     AglDescribePixelFormat,
     AglDestroyPixelFormat,
@@ -5418,6 +5419,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("ObjectSupportLib", "CreateObjSpecifier") => {
             PpcImportDispatcherTarget::ObjectSupportCompatibility
         }
+        ("OpenGLLibrary", "aglGetVersion") => PpcImportDispatcherTarget::AglGetVersion,
         ("OpenGLLibrary", "aglChoosePixelFormat") => {
             PpcImportDispatcherTarget::AglChoosePixelFormat
         }
