@@ -58,6 +58,7 @@ artifacts:
     notes: >-
       Original 611,587-byte StuffIt archive, SHA-256
       01a6bb8f4a43715b6fefba3f3b99546497e00b6ffd9ff1805f311fa8de216c70.
+      The promoted public object was fetched back and matched this hash and size.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -77,6 +78,7 @@ artifacts:
     notes: >-
       Exact 640-by-400 game-content crop at (80,104) of an 800-by-600 Systemless
       framebuffer during live Level 1 after increasing release rate.
+      The promoted screenshot was fetched back and matched its recorded hash and size.
 references:
 - https://classicmacdemos.com/xmas-lemmings
 ---
