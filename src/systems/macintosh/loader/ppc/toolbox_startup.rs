@@ -55,6 +55,8 @@ pub struct PpcToolboxStartupState {
     pub(super) receive_next_event_deadline: Option<(u32, u32, u64)>,
     pub(super) carbon_event_dispatch_stack: Vec<PpcCarbonEventDispatchRecord>,
     pub(super) next_carbon_event_call_ref: u32,
+    pub(super) application_event_loop_context: Option<(u32, u32)>,
+    pub(super) application_event_loop_quit_requested: bool,
     /// Last tick through which a Carbon or classic event-loop wait is active.
     pub(super) event_loop_poll_until_tick: Option<u32>,
     pub(crate) last_button_result: Option<bool>,
@@ -147,6 +149,8 @@ impl Default for PpcToolboxStartupState {
             receive_next_event_deadline: None,
             carbon_event_dispatch_stack: Vec::new(),
             next_carbon_event_call_ref: 0x6000_0000,
+            application_event_loop_context: None,
+            application_event_loop_quit_requested: false,
             event_loop_poll_until_tick: None,
             last_button_result: None,
             last_still_down_result: None,

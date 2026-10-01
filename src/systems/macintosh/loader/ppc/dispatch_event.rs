@@ -42,6 +42,7 @@ pub(super) struct PpcCarbonEventParameterRecord {
 pub(super) enum PpcCarbonEventDispatchOrigin {
     Send,
     CallNext,
+    ApplicationLoop,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +80,44 @@ fn ppc_call_next_carbon_event_handler(
         restore_rtoc: dispatch.restore_rtoc,
         return_gpr3: PpcNativeReturnGpr3::Preserve,
     })
+}
+
+fn ppc_carbon_matching_handlers(
+    toolbox_startup: &PpcToolboxStartupState,
+    event_ref: u32,
+    target: u32,
+) -> Option<Vec<PpcCarbonEventHandlerRecord>> {
+    let event = toolbox_startup
+        .carbon_events
+        .iter()
+        .find(|event| event.event_ref == event_ref)?;
+    let event_type = (event.event_class, event.event_kind);
+    let mut handlers = Vec::new();
+    if target == PPC_EVENT_DISPATCHER_TARGET_REF {
+        handlers.extend(
+            toolbox_startup
+                .carbon_event_handlers
+                .iter()
+                .rev()
+                .filter(|handler| {
+                    handler.target == PPC_EVENT_DISPATCHER_TARGET_REF
+                        && handler.event_types.contains(&event_type)
+                })
+                .cloned(),
+        );
+    }
+    handlers.extend(
+        toolbox_startup
+            .carbon_event_handlers
+            .iter()
+            .rev()
+            .filter(|handler| {
+                handler.target == PPC_APPLICATION_EVENT_TARGET_REF
+                    && handler.event_types.contains(&event_type)
+            })
+            .cloned(),
+    );
+    Some(handlers)
 }
 
 fn ppc_resume_carbon_event_dispatch(
@@ -990,13 +1029,6 @@ pub(super) fn dispatch_event_import(
             }
             let event_ref = cpu.gpr[3];
             let target = cpu.gpr[4];
-            let Some(event) = toolbox_startup
-                .carbon_events
-                .iter()
-                .find(|event| event.event_ref == event_ref)
-            else {
-                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
-            };
             if !matches!(
                 target,
                 PPC_APPLICATION_EVENT_TARGET_REF | PPC_EVENT_DISPATCHER_TARGET_REF
@@ -1006,32 +1038,10 @@ pub(super) fn dispatch_event_import(
             // Carbon Event Manager Programming Guide (2005), pp. 10-13:
             // handlers form a last-installed-first stack; the dispatcher
             // propagates an unhandled event to the application target.
-            let event_type = (event.event_class, event.event_kind);
-            let mut handlers = Vec::new();
-            if target == PPC_EVENT_DISPATCHER_TARGET_REF {
-                handlers.extend(
-                    toolbox_startup
-                        .carbon_event_handlers
-                        .iter()
-                        .rev()
-                        .filter(|handler| {
-                            handler.target == PPC_EVENT_DISPATCHER_TARGET_REF
-                                && handler.event_types.contains(&event_type)
-                        })
-                        .cloned(),
-                );
-            }
-            handlers.extend(
-                toolbox_startup
-                    .carbon_event_handlers
-                    .iter()
-                    .rev()
-                    .filter(|handler| {
-                        handler.target == PPC_APPLICATION_EVENT_TARGET_REF
-                            && handler.event_types.contains(&event_type)
-                    })
-                    .cloned(),
-            );
+            let Some(handlers) = ppc_carbon_matching_handlers(toolbox_startup, event_ref, target)
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
             if handlers.is_empty() {
                 return Some(PpcImportAction::Return(ppc_i16_result(
                     PPC_EVENT_NOT_HANDLED_ERR,
@@ -1104,6 +1114,84 @@ pub(super) fn dispatch_event_import(
             };
             toolbox_startup.carbon_event_dispatch_stack.push(dispatch);
             Some(action)
+        }
+        PpcImportDispatcherTarget::RunApplicationEventLoop => {
+            // CarbonEvents.h (QuickTime 6.0.2): this is a void routine. The
+            // loop owns each pulled queue reference until dispatch finishes.
+            if let Some(dispatch) = toolbox_startup.carbon_event_dispatch_stack.last_mut() {
+                if dispatch.origin == PpcCarbonEventDispatchOrigin::ApplicationLoop
+                    && dispatch.import_pc == cpu.pc
+                    && cpu.lr == cpu.pc
+                {
+                    if cpu.gpr[3] == ppc_i16_result(PPC_EVENT_NOT_HANDLED_ERR)
+                        && !dispatch.delegated
+                    {
+                        if let Some(action) = ppc_call_next_carbon_event_handler(
+                            cpu,
+                            dispatch,
+                            &mut toolbox_startup.next_carbon_event_call_ref,
+                        ) {
+                            return Some(action);
+                        }
+                    }
+                    let dispatch = toolbox_startup.carbon_event_dispatch_stack.pop().unwrap();
+                    ppc_release_carbon_event(toolbox_startup, dispatch.event_ref);
+                    cpu.lr = dispatch.return_pc;
+                }
+            }
+            let return_pc = match toolbox_startup.application_event_loop_context {
+                Some((import_pc, return_pc)) if import_pc == cpu.pc => return_pc,
+                Some(_) => return Some(PpcImportAction::ReturnPreserve),
+                None => {
+                    toolbox_startup.application_event_loop_context = Some((cpu.pc, cpu.lr));
+                    cpu.lr
+                }
+            };
+            if toolbox_startup.application_event_loop_quit_requested {
+                toolbox_startup.application_event_loop_quit_requested = false;
+                toolbox_startup.application_event_loop_context = None;
+                cpu.lr = return_pc;
+                return Some(PpcImportAction::ReturnPreserve);
+            }
+            toolbox_startup.event_loop_poll_until_tick = Some(tick_count.wrapping_add(1));
+            while let Some((event_ref, _)) = toolbox_startup.carbon_event_queue.pop_front() {
+                let handlers = ppc_carbon_matching_handlers(
+                    toolbox_startup,
+                    event_ref,
+                    PPC_EVENT_DISPATCHER_TARGET_REF,
+                )
+                .unwrap_or_default();
+                if handlers.is_empty() {
+                    ppc_release_carbon_event(toolbox_startup, event_ref);
+                    continue;
+                }
+                let mut dispatch = PpcCarbonEventDispatchRecord {
+                    origin: PpcCarbonEventDispatchOrigin::ApplicationLoop,
+                    import_pc: cpu.pc,
+                    return_pc,
+                    restore_rtoc: cpu.gpr[2],
+                    event_ref,
+                    handlers,
+                    next_index: 0,
+                    active_call_ref: 0,
+                    delegated: false,
+                };
+                let Some(action) = ppc_call_next_carbon_event_handler(
+                    cpu,
+                    &mut dispatch,
+                    &mut toolbox_startup.next_carbon_event_call_ref,
+                ) else {
+                    ppc_release_carbon_event(toolbox_startup, event_ref);
+                    return Some(PpcImportAction::ReturnPreserve);
+                };
+                toolbox_startup.carbon_event_dispatch_stack.push(dispatch);
+                return Some(action);
+            }
+            Some(PpcImportAction::Yield(u64::MAX))
+        }
+        PpcImportDispatcherTarget::QuitApplicationEventLoop => {
+            toolbox_startup.application_event_loop_quit_requested = true;
+            Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetMainEventQueue => {
             // Carbon Event Manager Programming Guide (2005), "Posting Events":

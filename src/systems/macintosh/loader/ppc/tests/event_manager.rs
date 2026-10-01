@@ -352,6 +352,79 @@ fn call_next_carbon_event_handler_returns_to_its_guest_caller() {
 }
 
 #[test]
+fn carbon_application_loop_dispatches_queued_event_then_quits() {
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"RunApplicationEventLoop");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let base = PPC_DATA_BASE + 0x2e00;
+    let callback = base + 0x100;
+    let type_list = base + 0x200;
+    let out_ref = base + 0x210;
+    let marker = base + 0x220;
+    loaded.memory.add_region(base, vec![0; 0x300]);
+    loaded.memory.write_u32_be(callback, 0x38c0_1234).unwrap(); // li r6,$1234
+    loaded
+        .memory
+        .write_u32_be(callback + 4, 0x90c5_0000)
+        .unwrap(); // stw r6,0(r5)
+    loaded
+        .memory
+        .write_u32_be(callback + 8, 0x3860_0000)
+        .unwrap(); // li r3,0
+    loaded.memory.write_u32_be(callback + 12, BLR).unwrap();
+    loaded
+        .memory
+        .write_u32_be(type_list, u32::from_be_bytes(*b"test"))
+        .unwrap();
+    loaded.memory.write_u32_be(type_list + 4, 1).unwrap();
+    loaded.cpu.gpr[3] = PPC_APPLICATION_EVENT_TARGET_REF;
+    loaded.cpu.gpr[4] = callback;
+    loaded.cpu.gpr[5] = 1;
+    loaded.cpu.gpr[6] = type_list;
+    loaded.cpu.gpr[7] = marker;
+    loaded.cpu.gpr[8] = out_ref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InstallEventHandler);
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"test");
+    loaded.cpu.gpr[5] = 1;
+    loaded.cpu.fpr[1] = 1.0f64.to_bits();
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = out_ref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CreateEvent);
+    let event_ref = loaded.memory.read_u32_be(out_ref).unwrap();
+    loaded.cpu.gpr[3] = PPC_MAIN_EVENT_QUEUE_REF;
+    loaded.cpu.gpr[4] = event_ref;
+    loaded.cpu.gpr[5] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PostEventToQueue);
+    loaded.cpu.gpr[3] = event_ref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ReleaseEvent);
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::RunApplicationEventLoop;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 2);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.memory.read_u32_be(marker), Some(0x1234));
+    assert!(loaded.toolbox_startup.carbon_events.is_empty());
+    assert!(loaded.toolbox_startup.carbon_event_queue.is_empty());
+    assert!(loaded
+        .toolbox_startup
+        .application_event_loop_context
+        .is_some());
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuitApplicationEventLoop,
+    );
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::RunApplicationEventLoop,
+    );
+    assert!(loaded
+        .toolbox_startup
+        .application_event_loop_context
+        .is_none());
+    assert!(!loaded.toolbox_startup.application_event_loop_quit_requested);
+}
+
+#[test]
 fn carbon_application_event_handlers_keep_process_owned_targets_and_type_specs() {
     let pef = synthetic_pef_with_library_import(b"CarbonLib", b"InstallEventHandler");
     let mut loaded = load_pef_application(&pef).unwrap();
