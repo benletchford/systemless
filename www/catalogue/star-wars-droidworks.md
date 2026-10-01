@@ -12,7 +12,6 @@ architectures:
 - ppc
 default_architecture: ppc
 category: Puzzle
-launch_enabled: false
 compatibility:
   status: boots
   verified:
@@ -31,9 +30,9 @@ compatibility:
     systemless_version: 073fc3b9bfb63205ec93a66d683bb325b5e3683b
     architecture: ppc
     environment: >-
-      Deterministic native replay of the unchanged Macintosh demo reaches the
-      droid workshop and opens a part-selection panel. Browser launch remains
-      unverified and disabled pending the published runtime release.
+      Deterministic native replay of the unchanged Macintosh demo reaches the droid
+      workshop and opens a part-selection panel. Browser launch remains unverified and
+      disabled pending the published runtime release.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/3249
 artifacts:
@@ -65,22 +64,22 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/star-wars-droidworks/gameplay.png
+    type: sha256
+    sha256: 527aca60200dd468a5de4890ac9658faec789205d1bea6edc1d633b346581ce9
+    size_bytes: 497963
   provenance:
     redistribution: permitted
     content_only: true
     sources:
     - https://github.com/benletchford/systemless/issues/3677
     permission: >-
-      Original gameplay screenshot captured from the unchanged demo archive for
-      this catalogue entry. Underlying game artwork remains its owners' property.
+      Original gameplay screenshot captured from the unchanged demo archive for this
+      catalogue entry. Underlying game artwork remains its owners' property.
     notes: >-
-      Exact 640-by-480 game-content frame at tick 8,608 of a deterministic
-      Systemless replay, after entering Play New Game and opening a workshop
-      part category. The capture excludes desktop and emulator framing. PNG
-      SHA-256 527aca60200dd468a5de4890ac9658faec789205d1bea6edc1d633b346581ce9,
-      497,963 bytes.
+      Exact 640-by-480 game-content frame at tick 8,608 of a deterministic Systemless
+      replay, after entering Play New Game and opening a workshop part category. The
+      capture excludes desktop and emulator framing. PNG SHA-256
+      527aca60200dd468a5de4890ac9658faec789205d1bea6edc1d633b346581ce9, 497,963 bytes.
 references:
 - https://classicmacdemos.com/star-wars-droidworks
 - https://github.com/benletchford/systemless/issues/3249
@@ -93,4 +92,4 @@ Jawa workshop and try it in a mission. The bundled Read Me describes wheeled,
 legged and tread designs, along with painting and testing a creation. This is
 the complete, unchanged Power Macintosh demo package.
 
-![DroidWorks droid workshop with part choices](incoming/star-wars-droidworks/gameplay.png)
+![DroidWorks droid workshop with part choices](https://assets.systemless.org/catalogue/media/sha256/52/527aca60200dd468a5de4890ac9658faec789205d1bea6edc1d633b346581ce9.png)
