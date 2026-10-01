@@ -36,6 +36,14 @@ pub struct ClassicGlFramebuffer {
 }
 
 impl ClassicGlFramebuffer {
+    pub fn width(&self) -> u32 {
+        self.width as u32
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height as u32
+    }
+
     pub fn new(width: u32, height: u32, double_buffered: bool) -> Option<Self> {
         let (width, height) = (usize::try_from(width).ok()?, usize::try_from(height).ok()?);
         let len = width.checked_mul(height)?;

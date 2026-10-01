@@ -4,7 +4,8 @@
 //! AGL/agl.h (Mac OS X 10.2.8 SDK). Capability selection happens separately.
 //! https://github.com/phracker/MacOSX-SDKs/blob/master/MacOSX10.2.8.sdk/System/Library/Frameworks/AGL.framework/Versions/A/Headers/agl.h
 
-use super::PpcSectionMem;
+use super::classic_gl_framebuffer::{ClassicGlColorBuffer, ClassicGlFramebuffer};
+use super::{PpcFrontBuffer, PpcSectionMem};
 use ppc::PpcMemory;
 
 const MAX_ATTRIBUTE_WORDS: u32 = 64;
@@ -48,6 +49,16 @@ pub struct PpcAglPixelFormat {
 pub struct PpcAglState {
     next_handle: u32,
     pixel_formats: Vec<PpcAglPixelFormat>,
+    contexts: Vec<PpcAglContext>,
+    current_context: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct PpcAglContext {
+    pub handle: u32,
+    pub format: PpcAglPixelFormatRequest,
+    pub drawable: u32,
+    pub framebuffer: Option<ClassicGlFramebuffer>,
 }
 
 impl Default for PpcAglState {
@@ -55,6 +66,8 @@ impl Default for PpcAglState {
         Self {
             next_handle: FIRST_AGL_OBJECT,
             pixel_formats: Vec::new(),
+            contexts: Vec::new(),
+            current_context: 0,
         }
     }
 }
@@ -101,6 +114,152 @@ impl PpcAglState {
 
     pub fn destroy_pixel_format(&mut self, handle: u32) {
         self.pixel_formats.retain(|format| format.handle != handle);
+    }
+
+    pub fn create_context(&mut self, format: u32, share: u32) -> u32 {
+        // Shared display lists and textures need shared GL object state.
+        if share != 0 {
+            return 0;
+        }
+        let Some(format) = self
+            .pixel_format(format)
+            .map(|format| format.request.clone())
+        else {
+            return 0;
+        };
+        let handle = self.next_handle;
+        let Some(next) = handle.checked_add(4) else {
+            return 0;
+        };
+        self.next_handle = next;
+        self.contexts.push(PpcAglContext {
+            handle,
+            format,
+            drawable: 0,
+            framebuffer: None,
+        });
+        handle
+    }
+
+    pub fn context(&self, handle: u32) -> Option<&PpcAglContext> {
+        self.contexts
+            .iter()
+            .find(|context| context.handle == handle)
+    }
+
+    pub fn context_mut(&mut self, handle: u32) -> Option<&mut PpcAglContext> {
+        self.contexts
+            .iter_mut()
+            .find(|context| context.handle == handle)
+    }
+
+    pub fn destroy_context(&mut self, handle: u32) -> bool {
+        let Some(index) = self
+            .contexts
+            .iter()
+            .position(|context| context.handle == handle)
+        else {
+            return false;
+        };
+        self.contexts.swap_remove(index);
+        if self.current_context == handle {
+            self.current_context = 0;
+        }
+        true
+    }
+
+    pub fn set_current_context(&mut self, handle: u32) -> bool {
+        if handle != 0 && self.context(handle).is_none() {
+            return false;
+        }
+        self.current_context = handle;
+        true
+    }
+
+    pub fn current_context(&self) -> u32 {
+        self.current_context
+    }
+
+    pub fn set_drawable(
+        &mut self,
+        handle: u32,
+        drawable: u32,
+        surface: Option<PpcFrontBuffer>,
+    ) -> bool {
+        let Some(context) = self.context_mut(handle) else {
+            return false;
+        };
+        if drawable == 0 {
+            context.drawable = 0;
+            context.framebuffer = None;
+            return true;
+        }
+        let Some(surface) = surface.filter(|surface| surface.depth == 16) else {
+            return false;
+        };
+        let Some(framebuffer) = ClassicGlFramebuffer::new(
+            surface.width,
+            surface.height,
+            context.format.double_buffered,
+        ) else {
+            return false;
+        };
+        context.drawable = drawable;
+        context.framebuffer = Some(framebuffer);
+        true
+    }
+
+    pub fn update_context(&mut self, handle: u32, surface: Option<PpcFrontBuffer>) -> bool {
+        let Some(context) = self.context_mut(handle) else {
+            return false;
+        };
+        if context.drawable == 0 {
+            return true;
+        }
+        let Some(surface) = surface.filter(|surface| surface.depth == 16) else {
+            return false;
+        };
+        let resize = context.framebuffer.as_ref().is_none_or(|framebuffer| {
+            framebuffer.width() != surface.width || framebuffer.height() != surface.height
+        });
+        if resize {
+            let Some(framebuffer) = ClassicGlFramebuffer::new(
+                surface.width,
+                surface.height,
+                context.format.double_buffered,
+            ) else {
+                return false;
+            };
+            context.framebuffer = Some(framebuffer);
+        }
+        true
+    }
+
+    pub fn swap_buffers(
+        &mut self,
+        handle: u32,
+        memory: &mut PpcSectionMem,
+        surface: PpcFrontBuffer,
+    ) -> bool {
+        let Some(context) = self.context_mut(handle) else {
+            return false;
+        };
+        let Some(framebuffer) = context.framebuffer.as_mut() else {
+            return false;
+        };
+        let buffer = if context.format.double_buffered {
+            ClassicGlColorBuffer::Back
+        } else {
+            ClassicGlColorBuffer::Front
+        };
+        if !framebuffer.present_rgb555(buffer, memory, surface) {
+            return false;
+        }
+        if context.format.double_buffered {
+            framebuffer.swap()
+        } else {
+            true
+        }
     }
 }
 
@@ -210,6 +369,7 @@ pub fn ppc_agl_read_pixel_format_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ppc::PpcMemory;
 
     #[test]
     fn reads_boolean_and_value_attributes_from_guest_memory() {
@@ -297,5 +457,41 @@ mod tests {
         assert_eq!(state.describe_pixel_format(handle, 999), None);
         state.destroy_pixel_format(handle);
         assert_eq!(state.describe_pixel_format(handle, 5), None);
+    }
+
+    #[test]
+    fn context_keeps_format_after_disposal_and_swaps_to_guest_pixels() {
+        let mut agl = PpcAglState::default();
+        let format = agl.choose_pixel_format(PpcAglPixelFormatRequest {
+            rgba: true,
+            double_buffered: true,
+            ..Default::default()
+        });
+        let context = agl.create_context(format, 0);
+        assert_ne!(context, 0);
+        agl.destroy_pixel_format(format);
+        assert!(agl.set_current_context(context));
+        assert_eq!(agl.current_context(), context);
+        let surface = PpcFrontBuffer {
+            base_addr: 0x1000,
+            row_bytes: 2,
+            width: 1,
+            height: 1,
+            depth: 16,
+        };
+        assert!(agl.set_drawable(context, 0x2000, Some(surface)));
+        assert!(agl
+            .context_mut(context)
+            .unwrap()
+            .framebuffer
+            .as_mut()
+            .unwrap()
+            .clear_color(ClassicGlColorBuffer::Back, [255, 0, 0, 255]));
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x1000, vec![0; 2]);
+        assert!(agl.swap_buffers(context, &mut memory, surface));
+        assert_eq!(memory.read_u16_be(0x1000), Some(0x7c00));
+        assert!(agl.destroy_context(context));
+        assert_eq!(agl.current_context(), 0);
     }
 }

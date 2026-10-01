@@ -2804,6 +2804,32 @@ pub(crate) fn dispatch_supported_import(
             agl.destroy_pixel_format(cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::AglCreateContext => Some(PpcImportAction::Return(
+            agl.create_context(cpu.gpr[3], cpu.gpr[4]),
+        )),
+        PpcImportDispatcherTarget::AglDestroyContext => Some(PpcImportAction::Return(u32::from(
+            agl.destroy_context(cpu.gpr[3]),
+        ))),
+        PpcImportDispatcherTarget::AglSetCurrentContext => Some(PpcImportAction::Return(
+            u32::from(agl.set_current_context(cpu.gpr[3])),
+        )),
+        PpcImportDispatcherTarget::AglGetCurrentContext => {
+            Some(PpcImportAction::Return(agl.current_context()))
+        }
+        PpcImportDispatcherTarget::AglSetDrawable => Some(PpcImportAction::Return(u32::from(
+            ppc_agl_set_drawable(cpu, memory, agl, gworlds, window_list),
+        ))),
+        PpcImportDispatcherTarget::AglGetDrawable => Some(PpcImportAction::Return(
+            agl.context(cpu.gpr[3])
+                .map_or(0, |context| context.drawable),
+        )),
+        PpcImportDispatcherTarget::AglUpdateContext => Some(PpcImportAction::Return(u32::from(
+            ppc_agl_update_context(cpu, memory, agl, gworlds, window_list),
+        ))),
+        PpcImportDispatcherTarget::AglSwapBuffers => {
+            ppc_agl_swap_buffers(cpu, memory, agl, gworlds, window_list)
+                .then_some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::NoOpPreserve => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::ExitToShell => Some(PpcImportAction::Halt),
         PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => None,
@@ -2860,8 +2886,79 @@ fn ppc_agl_describe_pixel_format(
     cpu.gpr[5] != 0 && memory.write_u32_be(cpu.gpr[5], value as u32).is_some()
 }
 
+fn ppc_agl_window_surface(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+    drawable: u32,
+) -> Option<PpcFrontBuffer> {
+    // Apple Technical Q&A OGL02 (2000): an AGLDrawable is a window CGrafPtr;
+    // a DrawSprocket front buffer is not a valid AGL drawable.
+    // https://leopard-adc.pepas.com/qa/ogl/ogl02.html
+    if drawable == 0
+        || matches!(drawable, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
+        || !window_list.contains_window(drawable)
+    {
+        return None;
+    }
+    ppc_live_front_buffer_for_gworld(memory, gworlds, drawable)
+}
+
+fn ppc_agl_set_drawable(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    agl: &mut PpcAglState,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+) -> bool {
+    let drawable = cpu.gpr[4];
+    let surface = (drawable != 0)
+        .then(|| ppc_agl_window_surface(memory, gworlds, window_list, drawable))
+        .flatten();
+    if drawable != 0 && surface.is_none() {
+        return false;
+    }
+    agl.set_drawable(cpu.gpr[3], drawable, surface)
+}
+
+fn ppc_agl_update_context(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    agl: &mut PpcAglState,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+) -> bool {
+    let Some(context) = agl.context(cpu.gpr[3]) else {
+        return false;
+    };
+    let drawable = context.drawable;
+    let surface = (drawable != 0)
+        .then(|| ppc_agl_window_surface(memory, gworlds, window_list, drawable))
+        .flatten();
+    agl.update_context(cpu.gpr[3], surface)
+}
+
+fn ppc_agl_swap_buffers(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    agl: &mut PpcAglState,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+) -> bool {
+    let Some(context) = agl.context(cpu.gpr[3]) else {
+        return false;
+    };
+    let Some(surface) = ppc_agl_window_surface(memory, gworlds, window_list, context.drawable)
+    else {
+        return false;
+    };
+    agl.swap_buffers(cpu.gpr[3], memory, surface)
+}
+
 #[cfg(test)]
 mod agl_choose_tests {
+    use super::super::classic_gl_agl::PpcAglPixelFormatRequest;
+    use super::super::classic_gl_framebuffer::ClassicGlColorBuffer;
     use super::*;
     use ppc::PpcMemory;
 
@@ -2908,6 +3005,64 @@ mod agl_choose_tests {
             ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]),
             0
         );
+    }
+
+    #[test]
+    fn agl_drawable_requires_window_port_and_swaps_into_its_guest_pixels() {
+        let port = 0x2000;
+        let world = PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+            port,
+            pixmap_handle: 0,
+            pixmap: 0,
+            base_addr: 0x1000,
+            gdevice: PPC_MAIN_GDEVICE,
+            width: 1,
+            height: 1,
+            depth: 16,
+            row_bytes: 2,
+            pixels_locked: false,
+            pixels_no_purge: true,
+        };
+        let windows = SharedProcessWindowList::from_value(vec![port]);
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x1000, vec![0; 2]);
+        assert!(ppc_agl_window_surface(&mut memory, &[world], &windows, port).is_some());
+        assert!(
+            ppc_agl_window_surface(&mut memory, &[world], &windows, PPC_DSP_BACK_GWORLD,).is_none()
+        );
+        let mut agl = PpcAglState::default();
+        let format = agl.choose_pixel_format(PpcAglPixelFormatRequest {
+            rgba: true,
+            double_buffered: true,
+            ..Default::default()
+        });
+        let context = agl.create_context(format, 0);
+        let mut cpu = PpcCpu::new();
+        cpu.gpr[3] = context;
+        cpu.gpr[4] = port;
+        assert!(ppc_agl_set_drawable(
+            &cpu,
+            &mut memory,
+            &mut agl,
+            &[world],
+            &windows
+        ));
+        assert!(agl
+            .context_mut(context)
+            .unwrap()
+            .framebuffer
+            .as_mut()
+            .unwrap()
+            .clear_color(ClassicGlColorBuffer::Back, [0, 255, 0, 255]));
+        assert!(ppc_agl_swap_buffers(
+            &cpu,
+            &mut memory,
+            &mut agl,
+            &[world],
+            &windows
+        ));
+        assert_eq!(memory.read_u16_be(0x1000), Some(0x03e0));
     }
 }
 
