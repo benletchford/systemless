@@ -2263,17 +2263,16 @@ pub(super) fn ppc_get_new_cwindow(
     window
 }
 
-pub(super) fn ppc_size_window(
-    cpu: &PpcCpu,
+pub(super) fn ppc_size_window_dimensions(
     memory: &mut PpcSectionMem,
     gworlds: &mut [PpcGWorldRecord],
+    window_ptr: u32,
+    width: u32,
+    height: u32,
 ) -> Option<()> {
     // Inside Macintosh: Imaging With QuickDraw (1994), Basic QuickDraw,
     // p. 2-46: PortSize changes only the port rectangle's size and preserves
     // the graphics port's coordinate system and boundary rectangle.
-    let window_ptr = cpu.gpr[3];
-    let width = u32::from(cpu.gpr[4] as u16).max(1);
-    let height = u32::from(cpu.gpr[5] as u16).max(1);
     let (top, left, _, _) = ppc_read_rect(memory, window_ptr.checked_add(16)?)?;
     let pixmap_handle = memory.read_u32_be(window_ptr.checked_add(2)?)?;
     let pixmap = memory.read_u32_be(pixmap_handle)?;
@@ -2321,18 +2320,28 @@ pub(super) fn ppc_size_window(
     Some(())
 }
 
-pub(super) fn ppc_move_window(
+pub(super) fn ppc_size_window(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     gworlds: &mut [PpcGWorldRecord],
+) -> Option<()> {
+    let window_ptr = cpu.gpr[3];
+    let width = u32::from(cpu.gpr[4] as u16).max(1);
+    let height = u32::from(cpu.gpr[5] as u16).max(1);
+    ppc_size_window_dimensions(memory, gworlds, window_ptr, width, height)
+}
+
+pub(super) fn ppc_move_window_coordinates(
+    memory: &mut PpcSectionMem,
+    gworlds: &mut [PpcGWorldRecord],
+    window_ptr: u32,
+    new_left: i16,
+    new_top: i16,
 ) -> Option<()> {
     // Inside Macintosh: Macintosh Toolbox Essentials (1992), Window Manager,
     // "MoveWindow": moving a window changes its global location without
     // affecting the local coordinates of its upper-left corner. Shift the
     // screen boundary rectangle and leave the local port rectangle intact.
-    let window_ptr = cpu.gpr[3];
-    let new_left = cpu.gpr[4] as u16 as i16;
-    let new_top = cpu.gpr[5] as u16 as i16;
     let (port_top, port_left, port_bottom, port_right) =
         ppc_read_rect(memory, window_ptr.checked_add(16)?)?;
     let pixmap_handle = memory.read_u32_be(window_ptr.checked_add(2)?)?;
@@ -2392,6 +2401,17 @@ pub(super) fn ppc_move_window(
         );
     }
     Some(())
+}
+
+pub(super) fn ppc_move_window(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    gworlds: &mut [PpcGWorldRecord],
+) -> Option<()> {
+    let window_ptr = cpu.gpr[3];
+    let new_left = cpu.gpr[4] as u16 as i16;
+    let new_top = cpu.gpr[5] as u16 as i16;
+    ppc_move_window_coordinates(memory, gworlds, window_ptr, new_left, new_top)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2914,17 +2934,22 @@ pub(super) fn ppc_window_content_color(
 pub enum PpcLegacyWindowOperation {
     BringToFront,
     CalculateVisibleRegion,
+    ChangeWindowAttributes,
     CheckUpdate,
     CreateNewWindow,
     DisposeWindow,
     DragWindow,
     GetNewWindow,
     GetUserFocusWindow,
+    GetWindowAttributes,
+    GetWindowBounds,
     GetWindowCancelButton,
     GetWindowDefaultButton,
     GetWindowFeatures,
     GetWindowFromPort,
+    GetWindowGreatestArea,
     GetWindowIdealUserState,
+    GetWindowPortBounds,
     GetWindowProxyIcon,
     GetWindowRegion,
     GetWindowStandardState,
@@ -2932,6 +2957,8 @@ pub enum PpcLegacyWindowOperation {
     GetWindowTitle,
     GrowWindow,
     HighlightWindow,
+    InvalWindowRect,
+    InvalWindowRgn,
     IsWindowHilited,
     IsWindowModified,
     IsWindowPathSelectClick,
@@ -2939,8 +2966,10 @@ pub enum PpcLegacyWindowOperation {
     NewWindow,
     RemoveWindowProxy,
     RepositionWindow,
+    ReshapeCustomWindow,
     SendBehind,
     SetUserFocusWindow,
+    SetWindowBounds,
     SetWindowCancelButton,
     SetWindowDefaultButton,
     SetWindowIdealUserState,
@@ -2950,6 +2979,8 @@ pub enum PpcLegacyWindowOperation {
     SetWindowTitle,
     TrackBox,
     TrackGoAway,
+    ValidWindowRect,
+    ValidWindowRgn,
     ZoomWindow,
 }
 
@@ -3908,6 +3939,211 @@ pub(super) fn ppc_dispatch_legacy_window(
         }
         PpcLegacyWindowOperation::IsWindowPathSelectClick => {
             Some(PpcImportAction::Return(0))
+        }
+        PpcLegacyWindowOperation::InvalWindowRect => {
+            let window = cpu.gpr[3];
+            let in_rect = cpu.gpr[4];
+            let result = if window != 0 {
+                let rect = if in_rect != 0 {
+                    ppc_read_rect(memory, in_rect)
+                } else {
+                    ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
+                };
+                if let Some(r) = rect {
+                    ppc_invalidate_window_local_rect(memory, window, r);
+                    ppc_enqueue_window_update_event(event_queue, window, when, input);
+                }
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::InvalWindowRgn => {
+            let window = cpu.gpr[3];
+            let in_rgn = cpu.gpr[4];
+            let result = if window != 0 {
+                let rect = if in_rgn != 0 {
+                    ppc_read_rgn_bbox(memory, in_rgn)
+                } else {
+                    ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
+                };
+                if let Some(r) = rect {
+                    ppc_invalidate_window_local_rect(memory, window, r);
+                    ppc_enqueue_window_update_event(event_queue, window, when, input);
+                }
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::ValidWindowRect => {
+            let window = cpu.gpr[3];
+            let in_rect = cpu.gpr[4];
+            let result = if window != 0 {
+                let rect = if in_rect != 0 {
+                    ppc_read_rect(memory, in_rect)
+                } else {
+                    ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
+                };
+                if let Some(r) = rect {
+                    ppc_validate_window_local_rect(memory, window, r);
+                    let update_rgn = memory
+                        .read_u32_be(window.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
+                        .unwrap_or(0);
+                    if ppc_read_rgn_bbox(memory, update_rgn).map_or(true, |(t, l, b, r)| t >= b || l >= r) {
+                        event_queue.retain(|event| !(event.what == 6 && event.message == window));
+                    }
+                }
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::ValidWindowRgn => {
+            let window = cpu.gpr[3];
+            let in_rgn = cpu.gpr[4];
+            let result = if window != 0 {
+                let rect = if in_rgn != 0 {
+                    ppc_read_rgn_bbox(memory, in_rgn)
+                } else {
+                    ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
+                };
+                if let Some(r) = rect {
+                    ppc_validate_window_local_rect(memory, window, r);
+                    let update_rgn = memory
+                        .read_u32_be(window.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
+                        .unwrap_or(0);
+                    if ppc_read_rgn_bbox(memory, update_rgn).map_or(true, |(t, l, b, r)| t >= b || l >= r) {
+                        event_queue.retain(|event| !(event.what == 6 && event.message == window));
+                    }
+                }
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::GetWindowPortBounds => {
+            let window = cpu.gpr[3];
+            let out_bounds = cpu.gpr[4];
+            let result = if window != 0 && out_bounds != 0 {
+                let (top, left, bottom, right) = ppc_read_rect(
+                    memory,
+                    window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET),
+                )
+                .unwrap_or((0, 0, 0, 0));
+                let _ = ppc_write_rect(memory, out_bounds, top, left, bottom, right);
+                out_bounds
+            } else {
+                0
+            };
+            Some(PpcImportAction::Return(result))
+        }
+        PpcLegacyWindowOperation::GetWindowBounds => {
+            let window = cpu.gpr[3];
+            let region_code = cpu.gpr[4];
+            let out_rect = cpu.gpr[5];
+            let result = if window != 0 && out_rect != 0 {
+                let bounds = if region_code == 32 {
+                    ppc_window_global_structure_bounds(memory, gworlds, window)
+                } else {
+                    ppc_window_global_content_bounds(memory, gworlds, window)
+                };
+                let (top, left, bottom, right) = bounds.unwrap_or((40, 40, 240, 340));
+                let _ = ppc_write_rect(memory, out_rect, top, left, bottom, right);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::SetWindowBounds => {
+            let window = cpu.gpr[3];
+            let _region_code = cpu.gpr[4];
+            let in_rect = cpu.gpr[5];
+            let result = if window != 0 && in_rect != 0 {
+                if let Some((top, left, bottom, right)) = ppc_read_rect(memory, in_rect) {
+                    let width = (right.saturating_sub(left)).max(1) as u32;
+                    let height = (bottom.saturating_sub(top)).max(1) as u32;
+                    let was_visible = ppc_window_is_visible(memory, window);
+                    let previous_structure =
+                        ppc_window_global_structure_bounds(memory, gworlds, window);
+                    let _ = ppc_move_window_coordinates(memory, gworlds, window, left, top);
+                    let _ = ppc_size_window_dimensions(memory, gworlds, window, width, height);
+                    ppc_recalculate_window_vis_regions(
+                        process_memory_manager,
+                        memory,
+                        window_list,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                    );
+                    let next_structure =
+                        ppc_window_global_structure_bounds(memory, gworlds, window);
+                    ppc_repaint_window_geometry_transition(
+                        memory,
+                        gworlds,
+                        window_list,
+                        window,
+                        was_visible,
+                        previous_structure,
+                        next_structure,
+                        toolbox_startup.host_menu_bar_hidden,
+                        event_queue,
+                        when,
+                        input,
+                    );
+                    PPC_NO_ERR
+                } else {
+                    PPC_PARAM_ERR
+                }
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::GetWindowGreatestArea => {
+            let out_greatest = cpu.gpr[5];
+            let result = if out_greatest != 0 {
+                let _ = ppc_write_rect(memory, out_greatest, 0, 0, 480, 640);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::GetWindowAttributes => {
+            let window = cpu.gpr[3];
+            let out_attrs = cpu.gpr[4];
+            let result = if window != 0 && out_attrs != 0 {
+                let _ = memory.write_u32_be(out_attrs, 0x0000_0007);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::ChangeWindowAttributes => {
+            let window = cpu.gpr[3];
+            let result = if window != 0 {
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::ReshapeCustomWindow => {
+            let window = cpu.gpr[3];
+            let result = if window != 0 {
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
     }
 }

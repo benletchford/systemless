@@ -4400,6 +4400,14 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ChangeWindowAttributes" | "changewindowattributes",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::ChangeWindowAttributes,
+            )
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "CheckUpdate" | "checkupdate",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CheckUpdate)
@@ -4436,6 +4444,20 @@ pub(crate) fn dispatcher_target_for_import(
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWindowAttributes" | "getwindowattributes",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::GetWindowAttributes,
+            )
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWindowBounds" | "getwindowbounds",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowBounds)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowCancelButton" | "getwindowcancelbutton",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowCancelButton)
@@ -4460,9 +4482,25 @@ pub(crate) fn dispatcher_target_for_import(
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWindowGreatestArea" | "getwindowgreatestarea",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::GetWindowGreatestArea,
+            )
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowIdealUserState" | "getwindowidealuserstate",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowIdealUserState)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWindowPortBounds" | "getwindowportbounds",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::GetWindowPortBounds,
+            )
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
@@ -4508,6 +4546,22 @@ pub(crate) fn dispatcher_target_for_import(
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "InvalWindowRect" | "invalwindowrect",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::InvalWindowRect,
+            )
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "InvalWindowRgn" | "invalwindowrgn",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::InvalWindowRgn,
+            )
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "IsWindowHilited" | "iswindowhilited",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowHilited)
@@ -4544,6 +4598,14 @@ pub(crate) fn dispatcher_target_for_import(
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ReshapeCustomWindow" | "reshapecustomwindow",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::ReshapeCustomWindow,
+            )
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "RepositionWindow" | "repositionwindow",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RepositionWindow)
@@ -4559,6 +4621,12 @@ pub(crate) fn dispatcher_target_for_import(
             "SetUserFocusWindow" | "setuserfocuswindow",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetUserFocusWindow)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetWindowBounds" | "setwindowbounds",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowBounds)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
@@ -4613,6 +4681,22 @@ pub(crate) fn dispatcher_target_for_import(
             "TrackGoAway" | "trackgoaway",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::TrackGoAway)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ValidWindowRect" | "validwindowrect",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::ValidWindowRect,
+            )
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ValidWindowRgn" | "validwindowrgn",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::ValidWindowRgn,
+            )
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",

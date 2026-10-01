@@ -5900,6 +5900,392 @@ fn window_proxy_icon_modified_and_state_rect_commands_dispatch_with_canonical_ev
     }
 }
 
+#[test]
+fn import_bindings_classify_window_invalidation_geometry_and_attribute_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // InvalWindowRect
+        assert_eq!(
+            dispatcher_target_for_import(lib, "InvalWindowRect"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::InvalWindowRect)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "invalwindowrect"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::InvalWindowRect)
+        );
+
+        // InvalWindowRgn
+        assert_eq!(
+            dispatcher_target_for_import(lib, "InvalWindowRgn"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::InvalWindowRgn)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "invalwindowrgn"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::InvalWindowRgn)
+        );
+
+        // ValidWindowRect
+        assert_eq!(
+            dispatcher_target_for_import(lib, "ValidWindowRect"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ValidWindowRect)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "validwindowrect"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ValidWindowRect)
+        );
+
+        // ValidWindowRgn
+        assert_eq!(
+            dispatcher_target_for_import(lib, "ValidWindowRgn"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ValidWindowRgn)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "validwindowrgn"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ValidWindowRgn)
+        );
+
+        // GetWindowPortBounds
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowPortBounds"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowPortBounds)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowportbounds"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowPortBounds)
+        );
+
+        // GetWindowBounds
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowBounds"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowBounds)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowbounds"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowBounds)
+        );
+
+        // SetWindowBounds
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWindowBounds"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowBounds)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwindowbounds"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowBounds)
+        );
+
+        // GetWindowGreatestArea
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowGreatestArea"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowGreatestArea)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowgreatestarea"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowGreatestArea)
+        );
+
+        // GetWindowAttributes
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowAttributes"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowAttributes)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowattributes"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowAttributes)
+        );
+
+        // ChangeWindowAttributes
+        assert_eq!(
+            dispatcher_target_for_import(lib, "ChangeWindowAttributes"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ChangeWindowAttributes)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "changewindowattributes"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ChangeWindowAttributes)
+        );
+
+        // ReshapeCustomWindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "ReshapeCustomWindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ReshapeCustomWindow)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "reshapecustomwindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ReshapeCustomWindow)
+        );
+    }
+}
+
+#[test]
+fn window_invalidation_geometry_and_attribute_commands_dispatch_with_canonical_evaluation() {
+    for lib in [b"InterfaceLib".as_slice(), b"AppearanceLib".as_slice(), b"CarbonLib".as_slice()] {
+        let lib_str = std::str::from_utf8(lib).unwrap();
+        let pef = synthetic_pef_with_library_import(lib, b"InvalWindowRect");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let bounds_ptr = PPC_DATA_BASE + 0x1000;
+        let scratch_ptr = PPC_DATA_BASE + 0x1200;
+        let in_rect_ptr = PPC_DATA_BASE + 0x1300;
+        let rgn_ptr = PPC_DATA_BASE + 0x1400;
+        let rgn_handle = PPC_DATA_BASE + 0x1420;
+        loaded.memory.add_region(bounds_ptr, vec![0; 64]);
+        loaded.memory.add_region(scratch_ptr, vec![0; 64]);
+        loaded.memory.add_region(in_rect_ptr, vec![0; 64]);
+        loaded.memory.add_region(rgn_ptr, vec![0; 64]);
+        loaded.memory.add_region(rgn_handle, vec![0; 4]);
+        loaded.memory.write_u32_be(rgn_handle, rgn_ptr).unwrap();
+
+        let window = create_test_cwindow(&mut loaded, bounds_ptr, (40, 50, 140, 250), 0, true, u32::MAX);
+        let update_rgn = loaded.memory.read_u32_be(window + PPC_CWINDOW_UPDATE_RGN_OFFSET).unwrap();
+
+        // 1. InvalWindowRect & ValidWindowRect
+        {
+            ppc_set_empty_rgn(&mut loaded.memory, update_rgn).unwrap();
+            ppc_write_rect(&mut loaded.memory, in_rect_ptr, 10, 10, 50, 60).unwrap();
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "InvalWindowRect");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = in_rect_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((10, 10, 50, 60)));
+
+            // ValidWindowRect clears it
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ValidWindowRect");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = in_rect_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((0, 0, 0, 0)));
+
+            // window = 0 returns paramErr
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = in_rect_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+        }
+
+        // 2. InvalWindowRgn & ValidWindowRgn
+        {
+            ppc_set_empty_rgn(&mut loaded.memory, update_rgn).unwrap();
+            ppc_write_rgn_bbox(&mut loaded.memory, rgn_handle, 15, 20, 65, 80).unwrap();
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "InvalWindowRgn");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = rgn_handle;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((15, 20, 65, 80)));
+
+            // ValidWindowRgn clears it
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ValidWindowRgn");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = rgn_handle;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((0, 0, 0, 0)));
+
+            // window = 0 returns paramErr
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = rgn_handle;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+        }
+
+        // 3. GetWindowPortBounds
+        {
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowPortBounds");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = scratch_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], scratch_ptr);
+            assert_eq!(ppc_read_rect(&mut loaded.memory, scratch_ptr), Some((0, 0, 100, 200)));
+
+            // window = 0 returns 0
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = scratch_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+
+        // 4. GetWindowBounds & SetWindowBounds
+        {
+            // kWindowContentRgn = 33
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowBounds");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 33;
+            loaded.cpu.gpr[5] = scratch_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(ppc_read_rect(&mut loaded.memory, scratch_ptr), Some((40, 50, 140, 250)));
+
+            // SetWindowBounds
+            let new_geom = (60, 70, 180, 290);
+            ppc_write_rect(&mut loaded.memory, in_rect_ptr, new_geom.0, new_geom.1, new_geom.2, new_geom.3).unwrap();
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetWindowBounds");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 33;
+            loaded.cpu.gpr[5] = in_rect_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+            // Verify with GetWindowBounds
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowBounds");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 33;
+            loaded.cpu.gpr[5] = scratch_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(ppc_read_rect(&mut loaded.memory, scratch_ptr), Some(new_geom));
+
+            // window = 0 returns paramErr
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = 33;
+            loaded.cpu.gpr[5] = scratch_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+        }
+
+        // 5. GetWindowGreatestArea
+        {
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowGreatestArea");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = scratch_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(ppc_read_rect(&mut loaded.memory, scratch_ptr), Some((0, 0, 480, 640)));
+
+            // scratch_ptr = 0 returns paramErr
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+        }
+
+        // 6. GetWindowAttributes & ChangeWindowAttributes
+        {
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowAttributes");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = scratch_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(loaded.memory.read_u32_be(scratch_ptr), Some(0x0000_0007));
+
+            // window = 0 returns paramErr
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = scratch_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+            // ChangeWindowAttributes
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ChangeWindowAttributes");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+            // window = 0 returns paramErr
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+        }
+
+        // 7. ReshapeCustomWindow
+        {
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ReshapeCustomWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+            // window = 0 returns paramErr
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+        }
+    }
+}
+
 
 
 
