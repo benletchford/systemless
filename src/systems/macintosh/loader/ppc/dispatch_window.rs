@@ -2919,12 +2919,22 @@ pub enum PpcLegacyWindowOperation {
     DisposeWindow,
     DragWindow,
     GetNewWindow,
+    GetUserFocusWindow,
+    GetWindowCancelButton,
+    GetWindowDefaultButton,
+    GetWindowFeatures,
+    GetWindowFromPort,
+    GetWindowRegion,
+    GetWindowStructureWidths,
     GetWindowTitle,
     GrowWindow,
     HighlightWindow,
     NewWindow,
     RepositionWindow,
     SendBehind,
+    SetUserFocusWindow,
+    SetWindowCancelButton,
+    SetWindowDefaultButton,
     SetWindowTitle,
     TrackBox,
     TrackGoAway,
@@ -3628,6 +3638,113 @@ pub(super) fn ppc_dispatch_legacy_window(
                 let _ = ppc_rect_rgn(memory, vis_rgn, window.wrapping_add(16));
             }
             Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcLegacyWindowOperation::SetWindowDefaultButton => {
+            let window = cpu.gpr[3];
+            let control = cpu.gpr[4];
+            let result = if window != 0 {
+                toolbox_startup.set_window_default_button(window, control);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::GetWindowDefaultButton => {
+            let window = cpu.gpr[3];
+            let out_control = cpu.gpr[4];
+            let result = if window != 0 && out_control != 0 {
+                let button = toolbox_startup.window_default_button(window);
+                let _ = memory.write_u32_be(out_control, button);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::SetWindowCancelButton => {
+            let window = cpu.gpr[3];
+            let control = cpu.gpr[4];
+            let result = if window != 0 {
+                toolbox_startup.set_window_cancel_button(window, control);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::GetWindowCancelButton => {
+            let window = cpu.gpr[3];
+            let out_control = cpu.gpr[4];
+            let result = if window != 0 && out_control != 0 {
+                let button = toolbox_startup.window_cancel_button(window);
+                let _ = memory.write_u32_be(out_control, button);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::SetUserFocusWindow => {
+            let window = cpu.gpr[3];
+            toolbox_startup.set_user_focus_window(window);
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcLegacyWindowOperation::GetUserFocusWindow => {
+            let focused = toolbox_startup.user_focus_window();
+            let window = if focused != 0 {
+                focused
+            } else {
+                window_list.front_window().unwrap_or(0)
+            };
+            Some(PpcImportAction::Return(window))
+        }
+        PpcLegacyWindowOperation::GetWindowFromPort => {
+            let port = cpu.gpr[3];
+            Some(PpcImportAction::Return(port))
+        }
+        PpcLegacyWindowOperation::GetWindowRegion => {
+            let window = cpu.gpr[3];
+            let region_code = cpu.gpr[4];
+            let io_rgn = cpu.gpr[5];
+            let result = if window != 0 && io_rgn != 0 {
+                let bounds = if region_code == 32 {
+                    ppc_window_global_structure_bounds(memory, gworlds, window)
+                } else {
+                    ppc_window_global_content_bounds(memory, gworlds, window)
+                };
+                let (top, left, bottom, right) = bounds.unwrap_or((0, 0, 100, 100));
+                let _ = ppc_write_rgn_bbox(memory, io_rgn, top, left, bottom, right);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::GetWindowFeatures => {
+            let window = cpu.gpr[3];
+            let out_features = cpu.gpr[4];
+            let result = if window != 0 && out_features != 0 {
+                let _ = memory.write_u32_be(out_features, 0x0000_0007);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::GetWindowStructureWidths => {
+            let window = cpu.gpr[3];
+            let out_rect = cpu.gpr[4];
+            let result = if window != 0 && out_rect != 0 {
+                let _ = memory.write_u16_be(out_rect, 20);
+                let _ = memory.write_u16_be(out_rect.wrapping_add(2), 1);
+                let _ = memory.write_u16_be(out_rect.wrapping_add(4), 1);
+                let _ = memory.write_u16_be(out_rect.wrapping_add(6), 1);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
     }
 }

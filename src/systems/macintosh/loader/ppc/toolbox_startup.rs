@@ -79,6 +79,9 @@ pub struct PpcToolboxStartupState {
     pub ae_interaction_allowed: u8,
     pub(crate) stdc_signal_state: PpcStdSignalState,
     pub(super) mp_semaphores: dispatch_threads::PpcMpSemaphoreState,
+    pub(crate) window_default_buttons: HashMap<u32, u32>,
+    pub(crate) window_cancel_buttons: HashMap<u32, u32>,
+    pub(crate) user_focus_window: u32,
 }
 
 impl Default for PpcToolboxStartupState {
@@ -147,11 +150,46 @@ impl Default for PpcToolboxStartupState {
             ae_interaction_allowed: 1,
             stdc_signal_state: PpcStdSignalState::default(),
             mp_semaphores: dispatch_threads::PpcMpSemaphoreState::default(),
+            window_default_buttons: HashMap::new(),
+            window_cancel_buttons: HashMap::new(),
+            user_focus_window: 0,
         }
     }
 }
 
 impl PpcToolboxStartupState {
+    pub(crate) fn window_default_button(&self, window: u32) -> u32 {
+        self.window_default_buttons.get(&window).copied().unwrap_or(0)
+    }
+
+    pub(crate) fn set_window_default_button(&mut self, window: u32, button: u32) {
+        if button != 0 {
+            self.window_default_buttons.insert(window, button);
+        } else {
+            self.window_default_buttons.remove(&window);
+        }
+    }
+
+    pub(crate) fn window_cancel_button(&self, window: u32) -> u32 {
+        self.window_cancel_buttons.get(&window).copied().unwrap_or(0)
+    }
+
+    pub(crate) fn set_window_cancel_button(&mut self, window: u32, button: u32) {
+        if button != 0 {
+            self.window_cancel_buttons.insert(window, button);
+        } else {
+            self.window_cancel_buttons.remove(&window);
+        }
+    }
+
+    pub(crate) fn user_focus_window(&self) -> u32 {
+        self.user_focus_window
+    }
+
+    pub(crate) fn set_user_focus_window(&mut self, window: u32) {
+        self.user_focus_window = window;
+    }
+
     pub(crate) fn retained_host_overlay_rects(&self) -> Vec<(i16, i16, i16, i16)> {
         self.standard_file_get_tracking
             .iter()

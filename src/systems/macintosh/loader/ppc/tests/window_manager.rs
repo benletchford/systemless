@@ -5102,4 +5102,388 @@ fn window_hit_testing_clipping_and_region_commands_dispatch_with_canonical_evalu
     }
 }
 
+#[test]
+fn import_bindings_classify_window_default_cancel_button_focus_and_region_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // SetWindowDefaultButton
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWindowDefaultButton"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowDefaultButton)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwindowdefaultbutton"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowDefaultButton)
+        );
+
+        // GetWindowDefaultButton
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowDefaultButton"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowDefaultButton)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowdefaultbutton"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowDefaultButton)
+        );
+
+        // SetWindowCancelButton
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWindowCancelButton"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowCancelButton)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwindowcancelbutton"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowCancelButton)
+        );
+
+        // GetWindowCancelButton
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowCancelButton"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowCancelButton)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowcancelbutton"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowCancelButton)
+        );
+
+        // SetUserFocusWindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetUserFocusWindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetUserFocusWindow)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setuserfocuswindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetUserFocusWindow)
+        );
+
+        // GetUserFocusWindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetUserFocusWindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetUserFocusWindow)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getuserfocuswindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetUserFocusWindow)
+        );
+
+        // GetWindowFromPort
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowFromPort"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowFromPort)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowfromport"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowFromPort)
+        );
+
+        // GetWindowRegion
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowRegion"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowRegion)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowregion"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowRegion)
+        );
+
+        // GetWindowFeatures
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowFeatures"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowFeatures)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowfeatures"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowFeatures)
+        );
+
+        // GetWindowStructureWidths
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowStructureWidths"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowStructureWidths)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowstructurewidths"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowStructureWidths)
+        );
+    }
+}
+
+#[test]
+fn window_default_cancel_button_focus_and_region_commands_dispatch_with_canonical_evaluation() {
+    for lib in [b"InterfaceLib".as_slice(), b"AppearanceLib".as_slice(), b"CarbonLib".as_slice()] {
+        let lib_str = std::str::from_utf8(lib).unwrap();
+        let pef = synthetic_pef_with_library_import(lib, b"SetWindowDefaultButton");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let bounds_ptr = PPC_DATA_BASE + 0x1000;
+        let scratch_ptr = PPC_DATA_BASE + 0x1200;
+        let rgn_ptr = PPC_DATA_BASE + 0x1300;
+        let rgn_handle = PPC_DATA_BASE + 0x1340;
+        loaded.memory.add_region(bounds_ptr, vec![0; 64]);
+        loaded.memory.add_region(scratch_ptr, vec![0; 64]);
+        loaded.memory.add_region(rgn_ptr, vec![0; 32]);
+        loaded.memory.add_region(rgn_handle, vec![0; 4]);
+        loaded.memory.write_u32_be(rgn_handle, rgn_ptr).unwrap();
+
+        let window = create_test_cwindow(&mut loaded, bounds_ptr, (40, 50, 140, 250), 0, true, u32::MAX);
+        let control_1 = 0x2000_1000;
+        let control_2 = 0x2000_2000;
+
+        // 1. SetWindowDefaultButton & GetWindowDefaultButton
+        {
+            // Initial default button is 0
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowDefaultButton");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = scratch_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(loaded.memory.read_u32_be(scratch_ptr), Some(0));
+
+            // Set default button to control_1
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetWindowDefaultButton");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = control_1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+            // Get default button returns control_1
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowDefaultButton");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = scratch_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(loaded.memory.read_u32_be(scratch_ptr), Some(control_1));
+
+            // Passing window = 0 returns paramErr (-50)
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetWindowDefaultButton");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = control_1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+        }
+
+        // 2. SetWindowCancelButton & GetWindowCancelButton
+        {
+            // Initial cancel button is 0
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowCancelButton");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = scratch_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(loaded.memory.read_u32_be(scratch_ptr), Some(0));
+
+            // Set cancel button to control_2
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetWindowCancelButton");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = control_2;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+            // Get cancel button returns control_2
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowCancelButton");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = scratch_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(loaded.memory.read_u32_be(scratch_ptr), Some(control_2));
+
+            // Clear cancel button with 0
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetWindowCancelButton");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowCancelButton");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = scratch_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(loaded.memory.read_u32_be(scratch_ptr), Some(0));
+        }
+
+        // 3. SetUserFocusWindow & GetUserFocusWindow
+        {
+            // Initial user focus window falls back to front window
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetUserFocusWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], window);
+
+            // Set explicit user focus window
+            let custom_focus = 0x3000_1000;
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetUserFocusWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = custom_focus;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+            // GetUserFocusWindow returns explicit focus
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetUserFocusWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], custom_focus);
+        }
+
+        // 4. GetWindowFromPort
+        {
+            // Valid window port returns itself
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowFromPort");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], window);
+
+            // Null port returns 0
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+
+        // 5. GetWindowRegion
+        {
+            // Structure region (kWindowStructureRgn = 32)
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowRegion");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 32;
+            loaded.cpu.gpr[5] = rgn_handle;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            let struct_bbox = ppc_read_rgn_bbox(&mut loaded.memory, rgn_handle).unwrap();
+            let expected_struct = ppc_window_global_structure_bounds(&mut loaded.memory, &loaded.gworlds, window).unwrap();
+            assert_eq!(struct_bbox, expected_struct);
+
+            // Content region (kWindowContentRgn = 33)
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 33;
+            loaded.cpu.gpr[5] = rgn_handle;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            let content_bbox = ppc_read_rgn_bbox(&mut loaded.memory, rgn_handle).unwrap();
+            let expected_content = ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window).unwrap();
+            assert_eq!(content_bbox, expected_content);
+
+            // Invalid window = 0 returns paramErr (-50)
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = 32;
+            loaded.cpu.gpr[5] = rgn_handle;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+        }
+
+        // 6. GetWindowFeatures
+        {
+            let feat_ptr = scratch_ptr;
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowFeatures");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = feat_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(loaded.memory.read_u32_be(feat_ptr), Some(0x0000_0007));
+
+            // window = 0 returns paramErr
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = feat_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+        }
+
+        // 7. GetWindowStructureWidths
+        {
+            let rect_ptr = scratch_ptr;
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowStructureWidths");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = rect_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(ppc_read_rect(&mut loaded.memory, rect_ptr), Some((20, 1, 1, 1)));
+
+            // window = 0 returns paramErr
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = rect_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+        }
+    }
+}
+
+
 
