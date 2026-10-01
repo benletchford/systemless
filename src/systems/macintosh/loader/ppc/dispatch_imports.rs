@@ -2889,6 +2889,79 @@ pub(crate) fn dispatch_supported_import(
                 cpu.gpr[9],
             )
             .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlMatrixMode => agl
+            .current_transform_mut()
+            .is_some_and(|transform| transform.set_mode(cpu.gpr[3]))
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlLoadIdentity => agl.current_transform_mut().map(|transform| {
+            transform.load(super::classic_gl_transform::ClassicGlMatrix::IDENTITY);
+            PpcImportAction::ReturnPreserve
+        }),
+        PpcImportDispatcherTarget::GlPushMatrix => agl
+            .current_transform_mut()
+            .is_some_and(|transform| transform.push())
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlPopMatrix => agl
+            .current_transform_mut()
+            .is_some_and(|transform| transform.pop())
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlLoadMatrixf => {
+            let matrix = ppc_gl_read_matrixf(memory, cpu.gpr[3])?;
+            agl.current_transform_mut().map(|transform| {
+                transform.load(matrix);
+                PpcImportAction::ReturnPreserve
+            })
+        }
+        PpcImportDispatcherTarget::GlMultMatrixf => {
+            let matrix = ppc_gl_read_matrixf(memory, cpu.gpr[3])?;
+            agl.current_transform_mut().map(|transform| {
+                transform.multiply(matrix);
+                PpcImportAction::ReturnPreserve
+            })
+        }
+        PpcImportDispatcherTarget::GlTranslatef => agl.current_transform_mut().map(|transform| {
+            transform.translate(
+                f64::from_bits(cpu.fpr[1]),
+                f64::from_bits(cpu.fpr[2]),
+                f64::from_bits(cpu.fpr[3]),
+            );
+            PpcImportAction::ReturnPreserve
+        }),
+        PpcImportDispatcherTarget::GlScalef => agl.current_transform_mut().map(|transform| {
+            transform.scale(
+                f64::from_bits(cpu.fpr[1]),
+                f64::from_bits(cpu.fpr[2]),
+                f64::from_bits(cpu.fpr[3]),
+            );
+            PpcImportAction::ReturnPreserve
+        }),
+        PpcImportDispatcherTarget::GlRotatef => agl
+            .current_transform_mut()
+            .is_some_and(|transform| {
+                transform.rotate(
+                    f64::from_bits(cpu.fpr[1]),
+                    f64::from_bits(cpu.fpr[2]),
+                    f64::from_bits(cpu.fpr[3]),
+                    f64::from_bits(cpu.fpr[4]),
+                )
+            })
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlOrtho => agl
+            .current_transform_mut()
+            .is_some_and(|transform| {
+                transform.ortho(std::array::from_fn(|index| {
+                    f64::from_bits(cpu.fpr[index + 1])
+                }))
+            })
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlFrustum => agl
+            .current_transform_mut()
+            .is_some_and(|transform| {
+                transform.frustum(std::array::from_fn(|index| {
+                    f64::from_bits(cpu.fpr[index + 1])
+                }))
+            })
+            .then_some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::NoOpPreserve => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::ExitToShell => Some(PpcImportAction::Halt),
         PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => None,
@@ -2943,6 +3016,23 @@ fn ppc_agl_describe_pixel_format(
         return false;
     };
     cpu.gpr[5] != 0 && memory.write_u32_be(cpu.gpr[5], value as u32).is_some()
+}
+
+fn ppc_gl_read_matrixf(
+    memory: &mut PpcSectionMem,
+    address: u32,
+) -> Option<super::classic_gl_transform::ClassicGlMatrix> {
+    if address == 0 {
+        return None;
+    }
+    let mut elements = [0.0; 16];
+    for (index, element) in elements.iter_mut().enumerate() {
+        let offset = u32::try_from(index).ok()?.checked_mul(4)?;
+        *element = f64::from(f32::from_bits(
+            memory.read_u32_be(address.checked_add(offset)?)?,
+        ));
+    }
+    Some(super::classic_gl_transform::ClassicGlMatrix(elements))
 }
 
 fn ppc_agl_window_surface(
@@ -3020,6 +3110,27 @@ mod agl_choose_tests {
     use super::super::classic_gl_framebuffer::ClassicGlColorBuffer;
     use super::*;
     use ppc::PpcMemory;
+
+    #[test]
+    fn matrixf_reader_uses_big_endian_column_major_guest_floats() {
+        let mut memory = PpcSectionMem::new();
+        let values: [f32; 16] = [
+            2.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 5.0, 6.0, 7.0, 1.0,
+        ];
+        memory.add_region(
+            0x1000,
+            values
+                .iter()
+                .flat_map(|value| value.to_bits().to_be_bytes())
+                .collect(),
+        );
+        let matrix = ppc_gl_read_matrixf(&mut memory, 0x1000).unwrap();
+        assert_eq!(
+            matrix.transform([1.0, 1.0, 1.0, 1.0]),
+            [7.0, 9.0, 11.0, 1.0]
+        );
+        assert!(ppc_gl_read_matrixf(&mut memory, 0x1004).is_none());
+    }
 
     #[test]
     fn imported_agl_choose_uses_guest_attributes_and_tracks_lifetime() {

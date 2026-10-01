@@ -5,6 +5,7 @@
 //! https://github.com/phracker/MacOSX-SDKs/blob/master/MacOSX10.2.8.sdk/System/Library/Frameworks/AGL.framework/Versions/A/Headers/agl.h
 
 use super::classic_gl_framebuffer::{ClassicGlClear, ClassicGlColorBuffer, ClassicGlFramebuffer};
+use super::classic_gl_transform::ClassicGlTransform;
 use super::{PpcFrontBuffer, PpcSectionMem};
 use ppc::PpcMemory;
 
@@ -72,6 +73,7 @@ pub struct PpcAglContext {
     draw_front: bool,
     draw_back: bool,
     pack: PpcGlPixelPack,
+    transform: ClassicGlTransform,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -188,6 +190,7 @@ impl PpcAglState {
             draw_front: !double_buffered,
             draw_back: double_buffered,
             pack: PpcGlPixelPack::default(),
+            transform: ClassicGlTransform::default(),
         });
         handle
     }
@@ -229,6 +232,10 @@ impl PpcAglState {
 
     pub fn current_context(&self) -> u32 {
         self.current_context
+    }
+
+    pub fn current_transform_mut(&mut self) -> Option<&mut ClassicGlTransform> {
+        Some(&mut self.context_mut(self.current_context)?.transform)
     }
 
     pub fn gl_clear_color(&mut self, components: [f64; 4]) -> bool {
