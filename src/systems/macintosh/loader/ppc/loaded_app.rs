@@ -40,6 +40,7 @@ pub struct PpcLoadedApp {
     pub(crate) controls: SharedProcessControlManager,
     pub aliases: Vec<PpcAliasRecord>,
     pub gworlds: Vec<PpcGWorldRecord>,
+    pub(crate) agl: PpcAglState,
     /// Process-owned state bits keyed by PixMapHandle. GWorld geometry,
     /// allocation, and rendering records remain in `gworlds`.
     pub(crate) gworld_pixel_states: SharedProcessQuickDrawPixelStates,

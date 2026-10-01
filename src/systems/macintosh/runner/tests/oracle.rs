@@ -47,6 +47,7 @@ fn ppc_imports_are_recorded_in_oracle_events_when_enabled() {
             TrapDispatcher::standard_mac_8bpp_clut(),
         ),
         aliases: Vec::new(),
+        agl: Default::default(),
         gworlds: Vec::new(),
         gworld_pixel_states: Default::default(),
         q3_objects: Vec::new(),

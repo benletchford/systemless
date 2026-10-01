@@ -209,6 +209,7 @@ pub(super) fn halted_ppc_app_with_sound(sound: PpcSoundState) -> LoadedApp {
             TrapDispatcher::standard_mac_8bpp_clut(),
         ),
         aliases: Vec::new(),
+        agl: Default::default(),
         gworlds: Vec::new(),
         gworld_pixel_states: Default::default(),
         q3_objects: Vec::new(),
