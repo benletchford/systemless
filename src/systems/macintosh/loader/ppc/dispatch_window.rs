@@ -1019,7 +1019,7 @@ pub(super) fn ppc_window_structure_bounds(
     content: (i16, i16, i16, i16),
 ) -> (i16, i16, i16, i16) {
     let has_title_bar = ppc_window_proc_has_title_bar(proc_id);
-    let border: i16 = if has_title_bar { 1 } else { 6 };
+    let border: i16 = if proc_id == 2 { 1 } else { 6 };
     if has_title_bar {
         crate::window_manager::standard_window_structure_bounds(content)
     } else {
@@ -3157,7 +3157,7 @@ pub(super) fn ppc_dispatch_legacy_window(
             let attributes = cpu.gpr[4];
             let bounds = cpu.gpr[5];
             let out_window = cpu.gpr[6];
-            if window_class != 6
+            if !matches!(window_class, 6 | 13)
                 || bounds == 0
                 || out_window == 0
                 || ppc_read_rect(memory, bounds).is_none()
@@ -3171,7 +3171,7 @@ pub(super) fn ppc_dispatch_legacy_window(
             window_cpu.gpr[4] = bounds;
             window_cpu.gpr[5] = 0;
             window_cpu.gpr[6] = 0;
-            window_cpu.gpr[7] = 0;
+            window_cpu.gpr[7] = if window_class == 13 { 2 } else { 0 };
             window_cpu.gpr[8] = u32::MAX;
             window_cpu.gpr[9] = u32::from(attributes & 1 != 0);
             window_cpu.gpr[10] = 0;
@@ -3193,6 +3193,9 @@ pub(super) fn ppc_dispatch_legacy_window(
             );
             if window == 0 {
                 return Some(PpcImportAction::Return(ppc_i16_result(*last_mem_error)));
+            }
+            if attributes & (1 << 16) != 0 {
+                toolbox_startup.windows_without_updates.insert(window);
             }
             let _ = memory.write_u32_be(out_window, window);
             ppc_recalculate_window_vis_regions(
@@ -3403,6 +3406,7 @@ pub(super) fn ppc_dispatch_legacy_window(
         }
         PpcLegacyWindowOperation::DisposeWindow => {
             let window = cpu.gpr[3];
+            toolbox_startup.windows_without_updates.remove(&window);
             let previous_front = ppc_front_visible_process_window(memory, window_list);
             let was_visible = ppc_window_is_visible(memory, window);
             let exposed = was_visible

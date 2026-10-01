@@ -3623,6 +3623,43 @@ fn window_creation_and_disposal_commands_dispatch_with_canonical_evaluation() {
 }
 
 #[test]
+fn create_new_plain_window_preserves_bounds_and_suppresses_updates() {
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"CreateNewWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    let out_window_ptr = PPC_DATA_BASE + 0x1020;
+    loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+    ppc_write_rect(&mut loaded.memory, bounds_ptr, 50, 50, 250, 350).unwrap();
+    loaded.memory.add_region(out_window_ptr, vec![0; 4]);
+    loaded.cpu.gpr[3] = 13; // kPlainWindowClass
+    loaded.cpu.gpr[4] = 1 << 16; // kWindowNoUpdatesAttribute
+    loaded.cpu.gpr[5] = bounds_ptr;
+    loaded.cpu.gpr[6] = out_window_ptr;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let window = loaded.memory.read_u32_be(out_window_ptr).unwrap();
+    assert_ne!(window, 0);
+    assert_eq!(ppc_window_proc_id(&mut loaded.memory, window), 2);
+    assert!(loaded.toolbox_startup.windows_without_updates.contains(&window));
+    assert_eq!(ppc_window_structure_bounds(2, (50, 50, 250, 350)), (49, 49, 251, 351));
+    let mut queue = VecDeque::new();
+    queue.push_back(PpcQueuedEvent {
+        what: 6,
+        message: window,
+        when: 0,
+        where_v: 0,
+        where_h: 0,
+        modifiers: 0,
+    });
+    ppc_suppress_window_updates(
+        &mut queue,
+        &loaded.toolbox_startup.windows_without_updates,
+    );
+    assert!(queue.is_empty());
+}
+
+#[test]
 fn import_bindings_classify_window_visibility_and_activation_imports() {
     for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
         // ShowWindow / showwindow
