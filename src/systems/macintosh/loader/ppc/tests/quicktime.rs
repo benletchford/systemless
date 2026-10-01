@@ -448,6 +448,60 @@ fn import_bindings_classify_quicktime_imports() {
 }
 
 #[test]
+fn carbon_multimedia_movie_imports_bind_existing_quicktime_handlers() {
+    for (name, target) in [
+        ("GetMovieBox", PpcImportDispatcherTarget::QtGetMovieBox),
+        ("DisposeMovie", PpcImportDispatcherTarget::QtDisposeMovie),
+        ("SetMovieBox", PpcImportDispatcherTarget::QtSetMovieBox),
+        ("EnterMovies", PpcImportDispatcherTarget::QtEnterMovies),
+        ("SetMovieGWorld", PpcImportDispatcherTarget::QtSetMovieGWorld),
+        ("StopMovie", PpcImportDispatcherTarget::QtStopMovie),
+        ("GetMoviesError", PpcImportDispatcherTarget::QtGetMoviesError),
+        ("MoviesTask", PpcImportDispatcherTarget::QtMoviesTask),
+        ("StartMovie", PpcImportDispatcherTarget::QtStartMovie),
+        ("IsMovieDone", PpcImportDispatcherTarget::QtIsMovieDone),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("Apple;Carbon;Multimedia", name),
+            target,
+            "{name}"
+        );
+    }
+
+    let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+        b"Apple;Carbon;Multimedia",
+        b"MoviesTask",
+        0x82,
+        &[sm_index_reloc(0x30, 0)],
+    ));
+    let mut weak_loaded = load_pef_application(&pef).unwrap();
+    assert_eq!(
+        weak_loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::QtMoviesTask
+    );
+    assert_ne!(weak_loaded.imports[0].address, 0);
+    assert_eq!(
+        weak_loaded.memory.read_u32_be(PPC_DATA_BASE),
+        Some(weak_loaded.imports[0].address)
+    );
+
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"Apple;Carbon;Multimedia",
+        b"MoviesTask",
+    ))
+    .unwrap();
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+
+    assert_eq!(
+        dispatcher_target_for_import("Apple;Carbon;Multimedia", "MovieImportFile"),
+        PpcImportDispatcherTarget::Unsupported
+    );
+}
+
+#[test]
 fn hle_import_runner_tracks_quicktime_init_and_error_state() {
     let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"EnterMovies");
     let mut loaded = load_pef_application(&pef).unwrap();
