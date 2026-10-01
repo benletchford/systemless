@@ -26,6 +26,14 @@ pub(super) struct PpcCarbonEventRecord {
     pub(super) time_bits: u64,
     pub(super) attributes: u32,
     pub(super) reference_count: u32,
+    pub(super) parameters: Vec<PpcCarbonEventParameterRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PpcCarbonEventParameterRecord {
+    pub(super) name: u32,
+    pub(super) type_code: u32,
+    pub(super) data: Vec<u8>,
 }
 
 // Carbon Event Manager Programming Guide (2005), "Installing Timers": a
@@ -634,6 +642,7 @@ pub(super) fn dispatch_event_import(
                 },
                 attributes: cpu.gpr[8],
                 reference_count: 1,
+                parameters: Vec::new(),
             });
             let _ = memory.write_u32_be(out_ref, event_ref);
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
@@ -673,6 +682,86 @@ pub(super) fn dispatch_event_import(
                 .find(|event| event.event_ref == cpu.gpr[3])
                 .map_or(0.0f64.to_bits(), |event| event.time_bits);
             Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::SetEventParameter => {
+            // CarbonEventsCore.h, SetEventParameter: the event owns a copy of
+            // the caller's bytes, and a second write replaces the named value.
+            let (event_ref, name, type_code, size, data_ptr) =
+                (cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6], cpu.gpr[7]);
+            if size != 0 && (data_ptr == 0 || !ppc_memory_can_read_bytes(memory, data_ptr, size)) {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let Some(event) = toolbox_startup
+                .carbon_events
+                .iter_mut()
+                .find(|event| event.event_ref == event_ref)
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let data = if size == 0 {
+                Vec::new()
+            } else {
+                let Some(data) = ppc_memory_read_bytes(memory, data_ptr, size) else {
+                    return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+                };
+                data
+            };
+            if let Some(parameter) = event
+                .parameters
+                .iter_mut()
+                .find(|parameter| parameter.name == name)
+            {
+                parameter.type_code = type_code;
+                parameter.data = data;
+            } else {
+                event.parameters.push(PpcCarbonEventParameterRecord {
+                    name,
+                    type_code,
+                    data,
+                });
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcImportDispatcherTarget::GetEventParameter => {
+            // CarbonEventsCore.h, GetEventParameter: NULL data with a zero
+            // buffer size requests metadata only; typeWildCard is '****'.
+            let Some(event) = toolbox_startup
+                .carbon_events
+                .iter()
+                .find(|event| event.event_ref == cpu.gpr[3])
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let Some(parameter) = event
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == cpu.gpr[4])
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(-9870)));
+            };
+            let (desired_type, actual_type_ptr, buffer_size, actual_size_ptr, data_ptr) =
+                (cpu.gpr[5], cpu.gpr[6], cpu.gpr[7], cpu.gpr[8], cpu.gpr[9]);
+            let data_size = parameter.data.len() as u32;
+            if (desired_type != u32::from_be_bytes(*b"****") && desired_type != parameter.type_code)
+                || (actual_type_ptr != 0 && !ppc_memory_can_write_bytes(memory, actual_type_ptr, 4))
+                || (actual_size_ptr != 0 && !ppc_memory_can_write_bytes(memory, actual_size_ptr, 4))
+                || (data_ptr == 0 && buffer_size != 0)
+                || (data_ptr != 0
+                    && (buffer_size < data_size
+                        || !ppc_memory_can_write_bytes(memory, data_ptr, data_size)))
+            {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            if actual_type_ptr != 0 {
+                let _ = memory.write_u32_be(actual_type_ptr, parameter.type_code);
+            }
+            if actual_size_ptr != 0 {
+                let _ = memory.write_u32_be(actual_size_ptr, data_size);
+            }
+            if data_ptr != 0 {
+                let _ = memory.write_bytes(data_ptr, &parameter.data);
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
         PpcImportDispatcherTarget::GetMainEventQueue => {
             // Carbon Event Manager Programming Guide (2005), "Posting Events":

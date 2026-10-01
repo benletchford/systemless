@@ -51,6 +51,69 @@ fn carbon_event_refs_are_process_owned_and_release_invalidates_them() {
 }
 
 #[test]
+fn carbon_event_parameters_copy_replace_and_report_metadata() {
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"SetEventParameter");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let base = PPC_DATA_BASE + 0x2500;
+    loaded.memory.add_region(base, vec![0; 64]);
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"test");
+    loaded.cpu.gpr[5] = 7;
+    loaded.cpu.fpr[1] = 1.0f64.to_bits();
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = base;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CreateEvent);
+    let event_ref = loaded.memory.read_u32_be(base).unwrap();
+    loaded.memory.write_bytes(base + 4, &[1, 2, 3, 4]).unwrap();
+    loaded.cpu.gpr[3] = event_ref;
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"data");
+    loaded.cpu.gpr[5] = u32::from_be_bytes(*b"long");
+    loaded.cpu.gpr[6] = 4;
+    loaded.cpu.gpr[7] = base + 4;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetEventParameter);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    loaded.memory.write_bytes(base + 4, &[9, 9, 9, 9]).unwrap();
+    loaded.cpu.gpr[3] = event_ref;
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"data");
+    loaded.cpu.gpr[5] = u32::from_be_bytes(*b"****");
+    loaded.cpu.gpr[6] = base + 8;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = base + 12;
+    loaded.cpu.gpr[9] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetEventParameter);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(base + 8),
+        Some(u32::from_be_bytes(*b"long"))
+    );
+    assert_eq!(loaded.memory.read_u32_be(base + 12), Some(4));
+    loaded.cpu.gpr[3] = event_ref;
+    loaded.cpu.gpr[7] = 4;
+    loaded.cpu.gpr[9] = base + 16;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetEventParameter);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, base + 16, 4),
+        Some(vec![1, 2, 3, 4])
+    );
+    loaded.memory.write_bytes(base + 4, &[5, 6]).unwrap();
+    loaded.cpu.gpr[3] = event_ref;
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"data");
+    loaded.cpu.gpr[5] = u32::from_be_bytes(*b"shor");
+    loaded.cpu.gpr[6] = 2;
+    loaded.cpu.gpr[7] = base + 4;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetEventParameter);
+    assert_eq!(loaded.toolbox_startup.carbon_events[0].parameters.len(), 1);
+    assert_eq!(
+        loaded.toolbox_startup.carbon_events[0].parameters[0].data,
+        vec![5, 6]
+    );
+    loaded.cpu.gpr[3] = event_ref;
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"none");
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetEventParameter);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-9870));
+}
+
+#[test]
 fn carbon_application_event_handlers_keep_process_owned_targets_and_type_specs() {
     let pef = synthetic_pef_with_library_import(b"CarbonLib", b"InstallEventHandler");
     let mut loaded = load_pef_application(&pef).unwrap();
