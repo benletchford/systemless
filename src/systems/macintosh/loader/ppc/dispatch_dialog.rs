@@ -41,6 +41,11 @@ use crate::dialog_manager::{
     evaluate_get_dialog_text_edit_handle, evaluate_get_param_text_parameters,
     evaluate_set_dialog_timeout_parameters, evaluate_get_dialog_timeout_parameters,
     evaluate_dialog_timeout_remaining,
+    evaluate_create_standard_alert_parameters, evaluate_run_standard_alert_parameters,
+    evaluate_close_standard_sheet_parameters, evaluate_get_standard_alert_default_params_parameters,
+    evaluate_get_modal_dialog_event_mask_parameters, evaluate_set_modal_dialog_event_mask_parameters,
+    evaluate_flash_dialog_control_parameters, evaluate_get_dialog_item_init_parameters,
+    evaluate_set_dialog_filter_parameters,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -50,6 +55,9 @@ use crate::dialog_manager::{
     DIALOG_RECORD_SIZE, DIALOG_RESOURCE_ID_OFFSET, DIALOG_STANDARD_ALERT_OUTPUT_OFFSET,
     DIALOG_STANDARD_ALERT_STACK_OFFSET, DIALOG_TEXT_HANDLE_OFFSET,
     DIALOG_TIMEOUT_BUTTON_OFFSET, DIALOG_TIMEOUT_SECONDS_OFFSET, DIALOG_TIMEOUT_START_TICK_OFFSET,
+    DIALOG_MODAL_EVENT_MASK_OFFSET, DIALOG_STANDARD_SHEET_COMMAND_OFFSET,
+    DIALOG_DEFAULT_MODAL_EVENT_MASK, ALERT_STD_CFSTRING_ALERT_PARAM_REC_SIZE,
+    STD_CFSTRING_ALERT_VERSION_ONE, ALERT_STD_ALERT_OK_BUTTON,
 };
 use crate::trap::types::decode_mac_roman;
 
@@ -1339,6 +1347,7 @@ pub(super) fn dispatch_dialog_import(
                 dialog_callback_stack,
                 vfs_resources,
                 current_resource_refnum,
+                last_resource_error,
                 param_text,
                 tick_count,
             ))
@@ -1518,17 +1527,27 @@ fn ppc_offset_ditl_items(bytes: &mut [u8], items: &[PpcDialogItemView], dv: i16,
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcDialogCompatibilityOperation {
     AppendDitl,
+    CloseStandardSheet,
     CountDitl,
+    CreateStandardAlert,
+    CreateStandardSheet,
     DialogSelect,
     FindDialogItem,
+    FlashDialogControl,
+    GetDialogItemInit,
     GetDialogKeyboardFocusItem,
     GetDialogTextEditHandle,
     GetDialogTimeout,
+    GetModalDialogEventMask,
     GetParamText,
+    GetStandardAlertDefaultParams,
     HideDialogItem,
     IsDialogEvent,
+    RunStandardAlert,
+    SetDialogFilter,
     SetDialogKeyboardFocusItem,
     SetDialogTimeout,
+    SetModalDialogEventMask,
     ShortenDitl,
     ShowDialogItem,
     UpdateDialog,
@@ -1544,7 +1563,7 @@ fn ppc_dispatch_dialog_compatibility(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    controls: &[PpcControlRecord],
+    controls: &mut Vec<PpcControlRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     window_list: &SharedProcessWindowList,
     blanking_window: Option<u32>,
@@ -1552,8 +1571,9 @@ fn ppc_dispatch_dialog_compatibility(
     current_gworld: &mut u32,
     current_gdevice: &mut u32,
     dialog_callback_stack: &mut Vec<PpcDialogCallbackState>,
-    vfs_resources: &[PpcVfsResourceRecord],
+    vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
+    last_resource_error: &mut i16,
     param_text: &SharedProcessDialogText,
     tick_count: u32,
 ) -> PpcImportAction {
@@ -2086,6 +2106,245 @@ fn ppc_dispatch_dialog_compatibility(
                 Err(err) => err,
             };
             PpcImportAction::Return(ppc_i16_result(os_err))
+        }
+        PpcDialogCompatibilityOperation::CreateStandardAlert
+        | PpcDialogCompatibilityOperation::CreateStandardSheet => {
+            let output = cpu.gpr[7];
+            let can_write = ppc_memory_can_write_bytes(memory, output, 4);
+            let params = match evaluate_create_standard_alert_parameters(
+                cpu.gpr[3] as u16 as i16,
+                cpu.gpr[4],
+                cpu.gpr[5],
+                cpu.gpr[6],
+                output,
+                can_write,
+            ) {
+                Ok(p) => p,
+                Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
+            };
+            let created = ppc_new_alert_dialog(
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                controls,
+                gworlds,
+                window_list,
+                *current_gdevice,
+                vfs_resources,
+                current_resource_refnum,
+                last_resource_error,
+                params.alert_type(),
+                true,
+                param_text,
+            );
+            if created == 0 {
+                return PpcImportAction::Return(ppc_i16_result(*last_resource_error));
+            }
+            *current_gworld = created;
+            *current_gdevice = ppc_gworld_device(gworlds, created).unwrap_or(*current_gdevice);
+            let _ = memory.write_u32_be(params.out_alert_ptr(), created);
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcDialogCompatibilityOperation::RunStandardAlert => {
+            let output = cpu.gpr[5];
+            let can_write = ppc_memory_can_write_bytes(memory, output, 2);
+            let params = match evaluate_run_standard_alert_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4],
+                output,
+                can_write,
+            ) {
+                Ok(p) => p,
+                Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
+            };
+            let alert_dialog = params.dialog_ptr();
+            let hit = memory
+                .read_u16_be(alert_dialog + DIALOG_DEFAULT_ITEM_OFFSET)
+                .filter(|&item| item > 0)
+                .unwrap_or(1);
+            let items_handle = memory
+                .read_u32_be(alert_dialog + DIALOG_ITEMS_OFFSET)
+                .unwrap_or(0);
+            let items = ppc_dialog_items_for_dialog(memory, handles, alert_dialog).unwrap_or_default();
+            ppc_release_dialog_storage(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                controls,
+                gworlds,
+                window_list,
+                current_gworld,
+                current_gdevice,
+                alert_dialog,
+                items_handle,
+                &items,
+                true,
+            );
+            let _ = memory.write_u16_be(params.out_item_hit_ptr(), hit);
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcDialogCompatibilityOperation::CloseStandardSheet => {
+            let params = match evaluate_close_standard_sheet_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4],
+            ) {
+                Ok(p) => p,
+                Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
+            };
+            let sheet = params.sheet_ptr();
+            let _ = memory.write_u32_be(sheet + DIALOG_STANDARD_SHEET_COMMAND_OFFSET, params.result_command());
+            let items_handle = memory
+                .read_u32_be(sheet + DIALOG_ITEMS_OFFSET)
+                .unwrap_or(0);
+            let items = ppc_dialog_items_for_dialog(memory, handles, sheet).unwrap_or_default();
+            ppc_release_dialog_storage(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                controls,
+                gworlds,
+                window_list,
+                current_gworld,
+                current_gdevice,
+                sheet,
+                items_handle,
+                &items,
+                true,
+            );
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcDialogCompatibilityOperation::GetStandardAlertDefaultParams => {
+            let param_ptr = cpu.gpr[3];
+            let version = cpu.gpr[4];
+            let can_write = ppc_memory_can_write_bytes(memory, param_ptr, ALERT_STD_CFSTRING_ALERT_PARAM_REC_SIZE);
+            let params = match evaluate_get_standard_alert_default_params_parameters(
+                param_ptr,
+                version,
+                can_write,
+            ) {
+                Ok(p) => p,
+                Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
+            };
+            let ptr = params.param_ptr();
+            let _ = memory.write_u32_be(ptr, STD_CFSTRING_ALERT_VERSION_ONE);
+            let _ = memory.write_u8(ptr + 4, 0);
+            let _ = memory.write_u8(ptr + 5, 0);
+            let _ = memory.write_u16_be(ptr + 6, 0);
+            let _ = memory.write_u32_be(ptr + 8, 0);
+            let _ = memory.write_u32_be(ptr + 12, 0);
+            let _ = memory.write_u32_be(ptr + 16, 0);
+            let _ = memory.write_u16_be(ptr + 20, ALERT_STD_ALERT_OK_BUTTON as u16);
+            let _ = memory.write_u16_be(ptr + 22, 0);
+            let _ = memory.write_u16_be(ptr + 24, 0);
+            let _ = memory.write_u16_be(ptr + 26, 0);
+            let _ = memory.write_u32_be(ptr + 28, 0);
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcDialogCompatibilityOperation::GetModalDialogEventMask => {
+            let out_mask = cpu.gpr[4];
+            let can_write = ppc_memory_can_write_bytes(memory, out_mask, 2);
+            let params = match evaluate_get_modal_dialog_event_mask_parameters(
+                cpu.gpr[3],
+                out_mask,
+                can_write,
+            ) {
+                Ok(p) => p,
+                Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
+            };
+            let mask = match memory.read_u16_be(params.dialog_ptr() + DIALOG_MODAL_EVENT_MASK_OFFSET) {
+                Some(0) | None => DIALOG_DEFAULT_MODAL_EVENT_MASK,
+                Some(m) => m,
+            };
+            let _ = memory.write_u16_be(params.out_mask_ptr(), mask);
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcDialogCompatibilityOperation::SetModalDialogEventMask => {
+            let params = match evaluate_set_modal_dialog_event_mask_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4] as u16,
+            ) {
+                Ok(p) => p,
+                Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
+            };
+            let _ = memory.write_u16_be(
+                params.dialog_ptr() + DIALOG_MODAL_EVENT_MASK_OFFSET,
+                params.mask(),
+            );
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcDialogCompatibilityOperation::FlashDialogControl => {
+            let params = match evaluate_flash_dialog_control_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4] as i16,
+            ) {
+                Ok(p) => p,
+                Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
+            };
+            if ppc_hle_trace_enabled() {
+                eprintln!(
+                    "[PPC-TRACE] FlashDialogControl dialog=0x{:08X} item={}",
+                    params.dialog_ptr(),
+                    params.item_index(),
+                );
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcDialogCompatibilityOperation::GetDialogItemInit => {
+            let params = match evaluate_get_dialog_item_init_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4] as i16,
+                cpu.gpr[5],
+                cpu.gpr[6],
+                cpu.gpr[7],
+            ) {
+                Ok(p) => p,
+                Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
+            };
+            let items = ppc_dialog_items_for_dialog(memory, handles, params.dialog_ptr()).unwrap_or_default();
+            if let Some(item) = crate::dialog_manager::get_item_at_1_indexed(&items, params.item_index() as usize) {
+                if params.out_type_ptr() != 0 {
+                    let _ = memory.write_u16_be(params.out_type_ptr(), item.item_type as u16);
+                }
+                if params.out_handle_ptr() != 0 {
+                    let _ = memory.write_u32_be(params.out_handle_ptr(), item.handle);
+                }
+                if params.out_rect_ptr() != 0 {
+                    let _ = memory.write_u16_be(params.out_rect_ptr(), item.rect.0 as u16);
+                    let _ = memory.write_u16_be(params.out_rect_ptr() + 2, item.rect.1 as u16);
+                    let _ = memory.write_u16_be(params.out_rect_ptr() + 4, item.rect.2 as u16);
+                    let _ = memory.write_u16_be(params.out_rect_ptr() + 6, item.rect.3 as u16);
+                }
+                PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+            } else {
+                PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR))
+            }
+        }
+        PpcDialogCompatibilityOperation::SetDialogFilter => {
+            let params = match evaluate_set_dialog_filter_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4],
+            ) {
+                Ok(p) => p,
+                Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
+            };
+            if ppc_hle_trace_enabled() {
+                eprintln!(
+                    "[PPC-TRACE] SetDialogFilter dialog=0x{:08X} filter=0x{:08X}",
+                    params.dialog_ptr(),
+                    params.filter_proc(),
+                );
+            }
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }
     }
 }
@@ -2751,6 +3010,10 @@ fn ppc_new_dialog(
     let _ = memory.write_u16_be(
         dialog + crate::dialog_manager::DIALOG_TX_FONT_OFFSET,
         dialog_font as u16,
+    );
+    let _ = memory.write_u16_be(
+        dialog + DIALOG_MODAL_EVENT_MASK_OFFSET,
+        DIALOG_DEFAULT_MODAL_EVENT_MASK,
     );
 
     // Macintosh Toolbox Essentials (1992), pp. 6-115--6-118: NewDialog's

@@ -2040,6 +2040,86 @@ fn import_bindings_classify_dialog_imports() {
         ("AppearanceLib", "getdialogtimeout", PpcDialogCompatibilityOperation::GetDialogTimeout),
         ("DialogsLib", "getdialogtimeout", PpcDialogCompatibilityOperation::GetDialogTimeout),
         ("CarbonLib", "getdialogtimeout", PpcDialogCompatibilityOperation::GetDialogTimeout),
+        ("InterfaceLib", "CloseStandardSheet", PpcDialogCompatibilityOperation::CloseStandardSheet),
+        ("AppearanceLib", "CloseStandardSheet", PpcDialogCompatibilityOperation::CloseStandardSheet),
+        ("DialogsLib", "CloseStandardSheet", PpcDialogCompatibilityOperation::CloseStandardSheet),
+        ("CarbonLib", "CloseStandardSheet", PpcDialogCompatibilityOperation::CloseStandardSheet),
+        ("InterfaceLib", "closestandardsheet", PpcDialogCompatibilityOperation::CloseStandardSheet),
+        ("AppearanceLib", "closestandardsheet", PpcDialogCompatibilityOperation::CloseStandardSheet),
+        ("DialogsLib", "closestandardsheet", PpcDialogCompatibilityOperation::CloseStandardSheet),
+        ("CarbonLib", "closestandardsheet", PpcDialogCompatibilityOperation::CloseStandardSheet),
+        ("InterfaceLib", "CreateStandardAlert", PpcDialogCompatibilityOperation::CreateStandardAlert),
+        ("AppearanceLib", "CreateStandardAlert", PpcDialogCompatibilityOperation::CreateStandardAlert),
+        ("DialogsLib", "CreateStandardAlert", PpcDialogCompatibilityOperation::CreateStandardAlert),
+        ("CarbonLib", "CreateStandardAlert", PpcDialogCompatibilityOperation::CreateStandardAlert),
+        ("InterfaceLib", "createstandardalert", PpcDialogCompatibilityOperation::CreateStandardAlert),
+        ("AppearanceLib", "createstandardalert", PpcDialogCompatibilityOperation::CreateStandardAlert),
+        ("DialogsLib", "createstandardalert", PpcDialogCompatibilityOperation::CreateStandardAlert),
+        ("CarbonLib", "createstandardalert", PpcDialogCompatibilityOperation::CreateStandardAlert),
+        ("InterfaceLib", "CreateStandardSheet", PpcDialogCompatibilityOperation::CreateStandardSheet),
+        ("AppearanceLib", "CreateStandardSheet", PpcDialogCompatibilityOperation::CreateStandardSheet),
+        ("DialogsLib", "CreateStandardSheet", PpcDialogCompatibilityOperation::CreateStandardSheet),
+        ("CarbonLib", "CreateStandardSheet", PpcDialogCompatibilityOperation::CreateStandardSheet),
+        ("InterfaceLib", "createstandardsheet", PpcDialogCompatibilityOperation::CreateStandardSheet),
+        ("AppearanceLib", "createstandardsheet", PpcDialogCompatibilityOperation::CreateStandardSheet),
+        ("DialogsLib", "createstandardsheet", PpcDialogCompatibilityOperation::CreateStandardSheet),
+        ("CarbonLib", "createstandardsheet", PpcDialogCompatibilityOperation::CreateStandardSheet),
+        ("InterfaceLib", "FlashDialogControl", PpcDialogCompatibilityOperation::FlashDialogControl),
+        ("AppearanceLib", "FlashDialogControl", PpcDialogCompatibilityOperation::FlashDialogControl),
+        ("DialogsLib", "FlashDialogControl", PpcDialogCompatibilityOperation::FlashDialogControl),
+        ("CarbonLib", "FlashDialogControl", PpcDialogCompatibilityOperation::FlashDialogControl),
+        ("InterfaceLib", "flashdialogcontrol", PpcDialogCompatibilityOperation::FlashDialogControl),
+        ("AppearanceLib", "flashdialogcontrol", PpcDialogCompatibilityOperation::FlashDialogControl),
+        ("DialogsLib", "flashdialogcontrol", PpcDialogCompatibilityOperation::FlashDialogControl),
+        ("CarbonLib", "flashdialogcontrol", PpcDialogCompatibilityOperation::FlashDialogControl),
+        ("InterfaceLib", "GetDialogItemInit", PpcDialogCompatibilityOperation::GetDialogItemInit),
+        ("AppearanceLib", "GetDialogItemInit", PpcDialogCompatibilityOperation::GetDialogItemInit),
+        ("DialogsLib", "GetDialogItemInit", PpcDialogCompatibilityOperation::GetDialogItemInit),
+        ("CarbonLib", "GetDialogItemInit", PpcDialogCompatibilityOperation::GetDialogItemInit),
+        ("InterfaceLib", "getdialogiteminit", PpcDialogCompatibilityOperation::GetDialogItemInit),
+        ("AppearanceLib", "getdialogiteminit", PpcDialogCompatibilityOperation::GetDialogItemInit),
+        ("DialogsLib", "getdialogiteminit", PpcDialogCompatibilityOperation::GetDialogItemInit),
+        ("CarbonLib", "getdialogiteminit", PpcDialogCompatibilityOperation::GetDialogItemInit),
+        ("InterfaceLib", "GetModalDialogEventMask", PpcDialogCompatibilityOperation::GetModalDialogEventMask),
+        ("AppearanceLib", "GetModalDialogEventMask", PpcDialogCompatibilityOperation::GetModalDialogEventMask),
+        ("DialogsLib", "GetModalDialogEventMask", PpcDialogCompatibilityOperation::GetModalDialogEventMask),
+        ("CarbonLib", "GetModalDialogEventMask", PpcDialogCompatibilityOperation::GetModalDialogEventMask),
+        ("InterfaceLib", "getmodaldialogeventmask", PpcDialogCompatibilityOperation::GetModalDialogEventMask),
+        ("AppearanceLib", "getmodaldialogeventmask", PpcDialogCompatibilityOperation::GetModalDialogEventMask),
+        ("DialogsLib", "getmodaldialogeventmask", PpcDialogCompatibilityOperation::GetModalDialogEventMask),
+        ("CarbonLib", "getmodaldialogeventmask", PpcDialogCompatibilityOperation::GetModalDialogEventMask),
+        ("InterfaceLib", "GetStandardAlertDefaultParams", PpcDialogCompatibilityOperation::GetStandardAlertDefaultParams),
+        ("AppearanceLib", "GetStandardAlertDefaultParams", PpcDialogCompatibilityOperation::GetStandardAlertDefaultParams),
+        ("DialogsLib", "GetStandardAlertDefaultParams", PpcDialogCompatibilityOperation::GetStandardAlertDefaultParams),
+        ("CarbonLib", "GetStandardAlertDefaultParams", PpcDialogCompatibilityOperation::GetStandardAlertDefaultParams),
+        ("InterfaceLib", "getstandardalertdefaultparams", PpcDialogCompatibilityOperation::GetStandardAlertDefaultParams),
+        ("AppearanceLib", "getstandardalertdefaultparams", PpcDialogCompatibilityOperation::GetStandardAlertDefaultParams),
+        ("DialogsLib", "getstandardalertdefaultparams", PpcDialogCompatibilityOperation::GetStandardAlertDefaultParams),
+        ("CarbonLib", "getstandardalertdefaultparams", PpcDialogCompatibilityOperation::GetStandardAlertDefaultParams),
+        ("InterfaceLib", "RunStandardAlert", PpcDialogCompatibilityOperation::RunStandardAlert),
+        ("AppearanceLib", "RunStandardAlert", PpcDialogCompatibilityOperation::RunStandardAlert),
+        ("DialogsLib", "RunStandardAlert", PpcDialogCompatibilityOperation::RunStandardAlert),
+        ("CarbonLib", "RunStandardAlert", PpcDialogCompatibilityOperation::RunStandardAlert),
+        ("InterfaceLib", "runstandardalert", PpcDialogCompatibilityOperation::RunStandardAlert),
+        ("AppearanceLib", "runstandardalert", PpcDialogCompatibilityOperation::RunStandardAlert),
+        ("DialogsLib", "runstandardalert", PpcDialogCompatibilityOperation::RunStandardAlert),
+        ("CarbonLib", "runstandardalert", PpcDialogCompatibilityOperation::RunStandardAlert),
+        ("InterfaceLib", "SetDialogFilter", PpcDialogCompatibilityOperation::SetDialogFilter),
+        ("AppearanceLib", "SetDialogFilter", PpcDialogCompatibilityOperation::SetDialogFilter),
+        ("DialogsLib", "SetDialogFilter", PpcDialogCompatibilityOperation::SetDialogFilter),
+        ("CarbonLib", "SetDialogFilter", PpcDialogCompatibilityOperation::SetDialogFilter),
+        ("InterfaceLib", "setdialogfilter", PpcDialogCompatibilityOperation::SetDialogFilter),
+        ("AppearanceLib", "setdialogfilter", PpcDialogCompatibilityOperation::SetDialogFilter),
+        ("DialogsLib", "setdialogfilter", PpcDialogCompatibilityOperation::SetDialogFilter),
+        ("CarbonLib", "setdialogfilter", PpcDialogCompatibilityOperation::SetDialogFilter),
+        ("InterfaceLib", "SetModalDialogEventMask", PpcDialogCompatibilityOperation::SetModalDialogEventMask),
+        ("AppearanceLib", "SetModalDialogEventMask", PpcDialogCompatibilityOperation::SetModalDialogEventMask),
+        ("DialogsLib", "SetModalDialogEventMask", PpcDialogCompatibilityOperation::SetModalDialogEventMask),
+        ("CarbonLib", "SetModalDialogEventMask", PpcDialogCompatibilityOperation::SetModalDialogEventMask),
+        ("InterfaceLib", "setmodaldialogeventmask", PpcDialogCompatibilityOperation::SetModalDialogEventMask),
+        ("AppearanceLib", "setmodaldialogeventmask", PpcDialogCompatibilityOperation::SetModalDialogEventMask),
+        ("DialogsLib", "setmodaldialogeventmask", PpcDialogCompatibilityOperation::SetModalDialogEventMask),
+        ("CarbonLib", "setmodaldialogeventmask", PpcDialogCompatibilityOperation::SetModalDialogEventMask),
     ] {
         assert_eq!(
             dispatcher_target_for_import(lib, symbol),
@@ -5366,4 +5446,364 @@ fn dialog_keyboard_focus_textedit_paramtext_and_timeout_dispatch_with_canonical_
         assert_eq!(probe.unsupported_import_index, None);
     }
 }
+
+#[test]
+fn standard_alert_sheet_and_event_mask_dispatch_with_canonical_evaluation() {
+    let dialog_ptr = PPC_DATA_BASE + 0x1000;
+    let out_buf = PPC_DATA_BASE + 0x2000;
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"GetModalDialogEventMask");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(dialog_ptr, vec![0; 256]);
+    loaded.memory.add_region(out_buf, vec![0; 256]);
+
+    // 1. GetModalDialogEventMask and SetModalDialogEventMask
+    // 1a. NULL dialog returns paramErr
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = out_buf;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetModalDialogEventMask,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 1b. NULL outMask returns paramErr
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetModalDialogEventMask,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 1c. Valid dialog returns default event mask (0xFFFF)
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = out_buf;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetModalDialogEventMask,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u16_be(out_buf), Some(0xFFFF));
+
+    // 1d. SetModalDialogEventMask: NULL dialog returns paramErr
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0x01FF;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::SetModalDialogEventMask,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 1e. SetModalDialogEventMask: sets mask to 0x01FF
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0x01FF;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::SetModalDialogEventMask,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+
+    // 1f. GetModalDialogEventMask reads back 0x01FF
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = out_buf;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetModalDialogEventMask,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u16_be(out_buf), Some(0x01FF));
+
+    // 2. GetStandardAlertDefaultParams
+    // 2a. NULL param_ptr returns paramErr
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetStandardAlertDefaultParams,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 2b. Unsupported version != 1 returns paramErr
+    loaded.cpu.gpr[3] = out_buf;
+    loaded.cpu.gpr[4] = 2;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetStandardAlertDefaultParams,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 2c. Valid param_ptr with version 1 populates record
+    loaded.cpu.gpr[3] = out_buf;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetStandardAlertDefaultParams,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u32_be(out_buf), Some(1)); // version 1
+    assert_eq!(loaded.memory.read_u16_be(out_buf + 20), Some(1)); // defaultButton = 1 (OK)
+    assert_eq!(loaded.memory.read_u16_be(out_buf + 22), Some(0)); // cancelButton = 0
+
+    // 3. FlashDialogControl
+    // 3a. NULL dialog returns paramErr
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::FlashDialogControl,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 3b. item <= 0 returns paramErr
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::FlashDialogControl,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 3c. Valid dialog and item returns preserve (gpr[3] unchanged)
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 2;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::FlashDialogControl,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], dialog_ptr);
+
+    // 4. SetDialogFilter
+    // 4a. NULL dialog returns paramErr
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0x1234;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::SetDialogFilter,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 4b. Valid dialog returns noErr
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0x1234;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::SetDialogFilter,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+
+    // 5. CreateStandardAlert & CreateStandardSheet validation
+    // 5a. NULL outAlert returns paramErr
+    loaded.cpu.gpr[3] = 1;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::CreateStandardAlert,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    loaded.cpu.gpr[7] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::CreateStandardSheet,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 6. RunStandardAlert
+    // 6a. NULL dialog returns paramErr
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = out_buf;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::RunStandardAlert,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 6b. NULL outItemHit returns paramErr
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::RunStandardAlert,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 6c. Valid dialog returns hit item
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = out_buf;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::RunStandardAlert,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u16_be(out_buf), Some(1));
+
+    // 7. CloseStandardSheet
+    // 7a. NULL sheet returns paramErr
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 100;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::CloseStandardSheet,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 7b. Valid sheet writes result command and returns noErr
+    let sheet_ptr = PPC_DATA_BASE + 0x3000;
+    loaded.memory.add_region(sheet_ptr, vec![0; 256]);
+    loaded.cpu.gpr[3] = sheet_ptr;
+    loaded.cpu.gpr[4] = 42;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::CloseStandardSheet,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(sheet_ptr + crate::dialog_manager::DIALOG_STANDARD_SHEET_COMMAND_OFFSET),
+        Some(42)
+    );
+
+    // 8. GetDialogItemInit
+    // 8a. NULL dialog returns paramErr
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = out_buf;
+    loaded.cpu.gpr[6] = out_buf + 4;
+    loaded.cpu.gpr[7] = out_buf + 8;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogItemInit,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 8b. item <= 0 returns paramErr
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = out_buf;
+    loaded.cpu.gpr[6] = out_buf + 4;
+    loaded.cpu.gpr[7] = out_buf + 8;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogItemInit,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 8c. Item not found on empty dialog returns paramErr
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = out_buf;
+    loaded.cpu.gpr[6] = out_buf + 4;
+    loaded.cpu.gpr[7] = out_buf + 8;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogItemInit,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 9. All 10 operations bind cleanly across InterfaceLib, AppearanceLib, DialogsLib, and CarbonLib
+    for (lib, symbol) in [
+        (b"InterfaceLib".as_slice(), b"CloseStandardSheet".as_slice()),
+        (b"AppearanceLib".as_slice(), b"CloseStandardSheet".as_slice()),
+        (b"DialogsLib".as_slice(), b"CloseStandardSheet".as_slice()),
+        (b"CarbonLib".as_slice(), b"CloseStandardSheet".as_slice()),
+        (b"InterfaceLib".as_slice(), b"CreateStandardAlert".as_slice()),
+        (b"AppearanceLib".as_slice(), b"CreateStandardAlert".as_slice()),
+        (b"DialogsLib".as_slice(), b"CreateStandardAlert".as_slice()),
+        (b"CarbonLib".as_slice(), b"CreateStandardAlert".as_slice()),
+        (b"InterfaceLib".as_slice(), b"CreateStandardSheet".as_slice()),
+        (b"AppearanceLib".as_slice(), b"CreateStandardSheet".as_slice()),
+        (b"DialogsLib".as_slice(), b"CreateStandardSheet".as_slice()),
+        (b"CarbonLib".as_slice(), b"CreateStandardSheet".as_slice()),
+        (b"InterfaceLib".as_slice(), b"FlashDialogControl".as_slice()),
+        (b"AppearanceLib".as_slice(), b"FlashDialogControl".as_slice()),
+        (b"DialogsLib".as_slice(), b"FlashDialogControl".as_slice()),
+        (b"CarbonLib".as_slice(), b"FlashDialogControl".as_slice()),
+        (b"InterfaceLib".as_slice(), b"GetDialogItemInit".as_slice()),
+        (b"AppearanceLib".as_slice(), b"GetDialogItemInit".as_slice()),
+        (b"DialogsLib".as_slice(), b"GetDialogItemInit".as_slice()),
+        (b"CarbonLib".as_slice(), b"GetDialogItemInit".as_slice()),
+        (b"InterfaceLib".as_slice(), b"GetModalDialogEventMask".as_slice()),
+        (b"AppearanceLib".as_slice(), b"GetModalDialogEventMask".as_slice()),
+        (b"DialogsLib".as_slice(), b"GetModalDialogEventMask".as_slice()),
+        (b"CarbonLib".as_slice(), b"GetModalDialogEventMask".as_slice()),
+        (b"InterfaceLib".as_slice(), b"GetStandardAlertDefaultParams".as_slice()),
+        (b"AppearanceLib".as_slice(), b"GetStandardAlertDefaultParams".as_slice()),
+        (b"DialogsLib".as_slice(), b"GetStandardAlertDefaultParams".as_slice()),
+        (b"CarbonLib".as_slice(), b"GetStandardAlertDefaultParams".as_slice()),
+        (b"InterfaceLib".as_slice(), b"RunStandardAlert".as_slice()),
+        (b"AppearanceLib".as_slice(), b"RunStandardAlert".as_slice()),
+        (b"DialogsLib".as_slice(), b"RunStandardAlert".as_slice()),
+        (b"CarbonLib".as_slice(), b"RunStandardAlert".as_slice()),
+        (b"InterfaceLib".as_slice(), b"SetDialogFilter".as_slice()),
+        (b"AppearanceLib".as_slice(), b"SetDialogFilter".as_slice()),
+        (b"DialogsLib".as_slice(), b"SetDialogFilter".as_slice()),
+        (b"CarbonLib".as_slice(), b"SetDialogFilter".as_slice()),
+        (b"InterfaceLib".as_slice(), b"SetModalDialogEventMask".as_slice()),
+        (b"AppearanceLib".as_slice(), b"SetModalDialogEventMask".as_slice()),
+        (b"DialogsLib".as_slice(), b"SetModalDialogEventMask".as_slice()),
+        (b"CarbonLib".as_slice(), b"SetModalDialogEventMask".as_slice()),
+    ] {
+        let pef = synthetic_pef_with_library_import(lib, symbol);
+        let mut loaded_app = load_pef_application(&pef).unwrap();
+        loaded_app.cpu.gpr[3] = 0;
+        let probe = loaded_app.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+    }
+}
+
 
