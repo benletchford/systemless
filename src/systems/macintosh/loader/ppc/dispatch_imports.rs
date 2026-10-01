@@ -2861,10 +2861,17 @@ pub(crate) fn dispatch_supported_import(
                 cpu.gpr[6] as i32,
             )
             .then_some(PpcImportAction::ReturnPreserve),
-        PpcImportDispatcherTarget::GlEnable => (cpu.gpr[3] == 0x0c11 && agl.gl_scissor_test(true))
-            .then_some(PpcImportAction::ReturnPreserve),
-        PpcImportDispatcherTarget::GlDisable => (cpu.gpr[3] == 0x0c11
-            && agl.gl_scissor_test(false))
+        PpcImportDispatcherTarget::GlEnable => match cpu.gpr[3] {
+            0x0c11 => agl.gl_scissor_test(true),
+            0x0b71 => agl.gl_depth_test(true),
+            _ => false,
+        }
+        .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlDisable => match cpu.gpr[3] {
+            0x0c11 => agl.gl_scissor_test(false),
+            0x0b71 => agl.gl_depth_test(false),
+            _ => false,
+        }
         .then_some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::GlReadBuffer => agl
             .gl_read_buffer(cpu.gpr[3])
@@ -2961,6 +2968,55 @@ pub(crate) fn dispatch_supported_import(
                     f64::from_bits(cpu.fpr[index + 1])
                 }))
             })
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlViewport => agl
+            .gl_viewport(
+                cpu.gpr[3] as i32,
+                cpu.gpr[4] as i32,
+                cpu.gpr[5] as i32,
+                cpu.gpr[6] as i32,
+            )
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlDepthRange => agl
+            .gl_depth_range(f64::from_bits(cpu.fpr[1]), f64::from_bits(cpu.fpr[2]))
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlBegin => agl
+            .gl_begin(cpu.gpr[3])
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlEnd => agl.gl_end().then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlColor3f => agl
+            .gl_color([
+                f64::from_bits(cpu.fpr[1]),
+                f64::from_bits(cpu.fpr[2]),
+                f64::from_bits(cpu.fpr[3]),
+                1.0,
+            ])
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlColor4f => agl
+            .gl_color(std::array::from_fn(|index| {
+                f64::from_bits(cpu.fpr[index + 1])
+            }))
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlVertex2f => agl
+            .gl_vertex([
+                f64::from_bits(cpu.fpr[1]),
+                f64::from_bits(cpu.fpr[2]),
+                0.0,
+                1.0,
+            ])
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlVertex3f => agl
+            .gl_vertex([
+                f64::from_bits(cpu.fpr[1]),
+                f64::from_bits(cpu.fpr[2]),
+                f64::from_bits(cpu.fpr[3]),
+                1.0,
+            ])
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlVertex4f => agl
+            .gl_vertex(std::array::from_fn(|index| {
+                f64::from_bits(cpu.fpr[index + 1])
+            }))
             .then_some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::NoOpPreserve => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::ExitToShell => Some(PpcImportAction::Halt),

@@ -5,6 +5,7 @@
 //! https://github.com/phracker/MacOSX-SDKs/blob/master/MacOSX10.2.8.sdk/System/Library/Frameworks/AGL.framework/Versions/A/Headers/agl.h
 
 use super::classic_gl_framebuffer::{ClassicGlClear, ClassicGlColorBuffer, ClassicGlFramebuffer};
+use super::classic_gl_raster::{draw_triangle, ClassicGlRasterState, ClassicGlVertex};
 use super::classic_gl_transform::ClassicGlTransform;
 use super::{PpcFrontBuffer, PpcSectionMem};
 use ppc::PpcMemory;
@@ -74,6 +75,13 @@ pub struct PpcAglContext {
     draw_back: bool,
     pack: PpcGlPixelPack,
     transform: ClassicGlTransform,
+    viewport: (i32, i32, u32, u32),
+    viewport_explicit: bool,
+    depth_range: (f64, f64),
+    depth_test: bool,
+    current_color: [f64; 4],
+    primitive_mode: Option<u32>,
+    vertices: Vec<ClassicGlVertex>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -191,6 +199,13 @@ impl PpcAglState {
             draw_back: double_buffered,
             pack: PpcGlPixelPack::default(),
             transform: ClassicGlTransform::default(),
+            viewport: (0, 0, 0, 0),
+            viewport_explicit: false,
+            depth_range: (0.0, 1.0),
+            depth_test: false,
+            current_color: [1.0; 4],
+            primitive_mode: None,
+            vertices: Vec::new(),
         });
         handle
     }
@@ -236,6 +251,135 @@ impl PpcAglState {
 
     pub fn current_transform_mut(&mut self) -> Option<&mut ClassicGlTransform> {
         Some(&mut self.context_mut(self.current_context)?.transform)
+    }
+
+    pub fn gl_viewport(&mut self, x: i32, y: i32, width: i32, height: i32) -> bool {
+        if width < 0 || height < 0 {
+            return false;
+        }
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        context.viewport = (x, y, width as u32, height as u32);
+        context.viewport_explicit = true;
+        true
+    }
+
+    pub fn gl_depth_range(&mut self, near: f64, far: f64) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        context.depth_range = (near.clamp(0.0, 1.0), far.clamp(0.0, 1.0));
+        true
+    }
+
+    pub fn gl_depth_test(&mut self, enabled: bool) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        context.depth_test = enabled;
+        true
+    }
+
+    pub fn gl_color(&mut self, color: [f64; 4]) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        context.current_color = color;
+        true
+    }
+
+    pub fn gl_begin(&mut self, mode: u32) -> bool {
+        if !matches!(mode, 0x0004..=0x0007) {
+            return false;
+        }
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        context.vertices.clear();
+        context.primitive_mode = Some(mode);
+        true
+    }
+
+    pub fn gl_vertex(&mut self, point: [f64; 4]) -> bool {
+        const MAX_IMMEDIATE_VERTICES: usize = 1_000_000;
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_none() || context.vertices.len() >= MAX_IMMEDIATE_VERTICES {
+            return false;
+        }
+        context.vertices.push(ClassicGlVertex {
+            clip: context.transform.modelview_projection().transform(point),
+            color: context.current_color,
+        });
+        true
+    }
+
+    pub fn gl_end(&mut self) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        let Some(mode) = context.primitive_mode.take() else {
+            return false;
+        };
+        let vertices = std::mem::take(&mut context.vertices);
+        let Some(framebuffer) = context.framebuffer.as_mut() else {
+            return false;
+        };
+        let state = ClassicGlRasterState {
+            viewport: context.viewport,
+            depth_range: context.depth_range,
+            scissor: context.scissor_enabled.then_some(context.scissor),
+            draw_front: context.draw_front,
+            draw_back: context.draw_back,
+            color_mask: context.color_mask,
+            depth_test: context.depth_test,
+            depth_mask: context.depth_mask,
+        };
+        let mut draw = |a: usize, b: usize, c: usize| {
+            draw_triangle(framebuffer, [vertices[a], vertices[b], vertices[c]], state)
+        };
+        match mode {
+            0x0004 => {
+                for start in (0..vertices.len().saturating_sub(2)).step_by(3) {
+                    if !draw(start, start + 1, start + 2) {
+                        return false;
+                    }
+                }
+            }
+            0x0005 => {
+                for start in 0..vertices.len().saturating_sub(2) {
+                    let (a, b) = if start % 2 == 0 {
+                        (start, start + 1)
+                    } else {
+                        (start + 1, start)
+                    };
+                    if !draw(a, b, start + 2) {
+                        return false;
+                    }
+                }
+            }
+            0x0006 => {
+                for index in 1..vertices.len().saturating_sub(1) {
+                    if !draw(0, index, index + 1) {
+                        return false;
+                    }
+                }
+            }
+            0x0007 => {
+                for start in (0..vertices.len().saturating_sub(3)).step_by(4) {
+                    if !draw(start, start + 1, start + 2) || !draw(start, start + 2, start + 3) {
+                        return false;
+                    }
+                }
+            }
+            _ => unreachable!(),
+        }
+        true
     }
 
     pub fn gl_clear_color(&mut self, components: [f64; 4]) -> bool {
@@ -512,6 +656,9 @@ impl PpcAglState {
         if !context.scissor_explicit {
             context.scissor = (0, 0, surface.width, surface.height);
         }
+        if !context.viewport_explicit {
+            context.viewport = (0, 0, surface.width, surface.height);
+        }
         true
     }
 
@@ -539,6 +686,9 @@ impl PpcAglState {
             context.framebuffer = Some(framebuffer);
             if !context.scissor_explicit {
                 context.scissor = (0, 0, surface.width, surface.height);
+            }
+            if !context.viewport_explicit {
+                context.viewport = (0, 0, surface.width, surface.height);
             }
         }
         true
@@ -679,6 +829,77 @@ pub fn ppc_agl_read_pixel_format_request(
 mod tests {
     use super::*;
     use ppc::PpcMemory;
+
+    #[test]
+    fn immediate_triangle_reaches_guest_window_pixels_after_swap() {
+        let mut agl = PpcAglState::default();
+        let format = agl.choose_pixel_format(PpcAglPixelFormatRequest {
+            rgba: true,
+            double_buffered: true,
+            ..Default::default()
+        });
+        let context = agl.create_context(format, 0);
+        assert!(agl.set_current_context(context));
+        let surface = PpcFrontBuffer {
+            base_addr: 0x1000,
+            width: 4,
+            height: 4,
+            depth: 16,
+            row_bytes: 8,
+        };
+        assert!(agl.set_drawable(context, 0x2000, Some(surface)));
+        assert!(!agl.gl_viewport(0, 0, -1, 4));
+        assert!(agl.gl_color([1.0, 0.0, 0.0, 1.0]));
+        assert!(agl.gl_begin(0x0004)); // GL_TRIANGLES
+        assert!(agl.gl_vertex([-1.0, -1.0, 0.0, 1.0]));
+        assert!(agl.gl_vertex([1.0, -1.0, 0.0, 1.0]));
+        assert!(agl.gl_vertex([-1.0, 1.0, 0.0, 1.0]));
+        assert!(agl.gl_end());
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x1000, vec![0; 32]);
+        assert!(agl.swap_buffers(context, &mut memory, surface));
+        assert_eq!(memory.read_u16_be(0x1000 + 3 * 8), Some(0x7c00));
+        assert_eq!(memory.read_u16_be(0x1000 + 3 * 2), Some(0));
+    }
+
+    #[test]
+    fn immediate_vertices_use_modelview_projection_before_rasterization() {
+        let mut agl = PpcAglState::default();
+        let format = agl.choose_pixel_format(PpcAglPixelFormatRequest {
+            rgba: true,
+            ..Default::default()
+        });
+        let context = agl.create_context(format, 0);
+        assert!(agl.set_current_context(context));
+        assert!(agl.set_drawable(
+            context,
+            0x2000,
+            Some(PpcFrontBuffer {
+                base_addr: 0x1000,
+                width: 4,
+                height: 4,
+                depth: 16,
+                row_bytes: 8,
+            })
+        ));
+        agl.current_transform_mut()
+            .unwrap()
+            .translate(1.0, 0.0, 0.0);
+        assert!(agl.gl_begin(0x0004));
+        assert!(agl.gl_vertex([-1.0, -1.0, 0.0, 1.0]));
+        assert!(agl.gl_vertex([1.0, -1.0, 0.0, 1.0]));
+        assert!(agl.gl_vertex([-1.0, 1.0, 0.0, 1.0]));
+        assert!(agl.gl_end());
+        let framebuffer = agl.context(context).unwrap().framebuffer.as_ref().unwrap();
+        assert_eq!(
+            framebuffer.pixel(ClassicGlColorBuffer::Front, 0, 0),
+            Some([0; 4])
+        );
+        assert_eq!(
+            framebuffer.pixel(ClassicGlColorBuffer::Front, 2, 0),
+            Some([255; 4])
+        );
+    }
 
     #[test]
     fn clear_uses_current_context_back_buffer_and_default_depth_stencil() {

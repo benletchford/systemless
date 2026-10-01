@@ -1,6 +1,7 @@
 //! Pixel storage for classic OpenGL drawables. Coordinates at this boundary use
 //! OpenGL's lower-left origin; QuickDraw's guest framebuffer uses the upper-left.
 
+use super::classic_gl_raster::ClassicGlRasterState;
 use super::{PpcFrontBuffer, PpcSectionMem};
 
 const MAX_DRAWABLE_PIXELS: usize = 4096 * 4096;
@@ -158,6 +159,58 @@ impl ClassicGlFramebuffer {
             return false;
         };
         *pixel = rgba;
+        true
+    }
+
+    pub fn write_fragment(
+        &mut self,
+        x: u32,
+        y: u32,
+        depth: f32,
+        color: [u8; 4],
+        state: ClassicGlRasterState,
+    ) -> bool {
+        let Some(index) = self.index(x, y) else {
+            return false;
+        };
+        if let Some((left, bottom, width, height)) = state.scissor {
+            let x = i64::from(x);
+            let y = i64::from(y);
+            if x < i64::from(left)
+                || x >= i64::from(left) + i64::from(width)
+                || y < i64::from(bottom)
+                || y >= i64::from(bottom) + i64::from(height)
+            {
+                return true;
+            }
+        }
+        if state.depth_test {
+            if !depth.is_finite() || depth >= self.depth[index] {
+                return true;
+            }
+            if state.depth_mask {
+                self.depth[index] = depth;
+            }
+        }
+        for buffer in [
+            state.draw_front.then_some(ClassicGlColorBuffer::Front),
+            state.draw_back.then_some(ClassicGlColorBuffer::Back),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let Some(pixel) = self
+                .color_mut(buffer)
+                .and_then(|pixels| pixels.get_mut(index))
+            else {
+                return false;
+            };
+            for component in 0..4 {
+                if state.color_mask[component] {
+                    pixel[component] = color[component];
+                }
+            }
+        }
         true
     }
 

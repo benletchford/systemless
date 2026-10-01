@@ -175,6 +175,13 @@ impl ClassicGlTransform {
         }
     }
 
+    pub fn modelview_projection(&self) -> ClassicGlMatrix {
+        self.projection
+            .last()
+            .unwrap()
+            .multiply(*self.modelview.last().unwrap())
+    }
+
     pub fn push(&mut self) -> bool {
         let maximum = if self.mode == ClassicGlMatrixMode::ModelView {
             32
