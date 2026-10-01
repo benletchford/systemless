@@ -45,6 +45,9 @@ pub const DIALOG_CANCEL_ITEM_OFFSET: u32 = 172;
 pub const DIALOG_ALERT_HIT_OFFSET: u32 = 174;
 pub const DIALOG_STANDARD_ALERT_OUTPUT_OFFSET: u32 = 176;
 pub const DIALOG_STANDARD_ALERT_STACK_OFFSET: u32 = 180;
+pub const DIALOG_TIMEOUT_BUTTON_OFFSET: u32 = 184;
+pub const DIALOG_TIMEOUT_SECONDS_OFFSET: u32 = 188;
+pub const DIALOG_TIMEOUT_START_TICK_OFFSET: u32 = 192;
 
 /// Canonical Dialog window kind. Inside Macintosh Volume I, p. I-273.
 pub const DIALOG_WINDOW_KIND: u16 = 2;
@@ -6097,6 +6100,304 @@ pub const fn evaluate_shorten_ditl_parameters(
     })
 }
 
+/// Evaluates `GetDialogKeyboardFocusItem` (Universal Interfaces 3.4.1 `Dialogs.h`).
+///
+/// Inside Macintosh Volume I, p. I-411:
+/// `editField` in `DialogRecord` contains the 0-based item number of the editable text item
+/// that currently has keyboard focus, or -1 (`DIALOG_INITIAL_EDIT_FIELD`) if none.
+/// `GetDialogKeyboardFocusItem` returns the 1-based dialog item number (`editField + 1`),
+/// or 0 if `dialog_ptr == 0` or no editable text item currently has focus.
+#[inline]
+#[must_use]
+pub const fn evaluate_get_dialog_keyboard_focus_item(
+    dialog_ptr: u32,
+    edit_field: Option<i16>,
+) -> i16 {
+    if dialog_ptr == 0 {
+        return 0;
+    }
+    match edit_field {
+        Some(field) if field >= 0 => field.saturating_add(1),
+        _ => 0,
+    }
+}
+
+/// Canonical evaluated parameters for `SetDialogKeyboardFocusItem`.
+///
+/// Universal Interfaces 3.4.1 `Dialogs.h`:
+/// Sets the active edit field in `DialogRecord` (`editField` at offset 164).
+/// An `item_index <= 0` clears the focus (-1), while `item_index > 0` sets `editField = item_index - 1`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SetDialogKeyboardFocusItemParameters {
+    dialog_ptr: u32,
+    item_index: i16,
+}
+
+impl SetDialogKeyboardFocusItemParameters {
+    /// Constructs a new `SetDialogKeyboardFocusItemParameters`.
+    #[inline]
+    #[must_use]
+    pub const fn new(dialog_ptr: u32, item_index: i16) -> Self {
+        Self {
+            dialog_ptr,
+            item_index,
+        }
+    }
+
+    /// The target dialog pointer.
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// The 1-based target dialog item index (or <= 0 to clear focus).
+    #[allow(dead_code)]
+    #[inline]
+    #[must_use]
+    pub const fn item_index(&self) -> i16 {
+        self.item_index
+    }
+
+    /// The calculated 0-based `editField` value to write to `DialogRecord` (or -1 if clearing focus).
+    #[inline]
+    #[must_use]
+    pub const fn target_edit_field(&self) -> i16 {
+        if self.item_index <= 0 {
+            DIALOG_INITIAL_EDIT_FIELD
+        } else {
+            self.item_index.saturating_sub(1)
+        }
+    }
+}
+
+/// Evaluates `SetDialogKeyboardFocusItem` parameters.
+///
+/// Returns `Ok(SetDialogKeyboardFocusItemParameters)` if `dialog_ptr != 0`,
+/// or `Err(DIALOG_PARAM_ERR)` if `dialog_ptr == 0`.
+#[inline]
+pub const fn evaluate_set_dialog_keyboard_focus_item_parameters(
+    dialog_ptr: u32,
+    item_index: i16,
+) -> Result<SetDialogKeyboardFocusItemParameters, i16> {
+    if dialog_ptr == 0 {
+        Err(DIALOG_PARAM_ERR)
+    } else {
+        Ok(SetDialogKeyboardFocusItemParameters::new(
+            dialog_ptr,
+            item_index,
+        ))
+    }
+}
+
+/// Evaluates `GetDialogTextEditHandle` (Universal Interfaces 3.4.1 `Dialogs.h`).
+///
+/// Inside Macintosh Volume I, p. I-411:
+/// In `DialogRecord`, `textH` (offset 160) holds the handle to the `TERec` used for
+/// active text editing. Returns `text_handle` if `dialog_ptr != 0`, or 0 if NULL.
+#[inline]
+#[must_use]
+pub const fn evaluate_get_dialog_text_edit_handle(
+    dialog_ptr: u32,
+    text_handle: Option<u32>,
+) -> u32 {
+    if dialog_ptr == 0 {
+        0
+    } else {
+        match text_handle {
+            Some(handle) => handle,
+            None => 0,
+        }
+    }
+}
+
+/// Evaluates `GetParamText` parameters.
+///
+/// Universal Interfaces 3.4.1 `Dialogs.h`:
+/// `PROCEDURE GetParamText(VAR param0, param1, param2, param3: Str255);`
+#[inline]
+#[must_use]
+pub const fn evaluate_get_param_text_parameters(
+    param0: u32,
+    param1: u32,
+    param2: u32,
+    param3: u32,
+) -> ParamTextParameters {
+    ParamTextParameters::new(param0, param1, param2, param3)
+}
+
+/// Canonical evaluated parameters for `SetDialogTimeout`.
+///
+/// Universal Interfaces 3.4.1 `Dialogs.h`:
+/// `OSStatus SetDialogTimeout(DialogRef inDialog, DialogItemIndex inButtonToPress, UInt32 inSecondsToWait);`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SetDialogTimeoutParameters {
+    dialog_ptr: u32,
+    button_to_press: i16,
+    seconds_to_wait: u32,
+}
+
+impl SetDialogTimeoutParameters {
+    /// Constructs a new `SetDialogTimeoutParameters`.
+    #[inline]
+    #[must_use]
+    pub const fn new(dialog_ptr: u32, button_to_press: i16, seconds_to_wait: u32) -> Self {
+        Self {
+            dialog_ptr,
+            button_to_press,
+            seconds_to_wait,
+        }
+    }
+
+    /// The target dialog pointer.
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// The button item index to press on timeout expiration.
+    #[inline]
+    #[must_use]
+    pub const fn button_to_press(&self) -> i16 {
+        self.button_to_press
+    }
+
+    /// The duration to wait before timeout expiration (in seconds).
+    #[inline]
+    #[must_use]
+    pub const fn seconds_to_wait(&self) -> u32 {
+        self.seconds_to_wait
+    }
+}
+
+/// Evaluates `SetDialogTimeout` parameters.
+///
+/// Returns `Ok(SetDialogTimeoutParameters)` if `dialog_ptr != 0`,
+/// or `Err(DIALOG_PARAM_ERR)` if `dialog_ptr == 0`.
+#[inline]
+pub const fn evaluate_set_dialog_timeout_parameters(
+    dialog_ptr: u32,
+    button_to_press: i16,
+    seconds_to_wait: u32,
+) -> Result<SetDialogTimeoutParameters, i16> {
+    if dialog_ptr == 0 {
+        Err(DIALOG_PARAM_ERR)
+    } else {
+        Ok(SetDialogTimeoutParameters::new(
+            dialog_ptr,
+            button_to_press,
+            seconds_to_wait,
+        ))
+    }
+}
+
+/// Canonical evaluated parameters for `GetDialogTimeout`.
+///
+/// Universal Interfaces 3.4.1 `Dialogs.h`:
+/// `OSStatus GetDialogTimeout(DialogRef inDialog, DialogItemIndex *outButtonToPress, UInt32 *outSecondsToWait, UInt32 *outSecondsRemaining);`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GetDialogTimeoutParameters {
+    dialog_ptr: u32,
+    out_button_ptr: u32,
+    out_seconds_ptr: u32,
+    out_remaining_ptr: u32,
+}
+
+impl GetDialogTimeoutParameters {
+    /// Constructs a new `GetDialogTimeoutParameters`.
+    #[inline]
+    #[must_use]
+    pub const fn new(
+        dialog_ptr: u32,
+        out_button_ptr: u32,
+        out_seconds_ptr: u32,
+        out_remaining_ptr: u32,
+    ) -> Self {
+        Self {
+            dialog_ptr,
+            out_button_ptr,
+            out_seconds_ptr,
+            out_remaining_ptr,
+        }
+    }
+
+    /// The target dialog pointer.
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    /// The output pointer for the button item index.
+    #[inline]
+    #[must_use]
+    pub const fn out_button_ptr(&self) -> u32 {
+        self.out_button_ptr
+    }
+
+    /// The output pointer for the configured seconds duration.
+    #[inline]
+    #[must_use]
+    pub const fn out_seconds_ptr(&self) -> u32 {
+        self.out_seconds_ptr
+    }
+
+    /// The output pointer for the remaining seconds duration.
+    #[inline]
+    #[must_use]
+    pub const fn out_remaining_ptr(&self) -> u32 {
+        self.out_remaining_ptr
+    }
+}
+
+/// Evaluates `GetDialogTimeout` parameters.
+///
+/// Returns `Ok(GetDialogTimeoutParameters)` if `dialog_ptr != 0` and all non-null output pointers are writable,
+/// or `Err(DIALOG_PARAM_ERR)` otherwise.
+pub fn evaluate_get_dialog_timeout_parameters(
+    dialog_ptr: u32,
+    out_button_ptr: u32,
+    button_writable: bool,
+    out_seconds_ptr: u32,
+    seconds_writable: bool,
+    out_remaining_ptr: u32,
+    remaining_writable: bool,
+) -> Result<GetDialogTimeoutParameters, i16> {
+    if dialog_ptr == 0 {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    if (out_button_ptr != 0 && !button_writable)
+        || (out_seconds_ptr != 0 && !seconds_writable)
+        || (out_remaining_ptr != 0 && !remaining_writable)
+    {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    Ok(GetDialogTimeoutParameters::new(
+        dialog_ptr,
+        out_button_ptr,
+        out_seconds_ptr,
+        out_remaining_ptr,
+    ))
+}
+
+/// Evaluates the remaining countdown duration for a dialog timeout given start tick and current tick.
+#[inline]
+#[must_use]
+pub const fn evaluate_dialog_timeout_remaining(
+    seconds_to_wait: u32,
+    start_tick: u32,
+    current_tick: u32,
+) -> u32 {
+    if seconds_to_wait == 0 {
+        0
+    } else {
+        let elapsed_ticks = current_tick.saturating_sub(start_tick);
+        let elapsed_seconds = elapsed_ticks / 60;
+        seconds_to_wait.saturating_sub(elapsed_seconds)
+    }
+}
+
 /// Returns true if two rectangles intersect.
 pub fn rects_intersect(a: (i16, i16, i16, i16), b: (i16, i16, i16, i16)) -> bool {
     a.0 < b.2 && a.2 > b.0 && a.1 < b.3 && a.3 > b.1
@@ -10845,6 +11146,100 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn dialog_keyboard_focus_textedit_paramtext_and_timeout_evaluation() {
+        // 1. GetDialogKeyboardFocusItem
+        assert_eq!(evaluate_get_dialog_keyboard_focus_item(0, None), 0);
+        assert_eq!(evaluate_get_dialog_keyboard_focus_item(0, Some(0)), 0);
+        assert_eq!(evaluate_get_dialog_keyboard_focus_item(0x1000, None), 0);
+        assert_eq!(evaluate_get_dialog_keyboard_focus_item(0x1000, Some(-1)), 0);
+        assert_eq!(evaluate_get_dialog_keyboard_focus_item(0x1000, Some(0)), 1);
+        assert_eq!(evaluate_get_dialog_keyboard_focus_item(0x1000, Some(2)), 3);
+
+        // 2. SetDialogKeyboardFocusItem
+        assert_eq!(
+            evaluate_set_dialog_keyboard_focus_item_parameters(0, 1),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let params_clear = evaluate_set_dialog_keyboard_focus_item_parameters(0x1000, 0).unwrap();
+        assert_eq!(params_clear.dialog_ptr(), 0x1000);
+        assert_eq!(params_clear.item_index(), 0);
+        assert_eq!(params_clear.target_edit_field(), -1);
+
+        let params_neg = evaluate_set_dialog_keyboard_focus_item_parameters(0x1000, -5).unwrap();
+        assert_eq!(params_neg.target_edit_field(), -1);
+
+        let params_focus = evaluate_set_dialog_keyboard_focus_item_parameters(0x1000, 3).unwrap();
+        assert_eq!(params_focus.dialog_ptr(), 0x1000);
+        assert_eq!(params_focus.item_index(), 3);
+        assert_eq!(params_focus.target_edit_field(), 2);
+
+        // 3. GetDialogTextEditHandle
+        assert_eq!(evaluate_get_dialog_text_edit_handle(0, None), 0);
+        assert_eq!(evaluate_get_dialog_text_edit_handle(0, Some(0x2000)), 0);
+        assert_eq!(evaluate_get_dialog_text_edit_handle(0x1000, None), 0);
+        assert_eq!(evaluate_get_dialog_text_edit_handle(0x1000, Some(0x2000)), 0x2000);
+
+        // 4. GetParamText
+        let params_text = evaluate_get_param_text_parameters(0x10, 0x20, 0, 0x40);
+        assert_eq!(params_text.param(0), 0x10);
+        assert_eq!(params_text.param(1), 0x20);
+        assert_eq!(params_text.param(2), 0);
+        assert_eq!(params_text.param(3), 0x40);
+
+        // 5. SetDialogTimeout
+        assert_eq!(
+            evaluate_set_dialog_timeout_parameters(0, 1, 10),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let timeout_params = evaluate_set_dialog_timeout_parameters(0x1000, 2, 30).unwrap();
+        assert_eq!(timeout_params.dialog_ptr(), 0x1000);
+        assert_eq!(timeout_params.button_to_press(), 2);
+        assert_eq!(timeout_params.seconds_to_wait(), 30);
+
+        // 6. GetDialogTimeout
+        assert_eq!(
+            evaluate_get_dialog_timeout_parameters(0, 0x2000, true, 0x2004, true, 0x2008, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_dialog_timeout_parameters(0x1000, 0x2000, false, 0x2004, true, 0x2008, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_dialog_timeout_parameters(0x1000, 0x2000, true, 0x2004, false, 0x2008, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_dialog_timeout_parameters(0x1000, 0x2000, true, 0x2004, true, 0x2008, false),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let get_timeout = evaluate_get_dialog_timeout_parameters(
+            0x1000,
+            0x2000,
+            true,
+            0x2004,
+            true,
+            0x2008,
+            true,
+        )
+        .unwrap();
+        assert_eq!(get_timeout.dialog_ptr(), 0x1000);
+        assert_eq!(get_timeout.out_button_ptr(), 0x2000);
+        assert_eq!(get_timeout.out_seconds_ptr(), 0x2004);
+        assert_eq!(get_timeout.out_remaining_ptr(), 0x2008);
+
+        // 7. evaluate_dialog_timeout_remaining
+        assert_eq!(evaluate_dialog_timeout_remaining(0, 1000, 2000), 0);
+        assert_eq!(evaluate_dialog_timeout_remaining(10, 1000, 1000), 10);
+        // 120 ticks = 2 seconds elapsed
+        assert_eq!(evaluate_dialog_timeout_remaining(10, 1000, 1120), 8);
+        // 600 ticks = 10 seconds elapsed
+        assert_eq!(evaluate_dialog_timeout_remaining(10, 1000, 1600), 0);
+        // 1200 ticks = 20 seconds elapsed (saturates at 0)
+        assert_eq!(evaluate_dialog_timeout_remaining(10, 1000, 2200), 0);
     }
 }
 

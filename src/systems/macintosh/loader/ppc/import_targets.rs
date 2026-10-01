@@ -4770,6 +4770,30 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetDialogKeyboardFocusItem" | "getdialogkeyboardfocusitem",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogKeyboardFocusItem,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetDialogTextEditHandle" | "getdialogtextedithandle",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogTextEditHandle,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetDialogTimeout" | "getdialogtimeout",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogTimeout,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetParamText" | "getparamtext",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetParamText,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "HideDialogItem" | "HideDItem",
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::HideDialogItem,
@@ -4779,6 +4803,21 @@ pub(crate) fn dispatcher_target_for_import(
             "IsDialogEvent",
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::IsDialogEvent,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "SetDialogKeyboardFocusItem"
+            | "setdialogkeyboardfocusitem"
+            | "SetDialogKeyboardFocus"
+            | "setdialogkeyboardfocus",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "SetDialogTimeout" | "setdialogtimeout",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::SetDialogTimeout,
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",

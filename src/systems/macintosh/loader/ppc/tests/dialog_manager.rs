@@ -1984,6 +1984,62 @@ fn import_bindings_classify_dialog_imports() {
         ("AppearanceLib", "IsDialogEvent", PpcDialogCompatibilityOperation::IsDialogEvent),
         ("DialogsLib", "IsDialogEvent", PpcDialogCompatibilityOperation::IsDialogEvent),
         ("CarbonLib", "IsDialogEvent", PpcDialogCompatibilityOperation::IsDialogEvent),
+        ("InterfaceLib", "GetDialogKeyboardFocusItem", PpcDialogCompatibilityOperation::GetDialogKeyboardFocusItem),
+        ("AppearanceLib", "GetDialogKeyboardFocusItem", PpcDialogCompatibilityOperation::GetDialogKeyboardFocusItem),
+        ("DialogsLib", "GetDialogKeyboardFocusItem", PpcDialogCompatibilityOperation::GetDialogKeyboardFocusItem),
+        ("CarbonLib", "GetDialogKeyboardFocusItem", PpcDialogCompatibilityOperation::GetDialogKeyboardFocusItem),
+        ("InterfaceLib", "getdialogkeyboardfocusitem", PpcDialogCompatibilityOperation::GetDialogKeyboardFocusItem),
+        ("AppearanceLib", "getdialogkeyboardfocusitem", PpcDialogCompatibilityOperation::GetDialogKeyboardFocusItem),
+        ("DialogsLib", "getdialogkeyboardfocusitem", PpcDialogCompatibilityOperation::GetDialogKeyboardFocusItem),
+        ("CarbonLib", "getdialogkeyboardfocusitem", PpcDialogCompatibilityOperation::GetDialogKeyboardFocusItem),
+        ("InterfaceLib", "SetDialogKeyboardFocusItem", PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem),
+        ("AppearanceLib", "SetDialogKeyboardFocusItem", PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem),
+        ("DialogsLib", "SetDialogKeyboardFocusItem", PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem),
+        ("CarbonLib", "SetDialogKeyboardFocusItem", PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem),
+        ("InterfaceLib", "setdialogkeyboardfocusitem", PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem),
+        ("AppearanceLib", "setdialogkeyboardfocusitem", PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem),
+        ("DialogsLib", "setdialogkeyboardfocusitem", PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem),
+        ("CarbonLib", "setdialogkeyboardfocusitem", PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem),
+        ("InterfaceLib", "SetDialogKeyboardFocus", PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem),
+        ("AppearanceLib", "SetDialogKeyboardFocus", PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem),
+        ("DialogsLib", "SetDialogKeyboardFocus", PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem),
+        ("CarbonLib", "SetDialogKeyboardFocus", PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem),
+        ("InterfaceLib", "setdialogkeyboardfocus", PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem),
+        ("AppearanceLib", "setdialogkeyboardfocus", PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem),
+        ("DialogsLib", "setdialogkeyboardfocus", PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem),
+        ("CarbonLib", "setdialogkeyboardfocus", PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem),
+        ("InterfaceLib", "GetDialogTextEditHandle", PpcDialogCompatibilityOperation::GetDialogTextEditHandle),
+        ("AppearanceLib", "GetDialogTextEditHandle", PpcDialogCompatibilityOperation::GetDialogTextEditHandle),
+        ("DialogsLib", "GetDialogTextEditHandle", PpcDialogCompatibilityOperation::GetDialogTextEditHandle),
+        ("CarbonLib", "GetDialogTextEditHandle", PpcDialogCompatibilityOperation::GetDialogTextEditHandle),
+        ("InterfaceLib", "getdialogtextedithandle", PpcDialogCompatibilityOperation::GetDialogTextEditHandle),
+        ("AppearanceLib", "getdialogtextedithandle", PpcDialogCompatibilityOperation::GetDialogTextEditHandle),
+        ("DialogsLib", "getdialogtextedithandle", PpcDialogCompatibilityOperation::GetDialogTextEditHandle),
+        ("CarbonLib", "getdialogtextedithandle", PpcDialogCompatibilityOperation::GetDialogTextEditHandle),
+        ("InterfaceLib", "GetParamText", PpcDialogCompatibilityOperation::GetParamText),
+        ("AppearanceLib", "GetParamText", PpcDialogCompatibilityOperation::GetParamText),
+        ("DialogsLib", "GetParamText", PpcDialogCompatibilityOperation::GetParamText),
+        ("CarbonLib", "GetParamText", PpcDialogCompatibilityOperation::GetParamText),
+        ("InterfaceLib", "getparamtext", PpcDialogCompatibilityOperation::GetParamText),
+        ("AppearanceLib", "getparamtext", PpcDialogCompatibilityOperation::GetParamText),
+        ("DialogsLib", "getparamtext", PpcDialogCompatibilityOperation::GetParamText),
+        ("CarbonLib", "getparamtext", PpcDialogCompatibilityOperation::GetParamText),
+        ("InterfaceLib", "SetDialogTimeout", PpcDialogCompatibilityOperation::SetDialogTimeout),
+        ("AppearanceLib", "SetDialogTimeout", PpcDialogCompatibilityOperation::SetDialogTimeout),
+        ("DialogsLib", "SetDialogTimeout", PpcDialogCompatibilityOperation::SetDialogTimeout),
+        ("CarbonLib", "SetDialogTimeout", PpcDialogCompatibilityOperation::SetDialogTimeout),
+        ("InterfaceLib", "setdialogtimeout", PpcDialogCompatibilityOperation::SetDialogTimeout),
+        ("AppearanceLib", "setdialogtimeout", PpcDialogCompatibilityOperation::SetDialogTimeout),
+        ("DialogsLib", "setdialogtimeout", PpcDialogCompatibilityOperation::SetDialogTimeout),
+        ("CarbonLib", "setdialogtimeout", PpcDialogCompatibilityOperation::SetDialogTimeout),
+        ("InterfaceLib", "GetDialogTimeout", PpcDialogCompatibilityOperation::GetDialogTimeout),
+        ("AppearanceLib", "GetDialogTimeout", PpcDialogCompatibilityOperation::GetDialogTimeout),
+        ("DialogsLib", "GetDialogTimeout", PpcDialogCompatibilityOperation::GetDialogTimeout),
+        ("CarbonLib", "GetDialogTimeout", PpcDialogCompatibilityOperation::GetDialogTimeout),
+        ("InterfaceLib", "getdialogtimeout", PpcDialogCompatibilityOperation::GetDialogTimeout),
+        ("AppearanceLib", "getdialogtimeout", PpcDialogCompatibilityOperation::GetDialogTimeout),
+        ("DialogsLib", "getdialogtimeout", PpcDialogCompatibilityOperation::GetDialogTimeout),
+        ("CarbonLib", "getdialogtimeout", PpcDialogCompatibilityOperation::GetDialogTimeout),
     ] {
         assert_eq!(
             dispatcher_target_for_import(lib, symbol),
@@ -4994,3 +5050,320 @@ fn dialog_control_conversion_and_lowmem_commands_dispatch_with_canonical_evaluat
         assert_eq!(probe.unsupported_import_index, None);
     }
 }
+
+#[test]
+fn dialog_keyboard_focus_textedit_paramtext_and_timeout_dispatch_with_canonical_evaluation() {
+    let dialog_ptr = PPC_DATA_BASE + 0x1000;
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"GetDialogKeyboardFocusItem");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(dialog_ptr, vec![0; 256]);
+
+    // 1. GetDialogKeyboardFocusItem:
+    // 1a. NULL dialog returns 0
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogKeyboardFocusItem,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 1b. Dialog with editField = -1 (no field active) returns 0
+    loaded
+        .memory
+        .write_u16_be(dialog_ptr + PPC_DIALOG_EDIT_FIELD_OFFSET, (-1i16) as u16)
+        .unwrap();
+    loaded.cpu.gpr[3] = dialog_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogKeyboardFocusItem,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 1c. Dialog with editField = 0 (item 1 has focus) returns 1
+    loaded
+        .memory
+        .write_u16_be(dialog_ptr + PPC_DIALOG_EDIT_FIELD_OFFSET, 0)
+        .unwrap();
+    loaded.cpu.gpr[3] = dialog_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogKeyboardFocusItem,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    // 1d. Dialog with editField = 2 (item 3 has focus) returns 3
+    loaded
+        .memory
+        .write_u16_be(dialog_ptr + PPC_DIALOG_EDIT_FIELD_OFFSET, 2)
+        .unwrap();
+    loaded.cpu.gpr[3] = dialog_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogKeyboardFocusItem,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 3);
+
+    // 2. SetDialogKeyboardFocusItem:
+    // 2a. NULL dialog returns paramErr
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 2b. Setting item 2 sets editField = 1 and returns noErr
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 2;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(dialog_ptr + PPC_DIALOG_EDIT_FIELD_OFFSET),
+        Some(1)
+    );
+
+    // 2c. Clearing focus with item 0 sets editField = -1 and returns noErr
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(dialog_ptr + PPC_DIALOG_EDIT_FIELD_OFFSET)
+            .map(|f| f as i16),
+        Some(-1)
+    );
+
+    // 3. GetDialogTextEditHandle:
+    // 3a. NULL dialog returns 0
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogTextEditHandle,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 3b. Dialog with textH returns textH handle
+    let fake_te_handle = 0x55AA_1234;
+    loaded
+        .memory
+        .write_u32_be(dialog_ptr + PPC_DIALOG_TEXT_HANDLE_OFFSET, fake_te_handle)
+        .unwrap();
+    loaded.cpu.gpr[3] = dialog_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogTextEditHandle,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], fake_te_handle);
+
+    // 4. GetParamText:
+    let out_buf0 = PPC_DATA_BASE + 0x2000;
+    let out_buf1 = PPC_DATA_BASE + 0x2100;
+    let out_buf3 = PPC_DATA_BASE + 0x2200;
+    loaded.memory.add_region(out_buf0, vec![0; 256]);
+    loaded.memory.add_region(out_buf1, vec![0; 256]);
+    loaded.memory.add_region(out_buf3, vec![0; 256]);
+
+    loaded.param_text.set_slot(0, b"First".to_vec());
+    loaded.param_text.set_slot(1, b"SecondParam".to_vec());
+    loaded.param_text.set_slot(2, b"ThirdUnqueried".to_vec());
+    loaded.param_text.set_slot(3, b"FourthParamText".to_vec());
+
+    loaded.cpu.gpr[3] = out_buf0;
+    loaded.cpu.gpr[4] = out_buf1;
+    loaded.cpu.gpr[5] = 0; // NULL pointer for param2
+    loaded.cpu.gpr[6] = out_buf3;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetParamText,
+        ),
+    );
+    // Verify Pascal strings written to out_buf0, out_buf1, out_buf3
+    assert_eq!(loaded.memory.read_u8(out_buf0), Some(5));
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, out_buf0),
+        Some(b"First".to_vec())
+    );
+    assert_eq!(loaded.memory.read_u8(out_buf1), Some(11));
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, out_buf1),
+        Some(b"SecondParam".to_vec())
+    );
+    assert_eq!(loaded.memory.read_u8(out_buf3), Some(15));
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, out_buf3),
+        Some(b"FourthParamText".to_vec())
+    );
+
+    // 5. SetDialogTimeout & GetDialogTimeout:
+    // 5a. SetDialogTimeout with NULL dialog returns paramErr
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = 45;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::SetDialogTimeout,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 5b. SetDialogTimeout with valid dialog records button and duration
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 2; // button 2 (Cancel)
+    loaded.cpu.gpr[5] = 60; // 60 seconds
+    loaded.set_tick_count(1200);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::SetDialogTimeout,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+
+    // 5c. GetDialogTimeout with NULL dialog returns paramErr
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogTimeout,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 5d. GetDialogTimeout reads back button, seconds, and remaining duration
+    let out_btn = PPC_DATA_BASE + 0x2300;
+    let out_secs = PPC_DATA_BASE + 0x2304;
+    let out_rem = PPC_DATA_BASE + 0x2308;
+    loaded.memory.add_region(out_btn, vec![0; 16]);
+
+    // Advance 600 ticks (10 seconds elapsed out of 60)
+    loaded.set_tick_count(1800);
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = out_btn;
+    loaded.cpu.gpr[5] = out_secs;
+    loaded.cpu.gpr[6] = out_rem;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogTimeout,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u16_be(out_btn), Some(2));
+    assert_eq!(loaded.memory.read_u32_be(out_secs), Some(60));
+    assert_eq!(loaded.memory.read_u32_be(out_rem), Some(50));
+
+    // 5e. GetDialogTimeout with NULL out pointers succeeds without writing
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogTimeout,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+
+    // 6. Synthetic PEF execution for all 6 routines across all four libraries
+    for (lib, symbol) in [
+        (
+            b"InterfaceLib".as_slice(),
+            b"GetDialogKeyboardFocusItem".as_slice(),
+        ),
+        (
+            b"AppearanceLib".as_slice(),
+            b"GetDialogKeyboardFocusItem".as_slice(),
+        ),
+        (
+            b"DialogsLib".as_slice(),
+            b"GetDialogKeyboardFocusItem".as_slice(),
+        ),
+        (
+            b"CarbonLib".as_slice(),
+            b"GetDialogKeyboardFocusItem".as_slice(),
+        ),
+        (
+            b"InterfaceLib".as_slice(),
+            b"SetDialogKeyboardFocusItem".as_slice(),
+        ),
+        (
+            b"AppearanceLib".as_slice(),
+            b"SetDialogKeyboardFocusItem".as_slice(),
+        ),
+        (
+            b"DialogsLib".as_slice(),
+            b"SetDialogKeyboardFocusItem".as_slice(),
+        ),
+        (
+            b"CarbonLib".as_slice(),
+            b"SetDialogKeyboardFocusItem".as_slice(),
+        ),
+        (
+            b"InterfaceLib".as_slice(),
+            b"GetDialogTextEditHandle".as_slice(),
+        ),
+        (
+            b"AppearanceLib".as_slice(),
+            b"GetDialogTextEditHandle".as_slice(),
+        ),
+        (
+            b"DialogsLib".as_slice(),
+            b"GetDialogTextEditHandle".as_slice(),
+        ),
+        (
+            b"CarbonLib".as_slice(),
+            b"GetDialogTextEditHandle".as_slice(),
+        ),
+        (b"InterfaceLib".as_slice(), b"GetParamText".as_slice()),
+        (b"AppearanceLib".as_slice(), b"GetParamText".as_slice()),
+        (b"DialogsLib".as_slice(), b"GetParamText".as_slice()),
+        (b"CarbonLib".as_slice(), b"GetParamText".as_slice()),
+        (b"InterfaceLib".as_slice(), b"SetDialogTimeout".as_slice()),
+        (b"AppearanceLib".as_slice(), b"SetDialogTimeout".as_slice()),
+        (b"DialogsLib".as_slice(), b"SetDialogTimeout".as_slice()),
+        (b"CarbonLib".as_slice(), b"SetDialogTimeout".as_slice()),
+        (b"InterfaceLib".as_slice(), b"GetDialogTimeout".as_slice()),
+        (b"AppearanceLib".as_slice(), b"GetDialogTimeout".as_slice()),
+        (b"DialogsLib".as_slice(), b"GetDialogTimeout".as_slice()),
+        (b"CarbonLib".as_slice(), b"GetDialogTimeout".as_slice()),
+    ] {
+        let pef = synthetic_pef_with_library_import(lib, symbol);
+        let mut loaded_app = load_pef_application(&pef).unwrap();
+        loaded_app.cpu.gpr[3] = 0;
+        let probe = loaded_app.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+    }
+}
+
