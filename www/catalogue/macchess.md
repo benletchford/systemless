@@ -61,6 +61,7 @@ artifacts:
     notes: >-
       Original 580,372-byte BinHex/StuffIt archive, SHA-256
       e9df9a62ba9d250010285f0149f5b2526b37bba93923fc20e8db958ccc5920cf.
+      The promoted public object was fetched back and matched this hash and size.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -80,7 +81,8 @@ artifacts:
     notes: >-
       Exact 257-by-256 board-content crop at (15,38) from an 800-by-600 Systemless
       framebuffer after white played e4 and black replied Nf6. The crop excludes the
-      Classic Mac menu bar and window frames.
+      Classic Mac menu bar and window frames. The promoted public object was
+      fetched back and matched its submitted hash and 7,929-byte size.
 references:
 - https://info-mac.org/viewtopic.php?p=4684
 - >-
