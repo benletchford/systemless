@@ -2840,7 +2840,14 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::NoOpPreserve => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::ExitToShell => Some(PpcImportAction::Halt),
-        PpcImportDispatcherTarget::GlmSetMode | PpcImportDispatcherTarget::GlmGetError => {
+        PpcImportDispatcherTarget::GlmSetMode
+        | PpcImportDispatcherTarget::GlmSetFunc
+        | PpcImportDispatcherTarget::GlmMalloc
+        | PpcImportDispatcherTarget::GlmCalloc
+        | PpcImportDispatcherTarget::GlmRealloc
+        | PpcImportDispatcherTarget::GlmFree
+        | PpcImportDispatcherTarget::GlmPageFreeAll
+        | PpcImportDispatcherTarget::GlmGetError => {
             unreachable!("OpenGL memory imports return through the fast dispatcher")
         }
         PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => None,

@@ -1042,6 +1042,10 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
         process_memory_manager,
         draw_sprocket: PpcDrawSprocketState::default(),
         glm_mode: None,
+        glm_callbacks: [None; 8],
+        glm_callback_stack: Vec::new(),
+        glm_allocations: HashMap::new(),
+        glm_page_free_all_queue: VecDeque::new(),
         glm_error: 0,
     })
 }

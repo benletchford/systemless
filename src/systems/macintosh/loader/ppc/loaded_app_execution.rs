@@ -1,6 +1,84 @@
 //! PowerPC loaded application HLE execution engine on [`PpcLoadedApp`].
 
 use super::*;
+use super::loaded_app::{PpcGlmCallbackOperation, PpcGlmCallbackState};
+
+fn ppc_glm_zero_guest_range(memory: &mut PpcSectionMem, pointer: u32, size: u32) -> bool {
+    const ZEROES: [u8; 4096] = [0; 4096];
+    let mut written = 0;
+    while written < size {
+        let chunk = (size - written).min(ZEROES.len() as u32);
+        let Some(address) = pointer.checked_add(written) else {
+            return false;
+        };
+        if memory.write_bytes(address, &ZEROES[..chunk as usize]).is_none() {
+            return false;
+        }
+        written += chunk;
+    }
+    true
+}
+
+fn ppc_glm_copy_guest_range(
+    memory: &mut PpcSectionMem,
+    source: u32,
+    destination: u32,
+    size: u32,
+) -> bool {
+    if source == destination {
+        return true;
+    }
+    let mut bytes = [0; 4096];
+    let mut copied = 0;
+    while copied < size {
+        let chunk = (size - copied).min(bytes.len() as u32);
+        let (Some(from), Some(to)) = (
+            source.checked_add(copied),
+            destination.checked_add(copied),
+        ) else {
+            return false;
+        };
+        if memory
+            .read_bytes_into(from, &mut bytes[..chunk as usize])
+            .is_none()
+            || memory.write_bytes(to, &bytes[..chunk as usize]).is_none()
+        {
+            return false;
+        }
+        copied += chunk;
+    }
+    true
+}
+
+fn ppc_glm_begin_guest_callback(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    callback_stack: &mut Vec<PpcGlmCallbackState>,
+    target: PpcCallbackTarget,
+    argument: u32,
+    state: PpcGlmCallbackState,
+) -> Option<PpcImportAction> {
+    install_powerpc_call_arguments(cpu, memory, &[argument])?;
+    callback_stack.push(state);
+    let action = GuestCallEffect::call_guest(
+        GuestCallRequest::new(GuestCallTarget {
+            isa: GuestIsa::PowerPc,
+            entry: target.entry,
+            rtoc: target.rtoc,
+        }),
+        GuestCallContinuation::to_powerpc(
+            PPC_GUEST_CALL_RETURN_PC,
+            state.import_pc,
+            state.restore_rtoc,
+            PpcNativeReturnGpr3::Preserve,
+        ),
+    )
+    .into_ppc_import_action();
+    if action.is_none() {
+        callback_stack.pop();
+    }
+    action
+}
 
 fn ppc_hle_import_trace_same_run(
     left: &PpcHleImportTraceEntry,
@@ -249,6 +327,10 @@ impl PpcLoadedApp {
         let mut quicktime = std::mem::take(&mut self.quicktime);
         let mut sound = std::mem::take(&mut self.sound);
         let mut glm_mode = self.glm_mode;
+        let mut glm_callbacks = self.glm_callbacks;
+        let mut glm_callback_stack = std::mem::take(&mut self.glm_callback_stack);
+        let mut glm_allocations = std::mem::take(&mut self.glm_allocations);
+        let mut glm_page_free_all_queue = std::mem::take(&mut self.glm_page_free_all_queue);
         let mut glm_error = self.glm_error;
         let timer_tasks = std::mem::take(&mut self.timer_tasks);
         let vbl_tasks = std::mem::take(&mut self.vbl_tasks);
@@ -989,7 +1071,498 @@ impl PpcLoadedApp {
                         &mut quickdraw_text_size,
                     );
                 }
-                let action = if binding.dispatcher_target == PpcImportDispatcherTarget::GlmSetMode {
+                let action = if binding.dispatcher_target == PpcImportDispatcherTarget::GlmPageFreeAll {
+                    let pending = (cpu.lr == cpu.pc)
+                        .then(|| glm_callback_stack.last().copied())
+                        .flatten()
+                        .filter(|state| {
+                            state.import_pc == cpu.pc
+                                && matches!(
+                                    state.operation,
+                                    PpcGlmCallbackOperation::Free { free_all: true, .. }
+                                )
+                        });
+                    let reentrant = pending.is_none() && !glm_page_free_all_queue.is_empty();
+                    let preserved = if let Some(state) = pending {
+                        glm_callback_stack.pop();
+                        let PpcGlmCallbackOperation::Free { pointer, result, .. } =
+                            state.operation else { unreachable!() };
+                        glm_allocations.remove(&pointer);
+                        cpu.lr = state.final_pc;
+                        cpu.gpr[2] = state.restore_rtoc;
+                        result
+                    } else if glm_page_free_all_queue.is_empty() {
+                        let mut pointers: Vec<u32> = glm_allocations.keys().copied().collect();
+                        pointers.sort_unstable();
+                        glm_page_free_all_queue.extend(pointers);
+                        cpu.gpr[3]
+                    } else {
+                        glm_error = 3; // GLM_INVALID_OPERATION (reentrant free-all)
+                        cpu.gpr[3]
+                    };
+                    let mut callback_action = None;
+                    while !reentrant {
+                        let Some(pointer) = glm_page_free_all_queue.pop_front() else {
+                            break;
+                        };
+                        match glm_allocations.get(&pointer).copied() {
+                            Some((true, _)) => {
+                                let Some(target) = glm_callbacks[1] else {
+                                    glm_error = 3; // GLM_INVALID_OPERATION
+                                    glm_page_free_all_queue.clear();
+                                    break;
+                                };
+                                let state = PpcGlmCallbackState {
+                                    import_pc: cpu.pc,
+                                    final_pc: cpu.lr,
+                                    restore_rtoc: cpu.gpr[2],
+                                    operation: PpcGlmCallbackOperation::Free {
+                                        pointer,
+                                        result: preserved,
+                                        replacement_size: None,
+                                        free_all: true,
+                                    },
+                                };
+                                callback_action = ppc_glm_begin_guest_callback(
+                                    cpu,
+                                    memory,
+                                    &mut glm_callback_stack,
+                                    target,
+                                    pointer,
+                                    state,
+                                );
+                                if callback_action.is_none() {
+                                    glm_error = 3; // GLM_INVALID_OPERATION
+                                    glm_page_free_all_queue.clear();
+                                }
+                                break;
+                            }
+                            Some((false, _)) => {
+                                process_memory_manager.dispose_native_ptr(pointer);
+                                glm_allocations.remove(&pointer);
+                                ppc_apply_process_native_allocator(
+                                    process_memory_manager,
+                                    memory,
+                                    &mut heap_cursor,
+                                    &mut last_mem_error,
+                                );
+                            }
+                            None => {}
+                        }
+                    }
+                    callback_action.or(Some(PpcImportAction::Return(preserved)))
+                } else if binding.dispatcher_target == PpcImportDispatcherTarget::GlmRealloc {
+                    let pending = (cpu.lr == cpu.pc)
+                        .then(|| glm_callback_stack.last().copied())
+                        .flatten()
+                        .filter(|state| state.import_pc == cpu.pc);
+                    if let Some(state) = pending {
+                        glm_callback_stack.pop();
+                        cpu.lr = state.final_pc;
+                        cpu.gpr[2] = state.restore_rtoc;
+                        match state.operation {
+                            PpcGlmCallbackOperation::Allocate {
+                                size,
+                                replace: Some((old_pointer, copy_size)),
+                                ..
+                            } => {
+                                let new_pointer = cpu.gpr[3];
+                                if new_pointer == 0 {
+                                    glm_error = 4; // GLM_OUT_OF_MEMORY
+                                    Some(PpcImportAction::Return(0))
+                                } else if new_pointer == old_pointer {
+                                    glm_allocations.insert(old_pointer, (true, size));
+                                    Some(PpcImportAction::Return(old_pointer))
+                                } else if !ppc_glm_copy_guest_range(
+                                    memory,
+                                    old_pointer,
+                                    new_pointer,
+                                    copy_size,
+                                ) {
+                                    glm_error = 2; // GLM_INVALID_VALUE
+                                    if let Some(free_target) = glm_callbacks[1] {
+                                        let cleanup = PpcGlmCallbackState {
+                                            import_pc: cpu.pc,
+                                            final_pc: state.final_pc,
+                                            restore_rtoc: state.restore_rtoc,
+                                            operation: PpcGlmCallbackOperation::Free {
+                                                pointer: new_pointer,
+                                                result: 0,
+                                                replacement_size: None,
+                                                free_all: false,
+                                            },
+                                        };
+                                        ppc_glm_begin_guest_callback(
+                                            cpu,
+                                            memory,
+                                            &mut glm_callback_stack,
+                                            free_target,
+                                            new_pointer,
+                                            cleanup,
+                                        )
+                                        .or(Some(PpcImportAction::Return(0)))
+                                    } else {
+                                        Some(PpcImportAction::Return(0))
+                                    }
+                                } else if let Some(free_target) = glm_callbacks[1] {
+                                    let next = PpcGlmCallbackState {
+                                        import_pc: cpu.pc,
+                                        final_pc: state.final_pc,
+                                        restore_rtoc: state.restore_rtoc,
+                                        operation: PpcGlmCallbackOperation::Free {
+                                            pointer: old_pointer,
+                                            result: new_pointer,
+                                            replacement_size: Some(size),
+                                            free_all: false,
+                                        },
+                                    };
+                                    let action = ppc_glm_begin_guest_callback(
+                                        cpu,
+                                        memory,
+                                        &mut glm_callback_stack,
+                                        free_target,
+                                        old_pointer,
+                                        next,
+                                    );
+                                    if action.is_none() {
+                                        glm_error = 3; // GLM_INVALID_OPERATION
+                                    }
+                                    action.or(Some(PpcImportAction::Return(0)))
+                                } else {
+                                    glm_error = 3; // GLM_INVALID_OPERATION
+                                    Some(PpcImportAction::Return(0))
+                                }
+                            }
+                            PpcGlmCallbackOperation::Allocate {
+                                size,
+                                replace: None,
+                                ..
+                            } => {
+                                let pointer = cpu.gpr[3];
+                                if pointer == 0 {
+                                    glm_error = 4; // GLM_OUT_OF_MEMORY
+                                } else {
+                                    glm_allocations.insert(pointer, (true, size));
+                                }
+                                Some(PpcImportAction::Return(pointer))
+                            }
+                            PpcGlmCallbackOperation::Free {
+                                pointer,
+                                result,
+                                replacement_size,
+                                free_all: _,
+                            } => {
+                                glm_allocations.remove(&pointer);
+                                if let Some(size) = replacement_size {
+                                    glm_allocations.insert(result, (true, size));
+                                }
+                                Some(PpcImportAction::Return(result))
+                            }
+                        }
+                    } else {
+                        let old_pointer = cpu.gpr[3];
+                        let size = cpu.gpr[4];
+                        let previous = if old_pointer == 0 {
+                            None
+                        } else {
+                            glm_allocations.get(&old_pointer).copied()
+                        };
+                        if old_pointer != 0 && previous.is_none() {
+                            glm_error = 2; // GLM_INVALID_VALUE
+                            Some(PpcImportAction::Return(0))
+                        } else if size == 0 && old_pointer != 0 {
+                            if previous.is_some_and(|(callback, _)| callback) {
+                                if let Some(target) = glm_callbacks[1] {
+                                    let state = PpcGlmCallbackState {
+                                        import_pc: cpu.pc,
+                                        final_pc: cpu.lr,
+                                        restore_rtoc: cpu.gpr[2],
+                                        operation: PpcGlmCallbackOperation::Free {
+                                            pointer: old_pointer,
+                                            result: 0,
+                                            replacement_size: None,
+                                            free_all: false,
+                                        },
+                                    };
+                                    let action = ppc_glm_begin_guest_callback(
+                                        cpu,
+                                        memory,
+                                        &mut glm_callback_stack,
+                                        target,
+                                        old_pointer,
+                                        state,
+                                    );
+                                    if action.is_none() {
+                                        glm_error = 3; // GLM_INVALID_OPERATION
+                                    }
+                                    action.or(Some(PpcImportAction::Return(0)))
+                                } else {
+                                    glm_error = 3; // GLM_INVALID_OPERATION
+                                    Some(PpcImportAction::Return(0))
+                                }
+                            } else {
+                                process_memory_manager.dispose_native_ptr(old_pointer);
+                                ppc_apply_process_native_allocator(
+                                    process_memory_manager,
+                                    memory,
+                                    &mut heap_cursor,
+                                    &mut last_mem_error,
+                                );
+                                glm_allocations.remove(&old_pointer);
+                                Some(PpcImportAction::Return(0))
+                            }
+                        } else if previous.is_some_and(|(callback, _)| callback)
+                            || (old_pointer == 0 && glm_mode == Some(1))
+                        {
+                            if let Some(target) = glm_callbacks[0]
+                                .filter(|_| old_pointer == 0 || glm_callbacks[1].is_some())
+                            {
+                                let replace = previous.map(|(_, old_size)| {
+                                    (old_pointer, old_size.min(size))
+                                });
+                                let state = PpcGlmCallbackState {
+                                    import_pc: cpu.pc,
+                                    final_pc: cpu.lr,
+                                    restore_rtoc: cpu.gpr[2],
+                                    operation: PpcGlmCallbackOperation::Allocate {
+                                        size,
+                                        zero_on_return: false,
+                                        replace,
+                                    },
+                                };
+                                let action = ppc_glm_begin_guest_callback(
+                                    cpu,
+                                    memory,
+                                    &mut glm_callback_stack,
+                                    target,
+                                    size,
+                                    state,
+                                );
+                                if action.is_none() {
+                                    glm_error = 3; // GLM_INVALID_OPERATION
+                                }
+                                action.or(Some(PpcImportAction::Return(0)))
+                            } else {
+                                glm_error = 3; // GLM_INVALID_OPERATION
+                                Some(PpcImportAction::Return(0))
+                            }
+                        } else {
+                            let pointer = process_memory_manager.reallocate_native_ptr(
+                                memory,
+                                old_pointer,
+                                size,
+                            );
+                            ppc_apply_process_native_allocator(
+                                process_memory_manager,
+                                memory,
+                                &mut heap_cursor,
+                                &mut last_mem_error,
+                            );
+                            if pointer == 0 {
+                                glm_error = 4; // GLM_OUT_OF_MEMORY
+                            } else {
+                                if old_pointer != 0 {
+                                    glm_allocations.remove(&old_pointer);
+                                }
+                                glm_allocations.insert(pointer, (false, size));
+                            }
+                            Some(PpcImportAction::Return(pointer))
+                        }
+                    }
+                } else if matches!(
+                    binding.dispatcher_target,
+                    PpcImportDispatcherTarget::GlmMalloc | PpcImportDispatcherTarget::GlmCalloc
+                ) {
+                    let is_calloc = binding.dispatcher_target == PpcImportDispatcherTarget::GlmCalloc;
+                    let requested_size = if is_calloc {
+                        cpu.gpr[3].checked_mul(cpu.gpr[4])
+                    } else {
+                        Some(cpu.gpr[3])
+                    };
+                    if cpu.lr == cpu.pc
+                        && glm_callback_stack.last().is_some_and(|state| {
+                            state.import_pc == cpu.pc
+                                && matches!(state.operation, PpcGlmCallbackOperation::Free { .. })
+                        })
+                    {
+                        let state = glm_callback_stack.pop().unwrap();
+                        let PpcGlmCallbackOperation::Free { pointer, result, .. } =
+                            state.operation else { unreachable!() };
+                        cpu.lr = state.final_pc;
+                        cpu.gpr[2] = state.restore_rtoc;
+                        glm_allocations.remove(&pointer);
+                        Some(PpcImportAction::Return(result))
+                    } else if cpu.lr == cpu.pc
+                        && glm_callback_stack
+                            .last()
+                            .is_some_and(|state| {
+                                state.import_pc == cpu.pc
+                                    && matches!(state.operation, PpcGlmCallbackOperation::Allocate { .. })
+                            })
+                    {
+                        let state = glm_callback_stack.pop().unwrap();
+                        let PpcGlmCallbackOperation::Allocate { size, zero_on_return, .. } =
+                            state.operation else { unreachable!() };
+                        let pointer = cpu.gpr[3];
+                        cpu.lr = state.final_pc;
+                        cpu.gpr[2] = state.restore_rtoc;
+                        if pointer == 0 {
+                            glm_error = 4; // GLM_OUT_OF_MEMORY
+                            Some(PpcImportAction::Return(0))
+                        } else if zero_on_return
+                            && !ppc_glm_zero_guest_range(memory, pointer, size)
+                        {
+                            glm_error = 2; // GLM_INVALID_VALUE
+                            if let Some(free_target) = glm_callbacks[1] {
+                                let cleanup = PpcGlmCallbackState {
+                                    import_pc: cpu.pc,
+                                    final_pc: state.final_pc,
+                                    restore_rtoc: state.restore_rtoc,
+                                    operation: PpcGlmCallbackOperation::Free {
+                                        pointer,
+                                        result: 0,
+                                        replacement_size: None,
+                                        free_all: false,
+                                    },
+                                };
+                                ppc_glm_begin_guest_callback(
+                                    cpu,
+                                    memory,
+                                    &mut glm_callback_stack,
+                                    free_target,
+                                    pointer,
+                                    cleanup,
+                                )
+                                .or(Some(PpcImportAction::Return(0)))
+                            } else {
+                                Some(PpcImportAction::Return(0))
+                            }
+                        } else {
+                            glm_allocations.insert(pointer, (true, size));
+                            Some(PpcImportAction::Return(pointer))
+                        }
+                    } else if requested_size.is_none() {
+                        glm_error = 2; // GLM_INVALID_VALUE
+                        Some(PpcImportAction::Return(0))
+                    } else if glm_mode == Some(1) {
+                        let requested_size = requested_size.unwrap();
+                        if let Some(target) = glm_callbacks[0] {
+                            let state = PpcGlmCallbackState {
+                                import_pc: cpu.pc,
+                                final_pc: cpu.lr,
+                                restore_rtoc: cpu.gpr[2],
+                                operation: PpcGlmCallbackOperation::Allocate {
+                                    size: requested_size,
+                                    zero_on_return: is_calloc,
+                                    replace: None,
+                                },
+                            };
+                            let action = ppc_glm_begin_guest_callback(
+                                cpu,
+                                memory,
+                                &mut glm_callback_stack,
+                                target,
+                                requested_size,
+                                state,
+                            );
+                            if action.is_none() {
+                                glm_error = 3; // GLM_INVALID_OPERATION
+                            }
+                            action.or(Some(PpcImportAction::Return(0)))
+                        } else {
+                            glm_error = 3; // GLM_INVALID_OPERATION
+                            Some(PpcImportAction::Return(0))
+                        }
+                    } else {
+                        let pointer = process_memory_manager.new_native_ptr(
+                            memory,
+                            requested_size.unwrap(),
+                            is_calloc,
+                        );
+                        ppc_apply_process_native_allocator(
+                            process_memory_manager,
+                            memory,
+                            &mut heap_cursor,
+                            &mut last_mem_error,
+                        );
+                        if pointer == 0 {
+                            glm_error = 4; // GLM_OUT_OF_MEMORY
+                        } else {
+                            glm_allocations.insert(pointer, (false, requested_size.unwrap()));
+                        }
+                        Some(PpcImportAction::Return(pointer))
+                    }
+                } else if binding.dispatcher_target == PpcImportDispatcherTarget::GlmFree {
+                    if cpu.lr == cpu.pc
+                        && glm_callback_stack
+                            .last()
+                            .is_some_and(|state| {
+                                state.import_pc == cpu.pc
+                                    && matches!(state.operation, PpcGlmCallbackOperation::Free { .. })
+                            })
+                    {
+                        let state = glm_callback_stack.pop().unwrap();
+                        let PpcGlmCallbackOperation::Free { pointer, result, replacement_size, free_all: _ } =
+                            state.operation else { unreachable!() };
+                        cpu.lr = state.final_pc;
+                        cpu.gpr[2] = state.restore_rtoc;
+                        glm_allocations.remove(&pointer);
+                        if let Some(size) = replacement_size {
+                            glm_allocations.insert(result, (true, size));
+                        }
+                        Some(PpcImportAction::Return(result))
+                    } else {
+                        let pointer = cpu.gpr[3];
+                        match glm_allocations.get(&pointer).copied() {
+                            None if pointer == 0 => Some(PpcImportAction::ReturnPreserve),
+                            None => {
+                                glm_error = 2; // GLM_INVALID_VALUE
+                                Some(PpcImportAction::ReturnPreserve)
+                            }
+                            Some((true, _)) => {
+                                if let Some(target) = glm_callbacks[1] {
+                                    let state = PpcGlmCallbackState {
+                                        import_pc: cpu.pc,
+                                        final_pc: cpu.lr,
+                                        restore_rtoc: cpu.gpr[2],
+                                        operation: PpcGlmCallbackOperation::Free {
+                                            pointer,
+                                            result: pointer,
+                                            replacement_size: None,
+                                            free_all: false,
+                                        },
+                                    };
+                                    let action = ppc_glm_begin_guest_callback(
+                                        cpu,
+                                        memory,
+                                        &mut glm_callback_stack,
+                                        target,
+                                        pointer,
+                                        state,
+                                    );
+                                    if action.is_none() {
+                                        glm_error = 3; // GLM_INVALID_OPERATION
+                                    }
+                                    action.or(Some(PpcImportAction::ReturnPreserve))
+                                } else {
+                                    glm_error = 3; // GLM_INVALID_OPERATION
+                                    Some(PpcImportAction::ReturnPreserve)
+                                }
+                            }
+                            Some((false, _)) => {
+                                process_memory_manager.dispose_native_ptr(pointer);
+                                ppc_apply_process_native_allocator(
+                                    process_memory_manager,
+                                    memory,
+                                    &mut heap_cursor,
+                                    &mut last_mem_error,
+                                );
+                                glm_allocations.remove(&pointer);
+                                Some(PpcImportAction::ReturnPreserve)
+                            }
+                        }
+                    }
+                } else if binding.dispatcher_target == PpcImportDispatcherTarget::GlmSetMode {
                     // AGL/glm.h (Mac OS 9): glmSetMode is void and accepts
                     // exactly these four memory configuration selectors.
                     match cpu.gpr[3] {
@@ -1001,6 +1574,23 @@ impl PpcLoadedApp {
                     let error = glm_error;
                     glm_error = 0;
                     Some(PpcImportAction::Return(error))
+                } else if binding.dispatcher_target == PpcImportDispatcherTarget::GlmSetFunc {
+                    // glm.h: GLMfunctions is a union of function pointers, passed
+                    // directly in r4 by the native PowerPC ABI.
+                    let selector = cpu.gpr[3];
+                    let pointer = cpu.gpr[4];
+                    if !(1..=8).contains(&selector) {
+                        glm_error = 1; // GLM_INVALID_ENUM
+                    } else if pointer == 0 {
+                        glm_callbacks[(selector - 1) as usize] = None;
+                    } else if let Some(target) = ppc_resolve_callback_target(
+                        memory, pointer, cpu.gpr[2], None,
+                    ).filter(|target| memory.read_u32_be(target.entry).is_some()) {
+                        glm_callbacks[(selector - 1) as usize] = Some(target);
+                    } else {
+                        glm_error = 2; // GLM_INVALID_VALUE
+                    }
+                    Some(PpcImportAction::ReturnPreserve)
                 } else if binding.dispatcher_target == PpcImportDispatcherTarget::GetKeys {
                     Some(dispatch_getkeys_import(
                         cpu,
@@ -1681,6 +2271,10 @@ impl PpcLoadedApp {
         self.quicktime = quicktime;
         self.sound = sound;
         self.glm_mode = glm_mode;
+        self.glm_callbacks = glm_callbacks;
+        self.glm_callback_stack = glm_callback_stack;
+        self.glm_allocations = glm_allocations;
+        self.glm_page_free_all_queue = glm_page_free_all_queue;
         self.glm_error = glm_error;
         self.timer_tasks = timer_tasks;
         self.vbl_tasks = vbl_tasks;

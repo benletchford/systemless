@@ -1160,6 +1160,12 @@ pub enum PpcImportDispatcherTarget {
     StdCCompatibility(PpcStdCCompatibilityOperation),
     ObjectSupportCompatibility,
     GlmSetMode,
+    GlmSetFunc,
+    GlmMalloc,
+    GlmCalloc,
+    GlmRealloc,
+    GlmFree,
+    GlmPageFreeAll,
     GlmGetError,
     AglChoosePixelFormat,
     AglDescribePixelFormat,
@@ -1215,6 +1221,12 @@ pub(crate) fn dispatcher_target_for_import(
     };
     match (library_name, symbol_name) {
         ("OpenGLMemory", "glmSetMode") => PpcImportDispatcherTarget::GlmSetMode,
+        ("OpenGLMemory", "glmSetFunc") => PpcImportDispatcherTarget::GlmSetFunc,
+        ("OpenGLMemory", "glmMalloc") => PpcImportDispatcherTarget::GlmMalloc,
+        ("OpenGLMemory", "glmCalloc") => PpcImportDispatcherTarget::GlmCalloc,
+        ("OpenGLMemory", "glmRealloc") => PpcImportDispatcherTarget::GlmRealloc,
+        ("OpenGLMemory", "glmFree") => PpcImportDispatcherTarget::GlmFree,
+        ("OpenGLMemory", "glmPageFreeAll") => PpcImportDispatcherTarget::GlmPageFreeAll,
         ("OpenGLMemory", "glmGetError") => PpcImportDispatcherTarget::GlmGetError,
         ("InterfaceLib", "_MPIsFullyInitialized" | "MPProcessors") => {
             PpcImportDispatcherTarget::ReturnOne
