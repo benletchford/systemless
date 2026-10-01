@@ -59,6 +59,7 @@ artifacts:
     notes: >-
       Original 1,259,456-byte StuffIt archive, SHA-256
       08ea43250e91c896dc71e803493cb837186ccb9bfcca35c90fb4918110d2636b.
+      The promoted public object matched this hash and byte count.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -75,7 +76,9 @@ artifacts:
     permission: >-
       Fresh gameplay capture made from the original demo for this catalogue entry.
       The underlying game artwork remains its owners' property.
-    notes: 640-by-480 direct Chrome capture of the active driving-range swing.
+    notes: >-
+      640-by-480 direct Chrome capture of the active driving-range swing.
+      The promoted public screenshot matched its recorded hash and byte count.
 references:
 - https://classicmacdemos.com/pga-tour-golf-ii
 ---
