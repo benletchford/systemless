@@ -24,6 +24,31 @@ pub(crate) fn create_test_cwindow(
     window
 }
 
+#[test]
+fn carbon_get_port_bounds_copies_window_local_rect() {
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"GetPortBounds");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    assert_eq!(loaded.imports[0].dispatcher_target, PpcImportDispatcherTarget::GetPortBounds);
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let window = create_test_cwindow(&mut loaded, scratch, (40, 50, 140, 250), 0, true, u32::MAX);
+    let out_rect = scratch + 16;
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = out_rect;
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPortBounds);
+
+    assert_eq!(loaded.cpu.gpr[3], out_rect);
+    assert_eq!(ppc_read_rect(&mut loaded.memory, out_rect), Some((0, 0, 100, 200)));
+
+    ppc_write_rect(&mut loaded.memory, out_rect, 1, 2, 3, 4).unwrap();
+    loaded.cpu.gpr[3] = scratch + 64; // mapped memory, but not a graphics port
+    loaded.cpu.gpr[4] = out_rect;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPortBounds);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(ppc_read_rect(&mut loaded.memory, out_rect), Some((1, 2, 3, 4)));
+}
+
 pub(crate) fn test_wind_resource(
     bounds: (i16, i16, i16, i16),
     proc_id: i16,

@@ -59,6 +59,27 @@ pub(super) fn dispatch_gworld_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::GetPortBounds => {
+            // Quickdraw.h: GetPortBounds(CGrafPtr, Rect *) copies the local
+            // portRect and returns the caller's Rect pointer.
+            let port = cpu.gpr[3];
+            let out_rect = cpu.gpr[4];
+            let bounds = gworlds
+                .iter()
+                .any(|record| record.port == port)
+                .then(|| ppc_read_rect(memory, port.wrapping_add(16)))
+                .flatten();
+            let result = match bounds {
+                Some((top, left, bottom, right))
+                    if ppc_memory_can_write_bytes(memory, out_rect, 8) =>
+                {
+                    let _ = ppc_write_rect(memory, out_rect, top, left, bottom, right);
+                    out_rect
+                }
+                _ => 0,
+            };
+            Some(PpcImportAction::Return(result))
+        }
         PpcImportDispatcherTarget::GetWindowPort => {
             // MacWindows.h: GetWindowPort(WindowRef) returns the window's
             // GrafPort. Imaging With QuickDraw (1994), pp. 3-52, 6-6:
