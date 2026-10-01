@@ -195,6 +195,7 @@ impl PpcLoadedApp {
         let controls = std::mem::take(&mut self.controls);
         let mut aliases = std::mem::take(&mut self.aliases);
         let mut gworlds = std::mem::take(&mut self.gworlds);
+        let mut agl = std::mem::take(&mut self.agl);
         let gworld_pixel_states = self.gworld_pixel_states.shared_handle();
         let window_list = self.window_list.shared_handle();
         if window_list.is_empty() {
@@ -1171,6 +1172,7 @@ impl PpcLoadedApp {
                                             files.with_mut(|files| {
                                             dispatch_supported_import(PpcDispatchContext {
                                             binding,
+                                            agl: &mut agl,
                                             cpu,
                                             memory,
                                             process_memory_manager: &mut *process_memory_manager,
@@ -1623,6 +1625,7 @@ impl PpcLoadedApp {
         self.controls = controls;
         self.aliases = aliases;
         self.gworlds = gworlds;
+        self.agl = agl;
         self.q3_objects = q3_objects;
         self.q3_object_refs = q3_object_refs;
         self.next_q3_object = next_q3_object;

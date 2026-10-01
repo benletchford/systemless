@@ -967,6 +967,7 @@ pub(crate) fn load_pef_application_with_config_and_optional_system_reservation(
         controls: SharedProcessControlManager::default(),
         aliases: Vec::new(),
         gworlds,
+        agl: PpcAglState::default(),
         gworld_pixel_states,
         q3_objects: Vec::new(),
         q3_object_refs: Vec::new(),

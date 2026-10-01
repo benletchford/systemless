@@ -131,6 +131,7 @@ fn ppc_loaded_app_runs_through_fixture_runner() {
             TrapDispatcher::standard_mac_8bpp_clut(),
         ),
         aliases: Vec::new(),
+        agl: Default::default(),
         gworlds: Vec::new(),
         gworld_pixel_states: Default::default(),
         q3_objects: Vec::new(),

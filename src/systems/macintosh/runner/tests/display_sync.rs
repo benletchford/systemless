@@ -44,6 +44,7 @@ fn ppc_gui_cpu_slice_defers_front_buffer_sync_until_composite() {
             TrapDispatcher::standard_mac_8bpp_clut(),
         ),
         aliases: Vec::new(),
+        agl: Default::default(),
         gworlds: vec![
             PpcGWorldRecord {
                 ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
@@ -332,6 +333,7 @@ fn ppc_completed_q3_frame_renders_before_host_front_buffer_sync() {
             TrapDispatcher::standard_mac_8bpp_clut(),
         ),
         aliases: Vec::new(),
+        agl: Default::default(),
         gworlds: vec![PpcGWorldRecord {
             ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: PPC_MAIN_GWORLD,

@@ -7,6 +7,7 @@ use super::*;
 
 pub(crate) struct PpcDispatchContext<'a> {
     pub(crate) binding: &'a PpcImportBinding,
+    pub(crate) agl: &'a mut PpcAglState,
     pub(crate) cpu: &'a mut PpcCpu,
     pub(crate) memory: &'a mut PpcSectionMem,
     pub(crate) process_memory_manager: &'a mut ProcessNativeMemoryManager,
@@ -122,6 +123,7 @@ pub(crate) fn dispatch_supported_import(
 ) -> Option<PpcImportAction> {
     let PpcDispatchContext {
         binding,
+        agl,
         cpu,
         memory,
         process_memory_manager,
@@ -2792,9 +2794,120 @@ pub(crate) fn dispatch_supported_import(
             // systems, NewOTNotifyUPP(userRoutine) returns the routine pointer.
             Some(PpcImportAction::Return(cpu.gpr[3]))
         }
+        PpcImportDispatcherTarget::AglChoosePixelFormat => Some(PpcImportAction::Return(
+            ppc_agl_choose_pixel_format(cpu, memory, agl, gworlds),
+        )),
+        PpcImportDispatcherTarget::AglDescribePixelFormat => Some(PpcImportAction::Return(
+            u32::from(ppc_agl_describe_pixel_format(cpu, memory, agl)),
+        )),
+        PpcImportDispatcherTarget::AglDestroyPixelFormat => {
+            agl.destroy_pixel_format(cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::NoOpPreserve => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::ExitToShell => Some(PpcImportAction::Halt),
         PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => None,
+    }
+}
+
+fn ppc_agl_choose_pixel_format(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    agl: &mut PpcAglState,
+    gworlds: &[PpcGWorldRecord],
+) -> u32 {
+    // AGLPixelFormat aglChoosePixelFormat(const AGLDevice *gdevs,
+    //     GLint ndev, const GLint *attribs);
+    // Apple AGL/agl.h (Mac OS X 10.2.8 SDK).
+    // https://github.com/phracker/MacOSX-SDKs/blob/master/MacOSX10.2.8.sdk/System/Library/Frameworks/AGL.framework/Versions/A/Headers/agl.h
+    let count = cpu.gpr[4] as i32;
+    if !(0..=16).contains(&count) {
+        return 0;
+    }
+    if count > 0 {
+        if cpu.gpr[3] == 0 {
+            return 0;
+        }
+        for index in 0..count as u32 {
+            let Some(device) = cpu.gpr[3]
+                .checked_add(index * 4)
+                .and_then(|address| memory.read_u32_be(address))
+            else {
+                return 0;
+            };
+            if device == 0 || !gworlds.iter().any(|world| world.gdevice == device) {
+                return 0;
+            }
+        }
+    }
+    let Ok(request) = ppc_agl_read_pixel_format_request(memory, cpu.gpr[5]) else {
+        return 0;
+    };
+    agl.choose_pixel_format(request)
+}
+
+fn ppc_agl_describe_pixel_format(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    agl: &PpcAglState,
+) -> bool {
+    // GLboolean aglDescribePixelFormat(AGLPixelFormat pix, GLint attrib,
+    //     GLint *value); Apple AGL/agl.h (Mac OS X 10.2.8 SDK).
+    // https://github.com/phracker/MacOSX-SDKs/blob/master/MacOSX10.2.8.sdk/System/Library/Frameworks/AGL.framework/Versions/A/Headers/agl.h
+    let Some(value) = agl.describe_pixel_format(cpu.gpr[3], cpu.gpr[4] as i32) else {
+        return false;
+    };
+    cpu.gpr[5] != 0 && memory.write_u32_be(cpu.gpr[5], value as u32).is_some()
+}
+
+#[cfg(test)]
+mod agl_choose_tests {
+    use super::*;
+    use ppc::PpcMemory;
+
+    #[test]
+    fn imported_agl_choose_uses_guest_attributes_and_tracks_lifetime() {
+        assert_eq!(
+            dispatcher_target_for_import("OpenGLLibrary", "aglChoosePixelFormat"),
+            PpcImportDispatcherTarget::AglChoosePixelFormat
+        );
+        assert_eq!(
+            dispatcher_target_for_import("OpenGLLibrary", "aglDestroyPixelFormat"),
+            PpcImportDispatcherTarget::AglDestroyPixelFormat
+        );
+        assert_eq!(
+            dispatcher_target_for_import("OpenGLLibrary", "aglDescribePixelFormat"),
+            PpcImportDispatcherTarget::AglDescribePixelFormat
+        );
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(
+            0x1000,
+            [4u32, 5, 12, 24, 0]
+                .iter()
+                .flat_map(|word| word.to_be_bytes())
+                .collect(),
+        );
+        let mut cpu = PpcCpu::new();
+        cpu.gpr[5] = 0x1000;
+        let mut agl = PpcAglState::default();
+        let handle = ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]);
+        assert_ne!(handle, 0);
+        assert!(agl.pixel_format(handle).unwrap().request.double_buffered);
+        memory.add_region(0x2000, vec![0xff; 4]);
+        cpu.gpr[3] = handle;
+        cpu.gpr[4] = 12; // AGL_DEPTH_SIZE
+        cpu.gpr[5] = 0x2000;
+        assert!(ppc_agl_describe_pixel_format(&cpu, &mut memory, &agl));
+        assert_eq!(memory.read_u32_be(0x2000), Some(24));
+        agl.destroy_pixel_format(handle);
+        assert!(agl.pixel_format(handle).is_none());
+
+        // A device constraint is not silently ignored.
+        cpu.gpr[4] = 1;
+        assert_eq!(
+            ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]),
+            0
+        );
     }
 }
 

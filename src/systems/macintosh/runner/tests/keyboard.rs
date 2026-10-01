@@ -105,6 +105,7 @@ fn ppc_getkeys_reads_runner_key_map_with_classic_packed_bit_order() {
             TrapDispatcher::standard_mac_8bpp_clut(),
         ),
         aliases: Vec::new(),
+        agl: Default::default(),
         gworlds: Vec::new(),
         gworld_pixel_states: Default::default(),
         q3_objects: Vec::new(),

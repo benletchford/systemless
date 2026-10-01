@@ -8,6 +8,7 @@ use super::PpcSectionMem;
 use ppc::PpcMemory;
 
 const MAX_ATTRIBUTE_WORDS: u32 = 64;
+const FIRST_AGL_OBJECT: u32 = 0x0500_0000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PpcAglPixelFormatRequest {
@@ -35,6 +36,108 @@ pub enum PpcAglAttributeError {
     BadPointer,
     UnsupportedAttribute(i32),
     Unterminated,
+}
+
+#[derive(Debug, Clone)]
+pub struct PpcAglPixelFormat {
+    pub handle: u32,
+    pub request: PpcAglPixelFormatRequest,
+}
+
+#[derive(Debug, Clone)]
+pub struct PpcAglState {
+    next_handle: u32,
+    pixel_formats: Vec<PpcAglPixelFormat>,
+}
+
+impl Default for PpcAglState {
+    fn default() -> Self {
+        Self {
+            next_handle: FIRST_AGL_OBJECT,
+            pixel_formats: Vec::new(),
+        }
+    }
+}
+
+impl PpcAglState {
+    pub fn choose_pixel_format(&mut self, request: PpcAglPixelFormatRequest) -> u32 {
+        if !ppc_agl_software_format_matches(&request) {
+            return 0;
+        }
+        let handle = self.next_handle;
+        let Some(next) = handle.checked_add(4) else {
+            return 0;
+        };
+        self.next_handle = next;
+        self.pixel_formats
+            .push(PpcAglPixelFormat { handle, request });
+        handle
+    }
+
+    pub fn pixel_format(&self, handle: u32) -> Option<&PpcAglPixelFormat> {
+        self.pixel_formats
+            .iter()
+            .find(|format| format.handle == handle)
+    }
+
+    pub fn describe_pixel_format(&self, handle: u32, attribute: i32) -> Option<i32> {
+        let request = &self.pixel_format(handle)?.request;
+        Some(match attribute {
+            2 | 3 | 7 | 14..=17 => 0,
+            4 => 1, // AGL_RGBA
+            5 => i32::from(request.double_buffered),
+            6 | 53 | 73 => 0,  // stereo, offscreen, accelerated
+            8..=11 => 8,       // RGBA8 color storage
+            12 => 24,          // depth storage
+            13 => 8,           // stencil storage
+            50 => 32,          // AGL_PIXEL_SIZE
+            54 => 1,           // fullscreen capable
+            70 => 0x0002_0200, // AGL_RENDERER_GENERIC_ID
+            76 => 0,           // backing store not selected by the software surface
+            80 => 1,           // AGL_WINDOW
+            _ => return None,
+        })
+    }
+
+    pub fn destroy_pixel_format(&mut self, handle: u32) {
+        self.pixel_formats.retain(|format| format.handle != handle);
+    }
+}
+
+fn ppc_agl_software_format_matches(request: &PpcAglPixelFormatRequest) -> bool {
+    // AGL_ACCELERATED asks for hardware rendering. The guest-backed software
+    // surface must never be advertised as a hardware renderer.
+    if !request.rgba
+        || request.accelerated
+        || request.stereo
+        || request.offscreen
+        || request.backing_store
+    {
+        return false;
+    }
+    for (requested, available) in [
+        (request.red_bits, 8),
+        (request.green_bits, 8),
+        (request.blue_bits, 8),
+        (request.alpha_bits, 8),
+        (request.depth_bits, 24),
+        (request.stencil_bits, 8),
+        (request.pixel_bits, 32),
+        (request.aux_buffers, 0),
+    ] {
+        if requested.is_some_and(|bits| bits < 0 || bits > available) {
+            return false;
+        }
+    }
+    request
+        .other_values
+        .iter()
+        .all(|&(attribute, value)| match attribute {
+            3 | 14..=17 | 55..=57 => value == 0,
+            70 => value == 0x0002_0200, // AGL_RENDERER_GENERIC_ID
+            2 => value == 0,            // AGL_BUFFER_SIZE is for color-index formats
+            _ => false,
+        })
 }
 
 /// Reads a terminated AGL attribute list without crossing an unmapped guest
@@ -156,5 +259,43 @@ mod tests {
             ppc_agl_read_pixel_format_request(&mut memory, 0x1000),
             Err(PpcAglAttributeError::UnsupportedAttribute(99))
         );
+    }
+
+    #[test]
+    fn software_format_selection_tracks_opaque_lifetime_and_declines_acceleration() {
+        let mut state = PpcAglState::default();
+        let request = PpcAglPixelFormatRequest {
+            rgba: true,
+            double_buffered: true,
+            depth_bits: Some(24),
+            stencil_bits: Some(8),
+            ..Default::default()
+        };
+        let handle = state.choose_pixel_format(request.clone());
+        assert_ne!(handle, 0);
+        assert_eq!(state.pixel_format(handle).unwrap().request, request);
+        state.destroy_pixel_format(handle);
+        assert!(state.pixel_format(handle).is_none());
+        let accelerated = PpcAglPixelFormatRequest {
+            accelerated: true,
+            ..request
+        };
+        assert_eq!(state.choose_pixel_format(accelerated), 0);
+    }
+
+    #[test]
+    fn description_reports_actual_software_format_properties() {
+        let mut state = PpcAglState::default();
+        let handle = state.choose_pixel_format(PpcAglPixelFormatRequest {
+            rgba: true,
+            double_buffered: true,
+            ..Default::default()
+        });
+        assert_eq!(state.describe_pixel_format(handle, 5), Some(1));
+        assert_eq!(state.describe_pixel_format(handle, 12), Some(24));
+        assert_eq!(state.describe_pixel_format(handle, 73), Some(0));
+        assert_eq!(state.describe_pixel_format(handle, 999), None);
+        state.destroy_pixel_format(handle);
+        assert_eq!(state.describe_pixel_format(handle, 5), None);
     }
 }
