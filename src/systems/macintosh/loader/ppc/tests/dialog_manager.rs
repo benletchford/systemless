@@ -2152,6 +2152,54 @@ fn import_bindings_classify_dialog_imports() {
         ("AppearanceLib", "isdialogtrackscursor", PpcDialogCompatibilityOperation::IsDialogTracksCursor),
         ("DialogsLib", "isdialogtrackscursor", PpcDialogCompatibilityOperation::IsDialogTracksCursor),
         ("CarbonLib", "isdialogtrackscursor", PpcDialogCompatibilityOperation::IsDialogTracksCursor),
+        ("InterfaceLib", "GetDialogFilter", PpcDialogCompatibilityOperation::GetDialogFilter),
+        ("AppearanceLib", "GetDialogFilter", PpcDialogCompatibilityOperation::GetDialogFilter),
+        ("DialogsLib", "GetDialogFilter", PpcDialogCompatibilityOperation::GetDialogFilter),
+        ("CarbonLib", "GetDialogFilter", PpcDialogCompatibilityOperation::GetDialogFilter),
+        ("InterfaceLib", "getdialogfilter", PpcDialogCompatibilityOperation::GetDialogFilter),
+        ("AppearanceLib", "getdialogfilter", PpcDialogCompatibilityOperation::GetDialogFilter),
+        ("DialogsLib", "getdialogfilter", PpcDialogCompatibilityOperation::GetDialogFilter),
+        ("CarbonLib", "getdialogfilter", PpcDialogCompatibilityOperation::GetDialogFilter),
+        ("InterfaceLib", "ShowSheetWindow", PpcDialogCompatibilityOperation::ShowSheetWindow),
+        ("AppearanceLib", "ShowSheetWindow", PpcDialogCompatibilityOperation::ShowSheetWindow),
+        ("DialogsLib", "ShowSheetWindow", PpcDialogCompatibilityOperation::ShowSheetWindow),
+        ("CarbonLib", "ShowSheetWindow", PpcDialogCompatibilityOperation::ShowSheetWindow),
+        ("InterfaceLib", "showsheetwindow", PpcDialogCompatibilityOperation::ShowSheetWindow),
+        ("AppearanceLib", "showsheetwindow", PpcDialogCompatibilityOperation::ShowSheetWindow),
+        ("DialogsLib", "showsheetwindow", PpcDialogCompatibilityOperation::ShowSheetWindow),
+        ("CarbonLib", "showsheetwindow", PpcDialogCompatibilityOperation::ShowSheetWindow),
+        ("InterfaceLib", "HideSheetWindow", PpcDialogCompatibilityOperation::HideSheetWindow),
+        ("AppearanceLib", "HideSheetWindow", PpcDialogCompatibilityOperation::HideSheetWindow),
+        ("DialogsLib", "HideSheetWindow", PpcDialogCompatibilityOperation::HideSheetWindow),
+        ("CarbonLib", "HideSheetWindow", PpcDialogCompatibilityOperation::HideSheetWindow),
+        ("InterfaceLib", "hidesheetwindow", PpcDialogCompatibilityOperation::HideSheetWindow),
+        ("AppearanceLib", "hidesheetwindow", PpcDialogCompatibilityOperation::HideSheetWindow),
+        ("DialogsLib", "hidesheetwindow", PpcDialogCompatibilityOperation::HideSheetWindow),
+        ("CarbonLib", "hidesheetwindow", PpcDialogCompatibilityOperation::HideSheetWindow),
+        ("InterfaceLib", "GetSheetWindowParent", PpcDialogCompatibilityOperation::GetSheetWindowParent),
+        ("AppearanceLib", "GetSheetWindowParent", PpcDialogCompatibilityOperation::GetSheetWindowParent),
+        ("DialogsLib", "GetSheetWindowParent", PpcDialogCompatibilityOperation::GetSheetWindowParent),
+        ("CarbonLib", "GetSheetWindowParent", PpcDialogCompatibilityOperation::GetSheetWindowParent),
+        ("InterfaceLib", "getsheetwindowparent", PpcDialogCompatibilityOperation::GetSheetWindowParent),
+        ("AppearanceLib", "getsheetwindowparent", PpcDialogCompatibilityOperation::GetSheetWindowParent),
+        ("DialogsLib", "getsheetwindowparent", PpcDialogCompatibilityOperation::GetSheetWindowParent),
+        ("CarbonLib", "getsheetwindowparent", PpcDialogCompatibilityOperation::GetSheetWindowParent),
+        ("InterfaceLib", "InsertDialogItem", PpcDialogCompatibilityOperation::InsertDialogItem),
+        ("AppearanceLib", "InsertDialogItem", PpcDialogCompatibilityOperation::InsertDialogItem),
+        ("DialogsLib", "InsertDialogItem", PpcDialogCompatibilityOperation::InsertDialogItem),
+        ("CarbonLib", "InsertDialogItem", PpcDialogCompatibilityOperation::InsertDialogItem),
+        ("InterfaceLib", "insertdialogitem", PpcDialogCompatibilityOperation::InsertDialogItem),
+        ("AppearanceLib", "insertdialogitem", PpcDialogCompatibilityOperation::InsertDialogItem),
+        ("DialogsLib", "insertdialogitem", PpcDialogCompatibilityOperation::InsertDialogItem),
+        ("CarbonLib", "insertdialogitem", PpcDialogCompatibilityOperation::InsertDialogItem),
+        ("InterfaceLib", "RemoveDialogItems", PpcDialogCompatibilityOperation::RemoveDialogItems),
+        ("AppearanceLib", "RemoveDialogItems", PpcDialogCompatibilityOperation::RemoveDialogItems),
+        ("DialogsLib", "RemoveDialogItems", PpcDialogCompatibilityOperation::RemoveDialogItems),
+        ("CarbonLib", "RemoveDialogItems", PpcDialogCompatibilityOperation::RemoveDialogItems),
+        ("InterfaceLib", "removedialogitems", PpcDialogCompatibilityOperation::RemoveDialogItems),
+        ("AppearanceLib", "removedialogitems", PpcDialogCompatibilityOperation::RemoveDialogItems),
+        ("DialogsLib", "removedialogitems", PpcDialogCompatibilityOperation::RemoveDialogItems),
+        ("CarbonLib", "removedialogitems", PpcDialogCompatibilityOperation::RemoveDialogItems),
     ] {
         assert_eq!(
             dispatcher_target_for_import(lib, symbol),
@@ -6103,6 +6151,241 @@ fn dialog_auto_positioning_and_cursor_tracking_dispatch_with_canonical_evaluatio
         (b"AppearanceLib".as_slice(), b"IsDialogTracksCursor".as_slice()),
         (b"DialogsLib".as_slice(), b"IsDialogTracksCursor".as_slice()),
         (b"CarbonLib".as_slice(), b"IsDialogTracksCursor".as_slice()),
+    ] {
+        let pef = synthetic_pef_with_library_import(lib, symbol);
+        let mut loaded_app = load_pef_application(&pef).unwrap();
+        loaded_app.cpu.gpr[3] = 0;
+        let probe = loaded_app.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+    }
+}
+
+#[test]
+fn dialog_sheet_window_filter_and_item_insertion_dispatch_with_canonical_evaluation() {
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    let parent_bounds_ptr = PPC_DATA_BASE + 0x1100;
+    let out_buf = PPC_DATA_BASE + 0x2000;
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"ShowSheetWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+    loaded.memory.add_region(parent_bounds_ptr, vec![0; 32]);
+    loaded.memory.add_region(out_buf, vec![0; 256]);
+
+    let sheet_dialog = window_manager::create_test_cwindow(
+        &mut loaded,
+        bounds_ptr,
+        (0, 0, 100, 200),
+        0,
+        false,
+        u32::MAX,
+    );
+    let parent_window = window_manager::create_test_cwindow(
+        &mut loaded,
+        parent_bounds_ptr,
+        (100, 100, 500, 700),
+        0,
+        true,
+        u32::MAX,
+    );
+
+    // 1. GetDialogFilter & SetDialogFilter
+    // 1a. GetDialogFilter error cases
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = out_buf;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogFilter,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    loaded.cpu.gpr[3] = sheet_dialog;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogFilter,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 1b. SetDialogFilter stores filter and GetDialogFilter reads it back
+    loaded.cpu.gpr[3] = sheet_dialog;
+    loaded.cpu.gpr[4] = 0x1122_3344;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::SetDialogFilter,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+
+    loaded.cpu.gpr[3] = sheet_dialog;
+    loaded.cpu.gpr[4] = out_buf;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogFilter,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u32_be(out_buf), Some(0x1122_3344));
+
+    // 2. Sheet window routines
+    // 2a. ShowSheetWindow NULL sheet returns paramErr
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = parent_window;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::ShowSheetWindow,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 2b. ShowSheetWindow positions sheet and makes it visible
+    loaded.cpu.gpr[3] = sheet_dialog;
+    loaded.cpu.gpr[4] = parent_window;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::ShowSheetWindow,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u8(sheet_dialog + 104), Some(1));
+    assert_eq!(
+        loaded.memory.read_u32_be(sheet_dialog + crate::dialog_manager::DIALOG_SHEET_PARENT_OFFSET),
+        Some(parent_window)
+    );
+
+    // 2c. GetSheetWindowParent reads parent window
+    loaded.cpu.gpr[3] = sheet_dialog;
+    loaded.cpu.gpr[4] = out_buf;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetSheetWindowParent,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u32_be(out_buf), Some(parent_window));
+
+    // 2d. HideSheetWindow hides sheet
+    loaded.cpu.gpr[3] = sheet_dialog;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::HideSheetWindow,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u8(sheet_dialog + 104), Some(0));
+
+    // 3. InsertDialogItem & RemoveDialogItems
+    let item1 = make_test_ditl_item(10, 10, 30, 80, b"OK");
+    let ditl_bytes = make_test_ditl(&[item1]);
+    let items_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &ditl_bytes,
+    );
+    loaded
+        .memory
+        .write_u32_be(sheet_dialog + PPC_DIALOG_ITEMS_OFFSET, items_handle)
+        .unwrap();
+
+    // 3a. CountDITL initially reports 1
+    loaded.cpu.gpr[3] = sheet_dialog;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::CountDitl,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    // 3b. InsertDialogItem adds a second item
+    let box_ptr = PPC_DATA_BASE + 0x3000;
+    loaded.memory.add_region(box_ptr, vec![0; 16]);
+    loaded.memory.write_u16_be(box_ptr, 10).unwrap();
+    loaded.memory.write_u16_be(box_ptr + 2, 90).unwrap();
+    loaded.memory.write_u16_be(box_ptr + 4, 30).unwrap();
+    loaded.memory.write_u16_be(box_ptr + 6, 160).unwrap();
+
+    loaded.cpu.gpr[3] = sheet_dialog;
+    loaded.cpu.gpr[4] = 1; // after item 1
+    loaded.cpu.gpr[5] = 4; // button
+    loaded.cpu.gpr[6] = 0; // handle
+    loaded.cpu.gpr[7] = box_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::InsertDialogItem,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+
+    loaded.cpu.gpr[3] = sheet_dialog;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::CountDitl,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 2);
+
+    // 3c. RemoveDialogItems removes the second item
+    loaded.cpu.gpr[3] = sheet_dialog;
+    loaded.cpu.gpr[4] = 2; // item 2
+    loaded.cpu.gpr[5] = 1; // amount 1
+    loaded.cpu.gpr[6] = 0; // dispose_data = false
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::RemoveDialogItems,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+
+    loaded.cpu.gpr[3] = sheet_dialog;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::CountDitl,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    // 4. Synthetic PEF binding across InterfaceLib, AppearanceLib, DialogsLib, and CarbonLib
+    for (lib, symbol) in [
+        (b"InterfaceLib".as_slice(), b"GetDialogFilter".as_slice()),
+        (b"AppearanceLib".as_slice(), b"GetDialogFilter".as_slice()),
+        (b"DialogsLib".as_slice(), b"GetDialogFilter".as_slice()),
+        (b"CarbonLib".as_slice(), b"GetDialogFilter".as_slice()),
+        (b"InterfaceLib".as_slice(), b"ShowSheetWindow".as_slice()),
+        (b"AppearanceLib".as_slice(), b"ShowSheetWindow".as_slice()),
+        (b"DialogsLib".as_slice(), b"ShowSheetWindow".as_slice()),
+        (b"CarbonLib".as_slice(), b"ShowSheetWindow".as_slice()),
+        (b"InterfaceLib".as_slice(), b"HideSheetWindow".as_slice()),
+        (b"AppearanceLib".as_slice(), b"HideSheetWindow".as_slice()),
+        (b"DialogsLib".as_slice(), b"HideSheetWindow".as_slice()),
+        (b"CarbonLib".as_slice(), b"HideSheetWindow".as_slice()),
+        (b"InterfaceLib".as_slice(), b"GetSheetWindowParent".as_slice()),
+        (b"AppearanceLib".as_slice(), b"GetSheetWindowParent".as_slice()),
+        (b"DialogsLib".as_slice(), b"GetSheetWindowParent".as_slice()),
+        (b"CarbonLib".as_slice(), b"GetSheetWindowParent".as_slice()),
+        (b"InterfaceLib".as_slice(), b"InsertDialogItem".as_slice()),
+        (b"AppearanceLib".as_slice(), b"InsertDialogItem".as_slice()),
+        (b"DialogsLib".as_slice(), b"InsertDialogItem".as_slice()),
+        (b"CarbonLib".as_slice(), b"InsertDialogItem".as_slice()),
+        (b"InterfaceLib".as_slice(), b"RemoveDialogItems".as_slice()),
+        (b"AppearanceLib".as_slice(), b"RemoveDialogItems".as_slice()),
+        (b"DialogsLib".as_slice(), b"RemoveDialogItems".as_slice()),
+        (b"CarbonLib".as_slice(), b"RemoveDialogItems".as_slice()),
     ] {
         let pef = synthetic_pef_with_library_import(lib, symbol);
         let mut loaded_app = load_pef_application(&pef).unwrap();

@@ -4810,6 +4810,12 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetDialogFilter" | "getdialogfilter",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogFilter,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "GetDialogItemInit" | "getdialogiteminit",
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::GetDialogItemInit,
@@ -4852,6 +4858,12 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetSheetWindowParent" | "getsheetwindowparent",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetSheetWindowParent,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "GetStandardAlertDefaultParams" | "getstandardalertdefaultparams",
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::GetStandardAlertDefaultParams,
@@ -4864,6 +4876,18 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "HideSheetWindow" | "hidesheetwindow",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::HideSheetWindow,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "InsertDialogItem" | "insertdialogitem",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::InsertDialogItem,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "IsDialogEvent",
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::IsDialogEvent,
@@ -4873,6 +4897,12 @@ pub(crate) fn dispatcher_target_for_import(
             "IsDialogTracksCursor" | "isdialogtrackscursor",
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::IsDialogTracksCursor,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "RemoveDialogItems" | "removedialogitems",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::RemoveDialogItems,
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
@@ -4918,6 +4948,12 @@ pub(crate) fn dispatcher_target_for_import(
             "ShowDialogItem" | "ShowDItem",
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::ShowDialogItem,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "ShowSheetWindow" | "showsheetwindow",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::ShowSheetWindow,
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
