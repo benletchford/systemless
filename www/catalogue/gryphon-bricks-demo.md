@@ -60,6 +60,7 @@ artifacts:
     notes: >-
       Original 168,278-byte StuffIt archive, SHA-256
       ea98d50fc10e25feb10a995de2c45dfaea3efe8e01a633889329754b31552f21.
+      The promoted public object matched this hash and byte count.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -76,7 +77,9 @@ artifacts:
     permission: >-
       Fresh construction capture made from the original demo for this catalogue
       entry. The underlying artwork remains its owner's property.
-    notes: 523-by-410 content-only capture of the baseplate after placing a brick.
+    notes: >-
+      523-by-410 content-only capture of the baseplate after placing a brick.
+      The promoted public screenshot matched its recorded hash and byte count.
 references:
 - https://classicmacdemos.com/gryphon-bricks
 ---
