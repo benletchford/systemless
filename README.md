@@ -30,15 +30,22 @@ while the guest application name and icon integrate with the Dock.
 
 ## Contributing
 
-Start with the [contribution guide](CONTRIBUTING.md). Open a public issue for a
-bug fix, make your change in this repository, and submit a pull request. For a
-game catalogue entry, follow the [catalogue guide](www/README.md#contribute-a-catalogue-entry)
-and use `www/catalogue/incoming/<entry-id>/` for small staged assets.
+Start with the [contribution guide](CONTRIBUTING.md). Open a public issue, then
+submit a focused pull request that links it. Runtime changes belong in `src/`;
+browser, catalogue, and website changes belong in `www/`. Run the relevant
+checks for your change.
 
-You do not need to configure Cloudflare R2 or upload assets yourself. The
-incoming workflow processes eligible catalogue PRs using repository secrets;
-maintainers handle asset promotion for fork PRs. Keep new games disabled for
-launch until browser testing is approved.
+For games, follow the [catalogue contribution guide](www/README.md#contribute-a-catalogue-entry).
+Check redistribution rights for the exact archive and test it before submitting
+the entry. Stage small assets in `www/catalogue/incoming/<entry-id>/`; provide
+an HTTPS URL, SHA-256, and size for large archives instead of committing them.
+Keep `launch_enabled: false` until browser testing is approved.
+
+**You do not need local Cloudflare R2 credentials, configuration, or manual
+uploads.** After approval, the incoming CI workflow promotes assets using
+repository secrets and writes immutable URLs back to eligible PR branches.
+Maintainers handle promotion for fork PRs. The local R2 commands in the website
+guide are for maintainer recovery and audits, not normal game contributions.
 
 ## Try it in your browser
 
@@ -55,42 +62,6 @@ catalogue entries and optional plugin collections live in
 [`www/catalogue/`](www/catalogue/), and catalogue maintenance tools live in
 [`www/tools/catalogue/`](www/tools/catalogue/). See
 [`www/README.md`](www/README.md) for local browser and catalogue workflows.
-
-## Contributing
-
-Open an issue describing the change and how to reproduce or validate it, then
-submit a focused pull request from a `dev/<topic>` branch that links the issue.
-Runtime and Macintosh compatibility changes belong in `src/`; browser,
-catalogue, and website changes belong in `www/`. The website is developed in
-this repository, so website contributions use this repository's issues and
-pull requests too. Run the relevant checks for the area you change.
-
-### Add to the catalogue
-
-Contribute through a pull request. Add a Markdown entry under `www/catalogue/`
-and stage small assets, such as screenshots, under
-`www/catalogue/incoming/<entry-id>/`. For large software archives, provide an
-HTTPS download URL with its expected SHA-256 and size in the entry instead of
-committing the archive. Keep optional plugin collections under
-`www/catalogue/plugins/`.
-
-**Contributors do not need local R2 credentials, a local R2 configuration, or
-manual uploads.** Submit the catalogue entry and any small incoming assets in
-the PR; for a large archive, provide its HTTPS URL, SHA-256, and size. After the
-required approval, the incoming CI workflow uses repository secrets to promote
-assets and managed downloads, then commits immutable asset URLs back to
-eligible PR branches. Maintainers handle promotion for fork PRs. Keep
-`launch_enabled: false` until browser testing has been approved; asset promotion
-does not approve a game for launch.
-
-For new catalogue contributions, use this PR and incoming CI path. Do not set
-up R2 locally or run a manual bucket sync to add a game. Check redistribution
-rights for the exact archive and test that archive before submitting it. The
-local R2 commands in the website guide are maintainer recovery and audit tools,
-not steps for adding a game.
-
-The [catalogue contribution guide](www/README.md#contribute-a-catalogue-entry)
-covers metadata, preview validation, browser testing, and the approval workflow.
 
 ## Quick Start
 
