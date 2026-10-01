@@ -36,6 +36,20 @@ pub(super) struct PpcCarbonEventParameterRecord {
     pub(super) data: Vec<u8>,
 }
 
+fn ppc_release_carbon_event(toolbox_startup: &mut PpcToolboxStartupState, event_ref: u32) {
+    if let Some(index) = toolbox_startup
+        .carbon_events
+        .iter()
+        .position(|event| event.event_ref == event_ref)
+    {
+        let event = &mut toolbox_startup.carbon_events[index];
+        event.reference_count -= 1;
+        if event.reference_count == 0 {
+            toolbox_startup.carbon_events.remove(index);
+        }
+    }
+}
+
 // Carbon Event Manager Programming Guide (2005), "Installing Timers": a
 // timer belongs to an event loop, fires only while that loop is running, and
 // repeats after its callback unless its interval is zero.
@@ -648,18 +662,25 @@ pub(super) fn dispatch_event_import(
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
         PpcImportDispatcherTarget::ReleaseEvent => {
-            if let Some(index) = toolbox_startup
-                .carbon_events
-                .iter()
-                .position(|event| event.event_ref == cpu.gpr[3])
-            {
-                let event = &mut toolbox_startup.carbon_events[index];
-                event.reference_count -= 1;
-                if event.reference_count == 0 {
-                    toolbox_startup.carbon_events.remove(index);
-                }
-            }
+            ppc_release_carbon_event(toolbox_startup, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::RetainEvent => {
+            let event_ref = cpu.gpr[3];
+            if let Some(event) = toolbox_startup
+                .carbon_events
+                .iter_mut()
+                .find(|event| event.event_ref == event_ref)
+            {
+                if let Some(reference_count) = event.reference_count.checked_add(1) {
+                    event.reference_count = reference_count;
+                    Some(PpcImportAction::Return(event_ref))
+                } else {
+                    Some(PpcImportAction::Return(0))
+                }
+            } else {
+                Some(PpcImportAction::Return(0))
+            }
         }
         PpcImportDispatcherTarget::GetEventClass => Some(PpcImportAction::Return(
             toolbox_startup
@@ -763,6 +784,43 @@ pub(super) fn dispatch_event_import(
             }
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
+        PpcImportDispatcherTarget::PostEventToQueue => {
+            // CarbonEventsCore.h, PostEventToQueue: the queue retains an
+            // event, refuses duplicate posts, and orders by EventPriority.
+            let queue_ref = cpu.gpr[3];
+            let event_ref = cpu.gpr[4];
+            let priority = cpu.gpr[5] as i16;
+            if queue_ref != PPC_MAIN_EVENT_QUEUE_REF || !(0..=2).contains(&priority) {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            if toolbox_startup
+                .carbon_event_queue
+                .iter()
+                .any(|(queued_ref, _)| *queued_ref == event_ref)
+            {
+                return Some(PpcImportAction::Return(ppc_i16_result(-9860)));
+            }
+            let Some(event) = toolbox_startup
+                .carbon_events
+                .iter_mut()
+                .find(|event| event.event_ref == event_ref)
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let Some(reference_count) = event.reference_count.checked_add(1) else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            event.reference_count = reference_count;
+            let index = toolbox_startup
+                .carbon_event_queue
+                .iter()
+                .position(|(_, queued_priority)| *queued_priority < priority)
+                .unwrap_or(toolbox_startup.carbon_event_queue.len());
+            toolbox_startup
+                .carbon_event_queue
+                .insert(index, (event_ref, priority));
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
         PpcImportDispatcherTarget::GetMainEventQueue => {
             // Carbon Event Manager Programming Guide (2005), "Posting Events":
             // GetMainEventQueue returns the main application's EventQueueRef.
@@ -774,6 +832,9 @@ pub(super) fn dispatch_event_import(
             // queue shared with classic Event Manager calls.
             if cpu.gpr[3] != PPC_MAIN_EVENT_QUEUE_REF {
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            while let Some((event_ref, _)) = toolbox_startup.carbon_event_queue.pop_front() {
+                ppc_release_carbon_event(toolbox_startup, event_ref);
             }
             event_queue.clear();
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))

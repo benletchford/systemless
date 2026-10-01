@@ -114,6 +114,50 @@ fn carbon_event_parameters_copy_replace_and_report_metadata() {
 }
 
 #[test]
+fn carbon_queue_retains_orders_and_flushes_events() {
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"PostEventToQueue");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let out_ref = PPC_DATA_BASE + 0x2600;
+    loaded.memory.add_region(out_ref, vec![0; 4]);
+    let mut refs = Vec::new();
+    for kind in [1, 2] {
+        loaded.cpu.gpr[4] = u32::from_be_bytes(*b"test");
+        loaded.cpu.gpr[5] = kind;
+        loaded.cpu.fpr[1] = 1.0f64.to_bits();
+        loaded.cpu.gpr[8] = 0;
+        loaded.cpu.gpr[9] = out_ref;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::CreateEvent);
+        refs.push(loaded.memory.read_u32_be(out_ref).unwrap());
+    }
+    for (event_ref, priority) in [(refs[0], 0), (refs[1], 2)] {
+        loaded.cpu.gpr[3] = PPC_MAIN_EVENT_QUEUE_REF;
+        loaded.cpu.gpr[4] = event_ref;
+        loaded.cpu.gpr[5] = priority;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PostEventToQueue);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        loaded.cpu.gpr[3] = event_ref;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::ReleaseEvent);
+    }
+    assert_eq!(loaded.toolbox_startup.carbon_event_queue[0].0, refs[1]);
+    assert_eq!(loaded.toolbox_startup.carbon_event_queue[1].0, refs[0]);
+    assert!(loaded
+        .toolbox_startup
+        .carbon_events
+        .iter()
+        .all(|event| event.reference_count == 1));
+    loaded.cpu.gpr[3] = PPC_MAIN_EVENT_QUEUE_REF;
+    loaded.cpu.gpr[4] = refs[0];
+    loaded.cpu.gpr[5] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PostEventToQueue);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-9860));
+    loaded.cpu.gpr[3] = PPC_MAIN_EVENT_QUEUE_REF;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FlushEventQueue);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert!(loaded.toolbox_startup.carbon_event_queue.is_empty());
+    assert!(loaded.toolbox_startup.carbon_events.is_empty());
+}
+
+#[test]
 fn carbon_application_event_handlers_keep_process_owned_targets_and_type_specs() {
     let pef = synthetic_pef_with_library_import(b"CarbonLib", b"InstallEventHandler");
     let mut loaded = load_pef_application(&pef).unwrap();
