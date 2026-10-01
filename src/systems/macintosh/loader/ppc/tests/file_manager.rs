@@ -97,12 +97,91 @@ fn pb_read_async_queues_completion_on_eof() {
 
     let probe = loaded.run_with_hle_imports(64);
 
+    assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 0);
     assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(PPC_EOF_ERR as u16));
     assert_eq!(loaded.memory.read_u32_be(pb + 40), Some(0));
     assert_eq!(loaded.pending_file_completions.pop_front(), Some((pb, completion)));
     assert!(loaded.pending_file_completions.is_empty());
+}
+
+#[test]
+fn pb_read_async_returns_from_sound_doubleback_before_its_completion() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PBReadAsync")).unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    let vector = PPC_DATA_BASE + 0x2000;
+    let callback = PPC_CODE_BASE + 0x2000;
+    let completion = PPC_CODE_BASE + 0x3000;
+    loaded.memory.add_region(pb, vec![0; 0x100]);
+    loaded.memory.add_region(vector, vec![0; 8]);
+    loaded.memory.write_u32_be(vector, callback).unwrap();
+    loaded.memory.write_u32_be(vector + 4, PPC_DATA_BASE).unwrap();
+    let pb_hi = (pb >> 16) as u16;
+    let pb_lo = pb as u16;
+    let trap_hi = (PPC_IMPORT_TRAP_BASE >> 16) as u16;
+    let trap_lo = PPC_IMPORT_TRAP_BASE as u16;
+    let callback_code = [
+        xfx_form(31, 30, 8, 339),     // mflr r30
+        d_form_u(15, 3, 0, pb_hi),     // lis r3, pb@h
+        d_form_u(24, 3, 3, pb_lo),     // ori r3, r3, pb@l
+        d_form_u(15, 12, 0, trap_hi),  // lis r12, trap@h
+        d_form_u(24, 12, 12, trap_lo), // ori r12, r12, trap@l
+        xfx_form(31, 12, 9, 467),     // mtctr r12
+        xl_form(19, 20, 0, 528, true), // bctrl
+        xfx_form(31, 30, 8, 467),     // mtlr r30
+        BLR,
+    ];
+    loaded.memory.add_region(
+        callback,
+        callback_code.into_iter().flat_map(u32::to_be_bytes).collect(),
+    );
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Audio/stream".to_string(),
+        data: Vec::new().into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.push_test_open_file(PpcFileRecord {
+        ref_num: PPC_FIRST_FILE_REF_NUM,
+        path: "Audio/stream".to_string(),
+        position: 0,
+    });
+    loaded.memory.write_u32_be(pb + 12, completion).unwrap();
+    loaded
+        .memory
+        .write_u16_be(pb + 24, PPC_FIRST_FILE_REF_NUM as u16)
+        .unwrap();
+    loaded.memory.write_u32_be(pb + 32, pb + 0x80).unwrap();
+    loaded.memory.write_u32_be(pb + 36, 24).unwrap();
+
+    let foreground = loaded.cpu.capture_execution_context();
+    let probe = loaded.run_sound_doubleback_callback(
+        PpcSoundDoubleBackRecord {
+            architecture: CallbackTaskArchitecture::PowerPc,
+            channel: 0,
+            header: 0,
+            exhausted_buffer: 0,
+            exhausted_buffer_index: 0,
+            callback: vector,
+            tick: 0,
+            instruction_count: 0,
+        },
+        1_000,
+        false,
+        false,
+    );
+
+    assert!(matches!(probe.invocation.result, PpcRunResult::Halted { .. }));
+    assert_eq!(probe.invocation.unsupported_import_index, None);
+    assert_eq!(loaded.pending_file_completions.pop_front(), Some((pb, completion)));
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(PPC_EOF_ERR as u16));
+    assert_eq!(
+        loaded.cpu.capture_execution_context().architectural(),
+        foreground.architectural()
+    );
 }
 
     #[test]
