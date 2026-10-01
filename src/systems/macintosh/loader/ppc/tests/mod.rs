@@ -218,6 +218,7 @@ mod gworld;
 mod blit;
 
 mod file_manager;
+mod opengl_memory;
 mod event_manager;
 
 mod text_edit;

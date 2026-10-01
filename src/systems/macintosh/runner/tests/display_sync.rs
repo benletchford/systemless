@@ -153,6 +153,8 @@ fn ppc_gui_cpu_slice_defers_front_buffer_sync_until_composite() {
             PPC_HEAP_BASE + 8,
             PPC_STACK_BASE,
         ),
+        glm_mode: None,
+        glm_error: 0,
         draw_sprocket: PpcDrawSprocketState {
             front_buffer_gworld: PPC_DSP_BACK_GWORLD,
             back_buffer_gworld: PPC_MAIN_GWORLD,
@@ -473,6 +475,8 @@ fn ppc_completed_q3_frame_renders_before_host_front_buffer_sync() {
             PPC_HEAP_BASE + 8 * 16,
             PPC_STACK_BASE,
         ),
+        glm_mode: None,
+        glm_error: 0,
         draw_sprocket: PpcDrawSprocketState::default(),
     });
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());

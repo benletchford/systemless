@@ -117,6 +117,9 @@ pub struct PpcLoadedApp {
     pub(crate) window_list: crate::process_context::SharedProcessWindowList,
     pub(crate) process_memory_manager: PpcProcessMemoryManager,
     pub draw_sprocket: PpcDrawSprocketState,
+    /// OpenGL memory configuration belongs to the loaded process.
+    pub(crate) glm_mode: Option<u32>,
+    pub(crate) glm_error: u32,
 }
 
 /// Launch-time storage that `grow_application_partition` budgets around.
