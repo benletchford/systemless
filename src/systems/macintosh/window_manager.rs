@@ -670,6 +670,140 @@ pub(crate) fn evaluate_is_window_collapsed(_valid_window: bool) -> bool {
     false
 }
 
+/// Canonical offsets into Mac OS WindowRecord structure.
+#[allow(dead_code)]
+pub const WINDOW_KIND_OFFSET: u32 = 108;
+#[allow(dead_code)]
+pub const WINDOW_VISIBLE_FLAG_OFFSET: u32 = 110;
+#[allow(dead_code)]
+pub const WINDOW_HILITED_FLAG_OFFSET: u32 = 111;
+#[allow(dead_code)]
+pub const WINDOW_GO_AWAY_FLAG_OFFSET: u32 = 112;
+#[allow(dead_code)]
+pub const WINDOW_SPARE_FLAG_OFFSET: u32 = 113;
+#[allow(dead_code)]
+pub const WINDOW_DEF_PROC_HANDLE_OFFSET: u32 = 126;
+#[allow(dead_code)]
+pub const WINDOW_STATE_DATA_HANDLE_OFFSET: u32 = 130;
+
+/// Architecture-neutral parameter validation for GetWindowUserState.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowUserStateParameters {
+    window_ptr: u32,
+    out_rect_ptr: u32,
+}
+
+impl GetWindowUserStateParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn out_rect_ptr(&self) -> u32 {
+        self.out_rect_ptr
+    }
+}
+
+pub fn evaluate_get_window_user_state_parameters(
+    window_ptr: u32,
+    out_rect_ptr: u32,
+    can_write: bool,
+) -> Result<GetWindowUserStateParameters, i16> {
+    if window_ptr == 0 || out_rect_ptr == 0 || !can_write {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(GetWindowUserStateParameters {
+        window_ptr,
+        out_rect_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for SetWindowUserState.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetWindowUserStateParameters {
+    window_ptr: u32,
+    in_rect_ptr: u32,
+}
+
+impl SetWindowUserStateParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn in_rect_ptr(&self) -> u32 {
+        self.in_rect_ptr
+    }
+}
+
+pub fn evaluate_set_window_user_state_parameters(
+    window_ptr: u32,
+    in_rect_ptr: u32,
+    can_read: bool,
+) -> Result<SetWindowUserStateParameters, i16> {
+    if window_ptr == 0 || in_rect_ptr == 0 || !can_read {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(SetWindowUserStateParameters {
+        window_ptr,
+        in_rect_ptr,
+    })
+}
+
+/// Architecture-neutral evaluation of GetWindowGoAwayFlag.
+pub fn evaluate_get_window_go_away_flag(window_ptr: u32, flag_byte: Option<u8>) -> bool {
+    if window_ptr == 0 {
+        return false;
+    }
+    flag_byte.unwrap_or(0) != 0
+}
+
+/// Architecture-neutral evaluation of GetWindowSpareFlag.
+pub fn evaluate_get_window_spare_flag(window_ptr: u32, flag_byte: Option<u8>) -> bool {
+    if window_ptr == 0 {
+        return false;
+    }
+    flag_byte.unwrap_or(0) != 0
+}
+
+/// Architecture-neutral evaluation of GetWindowKind.
+pub fn evaluate_get_window_kind(window_ptr: u32, kind: Option<i16>) -> i16 {
+    if window_ptr == 0 {
+        return 0;
+    }
+    kind.unwrap_or(0)
+}
+
+/// Architecture-neutral parameters for SetWindowKind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetWindowKindParameters {
+    window_ptr: u32,
+    kind: i16,
+}
+
+impl SetWindowKindParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn kind(&self) -> i16 {
+        self.kind
+    }
+}
+
+pub fn evaluate_set_window_kind_parameters(
+    window_ptr: u32,
+    kind: i16,
+) -> SetWindowKindParameters {
+    SetWindowKindParameters { window_ptr, kind }
+}
+
+/// Architecture-neutral evaluation of GetWindowDefProc.
+pub fn evaluate_get_window_def_proc(window_ptr: u32, def_proc: Option<u32>) -> u32 {
+    if window_ptr == 0 {
+        return 0;
+    }
+    def_proc.unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -737,6 +871,64 @@ mod tests {
         assert_eq!(evaluate_collapse_window(true, true), -4);
         assert!(!evaluate_is_window_collapsed(true));
         assert!(!evaluate_is_window_collapsed(false));
+    }
+
+    #[test]
+    fn window_user_state_flags_and_kind_evaluation() {
+        assert_eq!(
+            evaluate_get_window_user_state_parameters(0, 0x2000, true),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_get_window_user_state_parameters(0x1000, 0, true),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_get_window_user_state_parameters(0x1000, 0x2000, false),
+            Err(-50)
+        );
+        let get_params = evaluate_get_window_user_state_parameters(0x1000, 0x2000, true).unwrap();
+        assert_eq!(get_params.window_ptr(), 0x1000);
+        assert_eq!(get_params.out_rect_ptr(), 0x2000);
+
+        assert_eq!(
+            evaluate_set_window_user_state_parameters(0, 0x2000, true),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_set_window_user_state_parameters(0x1000, 0, true),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_set_window_user_state_parameters(0x1000, 0x2000, false),
+            Err(-50)
+        );
+        let set_params = evaluate_set_window_user_state_parameters(0x1000, 0x2000, true).unwrap();
+        assert_eq!(set_params.window_ptr(), 0x1000);
+        assert_eq!(set_params.in_rect_ptr(), 0x2000);
+
+        assert!(!evaluate_get_window_go_away_flag(0, Some(1)));
+        assert!(!evaluate_get_window_go_away_flag(0x1000, None));
+        assert!(!evaluate_get_window_go_away_flag(0x1000, Some(0)));
+        assert!(evaluate_get_window_go_away_flag(0x1000, Some(1)));
+
+        assert!(!evaluate_get_window_spare_flag(0, Some(1)));
+        assert!(!evaluate_get_window_spare_flag(0x1000, None));
+        assert!(!evaluate_get_window_spare_flag(0x1000, Some(0)));
+        assert!(evaluate_get_window_spare_flag(0x1000, Some(1)));
+
+        assert_eq!(evaluate_get_window_kind(0, Some(8)), 0);
+        assert_eq!(evaluate_get_window_kind(0x1000, None), 0);
+        assert_eq!(evaluate_get_window_kind(0x1000, Some(8)), 8);
+        assert_eq!(evaluate_get_window_kind(0x1000, Some(2)), 2);
+
+        let kind_params = evaluate_set_window_kind_parameters(0x1000, 8);
+        assert_eq!(kind_params.window_ptr(), 0x1000);
+        assert_eq!(kind_params.kind(), 8);
+
+        assert_eq!(evaluate_get_window_def_proc(0, Some(0x3000)), 0);
+        assert_eq!(evaluate_get_window_def_proc(0x1000, None), 0);
+        assert_eq!(evaluate_get_window_def_proc(0x1000, Some(0x3000)), 0x3000);
     }
     #[test]
     fn grow_retains_the_pointer_offset_inside_the_size_box() {
