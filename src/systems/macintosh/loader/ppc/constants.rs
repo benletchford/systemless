@@ -57,6 +57,7 @@ pub const PPC_FN_OPN_ERR: i16 = -38;
 pub const PPC_POS_ERR: i16 = -40;
 pub const PPC_NSV_ERR: i16 = -35;
 pub const PPC_FNF_ERR: i16 = -43;
+pub const PPC_F_BSY_ERR: i16 = -47;
 pub const PPC_DUP_FN_ERR: i16 = -48;
 pub const PPC_RF_NUM_ERR: i16 = -51;
 pub const PPC_WR_PERM_ERR: i16 = -61;
