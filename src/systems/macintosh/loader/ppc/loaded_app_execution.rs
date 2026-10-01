@@ -1343,7 +1343,10 @@ impl PpcLoadedApp {
                         // interrupt-work boundary without yielding out of an
                         // interrupt-time callback that called PBReadAsync.
                         // Inside Macintosh: Files (1992), 2-8–2-9.
-                        let action = if binding.library_name == "InterfaceLib"
+                        let action = if matches!(
+                            binding.library_name.as_str(),
+                            "InterfaceLib" | "CarbonLib"
+                        )
                             && binding.symbol_name == "PBReadAsync"
                             && matches!(action, PpcImportAction::Return(_))
                         {

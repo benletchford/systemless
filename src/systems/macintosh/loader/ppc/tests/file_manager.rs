@@ -107,6 +107,48 @@ fn pb_read_async_queues_completion_on_eof() {
 }
 
 #[test]
+fn carbonlib_pb_read_async_queues_completion_after_successful_read() {
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"PBReadAsync");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    assert_eq!(loaded.imports[0].dispatcher_target, PpcImportDispatcherTarget::PBRead);
+    let pb = PPC_DATA_BASE + 0x1000;
+    let completion = 0x0123_4567;
+    loaded.memory.add_region(pb, vec![0; 0x100]);
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Data/stream".to_string(),
+        data: b"read".to_vec().into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.push_test_open_file(PpcFileRecord {
+        ref_num: PPC_FIRST_FILE_REF_NUM,
+        path: "Data/stream".to_string(),
+        position: 0,
+    });
+    loaded.memory.write_u32_be(pb + 12, completion).unwrap();
+    loaded
+        .memory
+        .write_u16_be(pb + 24, PPC_FIRST_FILE_REF_NUM as u16)
+        .unwrap();
+    loaded.memory.write_u32_be(pb + 32, pb + 0x80).unwrap();
+    loaded.memory.write_u32_be(pb + 36, 4).unwrap();
+    loaded.cpu.gpr[3] = pb;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(pb + 40), Some(4));
+    assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, pb + 0x80, 4), Some(b"read".to_vec()));
+    assert_eq!(loaded.pending_file_completions.pop_front(), Some((pb, completion)));
+    assert!(loaded.pending_file_completions.is_empty());
+}
+
+#[test]
 fn pb_read_async_returns_from_sound_doubleback_before_its_completion() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PBReadAsync")).unwrap();
     let pb = PPC_DATA_BASE + 0x1000;
