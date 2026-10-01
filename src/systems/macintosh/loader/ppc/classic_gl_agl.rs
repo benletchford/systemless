@@ -155,7 +155,12 @@ impl Default for PpcAglState {
 
 impl PpcAglState {
     pub fn set_error(&mut self, error: u32) {
-        self.error = error;
+        // AGL records only the first error until aglGetError clears the flag.
+        // Apple AGL Reference, aglGetError.
+        // https://leopard-adc.pepas.com/documentation/GraphicsImaging/Reference/AGL_OpenGL/Reference/reference.html
+        if self.error == 0 {
+            self.error = error;
+        }
     }
 
     pub fn get_error(&mut self) -> u32 {
@@ -172,8 +177,12 @@ impl PpcAglState {
         handle
     }
 
+    pub fn has_renderer_info(&self, handle: u32) -> bool {
+        self.renderer_infos.contains(&handle)
+    }
+
     pub fn describe_renderer(&self, handle: u32, property: i32) -> Option<i32> {
-        if !self.renderer_infos.contains(&handle) {
+        if !self.has_renderer_info(handle) {
             return None;
         }
         Some(match property {

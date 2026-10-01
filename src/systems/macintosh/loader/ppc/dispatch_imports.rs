@@ -2805,9 +2805,15 @@ pub(crate) fn dispatch_supported_import(
             ppc_agl_describe_renderer(cpu, memory, agl),
         ))),
         PpcImportDispatcherTarget::AglNextRendererInfo => {
+            if !agl.has_renderer_info(cpu.gpr[3]) {
+                agl.set_error(10003); // AGL_BAD_RENDINFO
+            }
             Some(PpcImportAction::Return(agl.next_renderer_info(cpu.gpr[3])))
         }
         PpcImportDispatcherTarget::AglDestroyRendererInfo => {
+            if !agl.has_renderer_info(cpu.gpr[3]) {
+                agl.set_error(10003); // AGL_BAD_RENDINFO
+            }
             agl.destroy_renderer_info(cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -3166,6 +3172,10 @@ fn ppc_agl_query_renderer_info(
     agl: &mut PpcAglState,
     gworlds: &[PpcGWorldRecord],
 ) -> u32 {
+    if !(0..=16).contains(&(cpu.gpr[4] as i32)) {
+        agl.set_error(10008); // AGL_BAD_VALUE
+        return 0;
+    }
     if !ppc_agl_devices_valid(memory, cpu.gpr[3], cpu.gpr[4] as i32, gworlds) {
         agl.set_error(10006); // AGL_BAD_GDEV
         return 0;
@@ -3173,11 +3183,24 @@ fn ppc_agl_query_renderer_info(
     agl.query_renderer_info()
 }
 
-fn ppc_agl_describe_renderer(cpu: &PpcCpu, memory: &mut PpcSectionMem, agl: &PpcAglState) -> bool {
+fn ppc_agl_describe_renderer(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    agl: &mut PpcAglState,
+) -> bool {
+    if !agl.has_renderer_info(cpu.gpr[3]) {
+        agl.set_error(10003); // AGL_BAD_RENDINFO
+        return false;
+    }
     let Some(value) = agl.describe_renderer(cpu.gpr[3], cpu.gpr[4] as i32) else {
+        agl.set_error(10001); // AGL_BAD_PROPERTY
         return false;
     };
-    cpu.gpr[5] != 0 && memory.write_u32_be(cpu.gpr[5], value as u32).is_some()
+    if cpu.gpr[5] == 0 || memory.write_u32_be(cpu.gpr[5], value as u32).is_none() {
+        agl.set_error(10014); // AGL_BAD_POINTER
+        return false;
+    }
+    true
 }
 
 fn ppc_agl_devices_valid(
@@ -3455,15 +3478,25 @@ mod agl_choose_tests {
         assert_ne!(handle, 0);
         assert_eq!(agl.next_renderer_info(handle), 0);
         cpu.gpr[3] = handle;
+        cpu.gpr[4] = 999;
+        cpu.gpr[5] = 0x1000;
+        assert!(!ppc_agl_describe_renderer(&cpu, &mut memory, &mut agl));
+        assert_eq!(agl.get_error(), 10001);
+        cpu.gpr[4] = 73;
+        cpu.gpr[5] = 0;
+        assert!(!ppc_agl_describe_renderer(&cpu, &mut memory, &mut agl));
+        agl.set_error(10003);
+        assert_eq!(agl.get_error(), 10014);
         cpu.gpr[4] = 73; // AGL_ACCELERATED
         cpu.gpr[5] = 0x1000;
-        assert!(ppc_agl_describe_renderer(&cpu, &mut memory, &agl));
+        assert!(ppc_agl_describe_renderer(&cpu, &mut memory, &mut agl));
         assert_eq!(memory.read_u32_be(0x1000), Some(0));
         cpu.gpr[4] = 70; // AGL_RENDERER_ID
-        assert!(ppc_agl_describe_renderer(&cpu, &mut memory, &agl));
+        assert!(ppc_agl_describe_renderer(&cpu, &mut memory, &mut agl));
         assert_eq!(memory.read_u32_be(0x1000), Some(0x0002_0200));
         agl.destroy_renderer_info(handle);
-        assert!(!ppc_agl_describe_renderer(&cpu, &mut memory, &agl));
+        assert!(!ppc_agl_describe_renderer(&cpu, &mut memory, &mut agl));
+        assert_eq!(agl.get_error(), 10003);
     }
 
     #[test]
