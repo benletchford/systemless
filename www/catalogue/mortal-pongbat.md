@@ -57,6 +57,7 @@ artifacts:
     notes: >-
       Original 693,184-byte BinHex/StuffIt archive, SHA-256
       18fd463ee79834ac4d5cc90d8b1a924b2be7c55a9d1ae1b0bfc14aaa4c820e4c.
+      The public object was fetched back and matched the original hash and size.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -75,7 +76,8 @@ artifacts:
       for this catalogue entry. Underlying artwork remains its owner's property.
     notes: >-
       Exact 640-by-480 game-content crop at (80,60) from an 800-by-600 Systemless
-      framebuffer after moving the blue paddle upward.
+      framebuffer after moving the blue paddle upward. The public media object
+      was fetched back and matched the submitted hash and size.
 references:
 - >-
   https://ftp.zx.net.nz/pub/mirror/ftp.funet.fi/pub/mac/info-mac/game/arc/mortal-pongbat-141.hqx
