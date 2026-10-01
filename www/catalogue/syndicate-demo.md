@@ -61,6 +61,7 @@ artifacts:
     notes: >-
       Original 726,824-byte StuffIt archive, SHA-256
       feee55295a8caa41a7d7de6e3eb7bcfd82eb3b56c7edde9133e47f2c3606cbf0.
+      The promoted public object matched this hash and byte count.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -77,7 +78,9 @@ artifacts:
     permission: >-
       Fresh gameplay capture made from the original demo for this catalogue entry.
       The underlying game artwork remains its owners' property.
-    notes: 640-by-400 content-only capture of the live mission after moving an agent.
+    notes: >-
+      640-by-400 content-only capture of the live mission after moving an agent.
+      The promoted public screenshot matched its recorded hash and byte count.
 references:
 - https://classicmacdemos.com/syndicate
 ---
