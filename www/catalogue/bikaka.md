@@ -62,6 +62,7 @@ artifacts:
     notes: >-
       Original 173,201-byte BinHex/StuffIt archive, SHA-256
       d50b5d50407304d742a72789038678025e7b5fc537d1f383d44965739c7cbfce.
+      The promoted public object was fetched back and matched this hash and size.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -80,7 +81,8 @@ artifacts:
       Underlying artwork remains its owner's property.
     notes: >-
       Exact 495-by-330 game-content crop at (40,20) from an 800-by-600 Systemless
-      framebuffer after moving and dropping one piece; score 6.
+      framebuffer after moving and dropping one piece; score 6. The promoted
+      public media object matched the submitted crop byte for byte.
 references:
 - >-
   https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/bikaka-14.hqx
