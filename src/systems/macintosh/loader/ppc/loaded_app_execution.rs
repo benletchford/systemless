@@ -1193,14 +1193,18 @@ impl PpcLoadedApp {
                                             free_all: false,
                                         },
                                     };
-                                    ppc_glm_begin_guest_callback(
+                                    let action = ppc_glm_begin_guest_callback(
                                         cpu,
                                         memory,
                                         &mut glm_callback_stack,
                                         free_target,
                                         old_pointer,
                                         next,
-                                    )
+                                    );
+                                    if action.is_none() {
+                                        glm_error = 3; // GLM_INVALID_OPERATION
+                                    }
+                                    action.or(Some(PpcImportAction::Return(0)))
                                 } else {
                                     glm_error = 3; // GLM_INVALID_OPERATION
                                     Some(PpcImportAction::Return(0))
@@ -1257,14 +1261,18 @@ impl PpcLoadedApp {
                                             free_all: false,
                                         },
                                     };
-                                    ppc_glm_begin_guest_callback(
+                                    let action = ppc_glm_begin_guest_callback(
                                         cpu,
                                         memory,
                                         &mut glm_callback_stack,
                                         target,
                                         old_pointer,
                                         state,
-                                    )
+                                    );
+                                    if action.is_none() {
+                                        glm_error = 3; // GLM_INVALID_OPERATION
+                                    }
+                                    action.or(Some(PpcImportAction::Return(0)))
                                 } else {
                                     glm_error = 3; // GLM_INVALID_OPERATION
                                     Some(PpcImportAction::Return(0))
@@ -1299,14 +1307,18 @@ impl PpcLoadedApp {
                                         replace,
                                     },
                                 };
-                                ppc_glm_begin_guest_callback(
+                                let action = ppc_glm_begin_guest_callback(
                                     cpu,
                                     memory,
                                     &mut glm_callback_stack,
                                     target,
                                     size,
                                     state,
-                                )
+                                );
+                                if action.is_none() {
+                                    glm_error = 3; // GLM_INVALID_OPERATION
+                                }
+                                action.or(Some(PpcImportAction::Return(0)))
                             } else {
                                 glm_error = 3; // GLM_INVALID_OPERATION
                                 Some(PpcImportAction::Return(0))
@@ -1377,35 +1389,28 @@ impl PpcLoadedApp {
                     } else if glm_mode == Some(1) {
                         let requested_size = requested_size.unwrap();
                         if let Some(target) = glm_callbacks[0] {
-                            if install_powerpc_call_arguments(cpu, memory, &[requested_size]).is_some() {
-                                glm_callback_stack.push(PpcGlmCallbackState {
-                                    import_pc: cpu.pc,
-                                    final_pc: cpu.lr,
-                                    restore_rtoc: cpu.gpr[2],
-                                    operation: PpcGlmCallbackOperation::Allocate {
-                                        size: requested_size,
-                                        zero_on_return: is_calloc,
-                                        replace: None,
-                                    },
-                                });
-                                GuestCallEffect::call_guest(
-                                    GuestCallRequest::new(GuestCallTarget {
-                                        isa: GuestIsa::PowerPc,
-                                        entry: target.entry,
-                                        rtoc: target.rtoc,
-                                    }),
-                                    GuestCallContinuation::to_powerpc(
-                                        PPC_GUEST_CALL_RETURN_PC,
-                                        cpu.pc,
-                                        cpu.gpr[2],
-                                        PpcNativeReturnGpr3::Preserve,
-                                    ),
-                                )
-                                .into_ppc_import_action()
-                            } else {
+                            let state = PpcGlmCallbackState {
+                                import_pc: cpu.pc,
+                                final_pc: cpu.lr,
+                                restore_rtoc: cpu.gpr[2],
+                                operation: PpcGlmCallbackOperation::Allocate {
+                                    size: requested_size,
+                                    zero_on_return: is_calloc,
+                                    replace: None,
+                                },
+                            };
+                            let action = ppc_glm_begin_guest_callback(
+                                cpu,
+                                memory,
+                                &mut glm_callback_stack,
+                                target,
+                                requested_size,
+                                state,
+                            );
+                            if action.is_none() {
                                 glm_error = 3; // GLM_INVALID_OPERATION
-                                Some(PpcImportAction::Return(0))
                             }
+                            action.or(Some(PpcImportAction::Return(0)))
                         } else {
                             glm_error = 3; // GLM_INVALID_OPERATION
                             Some(PpcImportAction::Return(0))
@@ -1458,36 +1463,29 @@ impl PpcLoadedApp {
                             }
                             Some((true, _)) => {
                                 if let Some(target) = glm_callbacks[1] {
-                                    if install_powerpc_call_arguments(cpu, memory, &[pointer]).is_some() {
-                                        glm_callback_stack.push(PpcGlmCallbackState {
-                                            import_pc: cpu.pc,
-                                            final_pc: cpu.lr,
-                                            restore_rtoc: cpu.gpr[2],
-                                            operation: PpcGlmCallbackOperation::Free {
-                                                pointer,
-                                                result: pointer,
-                                                replacement_size: None,
-                                                free_all: false,
-                                            },
-                                        });
-                                        GuestCallEffect::call_guest(
-                                            GuestCallRequest::new(GuestCallTarget {
-                                                isa: GuestIsa::PowerPc,
-                                                entry: target.entry,
-                                                rtoc: target.rtoc,
-                                            }),
-                                            GuestCallContinuation::to_powerpc(
-                                                PPC_GUEST_CALL_RETURN_PC,
-                                                cpu.pc,
-                                                cpu.gpr[2],
-                                                PpcNativeReturnGpr3::Preserve,
-                                            ),
-                                        )
-                                        .into_ppc_import_action()
-                                    } else {
+                                    let state = PpcGlmCallbackState {
+                                        import_pc: cpu.pc,
+                                        final_pc: cpu.lr,
+                                        restore_rtoc: cpu.gpr[2],
+                                        operation: PpcGlmCallbackOperation::Free {
+                                            pointer,
+                                            result: pointer,
+                                            replacement_size: None,
+                                            free_all: false,
+                                        },
+                                    };
+                                    let action = ppc_glm_begin_guest_callback(
+                                        cpu,
+                                        memory,
+                                        &mut glm_callback_stack,
+                                        target,
+                                        pointer,
+                                        state,
+                                    );
+                                    if action.is_none() {
                                         glm_error = 3; // GLM_INVALID_OPERATION
-                                        Some(PpcImportAction::ReturnPreserve)
                                     }
+                                    action.or(Some(PpcImportAction::ReturnPreserve))
                                 } else {
                                     glm_error = 3; // GLM_INVALID_OPERATION
                                     Some(PpcImportAction::ReturnPreserve)
