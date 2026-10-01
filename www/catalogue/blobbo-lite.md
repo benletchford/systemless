@@ -60,6 +60,7 @@ artifacts:
     notes: >-
       Original 398,044-byte BinHex/StuffIt archive, SHA-256
       3d8dfcd0b33edca34e888c1f687b04a4f2d4442b093a14aa3894320bab990c21.
+      The promoted public object was fetched back and matched this hash and size.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -79,6 +80,7 @@ artifacts:
     notes: >-
       Exact 514-by-343 game-window crop at (143,132) from an 800-by-600 Systemless
       framebuffer after pressing Right in Level 1.
+      The promoted screenshot was fetched back and matched its hash and size.
 references:
 - >-
   https://ftp.zx.net.nz/pub/mirror/ftp.funet.fi/pub/mac/info-mac/game/adv/blobbo-102-lite.hqx
