@@ -52,6 +52,8 @@ pub struct PpcAglPixelFormat {
 pub struct PpcAglState {
     next_handle: u32,
     pixel_formats: Vec<PpcAglPixelFormat>,
+    renderer_infos: Vec<u32>,
+    error: u32,
     contexts: Vec<PpcAglContext>,
     current_context: u32,
 }
@@ -143,6 +145,8 @@ impl Default for PpcAglState {
         Self {
             next_handle: FIRST_AGL_OBJECT,
             pixel_formats: Vec::new(),
+            renderer_infos: Vec::new(),
+            error: 0,
             contexts: Vec::new(),
             current_context: 0,
         }
@@ -150,6 +154,52 @@ impl Default for PpcAglState {
 }
 
 impl PpcAglState {
+    pub fn set_error(&mut self, error: u32) {
+        self.error = error;
+    }
+
+    pub fn get_error(&mut self) -> u32 {
+        std::mem::take(&mut self.error)
+    }
+
+    pub fn query_renderer_info(&mut self) -> u32 {
+        let handle = self.next_handle;
+        let Some(next) = handle.checked_add(4) else {
+            return 0;
+        };
+        self.next_handle = next;
+        self.renderer_infos.push(handle);
+        handle
+    }
+
+    pub fn describe_renderer(&self, handle: u32, property: i32) -> Option<i32> {
+        if !self.renderer_infos.contains(&handle) {
+            return None;
+        }
+        Some(match property {
+            53 | 54 | 73 | 75 | 76 | 78 | 81 | 83 => 0,
+            80 => 1,
+            70 => 0x0002_0200, // AGL_RENDERER_GENERIC_ID
+            100 => 0x000d,     // monoscopic, single and double buffered
+            101 | 102 => 0,
+            103 => 0x0000_8000, // AGL_ARGB8888_BIT
+            104 => 1,           // AGL_0_BIT: no accumulation buffer
+            105 => 0x0000_0800, // AGL_24_BIT
+            106 => 0x0000_0080, // AGL_8_BIT
+            107 | 120 | 121 => 0,
+            _ => return None,
+        })
+    }
+
+    pub fn next_renderer_info(&self, _handle: u32) -> u32 {
+        // This software implementation exposes one renderer per query.
+        0
+    }
+
+    pub fn destroy_renderer_info(&mut self, handle: u32) {
+        self.renderer_infos.retain(|renderer| *renderer != handle);
+    }
+
     pub fn choose_pixel_format(&mut self, request: PpcAglPixelFormatRequest) -> u32 {
         if !ppc_agl_software_format_matches(&request) {
             return 0;

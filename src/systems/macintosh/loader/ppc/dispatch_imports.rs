@@ -2798,6 +2798,20 @@ pub(crate) fn dispatch_supported_import(
             ppc_agl_get_version(memory, cpu.gpr[3], cpu.gpr[4])
                 .then_some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::AglQueryRendererInfo => Some(PpcImportAction::Return(
+            ppc_agl_query_renderer_info(cpu, memory, agl, gworlds),
+        )),
+        PpcImportDispatcherTarget::AglDescribeRenderer => Some(PpcImportAction::Return(u32::from(
+            ppc_agl_describe_renderer(cpu, memory, agl),
+        ))),
+        PpcImportDispatcherTarget::AglNextRendererInfo => {
+            Some(PpcImportAction::Return(agl.next_renderer_info(cpu.gpr[3])))
+        }
+        PpcImportDispatcherTarget::AglDestroyRendererInfo => {
+            agl.destroy_renderer_info(cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::AglGetError => Some(PpcImportAction::Return(agl.get_error())),
         PpcImportDispatcherTarget::AglChoosePixelFormat => Some(PpcImportAction::Return(
             ppc_agl_choose_pixel_format(cpu, memory, agl, gworlds),
         )),
@@ -3146,6 +3160,54 @@ fn ppc_agl_get_version(memory: &mut PpcSectionMem, major: u32, minor: u32) -> bo
         .all(|pointer| pointer == 0 || memory.write_u32_be(pointer, 1).is_some())
 }
 
+fn ppc_agl_query_renderer_info(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    agl: &mut PpcAglState,
+    gworlds: &[PpcGWorldRecord],
+) -> u32 {
+    if !ppc_agl_devices_valid(memory, cpu.gpr[3], cpu.gpr[4] as i32, gworlds) {
+        agl.set_error(10006); // AGL_BAD_GDEV
+        return 0;
+    }
+    agl.query_renderer_info()
+}
+
+fn ppc_agl_describe_renderer(cpu: &PpcCpu, memory: &mut PpcSectionMem, agl: &PpcAglState) -> bool {
+    let Some(value) = agl.describe_renderer(cpu.gpr[3], cpu.gpr[4] as i32) else {
+        return false;
+    };
+    cpu.gpr[5] != 0 && memory.write_u32_be(cpu.gpr[5], value as u32).is_some()
+}
+
+fn ppc_agl_devices_valid(
+    memory: &mut PpcSectionMem,
+    devices: u32,
+    count: i32,
+    gworlds: &[PpcGWorldRecord],
+) -> bool {
+    if !(0..=16).contains(&count) {
+        return false;
+    }
+    if count > 0 {
+        if devices == 0 {
+            return false;
+        }
+        for index in 0..count as u32 {
+            let Some(device) = devices
+                .checked_add(index * 4)
+                .and_then(|address| memory.read_u32_be(address))
+            else {
+                return false;
+            };
+            if device == 0 || !gworlds.iter().any(|world| world.gdevice == device) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 fn ppc_agl_choose_pixel_format(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
@@ -3156,25 +3218,8 @@ fn ppc_agl_choose_pixel_format(
     //     GLint ndev, const GLint *attribs);
     // Apple AGL/agl.h (Mac OS X 10.2.8 SDK).
     // https://github.com/phracker/MacOSX-SDKs/blob/master/MacOSX10.2.8.sdk/System/Library/Frameworks/AGL.framework/Versions/A/Headers/agl.h
-    let count = cpu.gpr[4] as i32;
-    if !(0..=16).contains(&count) {
+    if !ppc_agl_devices_valid(memory, cpu.gpr[3], cpu.gpr[4] as i32, gworlds) {
         return 0;
-    }
-    if count > 0 {
-        if cpu.gpr[3] == 0 {
-            return 0;
-        }
-        for index in 0..count as u32 {
-            let Some(device) = cpu.gpr[3]
-                .checked_add(index * 4)
-                .and_then(|address| memory.read_u32_be(address))
-            else {
-                return 0;
-            };
-            if device == 0 || !gworlds.iter().any(|world| world.gdevice == device) {
-                return 0;
-            }
-        }
     }
     let Ok(request) = ppc_agl_read_pixel_format_request(memory, cpu.gpr[5]) else {
         return 0;
@@ -3369,6 +3414,56 @@ mod agl_choose_tests {
         assert_eq!(memory.read_u32_be(0x1000), Some(1));
         assert_eq!(memory.read_u32_be(0x1004), Some(1));
         assert!(ppc_agl_get_version(&mut memory, 0, 0));
+    }
+
+    #[test]
+    fn imported_agl_renderer_info_reports_software_capabilities_and_lifetime() {
+        for (name, target) in [
+            (
+                "aglQueryRendererInfo",
+                PpcImportDispatcherTarget::AglQueryRendererInfo,
+            ),
+            (
+                "aglDescribeRenderer",
+                PpcImportDispatcherTarget::AglDescribeRenderer,
+            ),
+            (
+                "aglNextRendererInfo",
+                PpcImportDispatcherTarget::AglNextRendererInfo,
+            ),
+            (
+                "aglDestroyRendererInfo",
+                PpcImportDispatcherTarget::AglDestroyRendererInfo,
+            ),
+            ("aglGetError", PpcImportDispatcherTarget::AglGetError),
+        ] {
+            assert_eq!(dispatcher_target_for_import("OpenGLLibrary", name), target);
+        }
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x1000, vec![0; 4]);
+        let mut cpu = PpcCpu::new();
+        let mut agl = PpcAglState::default();
+        cpu.gpr[4] = 1;
+        assert_eq!(
+            ppc_agl_query_renderer_info(&cpu, &mut memory, &mut agl, &[]),
+            0
+        );
+        assert_eq!(agl.get_error(), 10006);
+        assert_eq!(agl.get_error(), 0);
+        cpu.gpr[4] = 0;
+        let handle = ppc_agl_query_renderer_info(&cpu, &mut memory, &mut agl, &[]);
+        assert_ne!(handle, 0);
+        assert_eq!(agl.next_renderer_info(handle), 0);
+        cpu.gpr[3] = handle;
+        cpu.gpr[4] = 73; // AGL_ACCELERATED
+        cpu.gpr[5] = 0x1000;
+        assert!(ppc_agl_describe_renderer(&cpu, &mut memory, &agl));
+        assert_eq!(memory.read_u32_be(0x1000), Some(0));
+        cpu.gpr[4] = 70; // AGL_RENDERER_ID
+        assert!(ppc_agl_describe_renderer(&cpu, &mut memory, &agl));
+        assert_eq!(memory.read_u32_be(0x1000), Some(0x0002_0200));
+        agl.destroy_renderer_info(handle);
+        assert!(!ppc_agl_describe_renderer(&cpu, &mut memory, &agl));
     }
 
     #[test]
