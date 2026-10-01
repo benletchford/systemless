@@ -56,6 +56,7 @@ artifacts:
     notes: >-
       Original 154,219-byte BinHex/StuffIt archive, SHA-256
       37847a4d020d1b705182319bf48e142ee04f299ca15d43e4de46de71f2d35752.
+      The public object was fetched back and matched the original hash and size.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -74,7 +75,8 @@ artifacts:
       catalogue entry. Underlying artwork remains its owner's property.
     notes: >-
       Exact 388-by-313 game-content crop at (206,154) from an 800-by-600 Systemless
-      framebuffer after moving the block left.
+      framebuffer after moving the block left. The public media object was fetched
+      back and matched the submitted hash and size.
 references:
 - >-
   https://ftp.zx.net.nz/pub/mirror/ftp.funet.fi/pub/mac/info-mac/game/arc/color-fall-111.hqx
