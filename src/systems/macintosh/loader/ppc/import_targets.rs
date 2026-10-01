@@ -1165,6 +1165,8 @@ pub enum PpcImportDispatcherTarget {
     AglGetDrawable,
     AglUpdateContext,
     AglSwapBuffers,
+    GlClearColor,
+    GlClear,
     ReturnError(i16),
     ReturnNoErr,
     ReturnOne,
@@ -5388,6 +5390,8 @@ pub(crate) fn dispatcher_target_for_import(
         ("OpenGLLibrary", "aglGetDrawable") => PpcImportDispatcherTarget::AglGetDrawable,
         ("OpenGLLibrary", "aglUpdateContext") => PpcImportDispatcherTarget::AglUpdateContext,
         ("OpenGLLibrary", "aglSwapBuffers") => PpcImportDispatcherTarget::AglSwapBuffers,
+        ("OpenGLLibrary", "glClearColor") => PpcImportDispatcherTarget::GlClearColor,
+        ("OpenGLLibrary", "glClear") => PpcImportDispatcherTarget::GlClear,
         _ => PpcImportDispatcherTarget::Unsupported,
     }
 }

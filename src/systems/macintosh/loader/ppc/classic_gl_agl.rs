@@ -4,7 +4,7 @@
 //! AGL/agl.h (Mac OS X 10.2.8 SDK). Capability selection happens separately.
 //! https://github.com/phracker/MacOSX-SDKs/blob/master/MacOSX10.2.8.sdk/System/Library/Frameworks/AGL.framework/Versions/A/Headers/agl.h
 
-use super::classic_gl_framebuffer::{ClassicGlColorBuffer, ClassicGlFramebuffer};
+use super::classic_gl_framebuffer::{ClassicGlClear, ClassicGlColorBuffer, ClassicGlFramebuffer};
 use super::{PpcFrontBuffer, PpcSectionMem};
 use ppc::PpcMemory;
 
@@ -59,6 +59,7 @@ pub struct PpcAglContext {
     pub format: PpcAglPixelFormatRequest,
     pub drawable: u32,
     pub framebuffer: Option<ClassicGlFramebuffer>,
+    clear_color: [f64; 4],
 }
 
 impl Default for PpcAglState {
@@ -137,6 +138,7 @@ impl PpcAglState {
             format,
             drawable: 0,
             framebuffer: None,
+            clear_color: [0.0; 4],
         });
         handle
     }
@@ -178,6 +180,47 @@ impl PpcAglState {
 
     pub fn current_context(&self) -> u32 {
         self.current_context
+    }
+
+    pub fn gl_clear_color(&mut self, components: [f64; 4]) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        context.clear_color = components.map(|component| component.clamp(0.0, 1.0));
+        true
+    }
+
+    pub fn gl_clear(&mut self, mask: u32) -> bool {
+        const COLOR: u32 = 0x0000_4000;
+        const DEPTH: u32 = 0x0000_0100;
+        const STENCIL: u32 = 0x0000_0400;
+        if mask & !(COLOR | DEPTH | STENCIL) != 0 {
+            return false;
+        }
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        let Some(framebuffer) = context.framebuffer.as_mut() else {
+            return false;
+        };
+        framebuffer.clear(ClassicGlClear {
+            color: (mask & COLOR != 0).then_some((
+                if context.format.double_buffered {
+                    ClassicGlColorBuffer::Back
+                } else {
+                    ClassicGlColorBuffer::Front
+                },
+                context
+                    .clear_color
+                    .map(|component| (component * 255.0).round() as u8),
+            )),
+            color_mask: [true; 4],
+            depth: (mask & DEPTH != 0).then_some(1.0),
+            depth_mask: true,
+            stencil: (mask & STENCIL != 0).then_some(0),
+            stencil_mask: u8::MAX,
+            scissor: None,
+        })
     }
 
     pub fn set_drawable(
@@ -370,6 +413,41 @@ pub fn ppc_agl_read_pixel_format_request(
 mod tests {
     use super::*;
     use ppc::PpcMemory;
+
+    #[test]
+    fn clear_uses_current_context_back_buffer_and_default_depth_stencil() {
+        let mut agl = PpcAglState::default();
+        let format = agl.choose_pixel_format(PpcAglPixelFormatRequest {
+            rgba: true,
+            double_buffered: true,
+            ..Default::default()
+        });
+        let context = agl.create_context(format, 0);
+        assert!(!agl.gl_clear(0x4000));
+        assert!(agl.set_current_context(context));
+        let surface = PpcFrontBuffer {
+            base_addr: 0x1000,
+            width: 1,
+            height: 1,
+            depth: 16,
+            row_bytes: 2,
+        };
+        assert!(agl.set_drawable(context, 0x2000, Some(surface)));
+        assert!(agl.gl_clear_color([1.0, 0.5, -1.0, 2.0]));
+        assert!(agl.gl_clear(0x4000 | 0x0100 | 0x0400));
+        let framebuffer = agl.context(context).unwrap().framebuffer.as_ref().unwrap();
+        assert_eq!(
+            framebuffer.pixel(ClassicGlColorBuffer::Back, 0, 0),
+            Some([255, 128, 0, 255])
+        );
+        assert_eq!(
+            framebuffer.pixel(ClassicGlColorBuffer::Front, 0, 0),
+            Some([0; 4])
+        );
+        assert_eq!(framebuffer.depth_at(0, 0), Some(1.0));
+        assert_eq!(framebuffer.stencil_at(0, 0), Some(0));
+        assert!(!agl.gl_clear(0x8000_0000));
+    }
 
     #[test]
     fn reads_boolean_and_value_attributes_from_guest_memory() {

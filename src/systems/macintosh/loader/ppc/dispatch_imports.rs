@@ -2830,6 +2830,14 @@ pub(crate) fn dispatch_supported_import(
             ppc_agl_swap_buffers(cpu, memory, agl, gworlds, window_list)
                 .then_some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::GlClearColor => agl
+            .gl_clear_color(std::array::from_fn(|index| {
+                f64::from_bits(cpu.fpr[index + 1])
+            }))
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlClear => agl
+            .gl_clear(cpu.gpr[3])
+            .then_some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::NoOpPreserve => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::ExitToShell => Some(PpcImportAction::Halt),
         PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => None,
