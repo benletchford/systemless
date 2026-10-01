@@ -2,6 +2,50 @@ use super::*;
 use crate::memory::globals::addr;
 
 #[test]
+fn control_panel_init_runs_before_application_entry() {
+    let code0 = minimal_code0(0, 0x2000, 0, 0);
+    let app_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0)]);
+    let app_fork = ResourceFork::parse(&app_bytes).expect("parse synthetic app fork");
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let app = runner.load_app(&app_fork).expect("load app");
+    runner.init_app(&app);
+    let app_entry = runner.m68k.cpu.read_reg(Register::PC);
+
+    // MOVEQ #42,D0; MOVE.L #$12345678,$00180000; RTS
+    let init_code = [
+        0x70, 0x2a, 0x23, 0xfc, 0x12, 0x34, 0x56, 0x78, 0x00, 0x18, 0x00, 0x00, 0x4e,
+        0x75,
+    ];
+    let extension_bytes = make_resource_fork_bytes(&[(*b"INIT", 128, &init_code)]);
+    let path = "Test/System Folder/Control Panels/Example";
+    runner.dispatcher.vfs.insert(path.into(), Vec::new());
+    runner.dispatcher.vfs_rsrc.insert(path.into(), extension_bytes);
+    runner
+        .dispatcher
+        .set_vfs_entry_metadata(path, *b"cdev", *b"TEST", 0);
+    runner
+        .dispatcher
+        .vfs
+        .insert("Test/System Folder/System".into(), Vec::new());
+
+    assert_eq!(runner.start_system_extensions(), 1);
+    assert!(runner.dispatcher.vfs_directories.iter().any(|directory| {
+        directory.path == "Test/Desktop Folder"
+    }));
+    assert_ne!(runner.m68k.cpu.read_reg(Register::PC), app_entry);
+    for _ in 0..100 {
+        if runner.m68k.cpu.read_reg(Register::PC) == app_entry {
+            break;
+        }
+        let (_, running) = runner.run_steps(1, None);
+        assert!(running);
+    }
+    assert_eq!(runner.bus.read_long(0x0018_0000), 0x1234_5678);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::PC), app_entry);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0);
+}
+
+#[test]
 fn init_app_preserves_resources_allocated_before_zone_header() {
     let code0 = minimal_code0(0, 0x2000, 0, 0);
     let bgas = [0x4E, 0x56, 0xFF, 0xA6, 0x2D, 0x7A, 0x1C, 0x72];

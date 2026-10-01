@@ -2842,6 +2842,9 @@ impl FixtureRunner {
     }
 
     fn redraw_chrome(&mut self) {
+        if self.dispatcher.with_process_state(|dispatcher| dispatcher.screen_takeover_active) {
+            return;
+        }
         // An active DrawSprocket context owns the display. Repainting the
         // Window Manager desktop here would cover direct full-screen blits
         // outside any smaller setup window still on the window list.
@@ -3644,6 +3647,7 @@ impl FixtureRunner {
 
         let segments: HashMap<i16, u32> = app.segment_bases.iter().map(|(&k, &v)| (k, v)).collect();
         self.dispatcher.register_segments(segments);
+        self.dispatcher.mirror_application_code_relocations(&mut self.bus);
 
         Some(app)
     }
@@ -4239,6 +4243,13 @@ impl FixtureRunner {
         // screenBits is already initialized to 800x600 8bpp by the bus.
         let gdh = self.dispatcher.ensure_main_gdevice(&mut self.bus);
         let gd_ptr = self.bus.read_long(gdh);
+        // The built-in display occupies unit zero in the Device Manager's
+        // unit table. Its gdRefNum is the corresponding driver's -1 refnum.
+        // Screen-aware INITs inspect the DCE through UTableBase.
+        // Inside Macintosh: Devices (1994), pp. 1-8--1-9, 3-12--3-13.
+        if self.dispatcher.install_driver_dce(&mut self.bus, u16::MAX) == 0 {
+            self.bus.write_word(gd_ptr, u16::MAX);
+        }
         self.bus.write_long(0x8A4, gdh); // MainDevice
         self.bus.write_long(0xCC8, gdh); // TheGDevice
         self.bus.write_long(0x8A8, gdh); // DeviceList
@@ -4371,6 +4382,314 @@ impl FixtureRunner {
         self.m68k
             .cpu
             .write_reg(Register::PC, app.entry_point(app.a5_base));
+    }
+
+    /// Execute startup extension resources before the selected application.
+    ///
+    /// System 7 searches the Control Panels and Extensions folders for INIT
+    /// resources at startup, with the containing resource file current while
+    /// each INIT runs. Inside Macintosh: Operating System Utilities (1994),
+    /// pp. 9-7 to 9-9; Devices (1994), p. 2-13.
+    pub fn start_system_extensions(&mut self) -> usize {
+        // A booted Finder provides the standard Desktop Folder on its
+        // volume. Startup extensions can query it with FindFolder using
+        // kDontCreateFolder. IM:VI (1991), pp. 9-42 to 9-44.
+        if let Some(system_file) = self.vfs_file_summaries_where(|path| {
+            path.to_ascii_lowercase().ends_with("/system folder/system")
+        }).into_iter().next() {
+            let volume_root = system_file.path.rsplit_once("/System Folder/")
+                .map(|(root, _)| root)
+                .unwrap_or("");
+            let desktop = if volume_root.is_empty() {
+                "Desktop Folder".to_string()
+            } else {
+                format!("{volume_root}/Desktop Folder")
+            };
+            self.dispatcher.ensure_vfs_directory(&desktop);
+        }
+        // A booted Macintosh keeps the System file open beneath the
+        // application. Startup INITs and application code can then find its
+        // resources through GetResource. Inside Macintosh Volume I (1985),
+        // pp. I-125–I-126.
+        if let Some(system_file) = self.vfs_file_summaries_where(|path| {
+            let path = path.to_ascii_lowercase();
+            path.ends_with("/system folder/system")
+        }).into_iter().next() {
+            if self.dispatcher.vfs_rsrc.contains_key(&system_file.path) {
+                let refnum = self.dispatcher.open_resource_file_from_vfs_key(
+                    &mut self.bus,
+                    &system_file.path,
+                    false,
+                );
+                if refnum != u16::MAX {
+                    self.dispatcher.place_system_resource_file_before_application(refnum);
+                    self.dispatcher.set_current_resource_refnum(&mut self.bus, 0);
+                }
+            }
+        }
+        let mut files = self.vfs_file_summaries_where(|path| {
+            let path = path.to_ascii_lowercase();
+            path.contains("/system folder/control panels/")
+                || path.contains("/system folder/extensions/")
+        });
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+
+        let mut calls = Vec::new();
+        for file in files {
+            let is_control_panel = file.file_type == u32::from_be_bytes(*b"cdev");
+            let is_extension = file.file_type == u32::from_be_bytes(*b"INIT");
+            if !is_control_panel && !is_extension {
+                continue;
+            }
+            let Some(bytes) = self.dispatcher.vfs_rsrc.get(&file.path) else {
+                continue;
+            };
+            let Some(fork) = ResourceFork::parse(bytes) else {
+                continue;
+            };
+            let mut inits: Vec<_> = fork
+                .resources()
+                .values()
+                .filter(|resource| resource.res_type == *b"INIT")
+                .collect();
+            inits.sort_by_key(|resource| resource.id);
+            if inits.is_empty() {
+                continue;
+            }
+            let refnum = self
+                .dispatcher
+                .open_resource_file_from_vfs_key(&mut self.bus, &file.path, false);
+            if refnum == u16::MAX {
+                continue;
+            }
+            for init in inits {
+                let addr = self.bus.alloc(init.data.len() as u32);
+                if addr == 0 {
+                    continue;
+                }
+                self.bus.write_bytes(addr, &init.data);
+                if trace_load_enabled() {
+                    eprintln!("[LOAD] Startup INIT {} id={} at ${addr:08X}", file.path, init.id);
+                }
+                calls.push((refnum, addr));
+            }
+        }
+        if calls.is_empty() {
+            return 0;
+        }
+
+        let entry = self.m68k.cpu.read_reg(Register::PC);
+        let app_regs = [
+            Register::D0, Register::D1, Register::D2, Register::D3,
+            Register::D4, Register::D5, Register::D6, Register::D7,
+            Register::A0, Register::A1, Register::A2, Register::A3,
+            Register::A4, Register::A5, Register::A6, Register::A7,
+        ].map(|reg| self.m68k.cpu.read_reg(reg));
+        let app_sr = self.m68k.cpu.core.get_sr();
+        let mut code = Vec::with_capacity(calls.len() * 112 + 112);
+        let restore_app_context = |code: &mut Vec<u8>| {
+            for (index, value) in app_regs.iter().enumerate() {
+                let opcode = if index < 8 {
+                    0x203c + ((index as u16) << 9) // MOVE.L #value,Dn
+                } else {
+                    0x207c + (((index - 8) as u16) << 9) // MOVEA.L #value,An
+                };
+                code.extend_from_slice(&opcode.to_be_bytes());
+                code.extend_from_slice(&value.to_be_bytes());
+            }
+            code.extend_from_slice(&[0x46, 0xfc]); // MOVE.W #app_sr,SR
+            code.extend_from_slice(&app_sr.to_be_bytes());
+        };
+        for (refnum, addr) in &calls {
+            code.extend_from_slice(&[0x3f, 0x3c]); // MOVE.W #refnum,-(SP)
+            code.extend_from_slice(&refnum.to_be_bytes());
+            code.extend_from_slice(&[0xa9, 0x98]); // UseResFile
+            code.extend_from_slice(&[0x4e, 0xb9]); // JSR absolute long
+            code.extend_from_slice(&addr.to_be_bytes());
+            restore_app_context(&mut code);
+        }
+        code.extend_from_slice(&[0x3f, 0x3c, 0x00, 0x00, 0xa9, 0x98]); // UseResFile(0)
+        restore_app_context(&mut code);
+        code.extend_from_slice(&[0x4e, 0xf9]); // JMP application entry
+        code.extend_from_slice(&entry.to_be_bytes());
+        let trampoline = self.bus.alloc(code.len() as u32);
+        if trampoline == 0 {
+            return 0;
+        }
+        self.bus.write_bytes(trampoline, &code);
+        if trace_load_enabled() {
+            eprintln!(
+                "[LOAD] Startup INIT trampoline ${trampoline:08X}..${:08X}, app entry=${entry:08X} sp=${:08X}",
+                trampoline + code.len() as u32,
+                app_regs[15]
+            );
+        }
+        self.m68k.cpu.write_reg(Register::PC, trampoline);
+        calls.len()
+    }
+
+    /// Schedule the opening of a System 7 control panel after startup INITs.
+    /// The Finder creates the panel's DLOG and sends `initDev` to its `cdev`
+    /// resource. Inside Macintosh: More Macintosh Toolbox (1993), pp. 8-7,
+    /// 8-74–8-76. This entry is useful to headless hosts that do not run Finder.
+    pub fn start_control_panel(&mut self, name: &str) -> bool {
+        self.start_control_panel_with_hit(name, None)
+    }
+
+    /// Schedule a control device function and optionally deliver one click
+    /// on a dialog item after activation.
+    pub fn start_control_panel_with_hit(
+        &mut self,
+        name: &str,
+        hit: Option<(u16, i16, i16)>,
+    ) -> bool {
+        let Some(file) = self.vfs_file_summaries_where(|path| {
+            path.to_ascii_lowercase()
+                .contains("/system folder/control panels/")
+                && path.rsplit('/').next().is_some_and(|part| part.eq_ignore_ascii_case(name))
+        }).into_iter().find(|file| file.file_type == u32::from_be_bytes(*b"cdev")) else {
+            return false;
+        };
+        let Some(fork) = self.dispatcher.vfs_rsrc.get(&file.path).and_then(|bytes| ResourceFork::parse(bytes)) else {
+            return false;
+        };
+        let Some(cdev) = fork.resources().values().find(|resource| resource.res_type == *b"cdev" && resource.id == -4064) else {
+            return false;
+        };
+        let needs_mac_dev = fork.resources().values().any(|resource| {
+            resource.res_type == *b"mach"
+                && resource.id == -4064
+                && resource.data == [0xff, 0xff, 0x00, 0x00]
+        });
+        let code_addr = self.bus.alloc(cdev.data.len() as u32);
+        if code_addr == 0 {
+            return false;
+        }
+        self.bus.write_bytes(code_addr, &cdev.data);
+        let refnum = self.dispatcher.open_resource_file_from_vfs_key(&mut self.bus, &file.path, false);
+        if refnum == u16::MAX {
+            return false;
+        }
+        let event_addr = self.bus.alloc(16);
+        if event_addr == 0 {
+            return false;
+        }
+        self.bus.write_bytes(event_addr, &[0; 16]);
+        if let Some((_, v, h)) = hit {
+            // Toolbox Essentials 1992, 2-60: mouseDown EventRecord with a
+            // global Point at offsets 10 and 12.
+            self.bus.write_word(event_addr + 10, v as u16);
+            self.bus.write_word(event_addr + 12, h as u16);
+        }
+
+        let entry = self.m68k.cpu.read_reg(Register::PC);
+        let app_regs = [
+            Register::D0, Register::D1, Register::D2, Register::D3,
+            Register::D4, Register::D5, Register::D6, Register::D7,
+            Register::A0, Register::A1, Register::A2, Register::A3,
+            Register::A4, Register::A5, Register::A6, Register::A7,
+        ].map(|reg| self.m68k.cpu.read_reg(reg));
+        let app_sr = self.m68k.cpu.core.get_sr();
+        let mut code = Vec::with_capacity(160);
+        let push_long = |code: &mut Vec<u8>, value: u32| {
+            code.extend_from_slice(&[0x2f, 0x3c]); // MOVE.L #value,-(SP)
+            code.extend_from_slice(&value.to_be_bytes());
+        };
+        let push_word = |code: &mut Vec<u8>, value: u16| {
+            code.extend_from_slice(&[0x3f, 0x3c]); // MOVE.W #value,-(SP)
+            code.extend_from_slice(&value.to_be_bytes());
+        };
+        push_word(&mut code, refnum);
+        code.extend_from_slice(&[0xa9, 0x98]); // UseResFile
+        if needs_mac_dev {
+            push_long(&mut code, 0); // macDev result
+            push_word(&mut code, 8); // macDev
+            for _ in 0..3 {
+                push_word(&mut code, 0);
+            }
+            push_long(&mut code, event_addr);
+            push_long(&mut code, 3); // cdevUnset
+            push_long(&mut code, 0); // no dialog yet
+            code.extend_from_slice(&[0x4e, 0xb9]);
+            code.extend_from_slice(&code_addr.to_be_bytes());
+            code.extend_from_slice(&[0x2c, 0x1f]); // MOVE.L (SP)+,D6
+        }
+        push_long(&mut code, 0); // GetNewDialog result
+        push_word(&mut code, (-4064i16) as u16);
+        push_long(&mut code, 0); // dStorage
+        push_long(&mut code, u32::MAX); // behind all windows
+        code.extend_from_slice(&[0xa9, 0x7c]); // GetNewDialog
+        code.extend_from_slice(&[0x2e, 0x1f]); // MOVE.L (SP)+,D7: dialog
+        push_long(&mut code, 0); // cdev function result
+        for _ in 0..4 {
+            push_word(&mut code, 0); // initDev, item, numItems, CPrivateValue
+        }
+        push_long(&mut code, event_addr);
+        if needs_mac_dev {
+            code.extend_from_slice(&[0x2f, 0x06]); // previous cdev result
+        } else {
+            push_long(&mut code, 3); // cdevUnset
+        }
+        code.extend_from_slice(&[0x2f, 0x07]); // MOVE.L D7,-(SP): CPDialog
+        code.extend_from_slice(&[0x4e, 0xb9]); // JSR cdev entry
+        code.extend_from_slice(&code_addr.to_be_bytes());
+        code.extend_from_slice(&[0x2c, 0x1f]); // MOVE.L (SP)+,D6: cdev storage
+        let mut messages = vec![(5u16, 0u16), (4, 0)]; // activDev, updateDev
+        if let Some((item, _, _)) = hit {
+            messages.push((1, item)); // hitDev
+        }
+        messages.extend([(3, 0), (3, 0), (3, 0)]); // nulDev
+        for (message, item) in messages {
+            if message == 1 {
+                code.extend_from_slice(&[0x33, 0xfc, 0x00, 0x01]); // MOVE.W #mouseDown,EventRecord.what
+                code.extend_from_slice(&event_addr.to_be_bytes());
+            }
+            if message == 4 {
+                code.extend_from_slice(&[0x2f, 0x07]); // MOVE.L D7,-(SP)
+                code.extend_from_slice(&[0xa9, 0x22]); // BeginUpdate(CPDialog)
+            }
+            push_long(&mut code, 0); // cdev function result
+            push_word(&mut code, message);
+            push_word(&mut code, item);
+            push_word(&mut code, 0); // numItems
+            push_word(&mut code, 0); // CPrivateValue
+            push_long(&mut code, event_addr);
+            code.extend_from_slice(&[0x2f, 0x06]); // MOVE.L D6,-(SP): storage
+            code.extend_from_slice(&[0x2f, 0x07]); // MOVE.L D7,-(SP): dialog
+            code.extend_from_slice(&[0x4e, 0xb9]); // JSR cdev entry
+            code.extend_from_slice(&code_addr.to_be_bytes());
+            code.extend_from_slice(&[0x2c, 0x1f]); // MOVE.L (SP)+,D6
+            if message == 1 {
+                code.extend_from_slice(&[0x33, 0xfc, 0x00, 0x00]); // MOVE.W #nullEvent,EventRecord.what
+                code.extend_from_slice(&event_addr.to_be_bytes());
+            }
+            if message == 4 {
+                code.extend_from_slice(&[0x2f, 0x07]); // MOVE.L D7,-(SP)
+                code.extend_from_slice(&[0xa9, 0x23]); // EndUpdate(CPDialog)
+            }
+        }
+        push_word(&mut code, 0);
+        code.extend_from_slice(&[0xa9, 0x98]); // UseResFile(0)
+        for (index, value) in app_regs.iter().enumerate() {
+            let opcode = if index < 8 {
+                0x203c + ((index as u16) << 9)
+            } else {
+                0x207c + (((index - 8) as u16) << 9)
+            };
+            code.extend_from_slice(&opcode.to_be_bytes());
+            code.extend_from_slice(&value.to_be_bytes());
+        }
+        code.extend_from_slice(&[0x46, 0xfc]); // MOVE.W #app_sr,SR
+        code.extend_from_slice(&app_sr.to_be_bytes());
+        code.extend_from_slice(&[0x4e, 0xf9]); // JMP application entry
+        code.extend_from_slice(&entry.to_be_bytes());
+        let trampoline = self.bus.alloc(code.len() as u32);
+        if trampoline == 0 {
+            return false;
+        }
+        self.bus.write_bytes(trampoline, &code);
+        self.m68k.cpu.write_reg(Register::PC, trampoline);
+        true
     }
 
     pub(crate) fn stage_ppc_companion(&mut self, ppc_companion: PpcLoadedApp) {
@@ -5373,7 +5692,7 @@ impl FixtureRunner {
         let can_observe_events = self.active_interrupt_callback.is_none()
             && !self.dispatcher.input_state.has_key_repeat()
             && self.dispatcher.pending_launch_app.is_none()
-            && !self.dispatcher.system_task_has_periodic_work();
+            && !self.dispatcher.system_task_has_periodic_work(&self.bus);
         let event_stream_empty = can_observe_events
             && self
                 .dispatcher
@@ -5447,7 +5766,7 @@ impl FixtureRunner {
         let quiescent = idle_cycle_trap_is_journal_complete(
             opcode,
             null_event,
-            !self.dispatcher.system_task_has_periodic_work(),
+            !self.dispatcher.system_task_has_periodic_work(&self.bus),
             sound_command_rejected,
             self.m68k.cpu.read_reg(Register::D0),
         );

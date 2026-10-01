@@ -48,7 +48,7 @@ impl super::TrapDispatcher {
         (unit < count && table != 0).then(|| table + u32::from(unit) * 4)
     }
 
-    fn install_driver_dce(&mut self, bus: &mut MacMemoryBus, ref_num: u16) -> u32 {
+    pub(crate) fn install_driver_dce(&mut self, bus: &mut MacMemoryBus, ref_num: u16) -> u32 {
         let Some(slot) = Self::driver_unit_table_slot(bus, ref_num) else {
             return Self::BAD_UNIT_ERR;
         };

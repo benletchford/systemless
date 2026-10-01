@@ -1783,6 +1783,8 @@ pub struct TrapDispatcher {
     /// and MBarHeight was 0). While set, the menu bar is suppressed even if
     /// the game temporarily restores MBarHeight (e.g. on cursor-at-top).
     pub fullscreen_locked: bool,
+    /// A patched SystemTask has painted the screen directly for an idle display.
+    pub(crate) screen_takeover_active: bool,
     /// Host presentation policy for the classic Mac menu bar.
     pub(crate) menu_bar_policy: crate::runner::MenuBarPolicy,
     /// Whether an initial-kiosk frontend has observed the guest genuinely hide
@@ -1950,6 +1952,10 @@ pub struct TrapDispatcher {
     /// expired. If input arrives during that sleep, the runner rewrites the
     /// EventRecord/result before foreground guest code resumes.
     pub(crate) pending_wait_next_event_return: Option<PendingWaitNextEventReturn>,
+    /// A patched SystemTask runs before WaitNextEvent examines the event
+    /// stream. The two-instruction guest stub preserves native trap chaining.
+    pub(crate) system_task_wne_stub: u32,
+    pub(crate) system_task_wne_returns: Vec<u32>,
     /// Extra instruction-budget units reported by HLE traps that completed
     /// sizeable manager work inside Rust rather than through guest 68k code.
     pub(crate) pending_hle_tick_cost: i32,
@@ -3807,6 +3813,7 @@ impl TrapDispatcher {
             window_list: Default::default(),
             process_window_list_attached: false,
             fullscreen_locked: false,
+            screen_takeover_active: false,
             menu_bar_policy: crate::runner::MenuBarPolicy::GuestControlled,
             initial_kiosk_guest_hide_observed: false,
             menu_bar_hidden: false,
@@ -3879,6 +3886,8 @@ impl TrapDispatcher {
             current_trap_caller: None,
             pending_wait_sleep_ticks: 0,
             pending_wait_next_event_return: None,
+            system_task_wne_stub: 0,
+            system_task_wne_returns: Vec::new(),
             pending_hle_tick_cost: 0,
             yield_for_ui: false,
             pending_delay_ticks: 0,
@@ -4434,6 +4443,47 @@ impl TrapDispatcher {
         self.segment_map = segments;
     }
 
+    /// Mirror Segment Loader relocations into resident application CODE
+    /// resources. The HLE keeps separate loader and Resource Manager buffers,
+    /// while guest code can execute through either view of a CODE handle.
+    /// Preserve the resource allocation and its handle so Resource Manager
+    /// size and map operations still refer to the original resident block.
+    /// Inside Macintosh Volume II (1985), pp. II-59–II-61.
+    pub(crate) fn mirror_application_code_relocations(&self, bus: &mut MacMemoryBus) {
+        let Some(resources) = self.resources.as_ref() else {
+            return;
+        };
+        let Some(application) = resources.files.get(&0) else {
+            return;
+        };
+        for (&(kind, id), &resource_ptr) in &application.loaded {
+            if kind == *b"CODE" {
+                self.mirror_application_code_resource_relocations(bus, id, resource_ptr);
+            }
+        }
+    }
+
+    pub(crate) fn mirror_application_code_resource_relocations(
+        &self,
+        bus: &mut MacMemoryBus,
+        id: i16,
+        resource_ptr: u32,
+    ) {
+        let Some(&segment_ptr) = self.segment_map.get(&id) else {
+            return;
+        };
+        let Some(backing) = self.resource_backing_data.get(&(0, *b"CODE", id)) else {
+            return;
+        };
+        if resource_ptr == 0 || segment_ptr == 0 || resource_ptr == segment_ptr {
+            return;
+        }
+        let relocated = bus.read_bytes(segment_ptr, backing.len());
+        if relocated != *backing && bus.read_bytes(resource_ptr, backing.len()) == *backing {
+            bus.write_bytes(resource_ptr, &relocated);
+        }
+    }
+
     fn normalize_vfs_path_components(path: &str) -> String {
         path.split('/')
             .filter(|part| !part.is_empty() && *part != ".")
@@ -4585,11 +4635,10 @@ impl TrapDispatcher {
             ref_num,
             name: normalized,
             root_dir_id,
-            // Extracted images are immutable media. Report the VCB's
-            // hardware-lock bit so PBHGetVInfo agrees with mutations,
-            // which return wPrErr (hardware volume lock). Inside
-            // Macintosh: Files, pp. 2-127, 2-144, and 2-329.
-            attributes: attributes | 0x0080,
+            // Preserve the source volume's hardware-lock bit. Changes to
+            // extracted files live in the process VFS, not the source image.
+            // Inside Macintosh: Files (1992), pp. 2-127 and 2-144.
+            attributes,
             file_count,
             allocation_block_count,
             allocation_block_size,
@@ -4624,13 +4673,12 @@ impl TrapDispatcher {
         self.vfs_volume_by_name(root)
     }
 
-    /// Return whether a VFS path belongs to an extracted disk-image volume.
-    /// Resource-fork mirrors use a `__rsrc__` prefix, so strip it before
-    /// resolving the volume root. The synthetic boot volume remains writable;
-    /// extracted image volumes are immutable by construction.
+    /// Return whether the path's mounted volume has its hardware-lock bit.
+    /// Resource-fork mirrors use a `__rsrc__` prefix.
     pub(crate) fn vfs_path_is_read_only(&self, path: &str) -> bool {
         let path = path.strip_prefix("__rsrc__").unwrap_or(path);
-        self.vfs_volume_for_path(path).is_some()
+        self.vfs_volume_for_path(path)
+            .is_some_and(|volume| volume.attributes & 0x0080 != 0)
     }
 
     pub(crate) fn boot_volume_ref_num_u16() -> u16 {
@@ -4784,7 +4832,10 @@ impl TrapDispatcher {
         keys.sort_unstable();
         for key in keys {
             let normalized = Self::normalize_vfs_path(&key);
-            if normalized.is_empty() {
+            // Resource fork mirrors are backing files, not catalog entries.
+            // Treating their __rsrc__ prefix as a volume creates a second,
+            // longer System Folder path that misdirects FindFolder.
+            if normalized.is_empty() || normalized.starts_with("__rsrc__") {
                 continue;
             }
             let parent = Self::vfs_parent_path(&normalized).to_string();
@@ -5611,6 +5662,9 @@ impl TrapDispatcher {
     /// Update the current mouse position (called from GUI layer).
     /// Coordinates are in Mac screen space (0,0 = top-left of screen).
     pub fn set_mouse_position(&mut self, v: i16, h: i16) {
+        if self.input_state.mouse_position() != (v, h) {
+            self.screen_takeover_active = false;
+        }
         self.input_state.set_mouse_position((v, h));
         self.adb
             .note_mouse_state((v, h), self.input_state.mouse_button_pressed());
@@ -5630,6 +5684,7 @@ impl TrapDispatcher {
 
     /// Push a mouse-down event into the event queue.
     pub fn push_mouse_down(&mut self, v: i16, h: i16) {
+        self.screen_takeover_active = false;
         self.input_state.set_mouse_state((v, h), true);
         self.adb.note_mouse_state((v, h), true);
         let modifiers = self.current_event_modifiers();
@@ -5675,6 +5730,7 @@ impl TrapDispatcher {
 
     /// Push a key-down event into the event queue.
     pub fn push_key_down(&mut self, key_code: u8, char_code: u8) {
+        self.screen_takeover_active = false;
         // A physical key remains down until keyUp. Host browsers/windowing
         // systems may emit repeated keydown callbacks while it is held, but
         // classic Event Manager represents those repeats as autoKey events.
@@ -6473,6 +6529,25 @@ impl TrapDispatcher {
         refnum
     }
 
+    /// Keep the boot System file below the application in resource searches.
+    /// The application is loaded before VFS startup files are registered here,
+    /// so its in-memory slot exists first even though the System file is the
+    /// older file in the classic Resource Manager chain.
+    /// Inside Macintosh Volume I (1985), pp. I-125–I-126.
+    pub(crate) fn place_system_resource_file_before_application(&mut self, refnum: u16) {
+        self.with_resource_manager_mut(|resource_manager| {
+            if let Some(resources) = resource_manager.resources.as_mut() {
+                resources.search_order.retain(|&candidate| candidate != refnum);
+                let app_index = resources
+                    .search_order
+                    .iter()
+                    .position(|&candidate| candidate == 0)
+                    .unwrap_or(resources.search_order.len());
+                resources.search_order.insert(app_index, refnum);
+            }
+        });
+    }
+
     pub(crate) fn resource_file_name(&self, refnum: u16) -> Option<&str> {
         self.resources
             .as_ref()
@@ -7229,7 +7304,7 @@ impl TrapDispatcher {
         raw_trap_route(trap_word).table_address
     }
 
-    fn default_trap_gateway(&self, bus: &MacMemoryBus, trap_word: u16) -> Option<u32> {
+    pub(crate) fn default_trap_gateway(&self, bus: &MacMemoryBus, trap_word: u16) -> Option<u32> {
         bus.default_system_trap_gateway(self.trap_table_profile?, trap_word)
     }
 
@@ -8299,6 +8374,32 @@ impl TrapDispatcher {
         // a JSR to the native handler: push return address, set PC.
         // The base trap word (without variant/auto-pop bits) is used for lookup.
         let base_trap = route.canonical_word;
+        // WaitNextEvent performs SystemTask before returning an event
+        // (Macintosh Toolbox Essentials 1992, p. 2-85). A resident INIT can
+        // patch SystemTask, so run its guest trap before the HLE event path.
+        // The stub's second trap re-enters WaitNextEvent without repeating
+        // SystemTask; its original continuation is restored there.
+        if base_trap == 0xA860
+            && (self.system_task_wne_stub == 0 || pc != self.system_task_wne_stub + 4)
+            && self
+                .trap_table_address(bus, 0xA9B4)
+                .zip(self.default_trap_gateway(bus, 0xA9B4))
+                .is_some_and(|(head, default)| head != default)
+        {
+            if self.system_task_wne_stub == 0 {
+                let stub = bus.alloc(4);
+                if stub != 0 {
+                    bus.write_word(stub, 0xA9B4); // SystemTask
+                    bus.write_word(stub + 2, 0xA860); // WaitNextEvent
+                    self.system_task_wne_stub = stub;
+                }
+            }
+            if self.system_task_wne_stub != 0 {
+                self.system_task_wne_returns.push(pc);
+                cpu.write_reg(Register::PC, self.system_task_wne_stub);
+                return Ok(());
+            }
+        }
         // A pointer returned before a patch was installed remains the saved
         // address of the original system routine. The OS gateway is the
         // canonical trap followed by RTS, so recognize its exact trap PC and

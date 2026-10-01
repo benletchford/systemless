@@ -1251,6 +1251,20 @@ impl super::TrapDispatcher {
             }
         };
 
+        if matches!(op, ShapeOp::Fill(pattern) if pattern == [0xFF; 8])
+            && self.fg_color == (0, 0, 0)
+            && pix_base == self.screen_mode.0
+            && pix_row_bytes == self.screen_mode.1
+            && pixel_size == self.screen_mode.4
+            && r.top <= 0
+            && r.left <= 0
+            && r.bottom >= self.screen_mode.3 as i16
+            && r.right >= self.screen_mode.2 as i16
+            && self.system_task_has_periodic_work(bus)
+        {
+            self.screen_takeover_active = true;
+        }
+
         // A MakeRGBPat-generated PixPat carries its requested color in
         // the installed pnPixPat/bkPixPat handle. Use that color for
         // color-port pen/background operations while retaining pat1Data

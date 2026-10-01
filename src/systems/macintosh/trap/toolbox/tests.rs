@@ -3659,7 +3659,7 @@
         let sp_before = cpu.read_reg(Register::A7);
 
         assert!(
-            !disp.system_task_has_periodic_work(),
+            !disp.system_task_has_periodic_work(&bus),
             "the transparent path is valid only while no periodic DA/driver work is modeled"
         );
 
@@ -5218,7 +5218,7 @@
         let sp = TEST_SP;
         let name_ptr = 0x200000u32;
         let volume_ref =
-            disp.mount_vfs_volume("Resource Disk", 0, 1, 1024, 512, 512, 900, 0, 0, 0, 0, 0, 0);
+            disp.mount_vfs_volume("Resource Disk", 0x0080, 1, 1024, 512, 512, 900, 0, 0, 0, 0, 0, 0);
         disp.vfs_rsrc
             .insert("Resource Disk/Assets".to_string(), vec![]);
         disp.vfs_rsrc.insert("Assets".to_string(), vec![0x42]);
@@ -7589,6 +7589,64 @@
         assert!(result.expect("Pack0 arm").is_ok());
         assert_eq!(disp.current_selector_operation, None);
         assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+    }
+
+    #[test]
+    fn pack0_lnextcell_consumes_both_boolean_parameters() {
+        // IM:IV-263, 269: LNextCell(hNext, vNext, VAR theCell, lHandle)
+        // has 12 argument bytes after the Pack0 selector and a word result.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA9E7;
+        bus.write_word(sp, 0x0048);
+        bus.write_long(sp + 2, 0); // ListHandle
+        bus.write_long(sp + 6, 0); // Cell pointer
+        bus.write_word(sp + 10, 0xFFFF); // vNext
+        bus.write_word(sp + 12, 0xFFFF); // hNext
+        bus.write_word(sp + 14, 0xABCD); // result slot
+
+        let result = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(result.expect("Pack0 arm").is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+        assert_eq!(bus.read_word(sp + 14), 0);
+    }
+
+    #[test]
+    fn pack0_lnextcell_advances_across_rows() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let handle = 0x350000;
+        let cell = 0x350100;
+        disp.list_states.insert_record(handle, super::super::dispatch::ListState {
+            handle,
+            cells_handle: 0,
+            view_rect: (0, 0, 20, 20),
+            data_bounds: (0, 0, 2, 2),
+            cell_size: (10, 10),
+            visible: (0, 0, 2, 2),
+            port: 0,
+            draw_enabled: false,
+            active: true,
+            cells: Default::default(),
+            selected: Default::default(),
+            last_click: (-1, -1),
+            last_click_tick: 0,
+        });
+        bus.write_word(cell, 0);
+        bus.write_word(cell + 2, 0);
+        for (row, col, found) in [(0, 1, true), (1, 0, true), (1, 1, true), (1, 1, false)] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            disp.current_trap_word = 0xA9E7;
+            bus.write_word(TEST_SP, 0x0048);
+            bus.write_long(TEST_SP + 2, handle);
+            bus.write_long(TEST_SP + 6, cell);
+            bus.write_word(TEST_SP + 10, 0xFFFF);
+            bus.write_word(TEST_SP + 12, 0xFFFF);
+            let result = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+            assert!(result.expect("Pack0 arm").is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 14);
+            assert_eq!(bus.read_word(TEST_SP + 14) != 0, found);
+            assert_eq!((bus.read_word(cell), bus.read_word(cell + 2)), (row, col));
+        }
     }
 
     // Pack0 / List Manager ($A9E7) — LNew selector $0044
@@ -13019,7 +13077,7 @@
         let reply_ptr = 0x321200u32;
         let original_name_ptr = 0x321300u32;
         let locked_vref =
-            disp.mount_vfs_volume("Pathways Disk", 0, 1, 1024, 512, 512, 900, 0, 0, 0, 0, 0, 0);
+            disp.mount_vfs_volume("Pathways Disk", 0x0080, 1, 1024, 512, 512, 900, 0, 0, 0, 0, 0, 0);
         let locked_dir = disp
             .vfs_volume_for_ref_num(locked_vref)
             .expect("mounted volume")
@@ -13366,7 +13424,7 @@
         let reply_ptr = 0x321A00u32;
         let original_name_ptr = 0x321B00u32;
         let volume_ref =
-            disp.mount_vfs_volume("Locked Game", 0, 1, 1024, 512, 512, 900, 0, 0, 0, 0, 0, 0);
+            disp.mount_vfs_volume("Locked Game", 0x0080, 1, 1024, 512, 512, 900, 0, 0, 0, 0, 0, 0);
         let volume_root = disp
             .vfs_volume_for_ref_num(volume_ref)
             .expect("mounted volume")
@@ -14626,6 +14684,59 @@
             disp.directory_path_for_id(found_dir_id),
             Some("Temporary Items")
         );
+    }
+
+    #[test]
+    fn aliasdispatch_findfolder_control_panels_uses_nested_system_folder() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let volume_ref = disp.mount_vfs_volume("AfterDark", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        let control_panels = disp.ensure_vfs_directory("AfterDark/System Folder/Control Panels");
+        disp.vfs.insert(
+            "__rsrc__AfterDark/System Folder/Control Panels/After Dark".to_string(),
+            vec![0],
+        );
+        let sp = TEST_SP;
+        let found_dir_id_ptr = 0x340400u32;
+        let found_vref_ptr = 0x340500u32;
+
+        cpu.write_reg(Register::D0, 0);
+        bus.write_long(sp, found_dir_id_ptr);
+        bus.write_long(sp + 4, found_vref_ptr);
+        bus.write_word(sp + 8, 0);
+        bus.write_long(sp + 10, u32::from_be_bytes(*b"ctrl"));
+        bus.write_word(sp + 14, 0x8000);
+        bus.write_word(sp + 16, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x023, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 16), 0);
+        assert_eq!(bus.read_long(found_dir_id_ptr), control_panels);
+        assert_eq!(bus.read_word(found_vref_ptr), volume_ref as u16);
+    }
+
+    #[test]
+    fn aliasdispatch_findfolder_desktop_uses_volume_root() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let volume_ref = disp.mount_vfs_volume("AfterDark", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        disp.ensure_vfs_directory("AfterDark/System Folder");
+        let desktop = disp.ensure_vfs_directory("AfterDark/Desktop Folder");
+        let sp = TEST_SP;
+        let found_dir_id_ptr = 0x340600u32;
+        let found_vref_ptr = 0x340700u32;
+
+        cpu.write_reg(Register::D0, 0);
+        bus.write_long(sp, found_dir_id_ptr);
+        bus.write_long(sp + 4, found_vref_ptr);
+        bus.write_word(sp + 8, 0);
+        bus.write_long(sp + 10, u32::from_be_bytes(*b"desk"));
+        bus.write_word(sp + 14, 0x8000);
+        bus.write_word(sp + 16, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x023, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 16), 0);
+        assert_eq!(bus.read_long(found_dir_id_ptr), desktop);
+        assert_eq!(bus.read_word(found_vref_ptr), volume_ref as u16);
     }
 
     // AliasDispatch ($A823) / selector $0002 NewAlias

@@ -1055,7 +1055,21 @@ impl super::TrapDispatcher {
         if ptr == 0 {
             return None;
         }
-        bus.write_bytes(ptr, &data);
+        // An application's resident CODE segment may have been relocated by
+        // the Segment Loader before its Resource Manager handle is first
+        // requested. Materialize the same relocated bytes in this separate
+        // allocation, preserving the resource handle's ordinary heap block.
+        // Inside Macintosh Volume II (1985), pp. II-59–II-61.
+        if refnum == 0 && res_type == *b"CODE" {
+            if let Some(&segment_ptr) = self.segment_map.get(&res_id) {
+                let relocated = bus.read_bytes(segment_ptr, data.len());
+                bus.write_bytes(ptr, &relocated);
+            } else {
+                bus.write_bytes(ptr, &data);
+            }
+        } else {
+            bus.write_bytes(ptr, &data);
+        }
         Self::zero_loaded_resource_padding(bus, ptr, data.len() as u32);
 
         self.with_resource_manager_mut(|resource_manager| {
@@ -1072,6 +1086,10 @@ impl super::TrapDispatcher {
                 }
             }
         });
+
+        if refnum == 0 && res_type == *b"CODE" {
+            self.mirror_application_code_resource_relocations(bus, res_id, ptr);
+        }
 
         Some(ptr)
     }
@@ -1135,6 +1153,9 @@ impl super::TrapDispatcher {
     ) -> Option<(u16, i16, u32)> {
         let (refnum, res_id, ptr) = self.find_named_resource_current(res_type, name)?;
         let ptr = self.reload_named_resource_if_needed(bus, refnum, res_type, res_id, ptr)?;
+        if refnum == 0 && res_type == *b"CODE" {
+            self.mirror_application_code_resource_relocations(bus, res_id, ptr);
+        }
         Some((refnum, res_id, ptr))
     }
 
@@ -1146,6 +1167,9 @@ impl super::TrapDispatcher {
     ) -> Option<(u16, i16, u32)> {
         let (refnum, res_id, ptr) = self.find_named_resource_any(res_type, name)?;
         let ptr = self.reload_named_resource_if_needed(bus, refnum, res_type, res_id, ptr)?;
+        if refnum == 0 && res_type == *b"CODE" {
+            self.mirror_application_code_resource_relocations(bus, res_id, ptr);
+        }
         Some((refnum, res_id, ptr))
     }
 
@@ -1545,7 +1569,12 @@ impl super::TrapDispatcher {
     pub(crate) fn rsrc_map_entry_for_handle(&self, handle: u32) -> Option<u32> {
         let (_, res_type, res_id) = self.loaded_handles.get(&handle).copied()?;
         let refnum = self.resource_handle_files.get(&handle).copied()?;
-        if let Some(file_name) = self.resource_file_name(refnum) {
+        let file_name = if refnum == 0 {
+            self.launched_app_path()
+        } else {
+            self.resource_file_name(refnum)
+        };
+        if let Some(file_name) = file_name {
             if let Some(rsrc_bytes) = self.vfs_rsrc.get(file_name) {
                 if let Some(fork) = ResourceFork::parse(rsrc_bytes) {
                     if let Some(resource) = fork.resources().get(&(res_type, res_id)) {
@@ -2604,6 +2633,33 @@ impl super::TrapDispatcher {
                 self.current_selector_operation = operation.map(|route| route.operation_id);
                 let routine = (selector & 0xFF) as u8;
                 match routine {
+                    // ResourceDispatch selector 0 ($A822)
+                    // Returns the resource-map handle for a file reference number.
+                    // This private selector is used by native System 7 code;
+                    // map handles and the refnum in each map are described in Inside
+                    // Macintosh Volume I (1985), pp. I-126 to I-127, and More
+                    // Macintosh Toolbox (1993), p. 1-147.
+                    0x00 if selector == 0 => {
+                        let refnum = bus.read_word(sp);
+                        let app_refnum = bus.read_word(crate::memory::globals::addr::CUR_APREF_NUM);
+                        let mut handle = bus.read_long(0x0A50); // TopMapHndl
+                        let mut found = 0;
+                        for _ in 0..64 {
+                            if handle == 0 { break; }
+                            let map = bus.read_long(handle);
+                            if map == 0 { break; }
+                            if bus.read_word(map + 20) == refnum
+                                || (refnum == app_refnum && bus.read_word(map + 20) == 0)
+                            {
+                                found = handle;
+                                break;
+                            }
+                            handle = bus.read_long(map + 16);
+                        }
+                        bus.write_long(sp + 2, found);
+                        bus.write_word(0x0A60, if found == 0 { Self::RES_NOT_FOUND as u16 } else { 0 });
+                        cpu.write_reg(Register::A7, sp + 2);
+                    }
                     // ReadPartialResource (selector 1) — 16 bytes args
                     // SP+12 theResource | SP+8 offset | SP+4 buffer | SP+0 count
                     0x01 => {
@@ -4775,10 +4831,10 @@ impl super::TrapDispatcher {
                 if is_hfs_variant {
                     bus.write_word(pb + 64, 0x4244); // ioVSigWord (HFS)
 
-                    // The extracted volume is a File Manager abstraction,
-                    // not a claim about the source image's physical device
-                    // or driver.
-                    bus.write_word(pb + 66, 0); // ioVDrvInfo
+                    // Files 1992, 2-145: an online volume has a positive
+                    // drive number; zero marks an offline or ejected volume.
+                    // Use a stable virtual drive number for mounted volumes.
+                    bus.write_word(pb + 66, volume_ref_num.unsigned_abs().max(1)); // ioVDrvInfo
                     bus.write_word(pb + 68, 0); // ioVDRefNum
                     bus.write_word(pb + 70, 0); // ioVFSID (File Manager)
                 }
@@ -6304,7 +6360,7 @@ impl super::TrapDispatcher {
                 self.current_selector_operation = operation.map(|route| route.operation_id);
                 let d0_sel = cpu.read_reg(Register::D0) & 0xFFFF;
                 let (selector, sp, selector_from_stack) = match stack_sel {
-                    0x0015 | 0x0016 | 0x0018 | 0x001D..=0x0020 | 0x0033..=0x003D | 0x0045 => {
+                    0x0015 | 0x0016 | 0x0018 | 0x001D..=0x0020 | 0x0033..=0x003D | 0x0043 | 0x0045 => {
                         // Pop the selector word pushed by MOVE.W #sel,-(SP).
                         cpu.write_reg(Register::A7, sp_entry + 2);
                         (stack_sel, sp_entry + 2, true)
@@ -6312,6 +6368,16 @@ impl super::TrapDispatcher {
                     _ => (d0_sel, sp_entry, false),
                 };
                 match selector {
+                    0x0043 => {
+                        // Private System 7 process-service selector. Its
+                        // observed Pascal frame is (Ptr, LongInt) -> OSErr.
+                        // No process service is installed here; return
+                        // unimpErr with the OSDispatch selector word consumed.
+                        bus.write_word(sp + 8, (-4i16) as u16);
+                        cpu.write_reg(Register::A7, sp + 8);
+                        cpu.write_reg(Register::D0, (-4i32) as u32);
+                        Ok(())
+                    }
                     0x0015 => {
                         // TempMaxMem (0xA88F selector $0015)
                         // Returns the largest contiguous temporary-memory block.

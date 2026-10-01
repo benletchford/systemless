@@ -1243,15 +1243,13 @@ impl RetiredThreadStorageEdge for ClassicRetiredThreadStorageEdge<'_> {
 impl super::TrapDispatcher {
     /// Whether `SystemTask` currently has periodic Desk Manager work to do.
     ///
-    /// Inside Macintosh Volume I, I-442 and I-444 through I-445, specifies
-    /// that `SystemTask` calls the control routines of open desk accessories
-    /// and other device drivers whose `dNeedTime`/`drvrDelay` period has
-    /// elapsed. Systemless does not yet model that periodic DA/driver chain,
-    /// so the current HLE implementation has no observable work. Keeping the
-    /// decision behind this runtime query gives future DA/driver support a
-    /// single place to revoke transparent execution.
-    pub(crate) fn system_task_has_periodic_work(&self) -> bool {
-        false
+    /// A native SystemTask patch can perform periodic work even when the HLE
+    /// Desk Manager has no open accessories. Such a patch must prevent the
+    /// runner from skipping repeated null-event calls.
+    pub(crate) fn system_task_has_periodic_work(&self, bus: &MacMemoryBus) -> bool {
+        self.trap_table_address(bus, 0xA9B4)
+            .zip(self.default_trap_gateway(bus, 0xA9B4))
+            .is_some_and(|(head, default)| head != default)
     }
 
     const LIST_RVIEW_OFFSET: u32 = 0;
@@ -4231,6 +4229,39 @@ impl super::TrapDispatcher {
             && col < state.data_bounds.3
     }
 
+    fn list_next_cell(
+        &self,
+        bus: &mut MacMemoryBus,
+        list_handle: u32,
+        cell_ptr: u32,
+        h_next: bool,
+        v_next: bool,
+    ) -> bool {
+        let Some(state) = self.list_states.get_record(list_handle) else {
+            return false;
+        };
+        if cell_ptr == 0 || (!h_next && !v_next) {
+            return false;
+        }
+        let mut row = bus.read_word(cell_ptr) as i16;
+        let mut col = bus.read_word(cell_ptr + 2) as i16;
+        if h_next {
+            col = col.saturating_add(1);
+            if col >= state.data_bounds.3 && v_next {
+                col = state.data_bounds.1;
+                row = row.saturating_add(1);
+            }
+        } else {
+            row = row.saturating_add(1);
+        }
+        if !Self::list_cell_is_valid(&state, row, col) {
+            return false;
+        }
+        bus.write_word(cell_ptr, row as u16);
+        bus.write_word(cell_ptr + 2, col as u16);
+        true
+    }
+
     fn list_cell_from_point(
         state: &super::dispatch::ListState,
         point: (i16, i16),
@@ -4915,7 +4946,7 @@ impl super::TrapDispatcher {
             0x3C => (10, 2), // LGetSelect
             0x40 => (4, 4),  // LLastClick
             0x44 => (26, 4), // LNew
-            0x48 => (10, 2), // LNextCell
+            0x48 => (12, 2), // LNextCell: two Boolean words, Cell pointer, ListHandle
             0x4C => (12, 0), // LRect
             0x50 => (8, 0),  // LScroll
             0x54 => (16, 2), // LSearch
@@ -5647,6 +5678,16 @@ impl super::TrapDispatcher {
                 // of the slot, so TRUE is 0x0100; see GetNextEvent).
                 bus.write_word(sp + 14, if has_event { 0x0100 } else { 0 });
                 cpu.write_reg(Register::A7, sp + 14);
+                if self.system_task_wne_stub != 0
+                    && trap_pc == self.system_task_wne_stub + 2
+                {
+                    if let Some(return_pc) = self.system_task_wne_returns.pop() {
+                        cpu.write_reg(Register::PC, return_pc);
+                        if let Some(pending) = self.pending_wait_next_event_return.as_mut() {
+                            pending.resume_pc = Some(return_pc);
+                        }
+                    }
+                }
                 // Gate field-map allocation behind is_trace_recording()
                 // because WNE is hot path; record_trace_event's own
                 // recorder-None early-return runs AFTER the to_string() +
@@ -7094,7 +7135,11 @@ impl super::TrapDispatcher {
                     raw_trap_route(self.current_trap_word).os_routine_variant,
                     OsRoutineVariant::FileHfsSynchronous | OsRoutineVariant::FileHfsAsynchronous
                 );
-                if is_hfs_variant && vref != 0 && self.working_directory_info(vref).is_none() {
+                if is_hfs_variant
+                    && vref != 0
+                    && self.working_directory_info(vref).is_none()
+                    && self.vfs_volume_for_ref_num(vref).is_none()
+                {
                     bus.write_word(pb + 16, (-35i16) as u16); // nsvErr
                     cpu.write_reg(Register::D0, (-35i32) as u32);
                     return Some(Ok(()));
@@ -7111,10 +7156,9 @@ impl super::TrapDispatcher {
                 // the HFS parent directory fields, then preserves the legacy
                 // broad lookup as a compatibility fallback for flattened archives.
                 let mounted_volume_selected = is_hfs_variant
-                    && self.working_directory_info(vref).is_some_and(|working| {
-                        self.vfs_volume_for_ref_num(working.volume_ref_num)
-                            .is_some()
-                    });
+                    && self
+                        .vfs_volume_for_ref_num(self.resolve_volume_ref_num(vref))
+                        .is_some();
                 let vfs_key = if mounted_volume_selected {
                     scoped_vfs_key
                 } else {
@@ -12310,6 +12354,20 @@ impl super::TrapDispatcher {
                     // Inside Macintosh Volume IV, IV-274.
                     0x10 => self.pack0_fallback(cpu, bus, sp, selector),
 
+                    // LNextCell advances within the current row, column, or
+                    // both, then reports whether the new Cell is in bounds.
+                    // Inside Macintosh Volume IV (1986), IV-274.
+                    0x48 => {
+                        let list_handle = bus.read_long(sp + 2);
+                        let cell_ptr = bus.read_long(sp + 6);
+                        let v_next = Self::stack_bool_slot(bus, sp + 10);
+                        let h_next = Self::stack_bool_slot(bus, sp + 12);
+                        let found = self.list_next_cell(bus, list_handle, cell_ptr, h_next, v_next);
+                        bus.write_word(sp + 14, u16::from(found));
+                        cpu.write_reg(Register::A7, sp + 14);
+                        Ok(())
+                    }
+
                     // LDispose (selector 40 / $28)
                     // Disposes of the list.
                     // PROCEDURE LDispose(lHandle: ListHandle);
@@ -12812,7 +12870,12 @@ impl super::TrapDispatcher {
                     // + result(2) = 16; pop 14, result@SP+14.
                     // No list → FALSE.
                     0x0048 => {
-                        bus.write_word(sp + 14, 0);
+                        let list_handle = bus.read_long(sp + 2);
+                        let cell_ptr = bus.read_long(sp + 6);
+                        let v_next = Self::stack_bool_slot(bus, sp + 10);
+                        let h_next = Self::stack_bool_slot(bus, sp + 12);
+                        let found = self.list_next_cell(bus, list_handle, cell_ptr, h_next, v_next);
+                        bus.write_word(sp + 14, u16::from(found));
                         cpu.write_reg(Register::A7, sp + 14);
                     }
                     // PROCEDURE LRect(VAR cellRect: Rect;
@@ -13942,7 +14005,7 @@ impl super::TrapDispatcher {
                     0 => {
                         let dirid_ptr = bus.read_long(sp);
                         let vref_ptr = bus.read_long(sp + 4);
-                        let _create = bus.read_word(sp + 8) != 0;
+                        let create = bus.read_word(sp + 8) != 0;
                         let folder_type = bus.read_long(sp + 10);
                         let v_ref_num = bus.read_word(sp + 14) as i16;
 
@@ -13953,20 +14016,95 @@ impl super::TrapDispatcher {
                             v_ref_num, type_str, folder_type
                         );
 
-                        let found_dir_id = match folder_type {
-                            t if t == u32::from_be_bytes(*b"pref") => {
-                                self.ensure_vfs_directory("System Folder/Preferences")
-                            }
-                            t if t == u32::from_be_bytes(*b"temp") => {
-                                self.ensure_vfs_directory("Temporary Items")
-                            }
-                            _ => 2,
+                        // IM:VI 1991 pp. 9-42..9-44: FindFolder returns the
+                        // directory ID for each folder type, creating it only
+                        // when requested. The boot volume's System Folder may
+                        // be nested below a volume directory in the VFS.
+                        self.ensure_vfs_catalog();
+                        let folder_name = match &type_bytes {
+                            b"macs" => Some(""),
+                            b"ctrl" => Some("Control Panels"),
+                            b"extn" => Some("Extensions"),
+                            b"pref" => Some("Preferences"),
+                            b"amnu" => Some("Apple Menu Items"),
+                            b"strt" => Some("Startup Items"),
+                            b"prnt" => Some("PrintMonitor Documents"),
+                            _ => None,
                         };
+                        let system_folder = self
+                            .vfs_directories
+                            .iter()
+                            .filter(|directory| {
+                                directory.path.eq_ignore_ascii_case("System Folder")
+                                    || directory
+                                        .path
+                                        .to_ascii_lowercase()
+                                        .ends_with("/system folder")
+                            })
+                            .max_by_key(|directory| directory.path.len())
+                            .map(|directory| directory.path.clone());
+                        let folder_path = if let Some(folder_name) = folder_name {
+                            system_folder.map(|system_folder| {
+                                if folder_name.is_empty() {
+                                    system_folder
+                                } else {
+                                    format!("{system_folder}/{folder_name}")
+                                }
+                            })
+                        } else if matches!(&type_bytes, b"temp" | b"desk") {
+                            let name = if type_bytes == *b"temp" {
+                                "Temporary Items"
+                            } else {
+                                "Desktop Folder"
+                            };
+                            system_folder.map(|system_folder| {
+                                let volume_root = system_folder
+                                    .rsplit_once('/')
+                                    .map(|(root, _)| root)
+                                    .unwrap_or("");
+                                if volume_root.is_empty() {
+                                    name.to_string()
+                                } else {
+                                    format!("{volume_root}/{name}")
+                                }
+                            })
+                        } else {
+                            None
+                        };
+                        let found_volume_ref = folder_path
+                            .as_deref()
+                            .and_then(|path| self.vfs_volume_for_path(path))
+                            .map(|volume| volume.ref_num)
+                            .unwrap_or_else(Self::boot_volume_ref_num);
+                        let found_dir_id = folder_path.and_then(|path| {
+                            self.vfs_directories
+                                .iter()
+                                .find(|directory| directory.path.eq_ignore_ascii_case(&path))
+                                .map(|directory| directory.dir_id)
+                                .or_else(|| create.then(|| self.ensure_vfs_directory(&path)))
+                        });
+                        if super::dispatch::trace_resfile_enabled() {
+                            eprintln!(
+                                "[ALIAS] FindFolder type='{}' -> dirID={:?} path={:?}",
+                                type_str,
+                                found_dir_id,
+                                found_dir_id.and_then(|id| self.directory_path_for_id(id))
+                            );
+                        }
 
-                        bus.write_word(vref_ptr, (-1i16) as u16);
-                        bus.write_long(dirid_ptr, found_dir_id);
+                        if let Some(found_dir_id) = found_dir_id {
+                            bus.write_word(vref_ptr, found_volume_ref as u16);
+                            bus.write_long(dirid_ptr, found_dir_id);
+                        }
                         // Pop 16 bytes params, leave 2-byte result
-                        bus.write_word(sp + 16, 0); // noErr
+                        bus.write_word(
+                            sp + 16,
+                            if found_dir_id.is_some() {
+                                0
+                            } else {
+                                -43i16 as u16 // fnfErr
+                            },
+                        );
                         cpu.write_reg(Register::A7, sp + 16);
                     }
                     // NewAlias (selector $0002)
