@@ -11,6 +11,20 @@ pub enum ClassicGlColorBuffer {
     Back,
 }
 
+/// State used by `glClear`. `scissor` is in lower-left OpenGL coordinates.
+/// See OpenGL 1.2.1, sections 4.1.2 and 4.2.2-4.2.3.
+/// https://registry.khronos.org/OpenGL/specs/gl/glspec121.pdf
+#[derive(Debug, Clone, Copy)]
+pub struct ClassicGlClear {
+    pub color: Option<(ClassicGlColorBuffer, [u8; 4])>,
+    pub color_mask: [bool; 4],
+    pub depth: Option<f32>,
+    pub depth_mask: bool,
+    pub stencil: Option<u8>,
+    pub stencil_mask: u8,
+    pub scissor: Option<(i32, i32, u32, u32)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ClassicGlFramebuffer {
     width: usize,
@@ -66,12 +80,53 @@ impl ClassicGlFramebuffer {
         true
     }
 
-    pub fn clear_depth(&mut self, value: f32) {
-        self.depth.fill(value.clamp(0.0, 1.0));
+    pub fn clear(&mut self, clear: ClassicGlClear) -> bool {
+        if let Some((buffer, _)) = clear.color {
+            if self.color(buffer).is_none() {
+                return false;
+            }
+        }
+        let (left, bottom, right, top) = match clear.scissor {
+            Some((x, y, width, height)) => (
+                i64::from(x).clamp(0, self.width as i64) as usize,
+                i64::from(y).clamp(0, self.height as i64) as usize,
+                (i64::from(x) + i64::from(width)).clamp(0, self.width as i64) as usize,
+                (i64::from(y) + i64::from(height)).clamp(0, self.height as i64) as usize,
+            ),
+            None => (0, 0, self.width, self.height),
+        };
+        for y in bottom..top {
+            for x in left..right {
+                let index = y * self.width + x;
+                if let Some((buffer, rgba)) = clear.color {
+                    let pixel = &mut self.color_mut(buffer).expect("buffer checked above")[index];
+                    for component in 0..4 {
+                        if clear.color_mask[component] {
+                            pixel[component] = rgba[component];
+                        }
+                    }
+                }
+                if let Some(depth) = clear.depth {
+                    if clear.depth_mask {
+                        self.depth[index] = depth.clamp(0.0, 1.0);
+                    }
+                }
+                if let Some(stencil) = clear.stencil {
+                    let old = self.stencil[index];
+                    self.stencil[index] =
+                        (old & !clear.stencil_mask) | (stencil & clear.stencil_mask);
+                }
+            }
+        }
+        true
     }
 
-    pub fn clear_stencil(&mut self, value: u8) {
-        self.stencil.fill(value);
+    pub fn depth_at(&self, x: u32, y: u32) -> Option<f32> {
+        self.depth.get(self.index(x, y)?).copied()
+    }
+
+    pub fn stencil_at(&self, x: u32, y: u32) -> Option<u8> {
+        self.stencil.get(self.index(x, y)?).copied()
     }
 
     pub fn pixel(&self, buffer: ClassicGlColorBuffer, x: u32, y: u32) -> Option<[u8; 4]> {
@@ -191,6 +246,48 @@ mod tests {
             frame.pixel(ClassicGlColorBuffer::Front, 0, 0),
             Some([255, 32, 0, 255])
         );
+    }
+
+    #[test]
+    fn clear_respects_scissor_and_write_masks() {
+        let mut frame = ClassicGlFramebuffer::new(3, 2, true).unwrap();
+        assert!(frame.clear_color(ClassicGlColorBuffer::Back, [10, 20, 30, 40]));
+        assert!(frame.clear(ClassicGlClear {
+            color: Some((ClassicGlColorBuffer::Back, [1, 2, 3, 4])),
+            color_mask: [true, false, true, false],
+            depth: Some(0.25),
+            depth_mask: true,
+            stencil: Some(0xf0),
+            stencil_mask: 0x0f,
+            scissor: Some((1, 0, 1, 1)),
+        }));
+        assert_eq!(
+            frame.pixel(ClassicGlColorBuffer::Back, 1, 0),
+            Some([1, 20, 3, 40])
+        );
+        assert_eq!(
+            frame.pixel(ClassicGlColorBuffer::Back, 0, 0),
+            Some([10, 20, 30, 40])
+        );
+        assert_eq!(
+            frame.pixel(ClassicGlColorBuffer::Back, 1, 1),
+            Some([10, 20, 30, 40])
+        );
+        assert_eq!(frame.depth_at(1, 0), Some(0.25));
+        assert_eq!(frame.depth_at(1, 1), Some(1.0));
+        assert_eq!(frame.stencil_at(1, 0), Some(0));
+        assert!(frame.clear(ClassicGlClear {
+            color: None,
+            color_mask: [false; 4],
+            depth: Some(0.5),
+            depth_mask: false,
+            stencil: Some(0x0a),
+            stencil_mask: 0x0f,
+            scissor: Some((-1, 0, 2, 1)),
+        }));
+        assert_eq!(frame.depth_at(0, 0), Some(1.0));
+        assert_eq!(frame.stencil_at(0, 0), Some(0x0a));
+        assert_eq!(frame.stencil_at(1, 0), Some(0));
     }
 
     #[test]
