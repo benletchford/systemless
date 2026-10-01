@@ -232,6 +232,7 @@ pub mod events;
 pub mod files;
 pub mod fixmath;
 pub mod graphics;
+mod classic_gl_agl;
 mod classic_gl_framebuffer;
 pub mod gworlds;
 pub mod import_targets;
