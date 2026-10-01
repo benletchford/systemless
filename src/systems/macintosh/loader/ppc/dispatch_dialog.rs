@@ -37,6 +37,10 @@ use crate::dialog_manager::{
     evaluate_auto_size_dialog_parameters, evaluate_auto_size_dialog_bounds,
     evaluate_get_alert_stage, evaluate_set_dialog_font_parameters,
     evaluate_get_dialog_port, evaluate_get_dialog_window, evaluate_get_dialog_from_window,
+    evaluate_get_dialog_keyboard_focus_item, evaluate_set_dialog_keyboard_focus_item_parameters,
+    evaluate_get_dialog_text_edit_handle, evaluate_get_param_text_parameters,
+    evaluate_set_dialog_timeout_parameters, evaluate_get_dialog_timeout_parameters,
+    evaluate_dialog_timeout_remaining,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -45,6 +49,7 @@ use crate::dialog_manager::{
     DIALOG_ITEM_RESOURCE_CONTROL, DIALOG_ITEM_STATIC_TEXT,
     DIALOG_RECORD_SIZE, DIALOG_RESOURCE_ID_OFFSET, DIALOG_STANDARD_ALERT_OUTPUT_OFFSET,
     DIALOG_STANDARD_ALERT_STACK_OFFSET, DIALOG_TEXT_HANDLE_OFFSET,
+    DIALOG_TIMEOUT_BUTTON_OFFSET, DIALOG_TIMEOUT_SECONDS_OFFSET, DIALOG_TIMEOUT_START_TICK_OFFSET,
 };
 use crate::trap::types::decode_mac_roman;
 
@@ -1334,6 +1339,8 @@ pub(super) fn dispatch_dialog_import(
                 dialog_callback_stack,
                 vfs_resources,
                 current_resource_refnum,
+                param_text,
+                tick_count,
             ))
         }
         _ => None,
@@ -1514,8 +1521,14 @@ pub enum PpcDialogCompatibilityOperation {
     CountDitl,
     DialogSelect,
     FindDialogItem,
+    GetDialogKeyboardFocusItem,
+    GetDialogTextEditHandle,
+    GetDialogTimeout,
+    GetParamText,
     HideDialogItem,
     IsDialogEvent,
+    SetDialogKeyboardFocusItem,
+    SetDialogTimeout,
     ShortenDitl,
     ShowDialogItem,
     UpdateDialog,
@@ -1541,6 +1554,8 @@ fn ppc_dispatch_dialog_compatibility(
     dialog_callback_stack: &mut Vec<PpcDialogCallbackState>,
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
+    param_text: &SharedProcessDialogText,
+    tick_count: u32,
 ) -> PpcImportAction {
     let dialog = cpu.gpr[3];
     match operation {
@@ -1956,6 +1971,121 @@ fn ppc_dispatch_dialog_compatibility(
                 ),
                 _ => PpcImportAction::ReturnPreserve,
             }
+        }
+        PpcDialogCompatibilityOperation::GetDialogKeyboardFocusItem => {
+            let edit_field = if dialog != 0 && ppc_memory_can_read_bytes(memory, dialog + DIALOG_EDIT_FIELD_OFFSET, 2) {
+                memory.read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET).map(|f| f as i16)
+            } else {
+                None
+            };
+            let item = evaluate_get_dialog_keyboard_focus_item(dialog, edit_field);
+            PpcImportAction::Return(ppc_i16_result(item))
+        }
+        PpcDialogCompatibilityOperation::SetDialogKeyboardFocusItem => {
+            let item_index = cpu.gpr[4] as u16 as i16;
+            let result = evaluate_set_dialog_keyboard_focus_item_parameters(dialog, item_index);
+            let os_err = match result {
+                Ok(params) => {
+                    let target_field = params.target_edit_field();
+                    if memory
+                        .write_u16_be(params.dialog_ptr() + DIALOG_EDIT_FIELD_OFFSET, target_field as u16)
+                        .is_some()
+                    {
+                        PPC_NO_ERR
+                    } else {
+                        PPC_PARAM_ERR
+                    }
+                }
+                Err(err) => err,
+            };
+            PpcImportAction::Return(ppc_i16_result(os_err))
+        }
+        PpcDialogCompatibilityOperation::GetDialogTextEditHandle => {
+            let text_handle = if dialog != 0 && ppc_memory_can_read_bytes(memory, dialog + DIALOG_TEXT_HANDLE_OFFSET, 4) {
+                memory.read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
+            } else {
+                None
+            };
+            let handle = evaluate_get_dialog_text_edit_handle(dialog, text_handle);
+            PpcImportAction::Return(handle)
+        }
+        PpcDialogCompatibilityOperation::GetParamText => {
+            let params = evaluate_get_param_text_parameters(
+                cpu.gpr[3],
+                cpu.gpr[4],
+                cpu.gpr[5],
+                cpu.gpr[6],
+            );
+            for index in 0..crate::dialog_manager::PARAM_TEXT_SLOT_COUNT {
+                let ptr = params.param(index);
+                if ptr != 0 {
+                    let slot_bytes = param_text.slot(index).unwrap_or_default();
+                    let _ = ppc_write_pstring_bytes(memory, ptr, &slot_bytes);
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcDialogCompatibilityOperation::SetDialogTimeout => {
+            let button = cpu.gpr[4] as u16 as i16;
+            let seconds = cpu.gpr[5];
+            let result = evaluate_set_dialog_timeout_parameters(dialog, button, seconds);
+            let os_err = match result {
+                Ok(params) => {
+                    if memory
+                        .write_u16_be(params.dialog_ptr() + DIALOG_TIMEOUT_BUTTON_OFFSET, params.button_to_press() as u16)
+                        .is_some()
+                        && memory
+                            .write_u32_be(params.dialog_ptr() + DIALOG_TIMEOUT_SECONDS_OFFSET, params.seconds_to_wait())
+                            .is_some()
+                        && memory
+                            .write_u32_be(params.dialog_ptr() + DIALOG_TIMEOUT_START_TICK_OFFSET, tick_count)
+                            .is_some()
+                    {
+                        PPC_NO_ERR
+                    } else {
+                        PPC_PARAM_ERR
+                    }
+                }
+                Err(err) => err,
+            };
+            PpcImportAction::Return(ppc_i16_result(os_err))
+        }
+        PpcDialogCompatibilityOperation::GetDialogTimeout => {
+            let out_button_ptr = cpu.gpr[4];
+            let out_seconds_ptr = cpu.gpr[5];
+            let out_remaining_ptr = cpu.gpr[6];
+            let button_writable = out_button_ptr == 0 || ppc_memory_can_write_bytes(memory, out_button_ptr, 2);
+            let seconds_writable = out_seconds_ptr == 0 || ppc_memory_can_write_bytes(memory, out_seconds_ptr, 4);
+            let remaining_writable = out_remaining_ptr == 0 || ppc_memory_can_write_bytes(memory, out_remaining_ptr, 4);
+            let result = evaluate_get_dialog_timeout_parameters(
+                dialog,
+                out_button_ptr,
+                button_writable,
+                out_seconds_ptr,
+                seconds_writable,
+                out_remaining_ptr,
+                remaining_writable,
+            );
+            let os_err = match result {
+                Ok(params) => {
+                    let button = memory.read_u16_be(params.dialog_ptr() + DIALOG_TIMEOUT_BUTTON_OFFSET).unwrap_or(0);
+                    let seconds = memory.read_u32_be(params.dialog_ptr() + DIALOG_TIMEOUT_SECONDS_OFFSET).unwrap_or(0);
+                    let start_tick = memory.read_u32_be(params.dialog_ptr() + DIALOG_TIMEOUT_START_TICK_OFFSET).unwrap_or(0);
+                    let remaining = evaluate_dialog_timeout_remaining(seconds, start_tick, tick_count);
+                    if params.out_button_ptr() != 0 {
+                        let _ = memory.write_u16_be(params.out_button_ptr(), button);
+                    }
+                    if params.out_seconds_ptr() != 0 {
+                        let _ = memory.write_u32_be(params.out_seconds_ptr(), seconds);
+                    }
+                    if params.out_remaining_ptr() != 0 {
+                        let _ = memory.write_u32_be(params.out_remaining_ptr(), remaining);
+                    }
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
+            };
+            PpcImportAction::Return(ppc_i16_result(os_err))
         }
     }
 }
