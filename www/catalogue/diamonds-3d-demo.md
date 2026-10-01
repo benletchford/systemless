@@ -61,6 +61,7 @@ artifacts:
     notes: >-
       Original 1,492,789-byte StuffIt archive, SHA-256
       504a95439fc60ee3f2dea59e7314935573767bd425995d53c83cc623527efbff.
+      The promoted public object matched this hash and byte count.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -77,7 +78,9 @@ artifacts:
     permission: >-
       Fresh gameplay capture made from the original demo for this catalogue entry.
       The underlying game artwork remains its owners' property.
-    notes: 620-by-460 Chrome capture of the active brick field after mouse input.
+    notes: >-
+      620-by-460 Chrome capture of the active brick field after mouse input.
+      The promoted public screenshot matched its recorded hash and byte count.
 references:
 - https://classicmacdemos.com/diamonds-3d
 ---
