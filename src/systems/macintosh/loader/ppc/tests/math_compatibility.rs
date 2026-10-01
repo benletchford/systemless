@@ -679,6 +679,14 @@ fn import_bindings_classify_mathlib_imports() {
         PpcImportDispatcherTarget::MathRound
     );
     assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "pow"),
+        PpcImportDispatcherTarget::MathPow
+    );
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "sqrt"),
+        PpcImportDispatcherTarget::MathSqrt
+    );
+    assert_eq!(
         dispatcher_target_for_import("MathLib", "rint"),
         PpcImportDispatcherTarget::MathRint
     );
@@ -698,6 +706,43 @@ fn import_bindings_classify_mathlib_imports() {
         dispatcher_target_for_import("MathLib", "dtox80"),
         PpcImportDispatcherTarget::MathDtox80
     );
+}
+
+#[test]
+fn carbon_pow_uses_powerpc_double_arguments_and_result() {
+    let mut cpu = PpcCpu::new();
+    let mut memory = PpcSectionMem::new();
+    for (base, exponent, expected) in [(2.0_f64, 3.0_f64, 8.0_f64), (-2.0, 3.0, -8.0)] {
+        cpu.fpr[1] = base.to_bits();
+        cpu.fpr[2] = exponent.to_bits();
+        assert_eq!(
+            super::super::dispatch_math::dispatch_math_import(
+                &dispatcher_target_for_import("CarbonLib", "pow"),
+                &mut cpu,
+                &mut memory,
+            ),
+            Some(PpcImportAction::ReturnPreserve)
+        );
+        assert_eq!(cpu.fpr[1], expected.to_bits());
+    }
+}
+
+#[test]
+fn carbon_sqrt_uses_powerpc_double_argument_and_result() {
+    let mut cpu = PpcCpu::new();
+    let mut memory = PpcSectionMem::new();
+    for (input, expected) in [(9.0_f64, 3.0_f64), (-0.0, -0.0)] {
+        cpu.fpr[1] = input.to_bits();
+        assert_eq!(
+            super::super::dispatch_math::dispatch_math_import(
+                &dispatcher_target_for_import("CarbonLib", "sqrt"),
+                &mut cpu,
+                &mut memory,
+            ),
+            Some(PpcImportAction::ReturnPreserve)
+        );
+        assert_eq!(cpu.fpr[1], expected.to_bits());
+    }
 }
 
 #[test]
