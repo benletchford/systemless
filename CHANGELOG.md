@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.72.0](https://github.com/benletchford/systemless/compare/v0.71.0...v0.72.0) (2026-10-01)
+
+
+### Features
+
+* **catalogue:** add Blades of Exile demo ([#3718](https://github.com/benletchford/systemless/issues/3718)) ([5dd5480](https://github.com/benletchford/systemless/commit/5dd5480a0a2ced8299094a9aa95b80a22020400c))
+* **catalogue:** add Blobbo Lite ([#3724](https://github.com/benletchford/systemless/issues/3724)) ([8394060](https://github.com/benletchford/systemless/commit/83940609a098dde8426ffce67944e5a1c51441f5))
+* **catalogue:** add Classic Daleks ([#3735](https://github.com/benletchford/systemless/issues/3735)) ([5987708](https://github.com/benletchford/systemless/commit/59877085e6358a21405ee40d9b7800f4bc5a078e))
+* **catalogue:** add ColorFall ([#3738](https://github.com/benletchford/systemless/issues/3738)) ([0b3ff7d](https://github.com/benletchford/systemless/commit/0b3ff7d8135408bc691e6e19796489143f0302ab))
+* **catalogue:** add Enemy Bomber Balloons ([#3727](https://github.com/benletchford/systemless/issues/3727)) ([31947d0](https://github.com/benletchford/systemless/commit/31947d0f3a5b3b536da2b8e06828173f55842e9d))
+* **catalogue:** add Mah Jong Parlour demo ([#3658](https://github.com/benletchford/systemless/issues/3658)) ([122b42d](https://github.com/benletchford/systemless/commit/122b42db7b6d3fbb8508803130e8bf943f118a60))
+* **catalogue:** add Mortal Pongbat ([#3743](https://github.com/benletchford/systemless/issues/3743)) ([df722b0](https://github.com/benletchford/systemless/commit/df722b0bea14b613c8014f8986e3c205c3280322))
+* **catalogue:** add Pattris++ ([#3732](https://github.com/benletchford/systemless/issues/3732)) ([00d8f6d](https://github.com/benletchford/systemless/commit/00d8f6d0d592b8e9aed2de8645b089d9dab1f301))
+* **catalogue:** add playable Diamonds 3D demo ([#3699](https://github.com/benletchford/systemless/issues/3699)) ([ec6b593](https://github.com/benletchford/systemless/commit/ec6b593716a0ece85fd46082a2443f01454e26eb))
+* **catalogue:** add playable Eat My Photons demo ([#3689](https://github.com/benletchford/systemless/issues/3689)) ([817c74c](https://github.com/benletchford/systemless/commit/817c74c1ebccb6edfc14334927703a6451e76be7))
+* **catalogue:** add playable Gearheads demo ([#3694](https://github.com/benletchford/systemless/issues/3694)) ([e669e49](https://github.com/benletchford/systemless/commit/e669e498e907094fe0972b85192f02f4b610fc8d))
+* **catalogue:** add playable Gryphon Bricks demo ([#3709](https://github.com/benletchford/systemless/issues/3709)) ([95a66ea](https://github.com/benletchford/systemless/commit/95a66eaaab4967dd1105f971244d643de150ca11))
+* **catalogue:** add playable PGA TOUR Golf II demo ([#3696](https://github.com/benletchford/systemless/issues/3696)) ([6ac39d8](https://github.com/benletchford/systemless/commit/6ac39d8b8f5068eba7e545ef1b3e807c9b841736))
+* **catalogue:** add playable Syndicate demo ([#3705](https://github.com/benletchford/systemless/issues/3705)) ([a046fe9](https://github.com/benletchford/systemless/commit/a046fe9aedd7a64d3efe09dbc83479db6cd88bd7))
+* **catalogue:** add playable Tang Chi demo ([#3684](https://github.com/benletchford/systemless/issues/3684)) ([3ec6b6a](https://github.com/benletchford/systemless/commit/3ec6b6ae2e2842bc17d14bc86bdf5ee3f6d05528))
+* **catalogue:** add playable ZOA demo ([#3702](https://github.com/benletchford/systemless/issues/3702)) ([e81aa7d](https://github.com/benletchford/systemless/commit/e81aa7d7b0ac40d9b268e36bda4f355de9c769db))
+* **catalogue:** add Space Madness demo ([#3661](https://github.com/benletchford/systemless/issues/3661)) ([c3bc009](https://github.com/benletchford/systemless/commit/c3bc0099e99ac5ccf84ea2c0bd4ee198623748e4))
+* **catalogue:** add Xmas Lemmings demo ([#3713](https://github.com/benletchford/systemless/issues/3713)) ([6eac3f7](https://github.com/benletchford/systemless/commit/6eac3f7eeb4d8954bd13dd5ab1c241bcb5edcc30))
+* **macintosh:** run System 7 control panels and Flying Toasters ([bb69919](https://github.com/benletchford/systemless/commit/bb69919c34d080bb6d5a57daf5228f378c24bb59))
+
+
+### Bug Fixes
+
+* bind Carbon Multimedia movie imports ([#3722](https://github.com/benletchford/systemless/issues/3722)) ([af8504a](https://github.com/benletchford/systemless/commit/af8504ab6b6e0a203a0c7c3b2ee8e76d3dbb1bdf))
+* bind CarbonLib double math imports ([#3714](https://github.com/benletchford/systemless/issues/3714)) ([883b4ce](https://github.com/benletchford/systemless/commit/883b4ce6d5f5d4faea11de7ae0922d9193c2c90d))
+* **mac:** resolve missing partial FSSpec leaves against their parents ([#3655](https://github.com/benletchford/systemless/issues/3655)) ([3c189d1](https://github.com/benletchford/systemless/commit/3c189d10b4eaedac90813d1e77d48f26e64a9d0e))
+* **ppc:** support classic startup imports ([#3664](https://github.com/benletchford/systemless/issues/3664)) ([e42ebc9](https://github.com/benletchford/systemless/commit/e42ebc96ae96d68b68e836739d2399f482b7bd53))
+* preserve open PowerPC files during deletion ([#3675](https://github.com/benletchford/systemless/issues/3675)) ([073fc3b](https://github.com/benletchford/systemless/commit/073fc3b9bfb63205ec93a66d683bb325b5e3683b))
+* report working-directory valence in PBHGetVInfo ([#3669](https://github.com/benletchford/systemless/issues/3669)) ([a1a9ccf](https://github.com/benletchford/systemless/commit/a1a9ccf055ac42df51283f1949a19b143eb2d39a))
+* return from PPC async reads inside sound callbacks ([#3692](https://github.com/benletchford/systemless/issues/3692)) ([10f9626](https://github.com/benletchford/systemless/commit/10f962671e7b902fbaa7100ee7c33742fe6cea87))
+* return InputSprocket element configuration ([#3731](https://github.com/benletchford/systemless/issues/3731)) ([65a9830](https://github.com/benletchford/systemless/commit/65a9830b9ed52b1e55a6ff712a320a368eba687a))
+
+
+### Code Refactoring
+
+* **control:** centralize Control activation, font styling, bounds, and state evaluation ([#3662](https://github.com/benletchford/systemless/issues/3662)) ([5c56070](https://github.com/benletchford/systemless/commit/5c56070990aeb919fb2273962bae794750a64ff5))
+* **control:** centralize Control data, features, color procs, and rendering evaluation ([#3666](https://github.com/benletchford/systemless/issues/3666)) ([9588a87](https://github.com/benletchford/systemless/commit/9588a87c7b597bc31446a2f76f0415c877c1a10c))
+* **control:** centralize Control hierarchy, embedding, and property evaluation ([#3654](https://github.com/benletchford/systemless/issues/3654)) ([20e8263](https://github.com/benletchford/systemless/commit/20e8263d2e6c342c844d54339f5d8fb4c0861806))
+* **control:** centralize Control lookup, interaction, focus part, and drag tracking evaluation ([#3672](https://github.com/benletchford/systemless/issues/3672)) ([dd440bf](https://github.com/benletchford/systemless/commit/dd440bf1b4dab93032aa35ef4dbc40627e336ec6))
+* **control:** centralize Control ownership, region, identification, and focus evaluation ([#3670](https://github.com/benletchford/systemless/issues/3670)) ([2fdfe66](https://github.com/benletchford/systemless/commit/2fdfe66640c0fb28b90e91ecd581260b33a809fc))
+* **dialog:** centralize Dialog auto-positioning and cursor tracking evaluation ([#3710](https://github.com/benletchford/systemless/issues/3710)) ([40233fd](https://github.com/benletchford/systemless/commit/40233fd5c667d4d72f602b50545d118ed6e3cd25))
+* **dialog:** centralize Dialog keyboard focus, TextEdit handle, ParamText retrieval, and timeout evaluation ([#3688](https://github.com/benletchford/systemless/issues/3688)) ([b6844e1](https://github.com/benletchford/systemless/commit/b6844e1ec5daba2a51c5a749974aa1f0836bfe7a))
+* **dialog:** centralize Dialog sheet window, filter, and item insertion evaluation ([#3719](https://github.com/benletchford/systemless/issues/3719)) ([3011787](https://github.com/benletchford/systemless/commit/30117871ca6e6001e2943524159e3f6c3b1109c3))
+* **dialog:** centralize Standard Alert creation, configuration, and modal execution evaluation ([#3697](https://github.com/benletchford/systemless/issues/3697)) ([c994268](https://github.com/benletchford/systemless/commit/c994268a5de1a66283e9182218041cf49c683bd3))
+* **window:** centralize Window default/cancel button, user focus, and region evaluation ([#3676](https://github.com/benletchford/systemless/issues/3676)) ([f7541bc](https://github.com/benletchford/systemless/commit/f7541bc649ccbf7a93fa35e79740d83a1085ecfa))
+* **window:** centralize Window invalidation, geometry bounds, and attribute evaluation ([#3683](https://github.com/benletchford/systemless/issues/3683)) ([ca9b92c](https://github.com/benletchford/systemless/commit/ca9b92c40847e5c654550b4f69579d4f7c3f740c))
+* **window:** centralize Window modality, activation, region handles, and chain traversal evaluation ([#3741](https://github.com/benletchford/systemless/issues/3741)) ([d3c6cff](https://github.com/benletchford/systemless/commit/d3c6cffefdaadbbf7df96ef7d0065a6a16512c35))
+* **window:** centralize Window proxy icon, modified state, and state rect evaluation ([#3680](https://github.com/benletchford/systemless/issues/3680)) ([d36fac6](https://github.com/benletchford/systemless/commit/d36fac65f8f78515d2b1b1ffdf5fc598d6e344b2))
+* **window:** centralize Window repositioning methods and placement evaluation ([#3703](https://github.com/benletchford/systemless/issues/3703)) ([c8811d1](https://github.com/benletchford/systemless/commit/c8811d158e168fa719c0e7b748424545cc56800b))
+* **window:** centralize Window user state, flags, and kind evaluation ([#3728](https://github.com/benletchford/systemless/issues/3728)) ([79f3250](https://github.com/benletchford/systemless/commit/79f32501a225bc43b1dbaa3ce518ca0b700fae11))
+
 ## [0.71.0](https://github.com/benletchford/systemless/compare/v0.70.1...v0.71.0) (2026-09-30)
 
 
