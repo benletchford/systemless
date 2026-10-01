@@ -54,6 +54,10 @@ pub const DIALOG_MODAL_EVENT_MASK_OFFSET: u32 = 196;
 pub const DIALOG_STANDARD_SHEET_COMMAND_OFFSET: u32 = 200;
 #[allow(dead_code)]
 pub const DIALOG_TRACKS_CURSOR_OFFSET: u32 = 204;
+#[allow(dead_code)]
+pub const DIALOG_FILTER_PROC_OFFSET: u32 = 208;
+#[allow(dead_code)]
+pub const DIALOG_SHEET_PARENT_OFFSET: u32 = 212;
 
 /// Default cursor tracking state (false = off per Macintosh Toolbox Essentials, p. 6-166).
 #[allow(dead_code)]
@@ -7041,6 +7045,345 @@ pub fn evaluate_set_dialog_filter_parameters(
     Ok(SetDialogFilterParameters::new(dialog_ptr, filter_proc))
 }
 
+/// Canonical evaluated parameters for `GetDialogFilter`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetDialogFilterParameters {
+    dialog_ptr: u32,
+    out_proc_ptr: u32,
+}
+
+impl GetDialogFilterParameters {
+    pub const fn new(dialog_ptr: u32, out_proc_ptr: u32) -> Self {
+        Self {
+            dialog_ptr,
+            out_proc_ptr,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn out_proc_ptr(&self) -> u32 {
+        self.out_proc_ptr
+    }
+}
+
+/// Evaluates parameters for `GetDialogFilter`.
+#[inline]
+pub fn evaluate_get_dialog_filter_parameters(
+    dialog_ptr: u32,
+    out_proc_ptr: u32,
+    can_write: bool,
+) -> Result<GetDialogFilterParameters, i16> {
+    if dialog_ptr == 0 || out_proc_ptr == 0 || !can_write {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    Ok(GetDialogFilterParameters::new(dialog_ptr, out_proc_ptr))
+}
+
+/// Canonical evaluated parameters for `ShowSheetWindow`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShowSheetWindowParameters {
+    sheet_ptr: u32,
+    parent_ptr: u32,
+}
+
+impl ShowSheetWindowParameters {
+    pub const fn new(sheet_ptr: u32, parent_ptr: u32) -> Self {
+        Self {
+            sheet_ptr,
+            parent_ptr,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub const fn sheet_ptr(&self) -> u32 {
+        self.sheet_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn parent_ptr(&self) -> u32 {
+        self.parent_ptr
+    }
+}
+
+/// Evaluates parameters for `ShowSheetWindow`.
+#[inline]
+pub fn evaluate_show_sheet_window_parameters(
+    sheet_ptr: u32,
+    parent_ptr: u32,
+) -> Result<ShowSheetWindowParameters, i16> {
+    if sheet_ptr == 0 {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    Ok(ShowSheetWindowParameters::new(sheet_ptr, parent_ptr))
+}
+
+/// Evaluates the sheet window position attached to the parent window.
+/// In standard Aqua sheet positioning, a sheet is centered horizontally relative
+/// to the parent window and anchored at the top of the parent window content.
+pub fn evaluate_sheet_window_bounds(
+    parent_bounds: (i16, i16, i16, i16),
+    sheet_bounds: (i16, i16, i16, i16),
+) -> (i16, i16, i16, i16) {
+    let parent_w = (parent_bounds.3 - parent_bounds.1).max(0);
+    let sheet_w = (sheet_bounds.3 - sheet_bounds.1).max(0);
+    let sheet_h = (sheet_bounds.2 - sheet_bounds.0).max(0);
+    let left = parent_bounds.1 + (parent_w - sheet_w) / 2;
+    let top = parent_bounds.0;
+    let right = left + sheet_w;
+    let bottom = top + sheet_h;
+    (top, left, bottom, right)
+}
+
+/// Canonical evaluated parameters for `HideSheetWindow`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HideSheetWindowParameters {
+    sheet_ptr: u32,
+}
+
+impl HideSheetWindowParameters {
+    pub const fn new(sheet_ptr: u32) -> Self {
+        Self { sheet_ptr }
+    }
+
+    #[allow(dead_code)]
+    pub const fn sheet_ptr(&self) -> u32 {
+        self.sheet_ptr
+    }
+}
+
+/// Evaluates parameters for `HideSheetWindow`.
+#[inline]
+pub fn evaluate_hide_sheet_window_parameters(
+    sheet_ptr: u32,
+) -> Result<HideSheetWindowParameters, i16> {
+    if sheet_ptr == 0 {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    Ok(HideSheetWindowParameters::new(sheet_ptr))
+}
+
+/// Canonical evaluated parameters for `GetSheetWindowParent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetSheetWindowParentParameters {
+    sheet_ptr: u32,
+    out_parent_ptr: u32,
+}
+
+impl GetSheetWindowParentParameters {
+    pub const fn new(sheet_ptr: u32, out_parent_ptr: u32) -> Self {
+        Self {
+            sheet_ptr,
+            out_parent_ptr,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub const fn sheet_ptr(&self) -> u32 {
+        self.sheet_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn out_parent_ptr(&self) -> u32 {
+        self.out_parent_ptr
+    }
+}
+
+/// Evaluates parameters for `GetSheetWindowParent`.
+#[inline]
+pub fn evaluate_get_sheet_window_parent_parameters(
+    sheet_ptr: u32,
+    out_parent_ptr: u32,
+    can_write: bool,
+) -> Result<GetSheetWindowParentParameters, i16> {
+    if sheet_ptr == 0 || out_parent_ptr == 0 || !can_write {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    Ok(GetSheetWindowParentParameters::new(sheet_ptr, out_parent_ptr))
+}
+
+/// Canonical evaluated parameters for `InsertDialogItem`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InsertDialogItemParameters {
+    dialog_ptr: u32,
+    after_item: i16,
+    item_type: i16,
+    item_handle: u32,
+    box_rect: (i16, i16, i16, i16),
+}
+
+impl InsertDialogItemParameters {
+    pub const fn new(
+        dialog_ptr: u32,
+        after_item: i16,
+        item_type: i16,
+        item_handle: u32,
+        box_rect: (i16, i16, i16, i16),
+    ) -> Self {
+        Self {
+            dialog_ptr,
+            after_item,
+            item_type,
+            item_handle,
+            box_rect,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn after_item(&self) -> i16 {
+        self.after_item
+    }
+
+    #[allow(dead_code)]
+    pub const fn item_type(&self) -> i16 {
+        self.item_type
+    }
+
+    #[allow(dead_code)]
+    pub const fn item_handle(&self) -> u32 {
+        self.item_handle
+    }
+
+    #[allow(dead_code)]
+    pub const fn box_rect(&self) -> (i16, i16, i16, i16) {
+        self.box_rect
+    }
+}
+
+/// Evaluates parameters for `InsertDialogItem`.
+#[inline]
+pub fn evaluate_insert_dialog_item_parameters(
+    dialog_ptr: u32,
+    after_item: i16,
+    item_type: i16,
+    item_handle: u32,
+    box_rect: (i16, i16, i16, i16),
+) -> Result<InsertDialogItemParameters, i16> {
+    if dialog_ptr == 0 {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    Ok(InsertDialogItemParameters::new(
+        dialog_ptr,
+        after_item,
+        item_type,
+        item_handle,
+        box_rect,
+    ))
+}
+
+/// Constructs serialized DITL entry bytes for an inserted item.
+/// DITL format: 4 bytes handle placeholder, 8 bytes Rect (top, left, bottom, right),
+/// 1 byte item type, 1 byte data length, plus data bytes and word alignment padding.
+pub fn evaluate_inserted_ditl_item_bytes(
+    item_type: i16,
+    item_handle: u32,
+    box_rect: (i16, i16, i16, i16),
+    title_or_data: &[u8],
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(16 + title_or_data.len());
+    bytes.extend_from_slice(&item_handle.to_be_bytes());
+    bytes.extend_from_slice(&box_rect.0.to_be_bytes());
+    bytes.extend_from_slice(&box_rect.1.to_be_bytes());
+    bytes.extend_from_slice(&box_rect.2.to_be_bytes());
+    bytes.extend_from_slice(&box_rect.3.to_be_bytes());
+    bytes.push(item_type as u8);
+    let len_byte = u8::try_from(title_or_data.len()).unwrap_or(u8::MAX);
+    bytes.push(len_byte);
+    bytes.extend_from_slice(title_or_data);
+    if bytes.len() % 2 != 0 {
+        bytes.push(0);
+    }
+    bytes
+}
+
+/// Canonical evaluated parameters for `RemoveDialogItems`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoveDialogItemsParameters {
+    dialog_ptr: u32,
+    item_no: i16,
+    amount_to_remove: i16,
+    dispose_item_data: bool,
+}
+
+impl RemoveDialogItemsParameters {
+    pub const fn new(
+        dialog_ptr: u32,
+        item_no: i16,
+        amount_to_remove: i16,
+        dispose_item_data: bool,
+    ) -> Self {
+        Self {
+            dialog_ptr,
+            item_no,
+            amount_to_remove,
+            dispose_item_data,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn item_no(&self) -> i16 {
+        self.item_no
+    }
+
+    #[allow(dead_code)]
+    pub const fn amount_to_remove(&self) -> i16 {
+        self.amount_to_remove
+    }
+
+    #[allow(dead_code)]
+    pub const fn dispose_item_data(&self) -> bool {
+        self.dispose_item_data
+    }
+}
+
+/// Evaluates parameters for `RemoveDialogItems`.
+#[inline]
+pub fn evaluate_remove_dialog_items_parameters(
+    dialog_ptr: u32,
+    item_no: i16,
+    amount_to_remove: i16,
+    dispose_item_data: bool,
+) -> Result<RemoveDialogItemsParameters, i16> {
+    if dialog_ptr == 0 || item_no <= 0 || amount_to_remove < 0 {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    Ok(RemoveDialogItemsParameters::new(
+        dialog_ptr,
+        item_no,
+        amount_to_remove,
+        dispose_item_data,
+    ))
+}
+
+/// Computes the 0-based removal range `(start, end)` for `RemoveDialogItems`.
+pub fn remove_dialog_items_range(
+    total_items: usize,
+    item_no_1_based: usize,
+    amount: usize,
+) -> (usize, usize) {
+    if total_items == 0 || item_no_1_based == 0 {
+        return (0, 0);
+    }
+    let start = (item_no_1_based - 1).min(total_items);
+    let end = (start + amount).min(total_items);
+    (start, end)
+}
+
+
 /// Returns true if two rectangles intersect.
 pub fn rects_intersect(a: (i16, i16, i16, i16), b: (i16, i16, i16, i16)) -> bool {
     a.0 < b.2 && a.2 > b.0 && a.1 < b.3 && a.3 > b.1
@@ -12110,6 +12453,100 @@ mod tests {
         assert_eq!(auto_pos.parent_ptr(), 0x2000);
         assert_eq!(auto_pos.method(), 1);
     }
+
+    #[test]
+    fn dialog_sheet_window_filter_and_item_insertion_evaluation() {
+        // 1. GetDialogFilter evaluation
+        assert_eq!(
+            evaluate_get_dialog_filter_parameters(0, 0x2000, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_dialog_filter_parameters(0x1000, 0, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_dialog_filter_parameters(0x1000, 0x2000, false),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let filter_params = evaluate_get_dialog_filter_parameters(0x1000, 0x2000, true).unwrap();
+        assert_eq!(filter_params.dialog_ptr(), 0x1000);
+        assert_eq!(filter_params.out_proc_ptr(), 0x2000);
+
+        // 2. Sheet window parameters and bounds
+        assert_eq!(
+            evaluate_show_sheet_window_parameters(0, 0x2000),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let show_sheet = evaluate_show_sheet_window_parameters(0x1000, 0x2000).unwrap();
+        assert_eq!(show_sheet.sheet_ptr(), 0x1000);
+        assert_eq!(show_sheet.parent_ptr(), 0x2000);
+
+        let parent_bounds = (100, 100, 400, 500);
+        let sheet_bounds = (0, 0, 150, 200);
+        let sheet_placed = evaluate_sheet_window_bounds(parent_bounds, sheet_bounds);
+        assert_eq!(sheet_placed, (100, 200, 250, 400));
+
+        assert_eq!(evaluate_hide_sheet_window_parameters(0), Err(DIALOG_PARAM_ERR));
+        let hide_sheet = evaluate_hide_sheet_window_parameters(0x1000).unwrap();
+        assert_eq!(hide_sheet.sheet_ptr(), 0x1000);
+
+        assert_eq!(
+            evaluate_get_sheet_window_parent_parameters(0, 0x2000, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_sheet_window_parent_parameters(0x1000, 0, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_sheet_window_parent_parameters(0x1000, 0x2000, false),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let parent_param = evaluate_get_sheet_window_parent_parameters(0x1000, 0x2000, true).unwrap();
+        assert_eq!(parent_param.sheet_ptr(), 0x1000);
+        assert_eq!(parent_param.out_parent_ptr(), 0x2000);
+
+        // 3. InsertDialogItem evaluation
+        assert_eq!(
+            evaluate_insert_dialog_item_parameters(0, 1, 4, 0, (10, 20, 30, 40)),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let insert_params = evaluate_insert_dialog_item_parameters(0x1000, 1, 4, 0x5000, (10, 20, 30, 40)).unwrap();
+        assert_eq!(insert_params.dialog_ptr(), 0x1000);
+        assert_eq!(insert_params.after_item(), 1);
+        assert_eq!(insert_params.item_type(), 4);
+        assert_eq!(insert_params.item_handle(), 0x5000);
+        assert_eq!(insert_params.box_rect(), (10, 20, 30, 40));
+
+        let ditl_bytes = evaluate_inserted_ditl_item_bytes(4, 0, (10, 20, 30, 40), b"OK");
+        assert_eq!(ditl_bytes.len() % 2, 0); // 16 bytes even alignment
+        assert_eq!(&ditl_bytes[0..4], &[0, 0, 0, 0]);
+        assert_eq!(&ditl_bytes[4..6], &10i16.to_be_bytes());
+        assert_eq!(&ditl_bytes[12..14], &[4, 2]); // type 4, len 2
+        assert_eq!(&ditl_bytes[14..16], b"OK");
+
+        // 4. RemoveDialogItems evaluation
+        assert_eq!(
+            evaluate_remove_dialog_items_parameters(0, 1, 1, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_remove_dialog_items_parameters(0x1000, 0, 1, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_remove_dialog_items_parameters(0x1000, 1, -1, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let remove_params = evaluate_remove_dialog_items_parameters(0x1000, 2, 3, false).unwrap();
+        assert_eq!(remove_params.dialog_ptr(), 0x1000);
+        assert_eq!(remove_params.item_no(), 2);
+        assert_eq!(remove_params.amount_to_remove(), 3);
+        assert!(!remove_params.dispose_item_data());
+
+        assert_eq!(remove_dialog_items_range(5, 2, 2), (1, 3));
+        assert_eq!(remove_dialog_items_range(5, 1, 10), (0, 5));
+        assert_eq!(remove_dialog_items_range(0, 1, 2), (0, 0));
+    }
 }
-
-

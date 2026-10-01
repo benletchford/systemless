@@ -49,6 +49,15 @@ use crate::dialog_manager::{
     evaluate_auto_position_dialog_parameters,
     evaluate_get_dialog_tracks_cursor_parameters,
     evaluate_is_dialog_tracks_cursor_parameters,
+    evaluate_get_dialog_filter_parameters,
+    evaluate_show_sheet_window_parameters,
+    evaluate_sheet_window_bounds,
+    evaluate_hide_sheet_window_parameters,
+    evaluate_get_sheet_window_parent_parameters,
+    evaluate_insert_dialog_item_parameters,
+    evaluate_inserted_ditl_item_bytes,
+    evaluate_remove_dialog_items_parameters,
+    remove_dialog_items_range,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -59,7 +68,7 @@ use crate::dialog_manager::{
     DIALOG_STANDARD_ALERT_STACK_OFFSET, DIALOG_TEXT_HANDLE_OFFSET,
     DIALOG_TIMEOUT_BUTTON_OFFSET, DIALOG_TIMEOUT_SECONDS_OFFSET, DIALOG_TIMEOUT_START_TICK_OFFSET,
     DIALOG_MODAL_EVENT_MASK_OFFSET, DIALOG_STANDARD_SHEET_COMMAND_OFFSET,
-    DIALOG_TRACKS_CURSOR_OFFSET,
+    DIALOG_TRACKS_CURSOR_OFFSET, DIALOG_FILTER_PROC_OFFSET, DIALOG_SHEET_PARENT_OFFSET,
     DIALOG_DEFAULT_MODAL_EVENT_MASK, ALERT_STD_CFSTRING_ALERT_PARAM_REC_SIZE,
     STD_CFSTRING_ALERT_VERSION_ONE, ALERT_STD_ALERT_OK_BUTTON,
 };
@@ -1544,6 +1553,7 @@ pub enum PpcDialogCompatibilityOperation {
     DialogSelect,
     FindDialogItem,
     FlashDialogControl,
+    GetDialogFilter,
     GetDialogItemInit,
     GetDialogKeyboardFocusItem,
     GetDialogTextEditHandle,
@@ -1551,10 +1561,14 @@ pub enum PpcDialogCompatibilityOperation {
     GetDialogTracksCursor,
     GetModalDialogEventMask,
     GetParamText,
+    GetSheetWindowParent,
     GetStandardAlertDefaultParams,
     HideDialogItem,
+    HideSheetWindow,
+    InsertDialogItem,
     IsDialogEvent,
     IsDialogTracksCursor,
+    RemoveDialogItems,
     RunStandardAlert,
     SetDialogFilter,
     SetDialogKeyboardFocusItem,
@@ -1562,6 +1576,7 @@ pub enum PpcDialogCompatibilityOperation {
     SetModalDialogEventMask,
     ShortenDitl,
     ShowDialogItem,
+    ShowSheetWindow,
     UpdateDialog,
 }
 
@@ -2349,6 +2364,10 @@ fn ppc_dispatch_dialog_compatibility(
                 Ok(p) => p,
                 Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
             };
+            let _ = memory.write_u32_be(
+                params.dialog_ptr() + DIALOG_FILTER_PROC_OFFSET,
+                params.filter_proc(),
+            );
             if ppc_hle_trace_enabled() {
                 eprintln!(
                     "[PPC-TRACE] SetDialogFilter dialog=0x{:08X} filter=0x{:08X}",
@@ -2430,6 +2449,207 @@ fn ppc_dispatch_dialog_compatibility(
                 false
             };
             PpcImportAction::Return(if tracks { 1 } else { 0 })
+        }
+        PpcDialogCompatibilityOperation::GetDialogFilter => {
+            let dialog = cpu.gpr[3];
+            let out_proc = cpu.gpr[4];
+            let can_write = ppc_memory_can_write_bytes(memory, out_proc, 4);
+            let params = match evaluate_get_dialog_filter_parameters(dialog, out_proc, can_write) {
+                Ok(p) => p,
+                Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
+            };
+            let filter = memory
+                .read_u32_be(params.dialog_ptr() + DIALOG_FILTER_PROC_OFFSET)
+                .unwrap_or(0);
+            let _ = memory.write_u32_be(params.out_proc_ptr(), filter);
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcDialogCompatibilityOperation::ShowSheetWindow => {
+            let sheet = cpu.gpr[3];
+            let parent = cpu.gpr[4];
+            let params = match evaluate_show_sheet_window_parameters(sheet, parent) {
+                Ok(p) => p,
+                Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
+            };
+            let _ = memory.write_u32_be(
+                params.sheet_ptr() + DIALOG_SHEET_PARENT_OFFSET,
+                params.parent_ptr(),
+            );
+            if params.parent_ptr() != 0 {
+                let parent_bounds = ppc_dialog_global_bounds(memory, gworlds, params.parent_ptr())
+                    .or_else(|| ppc_read_rect(memory, params.parent_ptr().wrapping_add(16)));
+                let sheet_bounds = ppc_dialog_global_bounds(memory, gworlds, params.sheet_ptr())
+                    .or_else(|| ppc_read_rect(memory, params.sheet_ptr().wrapping_add(16)));
+                if let (Some(parent_bounds), Some(sheet_bounds)) = (parent_bounds, sheet_bounds) {
+                    let target = evaluate_sheet_window_bounds(parent_bounds, sheet_bounds);
+                    let width = (target.3.saturating_sub(target.1).max(0)) as u32;
+                    let height = (target.2.saturating_sub(target.0).max(0)) as u32;
+                    let _ = ppc_size_window_dimensions(
+                        memory,
+                        gworlds,
+                        params.sheet_ptr(),
+                        width,
+                        height,
+                    );
+                    let _ = ppc_move_window_coordinates(
+                        memory,
+                        gworlds,
+                        params.sheet_ptr(),
+                        target.1,
+                        target.0,
+                    );
+                }
+            }
+            let _ = memory.write_u8(params.sheet_ptr() + 104, 1);
+            window_list.bring_to_front(params.sheet_ptr());
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcDialogCompatibilityOperation::HideSheetWindow => {
+            let sheet = cpu.gpr[3];
+            let params = match evaluate_hide_sheet_window_parameters(sheet) {
+                Ok(p) => p,
+                Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
+            };
+            let _ = memory.write_u8(params.sheet_ptr() + 104, 0);
+            window_list.remove_window(params.sheet_ptr());
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcDialogCompatibilityOperation::GetSheetWindowParent => {
+            let sheet = cpu.gpr[3];
+            let out_parent = cpu.gpr[4];
+            let can_write = ppc_memory_can_write_bytes(memory, out_parent, 4);
+            let params = match evaluate_get_sheet_window_parent_parameters(sheet, out_parent, can_write) {
+                Ok(p) => p,
+                Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
+            };
+            let parent = memory
+                .read_u32_be(params.sheet_ptr() + DIALOG_SHEET_PARENT_OFFSET)
+                .unwrap_or(0);
+            let _ = memory.write_u32_be(params.out_parent_ptr(), parent);
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcDialogCompatibilityOperation::InsertDialogItem => {
+            let dialog = cpu.gpr[3];
+            let after_item = cpu.gpr[4] as i16;
+            let item_type = cpu.gpr[5] as i16;
+            let item_handle = cpu.gpr[6];
+            let box_ptr = cpu.gpr[7];
+            let box_rect = (
+                memory.read_u16_be(box_ptr).unwrap_or(0) as i16,
+                memory.read_u16_be(box_ptr + 2).unwrap_or(0) as i16,
+                memory.read_u16_be(box_ptr + 4).unwrap_or(0) as i16,
+                memory.read_u16_be(box_ptr + 6).unwrap_or(0) as i16,
+            );
+            let params = match evaluate_insert_dialog_item_parameters(
+                dialog,
+                after_item,
+                item_type,
+                item_handle,
+                box_rect,
+            ) {
+                Ok(p) => p,
+                Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
+            };
+            if let Some((handle, _ptr, bytes, items)) = ppc_dialog_live_items(memory, handles, params.dialog_ptr()) {
+                let insert_idx = if params.after_item() <= 0 {
+                    0
+                } else {
+                    (params.after_item() as usize).min(items.len())
+                };
+                let insert_pos = if insert_idx == 0 {
+                    2
+                } else if insert_idx >= items.len() {
+                    bytes.len()
+                } else {
+                    ppc_dialog_item_end(&bytes, &items[insert_idx - 1]).unwrap_or(bytes.len())
+                };
+                let new_item_bytes = evaluate_inserted_ditl_item_bytes(
+                    params.item_type(),
+                    params.item_handle(),
+                    params.box_rect(),
+                    &[],
+                );
+                let mut new_bytes = Vec::with_capacity(bytes.len() + new_item_bytes.len());
+                new_bytes.extend_from_slice(&bytes[..insert_pos]);
+                new_bytes.extend_from_slice(&new_item_bytes);
+                new_bytes.extend_from_slice(&bytes[insert_pos..]);
+                let new_count = items.len() + 1;
+                let count_minus_one = (new_count.saturating_sub(1)) as u16;
+                new_bytes[0..2].copy_from_slice(&count_minus_one.to_be_bytes());
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                let result = allocator.resize_handle(
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    handles,
+                    handle,
+                    u32::try_from(new_bytes.len()).unwrap_or(u32::MAX),
+                );
+                *last_mem_error = result;
+                if result == PPC_NO_ERR {
+                    if let Some(target_ptr) = memory.read_u32_be(handle) {
+                        let _ = memory.write_bytes(target_ptr, &new_bytes);
+                    }
+                }
+            }
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcDialogCompatibilityOperation::RemoveDialogItems => {
+            let dialog = cpu.gpr[3];
+            let item_no = cpu.gpr[4] as i16;
+            let amount = cpu.gpr[5] as i16;
+            let dispose_data = cpu.gpr[6] != 0;
+            let params = match evaluate_remove_dialog_items_parameters(
+                dialog,
+                item_no,
+                amount,
+                dispose_data,
+            ) {
+                Ok(p) => p,
+                Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
+            };
+            if let Some((handle, _ptr, bytes, items)) = ppc_dialog_live_items(memory, handles, params.dialog_ptr()) {
+                let (start_idx, end_idx) = remove_dialog_items_range(
+                    items.len(),
+                    params.item_no() as usize,
+                    params.amount_to_remove() as usize,
+                );
+                if start_idx < end_idx && start_idx < items.len() {
+                    let start_pos = if start_idx == 0 {
+                        2
+                    } else {
+                        ppc_dialog_item_end(&bytes, &items[start_idx - 1]).unwrap_or(2)
+                    };
+                    let end_pos = ppc_dialog_item_end(&bytes, &items[end_idx - 1]).unwrap_or(bytes.len());
+                    let mut new_bytes = Vec::with_capacity(bytes.len());
+                    new_bytes.extend_from_slice(&bytes[..start_pos]);
+                    new_bytes.extend_from_slice(&bytes[end_pos..]);
+                    let removed_count = end_idx - start_idx;
+                    let new_count = items.len().saturating_sub(removed_count);
+                    let count_minus_one = (new_count.saturating_sub(1)) as u16;
+                    new_bytes[0..2].copy_from_slice(&count_minus_one.to_be_bytes());
+                    let mut allocator = PpcProcessAllocatorView {
+                        memory_manager: process_memory_manager,
+                    };
+                    let result = allocator.resize_handle(
+                        memory,
+                        heap_cursor,
+                        last_mem_error,
+                        handles,
+                        handle,
+                        u32::try_from(new_bytes.len()).unwrap_or(u32::MAX),
+                    );
+                    *last_mem_error = result;
+                    if result == PPC_NO_ERR {
+                        if let Some(target_ptr) = memory.read_u32_be(handle) {
+                            let _ = memory.write_bytes(target_ptr, &new_bytes);
+                        }
+                    }
+                }
+            }
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }
     }
 }
