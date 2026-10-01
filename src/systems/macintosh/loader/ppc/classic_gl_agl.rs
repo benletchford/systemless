@@ -1683,6 +1683,73 @@ mod tests {
     }
 
     #[test]
+    fn minified_triangle_samples_mipmap_level() {
+        let mut agl = PpcAglState::default();
+        let format = agl.choose_pixel_format(PpcAglPixelFormatRequest {
+            rgba: true,
+            ..Default::default()
+        });
+        let context = agl.create_context(format, 0);
+        assert!(agl.set_current_context(context));
+        assert!(agl.set_drawable(
+            context,
+            0x2000,
+            Some(PpcFrontBuffer {
+                base_addr: 0x3000,
+                width: 4,
+                height: 4,
+                depth: 16,
+                row_bytes: 8,
+            })
+        ));
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x1000, [255, 0, 0, 255].repeat(4));
+        memory.add_region(0x1100, vec![0, 255, 0, 255]);
+        assert!(agl.gl_tex_image_2d(
+            &mut memory,
+            0x0de1,
+            0,
+            0x1908,
+            2,
+            2,
+            0,
+            0x1908,
+            0x1401,
+            0x1000
+        ));
+        assert!(agl.gl_tex_image_2d(
+            &mut memory,
+            0x0de1,
+            1,
+            0x1908,
+            1,
+            1,
+            0,
+            0x1908,
+            0x1401,
+            0x1100
+        ));
+        assert!(agl.gl_texture_2d(true));
+        assert!(agl.gl_begin(0x0004));
+        assert!(agl.gl_tex_coord([0.0, 0.0, 0.0, 1.0]));
+        assert!(agl.gl_vertex([-1.0, -1.0, 0.0, 1.0]));
+        assert!(agl.gl_tex_coord([8.0, 0.0, 0.0, 1.0]));
+        assert!(agl.gl_vertex([1.0, -1.0, 0.0, 1.0]));
+        assert!(agl.gl_tex_coord([0.0, 8.0, 0.0, 1.0]));
+        assert!(agl.gl_vertex([-1.0, 1.0, 0.0, 1.0]));
+        assert!(agl.gl_end());
+        assert_eq!(
+            agl.context(context)
+                .unwrap()
+                .framebuffer
+                .as_ref()
+                .unwrap()
+                .pixel(ClassicGlColorBuffer::Front, 0, 0),
+            Some([0, 255, 0, 255])
+        );
+    }
+
+    #[test]
     fn clear_uses_current_context_back_buffer_and_default_depth_stencil() {
         let mut agl = PpcAglState::default();
         let format = agl.choose_pixel_format(PpcAglPixelFormatRequest {

@@ -282,11 +282,55 @@ impl ClassicGlTexture2D {
         true
     }
 
+    #[cfg(test)]
     pub fn sample(&self, coordinates: [f64; 4]) -> Option<[f64; 4]> {
+        self.sample_with_lod(coordinates, 0.0)
+    }
+
+    pub fn sample_with_lod(&self, coordinates: [f64; 4], lod: f64) -> Option<[f64; 4]> {
         if !self.complete() {
             return None;
         }
-        let image = self.images.first()?.as_ref()?;
+        if !lod.is_finite() {
+            return None;
+        }
+        let crossover = if self.mag_filter == 0x2601 && matches!(self.min_filter, 0x2700 | 0x2702) {
+            0.5
+        } else {
+            0.0
+        };
+        if lod <= crossover {
+            return self.sample_level(0, coordinates, self.mag_filter == 0x2601);
+        }
+        match self.min_filter {
+            0x2600 | 0x2601 => self.sample_level(0, coordinates, self.min_filter == 0x2601),
+            0x2700 | 0x2701 => {
+                let level = lod.round().clamp(0.0, f64::from(self.last_level()?)) as usize;
+                self.sample_level(level, coordinates, self.min_filter == 0x2701)
+            }
+            0x2702 | 0x2703 => {
+                let lod = lod.clamp(0.0, f64::from(self.last_level()?));
+                let lower = lod.floor() as usize;
+                let upper = lod.ceil() as usize;
+                let linear = self.min_filter == 0x2703;
+                let a = self.sample_level(lower, coordinates, linear)?;
+                let b = self.sample_level(upper, coordinates, linear)?;
+                let fraction = lod.fract();
+                Some(std::array::from_fn(|component| {
+                    a[component] * (1.0 - fraction) + b[component] * fraction
+                }))
+            }
+            _ => None,
+        }
+    }
+
+    fn last_level(&self) -> Option<u32> {
+        let base = self.images[0].as_ref()?;
+        Some(base.width.max(base.height).ilog2())
+    }
+
+    fn sample_level(&self, level: usize, coordinates: [f64; 4], linear: bool) -> Option<[f64; 4]> {
+        let image = self.images.get(level)?.as_ref()?;
         let [s, t, _, q] = coordinates;
         if !s.is_finite() || !t.is_finite() || !q.is_finite() || q == 0.0 {
             return None;
@@ -299,20 +343,22 @@ impl ClassicGlTexture2D {
             }
         };
         let (s, t) = (wrap(s, self.wrap_s), wrap(t, self.wrap_t));
-        let linear = matches!(self.mag_filter, 0x2601);
         let texel = |x: i64, y: i64| -> Option<[f64; 4]> {
-            let index = |value: i64, size: u32, mode: u32| -> u32 {
-                if mode == 0x2901 {
-                    value.rem_euclid(i64::from(size)) as u32
-                } else {
-                    value.clamp(0, i64::from(size) - 1) as u32
+            let index = |value: i64, size: u32, mode: u32| -> Option<u32> {
+                match mode {
+                    0x2901 => Some(value.rem_euclid(i64::from(size)) as u32), // REPEAT
+                    0x2900 => u32::try_from(value).ok().filter(|&index| index < size), // CLAMP border
+                    _ => Some(value.clamp(0, i64::from(size) - 1) as u32), // CLAMP_TO_EDGE
                 }
             };
+            let (Some(x), Some(y)) = (
+                index(x, image.width, self.wrap_s),
+                index(y, image.height, self.wrap_t),
+            ) else {
+                return Some([0.0; 4]);
+            };
             image
-                .texel(
-                    index(x, image.width, self.wrap_s),
-                    index(y, image.height, self.wrap_t),
-                )
+                .texel(x, y)
                 .map(|rgba| rgba.map(|channel| f64::from(channel) / 255.0))
         };
         if !linear {
@@ -339,8 +385,13 @@ impl ClassicGlTexture2D {
         }))
     }
 
-    pub fn modulate(&self, fragment: [f64; 4], coordinates: [f64; 4]) -> Option<[f64; 4]> {
-        let sample = self.sample(coordinates)?;
+    pub fn modulate_with_lod(
+        &self,
+        fragment: [f64; 4],
+        coordinates: [f64; 4],
+        lod: f64,
+    ) -> Option<[f64; 4]> {
+        let sample = self.sample_with_lod(coordinates, lod)?;
         let format = self.images[0].as_ref()?.internal_format;
         let mut result = fragment;
         match format {
@@ -509,6 +560,35 @@ mod tests {
         assert_eq!(
             texture.sample([0.75, 0.5, 0.0, 1.0]),
             Some([0.0, 1.0, 0.0, 1.0])
+        );
+    }
+
+    #[test]
+    fn mip_filter_selects_levels_from_fragment_lod() {
+        let mut textures = ClassicGlTextures::default();
+        let texture = textures.bound_mut().unwrap();
+        for (level, size, rgba) in [
+            (0, 4, [255, 0, 0, 255]),
+            (1, 2, [0, 255, 0, 255]),
+            (2, 1, [0, 0, 255, 255]),
+        ] {
+            let mut image = ClassicGlTextureImage::new(size, size, 0x1908).unwrap();
+            image.pixels.fill(rgba);
+            texture.images[level] = Some(image);
+        }
+        let coordinates = [0.5, 0.5, 0.0, 1.0];
+        assert_eq!(
+            texture.sample_with_lod(coordinates, 1.0),
+            Some([0.0, 1.0, 0.0, 1.0])
+        );
+        assert_eq!(
+            texture.sample_with_lod(coordinates, 1.5),
+            Some([0.0, 0.5, 0.5, 1.0])
+        );
+        assert!(texture.set_parameter(0x2801, 0x2700));
+        assert_eq!(
+            texture.sample_with_lod(coordinates, 1.6),
+            Some([0.0, 0.0, 1.0, 1.0])
         );
     }
 }

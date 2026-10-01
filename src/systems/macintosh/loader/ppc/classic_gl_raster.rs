@@ -192,8 +192,44 @@ fn raster_triangle(
                         .sum::<f64>()
                         / denominator
                 });
-                if let Some(modulated) = texture.modulate(color, texcoord) {
-                    color = modulated;
+                if let Some(image) = texture.images[0].as_ref() {
+                    // OpenGL 1.2.1, section 3.8.5, equation 3.15: the footprint uses
+                    // window derivatives of projected texture coordinates in texels.
+                    let weight_dx = [
+                        -(c.y - b.y) / area,
+                        -(a.y - c.y) / area,
+                        -(b.y - a.y) / area,
+                    ];
+                    let weight_dy = [(c.x - b.x) / area, (a.x - c.x) / area, (b.x - a.x) / area];
+                    let weighted = |component: usize, weights: [f64; 3]| -> f64 {
+                        weights
+                            .iter()
+                            .zip(vertices)
+                            .map(|(&weight, vertex)| {
+                                weight * vertex.reciprocal_w * vertex.texcoord[component]
+                            })
+                            .sum()
+                    };
+                    let s = weighted(0, weights);
+                    let t = weighted(1, weights);
+                    let q = weighted(3, weights);
+                    if q != 0.0 {
+                        let derivative = |component: usize, direction: [f64; 3], numerator: f64| {
+                            (weighted(component, direction) * q
+                                - numerator * weighted(3, direction))
+                                / (q * q)
+                        };
+                        let (w, h) = (f64::from(image.width), f64::from(image.height));
+                        let rho_x = (w * derivative(0, weight_dx, s))
+                            .hypot(h * derivative(1, weight_dx, t));
+                        let rho_y = (w * derivative(0, weight_dy, s))
+                            .hypot(h * derivative(1, weight_dy, t));
+                        let rho = rho_x.max(rho_y);
+                        let lod = if rho > 0.0 { rho.log2() } else { -1000.0 };
+                        if let Some(modulated) = texture.modulate_with_lod(color, texcoord, lod) {
+                            color = modulated;
+                        }
+                    }
                 }
             }
             let color = color.map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8);
