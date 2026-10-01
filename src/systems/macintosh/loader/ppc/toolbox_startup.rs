@@ -51,6 +51,8 @@ pub struct PpcToolboxStartupState {
     pub(super) carbon_events: Vec<PpcCarbonEventRecord>,
     pub(super) next_carbon_event_ref: u32,
     pub(super) carbon_event_queue: VecDeque<(u32, i16)>,
+    /// Caller return PC, previous tick, and remaining finite wait ticks.
+    pub(super) receive_next_event_deadline: Option<(u32, u32, u64)>,
     /// Last tick through which a Carbon or classic event-loop wait is active.
     pub(super) event_loop_poll_until_tick: Option<u32>,
     pub(crate) last_button_result: Option<bool>,
@@ -140,6 +142,7 @@ impl Default for PpcToolboxStartupState {
             carbon_events: Vec::new(),
             next_carbon_event_ref: 0x5000_0000,
             carbon_event_queue: VecDeque::new(),
+            receive_next_event_deadline: None,
             event_loop_poll_until_tick: None,
             last_button_result: None,
             last_still_down_result: None,

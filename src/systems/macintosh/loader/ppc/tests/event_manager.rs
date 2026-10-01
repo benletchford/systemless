@@ -158,6 +158,86 @@ fn carbon_queue_retains_orders_and_flushes_events() {
 }
 
 #[test]
+fn receive_next_carbon_event_filters_peeks_and_transfers_queue_ownership() {
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"ReceiveNextEvent");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::ReceiveNextEvent
+    );
+    let base = PPC_DATA_BASE + 0x2700;
+    loaded.memory.add_region(base, vec![0; 24]);
+    let mut refs = Vec::new();
+    for kind in [1, 2] {
+        loaded.cpu.gpr[4] = u32::from_be_bytes(*b"test");
+        loaded.cpu.gpr[5] = kind;
+        loaded.cpu.fpr[1] = 1.0f64.to_bits();
+        loaded.cpu.gpr[8] = 0;
+        loaded.cpu.gpr[9] = base;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::CreateEvent);
+        refs.push(loaded.memory.read_u32_be(base).unwrap());
+        loaded.cpu.gpr[3] = PPC_MAIN_EVENT_QUEUE_REF;
+        loaded.cpu.gpr[4] = refs.last().copied().unwrap();
+        loaded.cpu.gpr[5] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PostEventToQueue);
+        loaded.cpu.gpr[3] = refs.last().copied().unwrap();
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::ReleaseEvent);
+    }
+    loaded
+        .memory
+        .write_u32_be(base + 4, u32::from_be_bytes(*b"test"))
+        .unwrap();
+    loaded.memory.write_u32_be(base + 8, 2).unwrap();
+    loaded.cpu.gpr[3] = 1;
+    loaded.cpu.gpr[4] = base + 4;
+    loaded.cpu.fpr[1] = 0.0f64.to_bits();
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = base + 12;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ReceiveNextEvent);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(base + 12), Some(refs[1]));
+    assert_eq!(loaded.toolbox_startup.carbon_event_queue.len(), 2);
+    assert_eq!(loaded.toolbox_startup.carbon_events[1].reference_count, 1);
+    loaded.cpu.gpr[3] = 1;
+    loaded.cpu.gpr[7] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ReceiveNextEvent);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.toolbox_startup.carbon_event_queue.len(), 1);
+    loaded.cpu.gpr[3] = refs[1];
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ReleaseEvent);
+    assert_eq!(loaded.toolbox_startup.carbon_events.len(), 1);
+    loaded.cpu.gpr[3] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ReceiveNextEvent);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-9875));
+    loaded.cpu.gpr[3] = PPC_MAIN_EVENT_QUEUE_REF;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FlushEventQueue);
+    assert!(loaded.toolbox_startup.carbon_events.is_empty());
+}
+
+#[test]
+fn receive_next_carbon_event_waits_until_its_finite_timeout() {
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"ReceiveNextEvent");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let out_ref = PPC_DATA_BASE + 0x2800;
+    loaded.memory.add_region(out_ref, vec![0; 4]);
+    loaded.set_tick_count(100);
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.fpr[1] = (2.0 / 60.0f64).to_bits();
+    loaded.cpu.gpr[7] = 1;
+    loaded.cpu.gpr[8] = out_ref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ReceiveNextEvent);
+    assert!(loaded.toolbox_startup.receive_next_event_deadline.is_some());
+    loaded.set_tick_count(101);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ReceiveNextEvent);
+    assert!(loaded.toolbox_startup.receive_next_event_deadline.is_some());
+    loaded.set_tick_count(102);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ReceiveNextEvent);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-9875));
+    assert!(loaded.toolbox_startup.receive_next_event_deadline.is_none());
+}
+
+#[test]
 fn carbon_application_event_handlers_keep_process_owned_targets_and_type_specs() {
     let pef = synthetic_pef_with_library_import(b"CarbonLib", b"InstallEventHandler");
     let mut loaded = load_pef_application(&pef).unwrap();

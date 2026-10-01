@@ -8,6 +8,7 @@ pub(super) const PPC_MAIN_EVENT_QUEUE_REF: u32 = 1;
 pub(super) const PPC_MAIN_EVENT_LOOP_REF: u32 = 2;
 pub(super) const PPC_APPLICATION_EVENT_TARGET_REF: u32 = 3;
 pub(super) const PPC_EVENT_DISPATCHER_TARGET_REF: u32 = 4;
+const PPC_EVENT_LOOP_TIMED_OUT_ERR: i16 = -9875;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PpcCarbonEventHandlerRecord {
@@ -820,6 +821,96 @@ pub(super) fn dispatch_event_import(
                 .carbon_event_queue
                 .insert(index, (event_ref, priority));
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcImportDispatcherTarget::ReceiveNextEvent => {
+            // CarbonEventsCore.h, ReceiveNextEvent: the double timeout uses
+            // f1 and PPC integer slots r5-r6; pull and result use r7-r8.
+            // Pull transfers the queue's retained reference to the caller.
+            let count = cpu.gpr[3];
+            let type_list = cpu.gpr[4];
+            let timeout = f64::from_bits(cpu.fpr[1]);
+            let pull = cpu.gpr[7] != 0;
+            let out_event = cpu.gpr[8];
+            if count > 4096
+                || !timeout.is_finite()
+                || (timeout < 0.0 && timeout != -1.0)
+                || out_event == 0
+                || !ppc_memory_can_write_bytes(memory, out_event, 4)
+            {
+                toolbox_startup.receive_next_event_deadline = None;
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let mut event_types = Vec::with_capacity(count as usize);
+            if type_list != 0 {
+                for index in 0..count {
+                    let Some(address) = index
+                        .checked_mul(8)
+                        .and_then(|offset| type_list.checked_add(offset))
+                    else {
+                        toolbox_startup.receive_next_event_deadline = None;
+                        return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+                    };
+                    let (Some(class), Some(kind)) = (
+                        memory.read_u32_be(address),
+                        address
+                            .checked_add(4)
+                            .and_then(|kind_address| memory.read_u32_be(kind_address)),
+                    ) else {
+                        toolbox_startup.receive_next_event_deadline = None;
+                        return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+                    };
+                    event_types.push((class, kind));
+                }
+            }
+            let index = toolbox_startup
+                .carbon_event_queue
+                .iter()
+                .position(|(event_ref, _)| {
+                    toolbox_startup
+                        .carbon_events
+                        .iter()
+                        .find(|event| event.event_ref == *event_ref)
+                        .is_some_and(|event| {
+                            event_types.is_empty()
+                                || event_types.contains(&(event.event_class, event.event_kind))
+                        })
+                });
+            if let Some(index) = index {
+                let event_ref = toolbox_startup.carbon_event_queue[index].0;
+                if pull {
+                    toolbox_startup.carbon_event_queue.remove(index);
+                }
+                toolbox_startup.receive_next_event_deadline = None;
+                let _ = memory.write_u32_be(out_event, event_ref);
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)));
+            }
+            if timeout == 0.0 {
+                toolbox_startup.receive_next_event_deadline = None;
+                return Some(PpcImportAction::Return(ppc_i16_result(
+                    PPC_EVENT_LOOP_TIMED_OUT_ERR,
+                )));
+            }
+            if timeout > 0.0 {
+                let remaining = (timeout * 60.0).ceil().max(1.0) as u64;
+                let (last_tick, remaining) = match toolbox_startup.receive_next_event_deadline {
+                    Some((caller, last_tick, remaining)) if caller == cpu.lr => {
+                        let elapsed = u64::from(tick_count.wrapping_sub(last_tick));
+                        if elapsed >= remaining {
+                            toolbox_startup.receive_next_event_deadline = None;
+                            return Some(PpcImportAction::Return(ppc_i16_result(
+                                PPC_EVENT_LOOP_TIMED_OUT_ERR,
+                            )));
+                        }
+                        (tick_count, remaining - elapsed)
+                    }
+                    _ => (tick_count, remaining),
+                };
+                toolbox_startup.receive_next_event_deadline = Some((cpu.lr, last_tick, remaining));
+            } else {
+                toolbox_startup.receive_next_event_deadline = None;
+            }
+            toolbox_startup.event_loop_poll_until_tick = Some(tick_count.wrapping_add(1));
+            Some(PpcImportAction::Yield(u64::MAX))
         }
         PpcImportDispatcherTarget::GetMainEventQueue => {
             // Carbon Event Manager Programming Guide (2005), "Posting Events":

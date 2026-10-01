@@ -2736,6 +2736,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::SetEventParameter
         | PpcImportDispatcherTarget::GetEventParameter
         | PpcImportDispatcherTarget::PostEventToQueue
+        | PpcImportDispatcherTarget::ReceiveNextEvent
         | PpcImportDispatcherTarget::FlushEventQueue
         | PpcImportDispatcherTarget::SetEventMask
         | PpcImportDispatcherTarget::GetNextEvent(_)
