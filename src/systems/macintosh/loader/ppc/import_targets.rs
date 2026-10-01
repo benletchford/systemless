@@ -1161,6 +1161,9 @@ pub enum PpcImportDispatcherTarget {
     ObjectSupportCompatibility,
     GlmSetMode,
     GlmGetError,
+    AglChoosePixelFormat,
+    AglDescribePixelFormat,
+    AglDestroyPixelFormat,
     ReturnError(i16),
     ReturnNoErr,
     ReturnOne,
@@ -5625,6 +5628,15 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("ObjectSupportLib", "CreateObjSpecifier") => {
             PpcImportDispatcherTarget::ObjectSupportCompatibility
+        }
+        ("OpenGLLibrary", "aglChoosePixelFormat") => {
+            PpcImportDispatcherTarget::AglChoosePixelFormat
+        }
+        ("OpenGLLibrary", "aglDescribePixelFormat") => {
+            PpcImportDispatcherTarget::AglDescribePixelFormat
+        }
+        ("OpenGLLibrary", "aglDestroyPixelFormat") => {
+            PpcImportDispatcherTarget::AglDestroyPixelFormat
         }
         _ => PpcImportDispatcherTarget::Unsupported,
     }
