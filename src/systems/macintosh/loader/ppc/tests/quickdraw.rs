@@ -4784,6 +4784,47 @@ fn import_bindings_classify_classic_quickdraw_shape_imports() {
 
 
 #[test]
+fn new_pixpat_allocates_device_pixmap_and_pattern_handles() {
+    let pef = synthetic_pef_with_import(b"NewPixPat");
+    let mut loaded = load_pef_application(&pef).unwrap();
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    let handle = loaded.cpu.gpr[3];
+    assert_ne!(handle, 0);
+    let record = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(record), Some(1));
+    let pixmap_handle = loaded.memory.read_u32_be(record + 2).unwrap();
+    let pixmap = loaded.memory.read_u32_be(pixmap_handle).unwrap();
+    let color_table_handle = loaded.memory.read_u32_be(pixmap + 42).unwrap();
+    assert_ne!(color_table_handle, 0);
+    let mut owned = vec![handle, pixmap_handle, color_table_handle];
+    for offset in [6, 10, 16] {
+        let nested = loaded.memory.read_u32_be(record + offset).unwrap();
+        assert_ne!(nested, 0);
+        assert_ne!(loaded.memory.read_u32_be(nested), Some(0));
+        owned.push(nested);
+    }
+    let mut gray = [0; 8];
+    loaded.memory.read_bytes_into(record + 20, &mut gray).unwrap();
+    assert_eq!(gray, [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]);
+
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::DisposePixPat,
+        ),
+    );
+    for nested in owned {
+        assert!(!test_handle_records!(loaded)
+            .iter()
+            .any(|record| record.handle == nested));
+    }
+}
+
+#[test]
 fn quickdraw_compatibility_imports_pre_resolve_to_typed_operations() {
     for (symbol, operation) in [
         ("AnimateEntry", PpcQuickDrawCompatibilityOperation::AnimateEntry),
@@ -4797,6 +4838,7 @@ fn quickdraw_compatibility_imports_pre_resolve_to_typed_operations() {
         ("CTab2Palette", PpcQuickDrawCompatibilityOperation::Ctab2Palette),
         ("DisposeGDevice", PpcQuickDrawCompatibilityOperation::DisposeGDevice),
         ("DisposePalette", PpcQuickDrawCompatibilityOperation::DisposePalette),
+        ("DisposePixPat", PpcQuickDrawCompatibilityOperation::DisposePixPat),
         ("Exp1to3", PpcQuickDrawCompatibilityOperation::Exp1To3),
         ("Exp1to6", PpcQuickDrawCompatibilityOperation::Exp1To6),
         ("GetCPixel", PpcQuickDrawCompatibilityOperation::GetCPixel),
@@ -4806,6 +4848,7 @@ fn quickdraw_compatibility_imports_pre_resolve_to_typed_operations() {
         ("GetNewPalette", PpcQuickDrawCompatibilityOperation::GetNewPalette),
         ("NewGDevice", PpcQuickDrawCompatibilityOperation::NewGDevice),
         ("NewPalette", PpcQuickDrawCompatibilityOperation::NewPalette),
+        ("NewPixPat", PpcQuickDrawCompatibilityOperation::NewPixPat),
         ("OpenPicture", PpcQuickDrawCompatibilityOperation::OpenPicture),
         ("Palette2CTab", PpcQuickDrawCompatibilityOperation::Palette2Ctab),
         ("PenPat", PpcQuickDrawCompatibilityOperation::PenPat),

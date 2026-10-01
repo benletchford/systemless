@@ -5067,30 +5067,8 @@ impl super::TrapDispatcher {
             // Imaging With QuickDraw (1994), p. 4-86: copy every field from
             // the current device PixMap except its color table.
             (true, 0x203) => {
-                let gd_handle = self.ensure_main_gdevice(bus);
-                let gd_ptr = bus.read_long(gd_handle);
-                let gd_pmap_handle = bus.read_long(gd_ptr + 22);
-                let gd_pmap = bus.read_long(gd_pmap_handle);
-                // Native Mac OS allocates the PixMap handle before its nested
-                // color-table handle (verified on Mac OS 8.1 in BasiliskII).
-                // Preserve that order when recycling master-pointer storage.
-                let pm_ptr = bus.alloc(50);
-                let handle = bus.alloc(4);
-                bus.write_long(handle, pm_ptr);
-                for i in 0..50u32 {
-                    bus.write_byte(pm_ptr + i, bus.read_byte(gd_pmap + i));
-                }
-                let depth = bus.read_word(pm_ptr + 32) as u32;
-                let source_ctab_handle = bus.read_long(pm_ptr + 42);
-                let ctab_handle = if let Some(clut) =
-                    self.active_seeded_screen_clut_for_offscreen_clone(gd_handle, 0)
-                {
-                    self.allocate_color_table_handle_with_clut(bus, depth, &clut, 0x8000)
-                } else {
-                    self.allocate_color_table_handle(bus, depth, source_ctab_handle, 0x8000)
-                };
-                bus.write_long(pm_ptr + 42, ctab_handle);
                 let sp = cpu.read_reg(Register::A7);
+                let handle = self.allocate_new_pixmap(bus);
                 bus.write_long(sp, handle);
                 Ok(())
             }
@@ -12029,67 +12007,13 @@ impl super::TrapDispatcher {
             }
 
             // DisposPixPat ($AA08)
-            // Releases all storage allocated by NewPixPat.
-            // PROCEDURE DisposPixPat(ppat: PixPatHandle);
-            // Inside Macintosh Volume V (1986), p. V-73
-            //
-            // "The DisposPixPat procedure releases all storage allocated
-            //  by NewPixPat. It disposes of the pixPat's data handle,
-            //  expanded data handle, and pixMap handle."
-            //
-            // MPW Universal Headers Quickdraw.h:
-            //     EXTERN_API(void) DisposePixPat(PixPatHandle pp)
-            //                                    ONEWORDINLINE(0xAA08);
-            //     #define DisposPixPat(pp) DisposePixPat(pp)
-            //
-            // Tool-bit Pascal PROCEDURE ABI:
-            //   Stack on entry:  [SP+0] = ppat (4 bytes, PixPatHandle).
-            //   Stack on exit:   trap pops 4 bytes; A7 net-balanced
-            //                    across the call; no FUNCTION result
-            //                    slot is written.
-            //
-            // PixPat layout (28 bytes):
-            //   +0  patType   (2)
-            //   +2  patMap    (PixMapHandle, 4)
-            //   +6  patData   (Handle, 4)
-            //  +10  patXData  (Handle, 4)
-            //  +14  patXValid (2)
-            //  +16  patXMap   (Handle, 4)
-            //  +20  pat1Data  (8)
-            //
-            // Documented behaviour: walks the PixPat handle chain freeing
-            // patData (+6), patXData (+10), patMap (+2) including its
-            // pmTable/color table, then the PixPat record itself, then
-            // the outer handle. Each nested dereference is guarded behind
-            // a non-NIL check.
-            //
-            // Absolute behavior differs from BII: BII System 7.5.3 ROM
-            // Color QuickDraw walks the full IM:V V-73 handle chain
-            // freeing every nested allocation NewPixPat made. Systemless's
-            // NewPixPat-allocated records have fewer embedded handles
-            // (zero-initialised record with patType=1 only; no embedded
-            // patMap/patData/patXData/patXMap), so the actual free-list
-            // mutation differs. The shared, verifiable subset is the
-            // Pascal PROCEDURE pop-4 calling convention itself.
-            //
-            // ## TRAP-WORD SWAP FIX (historical)
-            // This arm previously matched `(true, 0x209)` and was
-            // labeled "$AA09 DisposPixPat" — but per IM:V V-291
-            // master trap dispatch table line 20706, $AA08 is DisposPixPat.
-            // The arm was SWAPPED with CopyPixPat ($AA09); fixed by
-            // swapping the trap-word matches. Real-Mac apps emitting
-            // _DisposPixPat now correctly land here.
+            // Releases a PixPat and its owned data, expanded-data and PixMap handles.
+            // PROCEDURE DisposPixPat (ppat: PixPatHandle);
+            // Imaging With QuickDraw (1994), p. 4-91.
             // DisposeCCursor ($AA26)
-            // Releases all records allocated by GetCCursor.
-            // PROCEDURE DisposeCCursor(cCrsr: CCrsrHandle);
-            // Inside Macintosh Volume V, V-75; Imaging With QuickDraw
-            // (1994), pp. 8-26--8-27
-            //
-            // Both procedures consume one four-byte compound-object handle.
-            // Their common record prefix is released by one implementation;
-            // the selected 68040 profile also exposes one default procedure
-            // address for the two slots, while the 604 profile keeps distinct
-            // gateway identities.
+            // Releases a color cursor and its owned compound handles.
+            // PROCEDURE DisposeCCursor (cCrsr: CCrsrHandle);
+            // Imaging With QuickDraw (1994), pp. 8-26--8-27.
             (true, 0x208) | (true, 0x226) => {
                 let sp = cpu.read_reg(Register::A7);
                 let handle = bus.read_long(sp);
@@ -13036,73 +12960,40 @@ impl super::TrapDispatcher {
             }
 
             // NewPixPat ($AA07)
+            // Allocates a PixPat, its PixMap and embedded handles; seeds pat1Data to gray.
             // FUNCTION NewPixPat: PixPatHandle;
-            // Inside Macintosh Volume V, V-72 (Color QuickDraw —
-            //   Operations on Pixel Patterns — NewPixPat)
-            //
-            // MPW Universal Headers Quickdraw.h declares:
-            //     EXTERN_API(PixPatHandle) NewPixPat(void)
-            //                              ONEWORDINLINE(0xAA07);
-            //
-            // Tool-bit Pascal FUNCTION (bit 11 set) with no
-            // arguments and a 4-byte PixPatHandle function result.
-            // Caller pre-pushes a 4-byte result slot at SP+0; the
-            // trap writes the PixPatHandle to [SP+0] without
-            // modifying A7; the caller pops the slot after the
-            // trap returns. Net A7 change across the C-level call
-            // is zero.
-            //
-            // Per IM:V V-72 "The NewPixPat function returns a handle
-            // to a new pixel pattern." A PixPat is a 28-byte record:
-            //   +0  patType   (Integer)       — 1 = color
-            //   +2  patMap    (PixMapHandle)
-            //   +6  patData   (Handle)
-            //  +10  patXData  (Handle)
-            //  +14  patXValid (Integer)
-            //  +16  patXMap   (Handle)
-            //  +20  pat1Data  (Pattern, 8 bytes; documented to be
-            //                  initialised to 50% gray)
-            //
-            // Behaviour shared with BasiliskII:
-            //   (1) Pascal FUNCTION calling convention — A7
-            //       unchanged across the C-level call sequence.
-            //   (2) Non-NIL handle return — per IM:V V-72 the
-            //       routine "returns a handle to a new pixel
-            //       pattern"; both engines return a non-NIL handle
-            //       on a fresh boot with adequate heap space. The
-            //       absolute handle address differs between engines
-            //       (BII heap address vs Systemless host allocator
-            //       address) but each is valid on its own engine.
-            //
-            // Behaviour that diverges from BasiliskII:
-            //   The bytes inside the freshly-allocated PixPat
-            //   record. BII Color QuickDraw writes patType=1,
-            //   pat1Data=50% gray, and pre-allocates the embedded
-            //   patMap / patData / patXData / patXMap handles per
-            //   IM:V V-72. Systemless's implementation here allocates
-            //   a 28-byte record with patType=1 and the documented
-            //   50% gray pat1Data, but it still does NOT pre-
-            //   allocate the embedded handles since the host
-            //   runtime renders only to 1bpp canvases and has no
-            //   need for the embedded color table / expanded data
-            //   path. That remaining divergence is documented at
-            //   the AA0D MakeRGBPat / AA0A PenPixPat / AA0B
-            //   BackPixPat arms.
-            //
-            // Contract-test coverage in this file (mod tests):
-            //   newpixpat_pascal_function_returns_nonnil_handle_and_preserves_stack_across_five_calls
-            //   newpixpat_initializes_gray_pattern_and_penpixpat_copies_it
+            // Imaging With QuickDraw (1994), pp. 4-88--4-89.
             (true, 0x207) => {
                 let sp = cpu.read_reg(Register::A7);
+                let pat_map = self.allocate_new_pixmap(bus);
+                let pat_data = Self::allocate_empty_handle(bus);
+                let pat_xdata = Self::allocate_empty_handle(bus);
+                let pat_xmap = Self::allocate_empty_handle(bus);
                 let rec = bus.alloc(28);
-                if rec != 0 {
-                    for i in 0..28u32 {
-                        bus.write_byte(rec + i, 0);
-                    }
-                    bus.write_word(rec, 1); // patType = 1 (color)
-                    bus.write_bytes(rec + 20, &[0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]);
-                }
                 let handle = bus.alloc(4);
+                if [pat_map, pat_data, pat_xdata, pat_xmap, rec, handle].contains(&0) {
+                    Self::free_pixmap_handle(bus, pat_map);
+                    for nested in [pat_data, pat_xdata, pat_xmap] {
+                        Self::free_memory_handle(bus, nested);
+                    }
+                    if rec != 0 {
+                        bus.free(rec);
+                    }
+                    if handle != 0 {
+                        bus.free(handle);
+                    }
+                    bus.write_long(sp, 0);
+                    return Some(Ok(()));
+                }
+                for offset in 0..28u32 {
+                    bus.write_byte(rec + offset, 0);
+                }
+                bus.write_word(rec, 1);
+                bus.write_long(rec + 2, pat_map);
+                bus.write_long(rec + 6, pat_data);
+                bus.write_long(rec + 10, pat_xdata);
+                bus.write_long(rec + 16, pat_xmap);
+                bus.write_bytes(rec + 20, &[0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]);
                 bus.write_long(handle, rec);
                 bus.write_long(sp, handle);
                 Ok(())
@@ -24891,6 +24782,62 @@ impl super::TrapDispatcher {
             *slot = bus.read_byte(pp_ptr + 20 + i as u32);
         }
         Some(pat)
+    }
+
+    fn allocate_new_pixmap(&mut self, bus: &mut MacMemoryBus) -> u32 {
+        let gd_handle = self.ensure_main_gdevice(bus);
+        let gd_ptr = bus.read_long(gd_handle);
+        let gd_pmap_handle = bus.read_long(gd_ptr + 22);
+        let gd_pmap = bus.read_long(gd_pmap_handle);
+        // NewPixMap allocates the PixMap handle before its color table.
+        // Imaging With QuickDraw (1994), pp. 4-85--4-86.
+        let pm_ptr = bus.alloc(50);
+        let handle = bus.alloc(4);
+        if pm_ptr == 0 || handle == 0 {
+            if pm_ptr != 0 {
+                bus.free(pm_ptr);
+            }
+            if handle != 0 {
+                bus.free(handle);
+            }
+            return 0;
+        }
+        bus.write_long(handle, pm_ptr);
+        for offset in 0..50u32 {
+            bus.write_byte(pm_ptr + offset, bus.read_byte(gd_pmap + offset));
+        }
+        let depth = bus.read_word(pm_ptr + 32) as u32;
+        let source_ctab_handle = bus.read_long(pm_ptr + 42);
+        let ctab_handle = if let Some(clut) =
+            self.active_seeded_screen_clut_for_offscreen_clone(gd_handle, 0)
+        {
+            self.allocate_color_table_handle_with_clut(bus, depth, &clut, 0x8000)
+        } else {
+            self.allocate_color_table_handle(bus, depth, source_ctab_handle, 0x8000)
+        };
+        if ctab_handle == 0 {
+            bus.free(pm_ptr);
+            bus.free(handle);
+            return 0;
+        }
+        bus.write_long(pm_ptr + 42, ctab_handle);
+        handle
+    }
+
+    fn allocate_empty_handle(bus: &mut MacMemoryBus) -> u32 {
+        let ptr = bus.alloc(0);
+        let handle = bus.alloc(4);
+        if ptr == 0 || handle == 0 {
+            if ptr != 0 {
+                bus.free(ptr);
+            }
+            if handle != 0 {
+                bus.free(handle);
+            }
+            return 0;
+        }
+        bus.write_long(handle, ptr);
+        handle
     }
 
     fn clone_memory_handle(bus: &mut MacMemoryBus, source_handle: u32) -> Option<u32> {
