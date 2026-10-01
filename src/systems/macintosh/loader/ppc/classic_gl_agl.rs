@@ -81,10 +81,13 @@ pub struct PpcAglContext {
     depth_range: (f64, f64),
     depth_test: bool,
     current_color: [f64; 4],
+    current_texcoord: [f64; 4],
+    texture_2d_enabled: bool,
     primitive_mode: Option<u32>,
     vertices: Vec<ClassicGlVertex>,
     vertex_array: PpcGlArrayPointer,
     color_array: PpcGlArrayPointer,
+    texcoord_array: PpcGlArrayPointer,
     textures: ClassicGlTextures,
 }
 
@@ -229,10 +232,13 @@ impl PpcAglState {
             depth_range: (0.0, 1.0),
             depth_test: false,
             current_color: [1.0; 4],
+            current_texcoord: [0.0, 0.0, 0.0, 1.0],
+            texture_2d_enabled: false,
             primitive_mode: None,
             vertices: Vec::new(),
             vertex_array: PpcGlArrayPointer::default(),
             color_array: PpcGlArrayPointer::default(),
+            texcoord_array: PpcGlArrayPointer::default(),
             textures: ClassicGlTextures::default(),
         });
         handle
@@ -317,6 +323,25 @@ impl PpcAglState {
         true
     }
 
+    pub fn gl_tex_coord(&mut self, coordinates: [f64; 4]) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        context.current_texcoord = coordinates;
+        true
+    }
+
+    pub fn gl_texture_2d(&mut self, enabled: bool) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        context.texture_2d_enabled = enabled;
+        true
+    }
+
     pub fn gl_begin(&mut self, mode: u32) -> bool {
         if !matches!(mode, 0x0004..=0x0007) {
             return false;
@@ -343,6 +368,7 @@ impl PpcAglState {
         context.vertices.push(ClassicGlVertex {
             clip: context.transform.modelview_projection().transform(point),
             color: context.current_color,
+            texcoord: context.current_texcoord,
         });
         true
     }
@@ -368,8 +394,17 @@ impl PpcAglState {
             depth_test: context.depth_test,
             depth_mask: context.depth_mask,
         };
+        let texture = context
+            .texture_2d_enabled
+            .then(|| context.textures.bound())
+            .flatten();
         let mut draw = |a: usize, b: usize, c: usize| {
-            draw_triangle(framebuffer, [vertices[a], vertices[b], vertices[c]], state)
+            draw_triangle(
+                framebuffer,
+                [vertices[a], vertices[b], vertices[c]],
+                state,
+                texture,
+            )
         };
         match mode {
             0x0004 => {
@@ -468,6 +503,35 @@ impl PpcAglState {
         true
     }
 
+    pub fn gl_tex_coord_pointer(
+        &mut self,
+        size: i32,
+        component_type: u32,
+        stride: i32,
+        pointer: u32,
+    ) -> bool {
+        if !(1..=4).contains(&size)
+            || !matches!(component_type, 0x1402 | 0x1404 | 0x1406 | 0x140a)
+            || stride < 0
+        {
+            return false;
+        }
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        context.texcoord_array = PpcGlArrayPointer {
+            enabled: context.texcoord_array.enabled,
+            size: size as u32,
+            component_type,
+            stride: stride as u32,
+            pointer,
+        };
+        true
+    }
+
     pub fn gl_client_state(&mut self, array: u32, enabled: bool) -> bool {
         let Some(context) = self.context_mut(self.current_context) else {
             return false;
@@ -478,6 +542,7 @@ impl PpcAglState {
         match array {
             0x8074 => context.vertex_array.enabled = enabled, // GL_VERTEX_ARRAY
             0x8076 => context.color_array.enabled = enabled,  // GL_COLOR_ARRAY
+            0x8078 => context.texcoord_array.enabled = enabled, // GL_TEXTURE_COORD_ARRAY
             _ => return false,
         }
         true
@@ -572,6 +637,16 @@ impl PpcAglState {
             vertices.push(ClassicGlVertex {
                 clip: matrix.transform(position),
                 color,
+                texcoord: if context.texcoord_array.enabled {
+                    let Some(value) =
+                        ppc_gl_read_array_components(memory, context.texcoord_array, index, false)
+                    else {
+                        return false;
+                    };
+                    value
+                } else {
+                    context.current_texcoord
+                },
             });
         }
         context.vertices = vertices;
@@ -1551,6 +1626,60 @@ mod tests {
         );
         assert!(agl.gl_delete_textures(&mut memory, 1, 0x1000));
         assert_eq!(agl.context(context).unwrap().textures.bound_2d, 0);
+    }
+
+    #[test]
+    fn enabled_texture_modulates_immediate_triangle_pixels() {
+        let mut agl = PpcAglState::default();
+        let format = agl.choose_pixel_format(PpcAglPixelFormatRequest {
+            rgba: true,
+            ..Default::default()
+        });
+        let context = agl.create_context(format, 0);
+        assert!(agl.set_current_context(context));
+        assert!(agl.set_drawable(
+            context,
+            0x2000,
+            Some(PpcFrontBuffer {
+                base_addr: 0x3000,
+                width: 4,
+                height: 4,
+                depth: 16,
+                row_bytes: 8,
+            })
+        ));
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x1000, vec![255, 0, 0, 255]);
+        assert!(agl.gl_tex_parameter_i(0x0de1, 0x2801, 0x2600));
+        assert!(agl.gl_tex_parameter_i(0x0de1, 0x2800, 0x2600));
+        assert!(agl.gl_tex_image_2d(
+            &mut memory,
+            0x0de1,
+            0,
+            0x1908,
+            1,
+            1,
+            0,
+            0x1908,
+            0x1401,
+            0x1000
+        ));
+        assert!(agl.gl_texture_2d(true));
+        assert!(agl.gl_tex_coord([0.5, 0.5, 0.0, 1.0]));
+        assert!(agl.gl_begin(0x0004));
+        assert!(agl.gl_vertex([-1.0, -1.0, 0.0, 1.0]));
+        assert!(agl.gl_vertex([1.0, -1.0, 0.0, 1.0]));
+        assert!(agl.gl_vertex([-1.0, 1.0, 0.0, 1.0]));
+        assert!(agl.gl_end());
+        assert_eq!(
+            agl.context(context)
+                .unwrap()
+                .framebuffer
+                .as_ref()
+                .unwrap()
+                .pixel(ClassicGlColorBuffer::Front, 0, 0),
+            Some([255, 0, 0, 255])
+        );
     }
 
     #[test]

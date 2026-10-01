@@ -2864,12 +2864,14 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::GlEnable => match cpu.gpr[3] {
             0x0c11 => agl.gl_scissor_test(true),
             0x0b71 => agl.gl_depth_test(true),
+            0x0de1 => agl.gl_texture_2d(true),
             _ => false,
         }
         .then_some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::GlDisable => match cpu.gpr[3] {
             0x0c11 => agl.gl_scissor_test(false),
             0x0b71 => agl.gl_depth_test(false),
+            0x0de1 => agl.gl_texture_2d(false),
             _ => false,
         }
         .then_some(PpcImportAction::ReturnPreserve),
@@ -2997,6 +2999,14 @@ pub(crate) fn dispatch_supported_import(
                 f64::from_bits(cpu.fpr[index + 1])
             }))
             .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlTexCoord2f => agl
+            .gl_tex_coord([
+                f64::from_bits(cpu.fpr[1]),
+                f64::from_bits(cpu.fpr[2]),
+                0.0,
+                1.0,
+            ])
+            .then_some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::GlVertex2f => agl
             .gl_vertex([
                 f64::from_bits(cpu.fpr[1]),
@@ -3023,6 +3033,9 @@ pub(crate) fn dispatch_supported_import(
             .then_some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::GlColorPointer => agl
             .gl_color_pointer(cpu.gpr[3] as i32, cpu.gpr[4], cpu.gpr[5] as i32, cpu.gpr[6])
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlTexCoordPointer => agl
+            .gl_tex_coord_pointer(cpu.gpr[3] as i32, cpu.gpr[4], cpu.gpr[5] as i32, cpu.gpr[6])
             .then_some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::GlEnableClientState => agl
             .gl_client_state(cpu.gpr[3], true)

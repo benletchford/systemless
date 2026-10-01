@@ -2,11 +2,13 @@
 //! https://registry.khronos.org/OpenGL/specs/gl/glspec121.pdf
 
 use super::classic_gl_framebuffer::ClassicGlFramebuffer;
+use super::classic_gl_texture::ClassicGlTexture2D;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ClassicGlVertex {
     pub clip: [f64; 4],
     pub color: [f64; 4],
+    pub texcoord: [f64; 4],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -28,6 +30,7 @@ struct WindowVertex {
     depth: f64,
     reciprocal_w: f64,
     color: [f64; 4],
+    texcoord: [f64; 4],
 }
 
 fn plane_distance(vertex: ClassicGlVertex, plane: usize) -> f64 {
@@ -49,6 +52,9 @@ fn interpolate(a: ClassicGlVertex, b: ClassicGlVertex, fraction: f64) -> Classic
         }),
         color: std::array::from_fn(|index| {
             a.color[index] + fraction * (b.color[index] - a.color[index])
+        }),
+        texcoord: std::array::from_fn(|index| {
+            a.texcoord[index] + fraction * (b.texcoord[index] - a.texcoord[index])
         }),
     }
 }
@@ -95,6 +101,7 @@ fn window_vertex(vertex: ClassicGlVertex, state: ClassicGlRasterState) -> Option
         depth: (far - near) * (z * reciprocal_w + 1.0) / 2.0 + near,
         reciprocal_w,
         color: vertex.color,
+        texcoord: vertex.texcoord,
     })
 }
 
@@ -110,6 +117,7 @@ fn raster_triangle(
     framebuffer: &mut ClassicGlFramebuffer,
     vertices: [WindowVertex; 3],
     state: ClassicGlRasterState,
+    texture: Option<&ClassicGlTexture2D>,
 ) -> bool {
     let mut vertices = vertices;
     let mut area = edge(vertices[0], vertices[1], vertices[2].x, vertices[2].y);
@@ -164,15 +172,31 @@ fn raster_triangle(
             if denominator <= 0.0 || !denominator.is_finite() {
                 return false;
             }
-            let color = std::array::from_fn(|component| {
+            let mut color: [f64; 4] = std::array::from_fn(|component| {
                 let value: f64 = weights
                     .iter()
                     .zip(vertices)
                     .map(|(&weight, vertex)| weight * vertex.reciprocal_w * vertex.color[component])
                     .sum::<f64>()
                     / denominator;
-                (value.clamp(0.0, 1.0) * 255.0).round() as u8
+                value.clamp(0.0, 1.0)
             });
+            if let Some(texture) = texture {
+                let texcoord = std::array::from_fn(|component| {
+                    weights
+                        .iter()
+                        .zip(vertices)
+                        .map(|(&weight, vertex)| {
+                            weight * vertex.reciprocal_w * vertex.texcoord[component]
+                        })
+                        .sum::<f64>()
+                        / denominator
+                });
+                if let Some(modulated) = texture.modulate(color, texcoord) {
+                    color = modulated;
+                }
+            }
+            let color = color.map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8);
             let depth = weights
                 .iter()
                 .zip(vertices)
@@ -190,6 +214,7 @@ pub fn draw_triangle(
     framebuffer: &mut ClassicGlFramebuffer,
     vertices: [ClassicGlVertex; 3],
     state: ClassicGlRasterState,
+    texture: Option<&ClassicGlTexture2D>,
 ) -> bool {
     if vertices
         .iter()
@@ -213,6 +238,7 @@ pub fn draw_triangle(
             framebuffer,
             [window[0], window[index], window[index + 1]],
             state,
+            texture,
         ) {
             return false;
         }
@@ -242,6 +268,7 @@ mod tests {
         ClassicGlVertex {
             clip: [x, y, z, w],
             color,
+            texcoord: [0.0, 0.0, 0.0, 1.0],
         }
     }
 
@@ -256,7 +283,8 @@ mod tests {
                 vertex(1.0, -1.0, 0.0, 1.0, red),
                 vertex(-1.0, 1.0, 0.0, 1.0, red),
             ],
-            state()
+            state(),
+            None
         ));
         assert_eq!(
             framebuffer.pixel(ClassicGlColorBuffer::Front, 0, 0),
@@ -282,7 +310,8 @@ mod tests {
                 vertex(2.0, -2.0, 0.0, 1.0, green),
                 vertex(0.0, 2.0, 0.0, 1.0, green),
             ],
-            state
+            state,
+            None
         ));
         assert_eq!(
             framebuffer.pixel(ClassicGlColorBuffer::Front, 1, 1),
@@ -301,7 +330,8 @@ mod tests {
                 vertex(2.0, -2.0, 0.5, 1.0, blue),
                 vertex(0.0, 2.0, 0.5, 1.0, blue),
             ],
-            state
+            state,
+            None
         ));
         assert_eq!(
             framebuffer.pixel(ClassicGlColorBuffer::Front, 1, 1),

@@ -255,6 +255,121 @@ impl ClassicGlTexture2D {
         }
         true
     }
+
+    fn complete(&self) -> bool {
+        let Some(base) = self.images[0].as_ref() else {
+            return false;
+        };
+        if matches!(self.min_filter, 0x2600 | 0x2601) {
+            return true;
+        }
+        let (mut width, mut height) = (base.width, base.height);
+        let mut level = 0;
+        while width > 1 || height > 1 {
+            width = (width / 2).max(1);
+            height = (height / 2).max(1);
+            level += 1;
+            let Some(image) = self.images.get(level).and_then(Option::as_ref) else {
+                return false;
+            };
+            if image.width != width
+                || image.height != height
+                || image.internal_format != base.internal_format
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn sample(&self, coordinates: [f64; 4]) -> Option<[f64; 4]> {
+        if !self.complete() {
+            return None;
+        }
+        let image = self.images.first()?.as_ref()?;
+        let [s, t, _, q] = coordinates;
+        if !s.is_finite() || !t.is_finite() || !q.is_finite() || q == 0.0 {
+            return None;
+        }
+        let (s, t) = (s / q, t / q);
+        let wrap = |coordinate: f64, mode: u32| -> f64 {
+            match mode {
+                0x2901 => coordinate.rem_euclid(1.0), // REPEAT
+                _ => coordinate.clamp(0.0, 1.0),      // CLAMP, CLAMP_TO_EDGE
+            }
+        };
+        let (s, t) = (wrap(s, self.wrap_s), wrap(t, self.wrap_t));
+        let linear = matches!(self.mag_filter, 0x2601);
+        let texel = |x: i64, y: i64| -> Option<[f64; 4]> {
+            let index = |value: i64, size: u32, mode: u32| -> u32 {
+                if mode == 0x2901 {
+                    value.rem_euclid(i64::from(size)) as u32
+                } else {
+                    value.clamp(0, i64::from(size) - 1) as u32
+                }
+            };
+            image
+                .texel(
+                    index(x, image.width, self.wrap_s),
+                    index(y, image.height, self.wrap_t),
+                )
+                .map(|rgba| rgba.map(|channel| f64::from(channel) / 255.0))
+        };
+        if !linear {
+            return texel(
+                (s * f64::from(image.width)).floor() as i64,
+                (t * f64::from(image.height)).floor() as i64,
+            );
+        }
+        let (x, y) = (
+            s * f64::from(image.width) - 0.5,
+            t * f64::from(image.height) - 0.5,
+        );
+        let (left, bottom) = (x.floor() as i64, y.floor() as i64);
+        let (fx, fy) = (x.fract().rem_euclid(1.0), y.fract().rem_euclid(1.0));
+        let (a, b, c, d) = (
+            texel(left, bottom)?,
+            texel(left + 1, bottom)?,
+            texel(left, bottom + 1)?,
+            texel(left + 1, bottom + 1)?,
+        );
+        Some(std::array::from_fn(|component| {
+            (a[component] * (1.0 - fx) + b[component] * fx) * (1.0 - fy)
+                + (c[component] * (1.0 - fx) + d[component] * fx) * fy
+        }))
+    }
+
+    pub fn modulate(&self, fragment: [f64; 4], coordinates: [f64; 4]) -> Option<[f64; 4]> {
+        let sample = self.sample(coordinates)?;
+        let format = self.images[0].as_ref()?.internal_format;
+        let mut result = fragment;
+        match format {
+            0x1906 => result[3] *= sample[3], // ALPHA
+            1 | 0x1909 => {
+                for component in 0..3 {
+                    result[component] *= sample[0];
+                }
+            }
+            2 | 0x190a => {
+                for component in 0..3 {
+                    result[component] *= sample[0];
+                }
+                result[3] *= sample[3];
+            }
+            3 | 0x1907 => {
+                for component in 0..3 {
+                    result[component] *= sample[component];
+                }
+            }
+            4 | 0x1908 => {
+                for component in 0..4 {
+                    result[component] *= sample[component];
+                }
+            }
+            _ => return None,
+        }
+        Some(result)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -365,5 +480,35 @@ mod tests {
         textures.delete(&[1]);
         assert_eq!(textures.bound_2d, 0);
         assert_eq!(textures.reserve_names(1), Some(vec![3]));
+    }
+
+    #[test]
+    fn sampling_wraps_and_requires_mipmaps_for_default_filter() {
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x1000, vec![255, 0, 0, 0, 255, 0, 0, 0]);
+        let mut image = ClassicGlTextureImage::new(2, 1, 0x1907).unwrap();
+        assert!(image.upload_sub_image(
+            &mut memory,
+            (0, 0),
+            (2, 1),
+            0x1907,
+            0x1401,
+            0x1000,
+            ClassicGlPixelUnpack::default()
+        ));
+        let mut textures = ClassicGlTextures::default();
+        let texture = textures.bound_mut().unwrap();
+        texture.images[0] = Some(image);
+        assert_eq!(texture.sample([0.25, 0.5, 0.0, 1.0]), None);
+        assert!(texture.set_parameter(0x2801, 0x2600));
+        assert!(texture.set_parameter(0x2800, 0x2600));
+        assert_eq!(
+            texture.sample([1.25, 0.5, 0.0, 1.0]),
+            Some([1.0, 0.0, 0.0, 1.0])
+        );
+        assert_eq!(
+            texture.sample([0.75, 0.5, 0.0, 1.0]),
+            Some([0.0, 1.0, 0.0, 1.0])
+        );
     }
 }
