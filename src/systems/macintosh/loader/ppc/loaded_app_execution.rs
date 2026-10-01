@@ -1338,8 +1338,11 @@ impl PpcLoadedApp {
 
                 match action {
                     Some(action) => {
-                        // Complete asynchronous File Manager calls after returning
-                        // from the import, at the next interrupt-work boundary.
+                        // Asynchronous File Manager calls return noErr as soon as
+                        // the request is queued. Keep the completion for a later
+                        // interrupt-work boundary without yielding out of an
+                        // interrupt-time callback that called PBReadAsync.
+                        // Inside Macintosh: Files (1992), 2-8–2-9.
                         let action = if binding.library_name == "InterfaceLib"
                             && binding.symbol_name == "PBReadAsync"
                             && matches!(action, PpcImportAction::Return(_))
@@ -1348,9 +1351,7 @@ impl PpcLoadedApp {
                             let completion = memory.read_u32_be(parameter_block + 12).unwrap_or(0);
                             if completion != 0 {
                                 pending_file_completions.push_back((parameter_block, completion));
-                                cpu.gpr[3] = 0;
-                                cpu.pc = cpu.lr;
-                                PpcImportAction::Yield(0)
+                                PpcImportAction::Return(0)
                             } else {
                                 action
                             }
