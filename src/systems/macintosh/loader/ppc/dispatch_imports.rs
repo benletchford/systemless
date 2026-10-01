@@ -1514,6 +1514,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::ISpDeviceGetElementList
         | PpcImportDispatcherTarget::ISpElementListExtract
         | PpcImportDispatcherTarget::ISpElementGetInfo
+        | PpcImportDispatcherTarget::ISpElementGetConfigurationInfo
         | PpcImportDispatcherTarget::ISpElementGetSimpleState
         | PpcImportDispatcherTarget::ISpGetVersion
         | PpcImportDispatcherTarget::ISpStartup

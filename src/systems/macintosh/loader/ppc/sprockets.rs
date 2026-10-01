@@ -3311,6 +3311,43 @@ pub(crate) fn ppc_isp_element_get_info(cpu: &PpcCpu, memory: &mut PpcSectionMem)
     PPC_NO_ERR
 }
 
+pub(crate) fn ppc_isp_element_get_configuration_info(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+) -> i16 {
+    let element = cpu.gpr[3];
+    let buffer_len = cpu.gpr[4];
+    let config_ptr = cpu.gpr[5];
+    if config_ptr == 0 {
+        return PPC_PARAM_ERR;
+    }
+
+    // Apple Game Sprockets Legacy Reference (2003), pp. 59 and 158–160:
+    // button configuration contains one UInt32 ID, while delta configuration
+    // contains two reserved UInt32s. The synthetic keyboard element covers
+    // every key and therefore has no single button ID; the mouse has one.
+    let config: &[u8] = match element {
+        PPC_ISP_KEYBOARD_ELEMENT => &[0, 0, 0, 0],
+        PPC_ISP_MOUSE_BUTTON_ELEMENT => &[0, 0, 0, 1],
+        PPC_ISP_MOUSE_X_ELEMENT | PPC_ISP_MOUSE_Y_ELEMENT => &[0; 8],
+        _ => return PPC_PARAM_ERR,
+    };
+    let copy_len = buffer_len.min(config.len() as u32);
+    if copy_len > 0 && !ppc_memory_can_write_bytes(memory, config_ptr, copy_len) {
+        return PPC_PARAM_ERR;
+    }
+    for (offset, byte) in config.iter().copied().take(copy_len as usize).enumerate() {
+        memory
+            .write_u8(config_ptr + offset as u32, byte)
+            .expect("configuration buffer was prevalidated");
+    }
+    if buffer_len < config.len() as u32 {
+        PPC_PARAM_ERR
+    } else {
+        PPC_NO_ERR
+    }
+}
+
 pub(crate) fn ppc_isp_devices_extract(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
     let buffer_count = cpu.gpr[3];
     let out_count_ptr = cpu.gpr[4];
