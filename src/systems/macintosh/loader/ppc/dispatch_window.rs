@@ -2924,17 +2924,29 @@ pub enum PpcLegacyWindowOperation {
     GetWindowDefaultButton,
     GetWindowFeatures,
     GetWindowFromPort,
+    GetWindowIdealUserState,
+    GetWindowProxyIcon,
     GetWindowRegion,
+    GetWindowStandardState,
     GetWindowStructureWidths,
     GetWindowTitle,
     GrowWindow,
     HighlightWindow,
+    IsWindowHilited,
+    IsWindowModified,
+    IsWindowPathSelectClick,
+    IsWindowVisible,
     NewWindow,
+    RemoveWindowProxy,
     RepositionWindow,
     SendBehind,
     SetUserFocusWindow,
     SetWindowCancelButton,
     SetWindowDefaultButton,
+    SetWindowIdealUserState,
+    SetWindowModified,
+    SetWindowProxyIcon,
+    SetWindowStandardState,
     SetWindowTitle,
     TrackBox,
     TrackGoAway,
@@ -3745,6 +3757,157 @@ pub(super) fn ppc_dispatch_legacy_window(
                 PPC_PARAM_ERR
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::GetWindowIdealUserState => {
+            let window = cpu.gpr[3];
+            let out_rect = cpu.gpr[4];
+            let result = if window != 0 && out_rect != 0 {
+                let state = memory
+                    .read_u32_be(window.wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
+                    .filter(|handle| *handle != 0)
+                    .and_then(|handle| memory.read_u32_be(handle))
+                    .filter(|state| *state != 0);
+                let (top, left, bottom, right) = if let Some(s) = state {
+                    ppc_read_rect(memory, s).unwrap_or((40, 40, 240, 340))
+                } else if let Some((t, l, b, r)) = ppc_read_rect(memory, window.wrapping_add(16)) {
+                    (t, l, b, r)
+                } else {
+                    (40, 40, 240, 340)
+                };
+                let _ = ppc_write_rect(memory, out_rect, top, left, bottom, right);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::SetWindowIdealUserState => {
+            let window = cpu.gpr[3];
+            let in_rect = cpu.gpr[4];
+            let result = if window != 0 && in_rect != 0 {
+                if let Some((top, left, bottom, right)) = ppc_read_rect(memory, in_rect) {
+                    let state = memory
+                        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
+                        .filter(|handle| *handle != 0)
+                        .and_then(|handle| memory.read_u32_be(handle))
+                        .filter(|state| *state != 0);
+                    if let Some(s) = state {
+                        let _ = ppc_write_rect(memory, s, top, left, bottom, right);
+                    }
+                    PPC_NO_ERR
+                } else {
+                    PPC_PARAM_ERR
+                }
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::GetWindowStandardState => {
+            let window = cpu.gpr[3];
+            let out_rect = cpu.gpr[4];
+            let result = if window != 0 && out_rect != 0 {
+                let state = memory
+                    .read_u32_be(window.wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
+                    .filter(|handle| *handle != 0)
+                    .and_then(|handle| memory.read_u32_be(handle))
+                    .filter(|state| *state != 0);
+                let (top, left, bottom, right) = if let Some(s) = state {
+                    ppc_read_rect(memory, s.wrapping_add(8)).unwrap_or((40, 40, 440, 600))
+                } else {
+                    (40, 40, 440, 600)
+                };
+                let _ = ppc_write_rect(memory, out_rect, top, left, bottom, right);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::SetWindowStandardState => {
+            let window = cpu.gpr[3];
+            let in_rect = cpu.gpr[4];
+            let result = if window != 0 && in_rect != 0 {
+                if let Some((top, left, bottom, right)) = ppc_read_rect(memory, in_rect) {
+                    let state = memory
+                        .read_u32_be(window.wrapping_add(PPC_CWINDOW_STATE_HANDLE_OFFSET))
+                        .filter(|handle| *handle != 0)
+                        .and_then(|handle| memory.read_u32_be(handle))
+                        .filter(|state| *state != 0);
+                    if let Some(s) = state {
+                        let _ = ppc_write_rect(memory, s.wrapping_add(8), top, left, bottom, right);
+                    }
+                    PPC_NO_ERR
+                } else {
+                    PPC_PARAM_ERR
+                }
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::IsWindowHilited => {
+            let window = cpu.gpr[3];
+            let hilited = window != 0
+                && memory
+                    .read_u8(window.wrapping_add(PPC_CWINDOW_HILITED_OFFSET))
+                    == Some(1);
+            Some(PpcImportAction::Return(u32::from(hilited)))
+        }
+        PpcLegacyWindowOperation::IsWindowVisible => {
+            let window = cpu.gpr[3];
+            let visible = ppc_window_is_visible(memory, window);
+            Some(PpcImportAction::Return(u32::from(visible)))
+        }
+        PpcLegacyWindowOperation::IsWindowModified => {
+            let window = cpu.gpr[3];
+            let modified = window != 0 && toolbox_startup.is_window_modified(window);
+            Some(PpcImportAction::Return(u32::from(modified)))
+        }
+        PpcLegacyWindowOperation::SetWindowModified => {
+            let window = cpu.gpr[3];
+            let result = if window != 0 {
+                toolbox_startup.set_window_modified(window, cpu.gpr[4] != 0);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::GetWindowProxyIcon => {
+            let window = cpu.gpr[3];
+            let out_icon = cpu.gpr[4];
+            let result = if window != 0 && out_icon != 0 {
+                let icon = toolbox_startup.window_proxy_icon(window);
+                let _ = memory.write_u32_be(out_icon, icon);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::SetWindowProxyIcon => {
+            let window = cpu.gpr[3];
+            let result = if window != 0 {
+                toolbox_startup.set_window_proxy_icon(window, cpu.gpr[4]);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::RemoveWindowProxy => {
+            let window = cpu.gpr[3];
+            let result = if window != 0 {
+                toolbox_startup.remove_window_proxy_icon(window);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyWindowOperation::IsWindowPathSelectClick => {
+            Some(PpcImportAction::Return(0))
         }
     }
 }

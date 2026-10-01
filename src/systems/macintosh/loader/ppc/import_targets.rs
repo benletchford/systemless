@@ -4460,9 +4460,27 @@ pub(crate) fn dispatcher_target_for_import(
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWindowIdealUserState" | "getwindowidealuserstate",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowIdealUserState)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWindowProxyIcon" | "getwindowproxyicon",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowProxyIcon)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowRegion" | "getwindowregion",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowRegion)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWindowStandardState" | "getwindowstandardstate",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowStandardState)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
@@ -4490,9 +4508,39 @@ pub(crate) fn dispatcher_target_for_import(
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "IsWindowHilited" | "iswindowhilited",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowHilited)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "IsWindowModified" | "iswindowmodified",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowModified)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "IsWindowPathSelectClick" | "iswindowpathselectclick",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowPathSelectClick)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "IsWindowVisible" | "iswindowvisible",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowVisible)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "NewWindow" | "newwindow",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::NewWindow)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "RemoveWindowProxy" | "removewindowproxy",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RemoveWindowProxy)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
@@ -4523,6 +4571,30 @@ pub(crate) fn dispatcher_target_for_import(
             "SetWindowDefaultButton" | "setwindowdefaultbutton",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowDefaultButton)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetWindowIdealUserState" | "setwindowidealuserstate",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowIdealUserState)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetWindowModified" | "setwindowmodified",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowModified)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetWindowProxyIcon" | "setwindowproxyicon",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowProxyIcon)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetWindowStandardState" | "setwindowstandardstate",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowStandardState)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
