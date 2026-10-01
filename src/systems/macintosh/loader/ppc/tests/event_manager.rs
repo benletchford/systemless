@@ -1,6 +1,101 @@
-use super::dispatch_event::PPC_MAIN_EVENT_LOOP_REF;
-use super::dispatch_event::PPC_MAIN_EVENT_QUEUE_REF;
+use super::dispatch_event::{
+    PPC_APPLICATION_EVENT_TARGET_REF, PPC_EVENT_DISPATCHER_TARGET_REF, PPC_MAIN_EVENT_LOOP_REF,
+    PPC_MAIN_EVENT_QUEUE_REF,
+};
 use super::*;
+
+#[test]
+fn carbon_application_event_handlers_keep_process_owned_targets_and_type_specs() {
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"InstallEventHandler");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::InstallEventHandler
+    );
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::GetApplicationEventTarget,
+    );
+    let application_target = loaded.cpu.gpr[3];
+    assert_eq!(application_target, PPC_APPLICATION_EVENT_TARGET_REF);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::GetEventDispatcherTarget,
+    );
+    assert_eq!(loaded.cpu.gpr[3], PPC_EVENT_DISPATCHER_TARGET_REF);
+    assert_ne!(application_target, loaded.cpu.gpr[3]);
+
+    let type_list = PPC_DATA_BASE + 0x2000;
+    let callback = PPC_DATA_BASE + 0x2100;
+    let out_ref = PPC_DATA_BASE + 0x2200;
+    loaded.memory.add_region(type_list, vec![0; 16]);
+    loaded
+        .memory
+        .write_u32_be(type_list, u32::from_be_bytes(*b"keyb"))
+        .unwrap();
+    loaded.memory.write_u32_be(type_list + 4, 1).unwrap();
+    loaded
+        .memory
+        .write_u32_be(type_list + 8, u32::from_be_bytes(*b"mous"))
+        .unwrap();
+    loaded.memory.write_u32_be(type_list + 12, 2).unwrap();
+    loaded
+        .memory
+        .add_region(callback, vec![0x4e, 0x80, 0x00, 0x20]); // blr
+    loaded.memory.add_region(out_ref, vec![0; 4]);
+    loaded.cpu.gpr[3] = application_target;
+    loaded.cpu.gpr[4] = callback;
+    loaded.cpu.gpr[5] = 2;
+    loaded.cpu.gpr[6] = type_list;
+    loaded.cpu.gpr[7] = 0x1234_5678;
+    loaded.cpu.gpr[8] = out_ref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InstallEventHandler);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let handler_ref = loaded.memory.read_u32_be(out_ref).unwrap();
+    let handler = &loaded.toolbox_startup.carbon_event_handlers[0];
+    assert_eq!(handler.handler_ref, handler_ref);
+    assert_eq!(handler.target, application_target);
+    assert_eq!(handler.callback.entry, callback);
+    assert_eq!(handler.user_data, 0x1234_5678);
+    assert_eq!(
+        handler.event_types,
+        vec![
+            (u32::from_be_bytes(*b"keyb"), 1),
+            (u32::from_be_bytes(*b"mous"), 2)
+        ]
+    );
+    loaded.memory.write_u32_be(type_list, 0).unwrap();
+    assert_eq!(
+        loaded.toolbox_startup.carbon_event_handlers[0].event_types[0].0,
+        u32::from_be_bytes(*b"keyb")
+    );
+
+    loaded.cpu.gpr[3] = handler_ref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::RemoveEventHandler);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert!(loaded.toolbox_startup.carbon_event_handlers.is_empty());
+    loaded.cpu.gpr[3] = handler_ref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::RemoveEventHandler);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = callback;
+    loaded.cpu.gpr[5] = 2;
+    loaded.cpu.gpr[6] = type_list;
+    loaded.cpu.gpr[8] = out_ref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InstallEventHandler);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    loaded.cpu.gpr[3] = application_target;
+    loaded.cpu.gpr[4] = u32::MAX;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InstallEventHandler);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    loaded.cpu.gpr[4] = callback;
+    loaded.cpu.gpr[6] = u32::MAX - 3;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InstallEventHandler);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert!(loaded.toolbox_startup.carbon_event_handlers.is_empty());
+    assert_eq!(loaded.memory.read_u32_be(out_ref), Some(handler_ref));
+}
 
 #[test]
 fn carbon_event_loop_timer_fires_during_event_poll_and_can_be_removed() {
@@ -239,8 +334,7 @@ fn os_event_accessors_skip_toolbox_and_high_level_events() {
     // Macintosh Toolbox Essentials (1992), pp. 2-97--2-99:
     // GetOSEvent and OSEventAvail return only low-level events from the
     // Operating System event queue, never update or high-level events.
-    let event =
-        ppc_dequeue_event(&mut queue, u16::MAX, PpcInputSnapshot::default(), true, 7);
+    let event = ppc_dequeue_event(&mut queue, u16::MAX, PpcInputSnapshot::default(), true, 7);
 
     assert_eq!(event, (3, 0x0000_4120, 0, 120, 240, 0x0080, true));
     assert_eq!(queue.len(), 2);
@@ -289,14 +383,11 @@ fn toolbox_event_accessors_apply_documented_event_priority() {
         },
     ]);
 
-    let event =
-        ppc_dequeue_event(&mut queue, u16::MAX, PpcInputSnapshot::default(), false, 7);
+    let event = ppc_dequeue_event(&mut queue, u16::MAX, PpcInputSnapshot::default(), false, 7);
     assert_eq!(event.0, 8, "activate events have highest priority");
-    let event =
-        ppc_dequeue_event(&mut queue, u16::MAX, PpcInputSnapshot::default(), false, 7);
+    let event = ppc_dequeue_event(&mut queue, u16::MAX, PpcInputSnapshot::default(), false, 7);
     assert_eq!(event.0, 1, "user input precedes update events");
-    let event =
-        ppc_dequeue_event(&mut queue, u16::MAX, PpcInputSnapshot::default(), false, 7);
+    let event = ppc_dequeue_event(&mut queue, u16::MAX, PpcInputSnapshot::default(), false, 7);
     assert_eq!(event.0, 6, "update events precede high-level events");
     assert_eq!(queue.front().map(|event| event.what), Some(23));
 }
@@ -408,7 +499,10 @@ fn hle_post_event_uses_current_button_and_modifier_state() {
 
     run_test_import(&mut loaded, PpcImportDispatcherTarget::PostEvent);
 
-    let event = loaded.event_queue().front().expect("PostEvent must enqueue");
+    let event = loaded
+        .event_queue()
+        .front()
+        .expect("PostEvent must enqueue");
     assert_eq!(event.message, 0x0102_0304);
     assert_eq!(event.modifiers, 0x1B80);
     assert_eq!(event.when, expected_when);
@@ -707,8 +801,7 @@ fn getkeys_poll_fast_forward_requires_repeated_idle_caller() {
 
     let mut input = PpcInputSnapshot::default();
     input.key_map[(PPC_KEY_LEFT / 8) as usize] |= 1u8 << (PPC_KEY_LEFT % 8);
-    let action =
-        dispatch_getkeys_import(&mut cpu, &mut memory, input, Some(&mut idle_poll_counts));
+    let action = dispatch_getkeys_import(&mut cpu, &mut memory, input, Some(&mut idle_poll_counts));
     assert_eq!(action, PpcImportAction::ReturnPreserve);
     assert!(idle_poll_counts.is_empty());
 }

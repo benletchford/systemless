@@ -654,6 +654,10 @@ pub enum PpcImportDispatcherTarget {
     GetMainEventLoop,
     InstallEventLoopTimer,
     RemoveEventLoopTimer,
+    GetApplicationEventTarget,
+    GetEventDispatcherTarget,
+    InstallEventHandler,
+    RemoveEventHandler,
     FlushEventQueue,
     SetEventMask,
     CloseDialog,
@@ -3808,6 +3812,18 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib" | "CarbonLib", "RemoveEventLoopTimer") => {
             PpcImportDispatcherTarget::RemoveEventLoopTimer
+        }
+        ("InterfaceLib" | "CarbonLib", "GetApplicationEventTarget") => {
+            PpcImportDispatcherTarget::GetApplicationEventTarget
+        }
+        ("InterfaceLib" | "CarbonLib", "GetEventDispatcherTarget") => {
+            PpcImportDispatcherTarget::GetEventDispatcherTarget
+        }
+        ("InterfaceLib" | "CarbonLib", "InstallEventHandler") => {
+            PpcImportDispatcherTarget::InstallEventHandler
+        }
+        ("InterfaceLib" | "CarbonLib", "RemoveEventHandler") => {
+            PpcImportDispatcherTarget::RemoveEventHandler
         }
         ("InterfaceLib", "FlushEventQueue") => PpcImportDispatcherTarget::FlushEventQueue,
         ("InterfaceLib", "SetEventMask") => PpcImportDispatcherTarget::SetEventMask,
