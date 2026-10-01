@@ -64,6 +64,7 @@ artifacts:
     notes: >-
       Original 4,477,443-byte BinHex/StuffIt archive, SHA-256
       f27e669d7727216b9d6c675f5355c86106c0b687ea251e3c5474d58c1071069f.
+      The promoted public object was fetched back and matched this hash and size.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -83,6 +84,7 @@ artifacts:
     notes: >-
       Exact 560-by-400 game-content crop at (119,102) from an 800-by-600 Systemless
       framebuffer after the party moved one tile in the Guest Quarters.
+      The promoted screenshot was fetched back and matched its hash and size.
 references:
 - https://www.spiderwebsoftware.com/blades/macBOE.html
 - >-
