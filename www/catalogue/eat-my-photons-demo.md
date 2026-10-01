@@ -59,6 +59,7 @@ artifacts:
     notes: >-
       Original 1,873,536-byte StuffIt archive, SHA-256
       ea9fd6bd23e06d8318681e0c341766e8a85cc42695fb66cc2d1d58b6ca8e9d79.
+      The promoted public object was fetched back and matched this size and hash.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -74,7 +75,8 @@ artifacts:
     - https://github.com/benletchford/systemless/issues/3687
     permission: >-
       Fresh gameplay capture made from the original demo for this catalogue entry.
-      The underlying game artwork remains its owners' property.
+      The underlying game artwork remains its owners' property. The promoted
+      public screenshot was fetched back and matched its recorded size and hash.
 references:
 - https://classicmacdemos.com/eat-my-photons
 ---
