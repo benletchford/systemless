@@ -1,4 +1,5 @@
 use super::dispatch_event::{
+    PpcCarbonEventDispatchOrigin, PpcCarbonEventDispatchRecord, PpcCarbonEventHandlerRecord,
     PPC_APPLICATION_EVENT_TARGET_REF, PPC_EVENT_DISPATCHER_TARGET_REF, PPC_MAIN_EVENT_LOOP_REF,
     PPC_MAIN_EVENT_QUEUE_REF,
 };
@@ -235,6 +236,119 @@ fn receive_next_carbon_event_waits_until_its_finite_timeout() {
     run_test_import(&mut loaded, PpcImportDispatcherTarget::ReceiveNextEvent);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-9875));
     assert!(loaded.toolbox_startup.receive_next_event_deadline.is_none());
+}
+
+#[test]
+fn send_carbon_event_calls_handlers_in_stack_order() {
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"SendEventToEventTarget");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let base = PPC_DATA_BASE + 0x2900;
+    let first_callback = base + 0x100;
+    let second_callback = base + 0x200;
+    let type_list = base + 0x300;
+    let out_ref = base + 0x310;
+    let marker = base + 0x320;
+    loaded.memory.add_region(base, vec![0; 0x400]);
+    loaded
+        .memory
+        .write_u32_be(type_list, u32::from_be_bytes(*b"test"))
+        .unwrap();
+    loaded.memory.write_u32_be(type_list + 4, 7).unwrap();
+    for (callback, value, status) in [
+        (first_callback, 0x1111u16, 0i16),
+        (second_callback, 0x2222u16, -9874i16),
+    ] {
+        loaded
+            .memory
+            .write_u32_be(callback, 0x38c0_0000 | u32::from(value))
+            .unwrap(); // li r6,value
+        loaded
+            .memory
+            .write_u32_be(callback + 4, 0x90c5_0000)
+            .unwrap(); // stw r6,0(r5)
+        loaded
+            .memory
+            .write_u32_be(callback + 8, 0x3860_0000 | u32::from(status as u16))
+            .unwrap(); // li r3,status
+        loaded.memory.write_u32_be(callback + 12, BLR).unwrap();
+        loaded.cpu.gpr[3] = PPC_APPLICATION_EVENT_TARGET_REF;
+        loaded.cpu.gpr[4] = callback;
+        loaded.cpu.gpr[5] = 1;
+        loaded.cpu.gpr[6] = type_list;
+        loaded.cpu.gpr[7] = marker;
+        loaded.cpu.gpr[8] = out_ref;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::InstallEventHandler);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    }
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"test");
+    loaded.cpu.gpr[5] = 7;
+    loaded.cpu.fpr[1] = 1.0f64.to_bits();
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = out_ref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CreateEvent);
+    let event_ref = loaded.memory.read_u32_be(out_ref).unwrap();
+    loaded.cpu.gpr[3] = event_ref;
+    loaded.cpu.gpr[4] = PPC_APPLICATION_EVENT_TARGET_REF;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::SendEventToEventTarget;
+    let probe = loaded.run_with_hle_imports(128);
+    assert_eq!(probe.handled_import_count, 3);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(marker), Some(0x1111));
+    assert!(loaded
+        .toolbox_startup
+        .carbon_event_dispatch_stack
+        .is_empty());
+}
+
+#[test]
+fn call_next_carbon_event_handler_returns_to_its_guest_caller() {
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"CallNextEventHandler");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let callback = PPC_DATA_BASE + 0x2d00;
+    loaded
+        .memory
+        .add_region(callback, vec![0x38, 0x60, 0, 0, 0x4e, 0x80, 0, 0x20]); // li r3,0; blr
+    let event_ref = 0x5000_0100;
+    let call_ref = 0x6000_0100;
+    loaded
+        .toolbox_startup
+        .carbon_event_dispatch_stack
+        .push(PpcCarbonEventDispatchRecord {
+            origin: PpcCarbonEventDispatchOrigin::Send,
+            import_pc: 0x1234_0000,
+            return_pc: PPC_HALT_PC,
+            restore_rtoc: loaded.cpu.gpr[2],
+            event_ref,
+            handlers: vec![PpcCarbonEventHandlerRecord {
+                handler_ref: 0x4000_0100,
+                target: PPC_APPLICATION_EVENT_TARGET_REF,
+                callback: PpcCallbackTarget {
+                    entry: callback,
+                    rtoc: loaded.cpu.gpr[2],
+                    proc_info: 0,
+                    routine_flags: 0,
+                },
+                user_data: 0,
+                event_types: vec![(u32::from_be_bytes(*b"test"), 1)],
+            }],
+            next_index: 0,
+            active_call_ref: call_ref,
+            delegated: false,
+        });
+    loaded.cpu.gpr[3] = call_ref;
+    loaded.cpu.gpr[4] = event_ref;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::CallNextEventHandler;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 2);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.toolbox_startup.carbon_event_dispatch_stack.len(), 1);
+    assert!(loaded.toolbox_startup.carbon_event_dispatch_stack[0].delegated);
 }
 
 #[test]

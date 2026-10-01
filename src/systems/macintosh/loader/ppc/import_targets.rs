@@ -668,6 +668,8 @@ pub enum PpcImportDispatcherTarget {
     GetEventParameter,
     PostEventToQueue,
     ReceiveNextEvent,
+    SendEventToEventTarget,
+    CallNextEventHandler,
     FlushEventQueue,
     SetEventMask,
     CloseDialog,
@@ -3845,6 +3847,8 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "CarbonLib", "GetEventParameter") => PpcImportDispatcherTarget::GetEventParameter,
         ("InterfaceLib" | "CarbonLib", "PostEventToQueue") => PpcImportDispatcherTarget::PostEventToQueue,
         ("InterfaceLib" | "CarbonLib", "ReceiveNextEvent") => PpcImportDispatcherTarget::ReceiveNextEvent,
+        ("InterfaceLib" | "CarbonLib", "SendEventToEventTarget") => PpcImportDispatcherTarget::SendEventToEventTarget,
+        ("InterfaceLib" | "CarbonLib", "CallNextEventHandler") => PpcImportDispatcherTarget::CallNextEventHandler,
         ("InterfaceLib", "FlushEventQueue") => PpcImportDispatcherTarget::FlushEventQueue,
         ("InterfaceLib", "SetEventMask") => PpcImportDispatcherTarget::SetEventMask,
         (
