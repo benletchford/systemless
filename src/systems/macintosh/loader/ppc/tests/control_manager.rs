@@ -175,6 +175,8 @@ fn hle_import_runner_creates_and_links_a_classic_control_record() {
             control_id: (0, 0),
             command_id: 0,
             has_focus: false,
+            focus_part: 0,
+            drag_tracking_enabled: false,
         }]
     );
 }
@@ -3851,5 +3853,274 @@ fn control_ownership_region_id_and_focus_commands_dispatch_with_canonical_evalua
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.memory.read_u32_be(out_focus_ptr), Some(0));
+    }
+}
+
+#[test]
+fn import_bindings_classify_control_lookup_interaction_and_tracking_imports() {
+    let cases = [
+        ("GetControlByID", PpcLegacyControlOperation::GetControlByID),
+        ("getcontrolbyid", PpcLegacyControlOperation::GetControlByID),
+        ("FindControlUnderMouse", PpcLegacyControlOperation::FindControlUnderMouse),
+        ("findcontrolundermouse", PpcLegacyControlOperation::FindControlUnderMouse),
+        ("HandleControlClick", PpcLegacyControlOperation::HandleControlClick),
+        ("handlecontrolclick", PpcLegacyControlOperation::HandleControlClick),
+        ("HandleControlKey", PpcLegacyControlOperation::HandleControlKey),
+        ("handlecontrolkey", PpcLegacyControlOperation::HandleControlKey),
+        ("GetControlClickActivation", PpcLegacyControlOperation::GetControlClickActivation),
+        ("getcontrolclickactivation", PpcLegacyControlOperation::GetControlClickActivation),
+        ("GetControlKind", PpcLegacyControlOperation::GetControlKind),
+        ("getcontrolkind", PpcLegacyControlOperation::GetControlKind),
+        ("SetControlFocusPart", PpcLegacyControlOperation::SetControlFocusPart),
+        ("setcontrolfocuspart", PpcLegacyControlOperation::SetControlFocusPart),
+        ("GetControlFocusPart", PpcLegacyControlOperation::GetControlFocusPart),
+        ("getcontrolfocuspart", PpcLegacyControlOperation::GetControlFocusPart),
+        ("SendControlMessage", PpcLegacyControlOperation::SendControlMessage),
+        ("sendcontrolmessage", PpcLegacyControlOperation::SendControlMessage),
+        ("ScrollControlValues", PpcLegacyControlOperation::ScrollControlValues),
+        ("scrollcontrolvalues", PpcLegacyControlOperation::ScrollControlValues),
+        ("IsControlDragTrackingEnabled", PpcLegacyControlOperation::IsControlDragTrackingEnabled),
+        ("iscontroldragtrackingenabled", PpcLegacyControlOperation::IsControlDragTrackingEnabled),
+        ("SetControlDragTrackingEnabled", PpcLegacyControlOperation::SetControlDragTrackingEnabled),
+        ("setcontroldragtrackingenabled", PpcLegacyControlOperation::SetControlDragTrackingEnabled),
+    ];
+
+    for lib in [b"InterfaceLib".as_slice(), b"AppearanceLib".as_slice(), b"CarbonLib".as_slice()] {
+        for (symbol, expected_op) in cases {
+            let pef = synthetic_pef_with_library_import(lib, symbol.as_bytes());
+            let app = load_pef_application(&pef).unwrap();
+            assert_eq!(
+                app.imports[0].dispatcher_target,
+                PpcImportDispatcherTarget::LegacyControl(expected_op),
+                "Library {:?} symbol {}",
+                std::str::from_utf8(lib).unwrap(),
+                symbol
+            );
+        }
+    }
+}
+
+#[test]
+fn control_lookup_interaction_and_tracking_commands_dispatch_with_canonical_evaluation() {
+    let libs: &[&[u8]] = &[b"InterfaceLib", b"AppearanceLib", b"CarbonLib"];
+    for &lib in libs {
+        let lib_str = std::str::from_utf8(lib).unwrap();
+        let pef = synthetic_pef_with_library_import(lib, b"GetControlByID");
+        let mut loaded = load_pef_application(&pef).unwrap();
+
+        // Register two controls in window
+        let ctrl1 = 0x2200;
+        let ctrl1_ptr = 0x3300;
+        loaded.memory.write_u32_be(ctrl1, ctrl1_ptr).unwrap();
+        loaded.memory.write_u32_be(ctrl1_ptr + PPC_CONTROL_OWNER_OFFSET, PPC_MAIN_GWORLD).unwrap();
+        loaded.memory.write_u16_be(ctrl1_ptr + PPC_CONTROL_RECT_OFFSET, 10).unwrap();
+        loaded.memory.write_u16_be(ctrl1_ptr + PPC_CONTROL_RECT_OFFSET + 2, 20).unwrap();
+        loaded.memory.write_u16_be(ctrl1_ptr + PPC_CONTROL_RECT_OFFSET + 4, 50).unwrap();
+        loaded.memory.write_u16_be(ctrl1_ptr + PPC_CONTROL_RECT_OFFSET + 6, 80).unwrap();
+        loaded.memory.write_u8(ctrl1_ptr + PPC_CONTROL_HILITE_OFFSET, 0).unwrap();
+        loaded.memory.write_u8(ctrl1_ptr + PPC_CONTROL_VISIBLE_OFFSET, 255).unwrap();
+        loaded.memory.write_u16_be(ctrl1_ptr + PPC_CONTROL_VALUE_OFFSET, 10).unwrap();
+        loaded.memory.write_u16_be(ctrl1_ptr + PPC_CONTROL_MIN_OFFSET, 0).unwrap();
+        loaded.memory.write_u16_be(ctrl1_ptr + PPC_CONTROL_MAX_OFFSET, 100).unwrap();
+        loaded.memory.write_u32_be(ctrl1_ptr + PPC_CONTROL_NEXT_OFFSET, 0).unwrap();
+
+        loaded.controls.register(ctrl1, ctrl1_ptr, 0, 0);
+
+        // Put ctrl1 into window control list
+        loaded.memory.write_u32_be(PPC_MAIN_GWORLD + PPC_CWINDOW_CONTROL_LIST_OFFSET, ctrl1).unwrap();
+
+        // Scratch pointers
+        let in_id_ptr = 0x5000;
+        let out_ctrl_ptr = 0x5010;
+        let out_part_ptr = 0x5020;
+        let out_result_ptr = 0x5030;
+        let out_kind_ptr = 0x5040;
+        let out_tracks_ptr = 0x5050;
+
+        let sig = 0x5445_5354; // 'TEST'
+        let id_val = 42i32;
+        loaded.memory.write_u32_be(in_id_ptr, sig).unwrap();
+        loaded.memory.write_u32_be(in_id_ptr + 4, id_val as u32).unwrap();
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlID");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl1;
+        loaded.cpu.gpr[4] = in_id_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        // 1. GetControlByID: found
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlByID");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = in_id_ptr;
+        loaded.cpu.gpr[5] = out_ctrl_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_ctrl_ptr), Some(ctrl1));
+
+        // GetControlByID: not found
+        loaded.memory.write_u32_be(in_id_ptr + 4, 999).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = in_id_ptr;
+        loaded.cpu.gpr[5] = out_ctrl_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -30580);
+
+        // 2. FindControlUnderMouse: point inside (v=30, h=40)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "FindControlUnderMouse");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = (30 << 16) | 40;
+        loaded.cpu.gpr[4] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[5] = out_part_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ctrl1);
+        assert_ne!(loaded.memory.read_u16_be(out_part_ptr), Some(0));
+
+        // FindControlUnderMouse: point outside (v=200, h=200)
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = (200 << 16) | 200;
+        loaded.cpu.gpr[4] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[5] = out_part_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        // 3. HandleControlClick
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "HandleControlClick");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl1;
+        loaded.cpu.gpr[4] = (30 << 16) | 40;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_ne!(loaded.cpu.gpr[3] as i16, 0);
+
+        // 4. HandleControlKey
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "HandleControlKey");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl1;
+        loaded.cpu.gpr[4] = 0x31;
+        loaded.cpu.gpr[5] = 0x20;
+        loaded.cpu.gpr[6] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 1);
+
+        // 5. GetControlClickActivation
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlClickActivation");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl1;
+        loaded.cpu.gpr[4] = (30 << 16) | 40;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = out_result_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_result_ptr), Some(1));
+
+        // 6. GetControlKind
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlKind");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl1;
+        loaded.cpu.gpr[4] = out_kind_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_kind_ptr), Some(u32::from_be_bytes(*b"appl")));
+
+        // 7. SetControlFocusPart & GetControlFocusPart
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlFocusPart");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl1;
+        loaded.cpu.gpr[4] = 1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlFocusPart");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl1;
+        loaded.cpu.gpr[4] = out_part_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u16_be(out_part_ptr), Some(1));
+
+        // 8. SendControlMessage
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SendControlMessage");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl1;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        // 9. ScrollControlValues
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ScrollControlValues");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl1;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 15;
+        loaded.cpu.gpr[6] = 1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u16_be(ctrl1_ptr + PPC_CONTROL_VALUE_OFFSET), Some(25));
+
+        // 10. SetControlDragTrackingEnabled & IsControlDragTrackingEnabled
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlDragTrackingEnabled");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl1;
+        loaded.cpu.gpr[4] = 1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "IsControlDragTrackingEnabled");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl1;
+        loaded.cpu.gpr[4] = out_tracks_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u8(out_tracks_ptr), Some(1));
     }
 }
