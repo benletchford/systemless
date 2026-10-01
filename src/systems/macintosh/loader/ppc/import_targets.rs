@@ -4411,6 +4411,14 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TrackControl),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ActiveNonFloatingWindow" | "activenonfloatingwindow",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::ActiveNonFloatingWindow,
+            )
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "BringToFront" | "bringtofront",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::BringToFront)
@@ -4461,6 +4469,18 @@ pub(crate) fn dispatcher_target_for_import(
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetNextWindow" | "getnextwindow",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetNextWindow)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetPreviousWindow" | "getpreviouswindow",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetPreviousWindow)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetUserFocusWindow" | "getuserfocuswindow",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetUserFocusWindow)
@@ -4484,6 +4504,12 @@ pub(crate) fn dispatcher_target_for_import(
             "GetWindowCancelButton" | "getwindowcancelbutton",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowCancelButton)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWindowContentRgn" | "getwindowcontentrgn",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowContentRgn)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
@@ -4537,6 +4563,12 @@ pub(crate) fn dispatcher_target_for_import(
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWindowModality" | "getwindowmodality",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowModality)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowPortBounds" | "getwindowportbounds",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(
@@ -4569,6 +4601,14 @@ pub(crate) fn dispatcher_target_for_import(
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWindowStructureRgn" | "getwindowstructurergn",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::GetWindowStructureRgn,
+            )
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowStructureWidths" | "getwindowstructurewidths",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowStructureWidths)
@@ -4578,6 +4618,12 @@ pub(crate) fn dispatcher_target_for_import(
             "GetWTitle" | "getwtitle" | "GetWindowTitle" | "getwindowtitle",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowTitle)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWindowUpdateRgn" | "getwindowupdatergn",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowUpdateRgn)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
@@ -4615,6 +4661,12 @@ pub(crate) fn dispatcher_target_for_import(
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "IsWindowActive" | "iswindowactive",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowActive)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "IsWindowHilited" | "iswindowhilited",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowHilited)
@@ -4630,6 +4682,14 @@ pub(crate) fn dispatcher_target_for_import(
             "IsWindowPathSelectClick" | "iswindowpathselectclick",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowPathSelectClick)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "IsWindowUpdatePending" | "iswindowupdatepending",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::IsWindowUpdatePending,
+            )
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
@@ -4704,6 +4764,12 @@ pub(crate) fn dispatcher_target_for_import(
             "SetWindowKind" | "setwindowkind",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowKind)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetWindowModality" | "setwindowmodality",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowModality)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",

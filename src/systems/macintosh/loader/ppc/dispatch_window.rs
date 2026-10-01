@@ -9,9 +9,10 @@ pub(crate) const PPC_CWINDOW_VISIBLE_OFFSET: u32 = crate::window_manager::WINDOW
 pub(crate) const PPC_CWINDOW_HILITED_OFFSET: u32 = crate::window_manager::WINDOW_HILITED_FLAG_OFFSET;
 pub(crate) const PPC_CWINDOW_GO_AWAY_OFFSET: u32 = crate::window_manager::WINDOW_GO_AWAY_FLAG_OFFSET;
 pub(crate) const PPC_CWINDOW_SPARE_OFFSET: u32 = crate::window_manager::WINDOW_SPARE_FLAG_OFFSET;
-pub(crate) const PPC_CWINDOW_STRUCTURE_RGN_OFFSET: u32 = 114;
-pub(crate) const PPC_CWINDOW_CONTENT_RGN_OFFSET: u32 = 118;
-pub(crate) const PPC_CWINDOW_UPDATE_RGN_OFFSET: u32 = 122;
+pub(crate) const PPC_CWINDOW_STRUCTURE_RGN_OFFSET: u32 = crate::window_manager::WINDOW_STRUCTURE_RGN_OFFSET;
+pub(crate) const PPC_CWINDOW_CONTENT_RGN_OFFSET: u32 = crate::window_manager::WINDOW_CONTENT_RGN_OFFSET;
+pub(crate) const PPC_CWINDOW_UPDATE_RGN_OFFSET: u32 = crate::window_manager::WINDOW_UPDATE_RGN_OFFSET;
+pub(crate) const PPC_CWINDOW_NEXT_WINDOW_OFFSET: u32 = crate::window_manager::WINDOW_NEXT_WINDOW_OFFSET;
 pub(crate) const PPC_CWINDOW_WINDOW_PIC_OFFSET: u32 = 148;
 pub(crate) const PPC_CWINDOW_DEF_PROC_OFFSET: u32 = crate::window_manager::WINDOW_DEF_PROC_HANDLE_OFFSET;
 pub(crate) const PPC_CWINDOW_STATE_HANDLE_OFFSET: u32 = crate::window_manager::WINDOW_STATE_DATA_HANDLE_OFFSET;
@@ -1970,7 +1971,7 @@ pub(super) fn ppc_sync_process_window_list(
     memory: &mut PpcSectionMem,
     window_list: &SharedProcessWindowList,
 ) {
-    const WINDOW_NEXT_WINDOW_OFFSET: u32 = 144;
+    const WINDOW_NEXT_WINDOW_OFFSET: u32 = PPC_CWINDOW_NEXT_WINDOW_OFFSET;
     const LOWMEM_WINDOW_LIST: u32 = 0x09D6;
 
     window_list.with_ref(|windows| {
@@ -2933,6 +2934,7 @@ pub(super) fn ppc_window_content_color(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcLegacyWindowOperation {
+    ActiveNonFloatingWindow,
     BringToFront,
     CalculateVisibleRegion,
     ChangeWindowAttributes,
@@ -2941,10 +2943,13 @@ pub enum PpcLegacyWindowOperation {
     DisposeWindow,
     DragWindow,
     GetNewWindow,
+    GetNextWindow,
+    GetPreviousWindow,
     GetUserFocusWindow,
     GetWindowAttributes,
     GetWindowBounds,
     GetWindowCancelButton,
+    GetWindowContentRgn,
     GetWindowDefProc,
     GetWindowDefaultButton,
     GetWindowFeatures,
@@ -2953,21 +2958,26 @@ pub enum PpcLegacyWindowOperation {
     GetWindowGreatestArea,
     GetWindowIdealUserState,
     GetWindowKind,
+    GetWindowModality,
     GetWindowPortBounds,
     GetWindowProxyIcon,
     GetWindowRegion,
     GetWindowSpareFlag,
     GetWindowStandardState,
+    GetWindowStructureRgn,
     GetWindowStructureWidths,
     GetWindowTitle,
+    GetWindowUpdateRgn,
     GetWindowUserState,
     GrowWindow,
     HighlightWindow,
     InvalWindowRect,
     InvalWindowRgn,
+    IsWindowActive,
     IsWindowHilited,
     IsWindowModified,
     IsWindowPathSelectClick,
+    IsWindowUpdatePending,
     IsWindowVisible,
     NewWindow,
     RemoveWindowProxy,
@@ -2980,6 +2990,7 @@ pub enum PpcLegacyWindowOperation {
     SetWindowDefaultButton,
     SetWindowIdealUserState,
     SetWindowKind,
+    SetWindowModality,
     SetWindowModified,
     SetWindowProxyIcon,
     SetWindowStandardState,
@@ -3898,10 +3909,12 @@ pub(super) fn ppc_dispatch_legacy_window(
         }
         PpcLegacyWindowOperation::IsWindowHilited => {
             let window = cpu.gpr[3];
-            let hilited = window != 0
-                && memory
-                    .read_u8(window.wrapping_add(PPC_CWINDOW_HILITED_OFFSET))
-                    == Some(1);
+            let flag = if window != 0 {
+                memory.read_u8(window.wrapping_add(PPC_CWINDOW_HILITED_OFFSET))
+            } else {
+                None
+            };
+            let hilited = crate::window_manager::evaluate_get_window_hilited(window, flag);
             Some(PpcImportAction::Return(u32::from(hilited)))
         }
         PpcLegacyWindowOperation::IsWindowVisible => {
@@ -4268,6 +4281,158 @@ pub(super) fn ppc_dispatch_legacy_window(
             };
             let result = crate::window_manager::evaluate_get_window_def_proc(window, def_proc);
             Some(PpcImportAction::Return(result))
+        }
+        PpcLegacyWindowOperation::GetWindowStructureRgn => {
+            let window = cpu.gpr[3];
+            let rgn = if window != 0 {
+                memory.read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
+            } else {
+                None
+            };
+            let result = crate::window_manager::evaluate_get_window_structure_rgn(window, rgn);
+            Some(PpcImportAction::Return(result))
+        }
+        PpcLegacyWindowOperation::GetWindowContentRgn => {
+            let window = cpu.gpr[3];
+            let rgn = if window != 0 {
+                memory.read_u32_be(window.wrapping_add(PPC_CWINDOW_CONTENT_RGN_OFFSET))
+            } else {
+                None
+            };
+            let result = crate::window_manager::evaluate_get_window_content_rgn(window, rgn);
+            Some(PpcImportAction::Return(result))
+        }
+        PpcLegacyWindowOperation::GetWindowUpdateRgn => {
+            let window = cpu.gpr[3];
+            let rgn = if window != 0 {
+                memory.read_u32_be(window.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
+            } else {
+                None
+            };
+            let result = crate::window_manager::evaluate_get_window_update_rgn(window, rgn);
+            Some(PpcImportAction::Return(result))
+        }
+        PpcLegacyWindowOperation::IsWindowUpdatePending => {
+            let window = cpu.gpr[3];
+            let handle = if window != 0 {
+                memory.read_u32_be(window.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
+            } else {
+                None
+            };
+            let bounds = handle.and_then(|h| {
+                if h == 0 {
+                    None
+                } else {
+                    let ptr = memory.read_u32_be(h)?;
+                    if ptr == 0 {
+                        None
+                    } else {
+                        let top = memory.read_u16_be(ptr.wrapping_add(2))? as i16;
+                        let left = memory.read_u16_be(ptr.wrapping_add(4))? as i16;
+                        let bottom = memory.read_u16_be(ptr.wrapping_add(6))? as i16;
+                        let right = memory.read_u16_be(ptr.wrapping_add(8))? as i16;
+                        Some((top, left, bottom, right))
+                    }
+                }
+            });
+            let pending =
+                crate::window_manager::evaluate_is_window_update_pending(window, handle, bounds);
+            Some(PpcImportAction::Return(if pending { 1 } else { 0 }))
+        }
+        PpcLegacyWindowOperation::GetNextWindow => {
+            let window = cpu.gpr[3];
+            let next = if window != 0 {
+                memory.read_u32_be(window.wrapping_add(PPC_CWINDOW_NEXT_WINDOW_OFFSET))
+            } else {
+                None
+            };
+            let result = crate::window_manager::evaluate_get_next_window(window, next);
+            Some(PpcImportAction::Return(result))
+        }
+        PpcLegacyWindowOperation::GetPreviousWindow => {
+            let window = cpu.gpr[3];
+            let prev = window_list.with_ref(|windows| {
+                crate::window_manager::evaluate_get_previous_window(window, windows)
+            });
+            Some(PpcImportAction::Return(prev))
+        }
+        PpcLegacyWindowOperation::IsWindowActive => {
+            let window = cpu.gpr[3];
+            let is_hilited = if window != 0 {
+                let flag = memory.read_u8(window.wrapping_add(PPC_CWINDOW_HILITED_OFFSET));
+                crate::window_manager::evaluate_get_window_hilited(window, flag)
+            } else {
+                false
+            };
+            let is_front = window != 0
+                && window_list.with_ref(|windows| windows.first().copied() == Some(window));
+            let active =
+                crate::window_manager::evaluate_is_window_active(window, is_hilited, is_front);
+            Some(PpcImportAction::Return(if active { 1 } else { 0 }))
+        }
+        PpcLegacyWindowOperation::ActiveNonFloatingWindow => {
+            let active = window_list.with_ref(|windows| {
+                crate::window_manager::evaluate_active_non_floating_window(windows, |w| {
+                    let visible =
+                        memory.read_u8(w.wrapping_add(PPC_CWINDOW_VISIBLE_OFFSET)).unwrap_or(0) != 0;
+                    let kind = memory
+                        .read_u16_be(w.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET))
+                        .unwrap_or(0) as i16;
+                    visible && kind >= 0
+                })
+            });
+            Some(PpcImportAction::Return(active))
+        }
+        PpcLegacyWindowOperation::GetWindowModality => {
+            let window = cpu.gpr[3];
+            let out_modal_kind_ptr = cpu.gpr[4];
+            let out_unavailable_ptr = cpu.gpr[5];
+            let can_write_kind = out_modal_kind_ptr != 0
+                && memory.write_u32_be(out_modal_kind_ptr, 0).is_some();
+            let can_write_unavail = out_unavailable_ptr != 0
+                && memory.write_u32_be(out_unavailable_ptr, 0).is_some();
+            match crate::window_manager::evaluate_get_window_modality_parameters(
+                window,
+                out_modal_kind_ptr,
+                out_unavailable_ptr,
+                can_write_kind,
+                can_write_unavail,
+            ) {
+                Ok(params) => {
+                    let (kind, unavail) = toolbox_startup
+                        .window_modality
+                        .get(&params.window_ptr())
+                        .copied()
+                        .unwrap_or((crate::window_manager::WINDOW_MODALITY_NONE, 0));
+                    if params.out_modal_kind_ptr() != 0 {
+                        let _ = memory.write_u32_be(params.out_modal_kind_ptr(), kind);
+                    }
+                    if params.out_unavailable_window_ptr() != 0 {
+                        let _ = memory.write_u32_be(params.out_unavailable_window_ptr(), unavail);
+                    }
+                    Some(PpcImportAction::Return(0))
+                }
+                Err(err) => Some(PpcImportAction::Return(ppc_i16_result(err))),
+            }
+        }
+        PpcLegacyWindowOperation::SetWindowModality => {
+            let window = cpu.gpr[3];
+            let modal_kind = cpu.gpr[4];
+            let unavailable_ptr = cpu.gpr[5];
+            match crate::window_manager::evaluate_set_window_modality_parameters(
+                window,
+                modal_kind,
+                unavailable_ptr,
+            ) {
+                Ok(params) => {
+                    toolbox_startup.window_modality.insert(
+                        params.window_ptr(),
+                        (params.modal_kind(), params.unavailable_window_ptr()),
+                    );
+                    Some(PpcImportAction::Return(0))
+                }
+                Err(err) => Some(PpcImportAction::Return(ppc_i16_result(err))),
+            }
         }
     }
 }

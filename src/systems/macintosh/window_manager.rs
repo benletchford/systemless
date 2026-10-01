@@ -53,11 +53,9 @@ pub struct WindowSnapshot {
     pub active: bool,
 }
 
-const WINDOW_VISIBLE_OFFSET: u32 = 110;
-const WINDOW_HILITED_OFFSET: u32 = 111;
-const WINDOW_STRUCTURE_RGN_OFFSET: u32 = 114;
-const WINDOW_UPDATE_RGN_OFFSET: u32 = 122;
-const WINDOW_TITLE_HANDLE_OFFSET: u32 = 134;
+const WINDOW_VISIBLE_OFFSET: u32 = WINDOW_VISIBLE_FLAG_OFFSET;
+const WINDOW_HILITED_OFFSET: u32 = WINDOW_HILITED_FLAG_OFFSET;
+
 
 fn snapshot_read_word(read_byte: &mut impl FnMut(u32) -> u8, address: u32) -> u16 {
     u16::from_be_bytes([read_byte(address), read_byte(address.wrapping_add(1))])
@@ -682,9 +680,31 @@ pub const WINDOW_GO_AWAY_FLAG_OFFSET: u32 = 112;
 #[allow(dead_code)]
 pub const WINDOW_SPARE_FLAG_OFFSET: u32 = 113;
 #[allow(dead_code)]
+pub const WINDOW_STRUCTURE_RGN_OFFSET: u32 = 114;
+#[allow(dead_code)]
+pub const WINDOW_CONTENT_RGN_OFFSET: u32 = 118;
+#[allow(dead_code)]
+pub const WINDOW_UPDATE_RGN_OFFSET: u32 = 122;
+#[allow(dead_code)]
 pub const WINDOW_DEF_PROC_HANDLE_OFFSET: u32 = 126;
 #[allow(dead_code)]
 pub const WINDOW_STATE_DATA_HANDLE_OFFSET: u32 = 130;
+#[allow(dead_code)]
+pub const WINDOW_TITLE_HANDLE_OFFSET: u32 = 134;
+#[allow(dead_code)]
+pub const WINDOW_CONTROL_LIST_OFFSET: u32 = 140;
+#[allow(dead_code)]
+pub const WINDOW_NEXT_WINDOW_OFFSET: u32 = 144;
+
+/// Canonical Mac OS WindowModality constants.
+#[allow(dead_code)]
+pub const WINDOW_MODALITY_NONE: u32 = 0;
+#[allow(dead_code)]
+pub const WINDOW_MODALITY_SYSTEM_MODAL: u32 = 1;
+#[allow(dead_code)]
+pub const WINDOW_MODALITY_APP_MODAL: u32 = 2;
+#[allow(dead_code)]
+pub const WINDOW_MODALITY_WINDOW_MODAL: u32 = 3;
 
 /// Architecture-neutral parameter validation for GetWindowUserState.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -748,6 +768,14 @@ pub fn evaluate_set_window_user_state_parameters(
     })
 }
 
+/// Architecture-neutral evaluation of window hilite flag.
+pub fn evaluate_get_window_hilited(window_ptr: u32, flag_byte: Option<u8>) -> bool {
+    if window_ptr == 0 {
+        return false;
+    }
+    flag_byte.unwrap_or(0) != 0
+}
+
 /// Architecture-neutral evaluation of GetWindowGoAwayFlag.
 pub fn evaluate_get_window_go_away_flag(window_ptr: u32, flag_byte: Option<u8>) -> bool {
     if window_ptr == 0 {
@@ -802,6 +830,175 @@ pub fn evaluate_get_window_def_proc(window_ptr: u32, def_proc: Option<u32>) -> u
         return 0;
     }
     def_proc.unwrap_or(0)
+}
+
+/// Architecture-neutral evaluation of GetWindowStructureRgn.
+pub fn evaluate_get_window_structure_rgn(window_ptr: u32, structure_rgn: Option<u32>) -> u32 {
+    if window_ptr == 0 {
+        return 0;
+    }
+    structure_rgn.unwrap_or(0)
+}
+
+/// Architecture-neutral evaluation of GetWindowContentRgn.
+pub fn evaluate_get_window_content_rgn(window_ptr: u32, content_rgn: Option<u32>) -> u32 {
+    if window_ptr == 0 {
+        return 0;
+    }
+    content_rgn.unwrap_or(0)
+}
+
+/// Architecture-neutral evaluation of GetWindowUpdateRgn.
+pub fn evaluate_get_window_update_rgn(window_ptr: u32, update_rgn: Option<u32>) -> u32 {
+    if window_ptr == 0 {
+        return 0;
+    }
+    update_rgn.unwrap_or(0)
+}
+
+/// Architecture-neutral evaluation of IsWindowUpdatePending.
+pub fn evaluate_is_window_update_pending(
+    window_ptr: u32,
+    update_rgn_handle: Option<u32>,
+    update_rgn_bounds: Option<WindowRect>,
+) -> bool {
+    if window_ptr == 0 {
+        return false;
+    }
+    let Some(handle) = update_rgn_handle else {
+        return false;
+    };
+    if handle == 0 {
+        return false;
+    }
+    let Some(bounds) = update_rgn_bounds else {
+        return false;
+    };
+    bounds.2 > bounds.0 && bounds.3 > bounds.1
+}
+
+/// Architecture-neutral evaluation of GetNextWindow.
+pub fn evaluate_get_next_window(window_ptr: u32, next_window: Option<u32>) -> u32 {
+    if window_ptr == 0 {
+        return 0;
+    }
+    next_window.unwrap_or(0)
+}
+
+/// Architecture-neutral evaluation of GetPreviousWindow.
+pub fn evaluate_get_previous_window(window_ptr: u32, window_order: &[u32]) -> u32 {
+    if window_ptr == 0 {
+        return 0;
+    }
+    let Some(index) = window_order.iter().position(|&w| w == window_ptr) else {
+        return 0;
+    };
+    if index == 0 {
+        return 0;
+    }
+    window_order[index - 1]
+}
+
+/// Architecture-neutral evaluation of IsWindowActive.
+pub fn evaluate_is_window_active(window_ptr: u32, is_hilited: bool, is_front: bool) -> bool {
+    if window_ptr == 0 {
+        return false;
+    }
+    is_hilited || is_front
+}
+
+/// Architecture-neutral evaluation of ActiveNonFloatingWindow.
+pub fn evaluate_active_non_floating_window(
+    window_order: &[u32],
+    mut is_eligible: impl FnMut(u32) -> bool,
+) -> u32 {
+    window_order
+        .iter()
+        .copied()
+        .find(|&w| w != 0 && is_eligible(w))
+        .unwrap_or(0)
+}
+
+/// Architecture-neutral parameter validation for GetWindowModality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowModalityParameters {
+    window_ptr: u32,
+    out_modal_kind_ptr: u32,
+    out_unavailable_window_ptr: u32,
+}
+
+impl GetWindowModalityParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn out_modal_kind_ptr(&self) -> u32 {
+        self.out_modal_kind_ptr
+    }
+
+    pub const fn out_unavailable_window_ptr(&self) -> u32 {
+        self.out_unavailable_window_ptr
+    }
+}
+
+pub fn evaluate_get_window_modality_parameters(
+    window_ptr: u32,
+    out_modal_kind_ptr: u32,
+    out_unavailable_window_ptr: u32,
+    can_write_kind: bool,
+    can_write_unavail: bool,
+) -> Result<GetWindowModalityParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    if out_modal_kind_ptr != 0 && !can_write_kind {
+        return Err(-50);
+    }
+    if out_unavailable_window_ptr != 0 && !can_write_unavail {
+        return Err(-50);
+    }
+    Ok(GetWindowModalityParameters {
+        window_ptr,
+        out_modal_kind_ptr,
+        out_unavailable_window_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for SetWindowModality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetWindowModalityParameters {
+    window_ptr: u32,
+    modal_kind: u32,
+    unavailable_window_ptr: u32,
+}
+
+impl SetWindowModalityParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn modal_kind(&self) -> u32 {
+        self.modal_kind
+    }
+
+    pub const fn unavailable_window_ptr(&self) -> u32 {
+        self.unavailable_window_ptr
+    }
+}
+
+pub fn evaluate_set_window_modality_parameters(
+    window_ptr: u32,
+    modal_kind: u32,
+    unavailable_window_ptr: u32,
+) -> Result<SetWindowModalityParameters, i16> {
+    if window_ptr == 0 || modal_kind > WINDOW_MODALITY_WINDOW_MODAL {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(SetWindowModalityParameters {
+        window_ptr,
+        modal_kind,
+        unavailable_window_ptr,
+    })
 }
 
 #[cfg(test)]
@@ -929,6 +1126,85 @@ mod tests {
         assert_eq!(evaluate_get_window_def_proc(0, Some(0x3000)), 0);
         assert_eq!(evaluate_get_window_def_proc(0x1000, None), 0);
         assert_eq!(evaluate_get_window_def_proc(0x1000, Some(0x3000)), 0x3000);
+    }
+
+    #[test]
+    fn window_modality_activation_and_chain_traversal_evaluation() {
+        // Regions
+        assert_eq!(evaluate_get_window_structure_rgn(0, Some(0x2000)), 0);
+        assert_eq!(evaluate_get_window_structure_rgn(0x1000, None), 0);
+        assert_eq!(evaluate_get_window_structure_rgn(0x1000, Some(0x2000)), 0x2000);
+
+        assert_eq!(evaluate_get_window_content_rgn(0, Some(0x2000)), 0);
+        assert_eq!(evaluate_get_window_content_rgn(0x1000, None), 0);
+        assert_eq!(evaluate_get_window_content_rgn(0x1000, Some(0x2000)), 0x2000);
+
+        assert_eq!(evaluate_get_window_update_rgn(0, Some(0x2000)), 0);
+        assert_eq!(evaluate_get_window_update_rgn(0x1000, None), 0);
+        assert_eq!(evaluate_get_window_update_rgn(0x1000, Some(0x2000)), 0x2000);
+
+        // Update pending
+        assert!(!evaluate_is_window_update_pending(0, Some(0x2000), Some((10, 10, 50, 50))));
+        assert!(!evaluate_is_window_update_pending(0x1000, None, Some((10, 10, 50, 50))));
+        assert!(!evaluate_is_window_update_pending(0x1000, Some(0), Some((10, 10, 50, 50))));
+        assert!(!evaluate_is_window_update_pending(0x1000, Some(0x2000), None));
+        assert!(!evaluate_is_window_update_pending(0x1000, Some(0x2000), Some((10, 10, 10, 50))));
+        assert!(!evaluate_is_window_update_pending(0x1000, Some(0x2000), Some((10, 10, 50, 10))));
+        assert!(evaluate_is_window_update_pending(0x1000, Some(0x2000), Some((10, 10, 50, 50))));
+
+        // Chain traversal
+        assert_eq!(evaluate_get_next_window(0, Some(0x2000)), 0);
+        assert_eq!(evaluate_get_next_window(0x1000, None), 0);
+        assert_eq!(evaluate_get_next_window(0x1000, Some(0x2000)), 0x2000);
+
+        let order = [0x1000, 0x2000, 0x3000];
+        assert_eq!(evaluate_get_previous_window(0, &order), 0);
+        assert_eq!(evaluate_get_previous_window(0x9999, &order), 0);
+        assert_eq!(evaluate_get_previous_window(0x1000, &order), 0);
+        assert_eq!(evaluate_get_previous_window(0x2000, &order), 0x1000);
+        assert_eq!(evaluate_get_previous_window(0x3000, &order), 0x2000);
+
+        // Active
+        assert!(!evaluate_is_window_active(0, true, true));
+        assert!(evaluate_is_window_active(0x1000, true, false));
+        assert!(evaluate_is_window_active(0x1000, false, true));
+        assert!(!evaluate_is_window_active(0x1000, false, false));
+
+        // Active non-floating
+        assert_eq!(evaluate_active_non_floating_window(&[], |_| true), 0);
+        assert_eq!(evaluate_active_non_floating_window(&order, |_| false), 0);
+        assert_eq!(evaluate_active_non_floating_window(&order, |w| w == 0x2000), 0x2000);
+        assert_eq!(evaluate_active_non_floating_window(&order, |w| w != 0x1000), 0x2000);
+
+        // Modality parameters
+        assert_eq!(
+            evaluate_get_window_modality_parameters(0, 0x4000, 0x5000, true, true),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_get_window_modality_parameters(0x1000, 0x4000, 0x5000, false, true),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_get_window_modality_parameters(0x1000, 0x4000, 0x5000, true, false),
+            Err(-50)
+        );
+        let get_params = evaluate_get_window_modality_parameters(0x1000, 0x4000, 0x5000, true, true).unwrap();
+        assert_eq!(get_params.window_ptr(), 0x1000);
+        assert_eq!(get_params.out_modal_kind_ptr(), 0x4000);
+        assert_eq!(get_params.out_unavailable_window_ptr(), 0x5000);
+
+        // Null out pointers are allowed
+        let get_null_params = evaluate_get_window_modality_parameters(0x1000, 0, 0, false, false).unwrap();
+        assert_eq!(get_null_params.out_modal_kind_ptr(), 0);
+        assert_eq!(get_null_params.out_unavailable_window_ptr(), 0);
+
+        assert_eq!(evaluate_set_window_modality_parameters(0, WINDOW_MODALITY_APP_MODAL, 0), Err(-50));
+        assert_eq!(evaluate_set_window_modality_parameters(0x1000, 4, 0), Err(-50));
+        let set_params = evaluate_set_window_modality_parameters(0x1000, WINDOW_MODALITY_WINDOW_MODAL, 0x2000).unwrap();
+        assert_eq!(set_params.window_ptr(), 0x1000);
+        assert_eq!(set_params.modal_kind(), WINDOW_MODALITY_WINDOW_MODAL);
+        assert_eq!(set_params.unavailable_window_ptr(), 0x2000);
     }
     #[test]
     fn grow_retains_the_pointer_offset_inside_the_size_box() {
