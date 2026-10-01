@@ -1,6 +1,6 @@
 //! PowerPC Toolbox startup and runtime state.
 
-use super::dispatch_event::{PpcCarbonEventHandlerRecord, PpcEventLoopTimerRecord};
+use super::dispatch_event::{PpcCarbonEventHandlerRecord, PpcCarbonEventRecord, PpcEventLoopTimerRecord};
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +48,8 @@ pub struct PpcToolboxStartupState {
     pub(super) next_event_loop_timer_ref: u32,
     pub(super) carbon_event_handlers: Vec<PpcCarbonEventHandlerRecord>,
     pub(super) next_carbon_event_handler_ref: u32,
+    pub(super) carbon_events: Vec<PpcCarbonEventRecord>,
+    pub(super) next_carbon_event_ref: u32,
     /// Last tick through which a Carbon or classic event-loop wait is active.
     pub(super) event_loop_poll_until_tick: Option<u32>,
     pub(crate) last_button_result: Option<bool>,
@@ -134,6 +136,8 @@ impl Default for PpcToolboxStartupState {
             next_event_loop_timer_ref: 0x100,
             carbon_event_handlers: Vec::new(),
             next_carbon_event_handler_ref: 0x4000_0000,
+            carbon_events: Vec::new(),
+            next_carbon_event_ref: 0x5000_0000,
             event_loop_poll_until_tick: None,
             last_button_result: None,
             last_still_down_result: None,

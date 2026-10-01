@@ -658,6 +658,11 @@ pub enum PpcImportDispatcherTarget {
     GetEventDispatcherTarget,
     InstallEventHandler,
     RemoveEventHandler,
+    CreateEvent,
+    ReleaseEvent,
+    GetEventClass,
+    GetEventKind,
+    GetEventTime,
     FlushEventQueue,
     SetEventMask,
     CloseDialog,
@@ -3825,6 +3830,11 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "CarbonLib", "RemoveEventHandler") => {
             PpcImportDispatcherTarget::RemoveEventHandler
         }
+        ("InterfaceLib" | "CarbonLib", "CreateEvent") => PpcImportDispatcherTarget::CreateEvent,
+        ("InterfaceLib" | "CarbonLib", "ReleaseEvent") => PpcImportDispatcherTarget::ReleaseEvent,
+        ("InterfaceLib" | "CarbonLib", "GetEventClass") => PpcImportDispatcherTarget::GetEventClass,
+        ("InterfaceLib" | "CarbonLib", "GetEventKind") => PpcImportDispatcherTarget::GetEventKind,
+        ("InterfaceLib" | "CarbonLib", "GetEventTime") => PpcImportDispatcherTarget::GetEventTime,
         ("InterfaceLib", "FlushEventQueue") => PpcImportDispatcherTarget::FlushEventQueue,
         ("InterfaceLib", "SetEventMask") => PpcImportDispatcherTarget::SetEventMask,
         (

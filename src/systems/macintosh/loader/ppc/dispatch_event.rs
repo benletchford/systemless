@@ -18,6 +18,16 @@ pub(super) struct PpcCarbonEventHandlerRecord {
     pub(super) event_types: Vec<(u32, u32)>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PpcCarbonEventRecord {
+    pub(super) event_ref: u32,
+    pub(super) event_class: u32,
+    pub(super) event_kind: u32,
+    pub(super) time_bits: u64,
+    pub(super) attributes: u32,
+    pub(super) reference_count: u32,
+}
+
 // Carbon Event Manager Programming Guide (2005), "Installing Timers": a
 // timer belongs to an event loop, fires only while that loop is running, and
 // repeats after its callback unless its interval is zero.
@@ -596,6 +606,73 @@ pub(super) fn dispatch_event_import(
             };
             toolbox_startup.carbon_event_handlers.remove(index);
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcImportDispatcherTarget::CreateEvent => {
+            // The EventTime double occupies f1 and PPC argument slots r6-r7.
+            let when = f64::from_bits(cpu.fpr[1]);
+            let out_ref = cpu.gpr[9];
+            if !when.is_finite()
+                || (when < 0.0 && when != -1.0)
+                || out_ref == 0
+                || !ppc_memory_can_write_bytes(memory, out_ref, 4)
+            {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let event_ref = toolbox_startup.next_carbon_event_ref;
+            let Some(next_ref) = event_ref.checked_add(4) else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            toolbox_startup.next_carbon_event_ref = next_ref;
+            toolbox_startup.carbon_events.push(PpcCarbonEventRecord {
+                event_ref,
+                event_class: cpu.gpr[4],
+                event_kind: cpu.gpr[5],
+                time_bits: if when == 0.0 {
+                    (f64::from(tick_count) / 60.0).to_bits()
+                } else {
+                    when.to_bits()
+                },
+                attributes: cpu.gpr[8],
+                reference_count: 1,
+            });
+            let _ = memory.write_u32_be(out_ref, event_ref);
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcImportDispatcherTarget::ReleaseEvent => {
+            if let Some(index) = toolbox_startup
+                .carbon_events
+                .iter()
+                .position(|event| event.event_ref == cpu.gpr[3])
+            {
+                let event = &mut toolbox_startup.carbon_events[index];
+                event.reference_count -= 1;
+                if event.reference_count == 0 {
+                    toolbox_startup.carbon_events.remove(index);
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::GetEventClass => Some(PpcImportAction::Return(
+            toolbox_startup
+                .carbon_events
+                .iter()
+                .find(|event| event.event_ref == cpu.gpr[3])
+                .map_or(0, |event| event.event_class),
+        )),
+        PpcImportDispatcherTarget::GetEventKind => Some(PpcImportAction::Return(
+            toolbox_startup
+                .carbon_events
+                .iter()
+                .find(|event| event.event_ref == cpu.gpr[3])
+                .map_or(0, |event| event.event_kind),
+        )),
+        PpcImportDispatcherTarget::GetEventTime => {
+            cpu.fpr[1] = toolbox_startup
+                .carbon_events
+                .iter()
+                .find(|event| event.event_ref == cpu.gpr[3])
+                .map_or(0.0f64.to_bits(), |event| event.time_bits);
+            Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetMainEventQueue => {
             // Carbon Event Manager Programming Guide (2005), "Posting Events":

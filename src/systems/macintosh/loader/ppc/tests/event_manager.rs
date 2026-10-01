@@ -5,6 +5,52 @@ use super::dispatch_event::{
 use super::*;
 
 #[test]
+fn carbon_event_refs_are_process_owned_and_release_invalidates_them() {
+    for symbol in [
+        "CreateEvent",
+        "ReleaseEvent",
+        "GetEventClass",
+        "GetEventKind",
+        "GetEventTime",
+    ] {
+        assert_ne!(
+            dispatcher_target_for_import("CarbonLib", symbol),
+            PpcImportDispatcherTarget::Unsupported
+        );
+    }
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"CreateEvent");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let out_ref = PPC_DATA_BASE + 0x2400;
+    loaded.memory.add_region(out_ref, vec![0; 4]);
+    loaded.set_tick_count(120);
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"test");
+    loaded.cpu.gpr[5] = 7;
+    loaded.cpu.fpr[1] = 0.0f64.to_bits();
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = out_ref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CreateEvent);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let event_ref = loaded.memory.read_u32_be(out_ref).unwrap();
+    loaded.cpu.gpr[3] = event_ref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetEventClass);
+    assert_eq!(loaded.cpu.gpr[3], u32::from_be_bytes(*b"test"));
+    loaded.cpu.gpr[3] = event_ref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetEventKind);
+    assert_eq!(loaded.cpu.gpr[3], 7);
+    loaded.cpu.gpr[3] = event_ref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetEventTime);
+    let event_time = f64::from_bits(loaded.cpu.fpr[1]);
+    assert!((2.0..3.0).contains(&event_time));
+    loaded.cpu.gpr[3] = event_ref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ReleaseEvent);
+    assert!(loaded.toolbox_startup.carbon_events.is_empty());
+    loaded.cpu.gpr[3] = event_ref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetEventClass);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
 fn carbon_application_event_handlers_keep_process_owned_targets_and_type_specs() {
     let pef = synthetic_pef_with_library_import(b"CarbonLib", b"InstallEventHandler");
     let mut loaded = load_pef_application(&pef).unwrap();
