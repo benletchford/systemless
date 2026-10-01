@@ -2723,6 +2723,26 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetMainEventLoop
         | PpcImportDispatcherTarget::InstallEventLoopTimer
         | PpcImportDispatcherTarget::RemoveEventLoopTimer
+        | PpcImportDispatcherTarget::GetApplicationEventTarget
+        | PpcImportDispatcherTarget::GetEventDispatcherTarget
+        | PpcImportDispatcherTarget::InstallEventHandler
+        | PpcImportDispatcherTarget::RemoveEventHandler
+        | PpcImportDispatcherTarget::CreateEvent
+        | PpcImportDispatcherTarget::ReleaseEvent
+        | PpcImportDispatcherTarget::RetainEvent
+        | PpcImportDispatcherTarget::GetEventClass
+        | PpcImportDispatcherTarget::GetEventKind
+        | PpcImportDispatcherTarget::GetEventTime
+        | PpcImportDispatcherTarget::SetEventParameter
+        | PpcImportDispatcherTarget::GetEventParameter
+        | PpcImportDispatcherTarget::PostEventToQueue
+        | PpcImportDispatcherTarget::ReceiveNextEvent
+        | PpcImportDispatcherTarget::SendEventToEventTarget
+        | PpcImportDispatcherTarget::CallNextEventHandler
+        | PpcImportDispatcherTarget::RunApplicationEventLoop
+        | PpcImportDispatcherTarget::QuitApplicationEventLoop
+        | PpcImportDispatcherTarget::InstallStandardEventHandler
+        | PpcImportDispatcherTarget::GetCurrentEventTime
         | PpcImportDispatcherTarget::FlushEventQueue
         | PpcImportDispatcherTarget::SetEventMask
         | PpcImportDispatcherTarget::GetNextEvent(_)

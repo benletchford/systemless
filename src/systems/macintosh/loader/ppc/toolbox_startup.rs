@@ -1,6 +1,6 @@
 //! PowerPC Toolbox startup and runtime state.
 
-use super::dispatch_event::PpcEventLoopTimerRecord;
+use super::dispatch_event::{PpcCarbonEventDispatchRecord, PpcCarbonEventHandlerRecord, PpcCarbonEventRecord, PpcEventLoopTimerRecord};
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +46,17 @@ pub struct PpcToolboxStartupState {
     pub(crate) event_queue_probe: EventQueueProbeSnapshot,
     pub(super) event_loop_timers: Vec<PpcEventLoopTimerRecord>,
     pub(super) next_event_loop_timer_ref: u32,
+    pub(super) carbon_event_handlers: Vec<PpcCarbonEventHandlerRecord>,
+    pub(super) next_carbon_event_handler_ref: u32,
+    pub(super) carbon_events: Vec<PpcCarbonEventRecord>,
+    pub(super) next_carbon_event_ref: u32,
+    pub(super) carbon_event_queue: VecDeque<(u32, i16)>,
+    /// Caller return PC, previous tick, and remaining finite wait ticks.
+    pub(super) receive_next_event_deadline: Option<(u32, u32, u64)>,
+    pub(super) carbon_event_dispatch_stack: Vec<PpcCarbonEventDispatchRecord>,
+    pub(super) next_carbon_event_call_ref: u32,
+    pub(super) application_event_loop_context: Option<(u32, u32)>,
+    pub(super) application_event_loop_quit_requested: bool,
     /// Last tick through which a Carbon or classic event-loop wait is active.
     pub(super) event_loop_poll_until_tick: Option<u32>,
     pub(crate) last_button_result: Option<bool>,
@@ -130,6 +141,16 @@ impl Default for PpcToolboxStartupState {
             event_queue_probe: EventQueueProbeSnapshot::default(),
             event_loop_timers: Vec::new(),
             next_event_loop_timer_ref: 0x100,
+            carbon_event_handlers: Vec::new(),
+            next_carbon_event_handler_ref: 0x4000_0000,
+            carbon_events: Vec::new(),
+            next_carbon_event_ref: 0x5000_0000,
+            carbon_event_queue: VecDeque::new(),
+            receive_next_event_deadline: None,
+            carbon_event_dispatch_stack: Vec::new(),
+            next_carbon_event_call_ref: 0x6000_0000,
+            application_event_loop_context: None,
+            application_event_loop_quit_requested: false,
             event_loop_poll_until_tick: None,
             last_button_result: None,
             last_still_down_result: None,

@@ -6,6 +6,157 @@ use super::*;
 // queue, so this stable non-null token identifies that queue to guest calls.
 pub(super) const PPC_MAIN_EVENT_QUEUE_REF: u32 = 1;
 pub(super) const PPC_MAIN_EVENT_LOOP_REF: u32 = 2;
+pub(super) const PPC_APPLICATION_EVENT_TARGET_REF: u32 = 3;
+pub(super) const PPC_EVENT_DISPATCHER_TARGET_REF: u32 = 4;
+const PPC_EVENT_LOOP_TIMED_OUT_ERR: i16 = -9875;
+const PPC_EVENT_NOT_HANDLED_ERR: i16 = -9874;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PpcCarbonEventHandlerRecord {
+    pub(super) handler_ref: u32,
+    pub(super) target: u32,
+    pub(super) callback: PpcCallbackTarget,
+    pub(super) user_data: u32,
+    pub(super) event_types: Vec<(u32, u32)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PpcCarbonEventRecord {
+    pub(super) event_ref: u32,
+    pub(super) event_class: u32,
+    pub(super) event_kind: u32,
+    pub(super) time_bits: u64,
+    pub(super) attributes: u32,
+    pub(super) reference_count: u32,
+    pub(super) parameters: Vec<PpcCarbonEventParameterRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PpcCarbonEventParameterRecord {
+    pub(super) name: u32,
+    pub(super) type_code: u32,
+    pub(super) data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PpcCarbonEventDispatchOrigin {
+    Send,
+    CallNext,
+    ApplicationLoop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PpcCarbonEventDispatchRecord {
+    pub(super) origin: PpcCarbonEventDispatchOrigin,
+    pub(super) import_pc: u32,
+    pub(super) return_pc: u32,
+    pub(super) restore_rtoc: u32,
+    pub(super) event_ref: u32,
+    pub(super) handlers: Vec<PpcCarbonEventHandlerRecord>,
+    pub(super) next_index: usize,
+    pub(super) active_call_ref: u32,
+    pub(super) delegated: bool,
+}
+
+fn ppc_call_next_carbon_event_handler(
+    cpu: &mut PpcCpu,
+    dispatch: &mut PpcCarbonEventDispatchRecord,
+    next_call_ref: &mut u32,
+) -> Option<PpcImportAction> {
+    let handler = dispatch.handlers.get(dispatch.next_index)?;
+    let call_ref = *next_call_ref;
+    *next_call_ref = call_ref.checked_add(4)?;
+    dispatch.next_index += 1;
+    dispatch.active_call_ref = call_ref;
+    dispatch.delegated = false;
+    cpu.gpr[3] = call_ref;
+    cpu.gpr[4] = dispatch.event_ref;
+    cpu.gpr[5] = handler.user_data;
+    Some(PpcImportAction::CallNative {
+        entry: handler.callback.entry,
+        rtoc: handler.callback.rtoc,
+        return_pc: dispatch.import_pc,
+        final_pc: dispatch.import_pc,
+        restore_rtoc: dispatch.restore_rtoc,
+        return_gpr3: PpcNativeReturnGpr3::Preserve,
+    })
+}
+
+fn ppc_carbon_matching_handlers(
+    toolbox_startup: &PpcToolboxStartupState,
+    event_ref: u32,
+    target: u32,
+) -> Option<Vec<PpcCarbonEventHandlerRecord>> {
+    let event = toolbox_startup
+        .carbon_events
+        .iter()
+        .find(|event| event.event_ref == event_ref)?;
+    let event_type = (event.event_class, event.event_kind);
+    let mut handlers = Vec::new();
+    if target == PPC_EVENT_DISPATCHER_TARGET_REF {
+        handlers.extend(
+            toolbox_startup
+                .carbon_event_handlers
+                .iter()
+                .rev()
+                .filter(|handler| {
+                    handler.target == PPC_EVENT_DISPATCHER_TARGET_REF
+                        && handler.event_types.contains(&event_type)
+                })
+                .cloned(),
+        );
+    }
+    handlers.extend(
+        toolbox_startup
+            .carbon_event_handlers
+            .iter()
+            .rev()
+            .filter(|handler| {
+                handler.target == PPC_APPLICATION_EVENT_TARGET_REF
+                    && handler.event_types.contains(&event_type)
+            })
+            .cloned(),
+    );
+    Some(handlers)
+}
+
+fn ppc_resume_carbon_event_dispatch(
+    cpu: &mut PpcCpu,
+    toolbox_startup: &mut PpcToolboxStartupState,
+    origin: PpcCarbonEventDispatchOrigin,
+) -> Option<PpcImportAction> {
+    let dispatch = toolbox_startup.carbon_event_dispatch_stack.last_mut()?;
+    if dispatch.origin != origin || dispatch.import_pc != cpu.pc || cpu.lr != cpu.pc {
+        return None;
+    }
+    let status = cpu.gpr[3];
+    if status == ppc_i16_result(PPC_EVENT_NOT_HANDLED_ERR) && !dispatch.delegated {
+        if let Some(action) = ppc_call_next_carbon_event_handler(
+            cpu,
+            dispatch,
+            &mut toolbox_startup.next_carbon_event_call_ref,
+        ) {
+            return Some(action);
+        }
+    }
+    let dispatch = toolbox_startup.carbon_event_dispatch_stack.pop().unwrap();
+    cpu.lr = dispatch.return_pc;
+    Some(PpcImportAction::Return(status))
+}
+
+fn ppc_release_carbon_event(toolbox_startup: &mut PpcToolboxStartupState, event_ref: u32) {
+    if let Some(index) = toolbox_startup
+        .carbon_events
+        .iter()
+        .position(|event| event.event_ref == event_ref)
+    {
+        let event = &mut toolbox_startup.carbon_events[index];
+        event.reference_count -= 1;
+        if event.reference_count == 0 {
+            toolbox_startup.carbon_events.remove(index);
+        }
+    }
+}
 
 // Carbon Event Manager Programming Guide (2005), "Installing Timers": a
 // timer belongs to an event loop, fires only while that loop is running, and
@@ -455,6 +606,12 @@ pub(super) fn dispatch_event_import(
             // CarbonEvents.h: each application has one main EventLoopRef.
             Some(PpcImportAction::Return(PPC_MAIN_EVENT_LOOP_REF))
         }
+        PpcImportDispatcherTarget::GetApplicationEventTarget => {
+            Some(PpcImportAction::Return(PPC_APPLICATION_EVENT_TARGET_REF))
+        }
+        PpcImportDispatcherTarget::GetEventDispatcherTarget => {
+            Some(PpcImportAction::Return(PPC_EVENT_DISPATCHER_TARGET_REF))
+        }
         PpcImportDispatcherTarget::InstallEventLoopTimer => {
             // CarbonEvents.h (QuickTime 6.0.2): OSStatus InstallEventLoopTimer(
             // EventLoopRef, EventTimerInterval, EventTimerInterval,
@@ -509,6 +666,553 @@ pub(super) fn dispatch_event_import(
             toolbox_startup.event_loop_timers.remove(index);
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
+        PpcImportDispatcherTarget::InstallEventHandler => {
+            // CarbonEvents.h: an EventTypeSpec is two UInt32 fields. Copy the
+            // caller's list because it may be stack storage that disappears
+            // before the handler receives an event.
+            let target = cpu.gpr[3];
+            let callback_ptr = cpu.gpr[4];
+            let count = cpu.gpr[5];
+            let type_list = cpu.gpr[6];
+            let user_data = cpu.gpr[7];
+            let out_ref = cpu.gpr[8];
+            if !matches!(
+                target,
+                PPC_APPLICATION_EVENT_TARGET_REF | PPC_EVENT_DISPATCHER_TARGET_REF
+            ) || count > 4096
+                || (count != 0 && type_list == 0)
+                || (out_ref != 0 && !ppc_memory_can_write_bytes(memory, out_ref, 4))
+            {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let Some(callback) =
+                ppc_resolve_callback_target(memory, callback_ptr, cpu.gpr[2], None)
+                    .filter(|callback| memory.read_u32_be(callback.entry).is_some())
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let mut event_types = Vec::with_capacity(count as usize);
+            for index in 0..count {
+                let Some(address) = type_list.checked_add(index * 8) else {
+                    return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+                };
+                let Some(kind_address) = address.checked_add(4) else {
+                    return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+                };
+                let (Some(event_class), Some(event_kind)) = (
+                    memory.read_u32_be(address),
+                    memory.read_u32_be(kind_address),
+                ) else {
+                    return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+                };
+                event_types.push((event_class, event_kind));
+            }
+            let handler_ref = toolbox_startup.next_carbon_event_handler_ref;
+            let Some(next_ref) = handler_ref.checked_add(4) else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            toolbox_startup.next_carbon_event_handler_ref = next_ref;
+            toolbox_startup
+                .carbon_event_handlers
+                .push(PpcCarbonEventHandlerRecord {
+                    handler_ref,
+                    target,
+                    callback,
+                    user_data,
+                    event_types,
+                });
+            if out_ref != 0 {
+                let _ = memory.write_u32_be(out_ref, handler_ref);
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcImportDispatcherTarget::RemoveEventHandler => {
+            let Some(index) = toolbox_startup
+                .carbon_event_handlers
+                .iter()
+                .position(|handler| handler.handler_ref == cpu.gpr[3])
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            toolbox_startup.carbon_event_handlers.remove(index);
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcImportDispatcherTarget::CreateEvent => {
+            // The EventTime double occupies f1 and PPC argument slots r6-r7.
+            let when = f64::from_bits(cpu.fpr[1]);
+            let out_ref = cpu.gpr[9];
+            if !when.is_finite()
+                || (when < 0.0 && when != -1.0)
+                || out_ref == 0
+                || !ppc_memory_can_write_bytes(memory, out_ref, 4)
+            {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let event_ref = toolbox_startup.next_carbon_event_ref;
+            let Some(next_ref) = event_ref.checked_add(4) else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            toolbox_startup.next_carbon_event_ref = next_ref;
+            toolbox_startup.carbon_events.push(PpcCarbonEventRecord {
+                event_ref,
+                event_class: cpu.gpr[4],
+                event_kind: cpu.gpr[5],
+                time_bits: if when == 0.0 {
+                    (f64::from(tick_count) / 60.0).to_bits()
+                } else {
+                    when.to_bits()
+                },
+                attributes: cpu.gpr[8],
+                reference_count: 1,
+                parameters: Vec::new(),
+            });
+            let _ = memory.write_u32_be(out_ref, event_ref);
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcImportDispatcherTarget::ReleaseEvent => {
+            ppc_release_carbon_event(toolbox_startup, cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::RetainEvent => {
+            let event_ref = cpu.gpr[3];
+            if let Some(event) = toolbox_startup
+                .carbon_events
+                .iter_mut()
+                .find(|event| event.event_ref == event_ref)
+            {
+                if let Some(reference_count) = event.reference_count.checked_add(1) {
+                    event.reference_count = reference_count;
+                    Some(PpcImportAction::Return(event_ref))
+                } else {
+                    Some(PpcImportAction::Return(0))
+                }
+            } else {
+                Some(PpcImportAction::Return(0))
+            }
+        }
+        PpcImportDispatcherTarget::GetEventClass => Some(PpcImportAction::Return(
+            toolbox_startup
+                .carbon_events
+                .iter()
+                .find(|event| event.event_ref == cpu.gpr[3])
+                .map_or(0, |event| event.event_class),
+        )),
+        PpcImportDispatcherTarget::GetEventKind => Some(PpcImportAction::Return(
+            toolbox_startup
+                .carbon_events
+                .iter()
+                .find(|event| event.event_ref == cpu.gpr[3])
+                .map_or(0, |event| event.event_kind),
+        )),
+        PpcImportDispatcherTarget::GetEventTime => {
+            cpu.fpr[1] = toolbox_startup
+                .carbon_events
+                .iter()
+                .find(|event| event.event_ref == cpu.gpr[3])
+                .map_or(0.0f64.to_bits(), |event| event.time_bits);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::SetEventParameter => {
+            // CarbonEventsCore.h, SetEventParameter: the event owns a copy of
+            // the caller's bytes, and a second write replaces the named value.
+            let (event_ref, name, type_code, size, data_ptr) =
+                (cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6], cpu.gpr[7]);
+            if size != 0 && (data_ptr == 0 || !ppc_memory_can_read_bytes(memory, data_ptr, size)) {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let Some(event) = toolbox_startup
+                .carbon_events
+                .iter_mut()
+                .find(|event| event.event_ref == event_ref)
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let data = if size == 0 {
+                Vec::new()
+            } else {
+                let Some(data) = ppc_memory_read_bytes(memory, data_ptr, size) else {
+                    return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+                };
+                data
+            };
+            if let Some(parameter) = event
+                .parameters
+                .iter_mut()
+                .find(|parameter| parameter.name == name)
+            {
+                parameter.type_code = type_code;
+                parameter.data = data;
+            } else {
+                event.parameters.push(PpcCarbonEventParameterRecord {
+                    name,
+                    type_code,
+                    data,
+                });
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcImportDispatcherTarget::GetEventParameter => {
+            // CarbonEventsCore.h, GetEventParameter: NULL data with a zero
+            // buffer size requests metadata only; typeWildCard is '****'.
+            let Some(event) = toolbox_startup
+                .carbon_events
+                .iter()
+                .find(|event| event.event_ref == cpu.gpr[3])
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let Some(parameter) = event
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == cpu.gpr[4])
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(-9870)));
+            };
+            let (desired_type, actual_type_ptr, buffer_size, actual_size_ptr, data_ptr) =
+                (cpu.gpr[5], cpu.gpr[6], cpu.gpr[7], cpu.gpr[8], cpu.gpr[9]);
+            let data_size = parameter.data.len() as u32;
+            if (desired_type != u32::from_be_bytes(*b"****") && desired_type != parameter.type_code)
+                || (actual_type_ptr != 0 && !ppc_memory_can_write_bytes(memory, actual_type_ptr, 4))
+                || (actual_size_ptr != 0 && !ppc_memory_can_write_bytes(memory, actual_size_ptr, 4))
+                || (data_ptr == 0 && buffer_size != 0)
+                || (data_ptr != 0
+                    && (buffer_size < data_size
+                        || !ppc_memory_can_write_bytes(memory, data_ptr, data_size)))
+            {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            if actual_type_ptr != 0 {
+                let _ = memory.write_u32_be(actual_type_ptr, parameter.type_code);
+            }
+            if actual_size_ptr != 0 {
+                let _ = memory.write_u32_be(actual_size_ptr, data_size);
+            }
+            if data_ptr != 0 {
+                let _ = memory.write_bytes(data_ptr, &parameter.data);
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcImportDispatcherTarget::PostEventToQueue => {
+            // CarbonEventsCore.h, PostEventToQueue: the queue retains an
+            // event, refuses duplicate posts, and orders by EventPriority.
+            let queue_ref = cpu.gpr[3];
+            let event_ref = cpu.gpr[4];
+            let priority = cpu.gpr[5] as i16;
+            if queue_ref != PPC_MAIN_EVENT_QUEUE_REF || !(0..=2).contains(&priority) {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            if toolbox_startup
+                .carbon_event_queue
+                .iter()
+                .any(|(queued_ref, _)| *queued_ref == event_ref)
+            {
+                return Some(PpcImportAction::Return(ppc_i16_result(-9860)));
+            }
+            let Some(event) = toolbox_startup
+                .carbon_events
+                .iter_mut()
+                .find(|event| event.event_ref == event_ref)
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let Some(reference_count) = event.reference_count.checked_add(1) else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            event.reference_count = reference_count;
+            let index = toolbox_startup
+                .carbon_event_queue
+                .iter()
+                .position(|(_, queued_priority)| *queued_priority < priority)
+                .unwrap_or(toolbox_startup.carbon_event_queue.len());
+            toolbox_startup
+                .carbon_event_queue
+                .insert(index, (event_ref, priority));
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcImportDispatcherTarget::ReceiveNextEvent => {
+            // CarbonEventsCore.h, ReceiveNextEvent: the double timeout uses
+            // f1 and PPC integer slots r5-r6; pull and result use r7-r8.
+            // Pull transfers the queue's retained reference to the caller.
+            let count = cpu.gpr[3];
+            let type_list = cpu.gpr[4];
+            let timeout = f64::from_bits(cpu.fpr[1]);
+            let pull = cpu.gpr[7] != 0;
+            let out_event = cpu.gpr[8];
+            if count > 4096
+                || !timeout.is_finite()
+                || (timeout < 0.0 && timeout != -1.0)
+                || out_event == 0
+                || !ppc_memory_can_write_bytes(memory, out_event, 4)
+            {
+                toolbox_startup.receive_next_event_deadline = None;
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let mut event_types = Vec::with_capacity(count as usize);
+            if type_list != 0 {
+                for index in 0..count {
+                    let Some(address) = index
+                        .checked_mul(8)
+                        .and_then(|offset| type_list.checked_add(offset))
+                    else {
+                        toolbox_startup.receive_next_event_deadline = None;
+                        return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+                    };
+                    let (Some(class), Some(kind)) = (
+                        memory.read_u32_be(address),
+                        address
+                            .checked_add(4)
+                            .and_then(|kind_address| memory.read_u32_be(kind_address)),
+                    ) else {
+                        toolbox_startup.receive_next_event_deadline = None;
+                        return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+                    };
+                    event_types.push((class, kind));
+                }
+            }
+            let index = toolbox_startup
+                .carbon_event_queue
+                .iter()
+                .position(|(event_ref, _)| {
+                    toolbox_startup
+                        .carbon_events
+                        .iter()
+                        .find(|event| event.event_ref == *event_ref)
+                        .is_some_and(|event| {
+                            event_types.is_empty()
+                                || event_types.contains(&(event.event_class, event.event_kind))
+                        })
+                });
+            if let Some(index) = index {
+                let event_ref = toolbox_startup.carbon_event_queue[index].0;
+                if pull {
+                    toolbox_startup.carbon_event_queue.remove(index);
+                }
+                toolbox_startup.receive_next_event_deadline = None;
+                let _ = memory.write_u32_be(out_event, event_ref);
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)));
+            }
+            if timeout == 0.0 {
+                toolbox_startup.receive_next_event_deadline = None;
+                return Some(PpcImportAction::Return(ppc_i16_result(
+                    PPC_EVENT_LOOP_TIMED_OUT_ERR,
+                )));
+            }
+            if timeout > 0.0 {
+                let remaining = (timeout * 60.0).ceil().max(1.0) as u64;
+                let (last_tick, remaining) = match toolbox_startup.receive_next_event_deadline {
+                    Some((caller, last_tick, remaining)) if caller == cpu.lr => {
+                        let elapsed = u64::from(tick_count.wrapping_sub(last_tick));
+                        if elapsed >= remaining {
+                            toolbox_startup.receive_next_event_deadline = None;
+                            return Some(PpcImportAction::Return(ppc_i16_result(
+                                PPC_EVENT_LOOP_TIMED_OUT_ERR,
+                            )));
+                        }
+                        (tick_count, remaining - elapsed)
+                    }
+                    _ => (tick_count, remaining),
+                };
+                toolbox_startup.receive_next_event_deadline = Some((cpu.lr, last_tick, remaining));
+            } else {
+                toolbox_startup.receive_next_event_deadline = None;
+            }
+            toolbox_startup.event_loop_poll_until_tick = Some(tick_count.wrapping_add(1));
+            Some(PpcImportAction::Yield(u64::MAX))
+        }
+        PpcImportDispatcherTarget::SendEventToEventTarget => {
+            if let Some(action) = ppc_resume_carbon_event_dispatch(
+                cpu,
+                toolbox_startup,
+                PpcCarbonEventDispatchOrigin::Send,
+            ) {
+                return Some(action);
+            }
+            let event_ref = cpu.gpr[3];
+            let target = cpu.gpr[4];
+            if !matches!(
+                target,
+                PPC_APPLICATION_EVENT_TARGET_REF | PPC_EVENT_DISPATCHER_TARGET_REF
+            ) {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            // Carbon Event Manager Programming Guide (2005), pp. 10-13:
+            // handlers form a last-installed-first stack; the dispatcher
+            // propagates an unhandled event to the application target.
+            let Some(handlers) = ppc_carbon_matching_handlers(toolbox_startup, event_ref, target)
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            if handlers.is_empty() {
+                return Some(PpcImportAction::Return(ppc_i16_result(
+                    PPC_EVENT_NOT_HANDLED_ERR,
+                )));
+            }
+            let mut dispatch = PpcCarbonEventDispatchRecord {
+                origin: PpcCarbonEventDispatchOrigin::Send,
+                import_pc: cpu.pc,
+                return_pc: cpu.lr,
+                restore_rtoc: cpu.gpr[2],
+                event_ref,
+                handlers,
+                next_index: 0,
+                active_call_ref: 0,
+                delegated: false,
+            };
+            let Some(action) = ppc_call_next_carbon_event_handler(
+                cpu,
+                &mut dispatch,
+                &mut toolbox_startup.next_carbon_event_call_ref,
+            ) else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            toolbox_startup.carbon_event_dispatch_stack.push(dispatch);
+            Some(action)
+        }
+        PpcImportDispatcherTarget::CallNextEventHandler => {
+            if let Some(action) = ppc_resume_carbon_event_dispatch(
+                cpu,
+                toolbox_startup,
+                PpcCarbonEventDispatchOrigin::CallNext,
+            ) {
+                return Some(action);
+            }
+            let call_ref = cpu.gpr[3];
+            let event_ref = cpu.gpr[4];
+            let Some(parent) = toolbox_startup
+                .carbon_event_dispatch_stack
+                .last_mut()
+                .filter(|dispatch| {
+                    dispatch.active_call_ref == call_ref && dispatch.event_ref == event_ref
+                })
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let handlers = parent.handlers[parent.next_index..].to_vec();
+            parent.delegated = true;
+            if handlers.is_empty() {
+                return Some(PpcImportAction::Return(ppc_i16_result(
+                    PPC_EVENT_NOT_HANDLED_ERR,
+                )));
+            }
+            let mut dispatch = PpcCarbonEventDispatchRecord {
+                origin: PpcCarbonEventDispatchOrigin::CallNext,
+                import_pc: cpu.pc,
+                return_pc: cpu.lr,
+                restore_rtoc: cpu.gpr[2],
+                event_ref,
+                handlers,
+                next_index: 0,
+                active_call_ref: 0,
+                delegated: false,
+            };
+            let Some(action) = ppc_call_next_carbon_event_handler(
+                cpu,
+                &mut dispatch,
+                &mut toolbox_startup.next_carbon_event_call_ref,
+            ) else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            toolbox_startup.carbon_event_dispatch_stack.push(dispatch);
+            Some(action)
+        }
+        PpcImportDispatcherTarget::RunApplicationEventLoop => {
+            // CarbonEvents.h (QuickTime 6.0.2): this is a void routine. The
+            // loop owns each pulled queue reference until dispatch finishes.
+            if let Some(dispatch) = toolbox_startup.carbon_event_dispatch_stack.last_mut() {
+                if dispatch.origin == PpcCarbonEventDispatchOrigin::ApplicationLoop
+                    && dispatch.import_pc == cpu.pc
+                    && cpu.lr == cpu.pc
+                {
+                    if cpu.gpr[3] == ppc_i16_result(PPC_EVENT_NOT_HANDLED_ERR)
+                        && !dispatch.delegated
+                    {
+                        if let Some(action) = ppc_call_next_carbon_event_handler(
+                            cpu,
+                            dispatch,
+                            &mut toolbox_startup.next_carbon_event_call_ref,
+                        ) {
+                            return Some(action);
+                        }
+                    }
+                    let dispatch = toolbox_startup.carbon_event_dispatch_stack.pop().unwrap();
+                    ppc_release_carbon_event(toolbox_startup, dispatch.event_ref);
+                    cpu.lr = dispatch.return_pc;
+                }
+            }
+            let return_pc = match toolbox_startup.application_event_loop_context {
+                Some((import_pc, return_pc)) if import_pc == cpu.pc => return_pc,
+                Some(_) => return Some(PpcImportAction::ReturnPreserve),
+                None => {
+                    toolbox_startup.application_event_loop_context = Some((cpu.pc, cpu.lr));
+                    cpu.lr
+                }
+            };
+            if toolbox_startup.application_event_loop_quit_requested {
+                toolbox_startup.application_event_loop_quit_requested = false;
+                toolbox_startup.application_event_loop_context = None;
+                cpu.lr = return_pc;
+                return Some(PpcImportAction::ReturnPreserve);
+            }
+            toolbox_startup.event_loop_poll_until_tick = Some(tick_count.wrapping_add(1));
+            while let Some((event_ref, _)) = toolbox_startup.carbon_event_queue.pop_front() {
+                let handlers = ppc_carbon_matching_handlers(
+                    toolbox_startup,
+                    event_ref,
+                    PPC_EVENT_DISPATCHER_TARGET_REF,
+                )
+                .unwrap_or_default();
+                if handlers.is_empty() {
+                    ppc_release_carbon_event(toolbox_startup, event_ref);
+                    continue;
+                }
+                let mut dispatch = PpcCarbonEventDispatchRecord {
+                    origin: PpcCarbonEventDispatchOrigin::ApplicationLoop,
+                    import_pc: cpu.pc,
+                    return_pc,
+                    restore_rtoc: cpu.gpr[2],
+                    event_ref,
+                    handlers,
+                    next_index: 0,
+                    active_call_ref: 0,
+                    delegated: false,
+                };
+                let Some(action) = ppc_call_next_carbon_event_handler(
+                    cpu,
+                    &mut dispatch,
+                    &mut toolbox_startup.next_carbon_event_call_ref,
+                ) else {
+                    ppc_release_carbon_event(toolbox_startup, event_ref);
+                    return Some(PpcImportAction::ReturnPreserve);
+                };
+                toolbox_startup.carbon_event_dispatch_stack.push(dispatch);
+                return Some(action);
+            }
+            Some(PpcImportAction::Yield(u64::MAX))
+        }
+        PpcImportDispatcherTarget::QuitApplicationEventLoop => {
+            toolbox_startup.application_event_loop_quit_requested = true;
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::InstallStandardEventHandler => {
+            // CarbonEventsCore.h, InstallStandardEventHandler (CarbonLib
+            // 1.1): before Mac OS X 10.5 only window targets have an
+            // installable standard handler. Other targets have no effect.
+            let target = cpu.gpr[3];
+            if matches!(
+                target,
+                PPC_APPLICATION_EVENT_TARGET_REF | PPC_EVENT_DISPATCHER_TARGET_REF
+            ) {
+                Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+            } else {
+                Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)))
+            }
+        }
+        PpcImportDispatcherTarget::GetCurrentEventTime => {
+            // CarbonEventsCore.h, GetCurrentEventTime: EventTime is seconds
+            // since startup. The classic tick clock advances at 60 Hz.
+            cpu.fpr[1] = (f64::from(tick_count) / 60.0).to_bits();
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetMainEventQueue => {
             // Carbon Event Manager Programming Guide (2005), "Posting Events":
             // GetMainEventQueue returns the main application's EventQueueRef.
@@ -520,6 +1224,9 @@ pub(super) fn dispatch_event_import(
             // queue shared with classic Event Manager calls.
             if cpu.gpr[3] != PPC_MAIN_EVENT_QUEUE_REF {
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            while let Some((event_ref, _)) = toolbox_startup.carbon_event_queue.pop_front() {
+                ppc_release_carbon_event(toolbox_startup, event_ref);
             }
             event_queue.clear();
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))

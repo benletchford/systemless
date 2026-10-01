@@ -654,6 +654,26 @@ pub enum PpcImportDispatcherTarget {
     GetMainEventLoop,
     InstallEventLoopTimer,
     RemoveEventLoopTimer,
+    GetApplicationEventTarget,
+    GetEventDispatcherTarget,
+    InstallEventHandler,
+    RemoveEventHandler,
+    CreateEvent,
+    ReleaseEvent,
+    RetainEvent,
+    GetEventClass,
+    GetEventKind,
+    GetEventTime,
+    SetEventParameter,
+    GetEventParameter,
+    PostEventToQueue,
+    ReceiveNextEvent,
+    SendEventToEventTarget,
+    CallNextEventHandler,
+    RunApplicationEventLoop,
+    QuitApplicationEventLoop,
+    InstallStandardEventHandler,
+    GetCurrentEventTime,
     FlushEventQueue,
     SetEventMask,
     CloseDialog,
@@ -3809,6 +3829,34 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "CarbonLib", "RemoveEventLoopTimer") => {
             PpcImportDispatcherTarget::RemoveEventLoopTimer
         }
+        ("InterfaceLib" | "CarbonLib", "GetApplicationEventTarget") => {
+            PpcImportDispatcherTarget::GetApplicationEventTarget
+        }
+        ("InterfaceLib" | "CarbonLib", "GetEventDispatcherTarget") => {
+            PpcImportDispatcherTarget::GetEventDispatcherTarget
+        }
+        ("InterfaceLib" | "CarbonLib", "InstallEventHandler") => {
+            PpcImportDispatcherTarget::InstallEventHandler
+        }
+        ("InterfaceLib" | "CarbonLib", "RemoveEventHandler") => {
+            PpcImportDispatcherTarget::RemoveEventHandler
+        }
+        ("InterfaceLib" | "CarbonLib", "CreateEvent") => PpcImportDispatcherTarget::CreateEvent,
+        ("InterfaceLib" | "CarbonLib", "ReleaseEvent") => PpcImportDispatcherTarget::ReleaseEvent,
+        ("InterfaceLib" | "CarbonLib", "RetainEvent") => PpcImportDispatcherTarget::RetainEvent,
+        ("InterfaceLib" | "CarbonLib", "GetEventClass") => PpcImportDispatcherTarget::GetEventClass,
+        ("InterfaceLib" | "CarbonLib", "GetEventKind") => PpcImportDispatcherTarget::GetEventKind,
+        ("InterfaceLib" | "CarbonLib", "GetEventTime") => PpcImportDispatcherTarget::GetEventTime,
+        ("InterfaceLib" | "CarbonLib", "SetEventParameter") => PpcImportDispatcherTarget::SetEventParameter,
+        ("InterfaceLib" | "CarbonLib", "GetEventParameter") => PpcImportDispatcherTarget::GetEventParameter,
+        ("InterfaceLib" | "CarbonLib", "PostEventToQueue") => PpcImportDispatcherTarget::PostEventToQueue,
+        ("InterfaceLib" | "CarbonLib", "ReceiveNextEvent") => PpcImportDispatcherTarget::ReceiveNextEvent,
+        ("InterfaceLib" | "CarbonLib", "SendEventToEventTarget") => PpcImportDispatcherTarget::SendEventToEventTarget,
+        ("InterfaceLib" | "CarbonLib", "CallNextEventHandler") => PpcImportDispatcherTarget::CallNextEventHandler,
+        ("InterfaceLib" | "CarbonLib", "RunApplicationEventLoop") => PpcImportDispatcherTarget::RunApplicationEventLoop,
+        ("InterfaceLib" | "CarbonLib", "QuitApplicationEventLoop") => PpcImportDispatcherTarget::QuitApplicationEventLoop,
+        ("InterfaceLib" | "CarbonLib", "InstallStandardEventHandler") => PpcImportDispatcherTarget::InstallStandardEventHandler,
+        ("InterfaceLib" | "CarbonLib", "GetCurrentEventTime") => PpcImportDispatcherTarget::GetCurrentEventTime,
         ("InterfaceLib", "FlushEventQueue") => PpcImportDispatcherTarget::FlushEventQueue,
         ("InterfaceLib", "SetEventMask") => PpcImportDispatcherTarget::SetEventMask,
         (
