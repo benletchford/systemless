@@ -4752,9 +4752,27 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "CloseStandardSheet" | "closestandardsheet",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::CloseStandardSheet,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "CountDITL" | "CountDitl",
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::CountDitl,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "CreateStandardAlert" | "createstandardalert",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::CreateStandardAlert,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "CreateStandardSheet" | "createstandardsheet",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::CreateStandardSheet,
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
@@ -4767,6 +4785,18 @@ pub(crate) fn dispatcher_target_for_import(
             "FindDialogItem" | "FindDItem",
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::FindDialogItem,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "FlashDialogControl" | "flashdialogcontrol",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::FlashDialogControl,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetDialogItemInit" | "getdialogiteminit",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogItemInit,
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
@@ -4788,9 +4818,21 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetModalDialogEventMask" | "getmodaldialogeventmask",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetModalDialogEventMask,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "GetParamText" | "getparamtext",
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::GetParamText,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetStandardAlertDefaultParams" | "getstandardalertdefaultparams",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetStandardAlertDefaultParams,
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
@@ -4806,6 +4848,18 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "RunStandardAlert" | "runstandardalert",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::RunStandardAlert,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "SetDialogFilter" | "setdialogfilter",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::SetDialogFilter,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "SetDialogKeyboardFocusItem"
             | "setdialogkeyboardfocusitem"
             | "SetDialogKeyboardFocus"
@@ -4818,6 +4872,12 @@ pub(crate) fn dispatcher_target_for_import(
             "SetDialogTimeout" | "setdialogtimeout",
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::SetDialogTimeout,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "SetModalDialogEventMask" | "setmodaldialogeventmask",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::SetModalDialogEventMask,
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",

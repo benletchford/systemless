@@ -48,6 +48,24 @@ pub const DIALOG_STANDARD_ALERT_STACK_OFFSET: u32 = 180;
 pub const DIALOG_TIMEOUT_BUTTON_OFFSET: u32 = 184;
 pub const DIALOG_TIMEOUT_SECONDS_OFFSET: u32 = 188;
 pub const DIALOG_TIMEOUT_START_TICK_OFFSET: u32 = 192;
+#[allow(dead_code)]
+pub const DIALOG_MODAL_EVENT_MASK_OFFSET: u32 = 196;
+#[allow(dead_code)]
+pub const DIALOG_STANDARD_SHEET_COMMAND_OFFSET: u32 = 200;
+
+/// Default event mask for modal dialog event filtering (`everyEvent`).
+#[allow(dead_code)]
+pub const DIALOG_DEFAULT_MODAL_EVENT_MASK: u16 = 0xFFFF;
+
+/// Size of `AlertStdCFStringAlertParamRec` in guest memory.
+#[allow(dead_code)]
+pub const ALERT_STD_CFSTRING_ALERT_PARAM_REC_SIZE: u32 = 32;
+/// Version one of `AlertStdCFStringAlertParamRec`.
+#[allow(dead_code)]
+pub const STD_CFSTRING_ALERT_VERSION_ONE: u32 = 1;
+/// Default OK button index for standard alerts.
+#[allow(dead_code)]
+pub const ALERT_STD_ALERT_OK_BUTTON: i16 = 1;
 
 /// Canonical Dialog window kind. Inside Macintosh Volume I, p. I-273.
 pub const DIALOG_WINDOW_KIND: u16 = 2;
@@ -6398,6 +6416,447 @@ pub const fn evaluate_dialog_timeout_remaining(
     }
 }
 
+/// Canonical evaluated parameters for `CreateStandardAlert` and `CreateStandardSheet`.
+///
+/// Universal Interfaces 3.4.1 `Dialogs.h`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreateStandardAlertParameters {
+    alert_type: i16,
+    error_ptr: u32,
+    explanation_ptr: u32,
+    alert_param_ptr: u32,
+    out_alert_ptr: u32,
+}
+
+impl CreateStandardAlertParameters {
+    pub const fn new(
+        alert_type: i16,
+        error_ptr: u32,
+        explanation_ptr: u32,
+        alert_param_ptr: u32,
+        out_alert_ptr: u32,
+    ) -> Self {
+        Self {
+            alert_type,
+            error_ptr,
+            explanation_ptr,
+            alert_param_ptr,
+            out_alert_ptr,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub const fn alert_type(&self) -> i16 {
+        self.alert_type
+    }
+
+    #[allow(dead_code)]
+    pub const fn error_ptr(&self) -> u32 {
+        self.error_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn explanation_ptr(&self) -> u32 {
+        self.explanation_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn alert_param_ptr(&self) -> u32 {
+        self.alert_param_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn out_alert_ptr(&self) -> u32 {
+        self.out_alert_ptr
+    }
+}
+
+/// Evaluates parameters for `CreateStandardAlert` and `CreateStandardSheet`.
+#[inline]
+pub fn evaluate_create_standard_alert_parameters(
+    alert_type: i16,
+    error_ptr: u32,
+    explanation_ptr: u32,
+    alert_param_ptr: u32,
+    out_alert_ptr: u32,
+    can_write: bool,
+) -> Result<CreateStandardAlertParameters, i16> {
+    if out_alert_ptr == 0 || !can_write {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    Ok(CreateStandardAlertParameters::new(
+        alert_type,
+        error_ptr,
+        explanation_ptr,
+        alert_param_ptr,
+        out_alert_ptr,
+    ))
+}
+
+/// Canonical evaluated parameters for `RunStandardAlert`.
+///
+/// Universal Interfaces 3.4.1 `Dialogs.h`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunStandardAlertParameters {
+    dialog_ptr: u32,
+    filter_proc: u32,
+    out_item_hit_ptr: u32,
+}
+
+impl RunStandardAlertParameters {
+    pub const fn new(dialog_ptr: u32, filter_proc: u32, out_item_hit_ptr: u32) -> Self {
+        Self {
+            dialog_ptr,
+            filter_proc,
+            out_item_hit_ptr,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn filter_proc(&self) -> u32 {
+        self.filter_proc
+    }
+
+    #[allow(dead_code)]
+    pub const fn out_item_hit_ptr(&self) -> u32 {
+        self.out_item_hit_ptr
+    }
+}
+
+/// Evaluates parameters for `RunStandardAlert`.
+#[inline]
+pub fn evaluate_run_standard_alert_parameters(
+    dialog_ptr: u32,
+    filter_proc: u32,
+    out_item_hit_ptr: u32,
+    can_write: bool,
+) -> Result<RunStandardAlertParameters, i16> {
+    if dialog_ptr == 0 || out_item_hit_ptr == 0 || !can_write {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    Ok(RunStandardAlertParameters::new(
+        dialog_ptr,
+        filter_proc,
+        out_item_hit_ptr,
+    ))
+}
+
+/// Canonical evaluated parameters for `CloseStandardSheet`.
+///
+/// Universal Interfaces 3.4.1 `Dialogs.h`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CloseStandardSheetParameters {
+    sheet_ptr: u32,
+    result_command: u32,
+}
+
+impl CloseStandardSheetParameters {
+    pub const fn new(sheet_ptr: u32, result_command: u32) -> Self {
+        Self {
+            sheet_ptr,
+            result_command,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub const fn sheet_ptr(&self) -> u32 {
+        self.sheet_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn result_command(&self) -> u32 {
+        self.result_command
+    }
+}
+
+/// Evaluates parameters for `CloseStandardSheet`.
+#[inline]
+pub fn evaluate_close_standard_sheet_parameters(
+    sheet_ptr: u32,
+    result_command: u32,
+) -> Result<CloseStandardSheetParameters, i16> {
+    if sheet_ptr == 0 {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    Ok(CloseStandardSheetParameters::new(sheet_ptr, result_command))
+}
+
+/// Canonical evaluated parameters for `GetStandardAlertDefaultParams`.
+///
+/// Universal Interfaces 3.4.1 `Dialogs.h`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetStandardAlertDefaultParamsParameters {
+    param_ptr: u32,
+    version: u32,
+}
+
+impl GetStandardAlertDefaultParamsParameters {
+    pub const fn new(param_ptr: u32, version: u32) -> Self {
+        Self { param_ptr, version }
+    }
+
+    #[allow(dead_code)]
+    pub const fn param_ptr(&self) -> u32 {
+        self.param_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn version(&self) -> u32 {
+        self.version
+    }
+}
+
+/// Evaluates parameters for `GetStandardAlertDefaultParams`.
+#[inline]
+pub fn evaluate_get_standard_alert_default_params_parameters(
+    param_ptr: u32,
+    version: u32,
+    can_write: bool,
+) -> Result<GetStandardAlertDefaultParamsParameters, i16> {
+    if param_ptr == 0 || !can_write || version != STD_CFSTRING_ALERT_VERSION_ONE {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    Ok(GetStandardAlertDefaultParamsParameters::new(
+        param_ptr, version,
+    ))
+}
+
+/// Canonical evaluated parameters for `GetModalDialogEventMask`.
+///
+/// Universal Interfaces 3.4.1 `Dialogs.h`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetModalDialogEventMaskParameters {
+    dialog_ptr: u32,
+    out_mask_ptr: u32,
+}
+
+impl GetModalDialogEventMaskParameters {
+    pub const fn new(dialog_ptr: u32, out_mask_ptr: u32) -> Self {
+        Self {
+            dialog_ptr,
+            out_mask_ptr,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn out_mask_ptr(&self) -> u32 {
+        self.out_mask_ptr
+    }
+}
+
+/// Evaluates parameters for `GetModalDialogEventMask`.
+#[inline]
+pub fn evaluate_get_modal_dialog_event_mask_parameters(
+    dialog_ptr: u32,
+    out_mask_ptr: u32,
+    can_write: bool,
+) -> Result<GetModalDialogEventMaskParameters, i16> {
+    if dialog_ptr == 0 || out_mask_ptr == 0 || !can_write {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    Ok(GetModalDialogEventMaskParameters::new(
+        dialog_ptr,
+        out_mask_ptr,
+    ))
+}
+
+/// Canonical evaluated parameters for `SetModalDialogEventMask`.
+///
+/// Universal Interfaces 3.4.1 `Dialogs.h`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetModalDialogEventMaskParameters {
+    dialog_ptr: u32,
+    mask: u16,
+}
+
+impl SetModalDialogEventMaskParameters {
+    pub const fn new(dialog_ptr: u32, mask: u16) -> Self {
+        Self { dialog_ptr, mask }
+    }
+
+    #[allow(dead_code)]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn mask(&self) -> u16 {
+        self.mask
+    }
+}
+
+/// Evaluates parameters for `SetModalDialogEventMask`.
+#[inline]
+pub fn evaluate_set_modal_dialog_event_mask_parameters(
+    dialog_ptr: u32,
+    mask: u16,
+) -> Result<SetModalDialogEventMaskParameters, i16> {
+    if dialog_ptr == 0 {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    Ok(SetModalDialogEventMaskParameters::new(dialog_ptr, mask))
+}
+
+/// Canonical evaluated parameters for `FlashDialogControl`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlashDialogControlParameters {
+    dialog_ptr: u32,
+    item_index: i16,
+}
+
+impl FlashDialogControlParameters {
+    pub const fn new(dialog_ptr: u32, item_index: i16) -> Self {
+        Self {
+            dialog_ptr,
+            item_index,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn item_index(&self) -> i16 {
+        self.item_index
+    }
+}
+
+/// Evaluates parameters for `FlashDialogControl`.
+#[inline]
+pub fn evaluate_flash_dialog_control_parameters(
+    dialog_ptr: u32,
+    item_index: i16,
+) -> Result<FlashDialogControlParameters, i16> {
+    if dialog_ptr == 0 || item_index <= 0 {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    Ok(FlashDialogControlParameters::new(dialog_ptr, item_index))
+}
+
+/// Canonical evaluated parameters for `GetDialogItemInit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetDialogItemInitParameters {
+    dialog_ptr: u32,
+    item_index: i16,
+    out_type_ptr: u32,
+    out_handle_ptr: u32,
+    out_rect_ptr: u32,
+}
+
+impl GetDialogItemInitParameters {
+    pub const fn new(
+        dialog_ptr: u32,
+        item_index: i16,
+        out_type_ptr: u32,
+        out_handle_ptr: u32,
+        out_rect_ptr: u32,
+    ) -> Self {
+        Self {
+            dialog_ptr,
+            item_index,
+            out_type_ptr,
+            out_handle_ptr,
+            out_rect_ptr,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn item_index(&self) -> i16 {
+        self.item_index
+    }
+
+    #[allow(dead_code)]
+    pub const fn out_type_ptr(&self) -> u32 {
+        self.out_type_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn out_handle_ptr(&self) -> u32 {
+        self.out_handle_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn out_rect_ptr(&self) -> u32 {
+        self.out_rect_ptr
+    }
+}
+
+/// Evaluates parameters for `GetDialogItemInit`.
+#[inline]
+pub fn evaluate_get_dialog_item_init_parameters(
+    dialog_ptr: u32,
+    item_index: i16,
+    out_type_ptr: u32,
+    out_handle_ptr: u32,
+    out_rect_ptr: u32,
+) -> Result<GetDialogItemInitParameters, i16> {
+    if dialog_ptr == 0 || item_index <= 0 {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    Ok(GetDialogItemInitParameters::new(
+        dialog_ptr,
+        item_index,
+        out_type_ptr,
+        out_handle_ptr,
+        out_rect_ptr,
+    ))
+}
+
+/// Canonical evaluated parameters for `SetDialogFilter`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetDialogFilterParameters {
+    dialog_ptr: u32,
+    filter_proc: u32,
+}
+
+impl SetDialogFilterParameters {
+    pub const fn new(dialog_ptr: u32, filter_proc: u32) -> Self {
+        Self {
+            dialog_ptr,
+            filter_proc,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    #[allow(dead_code)]
+    pub const fn filter_proc(&self) -> u32 {
+        self.filter_proc
+    }
+}
+
+/// Evaluates parameters for `SetDialogFilter`.
+#[inline]
+pub fn evaluate_set_dialog_filter_parameters(
+    dialog_ptr: u32,
+    filter_proc: u32,
+) -> Result<SetDialogFilterParameters, i16> {
+    if dialog_ptr == 0 {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    Ok(SetDialogFilterParameters::new(dialog_ptr, filter_proc))
+}
+
 /// Returns true if two rectangles intersect.
 pub fn rects_intersect(a: (i16, i16, i16, i16), b: (i16, i16, i16, i16)) -> bool {
     a.0 < b.2 && a.2 > b.0 && a.1 < b.3 && a.3 > b.1
@@ -11240,6 +11699,131 @@ mod tests {
         assert_eq!(evaluate_dialog_timeout_remaining(10, 1000, 1600), 0);
         // 1200 ticks = 20 seconds elapsed (saturates at 0)
         assert_eq!(evaluate_dialog_timeout_remaining(10, 1000, 2200), 0);
+    }
+
+    #[test]
+    fn standard_alert_sheet_and_event_mask_evaluation() {
+        // 1. evaluate_create_standard_alert_parameters
+        assert_eq!(
+            evaluate_create_standard_alert_parameters(1, 0x1000, 0x1010, 0x1020, 0, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_create_standard_alert_parameters(1, 0x1000, 0x1010, 0x1020, 0x2000, false),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let alert_params = evaluate_create_standard_alert_parameters(
+            2, 0x1000, 0x1010, 0x1020, 0x2000, true,
+        )
+        .unwrap();
+        assert_eq!(alert_params.alert_type(), 2);
+        assert_eq!(alert_params.error_ptr(), 0x1000);
+        assert_eq!(alert_params.explanation_ptr(), 0x1010);
+        assert_eq!(alert_params.alert_param_ptr(), 0x1020);
+        assert_eq!(alert_params.out_alert_ptr(), 0x2000);
+
+        // 2. evaluate_run_standard_alert_parameters
+        assert_eq!(
+            evaluate_run_standard_alert_parameters(0, 0x3000, 0x4000, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_run_standard_alert_parameters(0x5000, 0x3000, 0, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_run_standard_alert_parameters(0x5000, 0x3000, 0x4000, false),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let run_params = evaluate_run_standard_alert_parameters(0x5000, 0x3000, 0x4000, true).unwrap();
+        assert_eq!(run_params.dialog_ptr(), 0x5000);
+        assert_eq!(run_params.filter_proc(), 0x3000);
+        assert_eq!(run_params.out_item_hit_ptr(), 0x4000);
+
+        // 3. evaluate_close_standard_sheet_parameters
+        assert_eq!(
+            evaluate_close_standard_sheet_parameters(0, 1),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let close_params = evaluate_close_standard_sheet_parameters(0x5000, 42).unwrap();
+        assert_eq!(close_params.sheet_ptr(), 0x5000);
+        assert_eq!(close_params.result_command(), 42);
+
+        // 4. evaluate_get_standard_alert_default_params_parameters
+        assert_eq!(
+            evaluate_get_standard_alert_default_params_parameters(0, 1, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_standard_alert_default_params_parameters(0x1000, 0, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_standard_alert_default_params_parameters(0x1000, 2, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_standard_alert_default_params_parameters(0x1000, 1, false),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let def_params = evaluate_get_standard_alert_default_params_parameters(0x1000, 1, true).unwrap();
+        assert_eq!(def_params.param_ptr(), 0x1000);
+        assert_eq!(def_params.version(), 1);
+
+        // 5. evaluate_get_modal_dialog_event_mask_parameters & evaluate_set_modal_dialog_event_mask_parameters
+        assert_eq!(
+            evaluate_get_modal_dialog_event_mask_parameters(0, 0x2000, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_modal_dialog_event_mask_parameters(0x1000, 0, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_modal_dialog_event_mask_parameters(0x1000, 0x2000, false),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let get_mask = evaluate_get_modal_dialog_event_mask_parameters(0x1000, 0x2000, true).unwrap();
+        assert_eq!(get_mask.dialog_ptr(), 0x1000);
+        assert_eq!(get_mask.out_mask_ptr(), 0x2000);
+
+        assert_eq!(
+            evaluate_set_modal_dialog_event_mask_parameters(0, 0x01FF),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let set_mask = evaluate_set_modal_dialog_event_mask_parameters(0x1000, 0x01FF).unwrap();
+        assert_eq!(set_mask.dialog_ptr(), 0x1000);
+        assert_eq!(set_mask.mask(), 0x01FF);
+
+        // 6. evaluate_flash_dialog_control_parameters
+        assert_eq!(evaluate_flash_dialog_control_parameters(0, 1), Err(DIALOG_PARAM_ERR));
+        assert_eq!(evaluate_flash_dialog_control_parameters(0x1000, 0), Err(DIALOG_PARAM_ERR));
+        assert_eq!(evaluate_flash_dialog_control_parameters(0x1000, -1), Err(DIALOG_PARAM_ERR));
+        let flash = evaluate_flash_dialog_control_parameters(0x1000, 2).unwrap();
+        assert_eq!(flash.dialog_ptr(), 0x1000);
+        assert_eq!(flash.item_index(), 2);
+
+        // 7. evaluate_get_dialog_item_init_parameters
+        assert_eq!(
+            evaluate_get_dialog_item_init_parameters(0, 1, 0x2000, 0x2004, 0x2008),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_dialog_item_init_parameters(0x1000, 0, 0x2000, 0x2004, 0x2008),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let item_init = evaluate_get_dialog_item_init_parameters(0x1000, 1, 0x2000, 0x2004, 0x2008).unwrap();
+        assert_eq!(item_init.dialog_ptr(), 0x1000);
+        assert_eq!(item_init.item_index(), 1);
+        assert_eq!(item_init.out_type_ptr(), 0x2000);
+        assert_eq!(item_init.out_handle_ptr(), 0x2004);
+        assert_eq!(item_init.out_rect_ptr(), 0x2008);
+
+        // 8. evaluate_set_dialog_filter_parameters
+        assert_eq!(evaluate_set_dialog_filter_parameters(0, 0x3000), Err(DIALOG_PARAM_ERR));
+        let set_filter = evaluate_set_dialog_filter_parameters(0x1000, 0x3000).unwrap();
+        assert_eq!(set_filter.dialog_ptr(), 0x1000);
+        assert_eq!(set_filter.filter_proc(), 0x3000);
     }
 }
 
