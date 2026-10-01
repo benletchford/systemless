@@ -347,8 +347,10 @@ fn ppc_dispatch_popup_track_control(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcLegacyControlOperation {
+    AdvanceKeyboardFocus,
     AutoEmbedControl,
     ChangeControlPropertyAttributes,
+    ClearKeyboardFocus,
     CountSubControls,
     CreateRootControl,
     DisableControl,
@@ -363,20 +365,25 @@ pub enum PpcLegacyControlOperation {
     GetControlAction,
     GetControlBounds,
     GetControlColorProc,
+    GetControlCommandID,
     GetControlData,
     GetControlDataSize,
     GetControlFeatures,
     GetControlHilite,
+    GetControlID,
     GetControlMaximum,
     GetControlMinimum,
+    GetControlOwner,
     GetControlProperty,
     GetControlPropertyAttributes,
     GetControlPropertySize,
     GetControlReference,
+    GetControlRegion,
     GetControlTitle,
     GetControlValue,
     GetControlVariant,
     GetIndexedSubControl,
+    GetKeyboardFocus,
     GetNewControl,
     GetRootControl,
     GetSuperControl,
@@ -390,16 +397,20 @@ pub enum PpcLegacyControlOperation {
     MoveControl,
     NewControl,
     RemoveControlProperty,
+    ReverseKeyboardFocus,
     SetControlAction,
     SetControlBounds,
     SetControlColorProc,
+    SetControlCommandID,
     SetControlData,
+    SetControlID,
     SetControlMaximum,
     SetControlMinimum,
     SetControlProperty,
     SetControlReference,
     SetControlSupervisor,
     SetControlVisibility,
+    SetKeyboardFocus,
     SetUpControlBackground,
     ShowControl,
     SizeControl,
@@ -1306,6 +1317,131 @@ pub(super) fn ppc_dispatch_legacy_control(
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
+        PpcLegacyControlOperation::GetControlOwner => {
+            let control = cpu.gpr[3];
+            let owner = ppc_control_ptr(memory, control)
+                .and_then(|ptr| memory.read_u32_be(ptr.wrapping_add(PPC_CONTROL_OWNER_OFFSET)))
+                .unwrap_or(0);
+            Some(PpcImportAction::Return(owner))
+        }
+        PpcLegacyControlOperation::GetControlRegion => {
+            let control = cpu.gpr[3];
+            let part = cpu.gpr[4] as u16 as i16;
+            let tag = cpu.gpr[5];
+            let out_rgn = cpu.gpr[6];
+            let result = ppc_get_control_region(memory, control, part, tag, out_rgn);
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::SetControlID => {
+            let control = cpu.gpr[3];
+            let in_id = cpu.gpr[4];
+            let result = if control != 0 && in_id != 0 {
+                let signature = memory.read_u32_be(in_id).unwrap_or(0);
+                let id = memory.read_u32_be(in_id.wrapping_add(4)).unwrap_or(0) as i32;
+                if let Some(record) = controls.iter_mut().find(|r| r.handle == control) {
+                    record.control_id = (signature, id);
+                } else {
+                    controls.push(PpcControlRecord {
+                        handle: control,
+                        control_id: (signature, id),
+                        ..Default::default()
+                    });
+                }
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::GetControlID => {
+            let control = cpu.gpr[3];
+            let out_id = cpu.gpr[4];
+            let result = if control != 0 && out_id != 0 {
+                let (signature, id) = controls
+                    .iter()
+                    .find(|r| r.handle == control)
+                    .map_or((0, 0), |r| r.control_id);
+                let _ = memory.write_u32_be(out_id, signature);
+                let _ = memory.write_u32_be(out_id.wrapping_add(4), id as u32);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::SetControlCommandID => {
+            let control = cpu.gpr[3];
+            let command_id = cpu.gpr[4];
+            let result = if control != 0 {
+                if let Some(record) = controls.iter_mut().find(|r| r.handle == control) {
+                    record.command_id = command_id;
+                } else {
+                    controls.push(PpcControlRecord {
+                        handle: control,
+                        command_id,
+                        ..Default::default()
+                    });
+                }
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::GetControlCommandID => {
+            let control = cpu.gpr[3];
+            let out_command_id = cpu.gpr[4];
+            let result = if control != 0 {
+                let command_id = controls
+                    .iter()
+                    .find(|r| r.handle == control)
+                    .map_or(0, |r| r.command_id);
+                if out_command_id != 0 {
+                    let _ = memory.write_u32_be(out_command_id, command_id);
+                }
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::SetKeyboardFocus => {
+            let window = cpu.gpr[3];
+            let control = cpu.gpr[4];
+            let _part = cpu.gpr[5] as u16 as i16;
+            let result = ppc_set_keyboard_focus(memory, controls, window, control);
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::GetKeyboardFocus => {
+            let window = cpu.gpr[3];
+            let out_control = cpu.gpr[4];
+            let result = if window != 0 {
+                let window_controls = ppc_window_control_handles(memory, window);
+                let focused = controls
+                    .iter()
+                    .find(|r| window_controls.contains(&r.handle) && r.has_focus)
+                    .map_or(0, |r| r.handle);
+                if out_control != 0 {
+                    let _ = memory.write_u32_be(out_control, focused);
+                }
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::AdvanceKeyboardFocus
+        | PpcLegacyControlOperation::ReverseKeyboardFocus => {
+            let window = cpu.gpr[3];
+            let advance = operation == PpcLegacyControlOperation::AdvanceKeyboardFocus;
+            let result = ppc_cycle_keyboard_focus(memory, controls, window, advance);
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcLegacyControlOperation::ClearKeyboardFocus => {
+            let window = cpu.gpr[3];
+            let result = ppc_set_keyboard_focus(memory, controls, window, 0);
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
     }
 }
 
@@ -1474,6 +1610,9 @@ pub(super) fn ppc_new_control_record_values(
         sub_controls: Vec::new(),
         properties: Vec::new(),
         color_proc: 0,
+        control_id: (0, 0),
+        command_id: 0,
+        has_focus: false,
     });
     *last_mem_error = PPC_NO_ERR;
     handle
@@ -2090,6 +2229,93 @@ pub(super) fn ppc_set_control_visibility(
         );
     }
     PPC_NO_ERR
+}
+
+pub(super) fn ppc_get_control_region(
+    memory: &mut PpcSectionMem,
+    control: u32,
+    _part: i16,
+    _tag: u32,
+    out_rgn: u32,
+) -> i16 {
+    let Some(control_ptr) = ppc_control_ptr(memory, control) else {
+        return PPC_PARAM_ERR;
+    };
+    if out_rgn == 0 {
+        return PPC_PARAM_ERR;
+    }
+    let Some((top, left, bottom, right)) =
+        ppc_read_rect(memory, control_ptr.wrapping_add(PPC_CONTROL_RECT_OFFSET))
+    else {
+        return PPC_PARAM_ERR;
+    };
+    if ppc_write_rgn_bbox(memory, out_rgn, top, left, bottom, right).is_none() {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
+pub(super) fn ppc_set_keyboard_focus(
+    memory: &mut PpcSectionMem,
+    controls: &mut [PpcControlRecord],
+    window: u32,
+    control: u32,
+) -> i16 {
+    if window == 0 {
+        return PPC_PARAM_ERR;
+    }
+    let window_controls = ppc_window_control_handles(memory, window);
+    for handle in &window_controls {
+        if let Some(record) = controls.iter_mut().find(|r| r.handle == *handle) {
+            record.has_focus = false;
+        }
+    }
+    if control != 0 && control != u32::MAX {
+        if let Some(record) = controls.iter_mut().find(|r| r.handle == control) {
+            record.has_focus = true;
+        }
+    }
+    PPC_NO_ERR
+}
+
+pub(super) fn ppc_cycle_keyboard_focus(
+    memory: &mut PpcSectionMem,
+    controls: &mut [PpcControlRecord],
+    window: u32,
+    advance: bool,
+) -> i16 {
+    if window == 0 {
+        return PPC_PARAM_ERR;
+    }
+    let window_controls = ppc_window_control_handles(memory, window);
+    if window_controls.is_empty() {
+        return PPC_NO_ERR;
+    }
+    let current_index = window_controls.iter().position(|handle| {
+        controls
+            .iter()
+            .any(|r| r.handle == *handle && r.has_focus)
+    });
+    let next_index = match current_index {
+        Some(idx) => {
+            if advance {
+                (idx + 1) % window_controls.len()
+            } else if idx == 0 {
+                window_controls.len() - 1
+            } else {
+                idx - 1
+            }
+        }
+        None => {
+            if advance {
+                0
+            } else {
+                window_controls.len() - 1
+            }
+        }
+    };
+    let next_handle = window_controls[next_index];
+    ppc_set_keyboard_focus(memory, controls, window, next_handle)
 }
 
 pub(super) fn ppc_clamp_control_value(memory: &mut PpcSectionMem, control: u32) {

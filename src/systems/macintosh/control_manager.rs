@@ -31,6 +31,9 @@ pub(crate) struct ProcessControlRecord {
     pub(crate) sub_controls: Vec<u32>,
     pub(crate) properties: Vec<ProcessControlProperty>,
     pub(crate) color_proc: u32,
+    pub(crate) control_id: (u32, i32),
+    pub(crate) command_id: u32,
+    pub(crate) has_focus: bool,
 }
 
 /// The Appearance Manager style override associated with a ControlRef.
@@ -86,6 +89,9 @@ impl ProcessControlManagerState {
             sub_controls: Vec::new(),
             properties: Vec::new(),
             color_proc: 0,
+            control_id: (0, 0),
+            command_id: 0,
+            has_focus: false,
         });
     }
 
@@ -101,6 +107,51 @@ impl ProcessControlManagerState {
     pub(crate) fn set_color_proc(&mut self, handle: u32, proc: u32) {
         if let Some(record) = self.records.iter_mut().find(|record| record.handle == handle) {
             record.color_proc = proc;
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn control_id(&self, handle: u32) -> (u32, i32) {
+        self.records
+            .iter()
+            .find(|record| record.handle == handle)
+            .map_or((0, 0), |record| record.control_id)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_control_id(&mut self, handle: u32, signature: u32, id: i32) {
+        if let Some(record) = self.records.iter_mut().find(|record| record.handle == handle) {
+            record.control_id = (signature, id);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn command_id(&self, handle: u32) -> u32 {
+        self.records
+            .iter()
+            .find(|record| record.handle == handle)
+            .map_or(0, |record| record.command_id)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_command_id(&mut self, handle: u32, command_id: u32) {
+        if let Some(record) = self.records.iter_mut().find(|record| record.handle == handle) {
+            record.command_id = command_id;
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn has_focus(&self, handle: u32) -> bool {
+        self.records
+            .iter()
+            .find(|record| record.handle == handle)
+            .is_some_and(|record| record.has_focus)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_has_focus(&mut self, handle: u32, focus: bool) {
+        if let Some(record) = self.records.iter_mut().find(|record| record.handle == handle) {
+            record.has_focus = focus;
         }
     }
 

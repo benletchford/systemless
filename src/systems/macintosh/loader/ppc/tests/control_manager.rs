@@ -172,6 +172,9 @@ fn hle_import_runner_creates_and_links_a_classic_control_record() {
             sub_controls: Vec::new(),
             properties: Vec::new(),
             color_proc: 0,
+            control_id: (0, 0),
+            command_id: 0,
+            has_focus: false,
         }]
     );
 }
@@ -3470,5 +3473,383 @@ fn control_data_features_and_rendering_commands_dispatch_with_canonical_evaluati
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+    }
+}
+
+#[test]
+fn import_bindings_classify_control_ownership_region_id_and_focus_imports() {
+    for library in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        for (symbol, expected) in [
+            (
+                "GetControlOwner",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlOwner),
+            ),
+            (
+                "getcontrolowner",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlOwner),
+            ),
+            (
+                "GetControlRegion",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlRegion),
+            ),
+            (
+                "getcontrolregion",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlRegion),
+            ),
+            (
+                "SetControlID",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlID),
+            ),
+            (
+                "setcontrolid",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlID),
+            ),
+            (
+                "GetControlID",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlID),
+            ),
+            (
+                "getcontrolid",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlID),
+            ),
+            (
+                "SetControlCommandID",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlCommandID),
+            ),
+            (
+                "setcontrolcommandid",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlCommandID),
+            ),
+            (
+                "GetControlCommandID",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlCommandID),
+            ),
+            (
+                "getcontrolcommandid",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlCommandID),
+            ),
+            (
+                "SetKeyboardFocus",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetKeyboardFocus),
+            ),
+            (
+                "setkeyboardfocus",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetKeyboardFocus),
+            ),
+            (
+                "GetKeyboardFocus",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetKeyboardFocus),
+            ),
+            (
+                "getkeyboardfocus",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetKeyboardFocus),
+            ),
+            (
+                "AdvanceKeyboardFocus",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::AdvanceKeyboardFocus),
+            ),
+            (
+                "advancekeyboardfocus",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::AdvanceKeyboardFocus),
+            ),
+            (
+                "ReverseKeyboardFocus",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ReverseKeyboardFocus),
+            ),
+            (
+                "reversekeyboardfocus",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ReverseKeyboardFocus),
+            ),
+            (
+                "ClearKeyboardFocus",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ClearKeyboardFocus),
+            ),
+            (
+                "clearkeyboardfocus",
+                PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ClearKeyboardFocus),
+            ),
+        ] {
+            assert_eq!(
+                dispatcher_target_for_import(library, symbol),
+                expected,
+                "library={library} symbol={symbol}"
+            );
+        }
+    }
+}
+
+#[test]
+fn control_ownership_region_id_and_focus_commands_dispatch_with_canonical_evaluation() {
+    for lib in [b"InterfaceLib".as_slice(), b"AppearanceLib".as_slice(), b"CarbonLib".as_slice()] {
+        let pef = synthetic_pef_with_library_import(lib, b"NewControl");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let lib_str = std::str::from_utf8(lib).unwrap();
+
+        let in_id_ptr = PPC_DATA_BASE + 0x3000;
+        let out_id_ptr = PPC_DATA_BASE + 0x3020;
+        let out_cmd_ptr = PPC_DATA_BASE + 0x3040;
+        let out_focus_ptr = PPC_DATA_BASE + 0x3060;
+        let rgn_ptr = PPC_DATA_BASE + 0x3080;
+        let rgn_handle = PPC_DATA_BASE + 0x30A0;
+        let rect1_ptr = PPC_DATA_BASE + 0x30C0;
+        let title1_ptr = PPC_DATA_BASE + 0x30E0;
+        let rect2_ptr = PPC_DATA_BASE + 0x3100;
+        let title2_ptr = PPC_DATA_BASE + 0x3120;
+        loaded.memory.add_region(PPC_DATA_BASE + 0x3000, vec![0; 0x1000]);
+
+        // Set up region handle pointing to master pointer
+        let _ = loaded.memory.write_u32_be(rgn_handle, rgn_ptr);
+
+        ppc_write_rect(&mut loaded.memory, rect1_ptr, 10, 20, 30, 80);
+        ppc_write_pstring_bytes(&mut loaded.memory, title1_ptr, b"Btn1");
+        ppc_write_rect(&mut loaded.memory, rect2_ptr, 40, 20, 60, 80);
+        ppc_write_pstring_bytes(&mut loaded.memory, title2_ptr, b"Btn2");
+
+        // 1. Create first control
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = rect1_ptr;
+        loaded.cpu.gpr[5] = title1_ptr;
+        loaded.cpu.gpr[6] = 1;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        loaded.cpu.gpr[9] = 1;
+        loaded.cpu.gpr[10] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let ctrl1 = loaded.cpu.gpr[3];
+        assert_ne!(ctrl1, 0);
+
+        // 2. Create second control
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = rect2_ptr;
+        loaded.cpu.gpr[5] = title2_ptr;
+        loaded.cpu.gpr[6] = 1;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        loaded.cpu.gpr[9] = 1;
+        loaded.cpu.gpr[10] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let ctrl2 = loaded.cpu.gpr[3];
+        assert_ne!(ctrl2, 0);
+
+        // 3. GetControlOwner
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlOwner");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], PPC_MAIN_GWORLD);
+
+        // Invalid control owner returns 0
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+
+        // 4. GetControlRegion
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlRegion");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl1;
+        loaded.cpu.gpr[4] = 0; // inPart
+        loaded.cpu.gpr[5] = 0; // inTag
+        loaded.cpu.gpr[6] = rgn_handle; // outRgn
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, rgn_handle), Some((10, 20, 30, 80)));
+
+        // Invalid control region query
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = rgn_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+        // 5. SetControlID & GetControlID
+        let sig = u32::from_be_bytes(*b"BENL");
+        let id_val = 42i32;
+        let _ = loaded.memory.write_u32_be(in_id_ptr, sig);
+        let _ = loaded.memory.write_u32_be(in_id_ptr + 4, id_val as u32);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlID");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl1;
+        loaded.cpu.gpr[4] = in_id_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlID");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl1;
+        loaded.cpu.gpr[4] = out_id_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_id_ptr), Some(sig));
+        assert_eq!(loaded.memory.read_u32_be(out_id_ptr + 4), Some(id_val as u32));
+
+        // 6. SetControlCommandID & GetControlCommandID
+        let cmd = 0x5052_4F43; // 'PROC'
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetControlCommandID");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl1;
+        loaded.cpu.gpr[4] = cmd;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetControlCommandID");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = ctrl1;
+        loaded.cpu.gpr[4] = out_cmd_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_cmd_ptr), Some(cmd));
+
+        // 7. Keyboard focus operations
+        // Initially no focus
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetKeyboardFocus");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = out_focus_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_focus_ptr), Some(0));
+
+        // SetKeyboardFocus to ctrl1
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetKeyboardFocus");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = ctrl1;
+        loaded.cpu.gpr[5] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        // GetKeyboardFocus returns ctrl1
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetKeyboardFocus");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = out_focus_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_focus_ptr), Some(ctrl1));
+
+        // AdvanceKeyboardFocus moves to next control (ctrl2)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "AdvanceKeyboardFocus");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetKeyboardFocus");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = out_focus_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u32_be(out_focus_ptr), Some(ctrl2));
+
+        // AdvanceKeyboardFocus again wraps around to ctrl1
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "AdvanceKeyboardFocus");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetKeyboardFocus");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = out_focus_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u32_be(out_focus_ptr), Some(ctrl1));
+
+        // ReverseKeyboardFocus moves back to ctrl2
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ReverseKeyboardFocus");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetKeyboardFocus");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = out_focus_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u32_be(out_focus_ptr), Some(ctrl2));
+
+        // ClearKeyboardFocus clears focus
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ClearKeyboardFocus");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetKeyboardFocus");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = out_focus_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u32_be(out_focus_ptr), Some(0));
     }
 }

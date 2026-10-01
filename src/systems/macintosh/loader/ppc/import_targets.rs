@@ -3393,6 +3393,50 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetUpControlBackground" | "setupcontrolbackground",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetUpControlBackground),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlOwner" | "getcontrolowner",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlOwner),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlRegion" | "getcontrolregion",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlRegion),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetControlID" | "setcontrolid",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlID),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlID" | "getcontrolid",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlID),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetControlCommandID" | "setcontrolcommandid",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlCommandID),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlCommandID" | "getcontrolcommandid",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlCommandID),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetKeyboardFocus" | "setkeyboardfocus",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetKeyboardFocus),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetKeyboardFocus" | "getkeyboardfocus",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetKeyboardFocus),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "AdvanceKeyboardFocus" | "advancekeyboardfocus",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::AdvanceKeyboardFocus),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ReverseKeyboardFocus" | "reversekeyboardfocus",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ReverseKeyboardFocus),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ClearKeyboardFocus" | "clearkeyboardfocus",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ClearKeyboardFocus),
         ("AppearanceLib", "CollapseWindow") => PpcImportDispatcherTarget::CollapseWindow,
         ("AppearanceLib", "IsWindowCollapsed") => PpcImportDispatcherTarget::IsWindowCollapsed,
         (
