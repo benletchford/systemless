@@ -60,6 +60,7 @@ artifacts:
     notes: >-
       Original 313,150-byte archive, SHA-256
       f80c911e06d35be898073db9f36d09e94df3e2793188e9397ae925b4b3d47e1e.
+      The promoted public object was fetched back and matched this hash and size.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -78,7 +79,8 @@ artifacts:
       artwork remains its owner's property.
     notes: >-
       Exact 490-by-330 game-content crop at (155,125) from an 800-by-600 Systemless
-      framebuffer after four numeric-keypad hops; score 5.
+      framebuffer after four numeric-keypad hops; score 5. The promoted public
+      media object was fetched back and matched its submitted hash and size.
 references:
 - https://www.lysator.liu.se/~ingemar/games/news.html
 - >-
