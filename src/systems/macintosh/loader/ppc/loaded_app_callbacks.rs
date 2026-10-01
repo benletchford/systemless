@@ -506,10 +506,148 @@ impl PpcLoadedApp {
         probes
     }
 
+    /// Deliver Carbon event-loop timers only while the guest is polling or
+    /// waiting in an event loop. Carbon Event Manager Programming Guide
+    /// (2005), "Installing Timers": these are not interrupt callbacks.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn fire_event_loop_timers_for_ticks_with_process_services(
+        &mut self,
+        start_tick: u32,
+        elapsed_ticks: u32,
+        max_callbacks: usize,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        memory_manager: &mut ProcessMemoryManager,
+        cfm: &mut PpcCfmState,
+    ) -> Vec<PpcTimerCallbackProbe> {
+        self.fire_event_loop_timers_for_ticks_inner(
+            start_tick,
+            elapsed_ticks,
+            max_callbacks,
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            Some(memory_manager),
+            Some(cfm),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fire_event_loop_timers_for_ticks(
+        &mut self,
+        start_tick: u32,
+        elapsed_ticks: u32,
+        max_callbacks: usize,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+    ) -> Vec<PpcTimerCallbackProbe> {
+        self.fire_event_loop_timers_for_ticks_inner(
+            start_tick,
+            elapsed_ticks,
+            max_callbacks,
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fire_event_loop_timers_for_ticks_inner(
+        &mut self,
+        start_tick: u32,
+        elapsed_ticks: u32,
+        max_callbacks: usize,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        mut memory_manager: Option<&mut ProcessMemoryManager>,
+        mut cfm: Option<&mut PpcCfmState>,
+    ) -> Vec<PpcTimerCallbackProbe> {
+        let mut probes = Vec::new();
+        if elapsed_ticks == 0 || max_callbacks == 0 {
+            return probes;
+        }
+        for offset in 0..elapsed_ticks {
+            let current_tick = self.publish_tick(start_tick.wrapping_add(offset).wrapping_add(1));
+            let is_polling = self
+                .toolbox_startup
+                .event_loop_poll_until_tick
+                .is_some_and(|until| dispatch_event::ppc_tick_is_due(until, current_tick));
+            if !is_polling {
+                continue;
+            }
+            loop {
+                if probes.len() >= max_callbacks {
+                    return probes;
+                }
+                let Some(index) = self
+                    .toolbox_startup
+                    .event_loop_timers
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, timer)| {
+                        timer.next_fire_tick.is_some_and(|deadline| {
+                            dispatch_event::ppc_tick_is_due(current_tick, deadline)
+                        })
+                    })
+                    .max_by_key(|(_, timer)| {
+                        current_tick.wrapping_sub(timer.next_fire_tick.unwrap())
+                    })
+                    .map(|(index, _)| index)
+                else {
+                    break;
+                };
+                let timer = self.toolbox_startup.event_loop_timers[index];
+                self.toolbox_startup.event_loop_timers[index].next_fire_tick =
+                    (timer.interval_ticks != 0)
+                        .then(|| current_tick.wrapping_add(timer.interval_ticks));
+                probes.push(self.run_timer_callback_with_arguments(
+                    timer.timer_ref,
+                    timer.callback,
+                    &[timer.timer_ref, timer.user_data],
+                    max_cycles,
+                    trace_imports,
+                    trace_fetches,
+                    memory_manager.as_deref_mut(),
+                    cfm.as_deref_mut(),
+                ));
+            }
+        }
+        probes
+    }
+
     pub(crate) fn run_timer_callback(
         &mut self,
         task_ptr: u32,
         callback: u32,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        process_memory_manager: Option<&mut ProcessMemoryManager>,
+        process_cfm: Option<&mut PpcCfmState>,
+    ) -> PpcTimerCallbackProbe {
+        self.run_timer_callback_with_arguments(
+            task_ptr,
+            callback,
+            &[task_ptr],
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            process_memory_manager,
+            process_cfm,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_timer_callback_with_arguments(
+        &mut self,
+        task_ptr: u32,
+        callback: u32,
+        arguments: &[u32],
         max_cycles: u64,
         trace_imports: bool,
         trace_fetches: bool,
@@ -539,10 +677,9 @@ impl PpcLoadedApp {
             self.cpu.lr = self.halt_pc;
             self.cpu.gpr[1] = callback_sp;
             self.cpu.gpr[2] = target.rtoc;
-            // Inside Macintosh: Processes (1994), pp. 3-21--3-22: the Time
-            // Manager passes the expired TMTask record to its callback. Mixed
-            // Mode marshals that pointer into the native PowerPC argument area.
-            let _ = install_powerpc_call_arguments(&mut self.cpu, &mut self.memory, &[task_ptr]);
+            // Mixed Mode marshals the documented callback parameters into
+            // the native PowerPC argument area.
+            let _ = install_powerpc_call_arguments(&mut self.cpu, &mut self.memory, arguments);
             self.run_with_hle_imports_with_trace(
                 max_cycles,
                 trace_imports,

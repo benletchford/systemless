@@ -1,5 +1,145 @@
-use super::*;
+use super::dispatch_event::PPC_MAIN_EVENT_LOOP_REF;
 use super::dispatch_event::PPC_MAIN_EVENT_QUEUE_REF;
+use super::*;
+
+#[test]
+fn carbon_event_loop_timer_fires_during_event_poll_and_can_be_removed() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "WaitNextEvent"),
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)
+    );
+    for symbol in [
+        "GetMainEventLoop",
+        "InstallEventLoopTimer",
+        "RemoveEventLoopTimer",
+    ] {
+        let binding = PpcImportBindingPlan::prepare(
+            vec![PefResolvedImport {
+                library_index: 0,
+                symbol_index: 0,
+                library_name: "CarbonLib".to_string(),
+                symbol_name: symbol.to_string(),
+                class: 2,
+                weak: true,
+            }],
+            1,
+            0,
+            ppc_import_layout(),
+            &SystemlessPpcImportBindingPolicy,
+        )
+        .unwrap()
+        .into_initial_bindings();
+        assert_eq!(binding[0].address, PPC_IMPORT_TVECTOR_BASE);
+    }
+
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"InstallEventLoopTimer");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::InstallEventLoopTimer
+    );
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetMainEventLoop);
+    assert_eq!(loaded.cpu.gpr[3], PPC_MAIN_EVENT_LOOP_REF);
+    let out_ref = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        4,
+        true,
+    );
+    let user_data = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        4,
+        true,
+    );
+    let callback = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        12,
+        true,
+    );
+    // li r5,$1234; stw r5,0(r4); blr. r4 is the documented userData.
+    loaded.memory.write_u32_be(callback, 0x38a0_1234).unwrap();
+    loaded
+        .memory
+        .write_u32_be(callback + 4, 0x90a4_0000)
+        .unwrap();
+    loaded.memory.write_u32_be(callback + 8, BLR).unwrap();
+
+    loaded.set_tick_count(10);
+    loaded.set_clock_cycle_timing(1_000, 0);
+    loaded.cpu.gpr[3] = PPC_MAIN_EVENT_LOOP_REF;
+    loaded.cpu.fpr[1] = 0.0f64.to_bits();
+    loaded.cpu.fpr[2] = 0.0f64.to_bits();
+    loaded.cpu.gpr[8] = callback;
+    loaded.cpu.gpr[9] = user_data;
+    loaded.cpu.gpr[10] = out_ref;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InstallEventLoopTimer,
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let timer_ref = loaded.memory.read_u32_be(out_ref).unwrap();
+    assert_ne!(timer_ref, 0);
+    assert_eq!(loaded.toolbox_startup.event_loop_timers.len(), 1);
+
+    loaded.cpu.gpr[3] = PPC_MAIN_EVENT_LOOP_REF;
+    loaded.cpu.gpr[10] = u32::MAX;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InstallEventLoopTimer,
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(loaded.toolbox_startup.event_loop_timers.len(), 1);
+
+    // An elapsed tick alone cannot fire a Carbon event-loop timer.
+    assert!(loaded
+        .fire_event_loop_timers_for_ticks(10, 1, 8, 64, false, false)
+        .is_empty());
+    assert_eq!(loaded.memory.read_u32_be(user_data), Some(0));
+
+    loaded.set_tick_count(11);
+    loaded.cpu.gpr[3] = u32::from(u16::MAX);
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent),
+    );
+    let polling_tick = loaded.toolbox_startup.event_loop_poll_until_tick.unwrap();
+    assert!(super::dispatch_event::ppc_tick_is_due(
+        polling_tick,
+        loaded.toolbox_startup.event_loop_timers[0]
+            .next_fire_tick
+            .unwrap(),
+    ));
+    let probes = loaded.fire_event_loop_timers_for_ticks(
+        polling_tick.wrapping_sub(1),
+        1,
+        8,
+        64,
+        false,
+        false,
+    );
+    assert_eq!(probes.len(), 1);
+    assert_eq!(probes[0].invocation.task_ptr, timer_ref);
+    assert_eq!(loaded.memory.read_u32_be(user_data), Some(0x1234));
+    assert_eq!(
+        loaded.toolbox_startup.event_loop_timers[0].next_fire_tick,
+        None
+    );
+
+    loaded.cpu.gpr[3] = timer_ref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::RemoveEventLoopTimer);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert!(loaded.toolbox_startup.event_loop_timers.is_empty());
+    loaded.cpu.gpr[3] = timer_ref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::RemoveEventLoopTimer);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+}
 
 #[test]
 fn carbon_main_event_queue_ref_is_stable_and_flushes_pending_events() {

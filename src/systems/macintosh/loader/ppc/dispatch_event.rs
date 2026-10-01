@@ -5,6 +5,33 @@ use super::*;
 // EventQueueRef is an opaque Carbon handle. The HLE has one application event
 // queue, so this stable non-null token identifies that queue to guest calls.
 pub(super) const PPC_MAIN_EVENT_QUEUE_REF: u32 = 1;
+pub(super) const PPC_MAIN_EVENT_LOOP_REF: u32 = 2;
+
+// Carbon Event Manager Programming Guide (2005), "Installing Timers": a
+// timer belongs to an event loop, fires only while that loop is running, and
+// repeats after its callback unless its interval is zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PpcEventLoopTimerRecord {
+    pub(super) timer_ref: u32,
+    pub(super) callback: u32,
+    pub(super) user_data: u32,
+    pub(super) next_fire_tick: Option<u32>,
+    pub(super) interval_ticks: u32,
+}
+
+fn ppc_event_timer_interval_ticks(seconds: f64) -> Option<Option<u32>> {
+    if seconds == -1.0 {
+        return Some(None); // kEventDurationForever
+    }
+    if !seconds.is_finite() || seconds < 0.0 || seconds > f64::from(u32::MAX) / 60.0 {
+        return None;
+    }
+    Some(Some((seconds * 60.0).ceil() as u32))
+}
+
+pub(super) fn ppc_tick_is_due(current: u32, deadline: u32) -> bool {
+    current.wrapping_sub(deadline) < 0x8000_0000
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcEventPollOperation {
@@ -424,6 +451,64 @@ pub(super) fn dispatch_event_import(
         tick_count,
     } = context;
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::GetMainEventLoop => {
+            // CarbonEvents.h: each application has one main EventLoopRef.
+            Some(PpcImportAction::Return(PPC_MAIN_EVENT_LOOP_REF))
+        }
+        PpcImportDispatcherTarget::InstallEventLoopTimer => {
+            // CarbonEvents.h (QuickTime 6.0.2): OSStatus InstallEventLoopTimer(
+            // EventLoopRef, EventTimerInterval, EventTimerInterval,
+            // EventLoopTimerUPP, void *, EventLoopTimerRef *). The two double
+            // arguments consume PPC integer parameter slots r4-r7, so the
+            // trailing pointers arrive in r8-r10.
+            let loop_ref = cpu.gpr[3];
+            let first_fire = f64::from_bits(cpu.fpr[1]);
+            let interval = f64::from_bits(cpu.fpr[2]);
+            let callback = cpu.gpr[8];
+            let user_data = cpu.gpr[9];
+            let out_ref = cpu.gpr[10];
+            let Some(interval_ticks) = ppc_event_timer_interval_ticks(interval) else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let interval_ticks = interval_ticks.unwrap_or(0);
+            let Some(first_fire_ticks) = ppc_event_timer_interval_ticks(first_fire) else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            if loop_ref != PPC_MAIN_EVENT_LOOP_REF
+                || callback == 0
+                || (out_ref != 0 && !ppc_memory_can_write_bytes(memory, out_ref, 4))
+            {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let timer_ref = toolbox_startup.next_event_loop_timer_ref;
+            toolbox_startup.next_event_loop_timer_ref = timer_ref.wrapping_add(4).max(0x100);
+            toolbox_startup
+                .event_loop_timers
+                .push(PpcEventLoopTimerRecord {
+                    timer_ref,
+                    callback,
+                    user_data,
+                    next_fire_tick: first_fire_ticks.map(|ticks| tick_count.wrapping_add(ticks)),
+                    interval_ticks,
+                });
+            if out_ref != 0 {
+                let _ = memory.write_u32_be(out_ref, timer_ref);
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcImportDispatcherTarget::RemoveEventLoopTimer => {
+            // CarbonEvents.h: removal invalidates the opaque timer reference.
+            let timer_ref = cpu.gpr[3];
+            let Some(index) = toolbox_startup
+                .event_loop_timers
+                .iter()
+                .position(|timer| timer.timer_ref == timer_ref)
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            toolbox_startup.event_loop_timers.remove(index);
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
         PpcImportDispatcherTarget::GetMainEventQueue => {
             // Carbon Event Manager Programming Guide (2005), "Posting Events":
             // GetMainEventQueue returns the main application's EventQueueRef.
@@ -470,11 +555,24 @@ pub(super) fn dispatch_event_import(
             let event_mask = cpu.gpr[3] as u16;
             let event_ptr = cpu.gpr[4];
             let sleep_ticks = cpu.gpr[5];
+            // Classic polling functions run the Carbon event loop too. Keep
+            // it active through a WaitNextEvent sleep, but not through later
+            // application work after a nonblocking poll.
             let os_only = matches!(
                 binding.dispatcher_target,
                 PpcImportDispatcherTarget::GetOSEvent
             );
             if !os_only {
+                let wait_ticks = if matches!(
+                    binding.dispatcher_target,
+                    PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)
+                ) {
+                    sleep_ticks
+                } else {
+                    0
+                };
+                toolbox_startup.event_loop_poll_until_tick =
+                    Some(tick_count.wrapping_add(wait_ticks.max(1)));
                 ppc_service_invalid_menu_bar(
                     event_queue,
                     memory,
@@ -551,6 +649,7 @@ pub(super) fn dispatch_event_import(
                 PpcImportDispatcherTarget::OSEventAvail
             );
             if !os_only {
+                toolbox_startup.event_loop_poll_until_tick = Some(tick_count.wrapping_add(1));
                 ppc_service_invalid_menu_bar(
                     event_queue,
                     memory,
