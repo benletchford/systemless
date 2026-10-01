@@ -2458,6 +2458,34 @@ fn import_bindings_classify_gworld_state_imports() {
 }
 
 #[test]
+fn carbon_get_port_bounds_copies_offscreen_gworld_rect() {
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"GetPortBounds");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1800;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let bounds_ptr = scratch;
+    let out_gworld = scratch + 16;
+    let out_rect = scratch + 32;
+    ppc_write_rect(&mut loaded.memory, bounds_ptr, 5, 7, 69, 135).unwrap();
+    loaded.cpu.gpr[3] = out_gworld;
+    loaded.cpu.gpr[4] = 16;
+    loaded.cpu.gpr[5] = bounds_ptr;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGWorld);
+    let port = loaded.memory.read_u32_be(out_gworld).unwrap();
+    assert_ne!(port, 0);
+    loaded.cpu.gpr[3] = port;
+    loaded.cpu.gpr[4] = out_rect;
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPortBounds);
+
+    assert_eq!(loaded.cpu.gpr[3], out_rect);
+    assert_eq!(ppc_read_rect(&mut loaded.memory, out_rect), Some((5, 7, 69, 135)));
+}
+
+#[test]
 fn carbon_window_port_accessors_use_the_window_grafport() {
     assert_eq!(
         dispatcher_target_for_import("CarbonLib", "GetWindowPort"),

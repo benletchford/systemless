@@ -267,6 +267,7 @@ pub enum PpcImportDispatcherTarget {
     NSetPalette,
     GetPalette,
     GetPort,
+    GetPortBounds,
     GetWMgrPort,
     SetPort,
     GetGDevice,
@@ -2996,6 +2997,7 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "GetPalette") => PpcImportDispatcherTarget::GetPalette,
         ("InterfaceLib", "GetPort") => PpcImportDispatcherTarget::GetPort,
+        ("InterfaceLib", "GetPortBounds") => PpcImportDispatcherTarget::GetPortBounds,
         ("InterfaceLib", "GetWMgrPort") | ("InterfaceLib", "GetCWMgrPort") => {
             PpcImportDispatcherTarget::GetWMgrPort
         }
