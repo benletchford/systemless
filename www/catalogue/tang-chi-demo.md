@@ -58,6 +58,7 @@ artifacts:
     notes: >-
       Original 7,441,488-byte StuffIt archive, SHA-256
       fe074c686b7fa61e9b33437a05f12106ac5a560cbe98d1a5a9c2f72a3cd59497.
+      The promoted public object was fetched back and matched this size and hash.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -73,7 +74,8 @@ artifacts:
     - https://github.com/benletchford/systemless/issues/3682
     permission: >-
       Fresh gameplay capture made from the original demo for this catalogue entry.
-      The underlying game artwork remains its owners' property.
+      The underlying game artwork remains its owners' property. The promoted
+      public screenshot was fetched back and matched its recorded size and hash.
 references:
 - https://classicmacdemos.com/tang-chi
 ---
