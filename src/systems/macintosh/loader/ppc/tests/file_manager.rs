@@ -6351,6 +6351,23 @@ fn pb_read_async_queues_completion_on_eof() {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_F_BSY_ERR));
+        assert_eq!(loaded.vfs_files.len(), 1);
+        assert_eq!(loaded.files.len(), 1);
+        assert!(loaded.take_deleted_vfs_file_paths().is_empty());
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::FSClose;
+        loaded.cpu.gpr[3] = read_ref_num as u16 as u32;
+        loaded.run_with_hle_imports(64);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::FSpDelete;
+        loaded.cpu.gpr[3] = spec_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
         assert!(loaded.vfs_files.is_empty());
         assert!(loaded.files.is_empty());
@@ -9178,6 +9195,11 @@ fn hle_import_runner_uses_typed_delete_by_name_operation() {
             dirty: false,
         });
     }
+    loaded.push_test_open_file(PpcFileRecord {
+        ref_num: PPC_FIRST_FILE_REF_NUM,
+        path: "Typed Folder/Victim".to_string(),
+        position: 0,
+    });
     let pb = PPC_DATA_BASE + 0x1000;
     let name_ptr = PPC_DATA_BASE + 0x1100;
     loaded.memory.add_region(pb, vec![0; 64]);
@@ -9198,6 +9220,40 @@ fn hle_import_runner_uses_typed_delete_by_name_operation() {
         )
     );
     loaded.imports[0].symbol_name = "PBDelete".to_string();
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_F_BSY_ERR));
+    assert!(loaded
+        .vfs_files
+        .iter()
+        .any(|file| file.path == "Typed Folder/Victim"));
+
+    loaded
+        .process_file_system
+        .with_mut(|file_system| file_system.files.with_mut(|files| files.clear()));
+    loaded.push_resource_file(PpcResourceFileRecord {
+        ref_num: PPC_FIRST_FILE_REF_NUM + 1,
+        path: "Typed Folder/Victim".to_string(),
+    });
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = pb;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_F_BSY_ERR));
+    assert!(loaded
+        .vfs_files
+        .iter()
+        .any(|file| file.path == "Typed Folder/Victim"));
+
+    loaded
+        .process_file_system
+        .with_resource_manager_mut(|manager| manager.resource_files.clear());
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = pb;
     let probe = loaded.run_with_hle_imports(64);
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);

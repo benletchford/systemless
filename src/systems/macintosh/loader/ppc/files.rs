@@ -4747,6 +4747,13 @@ pub(super) fn ppc_delete_vfs_path(
     if !existed {
         return PPC_FNF_ERR;
     }
+    if files.iter().any(|file| file.path.eq_ignore_ascii_case(path))
+        || resource_files
+            .iter()
+            .any(|file| file.path.eq_ignore_ascii_case(path))
+    {
+        return PPC_F_BSY_ERR;
+    }
     vfs_files.retain(|file| !file.path.eq_ignore_ascii_case(path));
     if !deleted_vfs_file_paths
         .iter()
