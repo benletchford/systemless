@@ -13,7 +13,7 @@ pub enum ClassicGlColorBuffer {
 
 /// State used by `glClear`. `scissor` is in lower-left OpenGL coordinates.
 /// See OpenGL 1.2.1, sections 4.1.2 and 4.2.2-4.2.3.
-/// https://registry.khronos.org/OpenGL/specs/gl/glspec121.pdf
+/// <https://registry.khronos.org/OpenGL/specs/gl/glspec121.pdf>
 #[derive(Debug, Clone, Copy)]
 pub struct ClassicGlClear {
     pub color: Option<(ClassicGlColorBuffer, [u8; 4])>,
