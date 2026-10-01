@@ -711,6 +711,11 @@ pub(super) fn ppc_pbh_get_v_info(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_volumes: &[PpcVfsVolumeRecord],
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    default_dir_id: u32,
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
 ) -> i16 {
     let pb = cpu.gpr[3];
     if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 122) {
@@ -767,12 +772,16 @@ pub(super) fn ppc_pbh_get_v_info(
         }
     };
     let volume_by_ref = |requested_ref: i16| {
-        if requested_ref == PPC_BOOT_VOLUME_REF_NUM {
+        let volume_ref = working_directories
+            .get(&requested_ref)
+            .map(|wd| wd.volume_ref_num)
+            .unwrap_or(requested_ref);
+        if volume_ref == PPC_BOOT_VOLUME_REF_NUM {
             Some(boot_volume())
         } else {
             vfs_volumes
                 .iter()
-                .find(|volume| volume.ref_num == requested_ref)
+                .find(|volume| volume.ref_num == volume_ref)
                 .cloned()
         }
     };
@@ -827,13 +836,34 @@ pub(super) fn ppc_pbh_get_v_info(
         );
     }
 
+    // A working-directory reference, or the default directory when it is a
+    // subdirectory, returns that directory's valence in ioVNmFls.
+    // Inside Macintosh: Files (1992), pp. 2-144--2-145.
+    let selected_dir_id =
+        if volume_index <= 0 && vref_num == 0 && volume.ref_num == PPC_BOOT_VOLUME_REF_NUM {
+            Some(default_dir_id)
+        } else if volume_index <= 0 {
+            working_directories
+                .get(&vref_num)
+                .filter(|wd| wd.volume_ref_num == volume.ref_num)
+                .map(|wd| wd.dir_id)
+        } else {
+            None
+        };
+    let valence = selected_dir_id
+        .or((volume.ref_num == PPC_BOOT_VOLUME_REF_NUM).then_some(volume.root_dir_id))
+        .and_then(|dir_id| {
+            ppc_vfs_directory_valence(vfs_directories, vfs_files, vfs_resource_files, dir_id)
+        })
+        .unwrap_or(volume.file_count);
+
     // Inside Macintosh: Files (1992), p. 2-238: HVolumeParam layout.
     let writes = [
         memory.write_u16_be(pb + 22, volume.ref_num as u16),
         memory.write_u32_be(pb + 30, volume.created_date),
         memory.write_u32_be(pb + 34, volume.modified_date),
         memory.write_u16_be(pb + 38, volume.attributes),
-        memory.write_u16_be(pb + 40, volume.file_count),
+        memory.write_u16_be(pb + 40, valence),
         memory.write_u16_be(pb + 42, volume.bitmap_start),
         memory.write_u16_be(pb + 44, volume.allocation_pointer),
         memory.write_u16_be(pb + 46, volume.allocation_block_count),
@@ -1121,6 +1151,32 @@ pub(super) fn ppc_catalog_child_by_index(
         left_key.cmp(&right_key)
     });
     entries.into_iter().nth(fdir_index.saturating_sub(1))
+}
+
+fn ppc_vfs_directory_valence(
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    dir_id: u32,
+) -> Option<u16> {
+    let parent_path = ppc_directory_path_for_id(vfs_directories, dir_id)?;
+    let mut children = HashSet::new();
+    for directory in vfs_directories
+        .iter()
+        .filter(|dir| dir.parent_dir_id == dir_id)
+    {
+        children.insert(ppc_vfs_basename_bytes(&directory.path).to_ascii_lowercase());
+    }
+    for path in vfs_files
+        .iter()
+        .map(|file| file.path.as_str())
+        .chain(vfs_resource_files.iter().map(|fork| fork.path.as_str()))
+    {
+        if let Some(name) = ppc_child_name_for_parent(parent_path, path) {
+            children.insert(name.as_bytes().to_ascii_lowercase());
+        }
+    }
+    Some(children.len().min(u16::MAX as usize) as u16)
 }
 
 pub(super) fn ppc_child_name_for_parent<'a>(parent_path: &str, path: &'a str) -> Option<&'a str> {

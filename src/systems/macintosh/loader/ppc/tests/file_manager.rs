@@ -8627,6 +8627,95 @@ fn pbh_get_v_info_keeps_relative_paths_on_the_default_volume() {
 }
 
 #[test]
+fn pbh_get_v_info_reports_default_directory_valence() {
+    let pef = synthetic_pef_with_import(b"PBHGetVInfoSync");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut directories = initial_ppc_vfs_directories();
+    directories.push(PpcVfsDirectory {
+        dir_id: 18,
+        parent_dir_id: PPC_ROOT_DIR_ID,
+        path: "Game".to_string(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    directories.push(PpcVfsDirectory {
+        dir_id: 19,
+        parent_dir_id: 18,
+        path: "Game/Levels".to_string(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.seed_vfs_directories(directories, 18, 20);
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Game/Data".to_string(),
+        data: b"data".to_vec().into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.push_vfs_resource_file(PpcVfsResourceFileRecord {
+        path: "Game/Data".to_string(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        resource_len: 4,
+        raw_data: None,
+        map_attrs: 0,
+        dirty: false,
+    });
+    loaded.push_vfs_resource_file(PpcVfsResourceFileRecord {
+        path: "Game/Resources".to_string(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        resource_len: 4,
+        raw_data: None,
+        map_attrs: 0,
+        dirty: false,
+    });
+    let pb = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(pb, vec![0; 0x200]);
+    loaded.cpu.gpr[3] = pb;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u16_be(pb + 40), Some(3));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = pb;
+    loaded.memory.write_u16_be(pb + 28, 1).unwrap();
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u16_be(pb + 40), Some(2));
+
+    let wd_ref_num = -5;
+    loaded.working_directories.with_mut(|directories| {
+        directories.insert(
+            wd_ref_num,
+            ProcessWorkingDirectory {
+                ref_num: wd_ref_num,
+                volume_ref_num: PPC_BOOT_VOLUME_REF_NUM,
+                dir_id: 18,
+                proc_id: 0,
+            },
+        );
+    });
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = pb;
+    loaded.memory.write_u16_be(pb + 22, wd_ref_num as u16).unwrap();
+    loaded.memory.write_u16_be(pb + 28, 0).unwrap();
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u16_be(pb + 40), Some(3));
+}
+
+#[test]
 fn hle_import_runner_gets_and_sets_cur_dir_store_low_memory_global() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "LMSetCurDirStore"),

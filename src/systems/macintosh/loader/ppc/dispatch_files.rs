@@ -402,9 +402,18 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
         PpcImportDispatcherTarget::PBFlushVol => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_complete_pb(memory, cpu.gpr[3], PPC_NO_ERR),
         ))),
-        PpcImportDispatcherTarget::PBHGetVInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pbh_get_v_info(cpu, memory, vfs_volumes),
-        ))),
+        PpcImportDispatcherTarget::PBHGetVInfo => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pbh_get_v_info(
+                cpu,
+                memory,
+                vfs_volumes,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                default_dir_id,
+                working_directories,
+            ))))
+        }
         PpcImportDispatcherTarget::GetVInfo => {
             // Inside Macintosh: Files (1992), p. 2-67: drive 0 selects the
             // default volume; the result includes its name, vRefNum, and
