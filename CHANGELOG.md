@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.73.0](https://github.com/benletchford/systemless/compare/v0.72.0...v0.73.0) (2026-10-01)
+
+
+### Features
+
+* **catalogue:** add Bachman ([#3749](https://github.com/benletchford/systemless/issues/3749)) ([19cf104](https://github.com/benletchford/systemless/commit/19cf104a26ba336476983dc4c252d50bdf123291))
+* **catalogue:** add Bert 1.1 ([dc5d75b](https://github.com/benletchford/systemless/commit/dc5d75b28f4c797c93365bf485b7a783c757ae48)), closes [#3758](https://github.com/benletchford/systemless/issues/3758)
+* **catalogue:** add Bikaka 1.4 ([1609e83](https://github.com/benletchford/systemless/commit/1609e838449b411524314c20ecce6b693a6b7879)), closes [#3760](https://github.com/benletchford/systemless/issues/3760)
+* **catalogue:** add Brix 1.0.2 ([8b48f8f](https://github.com/benletchford/systemless/commit/8b48f8ff4da2e823f0493cdc058da792384c90b9)), closes [#3764](https://github.com/benletchford/systemless/issues/3764)
+* **catalogue:** add F.A.R.M. Patrol 1.0 ([#3800](https://github.com/benletchford/systemless/issues/3800)) ([d4c6d4a](https://github.com/benletchford/systemless/commit/d4c6d4a8a8a89f34a19b070b03b860cbb8d89a2f))
+* **catalogue:** add Fly Swatter 2.0 ([04c7fa3](https://github.com/benletchford/systemless/commit/04c7fa3cf9ecde3c63ee0377bc4e0bcf07e490c9)), closes [#3768](https://github.com/benletchford/systemless/issues/3768)
+* **catalogue:** add GoldPusher 1.4 ([#3789](https://github.com/benletchford/systemless/issues/3789)) ([d9e1664](https://github.com/benletchford/systemless/commit/d9e1664482cd18a99b30de3859530fcdc72527f4))
+* **catalogue:** add Greebles 1.0 ([#3792](https://github.com/benletchford/systemless/issues/3792)) ([02a88c5](https://github.com/benletchford/systemless/commit/02a88c550c7e3086ec6c2f9585a307de7a3ff087))
+* **catalogue:** add Gunslinger 1.0 ([#3811](https://github.com/benletchford/systemless/issues/3811)) ([b83389c](https://github.com/benletchford/systemless/commit/b83389c575e6a7de22631898fb0a6b1b16f7e947))
+* **catalogue:** add MacChess 2.5.1 ([ce20919](https://github.com/benletchford/systemless/commit/ce20919d5f9d8d34f8e54f96a12e51c5012e6cec))
+* **catalogue:** add Mazeworld Catacombs 1.0.5 ([#3813](https://github.com/benletchford/systemless/issues/3813)) ([9d3a247](https://github.com/benletchford/systemless/commit/9d3a24743198112d6367a4c6a113fa7826a938a5))
+* **catalogue:** add MegaPong World Tournament ([#3816](https://github.com/benletchford/systemless/issues/3816)) ([9018780](https://github.com/benletchford/systemless/commit/9018780278b81d35b8fcf2c59ef26d538db536c0))
+* **catalogue:** add Missile Math 1.0 ([#3805](https://github.com/benletchford/systemless/issues/3805)) ([1a4ed48](https://github.com/benletchford/systemless/commit/1a4ed48e4af4f58150cfc4828e033a8f6fa03588))
+* **catalogue:** add Please Shoot Me ([#3819](https://github.com/benletchford/systemless/issues/3819)) ([418e6e1](https://github.com/benletchford/systemless/commit/418e6e1da3f1fdb472117ec319fe717712db5037))
+* **catalogue:** add Prima Materia v0.1.1 ([#3807](https://github.com/benletchford/systemless/issues/3807)) ([598615c](https://github.com/benletchford/systemless/commit/598615c1e9d41d313fe91857cd1709ffab7bdb1b))
+* **catalogue:** add SCS Mines 1.0 ([#3809](https://github.com/benletchford/systemless/issues/3809)) ([3c7a257](https://github.com/benletchford/systemless/commit/3c7a257f054a173532ac3a57400a47f5cd647750))
+* **catalogue:** add Smack a Skunk ([#3785](https://github.com/benletchford/systemless/issues/3785)) ([2b75abe](https://github.com/benletchford/systemless/commit/2b75abed4823be19d9c2cb65fb10270e68181125))
+* **catalogue:** add Snake Byte 1.2 ([fdb00cb](https://github.com/benletchford/systemless/commit/fdb00cbd1a3b88ce7925fc82a8a7160fc28fd1e2)), closes [#3772](https://github.com/benletchford/systemless/issues/3772)
+* **catalogue:** add SpaceInvader 1.04 ([#3821](https://github.com/benletchford/systemless/issues/3821)) ([dc3d3bf](https://github.com/benletchford/systemless/commit/dc3d3bfc96221bc8ee4e44f888273d047e0a204e))
+* **catalogue:** add Tic Tac Toe ([17de6ae](https://github.com/benletchford/systemless/commit/17de6ae845bcb6a89be273974efd573fe24a8056))
+* **catalogue:** add Utopia 1.1.0 ([#3794](https://github.com/benletchford/systemless/issues/3794)) ([a83e2fa](https://github.com/benletchford/systemless/commit/a83e2fac91387853979edbacebb9dce08a5a61d4))
+* **catalogue:** add WhackIt! Weenie Edition ([#3780](https://github.com/benletchford/systemless/issues/3780)) ([9119f3f](https://github.com/benletchford/systemless/commit/9119f3fdd0ca5f044be8a9f7d91015b698d718da))
+* **catalogue:** add Xenia 1.0 ([#3802](https://github.com/benletchford/systemless/issues/3802)) ([dad7b4b](https://github.com/benletchford/systemless/commit/dad7b4bd1aed714daf62521ea055419ca30d86b5))
+* **ppc:** bind classic AGL software contexts ([#3787](https://github.com/benletchford/systemless/issues/3787)) ([332facb](https://github.com/benletchford/systemless/commit/332facb2f80cea990adee07b7f4dbdd73b26442b))
+* **ppc:** bind classic AGL software pixel formats ([#3778](https://github.com/benletchford/systemless/issues/3778)) ([ad317a9](https://github.com/benletchford/systemless/commit/ad317a974eb273f64cccad0fdffdb9f662ab2a47))
+* **ppc:** implement Carbon application event dispatch ([#3814](https://github.com/benletchford/systemless/issues/3814)) ([468b956](https://github.com/benletchford/systemless/commit/468b9566de762954ce93cddf2acf2caaaf6f5d80))
+* **ppc:** invoke OpenGL memory callbacks ([#3795](https://github.com/benletchford/systemless/issues/3795)) ([5e0600a](https://github.com/benletchford/systemless/commit/5e0600a71be4ffadff4a51822d9baf371677ba0c))
+* **ppc:** support OpenGL memory mode selection ([#3769](https://github.com/benletchford/systemless/issues/3769)) ([0099061](https://github.com/benletchford/systemless/commit/0099061296efc56f7cf7d0d044a901d2d4e6f683))
+
+
+### Bug Fixes
+
+* accept PowerPC ThreadEntryUPP descriptors in NewThread ([#3752](https://github.com/benletchford/systemless/issues/3752)) ([271b28f](https://github.com/benletchford/systemless/commit/271b28f8d47887bf78650d0c8d5aa5491764710d))
+* **macintosh:** align QuickTime Gestalt versions ([#3803](https://github.com/benletchford/systemless/issues/3803)) ([db0336f](https://github.com/benletchford/systemless/commit/db0336ffb53766b8b96c82065537baf67e84a2e2))
+* **ppc:** complete CarbonLib asynchronous reads ([#3763](https://github.com/benletchford/systemless/issues/3763)) ([82b946c](https://github.com/benletchford/systemless/commit/82b946c143604860b4d08ceda07ddac31f626b8b))
+* **ppc:** create Carbon plain windows ([#3786](https://github.com/benletchford/systemless/issues/3786)) ([a5732e3](https://github.com/benletchford/systemless/commit/a5732e325c9322b1a080eb72b0b6d0e8ac2af1bf))
+* **ppc:** expose Carbon QuickDraw port bounds ([#3775](https://github.com/benletchford/systemless/issues/3775)) ([cb5d51f](https://github.com/benletchford/systemless/commit/cb5d51f452b154fee76cf7ccb8dc8d9bba174647))
+* **ppc:** expose classic AGL error state ([#3784](https://github.com/benletchford/systemless/issues/3784)) ([8ece78c](https://github.com/benletchford/systemless/commit/8ece78c821d6335e0d92b5c12589ff63ba51dbf5))
+* run Carbon event loop timers during polling ([#3740](https://github.com/benletchford/systemless/issues/3740)) ([651225d](https://github.com/benletchford/systemless/commit/651225dd7d1685b3b8fe2a7d09c259416d293490))
+
 ## [0.72.0](https://github.com/benletchford/systemless/compare/v0.71.0...v0.72.0) (2026-10-01)
 
 
