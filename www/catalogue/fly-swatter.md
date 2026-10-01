@@ -62,6 +62,8 @@ artifacts:
     notes: >-
       Original 23,908-byte BinHex/StuffIt archive, SHA-256
       601990f0a162b9664be462482154281759209e755b9f1dc0c512edbb3931d18c.
+      The promoted public object was fetched and confirmed byte-for-byte identical
+      to the original download on 2026-10-02.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -80,7 +82,8 @@ artifacts:
       artwork remains its owner's property.
     notes: >-
       Exact 580-by-400 game-content crop at (110,110) from an 800-by-600 Systemless
-      framebuffer after a successful swat; score 1 out of 2.
+      framebuffer after a successful swat; score 1 out of 2. The promoted public
+      PNG matched its 2,168-byte SHA-256 source on 2026-10-02.
 references:
 - >-
   https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/00arc-abstracts.txt
