@@ -56,6 +56,7 @@ artifacts:
     notes: >-
       Original 437,579-byte BinHex/StuffIt archive, SHA-256
       ccd48628c51416f17014dff233c22e7255eff4e6d09be42df043859d0ef23034.
+      The promoted public object was fetched back and matched this hash and size.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -75,6 +76,7 @@ artifacts:
     notes: >-
       Exact 614-by-496 game-content crop at (333,354) from a 1280-by-900 Chrome
       screenshot during an active round after moving the cannon right.
+      The promoted screenshot was fetched back and matched its hash and size.
 references:
 - >-
   https://ftp.zx.net.nz/pub/mirror/ftp.funet.fi/pub/mac/info-mac/game/arc/enemy-bomber-balloons-10.hqx
