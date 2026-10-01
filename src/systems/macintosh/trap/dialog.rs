@@ -2778,6 +2778,9 @@ impl super::TrapDispatcher {
     }
 
     fn textedit_idle(&mut self, cpu: &mut impl CpuOps, bus: &mut MacMemoryBus, te_handle: u32) {
+        if self.screen_takeover_active {
+            return;
+        }
         if trace_textedit_enabled() {
             eprintln!("[TE] TEIdle hTE=${te_handle:08X}");
         }

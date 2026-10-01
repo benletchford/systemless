@@ -3837,7 +3837,13 @@ mod tests {
         Payload {
             dirs: vec!["Disk 1".into(), "Disk 1/Install".into()],
             files: vec![file("Disk 1/Readme"), file("Disk 1/Install/Readme")],
-            volumes: vec![("Disk 1".into(), Default::default())],
+            volumes: vec![(
+                "Disk 1".into(),
+                crate::disk_image::DiskImageVolumeInfo {
+                    attributes: 0x0080,
+                    ..Default::default()
+                },
+            )],
             installer_roots: vec!["Disk 1/Install".into()],
             skipped_disk_image_errors: Vec::new(),
         }
@@ -4005,7 +4011,7 @@ mod tests {
     }
 
     #[test]
-    fn disk_image_payload_registers_a_hardware_locked_file_manager_volume() {
+    fn disk_image_payload_preserves_source_volume_lock_state() {
         let mut builder = hfsplus::testutil::HfsPlusImageBuilder::new();
         builder.add_file("Data File", b"contents", 0o100644);
         let image_bytes = builder.build();
@@ -4028,13 +4034,13 @@ mod tests {
             .vfs_volume_by_name(&volume_name)
             .expect("mounted File Manager volume");
         assert_eq!(volume.ref_num, -2);
-        assert_ne!(volume.attributes & 0x0080, 0, "hardware-locked volume");
+        assert_eq!(volume.attributes & 0x0080, 0, "writable source volume");
         assert_eq!(
             volume.attributes & 0x8000,
             0,
             "software lock must retain the source state"
         );
-        assert!(runner
+        assert!(!runner
             .dispatcher()
             .vfs_path_is_read_only(&format!("{volume_name}/Data File")));
     }
@@ -4073,8 +4079,8 @@ mod tests {
         assert_eq!(mounted.file_count, volume_info.file_count);
         assert_eq!(
             mounted.attributes,
-            volume_info.attributes | 0x0080,
-            "packed disk images remain hardware locked"
+            volume_info.attributes,
+            "packed disk images preserve source lock state"
         );
         assert_eq!(
             mounted.allocation_block_count,

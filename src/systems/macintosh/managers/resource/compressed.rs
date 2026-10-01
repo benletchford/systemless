@@ -9,6 +9,7 @@
 pub(crate) const COMPRESSED_RESOURCE_ATTR: u8 = 0x01;
 const COMPRESSED_MAGIC: &[u8; 4] = b"\xA8\x9Fer";
 const COMPRESSED_TYPE_8: u16 = 0x0801;
+const COMPRESSED_TYPE_9: u16 = 0x0901;
 const HEADER_LEN: usize = 0x12;
 
 const DCMP0_TABLE: [u8; 358] = [
@@ -88,8 +89,165 @@ fn decompress_resource(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
             }
             decompress_dcmp0(&data[header_len..], decompressed_len)
         }
+        COMPRESSED_TYPE_9 => {
+            let dcmp_id = read_i16(data, 12);
+            if dcmp_id != 3 {
+                return Err(DecompressError::UnsupportedDecompressor(dcmp_id));
+            }
+            decompress_dcmp3(&data[header_len..], decompressed_len)
+        }
         other => Err(DecompressError::UnsupportedHeaderType(other)),
     }
+}
+
+// System 7's dcmp 3 stores literal runs and overlapping backward copies in an
+// MSB-first bitstream. The dynamic offset code depends on bytes already output.
+// Format reference: ResourceDASM's System3 decompressor (MIT license).
+fn decompress_dcmp3(data: &[u8], decompressed_len: usize) -> Result<Vec<u8>, DecompressError> {
+    struct Bits<'a> {
+        data: &'a [u8],
+        pos: usize,
+    }
+    impl Bits<'_> {
+        fn read(&mut self, count: usize) -> Result<usize, DecompressError> {
+            let end = self
+                .pos
+                .checked_add(count)
+                .ok_or(DecompressError::Truncated)?;
+            if end > self.data.len() * 8 {
+                return Err(DecompressError::Truncated);
+            }
+            let mut value = 0;
+            while self.pos < end {
+                value =
+                    (value << 1) | ((self.data[self.pos / 8] >> (7 - self.pos % 8)) & 1) as usize;
+                self.pos += 1;
+            }
+            Ok(value)
+        }
+        fn run_length(&mut self) -> Result<usize, DecompressError> {
+            let mut prefix = 0;
+            while prefix < 10 && self.read(1)? == 1 {
+                prefix += 1;
+            }
+            let (base, bits) = match prefix {
+                0 => (0, 1),
+                1 => {
+                    return Ok(if self.read(1)? == 0 {
+                        2
+                    } else {
+                        self.read(1)? + 3
+                    })
+                }
+                2 => {
+                    return Ok(if self.read(1)? == 0 {
+                        self.read(1)? + 5
+                    } else {
+                        self.read(2)? + 7
+                    })
+                }
+                3 => (11, 3),
+                4 => (19, 3),
+                5 => (27, 5),
+                6 => (59, 6),
+                7 => (123, 7),
+                8 => (251, 8),
+                9 => (507, 9),
+                _ => (1019, 10),
+            };
+            Ok(base + self.read(bits)?)
+        }
+        fn literal_length(&mut self) -> Result<usize, DecompressError> {
+            if self.read(1)? == 0 {
+                return Ok(1);
+            }
+            match self.read(2)? {
+                0 => Ok(2),
+                1 => Ok(3),
+                2 => Ok(self.read(2)? + 4),
+                _ => {
+                    let code = self.read(4)?;
+                    if code < 8 {
+                        Ok(code + 8)
+                    } else if code < 12 {
+                        Ok(((code - 8) << 2) + self.read(2)? + 16)
+                    } else {
+                        Ok(((code - 12) << 3) + self.read(3)? + 32)
+                    }
+                }
+            }
+        }
+        fn offset(&mut self, available: usize) -> Result<usize, DecompressError> {
+            if available == 0 {
+                return Err(DecompressError::BadBackReference(0));
+            }
+            let bucket = [
+                10, 20, 40, 80, 160, 672, 1000, 2688, 5376, 10752, 21504, 43008, 70000, 172032,
+            ];
+            let k = bucket
+                .iter()
+                .position(|&limit| available <= limit)
+                .unwrap_or(14);
+            if self.read(1)? == 0 {
+                return Ok(self.read(k)? + 1);
+            }
+            if self.read(1)? == 0 {
+                return Ok(self.read(k + 2)? + (1 << k) + 1);
+            }
+            let base = 5 * (1 << k) + 1;
+            let range = available.saturating_sub(base) + 1;
+            let mut bits = (usize::BITS - (range - 1).leading_zeros()) as usize;
+            // Preserve the original dcmp 3 decoder's two irregular thresholds.
+            if k == 7 && (0x285..=0x288).contains(&available) {
+                bits = 4;
+            }
+            if k == 7 && (0x66D..=0x680).contains(&available) {
+                bits = 11;
+            }
+            if k == 14 && (0x200D..=0x14080).contains(&available) {
+                bits = 8;
+            }
+            Ok(base + self.read(bits)?)
+        }
+    }
+
+    let mut bits = Bits { data, pos: 0 };
+    let mut out = Vec::with_capacity(decompressed_len);
+    let mut literal_allowed = true;
+    while out.len() < decompressed_len {
+        let mut count = bits.run_length()?;
+        if count == 0 && literal_allowed {
+            count = bits.literal_length()?;
+            literal_allowed = count == 63;
+            if out.len() + count > decompressed_len {
+                return Err(DecompressError::LengthMismatch {
+                    expected: decompressed_len,
+                    actual: out.len() + count,
+                });
+            }
+            for _ in 0..count {
+                out.push(bits.read(8)? as u8);
+            }
+        } else {
+            count += if literal_allowed { 2 } else { 3 };
+            literal_allowed = true;
+            let offset = bits.offset(out.len())?;
+            if offset == 0 || offset > out.len() {
+                return Err(DecompressError::BadBackReference(offset));
+            }
+            if out.len() + count > decompressed_len {
+                return Err(DecompressError::LengthMismatch {
+                    expected: decompressed_len,
+                    actual: out.len() + count,
+                });
+            }
+            for _ in 0..count {
+                let value = out[out.len() - offset];
+                out.push(value);
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn decompress_dcmp0(data: &[u8], decompressed_len: usize) -> Result<Vec<u8>, DecompressError> {
@@ -191,6 +349,30 @@ fn decode_extended_dcmp0(
                 append_jump_table_entry(out, current as u16, &entry_tail, decompressed_len);
             }
         }
+        0x01 => {
+            // dcmp 0 can reconstruct a CODE jump table from its target and
+            // A5 offsets. Entries are BSR.W target; JMP d16(A5).
+            let mut target = r.read_var_i32()? as u16;
+            let delta = r.read_var_i32()? as u16;
+            let count = (r.read_var_i32()? as u32 & 0xFFFF) as usize + 1;
+            let mut a5_offset = r.read_var_i32()? as u16;
+            for index in 0..count {
+                if index != 0 {
+                    target = target.wrapping_sub(8);
+                    a5_offset = if delta == 0 {
+                        r.read_var_i32()? as u16
+                    } else {
+                        a5_offset.wrapping_add(delta)
+                    };
+                }
+                let mut entry = [0u8; 8];
+                entry[0..2].copy_from_slice(&0x6100u16.to_be_bytes());
+                entry[2..4].copy_from_slice(&target.to_be_bytes());
+                entry[4..6].copy_from_slice(&0x4EEDu16.to_be_bytes());
+                entry[6..8].copy_from_slice(&a5_offset.to_be_bytes());
+                append_chunk(out, &entry, decompressed_len);
+            }
+        }
         0x02 | 0x03 => {
             let byte_count = if kind == 0x02 { 1 } else { 2 };
             let value = r.read_var_i32()?;
@@ -226,6 +408,16 @@ fn decode_extended_dcmp0(
             for _ in 0..count {
                 let diff = r.read_i8()? as i32;
                 current = ((current as i32 + diff) & 0xFFFF) as u16;
+                append_chunk(out, &current.to_be_bytes(), decompressed_len);
+            }
+        }
+        0x05 => {
+            let mut current = r.read_var_i32()? as u16;
+            let count = (r.read_var_i32()? as u32 & 0xFFFF) as usize + 1;
+            for index in 0..count {
+                if index != 0 {
+                    current = current.wrapping_add(r.read_var_i32()? as u16);
+                }
                 append_chunk(out, &current.to_be_bytes(), decompressed_len);
             }
         }
@@ -369,6 +561,29 @@ mod tests {
         let decompressed = decompress_if_needed(0x01, &data).unwrap().unwrap();
 
         assert_eq!(decompressed, b"ABCD");
+    }
+
+    #[test]
+    fn dcmp3_decodes_literal_and_overlapping_copy() {
+        let mut data = compressed_resource(9, &[0x2A, 0x0A, 0x12, 0x1D, 0x48]);
+        data[6..8].copy_from_slice(&COMPRESSED_TYPE_9.to_be_bytes());
+        data[12..14].copy_from_slice(&3i16.to_be_bytes());
+        assert_eq!(
+            decompress_if_needed(0x01, &data).unwrap().unwrap(),
+            b"ABCABCABC"
+        );
+    }
+
+    #[test]
+    fn dcmp0_decodes_jump_table_extension() {
+        let data = compressed_resource(16, &[0xFE, 0x01, 0x12, 0x08, 0x01, 0x20, 0xFF]);
+        assert_eq!(
+            decompress_if_needed(0x01, &data).unwrap().unwrap(),
+            [
+                0x61, 0x00, 0x00, 0x12, 0x4E, 0xED, 0x00, 0x20, 0x61, 0x00, 0x00, 0x0A, 0x4E, 0xED,
+                0x00, 0x28
+            ]
+        );
     }
 
     #[test]

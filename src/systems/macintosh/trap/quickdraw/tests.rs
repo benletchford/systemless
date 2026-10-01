@@ -17837,6 +17837,19 @@
     }
 
     #[test]
+    fn dragdispatch_private_probe_reports_unavailable_manager() {
+        let (mut d, mut cpu, mut bus) = setup();
+        cpu.write_reg(Register::D0, 0xC301);
+        bus.write_word(TEST_SP, 1); // Boolean probe flag
+        bus.write_long(TEST_SP + 2, 0x1234); // output pointer
+        let result = d.dispatch_quickdraw(true, 0x3ED, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(bus.read_word(TEST_SP + 6) as i16, -4);
+    }
+
+    #[test]
     fn displaydispatch_get_first_screen_device_returns_main_gdevice() {
         let (mut d, mut cpu, mut bus) = setup();
         let main_gdh = d.ensure_main_gdevice(&mut bus);

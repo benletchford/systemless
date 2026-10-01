@@ -588,6 +588,49 @@
         }
     }
 
+    #[test]
+    fn wait_next_event_runs_patched_system_task_before_polling() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        dispatcher
+            .materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+            .unwrap();
+        let patch = bus.alloc(2);
+        bus.write_word(patch, 0x4E75); // RTS
+        dispatcher
+            .install_trap_address(&mut bus, 0xA9B4, patch)
+            .unwrap();
+
+        let sp = 0x001F_FF00;
+        let event = 0x001F_FE00;
+        let continuation = 0x0010_0002;
+        bus.write_long(sp, 0); // mouseRgn
+        bus.write_long(sp + 4, 0); // sleep
+        bus.write_long(sp + 8, event);
+        bus.write_word(sp + 12, u16::MAX);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, continuation);
+
+        dispatcher.dispatch(0xA860, &mut cpu, &mut bus).unwrap();
+        let stub = dispatcher.system_task_wne_stub;
+        assert_ne!(stub, 0);
+        assert_eq!(cpu.read_reg(Register::PC), stub);
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+
+        cpu.write_reg(Register::PC, stub + 2);
+        dispatcher.dispatch(0xA9B4, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::PC), patch);
+        let patch_sp = cpu.read_reg(Register::A7);
+        assert_eq!(bus.read_long(patch_sp), stub + 2);
+
+        cpu.write_reg(Register::PC, bus.read_long(patch_sp)); // RTS
+        cpu.write_reg(Register::A7, patch_sp + 4);
+        cpu.write_reg(Register::PC, stub + 4);
+        dispatcher.dispatch(0xA860, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::PC), continuation);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+        assert!(dispatcher.system_task_wne_returns.is_empty());
+    }
+
     fn call_trap_manager_getter<C: CpuOps>(
         dispatcher: &mut TrapDispatcher,
         cpu: &mut C,

@@ -245,13 +245,20 @@ fn init_app_materializes_the_device_manager_unit_table() {
         runner.bus.get_alloc_size(table),
         Some(u32::from(DEFAULT_UNIT_TABLE_ENTRY_COUNT) * 4)
     );
+    let display_dce_handle = runner.bus.read_long(table);
+    assert_ne!(display_dce_handle, 0, "unit zero should hold the main display DCE");
+    let display_dce = runner.bus.read_long(display_dce_handle);
+    assert_ne!(display_dce, 0);
+    assert_eq!(runner.bus.read_word(display_dce + 24), u16::MAX);
+    let gdevice = runner.bus.read_long(runner.bus.read_long(0x8A4));
+    assert_eq!(runner.bus.read_word(gdevice), u16::MAX);
     assert!(
         runner
             .bus
-            .read_bytes(table, usize::from(DEFAULT_UNIT_TABLE_ENTRY_COUNT) * 4)
+            .read_bytes(table + 4, usize::from(DEFAULT_UNIT_TABLE_ENTRY_COUNT - 1) * 4)
             .iter()
             .all(|&byte| byte == 0),
-        "the unit table should start with nil DCE handles"
+        "other unit-table slots should start empty"
     );
 }
 

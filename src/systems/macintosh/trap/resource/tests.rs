@@ -308,6 +308,56 @@ fn setup_resources(
 }
 
 #[test]
+fn boot_system_resources_are_visible_beneath_application_resources() {
+    let (mut dispatcher, mut cpu, mut bus) = setup();
+    setup_resources(&mut dispatcher, &mut bus, b"CODE", 1, b"app");
+    dispatcher.install_test_resource_in_file(&mut bus, 2, *b"dcmp", 0, b"system");
+    dispatcher.place_system_resource_file_before_application(2);
+    dispatcher.set_current_resource_refnum(&mut bus, 0);
+
+    assert_eq!(dispatcher.resource_search_order(), vec![0, 2]);
+    bus.write_word(TEST_SP, 0);
+    bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"dcmp"));
+    call(&mut dispatcher, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+    assert_ne!(bus.read_long(TEST_SP + 6), 0);
+}
+
+#[test]
+fn application_code_relocations_reach_resident_resource_without_replacing_handle() {
+    let (mut dispatcher, _, mut bus) = setup();
+    let resource_ptr = setup_resources(&mut dispatcher, &mut bus, b"CODE", 3, b"raw!");
+    let handle = dispatcher.get_or_create_resource_handle(&mut bus, *b"CODE", 3, resource_ptr);
+    let segment_ptr = bus.alloc(4);
+    bus.write_bytes(segment_ptr, b"raw!");
+    dispatcher.register_segments(HashMap::from([(3, segment_ptr)]));
+    dispatcher.mirror_application_code_relocations(&mut bus);
+    assert_eq!(bus.read_bytes(resource_ptr, 4), b"raw!");
+    bus.write_bytes(segment_ptr, b"code");
+    dispatcher.mirror_application_code_resource_relocations(&mut bus, 3, resource_ptr);
+
+    assert_eq!(bus.read_long(handle), resource_ptr);
+    assert_eq!(bus.read_bytes(resource_ptr, 4), b"code");
+}
+
+#[test]
+fn reloaded_application_code_contains_segment_relocations() {
+    let (mut dispatcher, _, mut bus) = setup();
+    setup_resources(&mut dispatcher, &mut bus, b"CODE", 3, b"raw!");
+    let segment_ptr = bus.alloc(4);
+    bus.write_bytes(segment_ptr, b"code");
+    dispatcher.register_segments(HashMap::from([(3, segment_ptr)]));
+    dispatcher.with_resource_manager_mut(|manager| {
+        manager.resources.as_mut().unwrap().files.get_mut(&0).unwrap()
+            .loaded.insert((*b"CODE", 3), 0);
+    });
+
+    let ptr = dispatcher
+        .reload_resource_data_from_file(&mut bus, 0, *b"CODE", 3)
+        .unwrap();
+    assert_eq!(bus.read_bytes(ptr, 4), b"code");
+}
+
+#[test]
 fn movehhi_respects_setrespurge_for_changed_resource_handles() {
     // Inside Macintosh Volume I (1985), p. I-126 and Memory 1992,
     // pp. 2-18 / 2-91: SetResPurge installs the purge hook so a
@@ -2176,7 +2226,27 @@ fn maxsizersrc_consumes_handle_argument_and_writes_function_result_slot() {
 }
 
 // ================================================================
-// 5d. ResourceDispatch (0x022) — selectors 1/2/3
+// 5d. ResourceDispatch (0x022) — map lookup and partial resources
+
+#[test]
+fn resource_dispatch_zero_returns_application_map_handle_for_file_refnum() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let map = bus.alloc(32);
+    let handle = bus.alloc(4);
+    bus.write_long(handle, map);
+    bus.write_word(map + 20, 0); // application map in the HLE
+    bus.write_long(0x0A50, handle); // TopMapHndl
+    bus.write_word(addr::CUR_APREF_NUM, 2); // File Manager FCB refnum
+    bus.write_word(TEST_SP, 2);
+    bus.write_long(TEST_SP + 2, 0);
+    cpu.write_reg(Register::D0, 0);
+
+    call_trap_word(&mut disp, 0xA822, &mut cpu, &mut bus).unwrap();
+
+    assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+    assert_eq!(bus.read_long(TEST_SP + 2), handle);
+    assert_eq!(bus.read_word(0x0A60), 0);
+}
 // ================================================================
 #[test]
 fn resourcedispatch_generated_selector_routes_are_sorted_unique_and_complete() {
@@ -4570,6 +4640,31 @@ fn get_res_attrs_after_add_resource_returns_res_changed() {
 // 1993, p. 1-120: RsrcMapEntry returns the resource-reference offset from
 // the start of the resource map for live resource handles.
 #[test]
+fn rsrcmapentry_uses_application_forks_actual_reference_offset() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let path = "Apps/Map Lookup";
+    let bytes = make_single_resource_fork_bytes(*b"TEST", 43, b"data");
+    let fork = crate::managers::resource::ResourceFork::parse(&bytes).unwrap();
+    let expected = fork.get(*b"TEST", 43).unwrap().reference_offset as u32;
+    disp.vfs_rsrc.insert(path.to_string(), bytes);
+    disp.set_launched_app_path(path);
+    disp.load_resources(&fork, &mut bus);
+    let handle = disp
+        .loaded_handles
+        .iter()
+        .find_map(|(handle, (_, res_type, res_id))| {
+            (*res_type == *b"TEST" && *res_id == 43).then_some(*handle)
+        })
+        .unwrap();
+    bus.write_long(TEST_SP, handle);
+
+    call_trap_word(&mut disp, 0xA9C5, &mut cpu, &mut bus).unwrap();
+
+    assert_eq!(bus.read_long(TEST_SP + 4), expected);
+    assert_eq!(bus.read_word(0x0A60), 0);
+}
+
+#[test]
 #[ignore]
 fn rsrcmapentry_returns_reference_offset_for_live_resource_handle() {
     let (mut disp, mut cpu, mut bus) = setup();
@@ -6251,7 +6346,8 @@ fn setup_param_block(
 }
 
 fn mount_read_only_test_volume(disp: &mut super::super::TrapDispatcher, name: &str) -> (i16, u32) {
-    let volume_ref = disp.mount_vfs_volume(name, 0, 1, 1024, 512, 512, 900, 0, 0, 0, 0, 0, 0);
+    let volume_ref =
+        disp.mount_vfs_volume(name, 0x0080, 1, 1024, 512, 512, 900, 0, 0, 0, 0, 0, 0);
     let root_dir_id = disp
         .vfs_volume_for_ref_num(volume_ref)
         .expect("mounted volume")
@@ -7273,7 +7369,7 @@ fn pb_get_vinfo_trap_variants_respect_basic_and_hfs_parameter_block_boundaries()
         assert_eq!(cpu.read_reg(Register::D0), 0, "trap ${trap_word:04X}");
         if is_hfs {
             assert_eq!(bus.read_word(pb + 64), 0x4244, "ioVSigWord");
-            assert_eq!(bus.read_word(pb + 66), 0, "ioVDrvInfo");
+            assert_eq!(bus.read_word(pb + 66), 1, "ioVDrvInfo");
             assert_eq!(bus.read_word(pb + 68), 0, "ioVDRefNum");
             assert_eq!(bus.read_word(pb + 70), 0, "ioVFSID");
         } else {
@@ -9344,7 +9440,7 @@ fn pbhopendf_resolves_a_file_from_a_mounted_volume_root() {
 fn extracted_volume_rejects_write_open_and_fswrite() {
     let (mut disp, mut cpu, mut bus) = setup();
     let volume_ref =
-        disp.mount_vfs_volume("Legend CD", 0, 1, 1024, 512, 512, 900, 0, 0, 0, 0, 0, 0);
+        disp.mount_vfs_volume("Legend CD", 0x0080, 1, 1024, 512, 512, 900, 0, 0, 0, 0, 0, 0);
     let file_name = "Legend CD/Legend";
     disp.vfs.insert(file_name.to_string(), vec![1, 2, 3]);
 
@@ -10340,6 +10436,17 @@ fn fsdispatch_pbhopendf_explicit_parent_does_not_open_same_basename_elsewhere() 
 }
 
 // OSDispatch ($A88F) selector contracts.
+#[test]
+fn osdispatch_private_process_service_reports_unavailable_with_pascal_frame() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    bus.write_word(TEST_SP, 0x0043);
+    bus.write_long(TEST_SP + 2, 0);
+    bus.write_long(TEST_SP + 6, 0x2400);
+    call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+    assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+    assert_eq!(bus.read_word(TEST_SP + 10) as i16, -4);
+}
+
 // Temporary Memory: Inside Macintosh Volume VI, 28-38 and 28-45.
 // Process Manager: Processes (1994), pp. 2-21 to 2-28 and p. 2-31.
 #[test]

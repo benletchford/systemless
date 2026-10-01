@@ -339,12 +339,20 @@ impl ProcessVfsFileRecords {
     }
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(&ProcessVfsFileRecord) -> bool) {
-        self.records.retain(|record| keep(record));
-        self.data_forks.retain(|path, _| {
-            self.records
-                .iter()
-                .any(|record| record.path.eq_ignore_ascii_case(path))
+        let mut removed_paths = Vec::new();
+        self.records.retain(|record| {
+            if keep(record) {
+                true
+            } else {
+                removed_paths.push(record.path.clone());
+                false
+            }
         });
+        for path in removed_paths {
+            if !self.records.iter().any(|record| record.path.eq_ignore_ascii_case(&path)) {
+                self.data_forks.remove(&path);
+            }
+        }
     }
 
     pub(crate) fn replace(&mut self, records: Vec<ProcessVfsFileRecord>) {
@@ -680,12 +688,20 @@ impl ProcessVfsResourceFileRecords {
     }
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(&ProcessVfsResourceFileRecord) -> bool) {
-        self.records.retain(|record| keep(record));
-        self.resource_forks.retain(|path, _| {
-            self.records
-                .iter()
-                .any(|record| record.path.eq_ignore_ascii_case(path))
+        let mut removed_paths = Vec::new();
+        self.records.retain(|record| {
+            if keep(record) {
+                true
+            } else {
+                removed_paths.push(record.path.clone());
+                false
+            }
         });
+        for path in removed_paths {
+            if !self.records.iter().any(|record| record.path.eq_ignore_ascii_case(&path)) {
+                self.resource_forks.remove(&path);
+            }
+        }
     }
 
     pub(crate) fn replace(&mut self, records: Vec<ProcessVfsResourceFileRecord>) {
@@ -13425,6 +13441,27 @@ mod tests {
         assert_eq!(state.vfs_files[0].data, b"replacement");
         assert!(state.classic_vfs_metadata.contains_key(path));
         assert_eq!(state.deleted_vfs_file_paths, [path]);
+    }
+
+    #[test]
+    fn deleting_recorded_file_preserves_unrecorded_open_fork_backing() {
+        let mut state = ProcessFileSystemState::default();
+        let removed = "System Folder/Control Panels/Unused";
+        state.vfs_files.push(ProcessVfsFileRecord {
+            path: removed.into(),
+            data: Vec::new().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        let backing = "__rsrc__System Folder/Finder";
+        state.vfs_files.data_forks.insert(backing.into(), b"fork".to_vec());
+
+        state.remove_classic_vfs_path(removed);
+
+        assert!(state.vfs_files.data_forks.get(removed).is_none());
+        assert_eq!(state.vfs_files.data_forks.get(backing), Some(&b"fork".to_vec()));
     }
 
     #[test]

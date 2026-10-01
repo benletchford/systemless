@@ -1434,6 +1434,12 @@ impl super::TrapDispatcher {
                 let trap_word = cpu.read_reg(Register::D0) as u16;
                 let trap_table_key = self.trap_address_table_key(trap_word);
                 let handler_addr = cpu.read_reg(Register::A0);
+                if std::env::var_os("SYSTEMLESS_TRACE_SET_TRAP_ADDRESS").is_some() {
+                    eprintln!(
+                        "[SET-TRAP-ADDRESS] trap=${trap_word:04X} handler=${handler_addr:08X} pc=${:08X}",
+                        cpu.read_reg(Register::PC)
+                    );
+                }
                 // The shared service validates protected heads before
                 // updating the selected guest table cell or chain link.
                 match self.install_trap_address(bus, trap_table_key, handler_addr) {

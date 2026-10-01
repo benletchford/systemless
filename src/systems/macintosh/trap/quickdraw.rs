@@ -15328,6 +15328,19 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
+            // DragDispatch ($ABED). System 7 Finder probes the manager with
+            // private selector $C301 (Boolean, Ptr -> OSErr). There is no
+            // booted Drag Manager in this HLE, so report unimpErr and let the
+            // caller use its non-drag path. Universal Interfaces 3.4,
+            // Traps.h, names $ABED as DragDispatch.
+            (true, 0x3ED) if cpu.read_reg(Register::D0) == 0xC301 => {
+                let sp = cpu.read_reg(Register::A7);
+                bus.write_word(sp + 6, (-4i16) as u16); // unimpErr
+                cpu.write_reg(Register::A7, sp + 6);
+                cpu.write_reg(Register::D0, (-4i32) as u32);
+                Ok(())
+            }
+
             // DisplayDispatch ($ABEB)
             // Selector-based dispatcher for the Display Manager. Abuse 1.01
             // enumerates active screen devices here. Systemless models one active
