@@ -4,7 +4,7 @@ use super::*;
 use crate::guest_call::{
     NativeRetirement, NativeThreadContext, SharedGuestCallStack, ThreadStorage,
 };
-use crate::guest_procedure::{resolve_same_isa_thread_entry, GuestIsa, GuestProcedure};
+use crate::guest_procedure::{resolve_guest_procedure, GuestIsa, GuestProcedure};
 use crate::thread_manager::{NewThreadCreationEdge, ThreadManager};
 use std::collections::HashMap;
 
@@ -55,12 +55,15 @@ impl NewThreadCreationEdge for PpcNewThreadEdge<'_> {
         if self.thread_made == 0 || !ppc_memory_can_write_bytes(self.memory, self.thread_made, 4) {
             return Err(PPC_PARAM_ERR);
         }
-        self.target = resolve_same_isa_thread_entry(
+        self.target = resolve_guest_procedure(
             self.memory,
             self.entry_pointer,
             self.default_rtoc,
+            None,
             GuestIsa::PowerPc,
-        );
+            GuestIsa::PowerPc,
+        )
+        .filter(|target| target.isa == GuestIsa::PowerPc);
         if self.target.is_some() {
             Ok(())
         } else {

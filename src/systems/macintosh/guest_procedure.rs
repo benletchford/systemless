@@ -194,9 +194,8 @@ pub(crate) fn resolve_guest_procedure(
 
 /// Resolve a direct NewThread entry for its declared ISA. Thread Manager
 /// (1999), pp. 56–58 requires every thread to use the application's instruction
-/// set and prohibits RoutineDescriptor entry points. Rejecting a recognized
-/// descriptor header is the runtime's explicit `paramErr` compatibility policy;
-/// the ABI adapter encodes that error.
+/// set. PowerPC ThreadEntryUPPs use Mixed Mode descriptors and are resolved
+/// separately by the PowerPC ABI adapter.
 pub(crate) fn resolve_same_isa_thread_entry(
     memory: &mut impl GuestProcedureMemory,
     pointer: u32,

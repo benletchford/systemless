@@ -510,7 +510,7 @@ fn native_thread_creation_clears_the_output_on_failure_without_publishing_a_task
 }
 
 #[test]
-fn native_thread_creation_rejects_descriptors_before_allocation_and_preserves_vector_state() {
+fn native_thread_creation_accepts_ppc_descriptors_and_rejects_other_isa() {
     use crate::guest_call::ExecutionTaskId;
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewThread")).unwrap();
     let made = PPC_DATA_BASE + 0x1000;
@@ -548,8 +548,8 @@ fn native_thread_creation_rejects_descriptors_before_allocation_and_preserves_ve
     loaded.memory.write_u32_be(tvector, target).unwrap();
     loaded.memory.write_u32_be(tvector + 4, rtoc).unwrap();
     for (isa, procedure) in [
-        (PPC_ROUTINE_RECORD_POWERPC_ISA, tvector),
         (PPC_ROUTINE_RECORD_M68K_ISA, PPC_CODE_BASE),
+        (PPC_ROUTINE_RECORD_POWERPC_ISA, tvector),
     ] {
         assert!(ppc_write_routine_record(
             &mut loaded.memory,
@@ -577,24 +577,24 @@ fn native_thread_creation_rejects_descriptors_before_allocation_and_preserves_ve
         assert_eq!(callable.entry, expected_entry);
         loaded.memory.write_u32_be(made, 0xaaaa_aaaa).unwrap();
         invoke(&mut loaded);
-        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
-        assert_eq!(loaded.memory.read_u32_be(made), Some(0));
-        assert_eq!(loaded.heap_cursor(), heap_before);
-        assert!(!loaded.guest_calls().has_live_workers());
+        if isa == PPC_ROUTINE_RECORD_M68K_ISA {
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+            assert_eq!(loaded.memory.read_u32_be(made), Some(0));
+            assert_eq!(loaded.heap_cursor(), heap_before);
+            assert!(!loaded.guest_calls().has_live_workers());
+        } else {
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            let worker = ExecutionTaskId::from_thread_id(loaded.memory.read_u32_be(made).unwrap());
+            assert_eq!(worker.thread_id(), 3);
+            assert!(loaded.toolbox_startup.execution.calls()
+                .yield_native_thread(&mut loaded.cpu, worker.thread_id())
+                .unwrap());
+            assert_eq!(loaded.cpu.pc, target);
+            assert_eq!(loaded.cpu.gpr[2], rtoc);
+            assert_eq!(loaded.cpu.gpr[3], 0x1234);
+        }
     }
 
-    loaded.memory.write_u32_be(descriptor, target).unwrap();
-    loaded.memory.write_u32_be(descriptor + 4, rtoc).unwrap();
-    invoke(&mut loaded);
-    assert_eq!(loaded.cpu.gpr[3], 0);
-    let worker = ExecutionTaskId::from_thread_id(loaded.memory.read_u32_be(made).unwrap());
-    assert_eq!(worker.thread_id(), 3);
-    assert!(loaded.toolbox_startup.execution.calls()
-        .yield_native_thread(&mut loaded.cpu, worker.thread_id())
-        .unwrap());
-    assert_eq!(loaded.cpu.pc, target);
-    assert_eq!(loaded.cpu.gpr[2], rtoc);
-    assert_eq!(loaded.cpu.gpr[3], 0x1234);
 }
 
 #[test]
