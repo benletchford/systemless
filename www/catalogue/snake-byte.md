@@ -61,6 +61,8 @@ artifacts:
     notes: >-
       Original 649,131-byte BinHex/StuffIt archive, SHA-256
       d567078dfd9d8a85ecab5495a9e4714e6b47192b4c41b683088caab787f93dcd.
+      The promoted public object was fetched and confirmed byte-for-byte identical
+      to the original download on 2026-10-02.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -80,7 +82,8 @@ artifacts:
     notes: >-
       Exact 626-by-438 game-content crop at (87,100) from an 800-by-600 Systemless
       framebuffer after the default left-key turn; the live board, apple, snake, and
-      score panel remain visible.
+      score panel remain visible. The promoted public PNG matched its 68,218-byte
+      SHA-256 source on 2026-10-02.
 references:
 - >-
   https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/00arc-abstracts.txt
