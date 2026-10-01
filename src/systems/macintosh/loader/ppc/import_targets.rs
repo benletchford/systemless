@@ -3485,8 +3485,14 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetControlDragTrackingEnabled" | "setcontroldragtrackingenabled",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlDragTrackingEnabled),
-        ("AppearanceLib", "CollapseWindow") => PpcImportDispatcherTarget::CollapseWindow,
-        ("AppearanceLib", "IsWindowCollapsed") => PpcImportDispatcherTarget::IsWindowCollapsed,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "CollapseWindow" | "collapsewindow",
+        ) => PpcImportDispatcherTarget::CollapseWindow,
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "IsWindowCollapsed" | "iswindowcollapsed",
+        ) => PpcImportDispatcherTarget::IsWindowCollapsed,
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "NewFeaturesDialog",

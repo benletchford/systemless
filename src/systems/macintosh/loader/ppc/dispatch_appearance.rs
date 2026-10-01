@@ -98,16 +98,17 @@ pub(super) fn dispatch_appearance_import(
             let window = cpu.gpr[3];
             let valid_window = window != 0
                 && memory.read_u8(window + PPC_CWINDOW_VISIBLE_OFFSET).is_some();
-            let result = if !valid_window {
-                PPC_PARAM_ERR
-            } else if cpu.gpr[4] == 0 {
-                PPC_NO_ERR
-            } else {
-                -4
-            };
+            let collapse = cpu.gpr[4] != 0;
+            let result = crate::window_manager::evaluate_collapse_window(valid_window, collapse);
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
-        PpcImportDispatcherTarget::IsWindowCollapsed => Some(PpcImportAction::Return(0)),
+        PpcImportDispatcherTarget::IsWindowCollapsed => {
+            let window = cpu.gpr[3];
+            let valid_window = window != 0
+                && memory.read_u8(window + PPC_CWINDOW_VISIBLE_OFFSET).is_some();
+            let collapsed = crate::window_manager::evaluate_is_window_collapsed(valid_window);
+            Some(PpcImportAction::Return(u32::from(collapsed)))
+        }
         _ => None,
     }
 }

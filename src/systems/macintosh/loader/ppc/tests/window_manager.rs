@@ -3966,6 +3966,28 @@ fn import_bindings_classify_window_sizing_positioning_and_zooming_imports() {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ZoomWindow)
         );
     }
+
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // CollapseWindow / collapsewindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "CollapseWindow"),
+            PpcImportDispatcherTarget::CollapseWindow
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "collapsewindow"),
+            PpcImportDispatcherTarget::CollapseWindow
+        );
+
+        // IsWindowCollapsed / iswindowcollapsed
+        assert_eq!(
+            dispatcher_target_for_import(lib, "IsWindowCollapsed"),
+            PpcImportDispatcherTarget::IsWindowCollapsed
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "iswindowcollapsed"),
+            PpcImportDispatcherTarget::IsWindowCollapsed
+        );
+    }
 }
 
 #[test]
@@ -4159,6 +4181,165 @@ fn window_sizing_positioning_and_zooming_commands_dispatch_with_canonical_evalua
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
+        }
+    }
+}
+
+#[test]
+fn window_repositioning_methods_and_placement_dispatch_with_canonical_evaluation() {
+    for lib in [
+        b"AppearanceLib".as_slice(),
+        b"CarbonLib".as_slice(),
+    ] {
+        let lib_str = std::str::from_utf8(lib).unwrap();
+
+        // 1. RepositionWindow across methods 1..=9
+        for method in 1..=9 {
+            let pef = synthetic_pef_with_library_import(lib, b"RepositionWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            let parent_bounds_ptr = PPC_DATA_BASE + 0x1030;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            loaded.memory.add_region(parent_bounds_ptr, vec![0; 32]);
+            let parent_window = create_test_cwindow(&mut loaded, parent_bounds_ptr, (100, 150, 400, 550), 0, true, u32::MAX);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (40, 50, 240, 350), 0, false, parent_window);
+
+            let parent_structure = ppc_window_global_structure_bounds(&mut loaded.memory, &loaded.gworlds, parent_window);
+            let initial_content = (40, 50, 240, 350);
+            let initial_structure = ppc_window_global_structure_bounds(&mut loaded.memory, &loaded.gworlds, window).unwrap();
+            let menu_h = i32::from(loaded.memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20));
+            let screen_w = ppc_main_screen_width() as i32;
+            let screen_h = ppc_main_screen_height() as i32;
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "RepositionWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = parent_window;
+            loaded.cpu.gpr[5] = method;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1, "lib {lib_str} method {method}");
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0, "RepositionWindow should succeed for method {method}");
+
+            let bounds = ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window).unwrap();
+            let expected = crate::window_manager::evaluate_reposition_window_bounds(
+                initial_content,
+                initial_structure,
+                parent_structure,
+                method as u16,
+                screen_w,
+                screen_h,
+                menu_h,
+            ).unwrap();
+            assert_eq!(bounds, expected, "lib {lib_str} method {method}");
+        }
+
+        // 2. RepositionWindow fallback without parent window (parent = 0)
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"RepositionWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (40, 50, 240, 350), 0, false, u32::MAX);
+
+            let initial_content = (40, 50, 240, 350);
+            let initial_structure = ppc_window_global_structure_bounds(&mut loaded.memory, &loaded.gworlds, window).unwrap();
+            let menu_h = i32::from(loaded.memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20));
+            let screen_w = ppc_main_screen_width() as i32;
+            let screen_h = ppc_main_screen_height() as i32;
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "RepositionWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0; // NULL parent window
+            loaded.cpu.gpr[5] = 4; // kWindowCenterOnParentWindow -> falls back to main screen
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            let bounds = ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, window).unwrap();
+            let expected = crate::window_manager::evaluate_reposition_window_bounds(
+                initial_content,
+                initial_structure,
+                None,
+                4,
+                screen_w,
+                screen_h,
+                menu_h,
+            ).unwrap();
+            assert_eq!(bounds, expected);
+        }
+
+        // 3. RepositionWindow rejects invalid method
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"RepositionWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (40, 50, 240, 350), 0, false, u32::MAX);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "RepositionWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = 12; // invalid method
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i32, -50); // paramErr
+        }
+
+        // 4. CollapseWindow and IsWindowCollapsed dispatch
+        {
+            let pef = synthetic_pef_with_library_import(lib, b"CollapseWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let bounds_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+            let window = create_test_cwindow(&mut loaded, bounds_ptr, (40, 50, 240, 350), 0, true, u32::MAX);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "CollapseWindow");
+            // CollapseWindow(window, false) -> 0 (noErr)
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+
+            // CollapseWindow(window, true) -> -4 (unimpErr)
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i32, -4);
+
+            // CollapseWindow(0, false) -> -50 (paramErr)
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3] as i32, -50);
+
+            // IsWindowCollapsed(window) -> 0
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "IsWindowCollapsed");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
         }
     }
 }

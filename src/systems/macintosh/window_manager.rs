@@ -516,8 +516,228 @@ where
         .collect()
 }
 
+/// Canonical Carbon Window Manager WindowPositionMethod values.
+/// Universal Interfaces <MacWindows.h>.
+pub const WINDOW_CENTER_ON_MAIN_SCREEN: u16 = 1;
+pub const WINDOW_ALERT_POSITION_ON_MAIN_SCREEN: u16 = 2;
+pub const WINDOW_STAGGER_ON_MAIN_SCREEN: u16 = 3;
+pub const WINDOW_CENTER_ON_PARENT_WINDOW: u16 = 4;
+pub const WINDOW_ALERT_POSITION_ON_PARENT_WINDOW: u16 = 5;
+pub const WINDOW_STAGGER_ON_PARENT_WINDOW: u16 = 6;
+pub const WINDOW_CENTER_ON_PARENT_WINDOW_SCREEN: u16 = 7;
+pub const WINDOW_ALERT_POSITION_ON_PARENT_WINDOW_SCREEN: u16 = 8;
+pub const WINDOW_STAGGER_ON_PARENT_WINDOW_SCREEN: u16 = 9;
+
+/// Standard staggering offset in pixels for staggered window positioning.
+pub const WINDOW_STAGGER_OFFSET: i32 = 20;
+
+/// Architecture-neutral repositioning bounds calculation for RepositionWindow.
+///
+/// Evaluates the target window content bounds for all 9 canonical WindowPositionMethod
+/// methods defined in Apple's Carbon Window Manager specification.
+pub(crate) fn evaluate_reposition_window_bounds(
+    content_bounds: WindowRect,
+    structure_bounds: WindowRect,
+    parent_structure_bounds: Option<WindowRect>,
+    method: u16,
+    screen_width: i32,
+    screen_height: i32,
+    menu_height: i32,
+) -> Option<WindowRect> {
+    if !(1..=9).contains(&method) {
+        return None;
+    }
+
+    let structure_width = i32::from(structure_bounds.3) - i32::from(structure_bounds.1);
+    let structure_height = i32::from(structure_bounds.2) - i32::from(structure_bounds.0);
+    let content_dx = i32::from(content_bounds.1) - i32::from(structure_bounds.1);
+    let content_dy = i32::from(content_bounds.0) - i32::from(structure_bounds.0);
+    let content_width = i32::from(content_bounds.3) - i32::from(content_bounds.1);
+    let content_height = i32::from(content_bounds.2) - i32::from(content_bounds.0);
+
+    // Usable main screen rectangle (excluding the menu bar).
+    let screen_target = (
+        menu_height,
+        0,
+        screen_height,
+        screen_width,
+    );
+
+    let (target_top, target_left, target_bottom, target_right) = match method {
+        WINDOW_CENTER_ON_MAIN_SCREEN
+        | WINDOW_ALERT_POSITION_ON_MAIN_SCREEN
+        | WINDOW_STAGGER_ON_MAIN_SCREEN
+        | WINDOW_CENTER_ON_PARENT_WINDOW_SCREEN
+        | WINDOW_ALERT_POSITION_ON_PARENT_WINDOW_SCREEN
+        | WINDOW_STAGGER_ON_PARENT_WINDOW_SCREEN => screen_target,
+        WINDOW_CENTER_ON_PARENT_WINDOW
+        | WINDOW_ALERT_POSITION_ON_PARENT_WINDOW
+        | WINDOW_STAGGER_ON_PARENT_WINDOW => {
+            if let Some(parent) = parent_structure_bounds {
+                (
+                    i32::from(parent.0),
+                    i32::from(parent.1),
+                    i32::from(parent.2),
+                    i32::from(parent.3),
+                )
+            } else {
+                screen_target
+            }
+        }
+        _ => return None,
+    };
+
+    let target_width = target_right - target_left;
+    let target_height = target_bottom - target_top;
+
+    let (mut new_struct_left, mut new_struct_top) = match method {
+        WINDOW_CENTER_ON_MAIN_SCREEN
+        | WINDOW_CENTER_ON_PARENT_WINDOW
+        | WINDOW_CENTER_ON_PARENT_WINDOW_SCREEN => {
+            let left = target_left + (target_width - structure_width) / 2;
+            let top = target_top + (target_height - structure_height) / 2;
+            (left, top)
+        }
+        WINDOW_ALERT_POSITION_ON_MAIN_SCREEN
+        | WINDOW_ALERT_POSITION_ON_PARENT_WINDOW
+        | WINDOW_ALERT_POSITION_ON_PARENT_WINDOW_SCREEN => {
+            let left = target_left + (target_width - structure_width) / 2;
+            let top = target_top + (target_height - structure_height) / 5;
+            (left, top)
+        }
+        WINDOW_STAGGER_ON_MAIN_SCREEN
+        | WINDOW_STAGGER_ON_PARENT_WINDOW
+        | WINDOW_STAGGER_ON_PARENT_WINDOW_SCREEN => {
+            if let Some(parent) = parent_structure_bounds {
+                let left = i32::from(parent.1) + WINDOW_STAGGER_OFFSET;
+                let top = i32::from(parent.0) + WINDOW_STAGGER_OFFSET;
+                (left, top)
+            } else {
+                let left = target_left + (target_width - structure_width) / 2;
+                let top = target_top + (target_height - structure_height) / 2;
+                (left, top)
+            }
+        }
+        _ => return None,
+    };
+
+    if matches!(
+        method,
+        WINDOW_STAGGER_ON_MAIN_SCREEN
+            | WINDOW_STAGGER_ON_PARENT_WINDOW
+            | WINDOW_STAGGER_ON_PARENT_WINDOW_SCREEN
+    ) {
+        if new_struct_left + structure_width > screen_width {
+            new_struct_left = (screen_width - structure_width).max(0);
+        }
+        if new_struct_top + structure_height > screen_height {
+            new_struct_top = (screen_height - structure_height).max(menu_height);
+        }
+        if new_struct_left < 0 {
+            new_struct_left = 0;
+        }
+        if new_struct_top < menu_height {
+            new_struct_top = menu_height;
+        }
+    }
+
+    let new_content_left = (new_struct_left + content_dx).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    let new_content_top = (new_struct_top + content_dy).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    let new_content_bottom = (i32::from(new_content_top) + content_height).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    let new_content_right = (i32::from(new_content_left) + content_width).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+
+    Some((
+        new_content_top,
+        new_content_left,
+        new_content_bottom,
+        new_content_right,
+    ))
+}
+
+/// Architecture-neutral evaluation of CollapseWindow.
+pub(crate) fn evaluate_collapse_window(valid_window: bool, collapse: bool) -> i16 {
+    if !valid_window {
+        -50 // PPC_PARAM_ERR
+    } else if !collapse {
+        0 // PPC_NO_ERR
+    } else {
+        -4 // unimpErr
+    }
+}
+
+/// Architecture-neutral evaluation of IsWindowCollapsed.
+pub(crate) fn evaluate_is_window_collapsed(_valid_window: bool) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reposition_window_bounds_evaluation_all_methods() {
+        let content = (40, 50, 240, 350);
+        let structure = (21, 49, 242, 352); // width: 303, height: 221, dx: 1, dy: 19
+        let screen_w = 640;
+        let screen_h = 480;
+        let menu_h = 20;
+
+        // Method 1: kWindowCenterOnMainScreen
+        let res1 = evaluate_reposition_window_bounds(content, structure, None, WINDOW_CENTER_ON_MAIN_SCREEN, screen_w, screen_h, menu_h).unwrap();
+        assert_eq!(res1.0, 158);
+        assert_eq!(res1.1, 169);
+        assert_eq!(res1.2, 158 + 200);
+        assert_eq!(res1.3, 169 + 300);
+
+        // Method 2: kWindowAlertPositionOnMainScreen
+        let res2 = evaluate_reposition_window_bounds(content, structure, None, WINDOW_ALERT_POSITION_ON_MAIN_SCREEN, screen_w, screen_h, menu_h).unwrap();
+        assert_eq!(res2.0, 86);
+        assert_eq!(res2.1, 169);
+
+        // Method 3: kWindowStaggerOnMainScreen (without parent)
+        let res3 = evaluate_reposition_window_bounds(content, structure, None, WINDOW_STAGGER_ON_MAIN_SCREEN, screen_w, screen_h, menu_h).unwrap();
+        assert_eq!(res3, res1);
+
+        // Method 4: kWindowCenterOnParentWindow (with parent)
+        let parent = (100, 150, 400, 550); // width: 400, height: 300
+        let res4 = evaluate_reposition_window_bounds(content, structure, Some(parent), WINDOW_CENTER_ON_PARENT_WINDOW, screen_w, screen_h, menu_h).unwrap();
+        assert_eq!(res4.0, 158);
+        assert_eq!(res4.1, 199);
+
+        // Method 5: kWindowAlertPositionOnParentWindow (with parent)
+        let res5 = evaluate_reposition_window_bounds(content, structure, Some(parent), WINDOW_ALERT_POSITION_ON_PARENT_WINDOW, screen_w, screen_h, menu_h).unwrap();
+        assert_eq!(res5.0, 134);
+        assert_eq!(res5.1, 199);
+
+        // Method 6: kWindowStaggerOnParentWindow (with parent)
+        let res6 = evaluate_reposition_window_bounds(content, structure, Some(parent), WINDOW_STAGGER_ON_PARENT_WINDOW, screen_w, screen_h, menu_h).unwrap();
+        assert_eq!(res6.0, 139);
+        assert_eq!(res6.1, 171);
+
+        // Method 7: kWindowCenterOnParentWindowScreen
+        let res7 = evaluate_reposition_window_bounds(content, structure, Some(parent), WINDOW_CENTER_ON_PARENT_WINDOW_SCREEN, screen_w, screen_h, menu_h).unwrap();
+        assert_eq!(res7, res1);
+
+        // Method 8: kWindowAlertPositionOnParentWindowScreen
+        let res8 = evaluate_reposition_window_bounds(content, structure, Some(parent), WINDOW_ALERT_POSITION_ON_PARENT_WINDOW_SCREEN, screen_w, screen_h, menu_h).unwrap();
+        assert_eq!(res8, res2);
+
+        // Method 9: kWindowStaggerOnParentWindowScreen (with parent)
+        let res9 = evaluate_reposition_window_bounds(content, structure, Some(parent), WINDOW_STAGGER_ON_PARENT_WINDOW_SCREEN, screen_w, screen_h, menu_h).unwrap();
+        assert_eq!(res9, res6);
+
+        // Invalid method returns None
+        assert_eq!(evaluate_reposition_window_bounds(content, structure, None, 0, screen_w, screen_h, menu_h), None);
+        assert_eq!(evaluate_reposition_window_bounds(content, structure, None, 10, screen_w, screen_h, menu_h), None);
+    }
+
+    #[test]
+    fn collapse_window_evaluation() {
+        assert_eq!(evaluate_collapse_window(false, false), -50);
+        assert_eq!(evaluate_collapse_window(false, true), -50);
+        assert_eq!(evaluate_collapse_window(true, false), 0);
+        assert_eq!(evaluate_collapse_window(true, true), -4);
+        assert!(!evaluate_is_window_collapsed(true));
+        assert!(!evaluate_is_window_collapsed(false));
+    }
     #[test]
     fn grow_retains_the_pointer_offset_inside_the_size_box() {
         let content = (185, 215, 430, 535);
