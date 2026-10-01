@@ -1,5 +1,6 @@
 //! PowerPC Toolbox startup and runtime state.
 
+use super::dispatch_event::PpcEventLoopTimerRecord;
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +44,10 @@ pub struct PpcToolboxStartupState {
     /// Most recent EventRecord exposed through the native event imports.
     pub(crate) last_event_record: Option<EventRecordSnapshot>,
     pub(crate) event_queue_probe: EventQueueProbeSnapshot,
+    pub(super) event_loop_timers: Vec<PpcEventLoopTimerRecord>,
+    pub(super) next_event_loop_timer_ref: u32,
+    /// Last tick through which a Carbon or classic event-loop wait is active.
+    pub(super) event_loop_poll_until_tick: Option<u32>,
     pub(crate) last_button_result: Option<bool>,
     pub(crate) last_still_down_result: Option<bool>,
     pub(crate) last_wait_mouse_up_result: Option<bool>,
@@ -121,6 +126,9 @@ impl Default for PpcToolboxStartupState {
             last_disposed_dialog: 0,
             last_event_record: None,
             event_queue_probe: EventQueueProbeSnapshot::default(),
+            event_loop_timers: Vec::new(),
+            next_event_loop_timer_ref: 0x100,
+            event_loop_poll_until_tick: None,
             last_button_result: None,
             last_still_down_result: None,
             last_wait_mouse_up_result: None,

@@ -650,6 +650,9 @@ pub enum PpcImportDispatcherTarget {
     LSearch,
     FlushEvents,
     GetMainEventQueue,
+    GetMainEventLoop,
+    InstallEventLoopTimer,
+    RemoveEventLoopTimer,
     FlushEventQueue,
     SetEventMask,
     CloseDialog,
@@ -3746,6 +3749,15 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LSearch") => PpcImportDispatcherTarget::LSearch,
         ("InterfaceLib", "FlushEvents") => PpcImportDispatcherTarget::FlushEvents,
         ("InterfaceLib", "GetMainEventQueue") => PpcImportDispatcherTarget::GetMainEventQueue,
+        ("InterfaceLib" | "CarbonLib", "GetMainEventLoop" | "GetCurrentEventLoop") => {
+            PpcImportDispatcherTarget::GetMainEventLoop
+        }
+        ("InterfaceLib" | "CarbonLib", "InstallEventLoopTimer") => {
+            PpcImportDispatcherTarget::InstallEventLoopTimer
+        }
+        ("InterfaceLib" | "CarbonLib", "RemoveEventLoopTimer") => {
+            PpcImportDispatcherTarget::RemoveEventLoopTimer
+        }
         ("InterfaceLib", "FlushEventQueue") => PpcImportDispatcherTarget::FlushEventQueue,
         ("InterfaceLib", "SetEventMask") => PpcImportDispatcherTarget::SetEventMask,
         (
@@ -3758,17 +3770,17 @@ pub(crate) fn dispatcher_target_for_import(
         ) => {
             PpcImportDispatcherTarget::DisposeDialog
         }
-        ("InterfaceLib", "GetNextEvent") => {
+        ("InterfaceLib" | "CarbonLib", "GetNextEvent") => {
             PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent)
         }
         // WaitNextEvent(eventMask, theEvent, sleep, mouseRgn) returns the
         // next matching event and yields time when no event is pending.
         // Macintosh Toolbox Essentials (1992), pp. 2-22–2-25.
-        ("InterfaceLib", "WaitNextEvent") => {
+        ("InterfaceLib" | "CarbonLib", "WaitNextEvent") => {
             PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent)
         }
         ("InterfaceLib", "GetOSEvent") => PpcImportDispatcherTarget::GetOSEvent,
-        ("InterfaceLib", "EventAvail") => PpcImportDispatcherTarget::EventAvail,
+        ("InterfaceLib" | "CarbonLib", "EventAvail") => PpcImportDispatcherTarget::EventAvail,
         ("InterfaceLib", "OSEventAvail") => PpcImportDispatcherTarget::OSEventAvail,
         ("InterfaceLib", "PostEvent") => PpcImportDispatcherTarget::PostEvent,
         ("InterfaceLib", "Button") => PpcImportDispatcherTarget::Button,

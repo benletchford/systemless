@@ -7969,6 +7969,16 @@ impl FixtureRunner {
                 memory_manager,
                 cfm,
             ));
+            timer_probes.extend(ppc_app.fire_event_loop_timers_for_ticks_with_process_services(
+                callback_tick.wrapping_sub(1),
+                1,
+                1024,
+                max_cycles,
+                trace_imports,
+                trace_fetches,
+                memory_manager,
+                cfm,
+            ));
         }
         (vbl_probes, timer_probes)
     }
