@@ -21,10 +21,10 @@ compatibility:
     architecture: 68k
     environment: >-
       The unchanged Xenia 1.0 archive reached the title, setup, Level 1, and active
-      playfield in 68K Systemless. Shift started the game and fired a visible shot
-      with a matching cannon indicator change. The release browser build fetched
-      the same archive once, reached active play, fired a visible projectile
-      with Shift, and moved the ship right after assigning the arrow keys in setup.
+      playfield in 68K Systemless. Shift started the game and fired a visible shot with
+      a matching cannon indicator change. The release browser build fetched the same
+      archive once, reached active play, fired a visible projectile with Shift, and moved
+      the ship right after assigning the arrow keys in setup.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3801
 artifacts:
@@ -32,15 +32,15 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/xenia-10.hqx
-    expected_sha256: 6b56d664748d5a5fbcfbe0dc97cc2bd65e92c10c718dfc424ab60419fa0775c4
-    expected_size: 307683
+    type: sha256
+    sha256: 6b56d664748d5a5fbcfbe0dc97cc2bd65e92c10c718dfc424ab60419fa0775c4
+    size_bytes: 307683
   provenance:
     redistribution: permitted
     original: true
     sources:
-    - https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/xenia-10.hqx
+    - >-
+      https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/xenia-10.hqx
     rights_holder: Richard Theil
     permission: >-
       The bundled author-supplied Read Me permits free downloading of the complete,
@@ -52,8 +52,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/xenia/gameplay.png
+    type: sha256
+    sha256: 7a4a0c5efec1a84d2347ba96c2e0b99b6055744cd5ff3fdf5f5b367e2ea7935e
+    size_bytes: 14236
   provenance:
     redistribution: permitted
     original: true
@@ -64,15 +65,16 @@ artifacts:
       Fresh Systemless gameplay capture from the unchanged freeware package.
       Underlying artwork remains its owner's property.
     notes: >-
-      Cropped active Level 1 playfield with a ground turret and fired projectile
-      from the release browser build.
+      Cropped active Level 1 playfield with a ground turret and fired projectile from
+      the release browser build.
 references:
-- https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/xenia-10.hqx
+- >-
+  https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/xenia-10.hqx
 ---
 
 ## Defend the skies
 
-![Xenia Level 1](incoming/xenia/gameplay.png)
+![Xenia Level 1](https://assets.systemless.org/catalogue/media/sha256/7a/7a4a0c5efec1a84d2347ba96c2e0b99b6055744cd5ff3fdf5f5b367e2ea7935e.png)
 
 Press **Shift** on the title screen to begin. Use **Escape** to open setup,
 where you can assign movement keys and change the fire and bomb controls.
