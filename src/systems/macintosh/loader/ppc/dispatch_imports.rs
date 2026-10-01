@@ -2838,6 +2838,34 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::GlClear => agl
             .gl_clear(cpu.gpr[3])
             .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlClearDepth => agl
+            .gl_clear_depth(f64::from_bits(cpu.fpr[1]))
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlClearStencil => agl
+            .gl_clear_stencil(cpu.gpr[3] as i32)
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlColorMask => agl
+            .gl_color_mask(std::array::from_fn(|index| cpu.gpr[index + 3] != 0))
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlDepthMask => agl
+            .gl_depth_mask(cpu.gpr[3] != 0)
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlStencilMask => agl
+            .gl_stencil_mask(cpu.gpr[3])
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlScissor => agl
+            .gl_scissor(
+                cpu.gpr[3] as i32,
+                cpu.gpr[4] as i32,
+                cpu.gpr[5] as i32,
+                cpu.gpr[6] as i32,
+            )
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlEnable => (cpu.gpr[3] == 0x0c11 && agl.gl_scissor_test(true))
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlDisable => (cpu.gpr[3] == 0x0c11
+            && agl.gl_scissor_test(false))
+        .then_some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::NoOpPreserve => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::ExitToShell => Some(PpcImportAction::Halt),
         PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => None,

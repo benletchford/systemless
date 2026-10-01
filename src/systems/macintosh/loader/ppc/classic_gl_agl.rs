@@ -60,6 +60,14 @@ pub struct PpcAglContext {
     pub drawable: u32,
     pub framebuffer: Option<ClassicGlFramebuffer>,
     clear_color: [f64; 4],
+    clear_depth: f64,
+    clear_stencil: i32,
+    color_mask: [bool; 4],
+    depth_mask: bool,
+    stencil_mask: u32,
+    scissor_enabled: bool,
+    scissor: (i32, i32, u32, u32),
+    scissor_explicit: bool,
 }
 
 impl Default for PpcAglState {
@@ -139,6 +147,14 @@ impl PpcAglState {
             drawable: 0,
             framebuffer: None,
             clear_color: [0.0; 4],
+            clear_depth: 1.0,
+            clear_stencil: 0,
+            color_mask: [true; 4],
+            depth_mask: true,
+            stencil_mask: u32::MAX,
+            scissor_enabled: false,
+            scissor: (0, 0, 0, 0),
+            scissor_explicit: false,
         });
         handle
     }
@@ -190,6 +206,66 @@ impl PpcAglState {
         true
     }
 
+    pub fn gl_clear_depth(&mut self, depth: f64) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        context.clear_depth = depth.clamp(0.0, 1.0);
+        true
+    }
+
+    pub fn gl_clear_stencil(&mut self, stencil: i32) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        context.clear_stencil = stencil;
+        true
+    }
+
+    pub fn gl_color_mask(&mut self, mask: [bool; 4]) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        context.color_mask = mask;
+        true
+    }
+
+    pub fn gl_depth_mask(&mut self, mask: bool) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        context.depth_mask = mask;
+        true
+    }
+
+    pub fn gl_stencil_mask(&mut self, mask: u32) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        context.stencil_mask = mask;
+        true
+    }
+
+    pub fn gl_scissor(&mut self, x: i32, y: i32, width: i32, height: i32) -> bool {
+        if width < 0 || height < 0 {
+            return false;
+        }
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        context.scissor = (x, y, width as u32, height as u32);
+        context.scissor_explicit = true;
+        true
+    }
+
+    pub fn gl_scissor_test(&mut self, enabled: bool) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        context.scissor_enabled = enabled;
+        true
+    }
+
     pub fn gl_clear(&mut self, mask: u32) -> bool {
         const COLOR: u32 = 0x0000_4000;
         const DEPTH: u32 = 0x0000_0100;
@@ -214,12 +290,12 @@ impl PpcAglState {
                     .clear_color
                     .map(|component| (component * 255.0).round() as u8),
             )),
-            color_mask: [true; 4],
-            depth: (mask & DEPTH != 0).then_some(1.0),
-            depth_mask: true,
-            stencil: (mask & STENCIL != 0).then_some(0),
-            stencil_mask: u8::MAX,
-            scissor: None,
+            color_mask: context.color_mask,
+            depth: (mask & DEPTH != 0).then_some(context.clear_depth as f32),
+            depth_mask: context.depth_mask,
+            stencil: (mask & STENCIL != 0).then_some(context.clear_stencil as u8),
+            stencil_mask: context.stencil_mask as u8,
+            scissor: context.scissor_enabled.then_some(context.scissor),
         })
     }
 
@@ -249,6 +325,9 @@ impl PpcAglState {
         };
         context.drawable = drawable;
         context.framebuffer = Some(framebuffer);
+        if !context.scissor_explicit {
+            context.scissor = (0, 0, surface.width, surface.height);
+        }
         true
     }
 
@@ -274,6 +353,9 @@ impl PpcAglState {
                 return false;
             };
             context.framebuffer = Some(framebuffer);
+            if !context.scissor_explicit {
+                context.scissor = (0, 0, surface.width, surface.height);
+            }
         }
         true
     }
@@ -447,6 +529,65 @@ mod tests {
         assert_eq!(framebuffer.depth_at(0, 0), Some(1.0));
         assert_eq!(framebuffer.stencil_at(0, 0), Some(0));
         assert!(!agl.gl_clear(0x8000_0000));
+    }
+
+    #[test]
+    fn clear_honors_scissor_and_write_masks() {
+        let mut agl = PpcAglState::default();
+        let format = agl.choose_pixel_format(PpcAglPixelFormatRequest {
+            rgba: true,
+            ..Default::default()
+        });
+        let context = agl.create_context(format, 0);
+        assert!(agl.set_current_context(context));
+        assert!(agl.set_drawable(
+            context,
+            0x2000,
+            Some(PpcFrontBuffer {
+                base_addr: 0x1000,
+                width: 2,
+                height: 2,
+                depth: 16,
+                row_bytes: 4,
+            })
+        ));
+        assert!(agl.gl_clear_color([0.25, 0.5, 0.75, 1.0]));
+        assert!(agl.gl_clear_depth(0.25));
+        assert!(agl.gl_clear_stencil(0xab));
+        assert!(agl.gl_color_mask([true, false, true, false]));
+        assert!(agl.gl_depth_mask(false));
+        assert!(agl.gl_stencil_mask(0x0f));
+        assert!(!agl.gl_scissor(0, 0, -1, 1));
+        assert!(agl.gl_scissor(1, 0, 1, 1));
+        assert!(agl.gl_scissor_test(true));
+        assert!(agl.gl_clear(0x4000 | 0x0100 | 0x0400));
+        let framebuffer = agl.context(context).unwrap().framebuffer.as_ref().unwrap();
+        assert_eq!(
+            framebuffer.pixel(ClassicGlColorBuffer::Front, 1, 0),
+            Some([64, 0, 191, 0])
+        );
+        assert_eq!(
+            framebuffer.pixel(ClassicGlColorBuffer::Front, 0, 0),
+            Some([0; 4])
+        );
+        assert_eq!(
+            framebuffer.pixel(ClassicGlColorBuffer::Front, 1, 1),
+            Some([0; 4])
+        );
+        assert_eq!(framebuffer.depth_at(1, 0), Some(1.0));
+        assert_eq!(framebuffer.stencil_at(1, 0), Some(0x0b));
+        assert!(agl.gl_scissor_test(false));
+        assert!(agl.gl_depth_mask(true));
+        assert!(agl.gl_clear(0x0100));
+        assert_eq!(
+            agl.context(context)
+                .unwrap()
+                .framebuffer
+                .as_ref()
+                .unwrap()
+                .depth_at(0, 0),
+            Some(0.25)
+        );
     }
 
     #[test]
