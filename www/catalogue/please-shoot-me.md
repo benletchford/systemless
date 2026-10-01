@@ -19,15 +19,7 @@ compatibility:
     tester: Catalogue maintainer
     systemless_version: 0.72.0 + deterministic play runner and release browser build
     architecture: 68k
-    environment: >-
-      The unchanged FAT shareware package launched in 68K Systemless with its
-      companion Music files. After dismissing the shareware prompt and choosing
-      Play, moving creatures crossed the arena. A click removed a visible
-      creature in a matched run while the idle run retained it. The release
-      browser fetched the original archive once, reached the same moving-target
-      arena, and registered hits from browser clicks: the level result showed
-      a score of 75 and five percent shot, compared with zero in an untouched
-      browser run.
+    environment: "The unchanged FAT shareware package launched in 68K Systemless with its companion Music files. After dismissing the shareware prompt and choosing Play, moving creatures crossed the arena. A click removed a visible creature in a matched run while the idle run retained it. The release browser fetched the original archive once, reached the same moving-target arena, and registered hits from browser clicks: the level result showed a score of 75 and five percent shot, compared with zero in an untouched browser run."
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3818
 artifacts:
@@ -35,21 +27,21 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/shoot-me-10.hqx
-    expected_sha256: 6cfabf85f02ebe81784c872a667a9d837f3735de75c9dfd8101e4e4e68a68f72
-    expected_size: 1242579
+    type: sha256
+    sha256: 6cfabf85f02ebe81784c872a667a9d837f3735de75c9dfd8101e4e4e68a68f72
+    size_bytes: 1242579
   provenance:
     redistribution: permitted
     original: true
     sources:
-    - https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/shoot-me-10.hqx
+    - >-
+      https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/shoot-me-10.hqx
     rights_holder: Slovis Software
     permission: >-
       The bundled Slovis Software Read Me permits free redistribution when the
-      application, Read Me, Registration, and Music files remain together.
-      It requires consent for distribution for profit or on CD. This entry
-      preserves the complete original package for free online play.
+      application, Read Me, Registration, and Music files remain together. It requires
+      consent for distribution for profit or on CD. This entry preserves the complete
+      original package for free online play.
     notes: >-
       Original 1,242,579-byte BinHex/StuffIt archive, SHA-256
       6cfabf85f02ebe81784c872a667a9d837f3735de75c9dfd8101e4e4e68a68f72.
@@ -57,8 +49,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/please-shoot-me/gameplay.png
+    type: sha256
+    sha256: 197a736123d797b7d0ce55ccf7135bb447f3552cb2b4a23f9ce7c88cdf32d5ec
+    size_bytes: 14198
   provenance:
     redistribution: permitted
     original: true
@@ -69,15 +62,16 @@ artifacts:
       Fresh Systemless gameplay capture from the unchanged shareware package.
       Underlying artwork remains its owner's property.
     notes: >-
-      Content-only crop of the release browser's active arena with moving
-      targets; Classic Mac menu bar and emulator framing are excluded.
+      Content-only crop of the release browser's active arena with moving targets;
+      Classic Mac menu bar and emulator framing are excluded.
 references:
-- https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/shoot-me-10.hqx
+- >-
+  https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/shoot-me-10.hqx
 ---
 
 ## Hit the moving targets
 
-![Please, Shoot Me! active arena](incoming/please-shoot-me/gameplay.png)
+![Please, Shoot Me! active arena](https://assets.systemless.org/catalogue/media/sha256/19/197a736123d797b7d0ce55ccf7135bb447f3552cb2b4a23f9ce7c88cdf32d5ec.png)
 
 Choose **Not Yet** at the shareware prompt, then click **Play**. Aim and click
 at the creatures crossing the arena. The original package includes its
