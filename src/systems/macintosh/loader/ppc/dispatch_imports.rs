@@ -3018,6 +3018,30 @@ pub(crate) fn dispatch_supported_import(
                 f64::from_bits(cpu.fpr[index + 1])
             }))
             .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlVertexPointer => agl
+            .gl_vertex_pointer(cpu.gpr[3] as i32, cpu.gpr[4], cpu.gpr[5] as i32, cpu.gpr[6])
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlColorPointer => agl
+            .gl_color_pointer(cpu.gpr[3] as i32, cpu.gpr[4], cpu.gpr[5] as i32, cpu.gpr[6])
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlEnableClientState => agl
+            .gl_client_state(cpu.gpr[3], true)
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlDisableClientState => agl
+            .gl_client_state(cpu.gpr[3], false)
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlDrawArrays => agl
+            .gl_draw_arrays(memory, cpu.gpr[3], cpu.gpr[4] as i32, cpu.gpr[5] as i32)
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlDrawElements => agl
+            .gl_draw_elements(
+                memory,
+                cpu.gpr[3],
+                cpu.gpr[4] as i32,
+                cpu.gpr[5],
+                cpu.gpr[6],
+            )
+            .then_some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::NoOpPreserve => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::ExitToShell => Some(PpcImportAction::Halt),
         PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => None,

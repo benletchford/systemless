@@ -82,6 +82,29 @@ pub struct PpcAglContext {
     current_color: [f64; 4],
     primitive_mode: Option<u32>,
     vertices: Vec<ClassicGlVertex>,
+    vertex_array: PpcGlArrayPointer,
+    color_array: PpcGlArrayPointer,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PpcGlArrayPointer {
+    enabled: bool,
+    size: u32,
+    component_type: u32,
+    stride: u32,
+    pointer: u32,
+}
+
+impl Default for PpcGlArrayPointer {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            size: 4,
+            component_type: 0x1406, // GL_FLOAT
+            stride: 0,
+            pointer: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -206,6 +229,8 @@ impl PpcAglState {
             current_color: [1.0; 4],
             primitive_mode: None,
             vertices: Vec::new(),
+            vertex_array: PpcGlArrayPointer::default(),
+            color_array: PpcGlArrayPointer::default(),
         });
         handle
     }
@@ -380,6 +405,175 @@ impl PpcAglState {
             _ => unreachable!(),
         }
         true
+    }
+
+    pub fn gl_vertex_pointer(
+        &mut self,
+        size: i32,
+        component_type: u32,
+        stride: i32,
+        pointer: u32,
+    ) -> bool {
+        if !(2..=4).contains(&size)
+            || !matches!(component_type, 0x1402 | 0x1404 | 0x1406 | 0x140a)
+            || stride < 0
+        {
+            return false;
+        }
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        context.vertex_array = PpcGlArrayPointer {
+            enabled: context.vertex_array.enabled,
+            size: size as u32,
+            component_type,
+            stride: stride as u32,
+            pointer,
+        };
+        true
+    }
+
+    pub fn gl_color_pointer(
+        &mut self,
+        size: i32,
+        component_type: u32,
+        stride: i32,
+        pointer: u32,
+    ) -> bool {
+        if !(3..=4).contains(&size)
+            || !matches!(component_type, 0x1400..=0x1406 | 0x140a)
+            || stride < 0
+        {
+            return false;
+        }
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        context.color_array = PpcGlArrayPointer {
+            enabled: context.color_array.enabled,
+            size: size as u32,
+            component_type,
+            stride: stride as u32,
+            pointer,
+        };
+        true
+    }
+
+    pub fn gl_client_state(&mut self, array: u32, enabled: bool) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        match array {
+            0x8074 => context.vertex_array.enabled = enabled, // GL_VERTEX_ARRAY
+            0x8076 => context.color_array.enabled = enabled,  // GL_COLOR_ARRAY
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn gl_draw_arrays(
+        &mut self,
+        memory: &mut PpcSectionMem,
+        mode: u32,
+        first: i32,
+        count: i32,
+    ) -> bool {
+        if first < 0 || count < 0 || count > 1_000_000 {
+            return false;
+        }
+        let Some(end) = (first as u32).checked_add(count as u32) else {
+            return false;
+        };
+        self.gl_draw_indices(memory, mode, first as u32..end)
+    }
+
+    pub fn gl_draw_elements(
+        &mut self,
+        memory: &mut PpcSectionMem,
+        mode: u32,
+        count: i32,
+        index_type: u32,
+        indices: u32,
+    ) -> bool {
+        if count < 0 || count > 1_000_000 || !matches!(index_type, 0x1401 | 0x1403 | 0x1405) {
+            return false;
+        }
+        let width = match index_type {
+            0x1401 => 1,
+            0x1403 => 2,
+            _ => 4,
+        };
+        let mut values = Vec::with_capacity(count as usize);
+        for index in 0..count as u32 {
+            let Some(address) = index
+                .checked_mul(width)
+                .and_then(|offset| indices.checked_add(offset))
+            else {
+                return false;
+            };
+            let value = match index_type {
+                0x1401 => memory.read_u8(address).map(u32::from),
+                0x1403 => memory.read_u16_be(address).map(u32::from),
+                _ => memory.read_u32_be(address),
+            };
+            let Some(value) = value else {
+                return false;
+            };
+            values.push(value);
+        }
+        self.gl_draw_indices(memory, mode, values)
+    }
+
+    fn gl_draw_indices<I: IntoIterator<Item = u32>>(
+        &mut self,
+        memory: &mut PpcSectionMem,
+        mode: u32,
+        indices: I,
+    ) -> bool {
+        if !matches!(mode, 0x0004..=0x0007) {
+            return false;
+        }
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() || !context.vertex_array.enabled {
+            return false;
+        }
+        let matrix = context.transform.modelview_projection();
+        let mut vertices = Vec::new();
+        for index in indices {
+            let Some(position) =
+                ppc_gl_read_array_components(memory, context.vertex_array, index, false)
+            else {
+                return false;
+            };
+            let color = if context.color_array.enabled {
+                let Some(color) =
+                    ppc_gl_read_array_components(memory, context.color_array, index, true)
+                else {
+                    return false;
+                };
+                color
+            } else {
+                context.current_color
+            };
+            vertices.push(ClassicGlVertex {
+                clip: matrix.transform(position),
+                color,
+            });
+        }
+        context.vertices = vertices;
+        context.primitive_mode = Some(mode);
+        self.gl_end()
     }
 
     pub fn gl_clear_color(&mut self, components: [f64; 4]) -> bool {
@@ -722,6 +916,85 @@ impl PpcAglState {
     }
 }
 
+fn ppc_gl_read_array_components(
+    memory: &mut PpcSectionMem,
+    array: PpcGlArrayPointer,
+    index: u32,
+    normalized: bool,
+) -> Option<[f64; 4]> {
+    let component_width: u32 = match array.component_type {
+        0x1400 | 0x1401 => 1,
+        0x1402 | 0x1403 => 2,
+        0x1404..=0x1406 => 4,
+        0x140a => 8,
+        _ => return None,
+    };
+    let stride = if array.stride == 0 {
+        array.size.checked_mul(component_width)?
+    } else {
+        array.stride
+    };
+    let base = array.pointer.checked_add(index.checked_mul(stride)?)?;
+    let mut values = [0.0, 0.0, 0.0, 1.0];
+    for component in 0..array.size {
+        let address = base.checked_add(component.checked_mul(component_width)?)?;
+        values[component as usize] = match array.component_type {
+            0x1400 => {
+                let value = memory.read_u8(address)? as i8;
+                if normalized {
+                    (f64::from(value) / 127.0).max(-1.0)
+                } else {
+                    f64::from(value)
+                }
+            }
+            0x1401 => {
+                let value = memory.read_u8(address)?;
+                if normalized {
+                    f64::from(value) / 255.0
+                } else {
+                    f64::from(value)
+                }
+            }
+            0x1402 => {
+                let value = memory.read_u16_be(address)? as i16;
+                if normalized {
+                    (f64::from(value) / 32767.0).max(-1.0)
+                } else {
+                    f64::from(value)
+                }
+            }
+            0x1403 => {
+                let value = memory.read_u16_be(address)?;
+                if normalized {
+                    f64::from(value) / 65535.0
+                } else {
+                    f64::from(value)
+                }
+            }
+            0x1404 => {
+                let value = memory.read_u32_be(address)? as i32;
+                if normalized {
+                    (f64::from(value) / 2147483647.0).max(-1.0)
+                } else {
+                    f64::from(value)
+                }
+            }
+            0x1405 => {
+                let value = memory.read_u32_be(address)?;
+                if normalized {
+                    f64::from(value) / 4294967295.0
+                } else {
+                    f64::from(value)
+                }
+            }
+            0x1406 => f64::from(f32::from_bits(memory.read_u32_be(address)?)),
+            0x140a => f64::from_bits(memory.read_u64_be(address)?),
+            _ => return None,
+        };
+    }
+    Some(values)
+}
+
 fn ppc_agl_software_format_matches(request: &PpcAglPixelFormatRequest) -> bool {
     // AGL_ACCELERATED asks for hardware rendering. The guest-backed software
     // surface must never be advertised as a hardware renderer.
@@ -899,6 +1172,77 @@ mod tests {
             framebuffer.pixel(ClassicGlColorBuffer::Front, 2, 0),
             Some([255; 4])
         );
+    }
+
+    #[test]
+    fn guest_client_arrays_and_indices_draw_into_the_same_framebuffer() {
+        let mut agl = PpcAglState::default();
+        let format = agl.choose_pixel_format(PpcAglPixelFormatRequest {
+            rgba: true,
+            ..Default::default()
+        });
+        let context = agl.create_context(format, 0);
+        assert!(agl.set_current_context(context));
+        assert!(agl.set_drawable(
+            context,
+            0x2000,
+            Some(PpcFrontBuffer {
+                base_addr: 0x3000,
+                width: 4,
+                height: 4,
+                depth: 16,
+                row_bytes: 8,
+            })
+        ));
+        let mut memory = PpcSectionMem::new();
+        let vertices: [f32; 12] = [
+            -1.0, -1.0, 0.0, 99.0, 1.0, -1.0, 0.0, 99.0, -1.0, 1.0, 0.0, 99.0,
+        ];
+        memory.add_region(
+            0x1000,
+            vertices
+                .iter()
+                .flat_map(|value| value.to_bits().to_be_bytes())
+                .collect(),
+        );
+        memory.add_region(0x1100, vec![255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255]);
+        memory.add_region(0x1200, vec![0, 0, 0, 1, 0, 2]);
+        assert!(agl.gl_vertex_pointer(3, 0x1406, 16, 0x1000));
+        assert!(agl.gl_color_pointer(4, 0x1401, 0, 0x1100));
+        assert!(agl.gl_client_state(0x8074, true));
+        assert!(agl.gl_client_state(0x8076, true));
+        assert!(agl.gl_begin(0x0004));
+        assert!(!agl.gl_vertex_pointer(3, 0x1406, 16, 0x1000));
+        assert!(!agl.gl_client_state(0x8074, false));
+        assert!(agl.gl_end());
+        assert!(agl.gl_draw_arrays(&mut memory, 0x0004, 0, 3));
+        assert_eq!(
+            agl.context(context)
+                .unwrap()
+                .framebuffer
+                .as_ref()
+                .unwrap()
+                .pixel(ClassicGlColorBuffer::Front, 0, 0),
+            Some([255, 0, 0, 255])
+        );
+        assert!(agl
+            .context_mut(context)
+            .unwrap()
+            .framebuffer
+            .as_mut()
+            .unwrap()
+            .clear_color(ClassicGlColorBuffer::Front, [0; 4]));
+        assert!(agl.gl_draw_elements(&mut memory, 0x0004, 3, 0x1403, 0x1200));
+        assert_eq!(
+            agl.context(context)
+                .unwrap()
+                .framebuffer
+                .as_ref()
+                .unwrap()
+                .pixel(ClassicGlColorBuffer::Front, 0, 0),
+            Some([255, 0, 0, 255])
+        );
+        assert!(!agl.gl_draw_elements(&mut memory, 0x0004, 3, 0x1403, 0x1300));
     }
 
     #[test]
