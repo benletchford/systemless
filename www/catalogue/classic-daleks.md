@@ -58,6 +58,7 @@ artifacts:
     notes: >-
       Original 48,208-byte BinHex/StuffIt archive, SHA-256
       603cbf7606a7ff14ca4dd9721fbbea967333f23b96efed934cf4649ff41c4710.
+      The promoted public object was fetched back and matched this hash and size.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -77,6 +78,7 @@ artifacts:
     notes: >-
       Exact 620-by-459 game-content crop at (330,321) from a 1280-by-900 Chrome
       screenshot after two mouse-directed turns.
+      The promoted screenshot was fetched back and matched its hash and size.
 references:
 - >-
   https://ftp.zx.net.nz/pub/mirror/ftp.funet.fi/pub/mac/info-mac/game/arc/classic-daleks-12.hqx
