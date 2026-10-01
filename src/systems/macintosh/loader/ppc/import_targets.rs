@@ -1165,6 +1165,14 @@ pub enum PpcImportDispatcherTarget {
     AglDescribePixelFormat,
     AglDestroyPixelFormat,
     AglGetError,
+    AglCreateContext,
+    AglDestroyContext,
+    AglSetCurrentContext,
+    AglGetCurrentContext,
+    AglSetDrawable,
+    AglGetDrawable,
+    AglUpdateContext,
+    AglSwapBuffers,
     ReturnError(i16),
     ReturnNoErr,
     ReturnOne,
@@ -5640,6 +5648,18 @@ pub(crate) fn dispatcher_target_for_import(
         ("OpenGLLibrary", "aglDestroyPixelFormat") => {
             PpcImportDispatcherTarget::AglDestroyPixelFormat
         }
+        ("OpenGLLibrary", "aglCreateContext") => PpcImportDispatcherTarget::AglCreateContext,
+        ("OpenGLLibrary", "aglDestroyContext") => PpcImportDispatcherTarget::AglDestroyContext,
+        ("OpenGLLibrary", "aglSetCurrentContext") => {
+            PpcImportDispatcherTarget::AglSetCurrentContext
+        }
+        ("OpenGLLibrary", "aglGetCurrentContext") => {
+            PpcImportDispatcherTarget::AglGetCurrentContext
+        }
+        ("OpenGLLibrary", "aglSetDrawable") => PpcImportDispatcherTarget::AglSetDrawable,
+        ("OpenGLLibrary", "aglGetDrawable") => PpcImportDispatcherTarget::AglGetDrawable,
+        ("OpenGLLibrary", "aglUpdateContext") => PpcImportDispatcherTarget::AglUpdateContext,
+        ("OpenGLLibrary", "aglSwapBuffers") => PpcImportDispatcherTarget::AglSwapBuffers,
         _ => PpcImportDispatcherTarget::Unsupported,
     }
 }
