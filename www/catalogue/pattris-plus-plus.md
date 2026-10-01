@@ -19,9 +19,9 @@ compatibility:
     systemless_version: 0.71.0 + deterministic play runner
     architecture: 68k
     environment: >-
-      The unchanged Info-Mac archive opened its unregistered 68K build. Dismissed
-      the shareware notice; a falling piece appeared and the documented O key
-      moved it left on the board.
+      The unchanged Info-Mac archive opened its unregistered 68K build. Dismissed the
+      shareware notice; a falling piece appeared and the documented O key moved it
+      left on the board.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3730
   - date: "2026-10-01"
@@ -29,10 +29,10 @@ compatibility:
     systemless_version: 0.71.0 + release-mode browser build
     architecture: 68k
     environment: >-
-      Chrome fetched the unchanged archive once. Dismissed the shareware notice;
-      the board ran live and O moved the falling piece left. A five-second
-      active-board sample measured 60.0 host frames/s, 60.2 guest ticks/s,
-      a 14.1 ms maximum frame, and a 131 ms minimum audio queue.
+      Chrome fetched the unchanged archive once. Dismissed the shareware notice; the
+      board ran live and O moved the falling piece left. A five-second active-board
+      sample measured 60.0 host frames/s, 60.2 guest ticks/s, a 14.1 ms maximum frame, and
+      a 131 ms minimum audio queue.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3730
 artifacts:
@@ -40,21 +40,21 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://ftp.zx.net.nz/pub/mirror/ftp.funet.fi/pub/mac/info-mac/game/arc/pattris.hqx
-    expected_sha256: c1e761fff1faeed0d629efbfc5a4d9df4f5128ff341e65a279cdf464772d47ec
-    expected_size: 99031
+    type: sha256
+    sha256: c1e761fff1faeed0d629efbfc5a4d9df4f5128ff341e65a279cdf464772d47ec
+    size_bytes: 99031
   provenance:
     redistribution: permitted
     original: true
     sources:
-    - https://ftp.zx.net.nz/pub/mirror/ftp.funet.fi/pub/mac/info-mac/game/arc/pattris.hqx
+    - >-
+      https://ftp.zx.net.nz/pub/mirror/ftp.funet.fi/pub/mac/info-mac/game/arc/pattris.hqx
     rights_holder: Valeri Marcello
     permission: >-
-      Valeri Marcello submitted this unregistered shareware release to Info-Mac
-      for public distribution. The bundled ReadMe describes the 100-second
-      unregistered play limit and $5 registration option, with no further
-      distribution restriction. This entry uses the complete unchanged archive.
+      Valeri Marcello submitted this unregistered shareware release to Info-Mac for
+      public distribution. The bundled ReadMe describes the 100-second unregistered play
+      limit and $5 registration option, with no further distribution restriction. This
+      entry uses the complete unchanged archive.
     notes: >-
       Original 99,031-byte BinHex/StuffIt archive, SHA-256
       c1e761fff1faeed0d629efbfc5a4d9df4f5128ff341e65a279cdf464772d47ec.
@@ -62,8 +62,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/pattris-plus-plus/gameplay.png
+    type: sha256
+    sha256: 317fbea9f40225b22583bf23852013208a47603228ebd8569883c7a422605bb7
+    size_bytes: 4858
   provenance:
     redistribution: permitted
     original: true
@@ -71,18 +72,19 @@ artifacts:
     sources:
     - https://github.com/benletchford/systemless/issues/3730
     permission: >-
-      Fresh Systemless gameplay capture from the unchanged shareware release
-      for this catalogue entry. Underlying artwork remains its owner's property.
+      Fresh Systemless gameplay capture from the unchanged shareware release for this
+      catalogue entry. Underlying artwork remains its owner's property.
     notes: >-
-      Exact 272-by-361 game-content crop at (280,294) from a 1280-by-900
-      Chrome screenshot after moving the falling piece left.
+      Exact 272-by-361 game-content crop at (280,294) from a 1280-by-900 Chrome
+      screenshot after moving the falling piece left.
 references:
-- https://ftp.zx.net.nz/pub/mirror/ftp.funet.fi/pub/mac/info-mac/game/arc/pattris.hqx
+- >-
+  https://ftp.zx.net.nz/pub/mirror/ftp.funet.fi/pub/mac/info-mac/game/arc/pattris.hqx
 ---
 
 ## Fill the gaps
 
-![A falling block in Pattris++](incoming/pattris-plus-plus/gameplay.png)
+![A falling block in Pattris++](https://assets.systemless.org/catalogue/media/sha256/31/317fbea9f40225b22583bf23852013208a47603228ebd8569883c7a422605bb7.png)
 
 Move left with **O**, right with **P**, rotate with **D**, and drop with **C**.
 Press Space to shoot the special one-cell filler piece. The unregistered
