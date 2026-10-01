@@ -155,6 +155,10 @@ fn ppc_gui_cpu_slice_defers_front_buffer_sync_until_composite() {
             PPC_STACK_BASE,
         ),
         glm_mode: None,
+        glm_callbacks: [None; 8],
+        glm_callback_stack: Vec::new(),
+        glm_allocations: HashMap::new(),
+        glm_page_free_all_queue: VecDeque::new(),
         glm_error: 0,
         draw_sprocket: PpcDrawSprocketState {
             front_buffer_gworld: PPC_DSP_BACK_GWORLD,
@@ -478,6 +482,10 @@ fn ppc_completed_q3_frame_renders_before_host_front_buffer_sync() {
             PPC_STACK_BASE,
         ),
         glm_mode: None,
+        glm_callbacks: [None; 8],
+        glm_callback_stack: Vec::new(),
+        glm_allocations: HashMap::new(),
+        glm_page_free_all_queue: VecDeque::new(),
         glm_error: 0,
         draw_sprocket: PpcDrawSprocketState::default(),
     });

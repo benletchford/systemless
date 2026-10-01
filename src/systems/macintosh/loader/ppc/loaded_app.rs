@@ -120,7 +120,34 @@ pub struct PpcLoadedApp {
     pub draw_sprocket: PpcDrawSprocketState,
     /// OpenGL memory configuration belongs to the loaded process.
     pub(crate) glm_mode: Option<u32>,
+    pub(crate) glm_callbacks: [Option<PpcCallbackTarget>; 8],
+    pub(crate) glm_callback_stack: Vec<PpcGlmCallbackState>,
+    pub(crate) glm_allocations: HashMap<u32, (bool, u32)>,
+    pub(crate) glm_page_free_all_queue: VecDeque<u32>,
     pub(crate) glm_error: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PpcGlmCallbackState {
+    pub(crate) import_pc: u32,
+    pub(crate) final_pc: u32,
+    pub(crate) restore_rtoc: u32,
+    pub(crate) operation: PpcGlmCallbackOperation,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PpcGlmCallbackOperation {
+    Allocate {
+        size: u32,
+        zero_on_return: bool,
+        replace: Option<(u32, u32)>,
+    },
+    Free {
+        pointer: u32,
+        result: u32,
+        replacement_size: Option<u32>,
+        free_all: bool,
+    },
 }
 
 /// Launch-time storage that `grow_application_partition` budgets around.
