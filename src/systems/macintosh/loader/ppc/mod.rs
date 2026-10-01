@@ -235,6 +235,7 @@ pub mod graphics;
 mod classic_gl_agl;
 mod classic_gl_framebuffer;
 mod classic_gl_raster;
+mod classic_gl_texture;
 mod classic_gl_transform;
 pub(crate) use classic_gl_agl::{ppc_agl_read_pixel_format_request, PpcAglState};
 pub mod gworlds;

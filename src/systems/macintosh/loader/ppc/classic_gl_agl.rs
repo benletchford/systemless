@@ -6,8 +6,9 @@
 
 use super::classic_gl_framebuffer::{ClassicGlClear, ClassicGlColorBuffer, ClassicGlFramebuffer};
 use super::classic_gl_raster::{draw_triangle, ClassicGlRasterState, ClassicGlVertex};
+use super::classic_gl_texture::{ClassicGlTextureImage, ClassicGlTextures};
 use super::classic_gl_transform::ClassicGlTransform;
-use super::{PpcFrontBuffer, PpcSectionMem};
+use super::{ppc_memory_can_write_bytes, PpcFrontBuffer, PpcSectionMem};
 use ppc::PpcMemory;
 
 const MAX_ATTRIBUTE_WORDS: u32 = 64;
@@ -84,6 +85,7 @@ pub struct PpcAglContext {
     vertices: Vec<ClassicGlVertex>,
     vertex_array: PpcGlArrayPointer,
     color_array: PpcGlArrayPointer,
+    textures: ClassicGlTextures,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -231,6 +233,7 @@ impl PpcAglState {
             vertices: Vec::new(),
             vertex_array: PpcGlArrayPointer::default(),
             color_array: PpcGlArrayPointer::default(),
+            textures: ClassicGlTextures::default(),
         });
         handle
     }
@@ -676,6 +679,12 @@ impl PpcAglState {
         let Some(context) = self.context_mut(self.current_context) else {
             return false;
         };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        if matches!(name, 0x0cf2..=0x0cf5) {
+            return context.textures.unpack.set(name, value);
+        }
         if value < 0 {
             return false;
         }
@@ -688,6 +697,222 @@ impl PpcAglState {
             _ => return false,
         }
         true
+    }
+
+    pub fn gl_gen_textures(
+        &mut self,
+        memory: &mut PpcSectionMem,
+        count: i32,
+        destination: u32,
+    ) -> bool {
+        let Ok(count) = u32::try_from(count) else {
+            return false;
+        };
+        let Some(bytes) = count.checked_mul(4) else {
+            return false;
+        };
+        if count > 0
+            && (destination == 0 || !ppc_memory_can_write_bytes(memory, destination, bytes))
+        {
+            return false;
+        }
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        let Some(names) = context.textures.reserve_names(count) else {
+            return false;
+        };
+        for (index, name) in names.into_iter().enumerate() {
+            let Some(address) = u32::try_from(index)
+                .ok()
+                .and_then(|index| index.checked_mul(4))
+                .and_then(|offset| destination.checked_add(offset))
+            else {
+                return false;
+            };
+            if memory.write_u32_be(address, name).is_none() {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn gl_delete_textures(
+        &mut self,
+        memory: &mut PpcSectionMem,
+        count: i32,
+        source: u32,
+    ) -> bool {
+        let Ok(count) = u32::try_from(count) else {
+            return false;
+        };
+        if count > 1_000_000 || (count > 0 && source == 0) {
+            return false;
+        }
+        let mut names = Vec::with_capacity(count as usize);
+        for index in 0..count {
+            let Some(address) = index
+                .checked_mul(4)
+                .and_then(|offset| source.checked_add(offset))
+            else {
+                return false;
+            };
+            let Some(name) = memory.read_u32_be(address) else {
+                return false;
+            };
+            names.push(name);
+        }
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        context.textures.delete(&names);
+        true
+    }
+
+    pub fn gl_bind_texture(&mut self, target: u32, name: u32) -> bool {
+        if target != 0x0de1 {
+            return false;
+        } // GL_TEXTURE_2D
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        context.textures.bind_2d(name);
+        true
+    }
+
+    pub fn gl_tex_parameter_i(&mut self, target: u32, name: u32, value: i32) -> bool {
+        if target != 0x0de1 {
+            return false;
+        }
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        context
+            .textures
+            .bound_mut()
+            .is_some_and(|texture| texture.set_parameter(name, value as u32))
+    }
+
+    pub fn gl_tex_image_2d(
+        &mut self,
+        memory: &mut PpcSectionMem,
+        target: u32,
+        level: i32,
+        internal_format: i32,
+        width: i32,
+        height: i32,
+        border: i32,
+        format: u32,
+        pixel_type: u32,
+        pixels: u32,
+    ) -> bool {
+        if target != 0x0de1
+            || !(0..=12).contains(&level)
+            || border != 0
+            || !matches!(
+                internal_format,
+                1..=4 | 0x1906 | 0x1907 | 0x1908 | 0x1909 | 0x190a
+            )
+            || !matches!(
+                format,
+                0x1906 | 0x1907 | 0x1908 | 0x1909 | 0x190a | 0x80e0 | 0x80e1
+            )
+            || pixel_type != 0x1401
+        {
+            return false;
+        }
+        let (Ok(width), Ok(height)) = (u32::try_from(width), u32::try_from(height)) else {
+            return false;
+        };
+        let Some(mut image) = ClassicGlTextureImage::new(width, height, internal_format as u32)
+        else {
+            return false;
+        };
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        if pixels != 0
+            && !image.upload_sub_image(
+                memory,
+                (0, 0),
+                (width, height),
+                format,
+                pixel_type,
+                pixels,
+                context.textures.unpack,
+            )
+        {
+            return false;
+        }
+        let Some(texture) = context.textures.bound_mut() else {
+            return false;
+        };
+        texture.images[level as usize] = Some(image);
+        true
+    }
+
+    pub fn gl_tex_sub_image_2d(
+        &mut self,
+        memory: &mut PpcSectionMem,
+        target: u32,
+        level: i32,
+        x_offset: i32,
+        y_offset: i32,
+        width: i32,
+        height: i32,
+        format: u32,
+        pixel_type: u32,
+        pixels: u32,
+    ) -> bool {
+        if target != 0x0de1 || !(0..=12).contains(&level) || pixels == 0 {
+            return false;
+        }
+        let (Ok(x_offset), Ok(y_offset), Ok(width), Ok(height)) = (
+            u32::try_from(x_offset),
+            u32::try_from(y_offset),
+            u32::try_from(width),
+            u32::try_from(height),
+        ) else {
+            return false;
+        };
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        let unpack = context.textures.unpack;
+        let Some(image) = context
+            .textures
+            .bound_mut()
+            .and_then(|texture| texture.images[level as usize].as_mut())
+        else {
+            return false;
+        };
+        image.upload_sub_image(
+            memory,
+            (x_offset, y_offset),
+            (width, height),
+            format,
+            pixel_type,
+            pixels,
+            unpack,
+        )
     }
 
     pub fn gl_read_pixels(
@@ -1243,6 +1468,89 @@ mod tests {
             Some([255, 0, 0, 255])
         );
         assert!(!agl.gl_draw_elements(&mut memory, 0x0004, 3, 0x1403, 0x1300));
+    }
+
+    #[test]
+    fn texture_uploads_use_guest_unpack_state_and_named_context_objects() {
+        let mut agl = PpcAglState::default();
+        let format = agl.choose_pixel_format(PpcAglPixelFormatRequest {
+            rgba: true,
+            ..Default::default()
+        });
+        let context = agl.create_context(format, 0);
+        assert!(agl.set_current_context(context));
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x1000, vec![0; 4]);
+        memory.add_region(
+            0x2000,
+            vec![255, 0, 0, 0, 255, 0, 0, 0, 0, 0, 255, 255, 255, 255, 0, 0],
+        );
+        memory.add_region(0x3000, vec![4, 5, 6, 7]);
+        assert!(agl.gl_gen_textures(&mut memory, 1, 0x1000));
+        assert_eq!(memory.read_u32_be(0x1000), Some(1));
+        assert!(agl.gl_bind_texture(0x0de1, 1));
+        assert!(agl.gl_tex_parameter_i(0x0de1, 0x2801, 0x2600)); // NEAREST minification
+        assert!(agl.gl_tex_image_2d(
+            &mut memory,
+            0x0de1,
+            0,
+            0x1907,
+            2,
+            2,
+            0,
+            0x1907,
+            0x1401,
+            0x2000,
+        ));
+        let image = agl
+            .context(context)
+            .unwrap()
+            .textures
+            .bound()
+            .unwrap()
+            .images[0]
+            .as_ref()
+            .unwrap();
+        assert_eq!(image.texel(0, 0), Some([255, 0, 0, 255]));
+        assert_eq!(image.texel(1, 1), Some([255, 255, 255, 255]));
+        assert!(!agl.gl_tex_sub_image_2d(
+            &mut memory,
+            0x0de1,
+            0,
+            1,
+            1,
+            1,
+            1,
+            0x1908,
+            0x1401,
+            0x4000
+        ));
+        assert!(agl.gl_tex_sub_image_2d(
+            &mut memory,
+            0x0de1,
+            0,
+            1,
+            1,
+            1,
+            1,
+            0x1908,
+            0x1401,
+            0x3000
+        ));
+        assert_eq!(
+            agl.context(context)
+                .unwrap()
+                .textures
+                .bound()
+                .unwrap()
+                .images[0]
+                .as_ref()
+                .unwrap()
+                .texel(1, 1),
+            Some([4, 5, 6, 7])
+        );
+        assert!(agl.gl_delete_textures(&mut memory, 1, 0x1000));
+        assert_eq!(agl.context(context).unwrap().textures.bound_2d, 0);
     }
 
     #[test]

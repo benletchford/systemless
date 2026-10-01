@@ -3042,6 +3042,56 @@ pub(crate) fn dispatch_supported_import(
                 cpu.gpr[6],
             )
             .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlGenTextures => agl
+            .gl_gen_textures(memory, cpu.gpr[3] as i32, cpu.gpr[4])
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlDeleteTextures => agl
+            .gl_delete_textures(memory, cpu.gpr[3] as i32, cpu.gpr[4])
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlBindTexture => agl
+            .gl_bind_texture(cpu.gpr[3], cpu.gpr[4])
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlTexParameteri => agl
+            .gl_tex_parameter_i(cpu.gpr[3], cpu.gpr[4], cpu.gpr[5] as i32)
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlTexImage2D => {
+            let pointer = memory.read_u32_be(ppc_parameter_area_slot_addr(
+                cpu.gpr[1],
+                PPC_NATIVE_PARAMETER_GPR_COUNT,
+            )?)?;
+            agl.gl_tex_image_2d(
+                memory,
+                cpu.gpr[3],
+                cpu.gpr[4] as i32,
+                cpu.gpr[5] as i32,
+                cpu.gpr[6] as i32,
+                cpu.gpr[7] as i32,
+                cpu.gpr[8] as i32,
+                cpu.gpr[9],
+                cpu.gpr[10],
+                pointer,
+            )
+            .then_some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::GlTexSubImage2D => {
+            let pointer = memory.read_u32_be(ppc_parameter_area_slot_addr(
+                cpu.gpr[1],
+                PPC_NATIVE_PARAMETER_GPR_COUNT,
+            )?)?;
+            agl.gl_tex_sub_image_2d(
+                memory,
+                cpu.gpr[3],
+                cpu.gpr[4] as i32,
+                cpu.gpr[5] as i32,
+                cpu.gpr[6] as i32,
+                cpu.gpr[7] as i32,
+                cpu.gpr[8] as i32,
+                cpu.gpr[9],
+                cpu.gpr[10],
+                pointer,
+            )
+            .then_some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::NoOpPreserve => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::ExitToShell => Some(PpcImportAction::Halt),
         PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => None,
