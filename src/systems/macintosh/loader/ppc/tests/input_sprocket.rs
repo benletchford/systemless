@@ -652,6 +652,71 @@ fn hle_import_runner_handles_input_sprocket_element_get_info() {
 }
 
 #[test]
+fn hle_import_runner_handles_input_sprocket_element_configuration_info() {
+    let library = b"InputSprocketLib";
+    let symbol = b"ISpElement_GetConfigurationInfo";
+    let weak_pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+        library,
+        symbol,
+        0x82,
+        &[sm_index_reloc(0x30, 0)],
+    ));
+    let mut weak_loaded = load_pef_application(&weak_pef).unwrap();
+    assert_eq!(
+        weak_loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::ISpElementGetConfigurationInfo
+    );
+    assert_ne!(weak_loaded.imports[0].address, 0);
+    assert_eq!(
+        weak_loaded.memory.read_u32_be(PPC_DATA_BASE),
+        Some(weak_loaded.imports[0].address)
+    );
+
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(library, symbol))
+        .unwrap();
+    let config_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(config_ptr, vec![0xaa; 12]);
+    loaded.cpu.gpr[3] = PPC_ISP_MOUSE_BUTTON_ELEMENT;
+    loaded.cpu.gpr[4] = 4;
+    loaded.cpu.gpr[5] = config_ptr;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(config_ptr), Some(1));
+    assert_eq!(loaded.memory.read_u8(config_ptr + 4), Some(0xaa));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = PPC_ISP_MOUSE_X_ELEMENT;
+    loaded.cpu.gpr[4] = 8;
+    loaded.cpu.gpr[5] = config_ptr;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(config_ptr), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(config_ptr + 4), Some(0));
+    assert_eq!(loaded.memory.read_u8(config_ptr + 8), Some(0xaa));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = PPC_ISP_KEYBOARD_ELEMENT;
+    loaded.cpu.gpr[4] = 2;
+    loaded.cpu.gpr[5] = config_ptr;
+    loaded.memory.write_u32_be(config_ptr, 0xaaaa_aaaa).unwrap();
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(loaded.memory.read_u32_be(config_ptr), Some(0x0000_aaaa));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = PPC_ISP_MOUSE_BUTTON_ELEMENT;
+    loaded.cpu.gpr[4] = 4;
+    loaded.cpu.gpr[5] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+}
+
+#[test]
 fn hle_import_runner_handles_input_sprocket_simple_state() {
     let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpElement_GetSimpleState");
     let mut loaded = load_pef_application(&pef).unwrap();

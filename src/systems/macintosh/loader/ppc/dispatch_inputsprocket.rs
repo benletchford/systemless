@@ -98,6 +98,11 @@ pub(super) fn dispatch_inputsprocket_import(
         PpcImportDispatcherTarget::ISpElementGetInfo => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_isp_element_get_info(cpu, memory)),
         )),
+        PpcImportDispatcherTarget::ISpElementGetConfigurationInfo => {
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_isp_element_get_configuration_info(cpu, memory),
+            )))
+        }
         PpcImportDispatcherTarget::ISpElementGetSimpleState => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_isp_element_get_simple_state(
                 cpu,

@@ -1061,6 +1061,7 @@ pub enum PpcImportDispatcherTarget {
     ISpDeviceGetElementList,
     ISpElementListExtract,
     ISpElementGetInfo,
+    ISpElementGetConfigurationInfo,
     ISpElementGetSimpleState,
     ISpGetVersion,
     ISpStartup,
@@ -2352,6 +2353,9 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::ISpElementListExtract
         }
         ("InputSprocketLib", "ISpElement_GetInfo") => PpcImportDispatcherTarget::ISpElementGetInfo,
+        ("InputSprocketLib", "ISpElement_GetConfigurationInfo") => {
+            PpcImportDispatcherTarget::ISpElementGetConfigurationInfo
+        }
         ("InputSprocketLib", "ISpElement_GetSimpleState") => {
             PpcImportDispatcherTarget::ISpElementGetSimpleState
         }
