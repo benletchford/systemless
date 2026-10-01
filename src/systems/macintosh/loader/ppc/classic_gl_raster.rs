@@ -20,7 +20,10 @@ pub struct ClassicGlRasterState {
     pub draw_back: bool,
     pub color_mask: [bool; 4],
     pub depth_test: bool,
+    pub depth_func: u32,
     pub depth_mask: bool,
+    pub alpha_test: Option<(u32, u8)>,
+    pub blend: Option<(u32, u32)>,
 }
 
 #[derive(Clone, Copy)]
@@ -296,7 +299,10 @@ mod tests {
             draw_back: false,
             color_mask: [true; 4],
             depth_test: false,
+            depth_func: 0x0201,
             depth_mask: true,
+            alpha_test: None,
+            blend: None,
         }
     }
 

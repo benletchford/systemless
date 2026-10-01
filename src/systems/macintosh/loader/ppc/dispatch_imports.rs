@@ -2850,6 +2850,15 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::GlDepthMask => agl
             .gl_depth_mask(cpu.gpr[3] != 0)
             .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlDepthFunc => agl
+            .gl_depth_func(cpu.gpr[3])
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlAlphaFunc => agl
+            .gl_alpha_func(cpu.gpr[3], f64::from_bits(cpu.fpr[1]))
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlBlendFunc => agl
+            .gl_blend_func(cpu.gpr[3], cpu.gpr[4])
+            .then_some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::GlStencilMask => agl
             .gl_stencil_mask(cpu.gpr[3])
             .then_some(PpcImportAction::ReturnPreserve),
@@ -2864,6 +2873,8 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::GlEnable => match cpu.gpr[3] {
             0x0c11 => agl.gl_scissor_test(true),
             0x0b71 => agl.gl_depth_test(true),
+            0x0bc0 => agl.gl_alpha_test(true),
+            0x0be2 => agl.gl_blend(true),
             0x0de1 => agl.gl_texture_2d(true),
             _ => false,
         }
@@ -2871,6 +2882,8 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::GlDisable => match cpu.gpr[3] {
             0x0c11 => agl.gl_scissor_test(false),
             0x0b71 => agl.gl_depth_test(false),
+            0x0bc0 => agl.gl_alpha_test(false),
+            0x0be2 => agl.gl_blend(false),
             0x0de1 => agl.gl_texture_2d(false),
             _ => false,
         }

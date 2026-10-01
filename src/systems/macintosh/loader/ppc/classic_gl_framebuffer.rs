@@ -184,8 +184,19 @@ impl ClassicGlFramebuffer {
                 return true;
             }
         }
+        if let Some((function, reference)) = state.alpha_test {
+            if !gl_comparison(function, f64::from(color[3]), f64::from(reference)) {
+                return true;
+            }
+        }
         if state.depth_test {
-            if !depth.is_finite() || depth >= self.depth[index] {
+            if !depth.is_finite()
+                || !gl_comparison(
+                    state.depth_func,
+                    f64::from(depth),
+                    f64::from(self.depth[index]),
+                )
+            {
                 return true;
             }
             if state.depth_mask {
@@ -204,6 +215,11 @@ impl ClassicGlFramebuffer {
                 .and_then(|pixels| pixels.get_mut(index))
             else {
                 return false;
+            };
+            let color = if let Some((source, destination)) = state.blend {
+                blend_rgba(color, *pixel, source, destination)
+            } else {
+                color
             };
             for component in 0..4 {
                 if state.color_mask[component] {
@@ -288,10 +304,113 @@ impl ClassicGlFramebuffer {
     }
 }
 
+fn gl_comparison(function: u32, incoming: f64, stored: f64) -> bool {
+    match function {
+        0x0200 => false,              // NEVER
+        0x0201 => incoming < stored,  // LESS
+        0x0202 => incoming == stored, // EQUAL
+        0x0203 => incoming <= stored, // LEQUAL
+        0x0204 => incoming > stored,  // GREATER
+        0x0205 => incoming != stored, // NOTEQUAL
+        0x0206 => incoming >= stored, // GEQUAL
+        0x0207 => true,               // ALWAYS
+        _ => false,
+    }
+}
+
+fn blend_rgba(
+    source: [u8; 4],
+    destination: [u8; 4],
+    source_factor: u32,
+    destination_factor: u32,
+) -> [u8; 4] {
+    let source = source.map(|channel| f64::from(channel) / 255.0);
+    let destination = destination.map(|channel| f64::from(channel) / 255.0);
+    let factor = |kind: u32, component: usize| -> f64 {
+        match kind {
+            0 => 0.0,                               // ZERO
+            1 => 1.0,                               // ONE
+            0x0300 => source[component],            // SRC_COLOR
+            0x0301 => 1.0 - source[component],      // ONE_MINUS_SRC_COLOR
+            0x0302 => source[3],                    // SRC_ALPHA
+            0x0303 => 1.0 - source[3],              // ONE_MINUS_SRC_ALPHA
+            0x0304 => destination[3],               // DST_ALPHA
+            0x0305 => 1.0 - destination[3],         // ONE_MINUS_DST_ALPHA
+            0x0306 => destination[component],       // DST_COLOR
+            0x0307 => 1.0 - destination[component], // ONE_MINUS_DST_COLOR
+            0x0308 => {
+                if component == 3 {
+                    1.0
+                } else {
+                    source[3].min(1.0 - destination[3])
+                }
+            } // SRC_ALPHA_SATURATE
+            _ => 0.0,
+        }
+    };
+    std::array::from_fn(|component| {
+        ((source[component] * factor(source_factor, component)
+            + destination[component] * factor(destination_factor, component))
+        .clamp(0.0, 1.0)
+            * 255.0)
+            .round() as u8
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ppc::PpcMemory;
+
+    fn raster_state() -> ClassicGlRasterState {
+        ClassicGlRasterState {
+            viewport: (0, 0, 1, 1),
+            depth_range: (0.0, 1.0),
+            scissor: None,
+            draw_front: true,
+            draw_back: false,
+            color_mask: [true; 4],
+            depth_test: true,
+            depth_func: 0x0201,
+            depth_mask: true,
+            alpha_test: None,
+            blend: None,
+        }
+    }
+
+    #[test]
+    fn alpha_discard_precedes_configurable_depth_comparison() {
+        let mut frame = ClassicGlFramebuffer::new(1, 1, false).unwrap();
+        let mut state = raster_state();
+        state.alpha_test = Some((0x0204, 127)); // GL_GREATER
+        assert!(frame.write_fragment(0, 0, 0.75, [255, 0, 0, 127], state));
+        assert_eq!(frame.depth_at(0, 0), Some(1.0));
+        assert_eq!(frame.pixel(ClassicGlColorBuffer::Front, 0, 0), Some([0; 4]));
+        assert!(frame.write_fragment(0, 0, 0.75, [255, 0, 0, 255], state));
+        assert_eq!(frame.depth_at(0, 0), Some(0.75));
+        state.depth_func = 0x0204; // GL_GREATER
+        assert!(frame.write_fragment(0, 0, 0.5, [0, 255, 0, 255], state));
+        assert_eq!(frame.depth_at(0, 0), Some(0.75));
+        assert!(frame.write_fragment(0, 0, 0.9, [0, 255, 0, 255], state));
+        assert_eq!(
+            frame.pixel(ClassicGlColorBuffer::Front, 0, 0),
+            Some([0, 255, 0, 255])
+        );
+    }
+
+    #[test]
+    fn source_alpha_blends_against_destination_before_color_mask() {
+        let mut frame = ClassicGlFramebuffer::new(1, 1, false).unwrap();
+        assert!(frame.set_pixel(ClassicGlColorBuffer::Front, 0, 0, [0, 0, 255, 255]));
+        let mut state = raster_state();
+        state.depth_test = false;
+        state.blend = Some((0x0302, 0x0303)); // SRC_ALPHA, ONE_MINUS_SRC_ALPHA
+        assert!(frame.write_fragment(0, 0, 0.0, [255, 0, 0, 128], state));
+        assert_eq!(
+            frame.pixel(ClassicGlColorBuffer::Front, 0, 0),
+            Some([128, 0, 127, 191])
+        );
+    }
 
     #[test]
     fn back_buffer_clear_readback_and_swap() {

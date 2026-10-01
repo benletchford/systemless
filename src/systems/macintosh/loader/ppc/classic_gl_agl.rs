@@ -80,6 +80,13 @@ pub struct PpcAglContext {
     viewport_explicit: bool,
     depth_range: (f64, f64),
     depth_test: bool,
+    depth_func: u32,
+    alpha_test: bool,
+    alpha_func: u32,
+    alpha_ref: u8,
+    blend_enabled: bool,
+    blend_src: u32,
+    blend_dst: u32,
     current_color: [f64; 4],
     current_texcoord: [f64; 4],
     texture_2d_enabled: bool,
@@ -231,6 +238,13 @@ impl PpcAglState {
             viewport_explicit: false,
             depth_range: (0.0, 1.0),
             depth_test: false,
+            depth_func: 0x0201, // GL_LESS
+            alpha_test: false,
+            alpha_func: 0x0207, // GL_ALWAYS
+            alpha_ref: 0,
+            blend_enabled: false,
+            blend_src: 1, // GL_ONE
+            blend_dst: 0, // GL_ZERO
             current_color: [1.0; 4],
             current_texcoord: [0.0, 0.0, 0.0, 1.0],
             texture_2d_enabled: false,
@@ -311,7 +325,78 @@ impl PpcAglState {
         let Some(context) = self.context_mut(self.current_context) else {
             return false;
         };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
         context.depth_test = enabled;
+        true
+    }
+
+    pub fn gl_depth_func(&mut self, function: u32) -> bool {
+        if !(0x0200..=0x0207).contains(&function) {
+            return false;
+        }
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        context.depth_func = function;
+        true
+    }
+
+    pub fn gl_alpha_test(&mut self, enabled: bool) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        context.alpha_test = enabled;
+        true
+    }
+
+    pub fn gl_alpha_func(&mut self, function: u32, reference: f64) -> bool {
+        if !(0x0200..=0x0207).contains(&function) || !reference.is_finite() {
+            return false;
+        }
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        context.alpha_func = function;
+        context.alpha_ref = (reference.clamp(0.0, 1.0) * 255.0).round() as u8;
+        true
+    }
+
+    pub fn gl_blend(&mut self, enabled: bool) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        context.blend_enabled = enabled;
+        true
+    }
+
+    pub fn gl_blend_func(&mut self, source: u32, destination: u32) -> bool {
+        let valid_source = matches!(source, 0 | 1 | 0x0302..=0x0308);
+        let valid_destination = matches!(destination, 0 | 1 | 0x0300..=0x0305);
+        if !valid_source || !valid_destination {
+            return false;
+        }
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if context.primitive_mode.is_some() {
+            return false;
+        }
+        context.blend_src = source;
+        context.blend_dst = destination;
         true
     }
 
@@ -392,7 +477,14 @@ impl PpcAglState {
             draw_back: context.draw_back,
             color_mask: context.color_mask,
             depth_test: context.depth_test,
+            depth_func: context.depth_func,
             depth_mask: context.depth_mask,
+            alpha_test: context
+                .alpha_test
+                .then_some((context.alpha_func, context.alpha_ref)),
+            blend: context
+                .blend_enabled
+                .then_some((context.blend_src, context.blend_dst)),
         };
         let texture = context
             .texture_2d_enabled
