@@ -60,6 +60,7 @@ artifacts:
     notes: >-
       Original 310,177-byte BinHex/StuffIt archive, SHA-256
       7d9dcbcfac16bec7f8818710c891515ec9429c2ad1b107782c44d432de15391b.
+      The public object was fetched back and matched the original hash and size.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -78,7 +79,8 @@ artifacts:
       for this catalogue entry. Underlying artwork remains its owner's property.
     notes: >-
       Exact 518-by-307 game-content crop at (132,138) from an 800-by-600 Systemless
-      framebuffer after moving Bachman right and collecting dots.
+      framebuffer after moving Bachman right and collecting dots. The public
+      media object was fetched back and matched the submitted hash and size.
 references:
 - >-
   https://ftp.zx.net.nz/pub/mirror/ftp.funet.fi/pub/mac/info-mac/game/arc/bachman-205u.hqx
