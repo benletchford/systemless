@@ -4758,6 +4758,15 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "AutoPositionDialog"
+                | "autopositiondialog"
+                | "PositionDialog"
+                | "positiondialog",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::AutoPositionDialog,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "CloseStandardSheet" | "closestandardsheet",
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::CloseStandardSheet,
@@ -4824,6 +4833,12 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "GetDialogTracksCursor" | "getdialogtrackscursor",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogTracksCursor,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "GetModalDialogEventMask" | "getmodaldialogeventmask",
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::GetModalDialogEventMask,
@@ -4851,6 +4866,12 @@ pub(crate) fn dispatcher_target_for_import(
             "IsDialogEvent",
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::IsDialogEvent,
+        ),
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "IsDialogTracksCursor" | "isdialogtrackscursor",
+        ) => PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::IsDialogTracksCursor,
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
