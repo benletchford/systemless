@@ -1175,6 +1175,9 @@ pub enum PpcImportDispatcherTarget {
     GlScissor,
     GlEnable,
     GlDisable,
+    GlReadBuffer,
+    GlPixelStorei,
+    GlReadPixels,
     ReturnError(i16),
     ReturnNoErr,
     ReturnOne,
@@ -5408,6 +5411,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("OpenGLLibrary", "glScissor") => PpcImportDispatcherTarget::GlScissor,
         ("OpenGLLibrary", "glEnable") => PpcImportDispatcherTarget::GlEnable,
         ("OpenGLLibrary", "glDisable") => PpcImportDispatcherTarget::GlDisable,
+        ("OpenGLLibrary", "glReadBuffer") => PpcImportDispatcherTarget::GlReadBuffer,
+        ("OpenGLLibrary", "glPixelStorei") => PpcImportDispatcherTarget::GlPixelStorei,
+        ("OpenGLLibrary", "glReadPixels") => PpcImportDispatcherTarget::GlReadPixels,
         _ => PpcImportDispatcherTarget::Unsupported,
     }
 }

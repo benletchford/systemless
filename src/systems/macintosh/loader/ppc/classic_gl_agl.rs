@@ -68,6 +68,27 @@ pub struct PpcAglContext {
     scissor_enabled: bool,
     scissor: (i32, i32, u32, u32),
     scissor_explicit: bool,
+    read_buffer: ClassicGlColorBuffer,
+    pack: PpcGlPixelPack,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PpcGlPixelPack {
+    alignment: u32,
+    row_length: u32,
+    skip_rows: u32,
+    skip_pixels: u32,
+}
+
+impl Default for PpcGlPixelPack {
+    fn default() -> Self {
+        Self {
+            alignment: 4,
+            row_length: 0,
+            skip_rows: 0,
+            skip_pixels: 0,
+        }
+    }
 }
 
 impl Default for PpcAglState {
@@ -141,6 +162,11 @@ impl PpcAglState {
             return 0;
         };
         self.next_handle = next;
+        let read_buffer = if format.double_buffered {
+            ClassicGlColorBuffer::Back
+        } else {
+            ClassicGlColorBuffer::Front
+        };
         self.contexts.push(PpcAglContext {
             handle,
             format,
@@ -155,6 +181,8 @@ impl PpcAglState {
             scissor_enabled: false,
             scissor: (0, 0, 0, 0),
             scissor_explicit: false,
+            read_buffer,
+            pack: PpcGlPixelPack::default(),
         });
         handle
     }
@@ -263,6 +291,121 @@ impl PpcAglState {
             return false;
         };
         context.scissor_enabled = enabled;
+        true
+    }
+
+    pub fn gl_read_buffer(&mut self, source: u32) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        context.read_buffer = match source {
+            0x0400 | 0x0404 => ClassicGlColorBuffer::Front, // FRONT_LEFT, FRONT
+            0x0402 | 0x0405 if context.format.double_buffered => ClassicGlColorBuffer::Back,
+            _ => return false,
+        };
+        true
+    }
+
+    pub fn gl_pixel_store_i(&mut self, name: u32, value: i32) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        if value < 0 {
+            return false;
+        }
+        let value = value as u32;
+        match name {
+            0x0d02 => context.pack.row_length = value, // PACK_ROW_LENGTH
+            0x0d03 => context.pack.skip_rows = value,  // PACK_SKIP_ROWS
+            0x0d04 => context.pack.skip_pixels = value, // PACK_SKIP_PIXELS
+            0x0d05 if matches!(value, 1 | 2 | 4 | 8) => context.pack.alignment = value,
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn gl_read_pixels(
+        &self,
+        memory: &mut PpcSectionMem,
+        rect: (i32, i32, i32, i32),
+        format: u32,
+        pixel_type: u32,
+        destination: u32,
+    ) -> bool {
+        const GL_UNSIGNED_BYTE: u32 = 0x1401;
+        let components: usize = match format {
+            0x1907 => 3, // GL_RGB
+            0x1908 => 4, // GL_RGBA
+            _ => return false,
+        };
+        if pixel_type != GL_UNSIGNED_BYTE || destination == 0 {
+            return false;
+        }
+        let (x, y, width, height) = rect;
+        let (Ok(x), Ok(y), Ok(width), Ok(height)) = (
+            u32::try_from(x),
+            u32::try_from(y),
+            u32::try_from(width),
+            u32::try_from(height),
+        ) else {
+            return false;
+        };
+        let Some(context) = self.context(self.current_context) else {
+            return false;
+        };
+        let Some(framebuffer) = context.framebuffer.as_ref() else {
+            return false;
+        };
+        let Some(pixels) = framebuffer.read_rgba(context.read_buffer, x, y, width, height) else {
+            return false;
+        };
+        let Some(stride) = (if context.pack.row_length == 0 {
+            width
+        } else {
+            context.pack.row_length
+        })
+        .checked_mul(components as u32)
+        .and_then(|length| length.checked_add(context.pack.alignment - 1))
+        .map(|length| length & !(context.pack.alignment - 1)) else {
+            return false;
+        };
+        let Some(start) = context
+            .pack
+            .skip_rows
+            .checked_mul(stride)
+            .and_then(|offset| {
+                context
+                    .pack
+                    .skip_pixels
+                    .checked_mul(components as u32)
+                    .and_then(|pixels| offset.checked_add(pixels))
+            })
+            .and_then(|offset| destination.checked_add(offset))
+        else {
+            return false;
+        };
+        let Ok(row_len) = usize::try_from(width).map(|width| width * components) else {
+            return false;
+        };
+        let mut row = vec![0; row_len];
+        for row_index in 0..height {
+            let Some(address) = row_index
+                .checked_mul(stride)
+                .and_then(|offset| start.checked_add(offset))
+            else {
+                return false;
+            };
+            let source = row_index as usize * width as usize * 4;
+            for column in 0..width as usize {
+                let source = source + column * 4;
+                let target = column * components;
+                row[target..target + components]
+                    .copy_from_slice(&pixels[source..source + components]);
+            }
+            if memory.write_bytes(address, &row).is_none() {
+                return false;
+            }
+        }
         true
     }
 
@@ -588,6 +731,56 @@ mod tests {
                 .depth_at(0, 0),
             Some(0.25)
         );
+    }
+
+    #[test]
+    fn read_pixels_packs_bottom_up_rgb_rows_into_guest_memory() {
+        let mut agl = PpcAglState::default();
+        let format = agl.choose_pixel_format(PpcAglPixelFormatRequest {
+            rgba: true,
+            double_buffered: true,
+            ..Default::default()
+        });
+        let context = agl.create_context(format, 0);
+        assert!(agl.set_current_context(context));
+        assert!(agl.set_drawable(
+            context,
+            0x2000,
+            Some(PpcFrontBuffer {
+                base_addr: 0x2000,
+                width: 2,
+                height: 2,
+                depth: 16,
+                row_bytes: 4,
+            })
+        ));
+        let framebuffer = agl
+            .context_mut(context)
+            .unwrap()
+            .framebuffer
+            .as_mut()
+            .unwrap();
+        assert!(framebuffer.set_pixel(ClassicGlColorBuffer::Back, 0, 0, [255, 0, 0, 255]));
+        assert!(framebuffer.set_pixel(ClassicGlColorBuffer::Back, 1, 0, [0, 255, 0, 255]));
+        assert!(framebuffer.set_pixel(ClassicGlColorBuffer::Back, 0, 1, [0, 0, 255, 255]));
+        assert!(framebuffer.set_pixel(ClassicGlColorBuffer::Back, 1, 1, [255, 255, 255, 255]));
+        assert!(agl.gl_pixel_store_i(0x0d02, 3)); // PACK_ROW_LENGTH
+        assert!(agl.gl_pixel_store_i(0x0d03, 1)); // PACK_SKIP_ROWS
+        assert!(agl.gl_pixel_store_i(0x0d04, 1)); // PACK_SKIP_PIXELS
+        assert!(!agl.gl_pixel_store_i(0x0d05, 3)); // Invalid alignment
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x1000, vec![0xee; 64]);
+        assert!(agl.gl_read_pixels(&mut memory, (0, 0, 2, 2), 0x1907, 0x1401, 0x1000));
+        let bytes = (0..64)
+            .map(|offset| memory.read_u8(0x1000 + offset).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(&bytes[15..21], &[255, 0, 0, 0, 255, 0]);
+        assert_eq!(&bytes[27..33], &[0, 0, 255, 255, 255, 255]);
+        assert_eq!(bytes[21], 0xee);
+        assert_eq!(bytes[26], 0xee);
+        assert!(!agl.gl_read_pixels(&mut memory, (0, 0, 2, 2), 0x1907, 0x1403, 0x1000));
+        assert!(agl.gl_read_buffer(0x0404)); // FRONT
+        assert!(!agl.gl_read_buffer(0x0408)); // FRONT_AND_BACK is invalid for reads
     }
 
     #[test]

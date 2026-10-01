@@ -2866,6 +2866,26 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::GlDisable => (cpu.gpr[3] == 0x0c11
             && agl.gl_scissor_test(false))
         .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlReadBuffer => agl
+            .gl_read_buffer(cpu.gpr[3])
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlPixelStorei => agl
+            .gl_pixel_store_i(cpu.gpr[3], cpu.gpr[4] as i32)
+            .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlReadPixels => agl
+            .gl_read_pixels(
+                memory,
+                (
+                    cpu.gpr[3] as i32,
+                    cpu.gpr[4] as i32,
+                    cpu.gpr[5] as i32,
+                    cpu.gpr[6] as i32,
+                ),
+                cpu.gpr[7],
+                cpu.gpr[8],
+                cpu.gpr[9],
+            )
+            .then_some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::NoOpPreserve => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::ExitToShell => Some(PpcImportAction::Halt),
         PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => None,
