@@ -589,6 +589,7 @@ pub(super) fn dispatch_event_import(
                     tick_count,
                 );
             }
+            ppc_suppress_window_updates(event_queue, &toolbox_startup.windows_without_updates);
             let (what, message, when, where_v, where_h, modifiers, has_event) =
                 ppc_dequeue_event(event_queue, event_mask, input, os_only, tick_count);
             if has_event && what == 8 {
@@ -666,6 +667,7 @@ pub(super) fn dispatch_event_import(
                     tick_count,
                 );
             }
+            ppc_suppress_window_updates(event_queue, &toolbox_startup.windows_without_updates);
             let (what, message, when, where_v, where_h, modifiers, has_event) =
                 ppc_peek_event(event_queue, event_mask, input, os_only, tick_count);
             if event_ptr != 0

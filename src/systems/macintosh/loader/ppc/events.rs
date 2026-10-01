@@ -146,6 +146,15 @@ pub(crate) fn ppc_flush_events(
     });
 }
 
+pub(crate) fn ppc_suppress_window_updates(
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    windows_without_updates: &std::collections::HashSet<u32>,
+) {
+    event_queue.retain(|event| {
+        event.what != 6 || !windows_without_updates.contains(&event.message)
+    });
+}
+
 pub(crate) fn ppc_toolbox_event_priority(what: u16) -> u8 {
     // Macintosh Toolbox Essentials (1992), pp. 2-18--2-19: the Event
     // Manager selects by event-class priority, preserving FIFO order among
