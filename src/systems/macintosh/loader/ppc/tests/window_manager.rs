@@ -7396,3 +7396,402 @@ fn window_modality_activation_and_chain_traversal_commands_dispatch_with_canonic
         }
     }
 }
+
+#[test]
+fn import_bindings_classify_window_property_management_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // ChangeWindowPropertyAttributes
+        assert_eq!(
+            dispatcher_target_for_import(lib, "ChangeWindowPropertyAttributes"),
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::ChangeWindowPropertyAttributes
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "changewindowpropertyattributes"),
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::ChangeWindowPropertyAttributes
+            )
+        );
+
+        // GetWindowProperty
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowProperty"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowProperty)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowproperty"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowProperty)
+        );
+
+        // GetWindowPropertyAttributes
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowPropertyAttributes"),
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::GetWindowPropertyAttributes
+            )
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowpropertyattributes"),
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::GetWindowPropertyAttributes
+            )
+        );
+
+        // GetWindowPropertySize
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowPropertySize"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowPropertySize)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowpropertysize"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowPropertySize)
+        );
+
+        // RemoveWindowProperty
+        assert_eq!(
+            dispatcher_target_for_import(lib, "RemoveWindowProperty"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RemoveWindowProperty)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "removewindowproperty"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RemoveWindowProperty)
+        );
+
+        // SetWindowProperty
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWindowProperty"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowProperty)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwindowproperty"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowProperty)
+        );
+    }
+}
+
+#[test]
+fn window_property_management_commands_dispatch_with_canonical_evaluation() {
+    for lib in [b"InterfaceLib".as_slice(), b"AppearanceLib".as_slice(), b"CarbonLib".as_slice()] {
+        let lib_str = std::str::from_utf8(lib).unwrap();
+        let pef = synthetic_pef_with_library_import(lib, b"SetWindowProperty");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let bounds_ptr1 = PPC_DATA_BASE + 0x1000;
+        let bounds_ptr2 = PPC_DATA_BASE + 0x1050;
+        let window_storage1 = PPC_DATA_BASE + 0x2000;
+        let window_storage2 = PPC_DATA_BASE + 0x3000;
+        let scratch_ptr = PPC_DATA_BASE + 0x1100;
+        let prop_data_in_ptr = PPC_DATA_BASE + 0x1200;
+        let prop_data_out_ptr = PPC_DATA_BASE + 0x1300;
+        let out_size_ptr = scratch_ptr;
+        let out_attr_ptr = scratch_ptr + 4;
+
+        loaded.memory.add_region(PPC_DATA_BASE + 0x1000, vec![0; 0x5000]);
+        ppc_write_rect(&mut loaded.memory, bounds_ptr1, 40, 50, 240, 350).unwrap();
+        ppc_write_rect(&mut loaded.memory, bounds_ptr2, 60, 70, 260, 370).unwrap();
+
+        // 1. Create window 1
+        let title1 = b"\x04Win1";
+        let title_ptr1 = PPC_DATA_BASE + 0x1400;
+        loaded.memory.write_bytes(title_ptr1, title1).unwrap();
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "NewWindow");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = window_storage1;
+        loaded.cpu.gpr[4] = bounds_ptr1;
+        loaded.cpu.gpr[5] = title_ptr1;
+        loaded.cpu.gpr[6] = 1; // visible
+        loaded.cpu.gpr[7] = 0; // documentProc
+        loaded.cpu.gpr[8] = 0xFFFF_FFFF;
+        loaded.cpu.gpr[9] = 1;
+        loaded.cpu.gpr[10] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        let win1 = loaded.cpu.gpr[3];
+        assert_ne!(win1, 0);
+
+        // 2. Create window 2
+        let title2 = b"\x04Win2";
+        let title_ptr2 = PPC_DATA_BASE + 0x1450;
+        loaded.memory.write_bytes(title_ptr2, title2).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = window_storage2;
+        loaded.cpu.gpr[4] = bounds_ptr2;
+        loaded.cpu.gpr[5] = title_ptr2;
+        loaded.cpu.gpr[6] = 1; // visible
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0xFFFF_FFFF;
+        loaded.cpu.gpr[9] = 1;
+        loaded.cpu.gpr[10] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        let win2 = loaded.cpu.gpr[3];
+        assert_ne!(win2, 0);
+
+        let creator_test = 0x5445_5354; // 'TEST'
+        let tag1 = 0x5441_4731; // 'TAG1'
+        let tag2 = 0x5441_4732; // 'TAG2'
+
+        // 3. Query non-existent property on win1 -> -5604 (errWindowPropertyNotFound)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowProperty");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        loaded.cpu.gpr[6] = 16;
+        loaded.cpu.gpr[7] = out_size_ptr;
+        loaded.cpu.gpr[8] = prop_data_out_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -5604);
+        assert_eq!(loaded.memory.read_u32_be(out_size_ptr), Some(0));
+
+        // 4. SetWindowProperty(win1, 'TEST', 'TAG1', 4, [0x11, 0x22, 0x33, 0x44])
+        loaded.memory.write_bytes(prop_data_in_ptr, &[0x11, 0x22, 0x33, 0x44]).unwrap();
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetWindowProperty");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        loaded.cpu.gpr[6] = 4;
+        loaded.cpu.gpr[7] = prop_data_in_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+        // 5. GetWindowPropertySize(win1, 'TEST', 'TAG1', out_size_ptr) -> 4
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowPropertySize");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        loaded.cpu.gpr[6] = out_size_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_size_ptr), Some(4));
+
+        // 6. GetWindowProperty(win1, 'TEST', 'TAG1', 16, out_size_ptr, prop_data_out_ptr) -> size 4, data
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowProperty");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        loaded.cpu.gpr[6] = 16;
+        loaded.cpu.gpr[7] = out_size_ptr;
+        loaded.cpu.gpr[8] = prop_data_out_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_size_ptr), Some(4));
+        let read_bytes = ppc_memory_read_bytes(&mut loaded.memory, prop_data_out_ptr, 4).unwrap();
+        assert_eq!(read_bytes, [0x11, 0x22, 0x33, 0x44]);
+
+        // 7. GetWindowProperty with buffer_size = 2 (truncated copy)
+        loaded.memory.write_bytes(prop_data_out_ptr, &[0xAA; 4]).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        loaded.cpu.gpr[6] = 2; // only 2 bytes buffer
+        loaded.cpu.gpr[7] = out_size_ptr;
+        loaded.cpu.gpr[8] = prop_data_out_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_size_ptr), Some(4)); // actual size is still 4
+        let read_bytes = ppc_memory_read_bytes(&mut loaded.memory, prop_data_out_ptr, 4).unwrap();
+        assert_eq!(read_bytes, [0x11, 0x22, 0xAA, 0xAA]); // only first 2 bytes overwritten
+
+        // 8. Attributes get/change
+        // Initial attributes are 0
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowPropertyAttributes");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        loaded.cpu.gpr[6] = out_attr_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_attr_ptr), Some(0));
+
+        // Change attributes: set 0x20
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ChangeWindowPropertyAttributes");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        loaded.cpu.gpr[6] = 0x20; // to_set
+        loaded.cpu.gpr[7] = 0;    // to_clear
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+        // Verify updated attributes
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowPropertyAttributes");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        loaded.cpu.gpr[6] = out_attr_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_attr_ptr), Some(0x20));
+
+        // 9. Add property TAG2 to win1 and property TAG1 to win2
+        loaded.memory.write_bytes(prop_data_in_ptr, &[0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetWindowProperty");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag2;
+        loaded.cpu.gpr[6] = 4;
+        loaded.cpu.gpr[7] = prop_data_in_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+        loaded.memory.write_bytes(prop_data_in_ptr, &[0xCA, 0xFE]).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win2;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        loaded.cpu.gpr[6] = 2;
+        loaded.cpu.gpr[7] = prop_data_in_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+        // Verify isolation between win1 and win2
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowPropertySize");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        loaded.cpu.gpr[6] = out_size_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.memory.read_u32_be(out_size_ptr), Some(4));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win2;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        loaded.cpu.gpr[6] = out_size_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.memory.read_u32_be(out_size_ptr), Some(2));
+
+        // 10. RemoveWindowProperty(win1, 'TEST', 'TAG1')
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "RemoveWindowProperty");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+        // Query removed property -> -5604
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowProperty");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        loaded.cpu.gpr[6] = 16;
+        loaded.cpu.gpr[7] = out_size_ptr;
+        loaded.cpu.gpr[8] = prop_data_out_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -5604);
+
+        // Removing already removed property returns -5604
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "RemoveWindowProperty");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -5604);
+
+        // Check that win1's tag2 and win2's tag1 are still present
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowPropertySize");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win1;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag2;
+        loaded.cpu.gpr[6] = out_size_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_size_ptr), Some(4));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = win2;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        loaded.cpu.gpr[6] = out_size_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+        assert_eq!(loaded.memory.read_u32_be(out_size_ptr), Some(2));
+
+        // 11. Error handling: window == 0 returns paramErr (-50)
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetWindowProperty");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        loaded.cpu.gpr[6] = 4;
+        loaded.cpu.gpr[7] = prop_data_in_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowProperty");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        loaded.cpu.gpr[6] = 16;
+        loaded.cpu.gpr[7] = out_size_ptr;
+        loaded.cpu.gpr[8] = prop_data_out_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "RemoveWindowProperty");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = creator_test;
+        loaded.cpu.gpr[5] = tag1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+    }
+}
+

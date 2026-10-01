@@ -102,6 +102,7 @@ pub struct PpcToolboxStartupState {
     pub(crate) window_proxy_icons: HashMap<u32, u32>,
     pub(crate) window_modality: HashMap<u32, (u32, u32)>,
     pub(crate) windows_without_updates: HashSet<u32>,
+    pub(crate) window_properties: HashMap<u32, Vec<crate::window_manager::ProcessWindowProperty>>,
 }
 
 impl Default for PpcToolboxStartupState {
@@ -190,6 +191,7 @@ impl Default for PpcToolboxStartupState {
             window_proxy_icons: HashMap::new(),
             window_modality: HashMap::new(),
             windows_without_updates: HashSet::new(),
+            window_properties: HashMap::new(),
         }
     }
 }

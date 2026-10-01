@@ -4537,6 +4537,14 @@ pub(crate) fn dispatcher_target_for_import(
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ChangeWindowPropertyAttributes" | "changewindowpropertyattributes",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::ChangeWindowPropertyAttributes,
+            )
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "CheckUpdate" | "checkupdate",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CheckUpdate)
@@ -4675,6 +4683,28 @@ pub(crate) fn dispatcher_target_for_import(
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWindowProperty" | "getwindowproperty",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowProperty)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWindowPropertyAttributes" | "getwindowpropertyattributes",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::GetWindowPropertyAttributes,
+            )
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetWindowPropertySize" | "getwindowpropertysize",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::GetWindowPropertySize,
+            )
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowProxyIcon" | "getwindowproxyicon",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowProxyIcon)
@@ -4803,6 +4833,14 @@ pub(crate) fn dispatcher_target_for_import(
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "RemoveWindowProperty" | "removewindowproperty",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::RemoveWindowProperty,
+            )
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "RemoveWindowProxy" | "removewindowproxy",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RemoveWindowProxy)
@@ -4874,6 +4912,12 @@ pub(crate) fn dispatcher_target_for_import(
             "SetWindowModified" | "setwindowmodified",
         ) => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowModified)
+        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetWindowProperty" | "setwindowproperty",
+        ) => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowProperty)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",

@@ -1001,6 +1001,383 @@ pub fn evaluate_set_window_modality_parameters(
     })
 }
 
+/// Canonical Mac OS Window Property error constants.
+#[allow(dead_code)]
+pub const WINDOW_PROPERTY_NOT_FOUND_ERR: i16 = -5604;
+
+/// Canonical Mac OS Window Property record.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProcessWindowProperty {
+    pub creator: u32,
+    pub tag: u32,
+    pub attributes: u32,
+    pub data: Vec<u8>,
+}
+
+#[allow(dead_code)]
+pub fn set_window_property(
+    properties: &mut Vec<ProcessWindowProperty>,
+    creator: u32,
+    tag: u32,
+    attributes: u32,
+    data: Vec<u8>,
+) {
+    if let Some(prop) = properties
+        .iter_mut()
+        .find(|p| p.creator == creator && p.tag == tag)
+    {
+        prop.attributes = attributes;
+        prop.data = data;
+    } else {
+        properties.push(ProcessWindowProperty {
+            creator,
+            tag,
+            attributes,
+            data,
+        });
+    }
+}
+
+#[allow(dead_code)]
+pub fn get_window_property<'a>(
+    properties: &'a [ProcessWindowProperty],
+    creator: u32,
+    tag: u32,
+) -> Option<&'a ProcessWindowProperty> {
+    properties
+        .iter()
+        .find(|p| p.creator == creator && p.tag == tag)
+}
+
+#[allow(dead_code)]
+pub fn remove_window_property(
+    properties: &mut Vec<ProcessWindowProperty>,
+    creator: u32,
+    tag: u32,
+) -> bool {
+    let before = properties.len();
+    properties.retain(|p| !(p.creator == creator && p.tag == tag));
+    properties.len() < before
+}
+
+#[allow(dead_code)]
+pub fn change_window_property_attributes(
+    properties: &mut Vec<ProcessWindowProperty>,
+    creator: u32,
+    tag: u32,
+    set: u32,
+    clear: u32,
+) -> Result<u32, i16> {
+    if let Some(prop) = properties
+        .iter_mut()
+        .find(|p| p.creator == creator && p.tag == tag)
+    {
+        prop.attributes = (prop.attributes | set) & !clear;
+        Ok(prop.attributes)
+    } else {
+        Err(WINDOW_PROPERTY_NOT_FOUND_ERR)
+    }
+}
+
+/// Architecture-neutral parameter validation for SetWindowProperty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetWindowPropertyParameters {
+    window_ptr: u32,
+    creator: u32,
+    tag: u32,
+    data: Vec<u8>,
+}
+
+#[allow(dead_code)]
+impl SetWindowPropertyParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn creator(&self) -> u32 {
+        self.creator
+    }
+
+    pub const fn tag(&self) -> u32 {
+        self.tag
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    pub fn into_data(self) -> Vec<u8> {
+        self.data
+    }
+}
+
+pub fn evaluate_set_window_property_parameters(
+    window_ptr: u32,
+    creator: u32,
+    tag: u32,
+    data: Vec<u8>,
+) -> Result<SetWindowPropertyParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(SetWindowPropertyParameters {
+        window_ptr,
+        creator,
+        tag,
+        data,
+    })
+}
+
+/// Architecture-neutral parameter validation for GetWindowProperty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowPropertyParameters {
+    window_ptr: u32,
+    creator: u32,
+    tag: u32,
+    buffer_size: u32,
+    out_actual_size_ptr: u32,
+    out_data_ptr: u32,
+}
+
+impl GetWindowPropertyParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn creator(&self) -> u32 {
+        self.creator
+    }
+
+    pub const fn tag(&self) -> u32 {
+        self.tag
+    }
+
+    pub const fn buffer_size(&self) -> u32 {
+        self.buffer_size
+    }
+
+    pub const fn out_actual_size_ptr(&self) -> u32 {
+        self.out_actual_size_ptr
+    }
+
+    pub const fn out_data_ptr(&self) -> u32 {
+        self.out_data_ptr
+    }
+}
+
+pub fn evaluate_get_window_property_parameters(
+    window_ptr: u32,
+    creator: u32,
+    tag: u32,
+    buffer_size: u32,
+    out_actual_size_ptr: u32,
+    out_data_ptr: u32,
+    can_write_actual_size: bool,
+    can_write_data: bool,
+) -> Result<GetWindowPropertyParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    if out_actual_size_ptr != 0 && !can_write_actual_size {
+        return Err(-50);
+    }
+    if out_data_ptr != 0 && buffer_size > 0 && !can_write_data {
+        return Err(-50);
+    }
+    Ok(GetWindowPropertyParameters {
+        window_ptr,
+        creator,
+        tag,
+        buffer_size,
+        out_actual_size_ptr,
+        out_data_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for GetWindowPropertySize.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowPropertySizeParameters {
+    window_ptr: u32,
+    creator: u32,
+    tag: u32,
+    out_actual_size_ptr: u32,
+}
+
+impl GetWindowPropertySizeParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn creator(&self) -> u32 {
+        self.creator
+    }
+
+    pub const fn tag(&self) -> u32 {
+        self.tag
+    }
+
+    pub const fn out_actual_size_ptr(&self) -> u32 {
+        self.out_actual_size_ptr
+    }
+}
+
+pub fn evaluate_get_window_property_size_parameters(
+    window_ptr: u32,
+    creator: u32,
+    tag: u32,
+    out_actual_size_ptr: u32,
+    can_write_actual_size: bool,
+) -> Result<GetWindowPropertySizeParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    if out_actual_size_ptr != 0 && !can_write_actual_size {
+        return Err(-50);
+    }
+    Ok(GetWindowPropertySizeParameters {
+        window_ptr,
+        creator,
+        tag,
+        out_actual_size_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for RemoveWindowProperty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoveWindowPropertyParameters {
+    window_ptr: u32,
+    creator: u32,
+    tag: u32,
+}
+
+impl RemoveWindowPropertyParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn creator(&self) -> u32 {
+        self.creator
+    }
+
+    pub const fn tag(&self) -> u32 {
+        self.tag
+    }
+}
+
+pub fn evaluate_remove_window_property_parameters(
+    window_ptr: u32,
+    creator: u32,
+    tag: u32,
+) -> Result<RemoveWindowPropertyParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(RemoveWindowPropertyParameters {
+        window_ptr,
+        creator,
+        tag,
+    })
+}
+
+/// Architecture-neutral parameter validation for GetWindowPropertyAttributes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowPropertyAttributesParameters {
+    window_ptr: u32,
+    creator: u32,
+    tag: u32,
+    out_attributes_ptr: u32,
+}
+
+impl GetWindowPropertyAttributesParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn creator(&self) -> u32 {
+        self.creator
+    }
+
+    pub const fn tag(&self) -> u32 {
+        self.tag
+    }
+
+    pub const fn out_attributes_ptr(&self) -> u32 {
+        self.out_attributes_ptr
+    }
+}
+
+pub fn evaluate_get_window_property_attributes_parameters(
+    window_ptr: u32,
+    creator: u32,
+    tag: u32,
+    out_attributes_ptr: u32,
+    can_write_attributes: bool,
+) -> Result<GetWindowPropertyAttributesParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    if out_attributes_ptr != 0 && !can_write_attributes {
+        return Err(-50);
+    }
+    Ok(GetWindowPropertyAttributesParameters {
+        window_ptr,
+        creator,
+        tag,
+        out_attributes_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for ChangeWindowPropertyAttributes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChangeWindowPropertyAttributesParameters {
+    window_ptr: u32,
+    creator: u32,
+    tag: u32,
+    to_set: u32,
+    to_clear: u32,
+}
+
+impl ChangeWindowPropertyAttributesParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn creator(&self) -> u32 {
+        self.creator
+    }
+
+    pub const fn tag(&self) -> u32 {
+        self.tag
+    }
+
+    pub const fn to_set(&self) -> u32 {
+        self.to_set
+    }
+
+    pub const fn to_clear(&self) -> u32 {
+        self.to_clear
+    }
+}
+
+pub fn evaluate_change_window_property_attributes_parameters(
+    window_ptr: u32,
+    creator: u32,
+    tag: u32,
+    to_set: u32,
+    to_clear: u32,
+) -> Result<ChangeWindowPropertyAttributesParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(ChangeWindowPropertyAttributesParameters {
+        window_ptr,
+        creator,
+        tag,
+        to_set,
+        to_clear,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1518,4 +1895,127 @@ mod tests {
         assert!(active.ink.len() > inactive.ink.len());
         assert!(active.ink.contains(&(398, 487, 399, 488)));
     }
+
+    #[test]
+    fn window_property_management_evaluation() {
+        use super::*;
+
+        let mut properties = Vec::new();
+        let creator = 0x54455354; // 'TEST'
+        let tag = 0x54414731; // 'TAG1'
+        let data = vec![1, 2, 3, 4, 5, 6, 7, 8];
+
+        // 1. Initial state: property not found
+        assert!(get_window_property(&properties, creator, tag).is_none());
+        assert!(!remove_window_property(&mut properties, creator, tag));
+        assert_eq!(
+            change_window_property_attributes(&mut properties, creator, tag, 1, 0),
+            Err(WINDOW_PROPERTY_NOT_FOUND_ERR)
+        );
+
+        // 2. Set property
+        set_window_property(&mut properties, creator, tag, 0x10, data.clone());
+        let prop = get_window_property(&properties, creator, tag).unwrap();
+        assert_eq!(prop.creator, creator);
+        assert_eq!(prop.tag, tag);
+        assert_eq!(prop.attributes, 0x10);
+        assert_eq!(prop.data, data);
+
+        // 3. Update property data and attributes
+        let new_data = vec![10, 20];
+        set_window_property(&mut properties, creator, tag, 0x20, new_data.clone());
+        let prop = get_window_property(&properties, creator, tag).unwrap();
+        assert_eq!(prop.attributes, 0x20);
+        assert_eq!(prop.data, new_data);
+
+        // 4. Change attributes: set 0x05, clear 0x20
+        let new_attrs = change_window_property_attributes(&mut properties, creator, tag, 0x05, 0x20).unwrap();
+        assert_eq!(new_attrs, 0x05);
+        let prop = get_window_property(&properties, creator, tag).unwrap();
+        assert_eq!(prop.attributes, 0x05);
+
+        // 5. Remove property
+        assert!(remove_window_property(&mut properties, creator, tag));
+        assert!(get_window_property(&properties, creator, tag).is_none());
+        assert!(!remove_window_property(&mut properties, creator, tag));
+
+        // 6. Parameter validations
+        // SetWindowPropertyParameters
+        assert_eq!(
+            evaluate_set_window_property_parameters(0, creator, tag, vec![]),
+            Err(-50)
+        );
+        let set_params = evaluate_set_window_property_parameters(0x1000, creator, tag, vec![9, 8]).unwrap();
+        assert_eq!(set_params.window_ptr(), 0x1000);
+        assert_eq!(set_params.creator(), creator);
+        assert_eq!(set_params.tag(), tag);
+        assert_eq!(set_params.data(), &[9, 8]);
+        assert_eq!(set_params.into_data(), vec![9, 8]);
+
+        // GetWindowPropertyParameters
+        assert_eq!(
+            evaluate_get_window_property_parameters(0, creator, tag, 16, 0x2000, 0x3000, true, true),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_get_window_property_parameters(0x1000, creator, tag, 16, 0x2000, 0x3000, false, true),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_get_window_property_parameters(0x1000, creator, tag, 16, 0x2000, 0x3000, true, false),
+            Err(-50)
+        );
+        let get_params = evaluate_get_window_property_parameters(0x1000, creator, tag, 16, 0x2000, 0x3000, true, true).unwrap();
+        assert_eq!(get_params.window_ptr(), 0x1000);
+        assert_eq!(get_params.creator(), creator);
+        assert_eq!(get_params.tag(), tag);
+        assert_eq!(get_params.buffer_size(), 16);
+        assert_eq!(get_params.out_actual_size_ptr(), 0x2000);
+        assert_eq!(get_params.out_data_ptr(), 0x3000);
+
+        // GetWindowPropertySizeParameters
+        assert_eq!(
+            evaluate_get_window_property_size_parameters(0, creator, tag, 0x2000, true),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_get_window_property_size_parameters(0x1000, creator, tag, 0x2000, false),
+            Err(-50)
+        );
+        let size_params = evaluate_get_window_property_size_parameters(0x1000, creator, tag, 0x2000, true).unwrap();
+        assert_eq!(size_params.window_ptr(), 0x1000);
+        assert_eq!(size_params.out_actual_size_ptr(), 0x2000);
+
+        // RemoveWindowPropertyParameters
+        assert_eq!(
+            evaluate_remove_window_property_parameters(0, creator, tag),
+            Err(-50)
+        );
+        let remove_params = evaluate_remove_window_property_parameters(0x1000, creator, tag).unwrap();
+        assert_eq!(remove_params.window_ptr(), 0x1000);
+
+        // GetWindowPropertyAttributesParameters
+        assert_eq!(
+            evaluate_get_window_property_attributes_parameters(0, creator, tag, 0x2000, true),
+            Err(-50)
+        );
+        assert_eq!(
+            evaluate_get_window_property_attributes_parameters(0x1000, creator, tag, 0x2000, false),
+            Err(-50)
+        );
+        let get_attr_params = evaluate_get_window_property_attributes_parameters(0x1000, creator, tag, 0x2000, true).unwrap();
+        assert_eq!(get_attr_params.window_ptr(), 0x1000);
+        assert_eq!(get_attr_params.out_attributes_ptr(), 0x2000);
+
+        // ChangeWindowPropertyAttributesParameters
+        assert_eq!(
+            evaluate_change_window_property_attributes_parameters(0, creator, tag, 1, 0),
+            Err(-50)
+        );
+        let change_params = evaluate_change_window_property_attributes_parameters(0x1000, creator, tag, 0x10, 0x01).unwrap();
+        assert_eq!(change_params.window_ptr(), 0x1000);
+        assert_eq!(change_params.to_set(), 0x10);
+        assert_eq!(change_params.to_clear(), 0x01);
+    }
 }
+
