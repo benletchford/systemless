@@ -1762,6 +1762,8 @@ mod tests {
     fn browser_modifier_keys_map_to_mac_adb() {
         assert_eq!(super::map_key("Shift", "ShiftLeft"), Some((0x38, 0)));
         assert_eq!(super::map_key("Shift", "ShiftRight"), Some((0x3C, 0)));
+        assert_eq!(super::map_key("Alt", "AltLeft"), Some((0x3A, 0)));
+        assert_eq!(super::map_key("Alt", "AltRight"), Some((0x3D, 0)));
         assert_eq!(super::map_key("Meta", "MetaLeft"), Some((0x37, 0)));
         assert_eq!(super::map_key("Meta", "MetaRight"), Some((0x37, 0)));
     }
@@ -4611,6 +4613,8 @@ fn map_key(key: &str, code: &str) -> Option<(u8, u8)> {
         " " => Some((0x31, 0x20)),
         "Shift" if code == "ShiftRight" => Some((0x3C, 0)),
         "Shift" => Some((0x38, 0)),
+        "Alt" if code == "AltRight" => Some((0x3D, 0)),
+        "Alt" => Some((0x3A, 0)),
         "Meta" => Some((0x37, 0)),
         "Enter" => Some((0x24, 0x0D)),
         "Escape" => Some((0x35, 0x1B)),
