@@ -440,3 +440,69 @@ fn glm_calloc_releases_guest_storage_when_zeroing_fails() {
     assert!(loaded.glm_allocations.is_empty());
     assert!(loaded.glm_callback_stack.is_empty());
 }
+
+#[test]
+fn glm_realloc_releases_failed_replacement_and_preserves_old_storage() {
+    let pef = synthetic_pef_with_library_import(b"OpenGLMemory", b"glmRealloc");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let alloc_callback = PPC_DATA_BASE + 0x2000;
+    let free_callback = PPC_DATA_BASE + 0x2100;
+    let callback_data = PPC_DATA_BASE + 0x3000;
+    let old_storage = PPC_DATA_BASE + 0x4000;
+    let short_storage = PPC_DATA_BASE + 0x5000;
+    loaded.memory.add_region(
+        alloc_callback,
+        vec![
+            0x90, 0x62, 0x00, 0x00, // stw r3, 0(r2)
+            0x80, 0x62, 0x00, 0x04, // lwz r3, 4(r2)
+            0x4e, 0x80, 0x00, 0x20, // blr
+        ],
+    );
+    loaded.memory.add_region(
+        free_callback,
+        vec![
+            0x90, 0x62, 0x00, 0x08, // stw r3, 8(r2)
+            0x4e, 0x80, 0x00, 0x20, // blr
+        ],
+    );
+    loaded.memory.add_region(callback_data, vec![0; 12]);
+    loaded
+        .memory
+        .write_u32_be(callback_data + 4, short_storage)
+        .unwrap();
+    loaded
+        .memory
+        .add_region(old_storage, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    loaded.memory.add_region(short_storage, vec![0; 4]);
+    loaded.glm_mode = Some(1);
+    loaded.glm_callbacks[0] = Some(PpcCallbackTarget {
+        entry: alloc_callback,
+        rtoc: callback_data,
+        proc_info: 0,
+        routine_flags: 0,
+    });
+    loaded.glm_callbacks[1] = Some(PpcCallbackTarget {
+        entry: free_callback,
+        rtoc: callback_data,
+        proc_info: 0,
+        routine_flags: 0,
+    });
+    loaded.glm_allocations.insert(old_storage, (true, 8));
+    loaded.cpu.gpr[3] = old_storage;
+    loaded.cpu.gpr[4] = 16;
+    let probe = loaded.run_with_hle_imports(256);
+    assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.memory.read_u32_be(callback_data), Some(16));
+    assert_eq!(
+        loaded.memory.read_u32_be(callback_data + 8),
+        Some(short_storage)
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.glm_error, 2); // GLM_INVALID_VALUE
+    assert_eq!(loaded.glm_allocations.get(&old_storage), Some(&(true, 8)));
+    assert!(!loaded.glm_allocations.contains_key(&short_storage));
+    assert!((0..8)
+        .all(|offset| loaded.memory.read_u8(old_storage + offset) == Some((offset + 1) as u8)));
+    assert!(loaded.glm_callback_stack.is_empty());
+}
