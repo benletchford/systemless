@@ -82,6 +82,8 @@ pub struct PpcToolboxStartupState {
     pub(crate) window_default_buttons: HashMap<u32, u32>,
     pub(crate) window_cancel_buttons: HashMap<u32, u32>,
     pub(crate) user_focus_window: u32,
+    pub(crate) window_modified: HashMap<u32, bool>,
+    pub(crate) window_proxy_icons: HashMap<u32, u32>,
 }
 
 impl Default for PpcToolboxStartupState {
@@ -153,6 +155,8 @@ impl Default for PpcToolboxStartupState {
             window_default_buttons: HashMap::new(),
             window_cancel_buttons: HashMap::new(),
             user_focus_window: 0,
+            window_modified: HashMap::new(),
+            window_proxy_icons: HashMap::new(),
         }
     }
 }
@@ -188,6 +192,34 @@ impl PpcToolboxStartupState {
 
     pub(crate) fn set_user_focus_window(&mut self, window: u32) {
         self.user_focus_window = window;
+    }
+
+    pub(crate) fn is_window_modified(&self, window: u32) -> bool {
+        self.window_modified.get(&window).copied().unwrap_or(false)
+    }
+
+    pub(crate) fn set_window_modified(&mut self, window: u32, modified: bool) {
+        if modified {
+            self.window_modified.insert(window, true);
+        } else {
+            self.window_modified.remove(&window);
+        }
+    }
+
+    pub(crate) fn window_proxy_icon(&self, window: u32) -> u32 {
+        self.window_proxy_icons.get(&window).copied().unwrap_or(0)
+    }
+
+    pub(crate) fn set_window_proxy_icon(&mut self, window: u32, icon: u32) {
+        if icon != 0 {
+            self.window_proxy_icons.insert(window, icon);
+        } else {
+            self.window_proxy_icons.remove(&window);
+        }
+    }
+
+    pub(crate) fn remove_window_proxy_icon(&mut self, window: u32) {
+        self.window_proxy_icons.remove(&window);
     }
 
     pub(crate) fn retained_host_overlay_rects(&self) -> Vec<(i16, i16, i16, i16)> {
