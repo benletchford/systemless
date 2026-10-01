@@ -1164,6 +1164,7 @@ pub enum PpcImportDispatcherTarget {
     AglChoosePixelFormat,
     AglDescribePixelFormat,
     AglDestroyPixelFormat,
+    AglGetError,
     ReturnError(i16),
     ReturnNoErr,
     ReturnOne,
@@ -5632,6 +5633,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("OpenGLLibrary", "aglChoosePixelFormat") => {
             PpcImportDispatcherTarget::AglChoosePixelFormat
         }
+        ("OpenGLLibrary", "aglGetError") => PpcImportDispatcherTarget::AglGetError,
         ("OpenGLLibrary", "aglDescribePixelFormat") => {
             PpcImportDispatcherTarget::AglDescribePixelFormat
         }
