@@ -2120,6 +2120,38 @@ fn import_bindings_classify_dialog_imports() {
         ("AppearanceLib", "setmodaldialogeventmask", PpcDialogCompatibilityOperation::SetModalDialogEventMask),
         ("DialogsLib", "setmodaldialogeventmask", PpcDialogCompatibilityOperation::SetModalDialogEventMask),
         ("CarbonLib", "setmodaldialogeventmask", PpcDialogCompatibilityOperation::SetModalDialogEventMask),
+        ("InterfaceLib", "AutoPositionDialog", PpcDialogCompatibilityOperation::AutoPositionDialog),
+        ("AppearanceLib", "AutoPositionDialog", PpcDialogCompatibilityOperation::AutoPositionDialog),
+        ("DialogsLib", "AutoPositionDialog", PpcDialogCompatibilityOperation::AutoPositionDialog),
+        ("CarbonLib", "AutoPositionDialog", PpcDialogCompatibilityOperation::AutoPositionDialog),
+        ("InterfaceLib", "autopositiondialog", PpcDialogCompatibilityOperation::AutoPositionDialog),
+        ("AppearanceLib", "autopositiondialog", PpcDialogCompatibilityOperation::AutoPositionDialog),
+        ("DialogsLib", "autopositiondialog", PpcDialogCompatibilityOperation::AutoPositionDialog),
+        ("CarbonLib", "autopositiondialog", PpcDialogCompatibilityOperation::AutoPositionDialog),
+        ("InterfaceLib", "PositionDialog", PpcDialogCompatibilityOperation::AutoPositionDialog),
+        ("AppearanceLib", "PositionDialog", PpcDialogCompatibilityOperation::AutoPositionDialog),
+        ("DialogsLib", "PositionDialog", PpcDialogCompatibilityOperation::AutoPositionDialog),
+        ("CarbonLib", "PositionDialog", PpcDialogCompatibilityOperation::AutoPositionDialog),
+        ("InterfaceLib", "positiondialog", PpcDialogCompatibilityOperation::AutoPositionDialog),
+        ("AppearanceLib", "positiondialog", PpcDialogCompatibilityOperation::AutoPositionDialog),
+        ("DialogsLib", "positiondialog", PpcDialogCompatibilityOperation::AutoPositionDialog),
+        ("CarbonLib", "positiondialog", PpcDialogCompatibilityOperation::AutoPositionDialog),
+        ("InterfaceLib", "GetDialogTracksCursor", PpcDialogCompatibilityOperation::GetDialogTracksCursor),
+        ("AppearanceLib", "GetDialogTracksCursor", PpcDialogCompatibilityOperation::GetDialogTracksCursor),
+        ("DialogsLib", "GetDialogTracksCursor", PpcDialogCompatibilityOperation::GetDialogTracksCursor),
+        ("CarbonLib", "GetDialogTracksCursor", PpcDialogCompatibilityOperation::GetDialogTracksCursor),
+        ("InterfaceLib", "getdialogtrackscursor", PpcDialogCompatibilityOperation::GetDialogTracksCursor),
+        ("AppearanceLib", "getdialogtrackscursor", PpcDialogCompatibilityOperation::GetDialogTracksCursor),
+        ("DialogsLib", "getdialogtrackscursor", PpcDialogCompatibilityOperation::GetDialogTracksCursor),
+        ("CarbonLib", "getdialogtrackscursor", PpcDialogCompatibilityOperation::GetDialogTracksCursor),
+        ("InterfaceLib", "IsDialogTracksCursor", PpcDialogCompatibilityOperation::IsDialogTracksCursor),
+        ("AppearanceLib", "IsDialogTracksCursor", PpcDialogCompatibilityOperation::IsDialogTracksCursor),
+        ("DialogsLib", "IsDialogTracksCursor", PpcDialogCompatibilityOperation::IsDialogTracksCursor),
+        ("CarbonLib", "IsDialogTracksCursor", PpcDialogCompatibilityOperation::IsDialogTracksCursor),
+        ("InterfaceLib", "isdialogtrackscursor", PpcDialogCompatibilityOperation::IsDialogTracksCursor),
+        ("AppearanceLib", "isdialogtrackscursor", PpcDialogCompatibilityOperation::IsDialogTracksCursor),
+        ("DialogsLib", "isdialogtrackscursor", PpcDialogCompatibilityOperation::IsDialogTracksCursor),
+        ("CarbonLib", "isdialogtrackscursor", PpcDialogCompatibilityOperation::IsDialogTracksCursor),
     ] {
         assert_eq!(
             dispatcher_target_for_import(lib, symbol),
@@ -5806,4 +5838,276 @@ fn standard_alert_sheet_and_event_mask_dispatch_with_canonical_evaluation() {
     }
 }
 
+#[test]
+fn dialog_auto_positioning_and_cursor_tracking_dispatch_with_canonical_evaluation() {
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    let parent_bounds_ptr = PPC_DATA_BASE + 0x1100;
+    let out_buf = PPC_DATA_BASE + 0x2000;
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"AutoPositionDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+    loaded.memory.add_region(parent_bounds_ptr, vec![0; 32]);
+    loaded.memory.add_region(out_buf, vec![0; 256]);
 
+    let dialog = window_manager::create_test_cwindow(
+        &mut loaded,
+        bounds_ptr,
+        (40, 50, 140, 250),
+        0,
+        true,
+        u32::MAX,
+    );
+    let parent_window = window_manager::create_test_cwindow(
+        &mut loaded,
+        parent_bounds_ptr,
+        (100, 150, 400, 550),
+        0,
+        true,
+        u32::MAX,
+    );
+
+    // 1. AutoPositionDialog validation
+    // 1a. NULL dialog returns paramErr
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::AutoPositionDialog,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 1b. Invalid position method 0 returns paramErr
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::AutoPositionDialog,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 1c. Invalid position method > 9 returns paramErr
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 10;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::AutoPositionDialog,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 1d. Valid AutoPositionDialog centering on main screen (method 1 / kWindowCenterOnMainScreen)
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::AutoPositionDialog,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    let centered_bounds =
+        ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    assert_eq!(centered_bounds, (260, 300, 360, 500));
+
+    // 1e. Classic position code 0x280A (center main screen) also centers on main screen
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0x280A;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::AutoPositionDialog,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(
+        ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog),
+        Some((260, 300, 360, 500))
+    );
+
+    // 1f. AutoPositionDialog staggering relative to parent window (method 6 / kWindowStaggerParentWindow)
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = parent_window;
+    loaded.cpu.gpr[5] = 6;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::AutoPositionDialog,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    let staggered_bounds =
+        ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    assert_eq!(staggered_bounds, (128, 178, 228, 378));
+
+    // 1g. Classic position code 0xB80A (stagger parent window)
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = parent_window;
+    loaded.cpu.gpr[5] = 0xB80A;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::AutoPositionDialog,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(
+        ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog),
+        Some((128, 178, 228, 378))
+    );
+
+    // 2. Cursor tracking: SetDialogTracksCursor, GetDialogTracksCursor, IsDialogTracksCursor
+    let cursor_dialog = PPC_DATA_BASE + 0x3000;
+    loaded.memory.add_region(cursor_dialog, vec![0; 256]);
+
+    // 2a. IsDialogTracksCursor on NULL returns 0 (false)
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::IsDialogTracksCursor,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 2b. IsDialogTracksCursor initially returns 0 (false)
+    loaded.cpu.gpr[3] = cursor_dialog;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::IsDialogTracksCursor,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // 2c. GetDialogTracksCursor on NULL dialog returns noErr (global setting)
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = out_buf;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogTracksCursor,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u8(out_buf), Some(0));
+
+    // 2d. GetDialogTracksCursor with unwritable output pointer returns paramErr
+    loaded.cpu.gpr[3] = cursor_dialog;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogTracksCursor,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+
+    // 2e. GetDialogTracksCursor initially returns noErr with 0 (false)
+    loaded.cpu.gpr[3] = cursor_dialog;
+    loaded.cpu.gpr[4] = out_buf;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogTracksCursor,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u8(out_buf), Some(0));
+
+    // 2f. SetDialogTracksCursor on NULL returns noErr (sets tracking for all dialogs)
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogTracksCursor);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+
+    // 2g. SetDialogTracksCursor to true
+    loaded.cpu.gpr[3] = cursor_dialog;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogTracksCursor);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+
+    // 2h. IsDialogTracksCursor now returns 1 (true)
+    loaded.cpu.gpr[3] = cursor_dialog;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::IsDialogTracksCursor,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    // 2i. GetDialogTracksCursor now writes 1 (true)
+    loaded.cpu.gpr[3] = cursor_dialog;
+    loaded.cpu.gpr[4] = out_buf;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogTracksCursor,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u8(out_buf), Some(1));
+
+    // 2j. SetDialogTracksCursor to false
+    loaded.cpu.gpr[3] = cursor_dialog;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogTracksCursor);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+
+    // 2k. IsDialogTracksCursor and GetDialogTracksCursor reflect false again
+    loaded.cpu.gpr[3] = cursor_dialog;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::IsDialogTracksCursor,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    loaded.cpu.gpr[3] = cursor_dialog;
+    loaded.cpu.gpr[4] = out_buf;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::GetDialogTracksCursor,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u8(out_buf), Some(0));
+
+    // 3. Synthetic PEF binding across InterfaceLib, AppearanceLib, DialogsLib, and CarbonLib
+    for (lib, symbol) in [
+        (b"InterfaceLib".as_slice(), b"AutoPositionDialog".as_slice()),
+        (b"AppearanceLib".as_slice(), b"AutoPositionDialog".as_slice()),
+        (b"DialogsLib".as_slice(), b"AutoPositionDialog".as_slice()),
+        (b"CarbonLib".as_slice(), b"AutoPositionDialog".as_slice()),
+        (b"InterfaceLib".as_slice(), b"PositionDialog".as_slice()),
+        (b"AppearanceLib".as_slice(), b"PositionDialog".as_slice()),
+        (b"DialogsLib".as_slice(), b"PositionDialog".as_slice()),
+        (b"CarbonLib".as_slice(), b"PositionDialog".as_slice()),
+        (b"InterfaceLib".as_slice(), b"GetDialogTracksCursor".as_slice()),
+        (b"AppearanceLib".as_slice(), b"GetDialogTracksCursor".as_slice()),
+        (b"DialogsLib".as_slice(), b"GetDialogTracksCursor".as_slice()),
+        (b"CarbonLib".as_slice(), b"GetDialogTracksCursor".as_slice()),
+        (b"InterfaceLib".as_slice(), b"IsDialogTracksCursor".as_slice()),
+        (b"AppearanceLib".as_slice(), b"IsDialogTracksCursor".as_slice()),
+        (b"DialogsLib".as_slice(), b"IsDialogTracksCursor".as_slice()),
+        (b"CarbonLib".as_slice(), b"IsDialogTracksCursor".as_slice()),
+    ] {
+        let pef = synthetic_pef_with_library_import(lib, symbol);
+        let mut loaded_app = load_pef_application(&pef).unwrap();
+        loaded_app.cpu.gpr[3] = 0;
+        let probe = loaded_app.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+    }
+}

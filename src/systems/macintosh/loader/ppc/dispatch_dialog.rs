@@ -18,7 +18,7 @@ use crate::dialog_manager::{
     evaluate_show_dialog_item, evaluate_standard_alert_parameters, evaluate_update_dialog_parameters,
     evaluate_alert_parameters,
     extract_dialog_item_text_bytes, find_dialog_item_hit, global_to_dialog_local_point, offset_ditl_bytes, parse_ditl_items,
-    position_dialog_bounds as unified_position_dialog_bounds, DialogItemHeader, DialogItemRecord,
+    DialogItemHeader, DialogItemRecord,
     GetNewDialogParameters, ParamTextParameters, SelectDialogItemTextParameters,
     evaluate_error_sound_parameters, ErrorSoundParameters,
     evaluate_alert_dialog_record_init, evaluate_find_dialog_item_parameters_packed,
@@ -46,6 +46,9 @@ use crate::dialog_manager::{
     evaluate_get_modal_dialog_event_mask_parameters, evaluate_set_modal_dialog_event_mask_parameters,
     evaluate_flash_dialog_control_parameters, evaluate_get_dialog_item_init_parameters,
     evaluate_set_dialog_filter_parameters,
+    evaluate_auto_position_dialog_parameters,
+    evaluate_get_dialog_tracks_cursor_parameters,
+    evaluate_is_dialog_tracks_cursor_parameters,
     DIALOG_ALERT_HIT_OFFSET, DIALOG_CANCEL_ITEM_OFFSET, DIALOG_DEFAULT_ITEM_OFFSET,
     DIALOG_EDIT_FIELD_OFFSET, DIALOG_EDIT_OPEN_OFFSET, DIALOG_ICON_SIZE,
     DIALOG_INITIAL_EDIT_FIELD, DIALOG_INITIAL_EDIT_OPEN,
@@ -56,6 +59,7 @@ use crate::dialog_manager::{
     DIALOG_STANDARD_ALERT_STACK_OFFSET, DIALOG_TEXT_HANDLE_OFFSET,
     DIALOG_TIMEOUT_BUTTON_OFFSET, DIALOG_TIMEOUT_SECONDS_OFFSET, DIALOG_TIMEOUT_START_TICK_OFFSET,
     DIALOG_MODAL_EVENT_MASK_OFFSET, DIALOG_STANDARD_SHEET_COMMAND_OFFSET,
+    DIALOG_TRACKS_CURSOR_OFFSET,
     DIALOG_DEFAULT_MODAL_EVENT_MASK, ALERT_STD_CFSTRING_ALERT_PARAM_REC_SIZE,
     STD_CFSTRING_ALERT_VERSION_ONE, ALERT_STD_ALERT_OK_BUTTON,
 };
@@ -600,7 +604,12 @@ pub(super) fn dispatch_dialog_import(
             let dialog = cpu.gpr[3];
             let tracks = cpu.gpr[4] != 0;
             let os_err = match evaluate_set_dialog_tracks_cursor_parameters(dialog, tracks) {
-                Ok(_params) => PPC_NO_ERR,
+                Ok(_params) => {
+                    if dialog != 0 {
+                        let _ = memory.write_u8(dialog + DIALOG_TRACKS_CURSOR_OFFSET, if tracks { 1 } else { 0 });
+                    }
+                    PPC_NO_ERR
+                }
                 Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(os_err)))
@@ -1527,6 +1536,7 @@ fn ppc_offset_ditl_items(bytes: &mut [u8], items: &[PpcDialogItemView], dv: i16,
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcDialogCompatibilityOperation {
     AppendDitl,
+    AutoPositionDialog,
     CloseStandardSheet,
     CountDitl,
     CreateStandardAlert,
@@ -1538,11 +1548,13 @@ pub enum PpcDialogCompatibilityOperation {
     GetDialogKeyboardFocusItem,
     GetDialogTextEditHandle,
     GetDialogTimeout,
+    GetDialogTracksCursor,
     GetModalDialogEventMask,
     GetParamText,
     GetStandardAlertDefaultParams,
     HideDialogItem,
     IsDialogEvent,
+    IsDialogTracksCursor,
     RunStandardAlert,
     SetDialogFilter,
     SetDialogKeyboardFocusItem,
@@ -2346,6 +2358,79 @@ fn ppc_dispatch_dialog_compatibility(
             }
             PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }
+        PpcDialogCompatibilityOperation::AutoPositionDialog => {
+            let dialog = cpu.gpr[3];
+            let parent = cpu.gpr[4];
+            let position = cpu.gpr[5] as u16;
+            let params = match evaluate_auto_position_dialog_parameters(dialog, parent, position) {
+                Ok(p) => p,
+                Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
+            };
+            let Some(content_bounds) = ppc_dialog_global_bounds(memory, gworlds, params.dialog_ptr())
+                .or_else(|| ppc_read_rect(memory, params.dialog_ptr().wrapping_add(16)))
+            else {
+                return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+            };
+            let parent_structure = if params.parent_ptr() != 0 {
+                ppc_dialog_global_bounds(memory, gworlds, params.parent_ptr())
+                    .or_else(|| ppc_read_rect(memory, params.parent_ptr().wrapping_add(16)))
+            } else {
+                None
+            };
+            let screen = gworlds.iter().find(|record| record.port == PPC_MAIN_GWORLD);
+            let screen_width = screen.map_or(ppc_main_screen_width(), |record| record.width) as i32;
+            let screen_height = screen.map_or(ppc_main_screen_height(), |record| record.height) as i32;
+            let new_bounds = crate::dialog_manager::evaluate_dialog_position_bounds(
+                content_bounds,
+                params.method(),
+                Some(crate::dialog_manager::dialog_dbox_frame_rect(content_bounds)),
+                parent_structure,
+                screen_width,
+                screen_height,
+                20,
+            );
+            let _ = ppc_move_window_coordinates(
+                memory,
+                gworlds,
+                params.dialog_ptr(),
+                new_bounds.1,
+                new_bounds.0,
+            );
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcDialogCompatibilityOperation::GetDialogTracksCursor => {
+            let dialog = cpu.gpr[3];
+            let out_tracks_ptr = cpu.gpr[4];
+            let can_write = ppc_memory_can_write_bytes(memory, out_tracks_ptr, 1);
+            let params = match evaluate_get_dialog_tracks_cursor_parameters(
+                dialog,
+                out_tracks_ptr,
+                can_write,
+            ) {
+                Ok(p) => p,
+                Err(err) => return PpcImportAction::Return(ppc_i16_result(err)),
+            };
+            let tracks = if params.dialog_ptr() != 0 {
+                memory.read_u8(params.dialog_ptr() + DIALOG_TRACKS_CURSOR_OFFSET).unwrap_or(0)
+            } else {
+                0
+            };
+            let _ = memory.write_u8(params.out_tracks_ptr(), tracks);
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcDialogCompatibilityOperation::IsDialogTracksCursor => {
+            let dialog = cpu.gpr[3];
+            let dialog_ptr = match evaluate_is_dialog_tracks_cursor_parameters(dialog) {
+                Ok(ptr) => ptr,
+                Err(_) => return PpcImportAction::Return(0),
+            };
+            let tracks = if dialog_ptr != 0 {
+                memory.read_u8(dialog_ptr + DIALOG_TRACKS_CURSOR_OFFSET).unwrap_or(0) != 0
+            } else {
+                false
+            };
+            PpcImportAction::Return(if tracks { 1 } else { 0 })
+        }
     }
 }
 
@@ -2365,7 +2450,15 @@ fn ppc_position_dialog_bounds(
     let screen = gworlds.iter().find(|record| record.port == PPC_MAIN_GWORLD);
     let screen_width = screen.map_or(ppc_main_screen_width(), |record| record.width) as i32;
     let screen_height = screen.map_or(ppc_main_screen_height(), |record| record.height) as i32;
-    unified_position_dialog_bounds(bounds, position, screen_width, screen_height)
+    crate::dialog_manager::evaluate_dialog_position_bounds(
+        bounds,
+        position,
+        Some(crate::dialog_manager::dialog_dbox_frame_rect(bounds)),
+        None,
+        screen_width,
+        screen_height,
+        20,
+    )
 }
 
 type PpcAlertTemplate = ((i16, i16, i16, i16), Vec<u8>, u16, u16, u16, u32);

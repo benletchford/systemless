@@ -3954,7 +3954,7 @@ impl super::TrapDispatcher {
     pub(crate) fn positioned_window_bounds(
         &self,
         bus: &MacMemoryBus,
-        mut bounds: (i16, i16, i16, i16),
+        bounds: (i16, i16, i16, i16),
         position: u16,
         proc_id: i16,
     ) -> (i16, i16, i16, i16) {
@@ -3964,91 +3964,22 @@ impl super::TrapDispatcher {
         } else {
             bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16
         };
-        // The main-screen positioning area is the desktop below the menu bar.
-        // Position the complete window structure within it, then translate
-        // back to the content bounds consumed by NewWindow. The WIND bounds
-        // themselves describe only the content region.
-        // Macintosh Toolbox Essentials (1992), pp. 4-29, 4-31, 4-55,
-        // and 4-124 to 4-126.
-        let main_screen = (menu_bar_height, 0, screen_h, screen_w);
-        // Parent-relative placement positions the complete dialog structure,
-        // then converts the result back to the content bounds used by NewWindow.
-        // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126 and 6-62 to 6-63
-        let place_structure_at_alert_position =
-            |target: (i16, i16, i16, i16)| -> (i16, i16, i16, i16) {
-                let structure = self.window_structure_global_rect_for_proc(bus, bounds, proc_id);
-                let structure_w = structure.3 - structure.1;
-                let structure_h = structure.2 - structure.0;
-                let target_w = target.3 - target.1;
-                let target_h = target.2 - target.0;
-                let new_structure_left = target.1 + (target_w - structure_w) / 2;
-                let new_structure_top = target.0 + (target_h - structure_h) / 5;
-                let new_left = new_structure_left + (bounds.1 - structure.1);
-                let new_top = new_structure_top + (bounds.0 - structure.0);
-                (
-                    new_top,
-                    new_left,
-                    new_top + (bounds.2 - bounds.0),
-                    new_left + (bounds.3 - bounds.1),
-                )
-            };
-        let center_structure = |target: (i16, i16, i16, i16)| -> (i16, i16, i16, i16) {
-            let structure = self.window_structure_global_rect_for_proc(bus, bounds, proc_id);
-            let structure_w = structure.3 - structure.1;
-            let structure_h = structure.2 - structure.0;
-            let target_w = target.3 - target.1;
-            let target_h = target.2 - target.0;
-            let new_structure_left = target.1 + (target_w - structure_w) / 2;
-            let new_structure_top = target.0 + (target_h - structure_h) / 2;
-            let new_left = new_structure_left + (bounds.1 - structure.1);
-            let new_top = new_structure_top + (bounds.0 - structure.0);
-            (
-                new_top,
-                new_left,
-                new_top + (bounds.2 - bounds.0),
-                new_left + (bounds.3 - bounds.1),
-            )
+        let parent = self.front_window_for_trap(bus);
+        let parent_structure = if parent != 0 {
+            self.window_content_global_rect(bus, parent)
+        } else {
+            None
         };
-        match position {
-            // alertPositionMainScreen / ParentWindowScreen
-            // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126
-            0x300A | 0x700A => {
-                bounds = place_structure_at_alert_position(main_screen);
-            }
-            // alertPositionParentWindow uses the content rectangle of the
-            // window in which the user was last working.
-            // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126
-            0xB00A => {
-                let parent = self.front_window_for_trap(bus);
-                let target = (parent != 0)
-                    .then(|| self.window_content_global_rect(bus, parent))
-                    .flatten()
-                    .unwrap_or(main_screen);
-                bounds = place_structure_at_alert_position(target);
-            }
-            // centerMainScreen / centerParentWindowScreen. Systemless models a
-            // single screen, so both use the main-screen desktop rectangle.
-            0x280A | 0x680A => {
-                bounds = center_structure(main_screen);
-            }
-            // centerParentWindow uses the content rectangle of the window in
-            // which the user was last working.
-            0xA80A => {
-                let parent = self.front_window_for_trap(bus);
-                let target = (parent != 0)
-                    .then(|| self.window_content_global_rect(bus, parent))
-                    .flatten()
-                    .unwrap_or(main_screen);
-                bounds = center_structure(target);
-            }
-            // Staggering is retained as the existing single-window fallback
-            // until the Window Manager tracks per-screen stagger slots.
-            0x380A => {
-                bounds = center_structure(main_screen);
-            }
-            _ => {} // noAutoCenter (0x0000) or unknown: use raw bounds
-        }
-        bounds
+        let structure = self.window_structure_global_rect_for_proc(bus, bounds, proc_id);
+        crate::dialog_manager::evaluate_dialog_position_bounds(
+            bounds,
+            position,
+            Some(structure),
+            parent_structure,
+            screen_w as i32,
+            screen_h as i32,
+            menu_bar_height as i32,
+        )
     }
 
     fn begin_interactive_alert<C: CpuOps>(
@@ -16968,7 +16899,12 @@ impl super::TrapDispatcher {
                         let tracks = bus.read_byte(sp) != 0;
                         let dialog_ptr = bus.read_long(sp + 2);
                         let os_err = match evaluate_set_dialog_tracks_cursor_parameters(dialog_ptr, tracks) {
-                            Ok(_params) => crate::dialog_manager::DIALOG_NO_ERR,
+                            Ok(_params) => {
+                                if dialog_ptr != 0 && bus.get_alloc_size(dialog_ptr).unwrap_or(0) >= crate::dialog_manager::DIALOG_RECORD_SIZE {
+                                    bus.write_byte(dialog_ptr + crate::dialog_manager::DIALOG_TRACKS_CURSOR_OFFSET, if tracks { 1 } else { 0 });
+                                }
+                                crate::dialog_manager::DIALOG_NO_ERR
+                            }
                             Err(err) => err,
                         };
                         bus.write_word(sp + param_bytes, os_err as u16);

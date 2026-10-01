@@ -52,6 +52,26 @@ pub const DIALOG_TIMEOUT_START_TICK_OFFSET: u32 = 192;
 pub const DIALOG_MODAL_EVENT_MASK_OFFSET: u32 = 196;
 #[allow(dead_code)]
 pub const DIALOG_STANDARD_SHEET_COMMAND_OFFSET: u32 = 200;
+#[allow(dead_code)]
+pub const DIALOG_TRACKS_CURSOR_OFFSET: u32 = 204;
+
+/// Default cursor tracking state (false = off per Macintosh Toolbox Essentials, p. 6-166).
+#[allow(dead_code)]
+pub const DIALOG_DEFAULT_TRACKS_CURSOR: bool = false;
+
+/// Canonical System 7 and Carbon dialog auto-positioning codes.
+/// Universal Interfaces <Dialogs.h> and <MacWindows.h>.
+#[allow(dead_code)]
+pub const DIALOG_POSITION_DEFAULT: u16 = 0x0000;
+pub const DIALOG_POSITION_CENTER_MAIN_SCREEN: u16 = 0x280A;
+pub const DIALOG_POSITION_ALERT_MAIN_SCREEN: u16 = 0x300A;
+pub const DIALOG_POSITION_STAGGER_MAIN_SCREEN: u16 = 0x380A;
+pub const DIALOG_POSITION_CENTER_PARENT_WINDOW: u16 = 0xA80A;
+pub const DIALOG_POSITION_ALERT_PARENT_WINDOW: u16 = 0xB00A;
+pub const DIALOG_POSITION_STAGGER_PARENT_WINDOW: u16 = 0xB80A;
+pub const DIALOG_POSITION_CENTER_PARENT_WINDOW_SCREEN: u16 = 0x680A;
+pub const DIALOG_POSITION_ALERT_PARENT_WINDOW_SCREEN: u16 = 0x700A;
+pub const DIALOG_POSITION_STAGGER_PARENT_WINDOW_SCREEN: u16 = 0x780A;
 
 /// Default event mask for modal dialog event filtering (`everyEvent`).
 #[allow(dead_code)]
@@ -1124,31 +1144,84 @@ pub fn parse_ditl_items(bytes: &[u8]) -> Option<Vec<DialogItemRecord>> {
     Some(items)
 }
 
+/// Map a legacy System 7 dialog positioning code to a canonical `WindowPositionMethod`.
+pub const fn dialog_position_code_to_method(position: u16) -> Option<u16> {
+    match position {
+        DIALOG_POSITION_CENTER_MAIN_SCREEN => Some(crate::window_manager::WINDOW_CENTER_ON_MAIN_SCREEN),
+        DIALOG_POSITION_ALERT_MAIN_SCREEN => Some(crate::window_manager::WINDOW_ALERT_POSITION_ON_MAIN_SCREEN),
+        DIALOG_POSITION_STAGGER_MAIN_SCREEN => Some(crate::window_manager::WINDOW_STAGGER_ON_MAIN_SCREEN),
+        DIALOG_POSITION_CENTER_PARENT_WINDOW => Some(crate::window_manager::WINDOW_CENTER_ON_PARENT_WINDOW),
+        DIALOG_POSITION_ALERT_PARENT_WINDOW => Some(crate::window_manager::WINDOW_ALERT_POSITION_ON_PARENT_WINDOW),
+        DIALOG_POSITION_STAGGER_PARENT_WINDOW => Some(crate::window_manager::WINDOW_STAGGER_ON_PARENT_WINDOW),
+        DIALOG_POSITION_CENTER_PARENT_WINDOW_SCREEN => Some(crate::window_manager::WINDOW_CENTER_ON_PARENT_WINDOW_SCREEN),
+        DIALOG_POSITION_ALERT_PARENT_WINDOW_SCREEN => Some(crate::window_manager::WINDOW_ALERT_POSITION_ON_PARENT_WINDOW_SCREEN),
+        DIALOG_POSITION_STAGGER_PARENT_WINDOW_SCREEN => Some(crate::window_manager::WINDOW_STAGGER_ON_PARENT_WINDOW_SCREEN),
+        _ => None,
+    }
+}
+
+/// Normalize either a System 7 positioning code (`0x280A`...) or Carbon `WindowPositionMethod` (1..=9).
+pub const fn normalize_dialog_position_method(position: u16) -> Option<u16> {
+    if position >= 1 && position <= 9 {
+        Some(position)
+    } else {
+        dialog_position_code_to_method(position)
+    }
+}
+
+/// Architecture-neutral dialog positioning bounds evaluation.
+///
+/// Supports all 9 canonical placement modes:
+/// - Center on main screen
+/// - Alert position on main screen (1/5th from top)
+/// - Stagger on main screen
+/// - Center on parent window
+/// - Alert position on parent window
+/// - Stagger on parent window
+/// - Center on parent window's screen
+/// - Alert position on parent window's screen
+/// - Stagger on parent window's screen
+pub fn evaluate_dialog_position_bounds(
+    content_bounds: (i16, i16, i16, i16),
+    position: u16,
+    structure_bounds: Option<(i16, i16, i16, i16)>,
+    parent_structure_bounds: Option<(i16, i16, i16, i16)>,
+    screen_width: i32,
+    screen_height: i32,
+    menu_bar_height: i32,
+) -> (i16, i16, i16, i16) {
+    let Some(method) = normalize_dialog_position_method(position) else {
+        return content_bounds;
+    };
+    let structure = structure_bounds.unwrap_or(content_bounds);
+    crate::window_manager::evaluate_reposition_window_bounds(
+        content_bounds,
+        structure,
+        parent_structure_bounds,
+        method,
+        screen_width,
+        screen_height,
+        menu_bar_height,
+    )
+    .unwrap_or(content_bounds)
+}
+
 /// Adjust dialog window bounds according to System 7 AutoPositioning flags.
+#[allow(dead_code)]
 pub fn position_dialog_bounds(
     bounds: (i16, i16, i16, i16),
     position: u16,
     screen_width: i32,
     screen_height: i32,
 ) -> (i16, i16, i16, i16) {
-    let centered = matches!(
+    evaluate_dialog_position_bounds(
+        bounds,
         position,
-        0x280a | 0x300a | 0x380a | 0xa80a | 0xb00a | 0xb80a
-    );
-    if !centered {
-        return bounds;
-    }
-
-    let height = i32::from(bounds.2) - i32::from(bounds.0);
-    let width = i32::from(bounds.3) - i32::from(bounds.1);
-    let top = (screen_height - height).max(0) / 2;
-    let left = (screen_width - width).max(0) / 2;
-
-    (
-        top.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
-        left.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
-        (top + height).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
-        (left + width).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+        None,
+        None,
+        screen_width,
+        screen_height,
+        0,
     )
 }
 
@@ -2559,6 +2632,117 @@ pub fn evaluate_set_dialog_tracks_cursor_parameters(
     tracks: bool,
 ) -> Result<SetDialogTracksCursorParameters, i16> {
     Ok(SetDialogTracksCursorParameters::new(dialog_ptr, tracks))
+}
+
+/// Evaluated parameters for a `GetDialogTracksCursor` request.
+///
+/// Macintosh Toolbox Essentials (1992), p. 6-166:
+/// `FUNCTION GetDialogTracksCursor(theDialog: DialogRef; VAR tracks: Boolean): OSErr;`
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GetDialogTracksCursorParameters {
+    dialog_ptr: u32,
+    out_tracks_ptr: u32,
+}
+
+impl GetDialogTracksCursorParameters {
+    #[inline]
+    #[must_use]
+    pub const fn new(dialog_ptr: u32, out_tracks_ptr: u32) -> Self {
+        Self {
+            dialog_ptr,
+            out_tracks_ptr,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn out_tracks_ptr(&self) -> u32 {
+        self.out_tracks_ptr
+    }
+}
+
+/// Evaluates `GetDialogTracksCursor` parameter validation.
+pub fn evaluate_get_dialog_tracks_cursor_parameters(
+    dialog_ptr: u32,
+    out_tracks_ptr: u32,
+    can_write: bool,
+) -> Result<GetDialogTracksCursorParameters, i16> {
+    if out_tracks_ptr == 0 || !can_write {
+        Err(DIALOG_PARAM_ERR)
+    } else {
+        Ok(GetDialogTracksCursorParameters::new(
+            dialog_ptr,
+            out_tracks_ptr,
+        ))
+    }
+}
+
+/// Evaluates `IsDialogTracksCursor` parameter validation.
+pub fn evaluate_is_dialog_tracks_cursor_parameters(
+    dialog_ptr: u32,
+) -> Result<u32, i16> {
+    Ok(dialog_ptr)
+}
+
+/// Evaluated parameters for an `AutoPositionDialog` / `PositionDialog` request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AutoPositionDialogParameters {
+    dialog_ptr: u32,
+    parent_ptr: u32,
+    method: u16,
+}
+
+impl AutoPositionDialogParameters {
+    #[inline]
+    #[must_use]
+    pub const fn new(dialog_ptr: u32, parent_ptr: u32, method: u16) -> Self {
+        Self {
+            dialog_ptr,
+            parent_ptr,
+            method,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn dialog_ptr(&self) -> u32 {
+        self.dialog_ptr
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn parent_ptr(&self) -> u32 {
+        self.parent_ptr
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn method(&self) -> u16 {
+        self.method
+    }
+}
+
+/// Evaluates `AutoPositionDialog` / `PositionDialog` parameter validation.
+pub fn evaluate_auto_position_dialog_parameters(
+    dialog_ptr: u32,
+    parent_ptr: u32,
+    position: u16,
+) -> Result<AutoPositionDialogParameters, i16> {
+    if dialog_ptr == 0 {
+        return Err(DIALOG_PARAM_ERR);
+    }
+    let Some(method) = normalize_dialog_position_method(position) else {
+        return Err(DIALOG_PARAM_ERR);
+    };
+    Ok(AutoPositionDialogParameters::new(
+        dialog_ptr, parent_ptr, method,
+    ))
 }
 
 /// Evaluated parameters for a `GetStdFilterProc` request.
@@ -11824,6 +12008,107 @@ mod tests {
         let set_filter = evaluate_set_dialog_filter_parameters(0x1000, 0x3000).unwrap();
         assert_eq!(set_filter.dialog_ptr(), 0x1000);
         assert_eq!(set_filter.filter_proc(), 0x3000);
+    }
+
+    #[test]
+    fn dialog_auto_positioning_and_cursor_tracking_evaluation() {
+        // 1. dialog_position_code_to_method & normalize_dialog_position_method
+        assert_eq!(dialog_position_code_to_method(0x280A), Some(crate::window_manager::WINDOW_CENTER_ON_MAIN_SCREEN));
+        assert_eq!(dialog_position_code_to_method(0x300A), Some(crate::window_manager::WINDOW_ALERT_POSITION_ON_MAIN_SCREEN));
+        assert_eq!(dialog_position_code_to_method(0x380A), Some(crate::window_manager::WINDOW_STAGGER_ON_MAIN_SCREEN));
+        assert_eq!(dialog_position_code_to_method(0xA80A), Some(crate::window_manager::WINDOW_CENTER_ON_PARENT_WINDOW));
+        assert_eq!(dialog_position_code_to_method(0xB00A), Some(crate::window_manager::WINDOW_ALERT_POSITION_ON_PARENT_WINDOW));
+        assert_eq!(dialog_position_code_to_method(0xB80A), Some(crate::window_manager::WINDOW_STAGGER_ON_PARENT_WINDOW));
+        assert_eq!(dialog_position_code_to_method(0x680A), Some(crate::window_manager::WINDOW_CENTER_ON_PARENT_WINDOW_SCREEN));
+        assert_eq!(dialog_position_code_to_method(0x700A), Some(crate::window_manager::WINDOW_ALERT_POSITION_ON_PARENT_WINDOW_SCREEN));
+        assert_eq!(dialog_position_code_to_method(0x780A), Some(crate::window_manager::WINDOW_STAGGER_ON_PARENT_WINDOW_SCREEN));
+        assert_eq!(dialog_position_code_to_method(0x0000), None);
+        assert_eq!(dialog_position_code_to_method(0x1234), None);
+
+        for method in 1..=9 {
+            assert_eq!(normalize_dialog_position_method(method), Some(method));
+        }
+        assert_eq!(normalize_dialog_position_method(0x280A), Some(1));
+        assert_eq!(normalize_dialog_position_method(0), None);
+
+        // 2. evaluate_dialog_position_bounds
+        let content = (0, 0, 100, 200); // height 100, width 200
+        let screen_w = 800;
+        let screen_h = 600;
+        let menu_h = 20;
+
+        // Center on main screen: target area 20..600 (height 580), 0..800 (width 800)
+        let centered = evaluate_dialog_position_bounds(content, 0x280A, None, None, screen_w, screen_h, menu_h);
+        assert_eq!(centered.0, 20 + (580 - 100) / 2); // 260
+        assert_eq!(centered.1, (800 - 200) / 2); // 300
+
+        // Alert on main screen: 1/5th from top
+        let alert = evaluate_dialog_position_bounds(content, 0x300A, None, None, screen_w, screen_h, menu_h);
+        assert_eq!(alert.0, 20 + (580 - 100) / 5); // 116
+        assert_eq!(alert.1, (800 - 200) / 2); // 300
+
+        // Stagger on main screen without parent window falls back to centering
+        let stagger = evaluate_dialog_position_bounds(content, 0x380A, None, None, screen_w, screen_h, menu_h);
+        assert_eq!(stagger, centered);
+
+        let parent = (100, 100, 400, 500); // parent height 300, width 400
+
+        // Stagger on main screen with parent window
+        let stagger_parent = evaluate_dialog_position_bounds(content, 0x380A, None, Some(parent), screen_w, screen_h, menu_h);
+        assert_eq!(stagger_parent.0, 100 + 20); // 120
+        assert_eq!(stagger_parent.1, 100 + 20); // 120
+
+        // Stagger on parent window (0xB80A)
+        let parent_stagger = evaluate_dialog_position_bounds(content, 0xB80A, None, Some(parent), screen_w, screen_h, menu_h);
+        assert_eq!(parent_stagger.0, 100 + 20); // 120
+        assert_eq!(parent_stagger.1, 100 + 20); // 120
+
+        // Center on parent window
+        let parent_centered = evaluate_dialog_position_bounds(content, 0xA80A, None, Some(parent), screen_w, screen_h, menu_h);
+        assert_eq!(parent_centered.0, 100 + (300 - 100) / 2); // 200
+        assert_eq!(parent_centered.1, 100 + (400 - 200) / 2); // 200
+
+        // Parent window fallback when None
+        let parent_fallback = evaluate_dialog_position_bounds(content, 0xA80A, None, None, screen_w, screen_h, menu_h);
+        assert_eq!(parent_fallback, centered);
+
+        // Position 0 leaves unchanged
+        let unpositioned = evaluate_dialog_position_bounds(content, 0x0000, None, None, screen_w, screen_h, menu_h);
+        assert_eq!(unpositioned, content);
+
+        // 3. Cursor tracking evaluation
+        assert_eq!(
+            evaluate_get_dialog_tracks_cursor_parameters(0x1000, 0, true),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_get_dialog_tracks_cursor_parameters(0x1000, 0x2000, false),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let get_tracks = evaluate_get_dialog_tracks_cursor_parameters(0x1000, 0x2000, true).unwrap();
+        assert_eq!(get_tracks.dialog_ptr(), 0x1000);
+        assert_eq!(get_tracks.out_tracks_ptr(), 0x2000);
+
+        assert_eq!(evaluate_is_dialog_tracks_cursor_parameters(0x1000), Ok(0x1000));
+        assert_eq!(evaluate_is_dialog_tracks_cursor_parameters(0), Ok(0));
+
+        // 4. AutoPositionDialog evaluation
+        assert_eq!(
+            evaluate_auto_position_dialog_parameters(0, 0, 1),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_auto_position_dialog_parameters(0x1000, 0, 0),
+            Err(DIALOG_PARAM_ERR)
+        );
+        assert_eq!(
+            evaluate_auto_position_dialog_parameters(0x1000, 0, 99),
+            Err(DIALOG_PARAM_ERR)
+        );
+        let auto_pos = evaluate_auto_position_dialog_parameters(0x1000, 0x2000, 0x280A).unwrap();
+        assert_eq!(auto_pos.dialog_ptr(), 0x1000);
+        assert_eq!(auto_pos.parent_ptr(), 0x2000);
+        assert_eq!(auto_pos.method(), 1);
     }
 }
 
