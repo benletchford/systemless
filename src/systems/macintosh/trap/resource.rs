@@ -2,7 +2,9 @@
 
 use crate::cpu::{CpuOps, Register};
 use crate::loader::CodeSegmentHeader;
-use crate::machine_profile::{REFERENCE_M68K_EXECUTION_CAPABILITIES, REFERENCE_MACHINE_PROFILE};
+use crate::machine_profile::{
+    QUICKTIME_NUM_VERSION, REFERENCE_M68K_EXECUTION_CAPABILITIES, REFERENCE_MACHINE_PROFILE,
+};
 use crate::managers::resource::ResourceFork;
 use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -76,7 +78,6 @@ fn os_dispatch_operation_route(
 const BOOT_VOLUME_ALLOCATION_BLOCKS: u16 = 16_384;
 const BOOT_VOLUME_ALLOCATION_BLOCK_SIZE: u32 = 4 * 1024;
 const BOOT_VOLUME_FREE_BLOCKS: u16 = 16_384;
-const QUICKTIME_NUM_VERSION_6_0_FINAL: u32 = 0x0600_8000;
 const NO_ERR: u32 = 0;
 const MEM_FULL_ERR: u32 = (-108i32) as u32;
 const NIL_HANDLE_ERR: u32 = (-109i32) as u32;
@@ -4089,7 +4090,7 @@ impl super::TrapDispatcher {
                     // resource; Inside Macintosh Volume VI, 9-23 defines
                     // the release byte as 0x80 for a final release.
                     b"qtim" => {
-                        cpu.write_reg(Register::A0, QUICKTIME_NUM_VERSION_6_0_FINAL);
+                        cpu.write_reg(Register::A0, QUICKTIME_NUM_VERSION);
                         cpu.write_reg(Register::D0, 0); // noErr
                     }
                     // gestaltDragMgrAttr ('drag') -> Drag Manager attrs.

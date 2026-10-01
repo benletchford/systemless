@@ -1,6 +1,5 @@
 use super::super::dispatch::{LoadedResources, ResourceFileMap};
 use super::super::test_helpers::{setup, setup_with_trap_tables, TEST_SP};
-use super::QUICKTIME_NUM_VERSION_6_0_FINAL;
 use crate::cpu::{CpuOps, Register};
 use crate::memory::globals::addr;
 use crate::memory::{GuestAddressSpace, MemoryBus};
@@ -6021,7 +6020,7 @@ fn gestalt_quicktime_reports_final_numversion() {
 
     call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
 
-    assert_eq!(cpu.read_reg(Register::A0), QUICKTIME_NUM_VERSION_6_0_FINAL);
+    assert_eq!(cpu.read_reg(Register::A0), 0x0403_8000);
     assert_eq!(cpu.read_reg(Register::D0), 0);
     assert_eq!((cpu.read_reg(Register::A0) >> 8) & 0xFF, 0x80);
 }

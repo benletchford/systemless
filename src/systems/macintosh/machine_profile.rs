@@ -17,6 +17,10 @@ use m68k::CpuType;
 /// is a binary-coded decimal version, and `0x0101` denotes version 1.0.1.
 pub const APPEARANCE_MANAGER_VERSION_BCD: u16 = 0x0101;
 
+/// QuickTime version installed in the reference Mac OS 9 guest, encoded as a
+/// final-release `NumVersion` from its `vers` resource (4.0.3 final).
+pub(crate) const QUICKTIME_NUM_VERSION: u32 = 0x0403_8000;
+
 /// Bag of constants describing one canonical guest machine: Gestalt
 /// selector responses, screen geometry, RAM size, VBL rate, realtime
 /// guest-advertised CPU MHz.
