@@ -6743,3 +6743,407 @@ fn window_user_state_flags_and_kind_commands_dispatch_with_canonical_evaluation(
         }
     }
 }
+
+#[test]
+fn import_bindings_classify_window_modality_activation_and_chain_traversal_imports() {
+    for lib in ["InterfaceLib", "AppearanceLib", "CarbonLib"] {
+        // ActiveNonFloatingWindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "ActiveNonFloatingWindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ActiveNonFloatingWindow)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "activenonfloatingwindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ActiveNonFloatingWindow)
+        );
+
+        // GetNextWindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetNextWindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetNextWindow)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getnextwindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetNextWindow)
+        );
+
+        // GetPreviousWindow
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetPreviousWindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetPreviousWindow)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getpreviouswindow"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetPreviousWindow)
+        );
+
+        // GetWindowContentRgn
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowContentRgn"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowContentRgn)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowcontentrgn"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowContentRgn)
+        );
+
+        // GetWindowModality
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowModality"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowModality)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowmodality"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowModality)
+        );
+
+        // GetWindowStructureRgn
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowStructureRgn"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowStructureRgn)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowstructurergn"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowStructureRgn)
+        );
+
+        // GetWindowUpdateRgn
+        assert_eq!(
+            dispatcher_target_for_import(lib, "GetWindowUpdateRgn"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowUpdateRgn)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "getwindowupdatergn"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowUpdateRgn)
+        );
+
+        // IsWindowActive
+        assert_eq!(
+            dispatcher_target_for_import(lib, "IsWindowActive"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowActive)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "iswindowactive"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowActive)
+        );
+
+        // IsWindowUpdatePending
+        assert_eq!(
+            dispatcher_target_for_import(lib, "IsWindowUpdatePending"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowUpdatePending)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "iswindowupdatepending"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowUpdatePending)
+        );
+
+        // SetWindowModality
+        assert_eq!(
+            dispatcher_target_for_import(lib, "SetWindowModality"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowModality)
+        );
+        assert_eq!(
+            dispatcher_target_for_import(lib, "setwindowmodality"),
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowModality)
+        );
+    }
+}
+
+#[test]
+fn window_modality_activation_and_chain_traversal_commands_dispatch_with_canonical_evaluation() {
+    for lib in [b"InterfaceLib".as_slice(), b"AppearanceLib".as_slice(), b"CarbonLib".as_slice()] {
+        let lib_str = std::str::from_utf8(lib).unwrap();
+        let pef = synthetic_pef_with_library_import(lib, b"GetNextWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let bounds_ptr1 = PPC_DATA_BASE + 0x1000;
+        let bounds_ptr2 = PPC_DATA_BASE + 0x1050;
+        let window_storage1 = PPC_DATA_BASE + 0x2000;
+        let window_storage2 = PPC_DATA_BASE + 0x3000;
+        let scratch_ptr = PPC_DATA_BASE + 0x1100;
+        loaded.memory.add_region(PPC_DATA_BASE + 0x1000, vec![0; 0x5000]);
+        ppc_write_rect(&mut loaded.memory, bounds_ptr1, 40, 50, 240, 350).unwrap();
+        ppc_write_rect(&mut loaded.memory, bounds_ptr2, 60, 70, 260, 370).unwrap();
+
+        // 1. Create window 1
+        let title1 = b"\x04Win1";
+        let title_ptr1 = PPC_DATA_BASE + 0x1200;
+        loaded.memory.write_bytes(title_ptr1, title1).unwrap();
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "NewWindow");
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = window_storage1;
+        loaded.cpu.gpr[4] = bounds_ptr1;
+        loaded.cpu.gpr[5] = title_ptr1;
+        loaded.cpu.gpr[6] = 1; // visible
+        loaded.cpu.gpr[7] = 0; // documentProc
+        loaded.cpu.gpr[8] = 0xFFFF_FFFF;
+        loaded.cpu.gpr[9] = 1;
+        loaded.cpu.gpr[10] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        let win1 = loaded.cpu.gpr[3];
+        assert_ne!(win1, 0);
+
+        // 2. Create window 2 behind window 1
+        let title2 = b"\x04Win2";
+        let title_ptr2 = PPC_DATA_BASE + 0x1250;
+        loaded.memory.write_bytes(title_ptr2, title2).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = window_storage2;
+        loaded.cpu.gpr[4] = bounds_ptr2;
+        loaded.cpu.gpr[5] = title_ptr2;
+        loaded.cpu.gpr[6] = 1; // visible
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0; // behind window 1
+        loaded.cpu.gpr[9] = 1;
+        loaded.cpu.gpr[10] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        let win2 = loaded.cpu.gpr[3];
+        assert_ne!(win2, 0);
+
+        // 3. GetNextWindow
+        {
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetNextWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = win1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], win2);
+
+            // Win2 is last, so nextWindow is 0
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = win2;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+
+            // Null window
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+
+        // 4. GetPreviousWindow
+        {
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetPreviousWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = win2;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], win1);
+
+            // Win1 is front, so previous is 0
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = win1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+
+            // Null window
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+
+        // 5. IsWindowActive
+        {
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "IsWindowActive");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = win1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 1);
+
+            // Null window
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+
+        // 6. ActiveNonFloatingWindow
+        {
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ActiveNonFloatingWindow");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], win1);
+        }
+
+        // 7. GetWindowStructureRgn, GetWindowContentRgn, GetWindowUpdateRgn
+        {
+            let struc_rgn = loaded.memory.read_u32_be(win1 + 114).unwrap_or(0);
+            let cont_rgn = loaded.memory.read_u32_be(win1 + 118).unwrap_or(0);
+            let update_rgn = loaded.memory.read_u32_be(win1 + 122).unwrap_or(0);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowStructureRgn");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = win1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], struc_rgn);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowContentRgn");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = win1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], cont_rgn);
+
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowUpdateRgn");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = win1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], update_rgn);
+
+            // Null window returns 0
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+
+        // 8. IsWindowUpdatePending
+        {
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "IsWindowUpdatePending");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = win1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            // Initially update region has empty bounds
+            assert_eq!(loaded.cpu.gpr[3], 0);
+
+            // Populate update region with non-empty bounds
+            let update_rgn_handle = loaded.memory.read_u32_be(win1 + 122).unwrap();
+            let update_rgn_ptr = loaded.memory.read_u32_be(update_rgn_handle).unwrap();
+            ppc_write_rect(&mut loaded.memory, update_rgn_ptr + 2, 10, 10, 50, 50).unwrap();
+
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = win1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 1);
+
+            // Null window returns 0
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+
+        // 9. GetWindowModality and SetWindowModality
+        {
+            let out_kind = scratch_ptr;
+            let out_unavail = scratch_ptr + 4;
+
+            // Initially modality is kWindowModalityNone (0)
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowModality");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = win1;
+            loaded.cpu.gpr[4] = out_kind;
+            loaded.cpu.gpr[5] = out_unavail;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(loaded.memory.read_u32_be(out_kind), Some(0));
+            assert_eq!(loaded.memory.read_u32_be(out_unavail), Some(0));
+
+            // Set win1 to kWindowModalityAppModal (2)
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetWindowModality");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = win1;
+            loaded.cpu.gpr[4] = 2; // kWindowModalityAppModal
+            loaded.cpu.gpr[5] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+            // Read back win1 modality
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowModality");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = win1;
+            loaded.cpu.gpr[4] = out_kind;
+            loaded.cpu.gpr[5] = out_unavail;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(loaded.memory.read_u32_be(out_kind), Some(2));
+            assert_eq!(loaded.memory.read_u32_be(out_unavail), Some(0));
+
+            // Set win2 to kWindowModalityWindowModal (3) targeting win1
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetWindowModality");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = win2;
+            loaded.cpu.gpr[4] = 3; // kWindowModalityWindowModal
+            loaded.cpu.gpr[5] = win1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+
+            // Read back win2 modality
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "GetWindowModality");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = win2;
+            loaded.cpu.gpr[4] = out_kind;
+            loaded.cpu.gpr[5] = out_unavail;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3] as i16, 0);
+            assert_eq!(loaded.memory.read_u32_be(out_kind), Some(3));
+            assert_eq!(loaded.memory.read_u32_be(out_unavail), Some(win1));
+
+            // Error cases:
+            // window = 0 returns paramErr
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = out_kind;
+            loaded.cpu.gpr[5] = out_unavail;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+
+            // SetWindowModality with invalid kind returns paramErr
+            loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "SetWindowModality");
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = win1;
+            loaded.cpu.gpr[4] = 99; // invalid modality
+            loaded.cpu.gpr[5] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3] as i16, -50);
+        }
+    }
+}
