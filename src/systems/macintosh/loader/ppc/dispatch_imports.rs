@@ -2741,6 +2741,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CallNextEventHandler
         | PpcImportDispatcherTarget::RunApplicationEventLoop
         | PpcImportDispatcherTarget::QuitApplicationEventLoop
+        | PpcImportDispatcherTarget::InstallStandardEventHandler
+        | PpcImportDispatcherTarget::GetCurrentEventTime
         | PpcImportDispatcherTarget::FlushEventQueue
         | PpcImportDispatcherTarget::SetEventMask
         | PpcImportDispatcherTarget::GetNextEvent(_)

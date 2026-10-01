@@ -425,6 +425,43 @@ fn carbon_application_loop_dispatches_queued_event_then_quits() {
 }
 
 #[test]
+fn classic_carbon_standard_handler_is_inert_on_application_target() {
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"InstallStandardEventHandler");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::InstallStandardEventHandler
+    );
+    loaded.cpu.gpr[3] = PPC_APPLICATION_EVENT_TARGET_REF;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InstallStandardEventHandler,
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert!(loaded.toolbox_startup.carbon_event_handlers.is_empty());
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InstallStandardEventHandler,
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+}
+
+#[test]
+fn current_carbon_event_time_uses_emulated_startup_clock() {
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"GetCurrentEventTime");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::GetCurrentEventTime
+    );
+    loaded.set_tick_count(600);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetCurrentEventTime);
+    let event_time = f64::from_bits(loaded.cpu.fpr[1]);
+    assert!((10.0..11.0).contains(&event_time));
+}
+
+#[test]
 fn carbon_application_event_handlers_keep_process_owned_targets_and_type_specs() {
     let pef = synthetic_pef_with_library_import(b"CarbonLib", b"InstallEventHandler");
     let mut loaded = load_pef_application(&pef).unwrap();

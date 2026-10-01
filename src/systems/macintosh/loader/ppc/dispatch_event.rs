@@ -1193,6 +1193,26 @@ pub(super) fn dispatch_event_import(
             toolbox_startup.application_event_loop_quit_requested = true;
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::InstallStandardEventHandler => {
+            // CarbonEventsCore.h, InstallStandardEventHandler (CarbonLib
+            // 1.1): before Mac OS X 10.5 only window targets have an
+            // installable standard handler. Other targets have no effect.
+            let target = cpu.gpr[3];
+            if matches!(
+                target,
+                PPC_APPLICATION_EVENT_TARGET_REF | PPC_EVENT_DISPATCHER_TARGET_REF
+            ) {
+                Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+            } else {
+                Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)))
+            }
+        }
+        PpcImportDispatcherTarget::GetCurrentEventTime => {
+            // CarbonEventsCore.h, GetCurrentEventTime: EventTime is seconds
+            // since startup. The classic tick clock advances at 60 Hz.
+            cpu.fpr[1] = (f64::from(tick_count) / 60.0).to_bits();
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetMainEventQueue => {
             // Carbon Event Manager Programming Guide (2005), "Posting Events":
             // GetMainEventQueue returns the main application's EventQueueRef.
