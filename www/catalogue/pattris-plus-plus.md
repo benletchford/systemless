@@ -58,6 +58,7 @@ artifacts:
     notes: >-
       Original 99,031-byte BinHex/StuffIt archive, SHA-256
       c1e761fff1faeed0d629efbfc5a4d9df4f5128ff341e65a279cdf464772d47ec.
+      The promoted public object was fetched back and matched this hash and size.
 - id: gameplay-screenshot
   role: screenshot
   format: png
