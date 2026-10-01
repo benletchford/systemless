@@ -2869,6 +2869,9 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::GlReadBuffer => agl
             .gl_read_buffer(cpu.gpr[3])
             .then_some(PpcImportAction::ReturnPreserve),
+        PpcImportDispatcherTarget::GlDrawBuffer => agl
+            .gl_draw_buffer(cpu.gpr[3])
+            .then_some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::GlPixelStorei => agl
             .gl_pixel_store_i(cpu.gpr[3], cpu.gpr[4] as i32)
             .then_some(PpcImportAction::ReturnPreserve),

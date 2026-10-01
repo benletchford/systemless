@@ -69,6 +69,8 @@ pub struct PpcAglContext {
     scissor: (i32, i32, u32, u32),
     scissor_explicit: bool,
     read_buffer: ClassicGlColorBuffer,
+    draw_front: bool,
+    draw_back: bool,
     pack: PpcGlPixelPack,
 }
 
@@ -167,6 +169,7 @@ impl PpcAglState {
         } else {
             ClassicGlColorBuffer::Front
         };
+        let double_buffered = format.double_buffered;
         self.contexts.push(PpcAglContext {
             handle,
             format,
@@ -182,6 +185,8 @@ impl PpcAglState {
             scissor: (0, 0, 0, 0),
             scissor_explicit: false,
             read_buffer,
+            draw_front: !double_buffered,
+            draw_back: double_buffered,
             pack: PpcGlPixelPack::default(),
         });
         handle
@@ -306,6 +311,22 @@ impl PpcAglState {
         true
     }
 
+    pub fn gl_draw_buffer(&mut self, target: u32) -> bool {
+        let Some(context) = self.context_mut(self.current_context) else {
+            return false;
+        };
+        let (front, back) = match target {
+            0 => (false, false),              // GL_NONE
+            0x0400 | 0x0404 => (true, false), // FRONT_LEFT, FRONT
+            0x0402 | 0x0405 if context.format.double_buffered => (false, true),
+            0x0406 | 0x0408 => (true, context.format.double_buffered), // LEFT, FRONT_AND_BACK
+            _ => return false,
+        };
+        context.draw_front = front;
+        context.draw_back = back;
+        true
+    }
+
     pub fn gl_pixel_store_i(&mut self, name: u32, value: i32) -> bool {
         let Some(context) = self.context_mut(self.current_context) else {
             return false;
@@ -422,24 +443,37 @@ impl PpcAglState {
         let Some(framebuffer) = context.framebuffer.as_mut() else {
             return false;
         };
-        framebuffer.clear(ClassicGlClear {
-            color: (mask & COLOR != 0).then_some((
-                if context.format.double_buffered {
-                    ClassicGlColorBuffer::Back
-                } else {
-                    ClassicGlColorBuffer::Front
-                },
-                context
-                    .clear_color
-                    .map(|component| (component * 255.0).round() as u8),
-            )),
+        let clear_color = context
+            .clear_color
+            .map(|component| (component * 255.0).round() as u8);
+        let color_requested = mask & COLOR != 0;
+        let clear = ClassicGlClear {
+            color: (color_requested && context.draw_front)
+                .then_some((ClassicGlColorBuffer::Front, clear_color))
+                .or_else(|| {
+                    (color_requested && context.draw_back)
+                        .then_some((ClassicGlColorBuffer::Back, clear_color))
+                }),
             color_mask: context.color_mask,
             depth: (mask & DEPTH != 0).then_some(context.clear_depth as f32),
             depth_mask: context.depth_mask,
             stencil: (mask & STENCIL != 0).then_some(context.clear_stencil as u8),
             stencil_mask: context.stencil_mask as u8,
             scissor: context.scissor_enabled.then_some(context.scissor),
-        })
+        };
+        if !framebuffer.clear(clear) {
+            return false;
+        }
+        if color_requested && context.draw_front && context.draw_back {
+            framebuffer.clear(ClassicGlClear {
+                color: Some((ClassicGlColorBuffer::Back, clear_color)),
+                depth: None,
+                stencil: None,
+                ..clear
+            })
+        } else {
+            true
+        }
     }
 
     pub fn set_drawable(
@@ -781,6 +815,66 @@ mod tests {
         assert!(!agl.gl_read_pixels(&mut memory, (0, 0, 2, 2), 0x1907, 0x1403, 0x1000));
         assert!(agl.gl_read_buffer(0x0404)); // FRONT
         assert!(!agl.gl_read_buffer(0x0408)); // FRONT_AND_BACK is invalid for reads
+    }
+
+    #[test]
+    fn draw_buffer_routes_clear_to_front_back_both_or_neither() {
+        let mut agl = PpcAglState::default();
+        let format = agl.choose_pixel_format(PpcAglPixelFormatRequest {
+            rgba: true,
+            double_buffered: true,
+            ..Default::default()
+        });
+        let context = agl.create_context(format, 0);
+        assert!(agl.set_current_context(context));
+        assert!(agl.set_drawable(
+            context,
+            0x2000,
+            Some(PpcFrontBuffer {
+                base_addr: 0x1000,
+                width: 1,
+                height: 1,
+                depth: 16,
+                row_bytes: 2,
+            })
+        ));
+        assert!(agl.gl_clear_color([1.0, 0.0, 0.0, 1.0]));
+        assert!(agl.gl_draw_buffer(0x0404)); // FRONT
+        assert!(agl.gl_clear(0x4000));
+        let framebuffer = agl.context(context).unwrap().framebuffer.as_ref().unwrap();
+        assert_eq!(
+            framebuffer.pixel(ClassicGlColorBuffer::Front, 0, 0),
+            Some([255, 0, 0, 255])
+        );
+        assert_eq!(
+            framebuffer.pixel(ClassicGlColorBuffer::Back, 0, 0),
+            Some([0; 4])
+        );
+        assert!(agl.gl_draw_buffer(0x0408)); // FRONT_AND_BACK
+        assert!(agl.gl_clear_color([0.0, 1.0, 0.0, 1.0]));
+        assert!(agl.gl_clear(0x4000));
+        let framebuffer = agl.context(context).unwrap().framebuffer.as_ref().unwrap();
+        assert_eq!(
+            framebuffer.pixel(ClassicGlColorBuffer::Front, 0, 0),
+            Some([0, 255, 0, 255])
+        );
+        assert_eq!(
+            framebuffer.pixel(ClassicGlColorBuffer::Back, 0, 0),
+            Some([0, 255, 0, 255])
+        );
+        assert!(agl.gl_draw_buffer(0)); // NONE
+        assert!(agl.gl_clear_color([0.0, 0.0, 1.0, 1.0]));
+        assert!(agl.gl_clear(0x4000));
+        let framebuffer = agl.context(context).unwrap().framebuffer.as_ref().unwrap();
+        assert_eq!(
+            framebuffer.pixel(ClassicGlColorBuffer::Front, 0, 0),
+            Some([0, 255, 0, 255])
+        );
+        assert_eq!(
+            framebuffer.pixel(ClassicGlColorBuffer::Back, 0, 0),
+            Some([0, 255, 0, 255])
+        );
+        assert!(!agl.gl_draw_buffer(0x0401)); // FRONT_RIGHT needs stereo
     }
 
     #[test]
