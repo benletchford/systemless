@@ -9,6 +9,11 @@ use ppc::PpcMemory;
 
 const MAX_ATTRIBUTE_WORDS: u32 = 64;
 const FIRST_AGL_OBJECT: u32 = 0x0500_0000;
+pub const AGL_BAD_ATTRIBUTE: u32 = 10000;
+pub const AGL_BAD_PIXELFMT: u32 = 10002;
+pub const AGL_BAD_GDEV: u32 = 10006;
+pub const AGL_BAD_VALUE: u32 = 10008;
+pub const AGL_BAD_POINTER: u32 = 10014;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PpcAglPixelFormatRequest {
@@ -48,6 +53,7 @@ pub struct PpcAglPixelFormat {
 pub struct PpcAglState {
     next_handle: u32,
     pixel_formats: Vec<PpcAglPixelFormat>,
+    error: u32,
 }
 
 impl Default for PpcAglState {
@@ -55,11 +61,22 @@ impl Default for PpcAglState {
         Self {
             next_handle: FIRST_AGL_OBJECT,
             pixel_formats: Vec::new(),
+            error: 0,
         }
     }
 }
 
 impl PpcAglState {
+    pub fn set_error(&mut self, error: u32) {
+        if self.error == 0 {
+            self.error = error;
+        }
+    }
+
+    pub fn get_error(&mut self) -> u32 {
+        std::mem::take(&mut self.error)
+    }
+
     pub fn choose_pixel_format(&mut self, request: PpcAglPixelFormatRequest) -> u32 {
         if !ppc_agl_software_format_matches(&request) {
             return 0;
@@ -99,8 +116,10 @@ impl PpcAglState {
         })
     }
 
-    pub fn destroy_pixel_format(&mut self, handle: u32) {
+    pub fn destroy_pixel_format(&mut self, handle: u32) -> bool {
+        let old_len = self.pixel_formats.len();
         self.pixel_formats.retain(|format| format.handle != handle);
+        self.pixel_formats.len() != old_len
     }
 }
 

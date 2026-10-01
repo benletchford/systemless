@@ -2806,9 +2806,12 @@ pub(crate) fn dispatch_supported_import(
             u32::from(ppc_agl_describe_pixel_format(cpu, memory, agl)),
         )),
         PpcImportDispatcherTarget::AglDestroyPixelFormat => {
-            agl.destroy_pixel_format(cpu.gpr[3]);
+            if !agl.destroy_pixel_format(cpu.gpr[3]) {
+                agl.set_error(classic_gl_agl::AGL_BAD_PIXELFMT);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::AglGetError => Some(PpcImportAction::Return(agl.get_error())),
         PpcImportDispatcherTarget::NoOpPreserve => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::ExitToShell => Some(PpcImportAction::Halt),
         PpcImportDispatcherTarget::GlmSetMode | PpcImportDispatcherTarget::GlmGetError => {
@@ -2830,10 +2833,12 @@ fn ppc_agl_choose_pixel_format(
     // https://github.com/phracker/MacOSX-SDKs/blob/master/MacOSX10.2.8.sdk/System/Library/Frameworks/AGL.framework/Versions/A/Headers/agl.h
     let count = cpu.gpr[4] as i32;
     if !(0..=16).contains(&count) {
+        agl.set_error(classic_gl_agl::AGL_BAD_VALUE);
         return 0;
     }
     if count > 0 {
         if cpu.gpr[3] == 0 {
+            agl.set_error(classic_gl_agl::AGL_BAD_GDEV);
             return 0;
         }
         for index in 0..count as u32 {
@@ -2841,15 +2846,28 @@ fn ppc_agl_choose_pixel_format(
                 .checked_add(index * 4)
                 .and_then(|address| memory.read_u32_be(address))
             else {
+                agl.set_error(classic_gl_agl::AGL_BAD_POINTER);
                 return 0;
             };
             if device == 0 || !gworlds.iter().any(|world| world.gdevice == device) {
+                agl.set_error(classic_gl_agl::AGL_BAD_GDEV);
                 return 0;
             }
         }
     }
-    let Ok(request) = ppc_agl_read_pixel_format_request(memory, cpu.gpr[5]) else {
-        return 0;
+    let request = match ppc_agl_read_pixel_format_request(memory, cpu.gpr[5]) {
+        Ok(request) => request,
+        Err(classic_gl_agl::PpcAglAttributeError::BadPointer) => {
+            agl.set_error(classic_gl_agl::AGL_BAD_POINTER);
+            return 0;
+        }
+        Err(
+            classic_gl_agl::PpcAglAttributeError::UnsupportedAttribute(_)
+            | classic_gl_agl::PpcAglAttributeError::Unterminated,
+        ) => {
+            agl.set_error(classic_gl_agl::AGL_BAD_ATTRIBUTE);
+            return 0;
+        }
     };
     agl.choose_pixel_format(request)
 }
@@ -2857,15 +2875,24 @@ fn ppc_agl_choose_pixel_format(
 fn ppc_agl_describe_pixel_format(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
-    agl: &PpcAglState,
+    agl: &mut PpcAglState,
 ) -> bool {
     // GLboolean aglDescribePixelFormat(AGLPixelFormat pix, GLint attrib,
     //     GLint *value); Apple AGL/agl.h (Mac OS X 10.2.8 SDK).
     // https://github.com/phracker/MacOSX-SDKs/blob/master/MacOSX10.2.8.sdk/System/Library/Frameworks/AGL.framework/Versions/A/Headers/agl.h
+    if agl.pixel_format(cpu.gpr[3]).is_none() {
+        agl.set_error(classic_gl_agl::AGL_BAD_PIXELFMT);
+        return false;
+    }
     let Some(value) = agl.describe_pixel_format(cpu.gpr[3], cpu.gpr[4] as i32) else {
+        agl.set_error(classic_gl_agl::AGL_BAD_ATTRIBUTE);
         return false;
     };
-    cpu.gpr[5] != 0 && memory.write_u32_be(cpu.gpr[5], value as u32).is_some()
+    if cpu.gpr[5] == 0 || memory.write_u32_be(cpu.gpr[5], value as u32).is_none() {
+        agl.set_error(classic_gl_agl::AGL_BAD_POINTER);
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -2905,7 +2932,7 @@ mod agl_choose_tests {
         cpu.gpr[3] = handle;
         cpu.gpr[4] = 12; // AGL_DEPTH_SIZE
         cpu.gpr[5] = 0x2000;
-        assert!(ppc_agl_describe_pixel_format(&cpu, &mut memory, &agl));
+        assert!(ppc_agl_describe_pixel_format(&cpu, &mut memory, &mut agl));
         assert_eq!(memory.read_u32_be(0x2000), Some(24));
         agl.destroy_pixel_format(handle);
         assert!(agl.pixel_format(handle).is_none());
@@ -2916,6 +2943,56 @@ mod agl_choose_tests {
             ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]),
             0
         );
+        assert_eq!(agl.get_error(), classic_gl_agl::AGL_BAD_POINTER);
+    }
+
+    #[test]
+    fn agl_error_import_latches_first_error_and_clears_on_read() {
+        assert_eq!(
+            dispatcher_target_for_import("OpenGLLibrary", "aglGetError"),
+            PpcImportDispatcherTarget::AglGetError
+        );
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x1000, vec![0; 16]);
+        let mut cpu = PpcCpu::new();
+        let mut agl = PpcAglState::default();
+        cpu.gpr[4] = u32::MAX;
+        assert_eq!(ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]), 0);
+        cpu.gpr[4] = 0;
+        cpu.gpr[5] = 0;
+        assert_eq!(ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]), 0);
+        assert_eq!(agl.get_error(), classic_gl_agl::AGL_BAD_VALUE);
+        assert_eq!(agl.get_error(), 0);
+
+        // A valid request for an unavailable accelerated format is a clean
+        // no-match, distinct from malformed guest inputs.
+        memory.add_region(
+            0x2000,
+            [4u32, 73, 0]
+                .iter()
+                .flat_map(|word| word.to_be_bytes())
+                .collect(),
+        );
+        cpu.gpr[5] = 0x2000;
+        assert_eq!(ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]), 0);
+        assert_eq!(agl.get_error(), 0);
+
+        memory.add_region(
+            0x3000,
+            [99u32, 0]
+                .iter()
+                .flat_map(|word| word.to_be_bytes())
+                .collect(),
+        );
+        cpu.gpr[5] = 0x3000;
+        assert_eq!(ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]), 0);
+        assert_eq!(agl.get_error(), classic_gl_agl::AGL_BAD_ATTRIBUTE);
+
+        cpu.gpr[3] = 0x1000;
+        cpu.gpr[4] = 1;
+        cpu.gpr[5] = 0x2000;
+        assert_eq!(ppc_agl_choose_pixel_format(&cpu, &mut memory, &mut agl, &[]), 0);
+        assert_eq!(agl.get_error(), classic_gl_agl::AGL_BAD_GDEV);
     }
 }
 
