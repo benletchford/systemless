@@ -1170,10 +1170,11 @@ pub(crate) fn dispatcher_target_for_import(
     // supported Toolbox APIs. An exact symbol match uses the same PPC ABI.
     // Carbon Porting Guide (2002), pp. 42–43 and 53–54.
     let library_name = match (library_name, symbol_name) {
-        // Inside Macintosh: PowerPC Numerics (1994), pp. 10-29--10-30:
-        // cos accepts and returns a double_t angle in radians. CarbonLib
-        // exports the same C math symbol and PowerPC floating-point ABI.
-        ("CarbonLib", "cos" | "round") => "MathLib",
+        // CarbonLib exports these C math symbols with the same PowerPC
+        // floating-point ABI as MathLib. Inside Macintosh: PowerPC Numerics
+        // (1994), pp. 6-10--6-11 (sqrt), 10-17--10-19 (pow),
+        // 10-29--10-30 (cos).
+        ("CarbonLib", "cos" | "pow" | "round" | "sqrt") => "MathLib",
         ("CarbonLib", _) => "InterfaceLib",
         _ => library_name,
     };
