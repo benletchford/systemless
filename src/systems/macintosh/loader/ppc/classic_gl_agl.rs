@@ -2,7 +2,7 @@
 //!
 //! Attribute values and the boolean/value distinction come from Apple's
 //! AGL/agl.h (Mac OS X 10.2.8 SDK). Capability selection happens separately.
-//! https://github.com/phracker/MacOSX-SDKs/blob/master/MacOSX10.2.8.sdk/System/Library/Frameworks/AGL.framework/Versions/A/Headers/agl.h
+//! <https://github.com/phracker/MacOSX-SDKs/blob/master/MacOSX10.2.8.sdk/System/Library/Frameworks/AGL.framework/Versions/A/Headers/agl.h>
 
 use super::PpcSectionMem;
 use ppc::PpcMemory;
