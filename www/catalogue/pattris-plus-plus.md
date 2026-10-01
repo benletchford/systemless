@@ -78,6 +78,7 @@ artifacts:
     notes: >-
       Exact 272-by-361 game-content crop at (280,294) from a 1280-by-900 Chrome
       screenshot after moving the falling piece left.
+      The promoted screenshot was fetched back and matched its hash and size.
 references:
 - >-
   https://ftp.zx.net.nz/pub/mirror/ftp.funet.fi/pub/mac/info-mac/game/arc/pattris.hqx
