@@ -34,6 +34,8 @@ pub(crate) struct ProcessControlRecord {
     pub(crate) control_id: (u32, i32),
     pub(crate) command_id: u32,
     pub(crate) has_focus: bool,
+    pub(crate) focus_part: i16,
+    pub(crate) drag_tracking_enabled: bool,
 }
 
 /// The Appearance Manager style override associated with a ControlRef.
@@ -92,6 +94,8 @@ impl ProcessControlManagerState {
             control_id: (0, 0),
             command_id: 0,
             has_focus: false,
+            focus_part: 0,
+            drag_tracking_enabled: false,
         });
     }
 
@@ -152,6 +156,37 @@ impl ProcessControlManagerState {
     pub(crate) fn set_has_focus(&mut self, handle: u32, focus: bool) {
         if let Some(record) = self.records.iter_mut().find(|record| record.handle == handle) {
             record.has_focus = focus;
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn focus_part(&self, handle: u32) -> i16 {
+        self.records
+            .iter()
+            .find(|record| record.handle == handle)
+            .map_or(0, |record| record.focus_part)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_focus_part(&mut self, handle: u32, part: i16) {
+        if let Some(record) = self.records.iter_mut().find(|record| record.handle == handle) {
+            record.focus_part = part;
+            record.has_focus = part != 0;
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn drag_tracking_enabled(&self, handle: u32) -> bool {
+        self.records
+            .iter()
+            .find(|record| record.handle == handle)
+            .is_some_and(|record| record.drag_tracking_enabled)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_drag_tracking_enabled(&mut self, handle: u32, enabled: bool) {
+        if let Some(record) = self.records.iter_mut().find(|record| record.handle == handle) {
+            record.drag_tracking_enabled = enabled;
         }
     }
 
@@ -733,5 +768,26 @@ mod tests {
         assert!(state.remove_property(10, creator, tag));
         assert!(state.get_property(10, creator, tag).is_none());
         assert!(!state.remove_property(10, creator, tag));
+    }
+
+    #[test]
+    fn process_control_manager_state_evaluates_focus_part_and_drag_tracking() {
+        let mut state = ProcessControlManagerState::default();
+        state.register(10, 0x1000, 0, 0);
+
+        assert_eq!(state.focus_part(10), 0);
+        assert!(!state.has_focus(10));
+        assert!(!state.drag_tracking_enabled(10));
+
+        state.set_focus_part(10, 1);
+        assert_eq!(state.focus_part(10), 1);
+        assert!(state.has_focus(10));
+
+        state.set_focus_part(10, 0);
+        assert_eq!(state.focus_part(10), 0);
+        assert!(!state.has_focus(10));
+
+        state.set_drag_tracking_enabled(10, true);
+        assert!(state.drag_tracking_enabled(10));
     }
 }

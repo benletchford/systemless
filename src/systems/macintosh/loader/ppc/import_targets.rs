@@ -3437,6 +3437,54 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "ClearKeyboardFocus" | "clearkeyboardfocus",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ClearKeyboardFocus),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlByID" | "getcontrolbyid",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlByID),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "FindControlUnderMouse" | "findcontrolundermouse",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::FindControlUnderMouse),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "HandleControlClick" | "handlecontrolclick",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::HandleControlClick),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "HandleControlKey" | "handlecontrolkey",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::HandleControlKey),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlClickActivation" | "getcontrolclickactivation",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlClickActivation),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlKind" | "getcontrolkind",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlKind),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetControlFocusPart" | "setcontrolfocuspart",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlFocusPart),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "GetControlFocusPart" | "getcontrolfocuspart",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlFocusPart),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SendControlMessage" | "sendcontrolmessage",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SendControlMessage),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "ScrollControlValues" | "scrollcontrolvalues",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ScrollControlValues),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "IsControlDragTrackingEnabled" | "iscontroldragtrackingenabled",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsControlDragTrackingEnabled),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "SetControlDragTrackingEnabled" | "setcontroldragtrackingenabled",
+        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlDragTrackingEnabled),
         ("AppearanceLib", "CollapseWindow") => PpcImportDispatcherTarget::CollapseWindow,
         ("AppearanceLib", "IsWindowCollapsed") => PpcImportDispatcherTarget::IsWindowCollapsed,
         (

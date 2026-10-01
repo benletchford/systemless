@@ -754,6 +754,8 @@ fn get_new_dialog_installs_owned_control_records_in_the_live_ditl() {
             control_id: (0, 0),
             command_id: 0,
             has_focus: false,
+            focus_part: 0,
+            drag_tracking_enabled: false,
         }]
     );
     // The dialog item hit test only accepts control items whose record
