@@ -270,6 +270,7 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
             | b"rsrc"
             | b"scr#"
             | b"qtim"
+            | b"qtrs"
             | b"drag"
             | b"os  "
             | b"powr"
@@ -4092,6 +4093,12 @@ impl super::TrapDispatcher {
                     b"qtim" => {
                         cpu.write_reg(Register::A0, QUICKTIME_NUM_VERSION);
                         cpu.write_reg(Register::D0, 0); // noErr
+                    }
+                    // Apple TN1083: bit 0 of 'qtrs' indicates a registered
+                    // PowerPC QuickTimeLib; the 68K guest has no PPC library.
+                    b"qtrs" => {
+                        cpu.write_reg(Register::A0, 0);
+                        cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltDragMgrAttr ('drag') -> Drag Manager attrs.
                     // Inside Macintosh: Operating System Utilities 1994,

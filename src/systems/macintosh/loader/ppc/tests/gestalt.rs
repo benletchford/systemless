@@ -104,6 +104,22 @@ fn gestalt_quicktime_matches_reference_extension_version() {
 }
 
 #[test]
+fn gestalt_reports_powerpc_quicktime_library() {
+    let pef = synthetic_pef_with_import(b"Gestalt");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let response_ptr = PPC_HEAP_BASE;
+    loaded.memory.add_region(response_ptr, vec![0; 4]);
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"qtrs");
+    loaded.cpu.gpr[4] = response_ptr;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(response_ptr), Some(1));
+}
+
+#[test]
 fn hle_import_runner_handles_gestalt_powerpc_capabilities() {
     let pef = synthetic_pef_with_import(b"Gestalt");
     let mut loaded = load_pef_application(&pef).unwrap();
