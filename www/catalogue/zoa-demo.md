@@ -60,6 +60,7 @@ artifacts:
     notes: >-
       Original 687,693-byte StuffIt archive, SHA-256
       a963ddf39bb834cf4da1ff716585e21c18fa2aa2dfa1336dad2b8859c22a1822.
+      The promoted public object matched this hash and byte count.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -76,7 +77,9 @@ artifacts:
     permission: >-
       Fresh gameplay capture made from the original demo for this catalogue entry.
       The underlying game artwork remains its owners' property.
-    notes: 512-by-348 direct Chrome capture of the cockpit after mouse input.
+    notes: >-
+      512-by-348 direct Chrome capture of the cockpit after mouse input.
+      The promoted public screenshot matched its recorded hash and byte count.
 references:
 - https://classicmacdemos.com/zoa-the-zone-of-avoidance
 ---
