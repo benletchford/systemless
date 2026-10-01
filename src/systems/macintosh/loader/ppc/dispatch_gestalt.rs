@@ -152,6 +152,9 @@ fn ppc_gestalt_response(selector: u32, physical_ram_size: u32) -> Option<(u32, i
         b"fs  " => Some(((1 << 0) | (1 << 1), PPC_NO_ERR)),
         b"fold" => Some((1, PPC_NO_ERR)),
         b"qtim" => Some((crate::machine_profile::QUICKTIME_NUM_VERSION, PPC_NO_ERR)),
+        // Apple TN1083: 'qtrs' bit 0 reports a registered PowerPC
+        // QuickTimeLib, whose movie entry points are bound by this runtime.
+        b"qtrs" => Some((1, PPC_NO_ERR)),
         b"drag" => Some((0, PPC_NO_ERR)),
         b"os  " => Some((0x00FF, PPC_NO_ERR)),
         b"powr" => Some((0, PPC_NO_ERR)),

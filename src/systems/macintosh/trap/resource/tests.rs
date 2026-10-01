@@ -6026,6 +6026,18 @@ fn gestalt_quicktime_reports_final_numversion() {
 }
 
 #[test]
+fn gestalt_68k_quicktime_reports_no_powerpc_library() {
+    let (mut disp, mut cpu, mut bus) = setup();
+
+    cpu.write_reg(Register::A0, 0xBEEF);
+    cpu.write_reg(Register::D0, u32::from_be_bytes(*b"qtrs"));
+    call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+
+    assert_eq!(cpu.read_reg(Register::A0), 0);
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+}
+
+#[test]
 fn gestalt_drag_manager_absent_without_error() {
     let (mut disp, mut cpu, mut bus) = setup();
 
