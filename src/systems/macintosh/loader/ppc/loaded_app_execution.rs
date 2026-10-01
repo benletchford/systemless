@@ -248,6 +248,8 @@ impl PpcLoadedApp {
         let mut toolbox_startup = std::mem::take(&mut self.toolbox_startup);
         let mut quicktime = std::mem::take(&mut self.quicktime);
         let mut sound = std::mem::take(&mut self.sound);
+        let mut glm_mode = self.glm_mode;
+        let mut glm_error = self.glm_error;
         let timer_tasks = std::mem::take(&mut self.timer_tasks);
         let vbl_tasks = std::mem::take(&mut self.vbl_tasks);
         let callback_scheduling = self.callback_scheduling.shared_handle();
@@ -987,7 +989,19 @@ impl PpcLoadedApp {
                         &mut quickdraw_text_size,
                     );
                 }
-                let action = if binding.dispatcher_target == PpcImportDispatcherTarget::GetKeys {
+                let action = if binding.dispatcher_target == PpcImportDispatcherTarget::GlmSetMode {
+                    // AGL/glm.h (Mac OS 9): glmSetMode is void and accepts
+                    // exactly these four memory configuration selectors.
+                    match cpu.gpr[3] {
+                        1..=4 => glm_mode = Some(cpu.gpr[3]),
+                        _ => glm_error = 1, // GLM_INVALID_ENUM
+                    }
+                    Some(PpcImportAction::ReturnPreserve)
+                } else if binding.dispatcher_target == PpcImportDispatcherTarget::GlmGetError {
+                    let error = glm_error;
+                    glm_error = 0;
+                    Some(PpcImportAction::Return(error))
+                } else if binding.dispatcher_target == PpcImportDispatcherTarget::GetKeys {
                     Some(dispatch_getkeys_import(
                         cpu,
                         memory,
@@ -1663,6 +1677,8 @@ impl PpcLoadedApp {
         self.toolbox_startup = toolbox_startup;
         self.quicktime = quicktime;
         self.sound = sound;
+        self.glm_mode = glm_mode;
+        self.glm_error = glm_error;
         self.timer_tasks = timer_tasks;
         self.vbl_tasks = vbl_tasks;
         self.quickdraw_fore_color = quickdraw_fore_color;

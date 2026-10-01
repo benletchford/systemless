@@ -1222,6 +1222,8 @@ pub enum PpcImportDispatcherTarget {
     GlTexParameteri,
     GlTexImage2D,
     GlTexSubImage2D,
+    GlmSetMode,
+    GlmGetError,
     ReturnError(i16),
     ReturnNoErr,
     ReturnOne,
@@ -1246,6 +1248,8 @@ pub(crate) fn dispatcher_target_for_import(
         _ => library_name,
     };
     match (library_name, symbol_name) {
+        ("OpenGLMemory", "glmSetMode") => PpcImportDispatcherTarget::GlmSetMode,
+        ("OpenGLMemory", "glmGetError") => PpcImportDispatcherTarget::GlmGetError,
         ("InterfaceLib", "_MPIsFullyInitialized" | "MPProcessors") => {
             PpcImportDispatcherTarget::ReturnOne
         }

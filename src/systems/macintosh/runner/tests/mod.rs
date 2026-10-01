@@ -287,6 +287,8 @@ pub(super) fn halted_ppc_app_with_sound(sound: PpcSoundState) -> LoadedApp {
         event_queue: Default::default(),
         window_list: Default::default(),
         process_memory_manager: PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_STACK_BASE),
+        glm_mode: None,
+        glm_error: 0,
         draw_sprocket: PpcDrawSprocketState::default(),
     })
 }

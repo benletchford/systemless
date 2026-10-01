@@ -136,6 +136,8 @@ fn ppc_imports_are_recorded_in_oracle_events_when_enabled() {
         event_queue: Default::default(),
         window_list: Default::default(),
         process_memory_manager: PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_STACK_BASE),
+        glm_mode: None,
+        glm_error: 0,
         draw_sprocket: PpcDrawSprocketState::default(),
     });
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
