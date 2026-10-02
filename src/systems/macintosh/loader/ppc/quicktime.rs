@@ -39,6 +39,7 @@ pub fn ppc_main_screen_height() -> u32 {
 pub enum PpcQuickTimeCompatibilityOperation {
     GetMovieActive,
     GetMovieTimeBase,
+    GetMovieTimeScale,
     GetMovieVolume,
     NewMovieFromDataFork,
     PrerollMovie,
@@ -178,6 +179,7 @@ pub struct PpcQuickTimeState {
     pub movie_at_beginning: bool,
     pub movie_started: bool,
     pub movie_active: bool,
+    pub movie_time_scale: u32,
     pub movie_task_count: u32,
     pub movie_tasks_until_done: u32,
     pub movie_video_track: Option<PpcQuickTimeVideoTrackRecord>,
@@ -234,6 +236,7 @@ impl Default for PpcQuickTimeState {
             movie_at_beginning: true,
             movie_started: false,
             movie_active: false,
+            movie_time_scale: 600,
             movie_task_count: 0,
             movie_tasks_until_done: PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE,
             movie_video_track: None,
@@ -272,6 +275,16 @@ pub(super) fn dispatch_quicktime_compatibility(
             } else {
                 0
             })
+        }
+        PpcQuickTimeCompatibilityOperation::GetMovieTimeScale => {
+            // Inside Macintosh: QuickTime (1993), p. 2-183.
+            if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
+                let _ = ppc_qt_record_error(quicktime, PPC_NO_ERR);
+                PpcImportAction::Return(quicktime.movie_time_scale)
+            } else {
+                let _ = ppc_qt_record_error(quicktime, -2010); // invalidMovie
+                PpcImportAction::Return(0)
+            }
         }
         PpcQuickTimeCompatibilityOperation::GetMovieVolume => {
             PpcImportAction::Return(if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
@@ -344,11 +357,17 @@ pub(super) fn dispatch_quicktime_compatibility(
                 quicktime.movie_video_track = quicktime.movie_file_video_track;
                 quicktime.movie_video_samples = quicktime.movie_file_video_samples.clone();
                 quicktime.movie_audio_track = quicktime.movie_file_audio_track;
+                quicktime.movie_time_scale = if quicktime.movie_file_time_scale == 0 {
+                    600
+                } else {
+                    quicktime.movie_file_time_scale
+                };
             } else {
                 quicktime.movie_tasks_until_done = PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE;
                 quicktime.movie_video_track = None;
                 quicktime.movie_video_samples = None;
                 quicktime.movie_audio_track = None;
+                quicktime.movie_time_scale = 600;
             }
             quicktime.movie_started = false;
             // newMovieActive is bit 0 of the creation flags (pp. 2-109–2-110).
@@ -2617,11 +2636,17 @@ pub(crate) fn ppc_qt_new_movie_from_file(
         quicktime.movie_video_track = quicktime.movie_file_video_track;
         quicktime.movie_video_samples = quicktime.movie_file_video_samples.clone();
         quicktime.movie_audio_track = quicktime.movie_file_audio_track;
+        quicktime.movie_time_scale = if quicktime.movie_file_time_scale == 0 {
+            600
+        } else {
+            quicktime.movie_file_time_scale
+        };
     } else {
         quicktime.movie_tasks_until_done = PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE;
         quicktime.movie_video_track = None;
         quicktime.movie_video_samples = None;
         quicktime.movie_audio_track = None;
+        quicktime.movie_time_scale = 600;
     }
     if memory.write_u32_be(movie_out_ptr, PPC_QT_MOVIE).is_none() {
         return PPC_PARAM_ERR;
