@@ -1,6 +1,18 @@
 use super::*;
 
     #[test]
+    fn hle_import_runner_qd_done_reports_synchronous_drawing_complete() {
+        let pef = synthetic_pef_with_import(b"QDDone");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cpu.gpr[3] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+    }
+
+    #[test]
     fn hle_import_runner_handles_new_gworld_allocation() {
         let pef = synthetic_pef_with_import(b"NewGWorld");
         let mut loaded = load_pef_application(&pef).unwrap();

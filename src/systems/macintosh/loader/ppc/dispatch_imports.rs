@@ -1927,6 +1927,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::UpdateGWorld
         | PpcImportDispatcherTarget::DisposeGWorld
         | PpcImportDispatcherTarget::QDError
+        | PpcImportDispatcherTarget::QDDone
         | PpcImportDispatcherTarget::GetGWorld
         | PpcImportDispatcherTarget::SetGWorld
         | PpcImportDispatcherTarget::GetGWorldDevice
