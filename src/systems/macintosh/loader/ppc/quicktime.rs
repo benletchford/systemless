@@ -544,8 +544,32 @@ pub(super) fn dispatch_quicktime_compatibility(
         }
         PpcQuickTimeCompatibilityOperation::MCDoAction => {
             // Inside Macintosh: QuickTime Components (1993), pp. 2-15, 2-46.
-            // Unknown controller references cannot receive actions.
-            PpcImportAction::Return(ppc_i16_result(PPC_INVALID_COMPONENT_ID))
+            let Some(movie) = quicktime
+                .movie_controllers
+                .iter()
+                .find(|controller| controller.handle == cpu.gpr[3])
+                .map(|controller| controller.movie)
+            else {
+                return PpcImportAction::Return(ppc_i16_result(PPC_INVALID_COMPONENT_ID));
+            };
+            match cpu.gpr[4] as i16 {
+                8 => {
+                    // mcActionPlay carries a Fixed playback rate in the params slot.
+                    if movie != PPC_QT_MOVIE || quicktime.movie_disposed {
+                        return PpcImportAction::Return(ppc_i16_result(-2010)); // invalidMovie
+                    }
+                    let controller = cpu.gpr[3];
+                    cpu.gpr[3] = movie;
+                    let error = if cpu.gpr[5] == 0 {
+                        ppc_qt_stop_movie(cpu, quicktime, sound)
+                    } else {
+                        ppc_qt_start_movie(cpu, memory, gworlds, current_gworld, quicktime, sound)
+                    };
+                    cpu.gpr[3] = controller;
+                    PpcImportAction::Return(ppc_i16_result(error))
+                }
+                _ => PpcImportAction::Return(ppc_i16_result(PPC_INVALID_COMPONENT_ID)),
+            }
         }
         PpcQuickTimeCompatibilityOperation::NewMovieController => {
             // Inside Macintosh: QuickTime Components (1993), p. 2-29.
