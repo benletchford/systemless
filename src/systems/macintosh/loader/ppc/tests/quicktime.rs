@@ -2914,6 +2914,10 @@ fn import_bindings_classify_quicktime_compatibility_imports() {
         ("GetUserData", PpcQuickTimeCompatibilityOperation::GetUserData),
         ("GetTrackMedia", PpcQuickTimeCompatibilityOperation::GetTrackMedia),
         (
+            "GetMediaSampleDescription",
+            PpcQuickTimeCompatibilityOperation::GetMediaSampleDescription,
+        ),
+        (
             "GetMovieVolume",
             PpcQuickTimeCompatibilityOperation::GetMovieVolume,
         ),
@@ -3201,6 +3205,40 @@ fn quicktime_get_track_media_returns_stable_media_reference() {
     loaded.run_with_hle_imports(64);
     assert_eq!(loaded.cpu.gpr[3], 0);
     assert_eq!(loaded.quicktime.movie_error, -2009);
+}
+
+#[test]
+fn quicktime_get_media_sample_description_copies_stsd_entry() {
+    let movie = test_quicktime_tkhd_movie(320, 240);
+    let tracks = ppc_qt_movie_tracks(&movie);
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"GetMediaSampleDescription");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.quicktime.movie_file_data = movie;
+    loaded.quicktime.movie_tracks = tracks;
+    let handle = loaded.process_memory_manager.0.borrow_mut().new_native_handle(&mut loaded.memory, 0, false);
+    let media = loaded.quicktime.movie_tracks[0].handle + 1;
+    loaded.cpu.gpr[3] = media;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = handle;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.quicktime.movie_error, 0);
+    let ptr = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(ptr), Some(16));
+    assert_eq!(loaded.memory.read_u32_be(ptr + 4), Some(u32::from_be_bytes(*b"rle ")));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = media;
+    loaded.cpu.gpr[4] = 2;
+    loaded.cpu.gpr[5] = handle;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.memory.read_u32_be(handle), Some(ptr));
+    assert_eq!(loaded.memory.read_u32_be(ptr + 4), Some(u32::from_be_bytes(*b"rle ")));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = 0;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.quicktime.movie_error, -2008);
 }
 
 #[test]
