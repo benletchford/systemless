@@ -2924,6 +2924,10 @@ fn import_bindings_classify_quicktime_compatibility_imports() {
         ),
         ("MCSetMovie", PpcQuickTimeCompatibilityOperation::MCSetMovie),
         (
+            "MCGetControllerBoundsRect",
+            PpcQuickTimeCompatibilityOperation::MCGetControllerBoundsRect,
+        ),
+        (
             "GetMovieVolume",
             PpcQuickTimeCompatibilityOperation::GetMovieVolume,
         ),
@@ -3337,6 +3341,40 @@ fn quicktime_mc_set_movie_updates_controller_association() {
     loaded.run_with_hle_imports(64);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-2010));
     assert_eq!(loaded.quicktime.movie_controllers[0].movie, 0);
+}
+
+#[test]
+fn quicktime_mc_get_controller_bounds_writes_recorded_rect() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"MCGetControllerBoundsRect");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let controller = PPC_QT_MOVIE + 0x1_0000;
+    loaded.quicktime.movie_controllers.push(PpcQuickTimeControllerRecord {
+        handle: controller,
+        movie: PPC_QT_MOVIE,
+        rect: (10, 20, 300, 600),
+        flags: 0,
+        window: 0,
+        origin: 0,
+    });
+    let out = PPC_DATA_BASE + 0x1b00;
+    loaded.memory.add_region(out, vec![0; 8]);
+    loaded.cpu.gpr[3] = controller;
+    loaded.cpu.gpr[4] = out;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(ppc_read_rect(&mut loaded.memory, out), Some((10, 20, 300, 600)));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = 0;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_INVALID_COMPONENT_ID));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = controller;
+    loaded.cpu.gpr[4] = 0;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
 }
 
 #[test]
