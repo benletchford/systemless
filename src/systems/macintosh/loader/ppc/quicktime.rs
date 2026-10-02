@@ -9,10 +9,10 @@ use super::{
     ppc_q3_write_software_pixel, ppc_quickdraw_surface_color_pixel, ppc_quickdraw_write_raw_pixel,
     ppc_read_be_u32_from_slice, ppc_read_rect, ppc_write_rect, qt_trace_enabled, PpcCpu,
     PpcDecodedAiffData, PpcDecodedAiffPlaybackRecord, PpcFileRecord, PpcFrontBuffer,
-    PpcGWorldRecord, PpcHandleRecord, PpcImportAction, PpcQuickDrawSurface, PpcRgbColor,
-    PpcSectionMem, PpcSoundFilePlaybackRecord, PpcSoundState, PpcVfsDirectory, PpcVfsFileRecord,
-    PpcVfsResourceFileRecord, PpcVfsResourceRecord, PPC_FIRST_FILE_REF_NUM,
-    PPC_INVALID_COMPONENT_ID, PPC_MEM_FULL_ERR, PPC_NO_ERR, PPC_PARAM_ERR,
+    PpcGWorldRecord, PpcHandleRecord, PpcImportAction, PpcProcessAllocatorView,
+    PpcQuickDrawSurface, PpcRgbColor, PpcSectionMem, PpcSoundFilePlaybackRecord, PpcSoundState,
+    PpcVfsDirectory, PpcVfsFileRecord, PpcVfsResourceFileRecord, PpcVfsResourceRecord,
+    PPC_FIRST_FILE_REF_NUM, PPC_INVALID_COMPONENT_ID, PPC_MEM_FULL_ERR, PPC_NO_ERR, PPC_PARAM_ERR,
     PPC_QT_GRAPHICS_IMPORTER, PPC_QT_MOVIE, PPC_QT_MOVIE_TASKS_PER_SECOND, PPC_RES_NOT_FOUND_ERR,
 };
 use crate::managers::resource::ResourceFork;
@@ -44,6 +44,7 @@ pub enum PpcQuickTimeCompatibilityOperation {
     GetMoviePreferredVolume,
     GetMovieIndTrackType,
     GetMovieUserData,
+    GetUserData,
     GetMovieVolume,
     NewMovieFromDataFork,
     PrerollMovie,
@@ -309,6 +310,10 @@ pub(super) fn dispatch_quicktime_compatibility(
     operation: PpcQuickTimeCompatibilityOperation,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
     quicktime: &mut PpcQuickTimeState,
     sound: &mut PpcSoundState,
     files: &[PpcFileRecord],
@@ -395,6 +400,54 @@ pub(super) fn dispatch_quicktime_compatibility(
             };
             let _ = ppc_qt_record_error(quicktime, PPC_NO_ERR);
             PpcImportAction::Return(user_data)
+        }
+        PpcQuickTimeCompatibilityOperation::GetUserData => {
+            // Inside Macintosh: QuickTime (1993), pp. 2-235–2-236.
+            if cpu.gpr[3] != PPC_QT_MOVIE + 0x20 || quicktime.movie_disposed {
+                return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+            }
+            let index = cpu.gpr[6];
+            if index == 0 {
+                return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+            }
+            let Some(item) =
+                ppc_qt_movie_user_data_item(&quicktime.movie_file_data, cpu.gpr[5], index)
+            else {
+                return PpcImportAction::Return(ppc_i16_result(-2026)); // userDataItemNotFound
+            };
+            let handle = cpu.gpr[4];
+            if handle != 0 {
+                let Ok(size) = u32::try_from(item.len()) else {
+                    return PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR));
+                };
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                let error = allocator.resize_handle(
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    handles,
+                    handle,
+                    size,
+                );
+                if error != PPC_NO_ERR {
+                    return PpcImportAction::Return(ppc_i16_result(error));
+                }
+                let Some(ptr) = handles
+                    .iter()
+                    .find(|record| record.handle == handle)
+                    .map(|record| record.ptr)
+                else {
+                    return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+                };
+                for (offset, byte) in item.iter().enumerate() {
+                    if memory.write_u8(ptr + offset as u32, *byte).is_none() {
+                        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+                    }
+                }
+            }
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }
         PpcQuickTimeCompatibilityOperation::GetMovieVolume => {
             PpcImportAction::Return(if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
@@ -1226,7 +1279,7 @@ pub(crate) fn ppc_qt_movie_preferred_volume(data: &[u8]) -> Option<i16> {
     ppc_qt_scan_movie_header(data, 0, data.len(), 0, ppc_qt_mvhd_preferred_volume)
 }
 
-fn ppc_qt_movie_has_user_data(data: &[u8]) -> bool {
+fn ppc_qt_movie_user_data_range(data: &[u8]) -> Option<(usize, usize)> {
     let mut offset = 0;
     while offset + 8 <= data.len() {
         let Some((kind, content_start, atom_end)) = ppc_qt_atom_range(data, offset, data.len())
@@ -1236,19 +1289,40 @@ fn ppc_qt_movie_has_user_data(data: &[u8]) -> bool {
         if kind == b"moov" {
             let mut child = content_start;
             while child + 8 <= atom_end {
-                let Some((child_kind, _, child_end)) = ppc_qt_atom_range(data, child, atom_end)
+                let Some((child_kind, child_start, child_end)) =
+                    ppc_qt_atom_range(data, child, atom_end)
                 else {
                     break;
                 };
                 if child_kind == b"udta" {
-                    return true;
+                    return Some((child_start, child_end));
                 }
                 child = child_end;
             }
         }
         offset = atom_end;
     }
-    false
+    None
+}
+
+fn ppc_qt_movie_has_user_data(data: &[u8]) -> bool {
+    ppc_qt_movie_user_data_range(data).is_some()
+}
+
+fn ppc_qt_movie_user_data_item(data: &[u8], kind: u32, index: u32) -> Option<&[u8]> {
+    let (mut offset, end) = ppc_qt_movie_user_data_range(data)?;
+    let mut matching = 0;
+    while offset + 8 <= end {
+        let (item_kind, content_start, item_end) = ppc_qt_atom_range(data, offset, end)?;
+        if item_kind == kind.to_be_bytes() {
+            matching += 1;
+            if matching == index {
+                return data.get(content_start..item_end);
+            }
+        }
+        offset = item_end;
+    }
+    None
 }
 
 pub(crate) fn ppc_qt_movie_tracks(data: &[u8]) -> Vec<PpcQuickTimeTrackRecord> {

@@ -2911,6 +2911,7 @@ fn import_bindings_classify_quicktime_compatibility_imports() {
             "GetMovieUserData",
             PpcQuickTimeCompatibilityOperation::GetMovieUserData,
         ),
+        ("GetUserData", PpcQuickTimeCompatibilityOperation::GetUserData),
         (
             "GetMovieVolume",
             PpcQuickTimeCompatibilityOperation::GetMovieVolume,
@@ -3126,6 +3127,54 @@ fn quicktime_get_movie_user_data_reflects_udta_atom() {
     loaded.run_with_hle_imports(64);
     assert_eq!(loaded.cpu.gpr[3], 0);
     assert_eq!(loaded.quicktime.movie_error, -2010);
+}
+
+#[test]
+fn quicktime_get_user_data_reads_indexed_items_into_handle() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"GetUserData");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.quicktime.movie_file_data = [
+        0, 0, 0, 40, b'm', b'o', b'o', b'v',
+        0, 0, 0, 32, b'u', b'd', b't', b'a',
+        0, 0, 0, 12, b'n', b'a', b'm', b'e', b'A', b'B', b'C', b'D',
+        0, 0, 0, 12, b'n', b'a', b'm', b'e', b'E', b'F', b'G', b'H',
+    ].to_vec();
+    let handle = loaded.process_memory_manager.0.borrow_mut().new_native_handle(&mut loaded.memory, 0, false);
+    assert_ne!(handle, 0);
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE + 0x20;
+    loaded.cpu.gpr[4] = handle;
+    loaded.cpu.gpr[5] = u32::from_be_bytes(*b"name");
+    loaded.cpu.gpr[6] = 2;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let ptr = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!((0..4).map(|i| loaded.memory.read_u8(ptr + i).unwrap()).collect::<Vec<_>>(), b"EFGH");
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE + 0x20;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = u32::from_be_bytes(*b"name");
+    loaded.cpu.gpr[6] = 1;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE + 0x20;
+    loaded.cpu.gpr[6] = 3;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-2026));
+
+    loaded.quicktime.movie_file_data = vec![
+        0, 0, 0, 20, b'm', b'o', b'o', b'v',
+        0, 0, 0, 12, b'u', b'd', b't', b'a',
+        0, 0, 0, 40,
+    ];
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE + 0x20;
+    loaded.cpu.gpr[6] = 1;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-2026));
 }
 
 #[test]
