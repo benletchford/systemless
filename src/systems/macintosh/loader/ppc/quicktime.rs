@@ -5099,7 +5099,15 @@ pub(crate) fn ppc_qt_draw_movie_frame(
     let Some(front_buffer) = ppc_live_front_buffer_for_gworld(memory, gworlds, gworld) else {
         return false;
     };
-    if ppc_qt_draw_decoded_movie_frame(memory, front_buffer, quicktime) {
+    // Inside Macintosh: QuickTime Components (1993), p. 2-38: the bounds
+    // of an attached controller also position its movie.
+    let draw_rect = quicktime
+        .movie_controllers
+        .iter()
+        .rev()
+        .find(|controller| controller.movie == PPC_QT_MOVIE && controller.window == gworld)
+        .map_or(quicktime.movie_box, |controller| controller.rect);
+    if ppc_qt_draw_decoded_movie_frame(memory, front_buffer, quicktime, draw_rect) {
         return true;
     }
     if front_buffer.depth != 16 {
@@ -5117,6 +5125,7 @@ fn ppc_qt_draw_decoded_movie_frame(
     memory: &mut PpcSectionMem,
     front_buffer: PpcFrontBuffer,
     quicktime: &mut PpcQuickTimeState,
+    draw_rect: (i16, i16, i16, i16),
 ) -> bool {
     if front_buffer.depth != 16
         || front_buffer.base_addr == 0
@@ -5129,7 +5138,7 @@ fn ppc_qt_draw_decoded_movie_frame(
     let Some(frame) = ppc_qt_decode_current_movie_video_frame(quicktime) else {
         return false;
     };
-    let (top, left, bottom, right) = quicktime.movie_box;
+    let (top, left, bottom, right) = draw_rect;
     let box_width = i32::from(right) - i32::from(left);
     let box_height = i32::from(bottom) - i32::from(top);
     if box_width <= 0 || box_height <= 0 {
