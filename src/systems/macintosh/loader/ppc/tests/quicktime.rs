@@ -728,6 +728,7 @@ fn hle_import_runner_tracks_quicktime_movie_file_box_and_beginning_state() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     assert_eq!(loaded.memory.read_u32_be(movie_out_ptr), Some(PPC_QT_MOVIE));
+    assert_eq!(loaded.quicktime.movie_time_scale, 60);
     assert!(loaded.quicktime.movie_at_beginning);
     assert_eq!(loaded.quicktime.movie_box, (0, 0, 240, 320));
     assert_eq!(loaded.quicktime.movie_tasks_until_done, 120);
@@ -2877,6 +2878,10 @@ fn import_bindings_classify_quicktime_compatibility_imports() {
             PpcQuickTimeCompatibilityOperation::GetMovieTimeBase,
         ),
         (
+            "GetMovieTimeScale",
+            PpcQuickTimeCompatibilityOperation::GetMovieTimeScale,
+        ),
+        (
             "GetMovieVolume",
             PpcQuickTimeCompatibilityOperation::GetMovieVolume,
         ),
@@ -2935,6 +2940,23 @@ fn quicktime_movie_activation_controls_task_progress() {
     loaded.cpu.gpr[3] = PPC_QT_MOVIE;
     loaded.run_with_hle_imports(64);
     assert_eq!(loaded.quicktime.movie_task_count, 0);
+}
+
+#[test]
+fn quicktime_movie_time_scale_uses_loaded_metadata_and_rejects_invalid_movies() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"GetMovieTimeScale");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.quicktime.movie_time_scale = 30;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 30);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = 0;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.quicktime.movie_error, -2010);
 }
 
 #[test]
