@@ -203,6 +203,7 @@ fn test_quicktime_tkhd_movie(width: u16, height: u16) -> Vec<u8> {
     mvhd_payload[12..16].copy_from_slice(&60u32.to_be_bytes());
     mvhd_payload[16..20].copy_from_slice(&120u32.to_be_bytes());
     mvhd_payload[20..24].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+    mvhd_payload[24..26].copy_from_slice(&0x0100u16.to_be_bytes());
 
     let mut tkhd_payload = vec![0; 84];
     tkhd_payload[3] = 0x07;
@@ -701,6 +702,7 @@ fn hle_import_runner_tracks_quicktime_movie_file_box_and_beginning_state() {
     assert_eq!(loaded.quicktime.movie_file_bounds, Some((0, 0, 240, 320)));
     assert_eq!(loaded.quicktime.movie_file_time_scale, 60);
     assert_eq!(loaded.quicktime.movie_file_preferred_rate, 0x0001_0000);
+    assert_eq!(loaded.quicktime.movie_file_preferred_volume, 0x0100);
     assert_eq!(loaded.quicktime.movie_file_duration, 120);
     assert_eq!(loaded.quicktime.movie_file_tasks_until_done, 120);
     assert_eq!(
@@ -732,6 +734,8 @@ fn hle_import_runner_tracks_quicktime_movie_file_box_and_beginning_state() {
     assert_eq!(loaded.memory.read_u32_be(movie_out_ptr), Some(PPC_QT_MOVIE));
     assert_eq!(loaded.quicktime.movie_time_scale, 60);
     assert_eq!(loaded.quicktime.movie_preferred_rate, 0x0001_0000);
+    assert_eq!(loaded.quicktime.movie_preferred_volume, 0x0100);
+    assert_eq!(loaded.quicktime.movie_volume, 0x0100);
     assert!(loaded.quicktime.movie_at_beginning);
     assert_eq!(loaded.quicktime.movie_box, (0, 0, 240, 320));
     assert_eq!(loaded.quicktime.movie_tasks_until_done, 120);
@@ -2889,6 +2893,10 @@ fn import_bindings_classify_quicktime_compatibility_imports() {
             PpcQuickTimeCompatibilityOperation::GetMoviePreferredRate,
         ),
         (
+            "GetMoviePreferredVolume",
+            PpcQuickTimeCompatibilityOperation::GetMoviePreferredVolume,
+        ),
+        (
             "GetMovieVolume",
             PpcQuickTimeCompatibilityOperation::GetMovieVolume,
         ),
@@ -2986,6 +2994,35 @@ fn quicktime_movie_preferred_rate_reads_mvhd_and_rejects_invalid_movies() {
     let probe = loaded.run_with_hle_imports(64);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 0x0001_8000);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = 0;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.quicktime.movie_error, -2010);
+}
+
+#[test]
+fn quicktime_movie_preferred_volume_reads_mvhd_and_rejects_invalid_movies() {
+    let mut mvhd = vec![0; 26];
+    mvhd[12..16].copy_from_slice(&60u32.to_be_bytes());
+    mvhd[16..20].copy_from_slice(&120u32.to_be_bytes());
+    mvhd[20..24].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+    mvhd[24..26].copy_from_slice(&0x0080u16.to_be_bytes());
+    let mut moov = Vec::new();
+    push_quicktime_atom(&mut moov, b"mvhd", &mvhd);
+    let mut movie = Vec::new();
+    push_quicktime_atom(&mut movie, b"moov", &moov);
+    assert_eq!(ppc_qt_movie_preferred_volume(&movie), Some(0x0080));
+    assert_eq!(ppc_qt_movie_preferred_volume(&movie[..movie.len() - 1]), None);
+
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"GetMoviePreferredVolume");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.quicktime.movie_preferred_volume = 0x0080;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0x0080);
 
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.gpr[3] = 0;
