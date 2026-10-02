@@ -3,7 +3,8 @@ id: path-to-fortune-r3
 kind: game
 title: The Path to Fortune (Release 3)
 summary: >-
-  Explore Windhall and seek a way to save its mayor's house in a fantasy text adventure.
+  Explore Windhall and seek a way to save its mayor's house in a fantasy text
+  adventure.
 developer: C.E. Forman
 publisher: Jeff Cassidy and C.E. Forman
 year: 1996
@@ -22,9 +23,9 @@ compatibility:
     environment: >-
       The unchanged Info-Mac package opened its bundled 68K MaxZip interpreter.
       Answering N to the resume prompt and advancing the introduction reached Central
-      Windhall. Typing LOOK and Return printed the town description again at a new
-      prompt. The release browser fetched the original archive once and reproduced
-      the command response.
+      Windhall. Typing LOOK and Return printed the town description again at a new prompt.
+      The release browser fetched the original archive once and reproduced the command
+      response.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3908
 artifacts:
@@ -32,20 +33,20 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/adv/path-to-fortune.hqx
-    expected_sha256: 4b23687e4ccbdf35c05e57747dfcf1acb2992935a8512161197b637fbf909cfa
-    expected_size: 475234
+    type: sha256
+    sha256: 4b23687e4ccbdf35c05e57747dfcf1acb2992935a8512161197b637fbf909cfa
+    size_bytes: 475234
   provenance:
     redistribution: permitted
     original: true
     sources:
     - https://info-mac.org/viewtopic.php?t=13925
-    - https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/adv/path-to-fortune.hqx
+    - >-
+      https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/adv/path-to-fortune.hqx
     rights_holder: Jeff Cassidy and C.E. Forman
     permission: >-
-      The author-submitted Info-Mac description permits free distribution of the
-      game without profit. The separately offered maps and hint book are excluded.
+      The author-submitted Info-Mac description permits free distribution of the game
+      without profit. The separately offered maps and hint book are excluded.
     notes: >-
       Original 475,234-byte Info-Mac archive; SHA-256
       4b23687e4ccbdf35c05e57747dfcf1acb2992935a8512161197b637fbf909cfa.
@@ -53,8 +54,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/path-to-fortune-r3/gameplay.png
+    type: sha256
+    sha256: 37afb6af12c80198e42bbba0ff86590ed59c66833a145416671fdb74b270815d
+    size_bytes: 22393
   provenance:
     redistribution: permitted
     original: true
@@ -69,12 +71,13 @@ artifacts:
       deterministic framebuffer after the LOOK command.
 references:
 - https://info-mac.org/viewtopic.php?t=13925
-- https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/adv/path-to-fortune.hqx
+- >-
+  https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/adv/path-to-fortune.hqx
 ---
 
 ## Windhall needs your help
 
-![The Path to Fortune story window after the LOOK command](incoming/path-to-fortune-r3/gameplay.png)
+![The Path to Fortune story window after the LOOK command](https://assets.systemless.org/catalogue/media/sha256/37/37afb6af12c80198e42bbba0ff86590ed59c66833a145416671fdb74b270815d.png)
 
 Answer **N** at the saved-game prompt, then press any key to advance the
 introduction. At the `>` prompt in Central Windhall, type a command and press
