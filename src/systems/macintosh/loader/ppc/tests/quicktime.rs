@@ -3321,6 +3321,36 @@ fn quicktime_mc_do_action_play_starts_and_stops_controller_movie() {
 }
 
 #[test]
+fn quicktime_mc_do_action_idle_tasks_associated_movie() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"MCDoAction");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let controller = 0x4001_3010;
+    loaded.quicktime.movie_controllers.push(PpcQuickTimeControllerRecord {
+        handle: controller,
+        movie: PPC_QT_MOVIE,
+        rect: (0, 0, 100, 100),
+        flags: 0,
+        window: 0,
+        origin: 0,
+        action_filter: 0,
+        action_ref_con: 0,
+    });
+    loaded.quicktime.movie_active = true;
+    loaded.quicktime.movie_started = true;
+    loaded.quicktime.movie_tasks_until_done = 10;
+    loaded.cpu.gpr[3] = controller;
+    loaded.cpu.gpr[4] = 1; // mcActionIdle
+    loaded.cpu.gpr[5] = 0;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.quicktime.movie_task_count, 1);
+    assert!(loaded.quicktime.movie_started);
+}
+
+#[test]
 fn quicktime_new_movie_controller_records_movie_and_bounds() {
     let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"NewMovieController");
     let mut loaded = load_pef_application(&pef).unwrap();
