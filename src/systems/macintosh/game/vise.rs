@@ -21,6 +21,7 @@ const VISE_VERSION_35: u32 = 0x8001_0201;
 const VISE_VERSION_35_LITE: u32 = 0x8001_0202;
 const VISE_VERSION_36_LITE: u32 = 0x8001_0300;
 const VISE_VERSION_36_FULL: u32 = 0x8001_0304;
+const VISE_VERSION_EARLY_EXTENDED_CATALOG: u32 = 0x8001_0306;
 const VISE_VERSION_EXTENDED_CATALOG: u32 = 0x8001_0307;
 const VISE_VERSION_PACKED_CATALOG: u32 = 0x8001_0308;
 const VISE_DIRECTORY_RECORD_LEN: usize = 78;
@@ -35,6 +36,13 @@ const VISE_PACKED_FILE_SUFFIX_LEN: usize = 66;
 // https://www.vintageapplemac.com/files/games/Myth%20Demo%20Installer.sit
 const VISE_36_FULL_DIRECTORY_SUFFIX_LEN: usize = 22;
 const VISE_36_FULL_FILE_SUFFIX_LEN: usize = 16;
+
+fn uncompressed_extended_catalog(version: u32) -> bool {
+    matches!(
+        version,
+        VISE_VERSION_EARLY_EXTENDED_CATALOG | VISE_VERSION_EXTENDED_CATALOG
+    )
+}
 
 // Installer VISE 3 archive layout and transform reference:
 // ScummVM `common/compression/vise.cpp`, GPL-3.0-or-later, as of
@@ -127,7 +135,7 @@ pub(crate) fn join_segments(primary: &[u8], continuations: &[&[u8]]) -> Result<V
     }
     let entry_count = read_u16(catalog, 16, "catalog entry count")? as usize;
     let mut cursor = catalog_offset + VISE_CATALOG_HEADER_LEN;
-    if version == VISE_VERSION_EXTENDED_CATALOG {
+    if uncompressed_extended_catalog(version) {
         range(
             &patched,
             cursor,
@@ -155,7 +163,7 @@ pub(crate) fn join_segments(primary: &[u8], continuations: &[&[u8]]) -> Result<V
                 cursor += VISE_DIRECTORY_RECORD_LEN;
                 if version == VISE_VERSION_36_LITE {
                     cursor += 6;
-                } else if version == VISE_VERSION_EXTENDED_CATALOG {
+                } else if uncompressed_extended_catalog(version) {
                     cursor += VISE_EXTENDED_DIRECTORY_SUFFIX_LEN;
                 }
                 range(&patched, cursor, name_len, "directory name")?;
@@ -202,7 +210,7 @@ pub(crate) fn join_segments(primary: &[u8], continuations: &[&[u8]]) -> Result<V
                         .copy_from_slice(&normalized_offset.to_be_bytes());
                 }
                 cursor += VISE_FILE_RECORD_LEN;
-                if version == VISE_VERSION_EXTENDED_CATALOG {
+                if uncompressed_extended_catalog(version) {
                     cursor += VISE_EXTENDED_FILE_SUFFIX_LEN;
                 }
                 range(&patched, cursor, name_len, "file name")?;
@@ -249,6 +257,7 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
             | VISE_VERSION_35_LITE
             | VISE_VERSION_36_LITE
             | VISE_VERSION_36_FULL
+            | VISE_VERSION_EARLY_EXTENDED_CATALOG
             | VISE_VERSION_EXTENDED_CATALOG
             | VISE_VERSION_PACKED_CATALOG
     ) {
@@ -268,10 +277,8 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
         ));
     }
     let entry_count = read_u16(catalog, 16, "catalog entry count")? as usize;
-    let extended_catalog = matches!(
-        version,
-        VISE_VERSION_EXTENDED_CATALOG | VISE_VERSION_PACKED_CATALOG
-    );
+    let extended_catalog =
+        uncompressed_extended_catalog(version) || version == VISE_VERSION_PACKED_CATALOG;
     let mut cursor = catalog_offset + VISE_CATALOG_HEADER_LEN;
     if extended_catalog {
         let prefix = range(
@@ -1319,16 +1326,22 @@ pub(crate) mod tests {
         archive.extend_from_slice(&[0u8; VISE_EXTENDED_FILE_SUFFIX_LEN]);
         archive.extend_from_slice(b"Runtime");
 
-        let parsed = parse_vise(&archive).unwrap().unwrap();
-        assert_eq!(parsed.dirs, ["Game"]);
-        assert_eq!(parsed.entries.len(), 1);
-        let entry = &parsed.entries[0];
-        assert_eq!(entry.path, "Game/Runtime");
-        assert_eq!(entry.unpacked_offset, 0);
-        assert_eq!(
-            decode_vise_fork(entry.data_packed, entry.data_unpacked_len).unwrap(),
-            data_fork
-        );
+        for version in [
+            VISE_VERSION_EARLY_EXTENDED_CATALOG,
+            VISE_VERSION_EXTENDED_CATALOG,
+        ] {
+            archive[16..20].copy_from_slice(&version.to_be_bytes());
+            let parsed = parse_vise(&archive).unwrap().unwrap();
+            assert_eq!(parsed.dirs, ["Game"]);
+            assert_eq!(parsed.entries.len(), 1);
+            let entry = &parsed.entries[0];
+            assert_eq!(entry.path, "Game/Runtime");
+            assert_eq!(entry.unpacked_offset, 0);
+            assert_eq!(
+                decode_vise_fork(entry.data_packed, entry.data_unpacked_len).unwrap(),
+                data_fork
+            );
+        }
     }
 
     #[test]
