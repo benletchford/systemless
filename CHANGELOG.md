@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.74.0](https://github.com/benletchford/systemless/compare/v0.73.0...v0.74.0) (2026-10-02)
+
+
+### Features
+
+* **catalogue:** add Alien Action Dome 1.0 ([#3868](https://github.com/benletchford/systemless/issues/3868)) ([8463aee](https://github.com/benletchford/systemless/commit/8463aeee7209cbd5a4b323fe517328889025fd15))
+* **catalogue:** add CrashBall 2.0An ([#3890](https://github.com/benletchford/systemless/issues/3890)) ([f7e8ab6](https://github.com/benletchford/systemless/commit/f7e8ab6bc288b5ef899749894a299379fd61781d))
+* **catalogue:** add FloorTiles 2.0.1 ([#3852](https://github.com/benletchford/systemless/issues/3852)) ([e4af133](https://github.com/benletchford/systemless/commit/e4af1334664a7abaffb854a68ecc0d26119c4350))
+* **catalogue:** add Gold Digger 1.3.0 ([#3860](https://github.com/benletchford/systemless/issues/3860)) ([8039c1b](https://github.com/benletchford/systemless/commit/8039c1bb8fd80877a4dd2e3359feab4458a2ce04))
+* **catalogue:** add Invasion of the Goofy Aliens ([#3846](https://github.com/benletchford/systemless/issues/3846)) ([f6d463c](https://github.com/benletchford/systemless/commit/f6d463c7a7c846a973402351054923c9a30b8e77))
+* **catalogue:** add Lunar Phantom 1.0 ([#3884](https://github.com/benletchford/systemless/issues/3884)) ([0f8ab1e](https://github.com/benletchford/systemless/commit/0f8ab1e9a4a10ad654a32125597fedd2a2821877))
+* **catalogue:** add Nuts and Bolts ([#3876](https://github.com/benletchford/systemless/issues/3876)) ([491be19](https://github.com/benletchford/systemless/commit/491be190191d45af550c2fa241d00b09d6f30b42))
+* **catalogue:** add Puzzler 1.0.3 ([#3900](https://github.com/benletchford/systemless/issues/3900)) ([6a409e0](https://github.com/benletchford/systemless/commit/6a409e00456d9e5a282a659ffe19127413ea63fe))
+* **catalogue:** add Smart Cookies 2.0.1 ([#3896](https://github.com/benletchford/systemless/issues/3896)) ([230068e](https://github.com/benletchford/systemless/commit/230068e7a217e3c988499a5f3f0981caf24cf241))
+* **catalogue:** add verified Chirac Attack 3.00 ([#3842](https://github.com/benletchford/systemless/issues/3842)) ([92d69a3](https://github.com/benletchford/systemless/commit/92d69a32b3b5613e6b8a7ff6243e55101a2a1fd3))
+* **catalogue:** add verified Slick Willie III ([#3835](https://github.com/benletchford/systemless/issues/3835)) ([e458a3a](https://github.com/benletchford/systemless/commit/e458a3ae840f7f9eb688bf64a7636067282ba704))
+* **catalogue:** add verified Tetris Plus 1.0 ([#3829](https://github.com/benletchford/systemless/issues/3829)) ([f9632eb](https://github.com/benletchford/systemless/commit/f9632eb87c03577424f053aa2193eb14a659ca6b))
+* **catalogue:** add Wanderer I v1.21 ([#3898](https://github.com/benletchford/systemless/issues/3898)) ([d80f5ab](https://github.com/benletchford/systemless/commit/d80f5abeab2bc460ace257ffe5123cd280d43b71))
+* **quicktime:** expose movie time scale ([6f545b0](https://github.com/benletchford/systemless/commit/6f545b0922fe036f4f0252e61e16125a8674d51a)), closes [#3834](https://github.com/benletchford/systemless/issues/3834)
+* **quicktime:** expose movie user data to PowerPC callers ([4d91921](https://github.com/benletchford/systemless/commit/4d91921a19993c9235ec8509691b65d6ccefe507)), closes [#3848](https://github.com/benletchford/systemless/issues/3848)
+* **quicktime:** expose track media ([a02ebd7](https://github.com/benletchford/systemless/commit/a02ebd75edbb69d836ce47fbb5ff3d9c5b585577)), closes [#3854](https://github.com/benletchford/systemless/issues/3854)
+* **quicktime:** read media sample descriptions ([abe14fb](https://github.com/benletchford/systemless/commit/abe14fb4f373bb3f1f1a9235f60852cbef6feae1)), closes [#3856](https://github.com/benletchford/systemless/issues/3856)
+* **quicktime:** read movie user data items ([1e867f1](https://github.com/benletchford/systemless/commit/1e867f109403baa6eb33df8a38319165782056af)), closes [#3851](https://github.com/benletchford/systemless/issues/3851)
+
+
+### Bug Fixes
+
+* **quickdraw:** allocate native pixel pattern handles ([#3830](https://github.com/benletchford/systemless/issues/3830)) ([0b6edeb](https://github.com/benletchford/systemless/commit/0b6edeb061706d658fb0cb62726951cdbdc0d388))
+* **quicktime:** expose PowerPC movie preferred rate ([7c0a575](https://github.com/benletchford/systemless/commit/7c0a575eb7b7ed2c4edba2e8441837b1367f76b2)), closes [#3837](https://github.com/benletchford/systemless/issues/3837)
+* **quicktime:** expose PowerPC movie preferred volume ([bb1a9f8](https://github.com/benletchford/systemless/commit/bb1a9f8363aa5368595a7d3ec2cd5419dedc263e)), closes [#3841](https://github.com/benletchford/systemless/issues/3841)
+* **quicktime:** honor PowerPC movie activation ([#3833](https://github.com/benletchford/systemless/issues/3833)) ([f4de68a](https://github.com/benletchford/systemless/commit/f4de68a0489d0a2ff400e8e7149e3517aa8a7757))
+* **quicktime:** locate typed movie tracks in data forks ([a80a1d7](https://github.com/benletchford/systemless/commit/a80a1d7dfaadbbc108baebc5423ae57030a18af9)), closes [#3844](https://github.com/benletchford/systemless/issues/3844)
+* **quicktime:** report PowerPC library availability through Gestalt ([#3824](https://github.com/benletchford/systemless/issues/3824)) ([5c9d59e](https://github.com/benletchford/systemless/commit/5c9d59e151fd5c4d6e4c29228788dbb81ae2e9c2))
+* **web:** enable PowerPong with Option keyboard support ([#3827](https://github.com/benletchford/systemless/issues/3827)) ([2e6d624](https://github.com/benletchford/systemless/commit/2e6d6248d4de69c8bd7d072b3c3301ee0e418d28))
+
 ## [0.73.0](https://github.com/benletchford/systemless/compare/v0.72.0...v0.73.0) (2026-10-01)
 
 
