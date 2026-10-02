@@ -5643,6 +5643,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "NewMovieController") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::NewMovieController,
         ),
+        ("QuickTimeLib", "MCSetMovie") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::MCSetMovie,
+        ),
         ("QuickTimeLib", "GetMovieVolume") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::GetMovieVolume,
         ),

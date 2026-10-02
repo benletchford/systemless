@@ -49,6 +49,7 @@ pub enum PpcQuickTimeCompatibilityOperation {
     GetMediaSampleDescription,
     MCDoAction,
     NewMovieController,
+    MCSetMovie,
     GetMovieVolume,
     NewMovieFromDataFork,
     PrerollMovie,
@@ -163,6 +164,8 @@ pub struct PpcQuickTimeControllerRecord {
     pub movie: u32,
     pub rect: (i16, i16, i16, i16),
     pub flags: u32,
+    pub window: u32,
+    pub origin: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -555,8 +558,28 @@ pub(super) fn dispatch_quicktime_compatibility(
                     movie: cpu.gpr[3],
                     rect,
                     flags: cpu.gpr[5],
+                    window: 0,
+                    origin: 0,
                 });
             PpcImportAction::Return(handle)
+        }
+        PpcQuickTimeCompatibilityOperation::MCSetMovie => {
+            // Inside Macintosh: QuickTime Components (1993), pp. 2-31–2-32.
+            let Some(controller) = quicktime
+                .movie_controllers
+                .iter_mut()
+                .find(|controller| controller.handle == cpu.gpr[3])
+            else {
+                return PpcImportAction::Return(ppc_i16_result(PPC_INVALID_COMPONENT_ID));
+            };
+            let movie = cpu.gpr[4];
+            if movie != 0 && (movie != PPC_QT_MOVIE || quicktime.movie_disposed) {
+                return PpcImportAction::Return(ppc_i16_result(-2010)); // invalidMovie
+            }
+            controller.movie = movie;
+            controller.window = cpu.gpr[5];
+            controller.origin = cpu.gpr[6];
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }
         PpcQuickTimeCompatibilityOperation::GetMovieVolume => {
             PpcImportAction::Return(if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
