@@ -20,9 +20,9 @@ compatibility:
     architecture: 68k
     environment: >-
       The unchanged Info-Mac archive opened its 68K application, displayed the title
-      menu, accepted Begin New Game, showed the first level objective, and reached
-      the active park scene with moving aliens, a timer, and mouse aiming and shooting.
-      The release browser fetched the same archive and reached the live level.
+      menu, accepted Begin New Game, showed the first level objective, and reached the
+      active park scene with moving aliens, a timer, and mouse aiming and shooting. The
+      release browser fetched the same archive and reached the live level.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3845
 artifacts:
@@ -30,15 +30,15 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/invasion-aliens-101.hqx
-    expected_sha256: 706345ba1bc46d8cf676256196445811ce7e0315e1fd002ebcf6862738ae31d5
-    expected_size: 2528418
+    type: sha256
+    sha256: 706345ba1bc46d8cf676256196445811ce7e0315e1fd002ebcf6862738ae31d5
+    size_bytes: 2528418
   provenance:
     redistribution: permitted
     original: true
     sources:
-    - https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/invasion-aliens-101.hqx
+    - >-
+      https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/invasion-aliens-101.hqx
     rights_holder: Gooey Orbit Games
     permission: >-
       The bundled Read Me permits free redistribution of the complete, unchanged
@@ -51,8 +51,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/invasion-goofy-aliens/gameplay.png
+    type: sha256
+    sha256: 4cd508a750704ae5720e7fa6033ea39c873bb711f202f4075b05c256c1b98236
+    size_bytes: 268003
   provenance:
     redistribution: permitted
     original: true
@@ -66,12 +67,13 @@ artifacts:
       Exact 512-by-343 game-content crop at (144,129) from an 800-by-600 Systemless
       framebuffer during the first active park level; host and emulator framing excluded.
 references:
-- https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/invasion-aliens-101.hqx
+- >-
+  https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/invasion-aliens-101.hqx
 ---
 
 ## Chase the aliens away
 
-![Aliens emerging in the park](incoming/invasion-goofy-aliens/gameplay.png)
+![Aliens emerging in the park](https://assets.systemless.org/catalogue/media/sha256/4c/4cd508a750704ae5720e7fa6033ea39c873bb711f202f4075b05c256c1b98236.png)
 
 Choose a difficulty and click **Begin New Game**. The first park level asks
 you to hit 40 aliens in 60 seconds. Aim with the mouse and click to shoot
