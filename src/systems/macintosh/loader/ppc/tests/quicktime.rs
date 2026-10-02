@@ -207,6 +207,7 @@ fn test_quicktime_tkhd_movie(width: u16, height: u16) -> Vec<u8> {
 
     let mut tkhd_payload = vec![0; 84];
     tkhd_payload[3] = 0x07;
+    tkhd_payload[12..16].copy_from_slice(&1u32.to_be_bytes());
     tkhd_payload[76..80].copy_from_slice(&(u32::from(width) << 16).to_be_bytes());
     tkhd_payload[80..84].copy_from_slice(&(u32::from(height) << 16).to_be_bytes());
 
@@ -331,6 +332,10 @@ fn test_quicktime_tkhd_movie(width: u16, height: u16) -> Vec<u8> {
     push_quicktime_atom(&mut audio_mdia_payload, b"minf", &audio_minf_payload);
 
     let mut audio_trak_payload = Vec::new();
+    let mut audio_tkhd_payload = vec![0; 84];
+    audio_tkhd_payload[3] = 0x07;
+    audio_tkhd_payload[12..16].copy_from_slice(&2u32.to_be_bytes());
+    push_quicktime_atom(&mut audio_trak_payload, b"tkhd", &audio_tkhd_payload);
     push_quicktime_atom(&mut audio_trak_payload, b"mdia", &audio_mdia_payload);
 
     let mut moov_payload = Vec::new();
@@ -703,6 +708,7 @@ fn hle_import_runner_tracks_quicktime_movie_file_box_and_beginning_state() {
     assert_eq!(loaded.quicktime.movie_file_time_scale, 60);
     assert_eq!(loaded.quicktime.movie_file_preferred_rate, 0x0001_0000);
     assert_eq!(loaded.quicktime.movie_file_preferred_volume, 0x0100);
+    assert_eq!(loaded.quicktime.movie_file_tracks.len(), 2);
     assert_eq!(loaded.quicktime.movie_file_duration, 120);
     assert_eq!(loaded.quicktime.movie_file_tasks_until_done, 120);
     assert_eq!(
@@ -736,6 +742,7 @@ fn hle_import_runner_tracks_quicktime_movie_file_box_and_beginning_state() {
     assert_eq!(loaded.quicktime.movie_preferred_rate, 0x0001_0000);
     assert_eq!(loaded.quicktime.movie_preferred_volume, 0x0100);
     assert_eq!(loaded.quicktime.movie_volume, 0x0100);
+    assert_eq!(loaded.quicktime.movie_tracks.len(), 2);
     assert!(loaded.quicktime.movie_at_beginning);
     assert_eq!(loaded.quicktime.movie_box, (0, 0, 240, 320));
     assert_eq!(loaded.quicktime.movie_tasks_until_done, 120);
@@ -2897,6 +2904,10 @@ fn import_bindings_classify_quicktime_compatibility_imports() {
             PpcQuickTimeCompatibilityOperation::GetMoviePreferredVolume,
         ),
         (
+            "GetMovieIndTrackType",
+            PpcQuickTimeCompatibilityOperation::GetMovieIndTrackType,
+        ),
+        (
             "GetMovieVolume",
             PpcQuickTimeCompatibilityOperation::GetMovieVolume,
         ),
@@ -3029,6 +3040,96 @@ fn quicktime_movie_preferred_volume_reads_mvhd_and_rejects_invalid_movies() {
     loaded.run_with_hle_imports(64);
     assert_eq!(loaded.cpu.gpr[3], 0);
     assert_eq!(loaded.quicktime.movie_error, -2010);
+}
+
+#[test]
+fn quicktime_movie_track_type_filters_media_and_enabled_tracks() {
+    let movie = test_quicktime_tkhd_movie(320, 240);
+    let tracks = ppc_qt_movie_tracks(&movie);
+    assert_eq!(tracks.len(), 2);
+    assert_eq!(tracks[0].id, 1);
+    assert_eq!(tracks[0].media_type, u32::from_be_bytes(*b"vide"));
+    assert!(tracks[0].enabled);
+    assert_eq!(tracks[1].id, 2);
+    assert_eq!(tracks[1].media_type, u32::from_be_bytes(*b"soun"));
+
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"GetMovieIndTrackType");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.quicktime.movie_tracks = tracks;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = u32::from_be_bytes(*b"vide");
+    loaded.cpu.gpr[6] = 1 | 4; // movieTrackMediaType | movieTrackEnabledOnly
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], loaded.quicktime.movie_tracks[0].handle);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = u32::from_be_bytes(*b"ears");
+    loaded.cpu.gpr[6] = 2 | 4; // movieTrackCharacteristic | movieTrackEnabledOnly
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], loaded.quicktime.movie_tracks[1].handle);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = 2;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    loaded.quicktime.movie_tracks[1].enabled = false;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = 1;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = 0;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.quicktime.movie_error, -2010);
+}
+
+#[test]
+fn quicktime_new_movie_from_data_fork_reads_atom_at_requested_offset() {
+    let movie = test_quicktime_tkhd_movie(320, 240);
+    let movie_offset = movie.windows(4).position(|bytes| bytes == b"moov").unwrap() - 4;
+    let mut fork = vec![0xAA; 13];
+    fork.extend_from_slice(&movie[movie_offset..]);
+
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"NewMovieFromDataFork");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Data/movie.mhk".to_string(),
+        data: fork.into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.push_test_open_file(PpcFileRecord {
+        ref_num: PPC_FIRST_FILE_REF_NUM,
+        path: "Data/movie.mhk".to_string(),
+        position: 0,
+    });
+    let movie_out = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(movie_out, vec![0; 4]);
+    loaded.cpu.gpr[3] = movie_out;
+    loaded.cpu.gpr[4] = PPC_FIRST_FILE_REF_NUM as u16 as u32;
+    loaded.cpu.gpr[5] = 13;
+    loaded.cpu.gpr[6] = 1; // newMovieActive
+    loaded.cpu.gpr[7] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(movie_out), Some(PPC_QT_MOVIE));
+    assert_eq!(loaded.quicktime.movie_file_path, "Data/movie.mhk");
+    assert_eq!(loaded.quicktime.movie_time_scale, 60);
+    assert_eq!(loaded.quicktime.movie_tracks.len(), 2);
+    assert_eq!(loaded.quicktime.movie_tracks[0].media_type, u32::from_be_bytes(*b"vide"));
+    assert!(loaded.quicktime.movie_active);
 }
 
 #[test]
