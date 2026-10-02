@@ -2684,7 +2684,7 @@ pub(crate) fn dispatch_supported_import(
             Some(ppc_dispatch_speech_compatibility(operation, cpu, memory))
         }
         PpcImportDispatcherTarget::QuickTimeCompatibility(operation) => Some(
-            dispatch_quicktime_compatibility(operation, cpu, memory, quicktime),
+            dispatch_quicktime_compatibility(operation, cpu, memory, quicktime, sound),
         ),
         PpcImportDispatcherTarget::InputSprocketCompatibility(_) => {
             unreachable!(

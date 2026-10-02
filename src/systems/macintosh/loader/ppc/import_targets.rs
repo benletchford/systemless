@@ -5599,6 +5599,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("SpeechLib", "SpeechBusy") => PpcImportDispatcherTarget::SpeechCompatibility(
             PpcSpeechCompatibilityOperation::SpeechBusy,
         ),
+        ("QuickTimeLib", "GetMovieActive") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMovieActive,
+        ),
         ("QuickTimeLib", "GetMovieTimeBase") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::GetMovieTimeBase,
         ),
@@ -5612,6 +5615,9 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("QuickTimeLib", "PrerollMovie") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::PrerollMovie,
+        ),
+        ("QuickTimeLib", "SetMovieActive") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetMovieActive,
         ),
         ("QuickTimeLib", "SetMovieVolume") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::SetMovieVolume,

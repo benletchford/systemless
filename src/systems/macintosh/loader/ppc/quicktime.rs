@@ -37,10 +37,12 @@ pub fn ppc_main_screen_height() -> u32 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcQuickTimeCompatibilityOperation {
+    GetMovieActive,
     GetMovieTimeBase,
     GetMovieVolume,
     NewMovieFromDataFork,
     PrerollMovie,
+    SetMovieActive,
     SetMovieVolume,
     SetTimeBaseFlags,
     UpdateMovie,
@@ -175,6 +177,7 @@ pub struct PpcQuickTimeState {
     pub movie_beginning_count: u32,
     pub movie_at_beginning: bool,
     pub movie_started: bool,
+    pub movie_active: bool,
     pub movie_task_count: u32,
     pub movie_tasks_until_done: u32,
     pub movie_video_track: Option<PpcQuickTimeVideoTrackRecord>,
@@ -230,6 +233,7 @@ impl Default for PpcQuickTimeState {
             movie_beginning_count: 0,
             movie_at_beginning: true,
             movie_started: false,
+            movie_active: false,
             movie_task_count: 0,
             movie_tasks_until_done: PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE,
             movie_video_track: None,
@@ -252,9 +256,16 @@ pub(super) fn dispatch_quicktime_compatibility(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     quicktime: &mut PpcQuickTimeState,
+    sound: &mut PpcSoundState,
 ) -> PpcImportAction {
     const PPC_QT_TIME_BASE: u32 = PPC_QT_MOVIE + 0x10;
     match operation {
+        PpcQuickTimeCompatibilityOperation::GetMovieActive => {
+            // Inside Macintosh: QuickTime (1993), p. 2-146.
+            PpcImportAction::Return(u32::from(
+                compatibility_valid_movie(quicktime, cpu.gpr[3]) && quicktime.movie_active,
+            ))
+        }
         PpcQuickTimeCompatibilityOperation::GetMovieTimeBase => {
             PpcImportAction::Return(if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
                 PPC_QT_TIME_BASE
@@ -272,6 +283,21 @@ pub(super) fn dispatch_quicktime_compatibility(
         PpcQuickTimeCompatibilityOperation::SetMovieVolume => {
             if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
                 quicktime.movie_volume = cpu.gpr[4] as u16 as i16;
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickTimeCompatibilityOperation::SetMovieActive => {
+            // Inside Macintosh: QuickTime (1993), pp. 2-145–2-146.
+            if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
+                quicktime.movie_active = cpu.gpr[4] != 0;
+                if quicktime.movie_active && quicktime.movie_started {
+                    let _ = ppc_qt_start_movie_audio(quicktime, sound);
+                } else if !quicktime.movie_active {
+                    ppc_qt_stop_movie_audio(sound);
+                }
+                let _ = ppc_qt_record_error(quicktime, PPC_NO_ERR);
+            } else {
+                let _ = ppc_qt_record_error(quicktime, -2010); // invalidMovie
             }
             PpcImportAction::ReturnPreserve
         }
@@ -325,6 +351,8 @@ pub(super) fn dispatch_quicktime_compatibility(
                 quicktime.movie_audio_track = None;
             }
             quicktime.movie_started = false;
+            // newMovieActive is bit 0 of the creation flags (pp. 2-109–2-110).
+            quicktime.movie_active = cpu.gpr[6] & 1 != 0;
             quicktime.movie_task_count = 0;
             quicktime.movie_disposed = false;
             quicktime.movie_at_beginning = true;
@@ -2602,6 +2630,8 @@ pub(crate) fn ppc_qt_new_movie_from_file(
         return PPC_PARAM_ERR;
     }
     quicktime.movie_started = false;
+    // newMovieActive is bit 0 of newMovieFlags (pp. 2-88–2-89).
+    quicktime.movie_active = cpu.gpr[7] & 1 != 0;
     quicktime.movie_task_count = 0;
     quicktime.movie_disposed = false;
     quicktime.movie_at_beginning = true;
@@ -2934,6 +2964,9 @@ pub(crate) fn ppc_qt_start_movie(
     }
     quicktime.movie_started = true;
     quicktime.movie_at_beginning = false;
+    if !quicktime.movie_active {
+        return PPC_NO_ERR;
+    }
     let audio_started = ppc_qt_start_movie_audio(quicktime, sound);
     let cache_before = quicktime
         .movie_video_decode_cache
@@ -2982,6 +3015,9 @@ pub(crate) fn ppc_qt_movies_task(
 ) -> i16 {
     if cpu.gpr[3] != PPC_QT_MOVIE || quicktime.movie_disposed {
         return PPC_PARAM_ERR;
+    }
+    if !quicktime.movie_active {
+        return PPC_NO_ERR;
     }
     quicktime.movie_task_count = quicktime.movie_task_count.saturating_add(1);
     if quicktime.movie_started {
@@ -3041,6 +3077,7 @@ pub(crate) fn ppc_qt_dispose_movie(
     }
     quicktime.movie_started = false;
     quicktime.movie_disposed = true;
+    quicktime.movie_active = false;
     quicktime.movie_video_track = None;
     quicktime.movie_video_samples = None;
     quicktime.movie_video_decode_cache = None;
