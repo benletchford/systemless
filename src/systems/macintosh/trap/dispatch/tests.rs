@@ -9,6 +9,12 @@
         assert!(default_trap_route(0xAA74).allows(TrapAdapterId::QuickDraw));
     }
 
+    #[test]
+    fn appearance_control_and_drag_routes_allow_their_adapters() {
+        assert!(default_trap_route(0xAA73).allows(TrapAdapterId::Control));
+        assert!(default_trap_route(0xABED).allows(TrapAdapterId::QuickDraw));
+    }
+
     /// The default-cell shortcut answers exactly as the full table lookup:
     /// for every slot of a fresh table (every cell holds its default
     /// gateway, or a come-from head where the profile has one), after a

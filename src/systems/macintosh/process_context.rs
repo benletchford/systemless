@@ -3847,9 +3847,24 @@ impl SharedProcessControlManager {
         self.with_ref(|manager| manager.proc_id(pointer))
     }
 
-    #[cfg(test)]
     pub(crate) fn contains_pointer(&self, pointer: u32) -> bool {
         self.with_ref(|manager| manager.contains_pointer(pointer))
+    }
+
+    pub(crate) fn set_font_style(
+        &self,
+        pointer: u32,
+        style: Option<crate::control_manager::ControlFontStyle>,
+    ) {
+        self.with_mut(|manager| manager.set_font_style(pointer, style));
+    }
+
+    pub(crate) fn set_control_data(&self, handle: u32, part: i16, tag: u32, data: Vec<u8>) {
+        self.with_mut(|manager| manager.set_control_data(handle, part, tag, data));
+    }
+
+    pub(crate) fn get_control_data(&self, handle: u32, part: i16, tag: u32) -> Option<Vec<u8>> {
+        self.with_ref(|manager| manager.get_control_data(handle, part, tag).map(<[u8]>::to_vec))
     }
 
     pub(crate) fn set_proc_id(&self, pointer: u32, proc_id: i16) {

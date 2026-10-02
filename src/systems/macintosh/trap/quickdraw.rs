@@ -15299,6 +15299,16 @@ impl super::TrapDispatcher {
             // booted Drag Manager in this HLE, so report unimpErr and let the
             // caller use its non-drag path. Universal Interfaces 3.4,
             // Traps.h, names $ABED as DragDispatch.
+            (true, 0x3ED) if matches!(cpu.read_reg(Register::D0), 1 | 2) => {
+                // InstallTrackingHandler / InstallReceiveHandler each take
+                // three pointers. Report the unavailable Drag Manager so
+                // callers can use their non-drag interaction path. Apple
+                // Universal Interfaces Drag.h, selectors $0001 and $0002.
+                let sp = cpu.read_reg(Register::A7);
+                bus.write_word(sp + 12, (-4i16) as u16); // unimpErr
+                cpu.write_reg(Register::A7, sp + 12);
+                Ok(())
+            }
             (true, 0x3ED) if cpu.read_reg(Register::D0) == 0xC301 => {
                 let sp = cpu.read_reg(Register::A7);
                 bus.write_word(sp + 6, (-4i16) as u16); // unimpErr

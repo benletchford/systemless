@@ -17915,6 +17915,24 @@
     }
 
     #[test]
+    fn dragdispatch_install_handler_returns_unavailable_without_corrupting_arguments() {
+        let (mut d, mut cpu, mut bus) = setup();
+        cpu.write_reg(Register::D0, 1); // InstallTrackingHandler
+        bus.write_long(TEST_SP, 0x1234); // handler UPP
+        bus.write_long(TEST_SP + 4, 0x5678); // window
+        bus.write_long(TEST_SP + 8, 0x9ABC); // refCon
+        bus.write_word(TEST_SP + 12, 0xBEEF); // OSErr result slot
+        let result = d.dispatch_quickdraw(true, 0x3ED, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(bus.read_word(TEST_SP + 12) as i16, -4);
+        assert_eq!(bus.read_long(TEST_SP), 0x1234);
+        assert_eq!(bus.read_long(TEST_SP + 4), 0x5678);
+        assert_eq!(bus.read_long(TEST_SP + 8), 0x9ABC);
+    }
+
+    #[test]
     fn displaydispatch_get_first_screen_device_returns_main_gdevice() {
         let (mut d, mut cpu, mut bus) = setup();
         let main_gdh = d.ensure_main_gdevice(&mut bus);

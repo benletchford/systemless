@@ -2685,6 +2685,145 @@ impl super::TrapDispatcher {
     ) -> Option<Result<()>> {
         self.read_tick_count(bus);
         Some(match (is_tool, trap_num) {
+            // GetControlData ($AA73, selector $0013): fetches a tagged payload
+            // and reports its full size even if the caller's buffer is short.
+            // OSErr GetControlData(ControlRef, ControlPartCode, ResType, Size,
+            // void *, Size *). Apple Universal Interfaces Controls.h.
+            (true, 0x273) if cpu.read_reg(Register::D0) as u16 == 0x0013 => {
+                let sp = cpu.read_reg(Register::A7);
+                let actual_size_ptr = bus.read_long(sp);
+                let buffer_ptr = bus.read_long(sp + 4);
+                let buffer_size = bus.read_long(sp + 8) as i32;
+                let tag = bus.read_long(sp + 12);
+                let part = bus.read_word(sp + 16) as i16;
+                let handle = bus.read_long(sp + 18);
+                let pointer = if handle != 0 && handle < bus.ram_size().saturating_sub(3) {
+                    bus.read_long(handle)
+                } else {
+                    0
+                };
+                let valid_buffer = buffer_size >= 0
+                    && (buffer_size == 0 || buffer_ptr != 0)
+                    && buffer_ptr <= bus.ram_size()
+                    && (buffer_size as u32) <= bus.ram_size() - buffer_ptr;
+                let valid_size_ptr = actual_size_ptr == 0
+                    || actual_size_ptr <= bus.ram_size().saturating_sub(4);
+                let status = if !self.control_manager.contains_pointer(pointer)
+                    || !valid_buffer
+                    || !valid_size_ptr
+                {
+                    -50i16 // paramErr
+                } else if let Some(data) = self.control_manager.get_control_data(handle, part, tag) {
+                    if actual_size_ptr != 0 {
+                        bus.write_long(actual_size_ptr, data.len() as u32);
+                    }
+                    for (offset, value) in data.iter().take(buffer_size as usize).enumerate() {
+                        bus.write_byte(buffer_ptr + offset as u32, *value);
+                    }
+                    0
+                } else {
+                    if actual_size_ptr != 0 {
+                        bus.write_long(actual_size_ptr, 0);
+                    }
+                    -5604i16 // controlPropertyNotFoundErr
+                };
+                bus.write_word(sp + 22, status as u16);
+                cpu.write_reg(Register::A7, sp + 22);
+                Ok(())
+            }
+            // HandleControlClick ($AA73, selector $000A): the classic
+            // Control Manager uses the same tracking behavior for standard
+            // controls. Its EventModifiers word sits between the action UPP
+            // and Point, so a two-byte frame shift lets TrackControl consume
+            // the original Point, ControlRef, and Pascal result slot.
+            // Apple Universal Interfaces Controls.h; Macintosh Toolbox
+            // Essentials (1992), pp. 5-89--5-90 for TrackControl.
+            (true, 0x273) if cpu.read_reg(Register::D0) as u16 == 0x000A => {
+                let sp = cpu.read_reg(Register::A7);
+                let tracking_frame = self
+                    .control_tracking
+                    .as_ref()
+                    .is_some_and(|tracking| tracking.stack_ptr == sp)
+                    || self
+                        .scrollbar_thumb_tracking
+                        .as_ref()
+                        .is_some_and(|tracking| tracking.stack_ptr == sp);
+                if tracking_frame {
+                    return self.dispatch_control(true, 0x168, cpu, bus);
+                }
+                let action = bus.read_long(sp);
+                bus.write_long(sp + 2, action);
+                cpu.write_reg(Register::A7, sp + 2);
+                return self.dispatch_control(true, 0x168, cpu, bus);
+            }
+            // SetControlData ($AA73, selector $0012): stores a tagged payload
+            // on a ControlRef. OSErr SetControlData(ControlRef, ControlPartCode,
+            // ResType, Size, void *). Apple Universal Interfaces Controls.h.
+            (true, 0x273) if cpu.read_reg(Register::D0) as u16 == 0x0012 => {
+                let sp = cpu.read_reg(Register::A7);
+                let data_ptr = bus.read_long(sp);
+                let size = bus.read_long(sp + 4) as i32;
+                let tag = bus.read_long(sp + 8);
+                let part = bus.read_word(sp + 12) as i16;
+                let handle = bus.read_long(sp + 14);
+                let pointer = if handle != 0 && handle < bus.ram_size().saturating_sub(3) {
+                    bus.read_long(handle)
+                } else {
+                    0
+                };
+                let valid_data = size >= 0
+                    && (size == 0 || data_ptr != 0)
+                    && data_ptr <= bus.ram_size()
+                    && (size as u32) <= bus.ram_size() - data_ptr;
+                let status = if !self.control_manager.contains_pointer(pointer) || !valid_data {
+                    -50i16 // paramErr
+                } else {
+                    let data = (0..size as u32)
+                        .map(|offset| bus.read_byte(data_ptr + offset))
+                        .collect();
+                    self.control_manager.set_control_data(handle, part, tag, data);
+                    0
+                };
+                bus.write_word(sp + 18, status as u16);
+                cpu.write_reg(Register::A7, sp + 18);
+                Ok(())
+            }
+            // SetControlFontStyle ($AA73, selector $001C): Appearance Manager
+            // Control Manager dispatch. OSErr SetControlFontStyle(ControlRef,
+            // const ControlFontStyleRec *). Apple Universal Interfaces Controls.h.
+            (true, 0x273) if cpu.read_reg(Register::D0) as u16 == 0x001C => {
+                let sp = cpu.read_reg(Register::A7);
+                let handle = bus.read_long(sp + 4);
+                let style_ptr = bus.read_long(sp);
+                let pointer = if handle != 0 && handle < bus.ram_size().saturating_sub(3) {
+                    bus.read_long(handle)
+                } else {
+                    0
+                };
+                let valid_style = style_ptr != 0
+                    && style_ptr <= bus.ram_size().saturating_sub(24);
+                let status = if !self.control_manager.contains_pointer(pointer) || !valid_style {
+                    -50i16 // paramErr
+                } else {
+                    let word = |offset| bus.read_word(style_ptr + offset);
+                    let style = crate::control_manager::ControlFontStyle {
+                        flags: word(0) as i16,
+                        font: word(2) as i16,
+                        size: word(4) as i16,
+                        style: word(6) as i16,
+                        mode: word(8) as i16,
+                        justification: word(10) as i16,
+                        foreground: [word(12), word(14), word(16)],
+                        background: [word(18), word(20), word(22)],
+                    };
+                    self.control_manager
+                        .set_font_style(pointer, (style.flags != 0).then_some(style));
+                    0
+                };
+                bus.write_word(sp + 8, status as u16);
+                cpu.write_reg(Register::A7, sp + 8);
+                Ok(())
+            }
             // NewControl ($A954)
             // Allocates a new control and adds it to the specified window.
             // FUNCTION NewControl(theWindow: WindowPtr; boundsRect: Rect; title: Str255;

@@ -197,9 +197,14 @@ impl ProcessControlManagerState {
             .map_or(0, |record| record.proc_id)
     }
 
-    #[cfg(test)]
     pub(crate) fn contains_pointer(&self, pointer: u32) -> bool {
         self.records.iter().any(|record| record.pointer == pointer)
+    }
+
+    pub(crate) fn set_font_style(&mut self, pointer: u32, style: Option<ControlFontStyle>) {
+        if let Some(record) = self.records.iter_mut().find(|record| record.pointer == pointer) {
+            record.font_style = style;
+        }
     }
 
     pub(crate) fn set_proc_id(&mut self, pointer: u32, proc_id: i16) {
