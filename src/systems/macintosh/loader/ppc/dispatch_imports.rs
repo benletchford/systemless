@@ -2692,6 +2692,8 @@ pub(crate) fn dispatch_supported_import(
                 heap_cursor,
                 last_mem_error,
                 handles,
+                gworlds.as_slice(),
+                *current_gworld,
                 quicktime,
                 sound,
                 files.as_slice(),

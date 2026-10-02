@@ -2935,6 +2935,7 @@ fn import_bindings_classify_quicktime_compatibility_imports() {
             "MCSetControllerBoundsRect",
             PpcQuickTimeCompatibilityOperation::MCSetControllerBoundsRect,
         ),
+        ("MCIdle", PpcQuickTimeCompatibilityOperation::MCIdle),
         (
             "GetMovieVolume",
             PpcQuickTimeCompatibilityOperation::GetMovieVolume,
@@ -3456,6 +3457,40 @@ fn quicktime_mc_set_controller_bounds_updates_rect() {
     loaded.run_with_hle_imports(64);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
     assert_eq!(loaded.quicktime.movie_controllers[0].rect, (10, 20, 300, 600));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = 0;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_INVALID_COMPONENT_ID));
+}
+
+#[test]
+fn quicktime_mc_idle_services_attached_movie() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"MCIdle");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let controller = PPC_QT_MOVIE + 0x1_0000;
+    loaded.quicktime.movie_controllers.push(PpcQuickTimeControllerRecord {
+        handle: controller,
+        movie: PPC_QT_MOVIE,
+        rect: (0, 0, 100, 100),
+        flags: 0,
+        window: 0,
+        origin: 0,
+        action_filter: 0,
+        action_ref_con: 0,
+    });
+    loaded.quicktime.movie_active = true;
+    loaded.cpu.gpr[3] = controller;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.quicktime.movie_task_count, 1);
+
+    loaded.quicktime.movie_controllers[0].movie = 0;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = controller;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.quicktime.movie_task_count, 1);
 
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.gpr[3] = 0;

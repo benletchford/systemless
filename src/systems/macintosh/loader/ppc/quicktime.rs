@@ -53,6 +53,7 @@ pub enum PpcQuickTimeCompatibilityOperation {
     MCGetControllerBoundsRect,
     MCSetActionFilterWithRefCon,
     MCSetControllerBoundsRect,
+    MCIdle,
     GetMovieVolume,
     NewMovieFromDataFork,
     PrerollMovie,
@@ -338,6 +339,8 @@ pub(super) fn dispatch_quicktime_compatibility(
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
     quicktime: &mut PpcQuickTimeState,
     sound: &mut PpcSoundState,
     files: &[PpcFileRecord],
@@ -639,6 +642,28 @@ pub(super) fn dispatch_quicktime_compatibility(
             };
             controller.rect = rect;
             PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcQuickTimeCompatibilityOperation::MCIdle => {
+            // Inside Macintosh: QuickTime Components (1993), p. 2-60.
+            let Some(movie) = quicktime
+                .movie_controllers
+                .iter()
+                .find(|controller| controller.handle == cpu.gpr[3])
+                .map(|controller| controller.movie)
+            else {
+                return PpcImportAction::Return(ppc_i16_result(PPC_INVALID_COMPONENT_ID));
+            };
+            if movie != 0 {
+                let original = cpu.gpr[3];
+                cpu.gpr[3] = movie;
+                let error =
+                    ppc_qt_movies_task(cpu, memory, gworlds, current_gworld, quicktime, sound);
+                cpu.gpr[3] = original;
+                if error != PPC_NO_ERR {
+                    return PpcImportAction::Return(ppc_i16_result(error));
+                }
+            }
+            PpcImportAction::Return(0)
         }
         PpcQuickTimeCompatibilityOperation::GetMovieVolume => {
             PpcImportAction::Return(if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
