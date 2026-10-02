@@ -5212,6 +5212,11 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "DisposePalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::DisposePalette,
         ),
+        ("InterfaceLib", "DisposePixPat" | "DisposPixPat") => {
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::DisposePixPat,
+            )
+        }
         ("InterfaceLib", "Exp1to3") => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::Exp1To3,
         ),
@@ -5244,6 +5249,9 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         ("InterfaceLib", "NewPalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::NewPalette,
+        ),
+        ("InterfaceLib", "NewPixPat") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::NewPixPat,
         ),
         ("InterfaceLib", "OpenPicture") => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::OpenPicture,

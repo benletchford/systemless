@@ -26319,6 +26319,51 @@
         assert_eq!(d.pn_pat, gray);
     }
 
+    #[test]
+    fn newpixpat_allocates_and_disposes_its_embedded_handles() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let sp = cpu.read_reg(Register::A7);
+        cpu.write_reg(Register::A7, sp - 4);
+        let result = d.dispatch_quickdraw(true, 0x207, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let handle = bus.read_long(sp - 4);
+        let record = bus.read_long(handle);
+        assert_eq!(bus.read_word(record), 1);
+        let pixmap_handle = bus.read_long(record + 2);
+        let data_handle = bus.read_long(record + 6);
+        let expanded_data_handle = bus.read_long(record + 10);
+        let expanded_map_handle = bus.read_long(record + 16);
+        let pixmap = bus.read_long(pixmap_handle);
+        let color_table_handle = bus.read_long(pixmap + 42);
+        for nested in [
+            pixmap_handle,
+            data_handle,
+            expanded_data_handle,
+            expanded_map_handle,
+            color_table_handle,
+        ] {
+            assert_ne!(nested, 0);
+            assert_ne!(bus.read_long(nested), 0);
+        }
+
+        bus.write_long(sp - 4, handle);
+        let result = d.dispatch_quickdraw(true, 0x208, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        for nested in [
+            handle,
+            record,
+            pixmap_handle,
+            pixmap,
+            data_handle,
+            expanded_data_handle,
+            expanded_map_handle,
+            color_table_handle,
+        ] {
+            assert_eq!(bus.get_alloc_size(nested), None);
+        }
+    }
+
     // GetPixPat ($AA0C) — Color QuickDraw Tool-bit Pascal FUNCTION
     // taking 2-byte INTEGER patID, returning 4-byte PixPatHandle per
     // IM:V 1986 p. V-73. Five successive

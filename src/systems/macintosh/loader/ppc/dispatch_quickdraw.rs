@@ -897,6 +897,7 @@ pub enum PpcQuickDrawCompatibilityOperation {
     Ctab2Palette,
     DisposeGDevice,
     DisposePalette,
+    DisposePixPat,
     Exp1To3,
     Exp1To6,
     GetCPixel,
@@ -906,6 +907,7 @@ pub enum PpcQuickDrawCompatibilityOperation {
     GetNewPalette,
     NewGDevice,
     NewPalette,
+    NewPixPat,
     OpenPicture,
     Palette2Ctab,
     PenPat,
@@ -1236,6 +1238,147 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
                 let _ = memory.write_bytes(dst_ptr + 16 + destination * 16, &info);
             }
             PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::DisposePixPat => {
+            // DisposePixPat releases the PixPat's owned handles, including
+            // the PixMap's color table. Imaging With QuickDraw (1994), p. 4-91.
+            let pat = cpu.gpr[3];
+            if let Some(record) = (pat != 0)
+                .then(|| memory.read_u32_be(pat))
+                .flatten()
+                .filter(|ptr| *ptr != 0)
+            {
+                let pat_map = memory.read_u32_be(record + 2).unwrap_or(0);
+                for offset in [6, 10, 16] {
+                    let nested = memory.read_u32_be(record + offset).unwrap_or(0);
+                    if nested != 0 {
+                        let _ = ppc_dispose_process_native_handle(
+                            process_memory_manager,
+                            memory,
+                            heap_cursor,
+                            heap_limit,
+                            last_mem_error,
+                            handles,
+                            nested,
+                        );
+                    }
+                }
+                ppc_dispose_pixmap(
+                    pat_map,
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    &mut toolbox_startup.indexed_screen_ctables,
+                );
+                let _ = ppc_dispose_process_native_handle(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    pat,
+                );
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::NewPixPat => {
+            // NewPixPat creates a PixPat with a device-matched PixMap,
+            // three initially empty data handles, and a gray pat1Data.
+            // Imaging With QuickDraw (1994), pp. 4-88--4-89.
+            let pat_map = ppc_new_pixmap(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                current_gdevice,
+            );
+            if pat_map == 0 {
+                return PpcImportAction::Return(0);
+            }
+            let pat_data = ppc_process_alloc_handle(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                0,
+                true,
+            );
+            let pat_xdata = ppc_process_alloc_handle(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                0,
+                true,
+            );
+            let pat_xmap = ppc_process_alloc_handle(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                0,
+                true,
+            );
+            let pat = ppc_process_alloc_handle(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                28,
+                true,
+            );
+            if [pat_data, pat_xdata, pat_xmap, pat].contains(&0) {
+                for nested in [pat_data, pat_xdata, pat_xmap, pat] {
+                    if nested != 0 {
+                        let _ = ppc_dispose_process_native_handle(
+                            process_memory_manager,
+                            memory,
+                            heap_cursor,
+                            heap_limit,
+                            last_mem_error,
+                            handles,
+                            nested,
+                        );
+                    }
+                }
+                ppc_dispose_pixmap(
+                    pat_map,
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    &mut toolbox_startup.indexed_screen_ctables,
+                );
+                *last_mem_error = PPC_MEM_FULL_ERR;
+                return PpcImportAction::Return(0);
+            }
+            let Some(record) = memory.read_u32_be(pat) else {
+                *last_mem_error = PPC_PARAM_ERR;
+                return PpcImportAction::Return(0);
+            };
+            let _ = memory.write_u16_be(record, 1);
+            let _ = memory.write_u32_be(record + 2, pat_map);
+            let _ = memory.write_u32_be(record + 6, pat_data);
+            let _ = memory.write_u32_be(record + 10, pat_xdata);
+            let _ = memory.write_u32_be(record + 16, pat_xmap);
+            let _ = memory.write_bytes(
+                record + 20,
+                &[0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
+            );
+            *last_mem_error = PPC_NO_ERR;
+            PpcImportAction::Return(pat)
         }
         PpcQuickDrawCompatibilityOperation::NewPalette => {
             let entry_count = u32::from(cpu.gpr[3] as u16);
