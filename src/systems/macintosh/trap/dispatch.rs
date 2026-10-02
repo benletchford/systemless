@@ -1567,6 +1567,8 @@ pub struct TrapDispatcher {
     /// System 7 renderer; explicit non-classic providers are allowed to change
     /// chrome pixels without changing guest-visible Toolbox behavior.
     pub(crate) ui_theme_id: UiThemeId,
+    pub(crate) appearance_registered: bool,
+    pub(crate) window_theme_brushes: HashMap<u32, i16>,
     /// Virtual filesystem: filename -> data fork contents
     pub vfs: SharedProcessValue<ProcessForkMap>,
     /// Virtual filesystem: filename -> resource fork contents
@@ -3743,6 +3745,8 @@ impl TrapDispatcher {
             std_pix_gateway: 0,
             param_text: SharedProcessDialogText::default(),
             ui_theme_id: UiThemeId::ClassicSystem7,
+            appearance_registered: false,
+            window_theme_brushes: HashMap::default(),
             vfs: SharedProcessValue::default(),
             vfs_rsrc: SharedProcessValue::default(),
             vfs_metadata: SharedProcessValue::default(),

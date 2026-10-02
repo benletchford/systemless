@@ -1031,7 +1031,7 @@ impl super::TrapDispatcher {
         })
     }
 
-    fn fill_theme_rect(
+    pub(super) fn fill_theme_rect(
         &self,
         bus: &mut MacMemoryBus,
         rect: (i16, i16, i16, i16),

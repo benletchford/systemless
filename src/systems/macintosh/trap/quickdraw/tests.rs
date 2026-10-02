@@ -43,6 +43,71 @@
     }
 
     #[test]
+    fn appearance_registration_tracks_state_and_pascal_result_slot() {
+        let (mut d, mut cpu, mut bus) = setup();
+        cpu.write_reg(Register::D0, 0x15);
+        bus.write_long(TEST_SP, 0xDEAD_BEEF);
+        assert!(d
+            .dispatch_quickdraw(true, 0x274, &mut cpu, &mut bus)
+            .expect("RegisterAppearanceClient")
+            .is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_long(TEST_SP), 0);
+        assert!(d.appearance_registered);
+
+        d.dispatch_quickdraw(true, 0x274, &mut cpu, &mut bus)
+            .expect("duplicate RegisterAppearanceClient")
+            .unwrap();
+        assert_eq!(bus.read_long(TEST_SP), (-30561i32) as u32);
+
+        cpu.write_reg(Register::D0, 0x16);
+        d.dispatch_quickdraw(true, 0x274, &mut cpu, &mut bus)
+            .expect("UnregisterAppearanceClient")
+            .unwrap();
+        assert_eq!(bus.read_long(TEST_SP), 0);
+        assert!(!d.appearance_registered);
+    }
+
+    #[test]
+    fn set_theme_window_background_preserves_arguments_and_records_brush() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let window = 0x190000;
+        d.window_list.push(window);
+        cpu.write_reg(Register::D0, 4);
+        bus.write_word(TEST_SP, 0);
+        bus.write_word(TEST_SP + 2, 15);
+        bus.write_long(TEST_SP + 4, window);
+        bus.write_long(TEST_SP + 8, 0xDEAD_BEEF);
+        d.dispatch_quickdraw(true, 0x274, &mut cpu, &mut bus)
+            .expect("SetThemeWindowBackground")
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_long(TEST_SP + 8), 0);
+        assert_eq!(d.window_theme_brushes.get(&window), Some(&15));
+    }
+
+    #[test]
+    fn draw_theme_placard_paints_rect_and_returns_no_err() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let rect_ptr = 0x190000;
+        write_rect(&mut bus, rect_ptr, 10, 10, 20, 20);
+        cpu.write_reg(Register::D0, 7);
+        bus.write_long(TEST_SP, 1);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        bus.write_long(TEST_SP + 8, 0xDEAD_BEEF);
+        d.dispatch_quickdraw(true, 0x274, &mut cpu, &mut bus)
+            .expect("DrawThemePlacard")
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_long(TEST_SP + 8), 0);
+        let screen_base = bus.read_long(0x0824);
+        let interior = bus.read_byte(screen_base + 15 * 64 + 15 / 8);
+        let frame = bus.read_byte(screen_base + 10 * 64 + 10 / 8);
+        assert_eq!(interior & (0x80 >> (15 % 8)), 0);
+        assert_ne!(frame & (0x80 >> (10 % 8)), 0);
+    }
+
+    #[test]
     fn qd_extensions_generated_routes_preserve_exact_long_values() {
         assert_eq!(super::QD_EXTENSIONS_OPERATION_ROUTES.len(), 23);
         assert!(super::QD_EXTENSIONS_OPERATION_ROUTES

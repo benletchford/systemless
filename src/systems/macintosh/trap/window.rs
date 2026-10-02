@@ -4,6 +4,7 @@ use crate::memory::SavedPixels;
 use crate::cpu::{CpuOps, Register};
 use crate::mac_roman::{decode_mac_roman, encode_mac_roman_lossy};
 use crate::memory::{MacMemoryBus, MemoryBus};
+use crate::systems::macintosh::ui_theme::Rgb8;
 use crate::trap::dispatch::{DrawOldState, PortDrawState, QueuedEvent};
 use super::quickdraw::RegionBooleanOp;
 use crate::trap::types::{Rect, ShapeOp};
@@ -1218,7 +1219,11 @@ impl super::TrapDispatcher {
             .map(|rect| self.global_rect_to_window_local(bus, window_ptr, rect))
     }
 
-    fn window_port_rect(&self, bus: &MacMemoryBus, window_ptr: u32) -> (i16, i16, i16, i16) {
+    pub(super) fn window_port_rect(
+        &self,
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+    ) -> (i16, i16, i16, i16) {
         (
             bus.read_word(window_ptr + 16) as i16,
             bus.read_word(window_ptr + 18) as i16,
@@ -1380,6 +1385,28 @@ impl super::TrapDispatcher {
             return;
         };
         let (global_top, global_left, _, _) = self.window_global_port_rect(bus, window_ptr);
+        if let Some(&brush) = self.window_theme_brushes.get(&window_ptr) {
+            let color = match brush {
+                -1 => Rgb8 { r: 0, g: 0, b: 0 },
+                -2 => Rgb8 {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                },
+                _ => self.ui_theme().palette().window_background,
+            };
+            self.fill_theme_rect(
+                bus,
+                (
+                    global_top.saturating_add(local_rect.0),
+                    global_left.saturating_add(local_rect.1),
+                    global_top.saturating_add(local_rect.2),
+                    global_left.saturating_add(local_rect.3),
+                ),
+                color,
+            );
+            return;
+        }
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         Self::fb_fill_rect(
@@ -3116,6 +3143,7 @@ impl super::TrapDispatcher {
         self.dialog_visible_snapshots.remove(&window_ptr);
         self.saved_vis_regions.remove(&window_ptr);
         self.window_proc_ids.remove(&window_ptr);
+        self.window_theme_brushes.remove(&window_ptr);
         self.windows_placed_offscreen.remove(&window_ptr);
         self.window_aux_records.remove(&window_ptr);
         self.window_original_pixmaps.remove(&window_ptr);
