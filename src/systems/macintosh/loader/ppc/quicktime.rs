@@ -48,6 +48,7 @@ pub enum PpcQuickTimeCompatibilityOperation {
     GetTrackMedia,
     GetMediaSampleDescription,
     MCDoAction,
+    NewMovieController,
     GetMovieVolume,
     NewMovieFromDataFork,
     PrerollMovie,
@@ -156,6 +157,14 @@ pub struct PpcQuickTimeTrackRecord {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpcQuickTimeControllerRecord {
+    pub handle: u32,
+    pub movie: u32,
+    pub rect: (i16, i16, i16, i16),
+    pub flags: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcQuickTimeState {
     pub movie_toolbox_enter_count: u32,
@@ -208,6 +217,8 @@ pub struct PpcQuickTimeState {
     pub movie_video_decode_cache: Option<PpcQuickTimeVideoDecodeCacheRecord>,
     pub movie_audio_track: Option<PpcQuickTimeAudioTrackRecord>,
     pub movie_tracks: Vec<PpcQuickTimeTrackRecord>,
+    pub movie_controllers: Vec<PpcQuickTimeControllerRecord>,
+    pub next_movie_controller_handle: u32,
     pub movie_disposed: bool,
     pub movie_volume: i16,
     pub movie_time_base_flags: u32,
@@ -271,6 +282,8 @@ impl Default for PpcQuickTimeState {
             movie_video_decode_cache: None,
             movie_audio_track: None,
             movie_tracks: Vec::new(),
+            movie_controllers: Vec::new(),
+            next_movie_controller_handle: PPC_QT_MOVIE + 0x1_0000,
             movie_disposed: false,
             movie_volume: 0x0100,
             movie_time_base_flags: 0,
@@ -519,9 +532,31 @@ pub(super) fn dispatch_quicktime_compatibility(
         }
         PpcQuickTimeCompatibilityOperation::MCDoAction => {
             // Inside Macintosh: QuickTime Components (1993), pp. 2-15, 2-46.
-            // PPC HLE does not create movie-controller instances yet, so no
-            // opaque controller reference is valid for an action dispatch.
+            // Unknown controller references cannot receive actions.
             PpcImportAction::Return(ppc_i16_result(PPC_INVALID_COMPONENT_ID))
+        }
+        PpcQuickTimeCompatibilityOperation::NewMovieController => {
+            // Inside Macintosh: QuickTime Components (1993), p. 2-29.
+            if !compatibility_valid_movie(quicktime, cpu.gpr[3]) || cpu.gpr[4] == 0 {
+                return PpcImportAction::Return(0);
+            }
+            let Some(rect) = ppc_read_rect(memory, cpu.gpr[4]) else {
+                return PpcImportAction::Return(0);
+            };
+            let handle = quicktime.next_movie_controller_handle;
+            let Some(next) = handle.checked_add(0x10) else {
+                return PpcImportAction::Return(0);
+            };
+            quicktime.next_movie_controller_handle = next;
+            quicktime
+                .movie_controllers
+                .push(PpcQuickTimeControllerRecord {
+                    handle,
+                    movie: cpu.gpr[3],
+                    rect,
+                    flags: cpu.gpr[5],
+                });
+            PpcImportAction::Return(handle)
         }
         PpcQuickTimeCompatibilityOperation::GetMovieVolume => {
             PpcImportAction::Return(if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
@@ -642,6 +677,7 @@ pub(super) fn dispatch_quicktime_compatibility(
             quicktime.movie_active = cpu.gpr[6] & 1 != 0;
             quicktime.movie_task_count = 0;
             quicktime.movie_disposed = false;
+            quicktime.movie_controllers.clear();
             quicktime.movie_at_beginning = true;
             ppc_qt_reset_movie_video_decode_cache(quicktime);
             PpcImportAction::Return(ppc_i16_result(ppc_qt_record_error(quicktime, PPC_NO_ERR)))
@@ -3185,6 +3221,7 @@ pub(crate) fn ppc_qt_new_movie_from_file(
     quicktime.movie_active = cpu.gpr[7] & 1 != 0;
     quicktime.movie_task_count = 0;
     quicktime.movie_disposed = false;
+    quicktime.movie_controllers.clear();
     quicktime.movie_at_beginning = true;
     ppc_qt_reset_movie_video_decode_cache(quicktime);
     PPC_NO_ERR
@@ -3647,6 +3684,7 @@ pub(crate) fn ppc_qt_dispose_movie(
     }
     quicktime.movie_started = false;
     quicktime.movie_disposed = true;
+    quicktime.movie_controllers.clear();
     quicktime.movie_active = false;
     quicktime.movie_video_track = None;
     quicktime.movie_video_samples = None;
