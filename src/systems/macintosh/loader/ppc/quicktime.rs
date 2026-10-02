@@ -45,6 +45,7 @@ pub enum PpcQuickTimeCompatibilityOperation {
     GetMovieIndTrackType,
     GetMovieUserData,
     GetUserData,
+    GetTrackMedia,
     GetMovieVolume,
     NewMovieFromDataFork,
     PrerollMovie,
@@ -448,6 +449,22 @@ pub(super) fn dispatch_quicktime_compatibility(
                 }
             }
             PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcQuickTimeCompatibilityOperation::GetTrackMedia => {
+            // Inside Macintosh: QuickTime (1993), p. 2-206. Each parsed track
+            // has one media; keep its opaque reference stable with the track.
+            let media = if quicktime.movie_disposed {
+                None
+            } else {
+                quicktime
+                    .movie_tracks
+                    .iter()
+                    .find(|track| track.handle == cpu.gpr[3])
+                    .map(|track| track.handle + 1)
+            };
+            let _ =
+                ppc_qt_record_error(quicktime, if media.is_some() { PPC_NO_ERR } else { -2009 }); // invalidTrack
+            PpcImportAction::Return(media.unwrap_or(0))
         }
         PpcQuickTimeCompatibilityOperation::GetMovieVolume => {
             PpcImportAction::Return(if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
