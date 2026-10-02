@@ -46,6 +46,7 @@ pub enum PpcQuickTimeCompatibilityOperation {
     GetMovieUserData,
     GetUserData,
     GetTrackMedia,
+    GetMediaSampleDescription,
     GetMovieVolume,
     NewMovieFromDataFork,
     PrerollMovie,
@@ -465,6 +466,55 @@ pub(super) fn dispatch_quicktime_compatibility(
             let _ =
                 ppc_qt_record_error(quicktime, if media.is_some() { PPC_NO_ERR } else { -2009 }); // invalidTrack
             PpcImportAction::Return(media.unwrap_or(0))
+        }
+        PpcQuickTimeCompatibilityOperation::GetMediaSampleDescription => {
+            // Inside Macintosh: QuickTime (1993), pp. 2-225–2-226.
+            let Some((ordinal, _)) = quicktime
+                .movie_tracks
+                .iter()
+                .enumerate()
+                .find(|(_, track)| track.handle + 1 == cpu.gpr[3] && !quicktime.movie_disposed)
+            else {
+                let _ = ppc_qt_record_error(quicktime, -2008); // invalidMedia
+                return PpcImportAction::ReturnPreserve;
+            };
+            let Some(description) = ppc_qt_movie_sample_description(
+                &quicktime.movie_file_data,
+                ordinal + 1,
+                cpu.gpr[4],
+            ) else {
+                return PpcImportAction::ReturnPreserve; // Missing index leaves handle unchanged.
+            };
+            let handle = cpu.gpr[5];
+            let Ok(size) = u32::try_from(description.len()) else {
+                let _ = ppc_qt_record_error(quicktime, PPC_MEM_FULL_ERR);
+                return PpcImportAction::ReturnPreserve;
+            };
+            let mut allocator = PpcProcessAllocatorView {
+                memory_manager: process_memory_manager,
+            };
+            let error =
+                allocator.resize_handle(memory, heap_cursor, last_mem_error, handles, handle, size);
+            if error != PPC_NO_ERR {
+                let _ = ppc_qt_record_error(quicktime, error);
+                return PpcImportAction::ReturnPreserve;
+            }
+            let Some(ptr) = handles
+                .iter()
+                .find(|record| record.handle == handle)
+                .map(|record| record.ptr)
+            else {
+                let _ = ppc_qt_record_error(quicktime, PPC_PARAM_ERR);
+                return PpcImportAction::ReturnPreserve;
+            };
+            for (offset, byte) in description.iter().enumerate() {
+                if memory.write_u8(ptr + offset as u32, *byte).is_none() {
+                    let _ = ppc_qt_record_error(quicktime, PPC_PARAM_ERR);
+                    return PpcImportAction::ReturnPreserve;
+                }
+            }
+            let _ = ppc_qt_record_error(quicktime, PPC_NO_ERR);
+            PpcImportAction::ReturnPreserve
         }
         PpcQuickTimeCompatibilityOperation::GetMovieVolume => {
             PpcImportAction::Return(if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
@@ -1380,6 +1430,62 @@ pub(crate) fn ppc_qt_movie_tracks(data: &[u8]) -> Vec<PpcQuickTimeTrackRecord> {
         offset = atom_end;
     }
     Vec::new()
+}
+
+fn ppc_qt_child_atom_range(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    wanted: &[u8],
+) -> Option<(usize, usize)> {
+    let mut offset = start;
+    while offset.checked_add(8)? <= end {
+        let (kind, content_start, atom_end) = ppc_qt_atom_range(data, offset, end)?;
+        if kind == wanted {
+            return Some((content_start, atom_end));
+        }
+        offset = atom_end;
+    }
+    None
+}
+
+fn ppc_qt_movie_sample_description(data: &[u8], track_index: usize, index: u32) -> Option<&[u8]> {
+    if index == 0 || track_index == 0 {
+        return None;
+    }
+    let (moov_start, moov_end) = ppc_qt_child_atom_range(data, 0, data.len(), b"moov")?;
+    let mut offset = moov_start;
+    let mut track_number = 0;
+    while offset.checked_add(8)? <= moov_end {
+        let (kind, track_start, track_end) = ppc_qt_atom_range(data, offset, moov_end)?;
+        if kind == b"trak" && ppc_qt_track_metadata(data, track_start, track_end).is_some() {
+            track_number += 1;
+            if track_number == track_index {
+                let (media_start, media_end) =
+                    ppc_qt_child_atom_range(data, track_start, track_end, b"mdia")?;
+                let (minf_start, minf_end) =
+                    ppc_qt_child_atom_range(data, media_start, media_end, b"minf")?;
+                let (stbl_start, stbl_end) =
+                    ppc_qt_child_atom_range(data, minf_start, minf_end, b"stbl")?;
+                let (stsd_start, stsd_end) =
+                    ppc_qt_child_atom_range(data, stbl_start, stbl_end, b"stsd")?;
+                let count =
+                    u32::from_be_bytes(data.get(stsd_start + 4..stsd_start + 8)?.try_into().ok()?);
+                if index > count {
+                    return None;
+                }
+                let mut entry = stsd_start.checked_add(8)?;
+                for _ in 1..index {
+                    let (_, _, entry_end) = ppc_qt_atom_range(data, entry, stsd_end)?;
+                    entry = entry_end;
+                }
+                let (_, _, entry_end) = ppc_qt_atom_range(data, entry, stsd_end)?;
+                return data.get(entry..entry_end);
+            }
+        }
+        offset = track_end;
+    }
+    None
 }
 
 fn ppc_qt_movie_data_from_open_fork(
