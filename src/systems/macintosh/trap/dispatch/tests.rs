@@ -4,6 +4,11 @@
     use crate::trap::test_helpers::{setup, setup_with_trap_tables};
     use std::collections::VecDeque;
 
+    #[test]
+    fn appearance_dispatch_route_allows_quickdraw_adapter() {
+        assert!(default_trap_route(0xAA74).allows(TrapAdapterId::QuickDraw));
+    }
+
     /// The default-cell shortcut answers exactly as the full table lookup:
     /// for every slot of a fresh table (every cell holds its default
     /// gateway, or a come-from head where the profile has one), after a

@@ -2685,6 +2685,81 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
+            // ========== Appearance Manager ==========
+
+            (true, 0x274) if cpu.read_reg(Register::D0) as u16 == 0x15 => {
+                // RegisterAppearanceClient ($AA74, selector $0015)
+                // Registers the current application as an Appearance Manager client.
+                // OSStatus RegisterAppearanceClient(void);
+                // Apple, Appearance.h (Universal Interfaces 3.4), line 1506.
+                let sp = cpu.read_reg(Register::A7);
+                let status = if self.appearance_registered {
+                    -30561i32 // themeProcessRegisteredErr, Apple MacErrors.h
+                } else {
+                    self.appearance_registered = true;
+                    0
+                };
+                bus.write_long(sp, status as u32);
+                Ok(())
+            }
+
+            (true, 0x274) if cpu.read_reg(Register::D0) as u16 == 0x16 => {
+                // UnregisterAppearanceClient ($AA74, selector $0016)
+                // Removes the current application's Appearance Manager registration.
+                // OSStatus UnregisterAppearanceClient(void);
+                // Apple, Appearance.h (Universal Interfaces 3.4), line 1518.
+                let sp = cpu.read_reg(Register::A7);
+                let status = if self.appearance_registered {
+                    self.appearance_registered = false;
+                    0
+                } else {
+                    -30562i32 // themeProcessNotRegisteredErr, Apple MacErrors.h
+                };
+                bus.write_long(sp, status as u32);
+                Ok(())
+            }
+
+            (true, 0x274) if cpu.read_reg(Register::D0) as u16 == 4 => {
+                // SetThemeWindowBackground ($AA74, selector $0004)
+                // Sets the brush used by the Window Manager to erase a window's content.
+                // OSStatus SetThemeWindowBackground(WindowRef inWindow, ThemeBrush inBrush, Boolean inUpdate);
+                // Apple, Appearance.h (Universal Interfaces 3.4), line 1602.
+                let sp = cpu.read_reg(Register::A7);
+                let update = bus.read_word(sp) != 0;
+                let brush = bus.read_word(sp + 2) as i16;
+                let window = bus.read_long(sp + 4);
+                let status = if !self.window_list.contains(&window) {
+                    -50i32 // paramErr
+                } else if !(-2..=53).contains(&brush) || brush == 0 {
+                    -30560i32 // themeInvalidBrushErr, Apple MacErrors.h
+                } else {
+                    self.window_theme_brushes.insert(window, brush);
+                    if update {
+                        let rect = self.window_port_rect(bus, window);
+                        self.invalidate_window_rect(bus, window, rect);
+                    }
+                    0
+                };
+                bus.write_long(sp + 8, status as u32);
+                cpu.write_reg(Register::A7, sp + 8);
+                Ok(())
+            }
+
+            (true, 0x274) if cpu.read_reg(Register::D0) as u16 == 7 => {
+                // DrawThemePlacard ($AA74, selector $0007)
+                // Draws a placard in the supplied rectangle using the current appearance.
+                // OSStatus DrawThemePlacard(const Rect *inRect, ThemeDrawState inState);
+                // Apple, Programming With the Appearance Manager (1999), Theme-Compliant Controls.
+                let sp = cpu.read_reg(Register::A7);
+                let rect_ptr = bus.read_long(sp + 4);
+                let rect = read_rect(bus, rect_ptr);
+                self.draw_rect(cpu, bus, &rect, ShapeOp::Erase);
+                self.draw_rect(cpu, bus, &rect, ShapeOp::Frame);
+                bus.write_long(sp + 8, 0);
+                cpu.write_reg(Register::A7, sp + 8);
+                Ok(())
+            }
+
             // ========== Shape Drawing Commands ==========
 
             // FrameRect ($A8A1)
