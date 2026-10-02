@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.75.0](https://github.com/benletchford/systemless/compare/v0.74.0...v0.75.0) (2026-10-02)
+
+
+### Features
+
+* **catalogue:** add Backgammon Lite ([#3913](https://github.com/benletchford/systemless/issues/3913)) ([f32d399](https://github.com/benletchford/systemless/commit/f32d39913e52af3b2b3ae6d23f0bd28bc1809cdf))
+* **catalogue:** add Curses Release 16 ([#3905](https://github.com/benletchford/systemless/issues/3905)) ([084b836](https://github.com/benletchford/systemless/commit/084b836382d75d3d6129e086caa6aa7be7cff7d7))
+* **catalogue:** add Jigsaw Release 3 ([#3907](https://github.com/benletchford/systemless/issues/3907)) ([b5f140b](https://github.com/benletchford/systemless/commit/b5f140bddfd914396ddc502b6f334dbff08f5a26))
+* **catalogue:** add Sunset Over Savannah ([#3911](https://github.com/benletchford/systemless/issues/3911)) ([8e0bd33](https://github.com/benletchford/systemless/commit/8e0bd3348be4156ccae2b5ce411b554b63757377))
+* **catalogue:** add The Path to Fortune ([#3909](https://github.com/benletchford/systemless/issues/3909)) ([e4cd522](https://github.com/benletchford/systemless/commit/e4cd52272cc51646f22421965207ec5f8200ade9))
+* **mac:** support Appearance control interactions ([#3917](https://github.com/benletchford/systemless/issues/3917)) ([3560928](https://github.com/benletchford/systemless/commit/356092873dba9393b3d9388030b89e8d67388046))
+* **mac:** support Appearance Manager startup calls ([#3915](https://github.com/benletchford/systemless/issues/3915)) ([395b73e](https://github.com/benletchford/systemless/commit/395b73e7a82f5c10aeb4a49036ba8985584acd15))
+* **quickdraw:** report synchronous drawing completion ([f495bef](https://github.com/benletchford/systemless/commit/f495bef45bc49a8f0d15bd244b247748f748d8b3)), closes [#3880](https://github.com/benletchford/systemless/issues/3880)
+* **quicktime:** associate controllers with movies ([4271047](https://github.com/benletchford/systemless/commit/42710475486ecc1767b2bb0ab36c59825547286d)), closes [#3864](https://github.com/benletchford/systemless/issues/3864)
+* **quicktime:** create movie controllers ([caa39d2](https://github.com/benletchford/systemless/commit/caa39d2e161315f6eb5873681e7d0f80b00eff05)), closes [#3862](https://github.com/benletchford/systemless/issues/3862)
+* **quicktime:** dispose movie controllers independently ([fdf13ee](https://github.com/benletchford/systemless/commit/fdf13ee7b6fb9b7d46ae4f03887a650edd4624a0)), closes [#3889](https://github.com/benletchford/systemless/issues/3889)
+* **quicktime:** expose controller bounds ([3ce48ee](https://github.com/benletchford/systemless/commit/3ce48ee64da38166e199fde4d76d2ae062846927)), closes [#3867](https://github.com/benletchford/systemless/issues/3867)
+* **quicktime:** read embedded movie samples from data fork ([264a0fe](https://github.com/benletchford/systemless/commit/264a0fe9b8d77cc29484891d96a8c2d47ed2b90d)), closes [#3886](https://github.com/benletchford/systemless/issues/3886)
+* **quicktime:** register controller action filters ([8f221ee](https://github.com/benletchford/systemless/commit/8f221ee752cf3263d362e15941cc7d0cc1a426cd)), closes [#3870](https://github.com/benletchford/systemless/issues/3870)
+* **quicktime:** report controller current time ([e2c04b5](https://github.com/benletchford/systemless/commit/e2c04b549cd825e0408c3700038cc917aa598a71)), closes [#3878](https://github.com/benletchford/systemless/issues/3878)
+* **quicktime:** route controller play actions ([edfb2bf](https://github.com/benletchford/systemless/commit/edfb2bf3fdfb91652e73a68efdcd4eb9dc03a2bf)), closes [#3883](https://github.com/benletchford/systemless/issues/3883)
+* **quicktime:** service movie controllers during idle ([cb22b9c](https://github.com/benletchford/systemless/commit/cb22b9cecb65d9bb95845595fdba6e4fe9cd7800)), closes [#3875](https://github.com/benletchford/systemless/issues/3875)
+* **quicktime:** set controller bounds ([bdf7f9d](https://github.com/benletchford/systemless/commit/bdf7f9dc4eb80b93f1c46f884f8e99b686a1e69c)), closes [#3872](https://github.com/benletchford/systemless/issues/3872)
+* **quicktime:** task movies on controller idle action ([70770eb](https://github.com/benletchford/systemless/commit/70770eb853121bf38996334a479c2b2528e0e376)), closes [#3892](https://github.com/benletchford/systemless/issues/3892)
+
+
+### Bug Fixes
+
+* **mac:** paint exposed color windows with their content color ([357acc5](https://github.com/benletchford/systemless/commit/357acc578414b40f064323d8707bcbc51ed29a9b))
+* **mac:** position movies using attached controller bounds ([#3922](https://github.com/benletchford/systemless/issues/3922)) ([338f5f8](https://github.com/benletchford/systemless/commit/338f5f8cbdba190597c48e9e5ec064b7a6210dcd))
+* **memory:** keep copy_ram_bytes memmove-safe while a write probe is armed ([#3924](https://github.com/benletchford/systemless/issues/3924)) ([1e132e9](https://github.com/benletchford/systemless/commit/1e132e926a1b0dad575556667672daadcf646cf4))
+* **quicktime:** reject invalid movie controller actions ([244ad86](https://github.com/benletchford/systemless/commit/244ad86655f19b35ecf5563c6d331e04e2d07401)), closes [#3859](https://github.com/benletchford/systemless/issues/3859)
+
 ## [0.74.0](https://github.com/benletchford/systemless/compare/v0.73.0...v0.74.0) (2026-10-02)
 
 
