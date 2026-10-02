@@ -47,6 +47,7 @@ pub enum PpcQuickTimeCompatibilityOperation {
     GetUserData,
     GetTrackMedia,
     GetMediaSampleDescription,
+    MCDoAction,
     GetMovieVolume,
     NewMovieFromDataFork,
     PrerollMovie,
@@ -515,6 +516,12 @@ pub(super) fn dispatch_quicktime_compatibility(
             }
             let _ = ppc_qt_record_error(quicktime, PPC_NO_ERR);
             PpcImportAction::ReturnPreserve
+        }
+        PpcQuickTimeCompatibilityOperation::MCDoAction => {
+            // Inside Macintosh: QuickTime Components (1993), pp. 2-15, 2-46.
+            // PPC HLE does not create movie-controller instances yet, so no
+            // opaque controller reference is valid for an action dispatch.
+            PpcImportAction::Return(ppc_i16_result(PPC_INVALID_COMPONENT_ID))
         }
         PpcQuickTimeCompatibilityOperation::GetMovieVolume => {
             PpcImportAction::Return(if compatibility_valid_movie(quicktime, cpu.gpr[3]) {

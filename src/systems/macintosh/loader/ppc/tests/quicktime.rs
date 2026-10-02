@@ -2917,6 +2917,7 @@ fn import_bindings_classify_quicktime_compatibility_imports() {
             "GetMediaSampleDescription",
             PpcQuickTimeCompatibilityOperation::GetMediaSampleDescription,
         ),
+        ("MCDoAction", PpcQuickTimeCompatibilityOperation::MCDoAction),
         (
             "GetMovieVolume",
             PpcQuickTimeCompatibilityOperation::GetMovieVolume,
@@ -3239,6 +3240,26 @@ fn quicktime_get_media_sample_description_copies_stsd_entry() {
     loaded.cpu.gpr[3] = 0;
     loaded.run_with_hle_imports(64);
     assert_eq!(loaded.quicktime.movie_error, -2008);
+}
+
+#[test]
+fn quicktime_mc_do_action_rejects_unknown_controller() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"MCDoAction");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let params = PPC_DATA_BASE + 0x1800;
+    loaded.memory.add_region(params, vec![0x5a; 16]);
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 29; // mcActionSetSelectionBegin
+    loaded.cpu.gpr[5] = params;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_INVALID_COMPONENT_ID));
+    assert_eq!(loaded.memory.read_u32_be(params), Some(0x5a5a_5a5a));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = 0x1234_5678;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_INVALID_COMPONENT_ID));
 }
 
 #[test]
