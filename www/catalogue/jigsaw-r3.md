@@ -3,7 +3,8 @@ id: jigsaw-r3
 kind: game
 title: Jigsaw (Release 3)
 summary: >-
-  Explore Century Park on New Year's Eve 1999 in Graham Nelson's interactive history.
+  Explore Century Park on New Year's Eve 1999 in Graham Nelson's interactive
+  history.
 developer: Graham Nelson
 publisher: Graham Nelson
 year: 1995
@@ -20,10 +21,10 @@ compatibility:
     systemless_version: 0.73.0 + deterministic play runner and release browser build
     architecture: 68k
     environment: >-
-      The unchanged Info-Mac package opened its bundled 68K MaxZip interpreter.
-      Space began the story in Century Park. Typing LOOK and Return printed the
-      location description again at a new prompt. The release browser fetched the
-      original archive once and reproduced the command response.
+      The unchanged Info-Mac package opened its bundled 68K MaxZip interpreter. Space
+      began the story in Century Park. Typing LOOK and Return printed the location
+      description again at a new prompt. The release browser fetched the original archive
+      once and reproduced the command response.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3906
 artifacts:
@@ -31,16 +32,16 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/adv/jigsaw.hqx
-    expected_sha256: 0d03e49151e16035c5ef80ca6f39bb09e20a0b5259209eebabe9b01213feb478
-    expected_size: 485090
+    type: sha256
+    sha256: 0d03e49151e16035c5ef80ca6f39bb09e20a0b5259209eebabe9b01213feb478
+    size_bytes: 485090
   provenance:
     redistribution: permitted
     original: true
     sources:
     - https://info-mac.org/viewtopic.php?t=13925
-    - https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/adv/jigsaw.hqx
+    - >-
+      https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/adv/jigsaw.hqx
     rights_holder: Graham Nelson
     permission: >-
       The author's Info-Mac submission permits free, unchanged distribution and use
@@ -53,8 +54,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/jigsaw-r3/gameplay.png
+    type: sha256
+    sha256: 7adfcb9fe33651c635c94a89eee72f161514b06ae93ec5a13fda15d38e457e3c
+    size_bytes: 15501
   provenance:
     redistribution: permitted
     original: true
@@ -69,12 +71,13 @@ artifacts:
       deterministic framebuffer after the LOOK command.
 references:
 - https://info-mac.org/viewtopic.php?t=13925
-- https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/adv/jigsaw.hqx
+- >-
+  https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/adv/jigsaw.hqx
 ---
 
 ## A century about to turn
 
-![Jigsaw story window after the LOOK command](incoming/jigsaw-r3/gameplay.png)
+![Jigsaw story window after the LOOK command](https://assets.systemless.org/catalogue/media/sha256/7a/7adfcb9fe33651c635c94a89eee72f161514b06ae93ec5a13fda15d38e457e3c.png)
 
 Press **Space** at the welcome screen to begin in Century Park. Type a command at
 the `>` prompt and press **Return**. Try `look` to examine the park before
