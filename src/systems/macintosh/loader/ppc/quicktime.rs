@@ -54,6 +54,7 @@ pub enum PpcQuickTimeCompatibilityOperation {
     MCSetActionFilterWithRefCon,
     MCSetControllerBoundsRect,
     MCIdle,
+    MCGetCurrentTime,
     GetMovieVolume,
     NewMovieFromDataFork,
     PrerollMovie,
@@ -664,6 +665,34 @@ pub(super) fn dispatch_quicktime_compatibility(
                 }
             }
             PpcImportAction::Return(0)
+        }
+        PpcQuickTimeCompatibilityOperation::MCGetCurrentTime => {
+            // Inside Macintosh: QuickTime Components (1993), pp. 2-56–2-57.
+            let valid_movie = quicktime.movie_controllers.iter().any(|controller| {
+                controller.handle == cpu.gpr[3]
+                    && controller.movie == PPC_QT_MOVIE
+                    && !quicktime.movie_disposed
+            });
+            if !valid_movie {
+                return PpcImportAction::Return(0);
+            }
+            let scale = quicktime.movie_time_scale.max(1);
+            let out = cpu.gpr[4];
+            if out != 0
+                && (!ppc_memory_can_write_bytes(memory, out, 4)
+                    || memory.write_u32_be(out, scale).is_none())
+            {
+                return PpcImportAction::Return(0);
+            }
+            let time = u64::from(quicktime.movie_task_count).saturating_mul(u64::from(scale))
+                / PPC_QT_MOVIE_TASKS_PER_SECOND;
+            let duration = quicktime.movie_file_duration;
+            let time = if duration == 0 {
+                time
+            } else {
+                time.min(duration)
+            };
+            PpcImportAction::Return(time.min(i32::MAX as u64) as u32)
         }
         PpcQuickTimeCompatibilityOperation::GetMovieVolume => {
             PpcImportAction::Return(if compatibility_valid_movie(quicktime, cpu.gpr[3]) {

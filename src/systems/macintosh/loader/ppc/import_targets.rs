@@ -5658,6 +5658,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "MCIdle") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::MCIdle,
         ),
+        ("QuickTimeLib", "MCGetCurrentTime") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::MCGetCurrentTime,
+        ),
         ("QuickTimeLib", "GetMovieVolume") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::GetMovieVolume,
         ),

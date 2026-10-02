@@ -2937,6 +2937,10 @@ fn import_bindings_classify_quicktime_compatibility_imports() {
         ),
         ("MCIdle", PpcQuickTimeCompatibilityOperation::MCIdle),
         (
+            "MCGetCurrentTime",
+            PpcQuickTimeCompatibilityOperation::MCGetCurrentTime,
+        ),
+        (
             "GetMovieVolume",
             PpcQuickTimeCompatibilityOperation::GetMovieVolume,
         ),
@@ -3496,6 +3500,46 @@ fn quicktime_mc_idle_services_attached_movie() {
     loaded.cpu.gpr[3] = 0;
     loaded.run_with_hle_imports(64);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_INVALID_COMPONENT_ID));
+}
+
+#[test]
+fn quicktime_mc_get_current_time_returns_value_and_scale() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"MCGetCurrentTime");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let controller = PPC_QT_MOVIE + 0x1_0000;
+    loaded.quicktime.movie_controllers.push(PpcQuickTimeControllerRecord {
+        handle: controller,
+        movie: PPC_QT_MOVIE,
+        rect: (0, 0, 100, 100),
+        flags: 0,
+        window: 0,
+        origin: 0,
+        action_filter: 0,
+        action_ref_con: 0,
+    });
+    loaded.quicktime.movie_time_scale = 600;
+    loaded.quicktime.movie_file_duration = 100;
+    loaded.quicktime.movie_task_count = 5;
+    let out = PPC_DATA_BASE + 0x1d00;
+    loaded.memory.add_region(out, vec![0; 4]);
+    loaded.cpu.gpr[3] = controller;
+    loaded.cpu.gpr[4] = out;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 50);
+    assert_eq!(loaded.memory.read_u32_be(out), Some(600));
+
+    loaded.quicktime.movie_task_count = 20;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = controller;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 100);
+
+    loaded.quicktime.movie_controllers[0].movie = 0;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = controller;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0);
 }
 
 #[test]
