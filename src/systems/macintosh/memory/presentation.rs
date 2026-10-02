@@ -4325,6 +4325,28 @@ mod tests {
     }
 
     #[test]
+    fn an_overlapping_copy_is_the_same_with_a_write_probe_armed() {
+        // A destination above an overlapping source, away from the screen.
+        let copy = |probe: bool| {
+            let mut bus = bus();
+            for i in 0..16u32 {
+                bus.write_byte(0x8_0000 + i, i as u8 + 1);
+            }
+            if probe {
+                bus.begin_write_probe();
+            }
+            assert!(bus.copy_ram_bytes(0x8_0000, 0x8_0004, 12));
+            if probe {
+                bus.cancel_write_probe();
+            }
+            bus.read_bytes(0x8_0000, 16)
+        };
+        let plain = copy(false);
+        assert_eq!(plain, [1, 2, 3, 4, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        assert_eq!(copy(true), plain);
+    }
+
+    #[test]
     fn an_active_write_probe_sets_the_global_byte() {
         let mut bus = bus();
         bus.store_filter_for_batch();
