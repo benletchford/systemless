@@ -305,13 +305,7 @@ pub(super) fn dispatch_window_import(
             let window_ptr = cpu.gpr[3];
             let aw_ctable_ptr = cpu.gpr[4];
             let is_tracked = window_list.contains_window(window_ptr);
-            let color_table = if window_ptr != 0 {
-                memory
-                    .read_u32_be(window_ptr.wrapping_add(PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET))
-                    .unwrap_or(0)
-            } else {
-                0
-            };
+            let color_table = ppc_window_color_table_handle(memory, window_ptr).unwrap_or(0);
             if aw_ctable_ptr != 0 && ppc_memory_can_write_bytes(memory, aw_ctable_ptr, 4) {
                 let _ = memory.write_u32_be(aw_ctable_ptr, color_table);
             }
@@ -458,9 +452,7 @@ pub(super) fn dispatch_window_import(
             if !was_visible {
                 // Macintosh Toolbox Essentials (1992), Window Manager,
                 // PaintOne: newly exposed content uses its window color table.
-                let content_color = memory
-                    .read_u32_be(window.wrapping_add(PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET))
-                    .filter(|handle| *handle != 0)
+                let content_color = ppc_window_color_table_handle(memory, window)
                     .and_then(|handle| ppc_window_content_color(memory, handle));
                 if let (Some(rect), Some(color)) = (
                     ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET)),
@@ -626,10 +618,12 @@ pub(super) fn dispatch_window_import(
             let color_table = cpu.gpr[4];
             if color_table != 0 {
                 let storage = if window == 0 { PPC_MAIN_GWORLD } else { window };
-                let _ = memory.write_u32_be(
-                    storage.wrapping_add(PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET),
-                    color_table,
-                );
+                if !ppc_window_is_dialog(memory, storage) {
+                    let _ = memory.write_u32_be(
+                        storage.wrapping_add(PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET),
+                        color_table,
+                    );
+                }
                 if window != 0 {
                     if let Some(content_color) = ppc_window_content_color(memory, color_table) {
                         if window == *current_gworld {
@@ -2531,9 +2525,7 @@ pub(super) fn ppc_paint_one(
     // exposed content with the window's background before adding it to the
     // update region. A color window uses its content entry in the WCTab.
     // These Window Manager coordinates are global screen-buffer pixels.
-    let background = memory
-        .read_u32_be(window.wrapping_add(PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET))
-        .filter(|handle| *handle != 0)
+    let background = ppc_window_color_table_handle(memory, window)
         .and_then(|handle| ppc_window_content_color(memory, handle))
         .unwrap_or(PPC_RGB_WHITE);
     let visible = memory
@@ -2962,6 +2954,23 @@ pub(super) fn ppc_set_window_hilited(
             u8::from(hilited),
         )
         .is_some()
+}
+
+fn ppc_window_is_dialog(memory: &mut PpcSectionMem, window: u32) -> bool {
+    window != 0
+        && memory.read_u16_be(window.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET))
+            == Some(crate::dialog_manager::DIALOG_WINDOW_KIND)
+}
+
+fn ppc_window_color_table_handle(memory: &mut PpcSectionMem, window: u32) -> Option<u32> {
+    // DialogRecord overlays the CWindowRecord extension at +164 with its
+    // editField/editOpen state. Those bytes are never an AuxWin color table.
+    if window == 0 || ppc_window_is_dialog(memory, window) {
+        return None;
+    }
+    memory
+        .read_u32_be(window.wrapping_add(PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET))
+        .filter(|handle| *handle != 0)
 }
 
 pub(super) fn ppc_window_content_color(

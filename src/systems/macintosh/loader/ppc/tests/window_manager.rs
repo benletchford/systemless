@@ -3436,6 +3436,82 @@ fn paint_one_uses_color_window_content_instead_of_white() {
 }
 
 #[test]
+fn show_window_does_not_read_dialog_edit_state_as_a_color_table() {
+    let pef = synthetic_pef_with_import(b"ShowWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut last_mem_error = loaded.last_mem_error();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, bounds_ptr, 0, 0, 100, 100).unwrap();
+    let mut window_cpu = loaded.cpu.clone();
+    window_cpu.gpr[3] = 0;
+    window_cpu.gpr[4] = bounds_ptr;
+    window_cpu.gpr[6] = 0;
+    window_cpu.gpr[7] = 1;
+    let dialog = ppc_new_cwindow(
+        &window_cpu,
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        &mut loaded.gworlds,
+        &mut loaded.window_list,
+        *loaded.current_gdevice,
+    );
+    assert_ne!(dialog, 0);
+    loaded
+        .memory
+        .write_u16_be(
+            dialog + PPC_CWINDOW_WINDOW_KIND_OFFSET,
+            crate::dialog_manager::DIALOG_WINDOW_KIND,
+        )
+        .unwrap();
+    let black_table = [
+        0, 0, 0, 1, // seed
+        0, 0, // flags
+        0, 0, // one entry
+        0, 0, // wContentColor
+        0, 0, 0, 0, 0, 0, // black
+    ];
+    let edit_state = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &black_table,
+    );
+    // DialogRecord.editField/editOpen occupy these bytes. If interpreted as
+    // a WCTab handle, they would falsely paint the dialog black.
+    loaded
+        .memory
+        .write_u32_be(
+            dialog + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
+            edit_state,
+        )
+        .unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    ppc_quickdraw_write_pixel(&mut loaded.memory, front, (50, 50), PPC_RGB_WHITE);
+    loaded.cpu.gpr[3] = dialog;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (50, 50)),
+        Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)))
+    );
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(dialog + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET),
+        Some(edit_state)
+    );
+}
+
+#[test]
 fn legacy_window_imports_pre_resolve_to_typed_operations() {
     for (symbol, operation) in [
         ("BringToFront", PpcLegacyWindowOperation::BringToFront),
