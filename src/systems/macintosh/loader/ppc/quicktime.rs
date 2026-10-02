@@ -52,6 +52,7 @@ pub enum PpcQuickTimeCompatibilityOperation {
     MCSetMovie,
     MCGetControllerBoundsRect,
     MCSetActionFilterWithRefCon,
+    MCSetControllerBoundsRect,
     GetMovieVolume,
     NewMovieFromDataFork,
     PrerollMovie,
@@ -619,6 +620,24 @@ pub(super) fn dispatch_quicktime_compatibility(
             };
             controller.action_filter = cpu.gpr[4];
             controller.action_ref_con = if cpu.gpr[4] == 0 { 0 } else { cpu.gpr[5] };
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcQuickTimeCompatibilityOperation::MCSetControllerBoundsRect => {
+            // Inside Macintosh: QuickTime Components (1993), pp. 2-37–2-38.
+            let Some(controller) = quicktime
+                .movie_controllers
+                .iter_mut()
+                .find(|controller| controller.handle == cpu.gpr[3])
+            else {
+                return PpcImportAction::Return(ppc_i16_result(PPC_INVALID_COMPONENT_ID));
+            };
+            if cpu.gpr[4] == 0 {
+                return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+            }
+            let Some(rect) = ppc_read_rect(memory, cpu.gpr[4]) else {
+                return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+            };
+            controller.rect = rect;
             PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }
         PpcQuickTimeCompatibilityOperation::GetMovieVolume => {
