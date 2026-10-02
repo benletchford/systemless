@@ -2922,6 +2922,7 @@ fn import_bindings_classify_quicktime_compatibility_imports() {
             "NewMovieController",
             PpcQuickTimeCompatibilityOperation::NewMovieController,
         ),
+        ("MCSetMovie", PpcQuickTimeCompatibilityOperation::MCSetMovie),
         (
             "GetMovieVolume",
             PpcQuickTimeCompatibilityOperation::GetMovieVolume,
@@ -3294,6 +3295,48 @@ fn quicktime_new_movie_controller_records_movie_and_bounds() {
     loaded.run_with_hle_imports(64);
     assert_eq!(loaded.cpu.gpr[3], 0);
     assert_eq!(loaded.quicktime.movie_controllers.len(), 2);
+}
+
+#[test]
+fn quicktime_mc_set_movie_updates_controller_association() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"MCSetMovie");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let controller = PPC_QT_MOVIE + 0x1_0000;
+    loaded.quicktime.movie_controllers.push(PpcQuickTimeControllerRecord {
+        handle: controller,
+        movie: PPC_QT_MOVIE,
+        rect: (0, 0, 100, 100),
+        flags: 0,
+        window: 0,
+        origin: 0,
+    });
+    loaded.cpu.gpr[3] = controller;
+    loaded.cpu.gpr[4] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[5] = 0x1234;
+    loaded.cpu.gpr[6] = 0x000a_0014;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.quicktime.movie_controllers[0].window, 0x1234);
+    assert_eq!(loaded.quicktime.movie_controllers[0].origin, 0x000a_0014);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = controller;
+    loaded.cpu.gpr[4] = 0;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.quicktime.movie_controllers[0].movie, 0);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = 0;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_INVALID_COMPONENT_ID));
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = controller;
+    loaded.cpu.gpr[4] = 0x1234_5678;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-2010));
+    assert_eq!(loaded.quicktime.movie_controllers[0].movie, 0);
 }
 
 #[test]
