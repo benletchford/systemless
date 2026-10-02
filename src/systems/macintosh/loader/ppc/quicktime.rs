@@ -40,6 +40,7 @@ pub enum PpcQuickTimeCompatibilityOperation {
     GetMovieActive,
     GetMovieTimeBase,
     GetMovieTimeScale,
+    GetMoviePreferredRate,
     GetMovieVolume,
     NewMovieFromDataFork,
     PrerollMovie,
@@ -156,6 +157,7 @@ pub struct PpcQuickTimeState {
     pub movie_file_bounds: Option<(i16, i16, i16, i16)>,
     pub movie_file_time_scale: u32,
     pub movie_file_duration: u64,
+    pub movie_file_preferred_rate: i32,
     pub movie_file_tasks_until_done: u32,
     pub movie_file_video_track: Option<PpcQuickTimeVideoTrackRecord>,
     pub movie_file_video_samples: Option<PpcQuickTimeVideoSampleTableRecord>,
@@ -180,6 +182,7 @@ pub struct PpcQuickTimeState {
     pub movie_started: bool,
     pub movie_active: bool,
     pub movie_time_scale: u32,
+    pub movie_preferred_rate: i32,
     pub movie_task_count: u32,
     pub movie_tasks_until_done: u32,
     pub movie_video_track: Option<PpcQuickTimeVideoTrackRecord>,
@@ -208,6 +211,7 @@ impl Default for PpcQuickTimeState {
             movie_file_bounds: None,
             movie_file_time_scale: 0,
             movie_file_duration: 0,
+            movie_file_preferred_rate: 0x0001_0000,
             movie_file_tasks_until_done: PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE,
             movie_file_video_track: None,
             movie_file_video_samples: None,
@@ -237,6 +241,7 @@ impl Default for PpcQuickTimeState {
             movie_started: false,
             movie_active: false,
             movie_time_scale: 600,
+            movie_preferred_rate: 0x0001_0000,
             movie_task_count: 0,
             movie_tasks_until_done: PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE,
             movie_video_track: None,
@@ -281,6 +286,16 @@ pub(super) fn dispatch_quicktime_compatibility(
             if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
                 let _ = ppc_qt_record_error(quicktime, PPC_NO_ERR);
                 PpcImportAction::Return(quicktime.movie_time_scale)
+            } else {
+                let _ = ppc_qt_record_error(quicktime, -2010); // invalidMovie
+                PpcImportAction::Return(0)
+            }
+        }
+        PpcQuickTimeCompatibilityOperation::GetMoviePreferredRate => {
+            // Inside Macintosh: QuickTime (1993), p. 2-127.
+            if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
+                let _ = ppc_qt_record_error(quicktime, PPC_NO_ERR);
+                PpcImportAction::Return(quicktime.movie_preferred_rate as u32)
             } else {
                 let _ = ppc_qt_record_error(quicktime, -2010); // invalidMovie
                 PpcImportAction::Return(0)
@@ -362,12 +377,14 @@ pub(super) fn dispatch_quicktime_compatibility(
                 } else {
                     quicktime.movie_file_time_scale
                 };
+                quicktime.movie_preferred_rate = quicktime.movie_file_preferred_rate;
             } else {
                 quicktime.movie_tasks_until_done = PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE;
                 quicktime.movie_video_track = None;
                 quicktime.movie_video_samples = None;
                 quicktime.movie_audio_track = None;
                 quicktime.movie_time_scale = 600;
+                quicktime.movie_preferred_rate = 0x0001_0000;
             }
             quicktime.movie_started = false;
             // newMovieActive is bit 0 of the creation flags (pp. 2-109–2-110).
@@ -1074,7 +1091,11 @@ pub(crate) fn ppc_qt_movie_bounds(data: &[u8]) -> Option<(i16, i16, i16, i16)> {
 }
 
 pub(crate) fn ppc_qt_movie_duration(data: &[u8]) -> Option<(u32, u64)> {
-    ppc_qt_scan_movie_duration(data, 0, data.len(), 0)
+    ppc_qt_scan_movie_header(data, 0, data.len(), 0, ppc_qt_mvhd_duration)
+}
+
+pub(crate) fn ppc_qt_movie_preferred_rate(data: &[u8]) -> Option<i32> {
+    ppc_qt_scan_movie_header(data, 0, data.len(), 0, ppc_qt_mvhd_preferred_rate)
 }
 
 pub(crate) fn ppc_qt_movie_first_video_track(data: &[u8]) -> Option<PpcQuickTimeVideoTrackRecord> {
@@ -1172,12 +1193,13 @@ fn ppc_qt_scan_movie_bounds(
     bounds
 }
 
-fn ppc_qt_scan_movie_duration(
+fn ppc_qt_scan_movie_header<T>(
     data: &[u8],
     start: usize,
     end: usize,
     depth: u8,
-) -> Option<(u32, u64)> {
+    read_header: fn(&[u8], usize, usize) -> Option<T>,
+) -> Option<T> {
     if depth > 8 || start >= end || end > data.len() {
         return None;
     }
@@ -1208,14 +1230,14 @@ fn ppc_qt_scan_movie_duration(
         }
 
         if atom_type == b"mvhd" {
-            if let Some(duration) = ppc_qt_mvhd_duration(data, content_start, atom_end) {
-                return Some(duration);
+            if let Some(value) = read_header(data, content_start, atom_end) {
+                return Some(value);
             }
         } else if ppc_qt_is_container_atom(atom_type) {
-            if let Some(duration) =
-                ppc_qt_scan_movie_duration(data, content_start, atom_end, depth + 1)
+            if let Some(value) =
+                ppc_qt_scan_movie_header(data, content_start, atom_end, depth + 1, read_header)
             {
-                return Some(duration);
+                return Some(value);
             }
         }
 
@@ -2528,6 +2550,22 @@ fn ppc_qt_mvhd_duration(data: &[u8], content_start: usize, atom_end: usize) -> O
     Some((time_scale, duration))
 }
 
+fn ppc_qt_mvhd_preferred_rate(data: &[u8], content_start: usize, atom_end: usize) -> Option<i32> {
+    // Inside Macintosh: QuickTime (1993), pp. 4-11–4-12: the preferred
+    // 16.16 Fixed rate follows the movie duration in the mvhd atom.
+    let offset = match *data.get(content_start)? {
+        0 => content_start.checked_add(20)?,
+        1 => content_start.checked_add(32)?,
+        _ => return None,
+    };
+    if offset.checked_add(4)? > atom_end {
+        return None;
+    }
+    Some(i32::from_be_bytes(
+        data.get(offset..offset + 4)?.try_into().ok()?,
+    ))
+}
+
 fn ppc_qt_movie_tasks_until_done(time_scale: u32, duration: u64) -> u32 {
     if time_scale == 0 || duration == 0 {
         return PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE;
@@ -2641,12 +2679,14 @@ pub(crate) fn ppc_qt_new_movie_from_file(
         } else {
             quicktime.movie_file_time_scale
         };
+        quicktime.movie_preferred_rate = quicktime.movie_file_preferred_rate;
     } else {
         quicktime.movie_tasks_until_done = PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE;
         quicktime.movie_video_track = None;
         quicktime.movie_video_samples = None;
         quicktime.movie_audio_track = None;
         quicktime.movie_time_scale = 600;
+        quicktime.movie_preferred_rate = 0x0001_0000;
     }
     if memory.write_u32_be(movie_out_ptr, PPC_QT_MOVIE).is_none() {
         return PPC_PARAM_ERR;
@@ -2682,6 +2722,7 @@ pub(crate) fn ppc_qt_open_movie_file(
     let mut movie_file_bounds = None;
     let mut movie_file_time_scale = 0;
     let mut movie_file_duration = 0;
+    let mut movie_file_preferred_rate = 0x0001_0000;
     let mut movie_file_tasks_until_done = PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE;
     let mut movie_file_video_track = None;
     let mut movie_file_video_samples = None;
@@ -2700,6 +2741,8 @@ pub(crate) fn ppc_qt_open_movie_file(
                 movie_file_video_track = ppc_qt_movie_first_video_track(&movie_file_data);
                 movie_file_video_samples = ppc_qt_movie_video_samples(&movie_file_data);
                 movie_file_audio_track = ppc_qt_movie_first_audio_track(&movie_file_data);
+                movie_file_preferred_rate =
+                    ppc_qt_movie_preferred_rate(&movie_file_data).unwrap_or(0x0001_0000);
                 if let Some((time_scale, duration)) = ppc_qt_movie_duration(&movie_file_data) {
                     movie_file_time_scale = time_scale;
                     movie_file_duration = duration;
@@ -2723,6 +2766,7 @@ pub(crate) fn ppc_qt_open_movie_file(
     quicktime.movie_file_bounds = movie_file_bounds;
     quicktime.movie_file_time_scale = movie_file_time_scale;
     quicktime.movie_file_duration = movie_file_duration;
+    quicktime.movie_file_preferred_rate = movie_file_preferred_rate;
     quicktime.movie_file_tasks_until_done = movie_file_tasks_until_done;
     quicktime.movie_file_video_track = movie_file_video_track;
     quicktime.movie_file_video_samples = movie_file_video_samples;
@@ -2830,6 +2874,7 @@ fn ppc_qt_refresh_open_movie_metadata(quicktime: &mut PpcQuickTimeState) {
     quicktime.movie_file_bounds = None;
     quicktime.movie_file_time_scale = 0;
     quicktime.movie_file_duration = 0;
+    quicktime.movie_file_preferred_rate = 0x0001_0000;
     quicktime.movie_file_tasks_until_done = PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE;
     quicktime.movie_file_video_track = None;
     quicktime.movie_file_video_samples = None;
@@ -2838,6 +2883,8 @@ fn ppc_qt_refresh_open_movie_metadata(quicktime: &mut PpcQuickTimeState) {
     quicktime.movie_file_video_track = ppc_qt_movie_first_video_track(&quicktime.movie_file_data);
     quicktime.movie_file_video_samples = ppc_qt_movie_video_samples(&quicktime.movie_file_data);
     quicktime.movie_file_audio_track = ppc_qt_movie_first_audio_track(&quicktime.movie_file_data);
+    quicktime.movie_file_preferred_rate =
+        ppc_qt_movie_preferred_rate(&quicktime.movie_file_data).unwrap_or(0x0001_0000);
     if let Some((time_scale, duration)) = ppc_qt_movie_duration(&quicktime.movie_file_data) {
         quicktime.movie_file_time_scale = time_scale;
         quicktime.movie_file_duration = duration;
