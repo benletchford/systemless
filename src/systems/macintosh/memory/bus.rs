@@ -2705,9 +2705,19 @@ impl MacMemoryBus {
                 .copy_bytes_in_bounds(src as usize, dst as usize, len as usize);
             return true;
         }
-        for offset in 0..len {
-            let byte = self.read_byte(src.wrapping_add(offset));
-            self.write_byte(dst.wrapping_add(offset), byte);
+        // Byte by byte with the fast paths' memmove semantics: a destination
+        // above an overlapping source copies from the end, or the bytes the
+        // copy has already written would be read back as source.
+        if dst > src && dst - src < len {
+            for offset in (0..len).rev() {
+                let byte = self.read_byte(src.wrapping_add(offset));
+                self.write_byte(dst.wrapping_add(offset), byte);
+            }
+        } else {
+            for offset in 0..len {
+                let byte = self.read_byte(src.wrapping_add(offset));
+                self.write_byte(dst.wrapping_add(offset), byte);
+            }
         }
         true
     }
