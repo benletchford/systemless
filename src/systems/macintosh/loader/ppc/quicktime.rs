@@ -50,6 +50,7 @@ pub enum PpcQuickTimeCompatibilityOperation {
     GetMediaSampleDescription,
     MCDoAction,
     NewMovieController,
+    DisposeMovieController,
     MCSetMovie,
     MCGetControllerBoundsRect,
     MCSetActionFilterWithRefCon,
@@ -600,6 +601,14 @@ pub(super) fn dispatch_quicktime_compatibility(
                     action_ref_con: 0,
                 });
             PpcImportAction::Return(handle)
+        }
+        PpcQuickTimeCompatibilityOperation::DisposeMovieController => {
+            // Inside Macintosh: QuickTime Components (1993), p. 2-32: the
+            // application retains ownership of the associated movie.
+            quicktime
+                .movie_controllers
+                .retain(|controller| controller.handle != cpu.gpr[3]);
+            PpcImportAction::ReturnPreserve
         }
         PpcQuickTimeCompatibilityOperation::MCSetMovie => {
             // Inside Macintosh: QuickTime Components (1993), pp. 2-31–2-32.

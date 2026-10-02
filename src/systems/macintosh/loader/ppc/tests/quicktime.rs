@@ -2922,6 +2922,10 @@ fn import_bindings_classify_quicktime_compatibility_imports() {
             "NewMovieController",
             PpcQuickTimeCompatibilityOperation::NewMovieController,
         ),
+        (
+            "DisposeMovieController",
+            PpcQuickTimeCompatibilityOperation::DisposeMovieController,
+        ),
         ("MCSetMovie", PpcQuickTimeCompatibilityOperation::MCSetMovie),
         (
             "MCGetControllerBoundsRect",
@@ -3344,6 +3348,32 @@ fn quicktime_new_movie_controller_records_movie_and_bounds() {
     loaded.run_with_hle_imports(64);
     assert_eq!(loaded.cpu.gpr[3], 0);
     assert_eq!(loaded.quicktime.movie_controllers.len(), 2);
+}
+
+#[test]
+fn quicktime_dispose_movie_controller_preserves_associated_movie() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"DisposeMovieController");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let controller = 0x4001_3010;
+    loaded.quicktime.movie_controllers.push(PpcQuickTimeControllerRecord {
+        handle: controller,
+        movie: PPC_QT_MOVIE,
+        rect: (0, 0, 100, 100),
+        flags: 0,
+        window: 0,
+        origin: 0,
+        action_filter: 0,
+        action_ref_con: 0,
+    });
+    loaded.quicktime.movie_started = true;
+    loaded.cpu.gpr[3] = controller;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert!(loaded.quicktime.movie_controllers.is_empty());
+    assert!(!loaded.quicktime.movie_disposed);
+    assert!(loaded.quicktime.movie_started);
 }
 
 #[test]
