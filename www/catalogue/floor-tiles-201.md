@@ -19,11 +19,11 @@ compatibility:
     systemless_version: 0.73.0 + deterministic play runner and release browser build
     architecture: 68k
     environment: >-
-      The unchanged Info-Mac package opened its 68K application. After dismissing
-      the startup and shareware reminders, Start Tiles began a Match Sides board.
-      Clicking a grid cell placed a colored tile and raised the score from 0 to 5.
-      The release browser fetched the same archive once; its board click placed a
-      tile and raised the score from 0 to 1.
+      The unchanged Info-Mac package opened its 68K application. After dismissing the
+      startup and shareware reminders, Start Tiles began a Match Sides board. Clicking
+      a grid cell placed a colored tile and raised the score from 0 to 5. The release
+      browser fetched the same archive once; its board click placed a tile and raised
+      the score from 0 to 1.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3849
 artifacts:
@@ -31,30 +31,31 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/floor-tiles-201.hqx
-    expected_sha256: ff03c52b5e0e6c03bac7b24a9273fc3ecedd55715fe8c90d345ff6355fc4295f
-    expected_size: 238197
+    type: sha256
+    sha256: ff03c52b5e0e6c03bac7b24a9273fc3ecedd55715fe8c90d345ff6355fc4295f
+    size_bytes: 238197
   provenance:
     redistribution: permitted
     original: true
     sources:
-    - https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/floor-tiles-201.hqx
+    - >-
+      https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/floor-tiles-201.hqx
     rights_holder: Karl Bunker
     permission: >-
-      Karl Bunker's bundled ReadMe permits free distribution of FloorTiles when
-      all included files remain unchanged and together, without unreasonable
-      charges. It explicitly welcomes CD-ROM and private sharing.
+      Karl Bunker's bundled ReadMe permits free distribution of FloorTiles when all
+      included files remain unchanged and together, without unreasonable charges. It
+      explicitly welcomes CD-ROM and private sharing.
     notes: >-
-      Original 238,197-byte Info-Mac BinHex/StuffIt package with application,
-      ReadMe, and registration utility; SHA-256
+      Original 238,197-byte Info-Mac BinHex/StuffIt package with application, ReadMe,
+      and registration utility; SHA-256
       ff03c52b5e0e6c03bac7b24a9273fc3ecedd55715fe8c90d345ff6355fc4295f.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/floor-tiles-201/gameplay.png
+    type: sha256
+    sha256: e3fea6052f43cd823be3ec470a4b282f0ba56b2ce943131353f77d8a4bd66284
+    size_bytes: 14777
   provenance:
     redistribution: permitted
     original: true
@@ -68,12 +69,13 @@ artifacts:
       Exact 504-by-314 game-content crop at (148,162) from an 800-by-600 Systemless
       framebuffer after placing the first tile; emulator framing excluded.
 references:
-- https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/floor-tiles-201.hqx
+- >-
+  https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/floor-tiles-201.hqx
 ---
 
 ## Match the sides
 
-![FloorTiles Match Sides board after a scored placement](incoming/floor-tiles-201/gameplay.png)
+![FloorTiles Match Sides board after a scored placement](https://assets.systemless.org/catalogue/media/sha256/e3/e3fea6052f43cd823be3ec470a4b282f0ba56b2ce943131353f77d8a4bd66284.png)
 
 Dismiss the startup prompts with **OK** and **Not Yet**, then click
 **Start Tiles**. Click a square to place the colored tile. Match its edges
