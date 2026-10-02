@@ -5,6 +5,110 @@ use crate::trap::menu::{Menu, MenuItem};
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::UiThemeId;
 
+#[test]
+fn appearance_control_font_style_reads_record_and_pascal_result() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let (handle, pointer) = alloc_control_handle(&mut bus, (10, 20, 30, 60), 255, 0);
+    disp.control_manager.register(handle, pointer, 0, 0);
+    let style_ptr = bus.alloc(24);
+    for (index, value) in [1u16, 3, 12, 1, 0, 0, 0xFFFF, 0, 0, 0, 0, 0]
+        .into_iter()
+        .enumerate()
+    {
+        bus.write_word(style_ptr + (index as u32) * 2, value);
+    }
+    let sp = 0x300000;
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::D0, 0x001C);
+    bus.write_long(sp, style_ptr);
+    bus.write_long(sp + 4, handle);
+    bus.write_word(sp + 8, 0xFFFF);
+    disp.dispatch_control(true, 0x273, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+    assert_eq!(bus.read_word(sp + 8), 0);
+    let style = disp.control_manager.records()[0].font_style.unwrap();
+    assert_eq!((style.flags, style.font, style.size), (1, 3, 12));
+    assert_eq!(style.foreground, [0xFFFF, 0, 0]);
+}
+
+#[test]
+fn appearance_control_data_round_trips_tag_and_actual_size() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let (handle, pointer) = alloc_control_handle(&mut bus, (10, 20, 30, 60), 255, 0);
+    disp.control_manager.register(handle, pointer, 0, 0);
+    let data_ptr = bus.alloc(4);
+    for (offset, value) in [1, 2, 3, 4].into_iter().enumerate() {
+        bus.write_byte(data_ptr + offset as u32, value);
+    }
+    let sp = 0x300000;
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::D0, 0x0012);
+    bus.write_long(sp, data_ptr);
+    bus.write_long(sp + 4, 4);
+    bus.write_long(sp + 8, 0x7465_7374);
+    bus.write_word(sp + 12, 0);
+    bus.write_long(sp + 14, handle);
+    disp.dispatch_control(true, 0x273, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::A7), sp + 18);
+    assert_eq!(bus.read_word(sp + 18), 0);
+
+    let buffer = bus.alloc(2);
+    let actual_size = bus.alloc(4);
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::D0, 0x0013);
+    bus.write_long(sp, actual_size);
+    bus.write_long(sp + 4, buffer);
+    bus.write_long(sp + 8, 2);
+    bus.write_long(sp + 12, 0x7465_7374);
+    bus.write_word(sp + 16, 0);
+    bus.write_long(sp + 18, handle);
+    disp.dispatch_control(true, 0x273, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::A7), sp + 22);
+    assert_eq!(bus.read_word(sp + 22), 0);
+    assert_eq!(bus.read_long(actual_size), 4);
+    assert_eq!([bus.read_byte(buffer), bus.read_byte(buffer + 1)], [1, 2]);
+}
+
+#[test]
+fn appearance_handle_control_click_tracks_button_across_release() {
+    let (mut disp, mut cpu, mut bus) = setup_with_port();
+    let window = *disp.current_port;
+    let screen_base = bus.read_long(window + 2);
+    let row_bytes = (bus.read_word(window + 6) & 0x3FFF) as u32;
+    disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+    let (handle, _) = alloc_button_control(&mut disp, &mut bus, window, (20, 20, 40, 80));
+    let sp = 0x300000;
+    disp.input_state.set_mouse_button_for_test(true);
+    disp.input_state.set_mouse_position_for_test((30, 30));
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::D0, 0x000A);
+    bus.write_long(sp, 0); // action UPP
+    bus.write_word(sp + 4, 0x1234); // modifiers
+    bus.write_word(sp + 6, 30); // Point.v
+    bus.write_word(sp + 8, 30); // Point.h
+    bus.write_long(sp + 10, handle);
+    bus.write_word(sp + 14, 0xBEEF);
+    disp.dispatch_control(true, 0x273, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::A7), sp + 2);
+    assert!(disp.control_tracking.is_some());
+
+    disp.input_state.set_mouse_button_for_test(false);
+    disp.dispatch_control(true, 0x273, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+    assert_eq!(bus.read_word(sp + 14), 10);
+    assert!(disp.control_tracking.is_none());
+}
+
 fn build_cntl_resource(
     rect: (i16, i16, i16, i16),
     value: i16,
