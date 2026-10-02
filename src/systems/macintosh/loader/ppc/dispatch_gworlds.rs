@@ -351,6 +351,8 @@ pub(super) fn dispatch_gworld_import(
         PpcImportDispatcherTarget::QDError => Some(PpcImportAction::Return(ppc_i16_result(
             *toolbox_startup.last_quickdraw_error,
         ))),
+        // HLE QuickDraw completes drawing synchronously, for any requested port.
+        PpcImportDispatcherTarget::QDDone => Some(PpcImportAction::Return(1)),
         PpcImportDispatcherTarget::GetGWorld => {
             let port_ptr = cpu.gpr[3];
             let device_ptr = cpu.gpr[4];
