@@ -557,6 +557,18 @@ pub(super) fn dispatch_quicktime_compatibility(
                 return PpcImportAction::Return(ppc_i16_result(PPC_INVALID_COMPONENT_ID));
             };
             match cpu.gpr[4] as i16 {
+                1 => {
+                    // mcActionIdle gives the assigned movie processing time.
+                    if movie == 0 {
+                        return PpcImportAction::Return(0);
+                    }
+                    let controller = cpu.gpr[3];
+                    cpu.gpr[3] = movie;
+                    let error =
+                        ppc_qt_movies_task(cpu, memory, gworlds, current_gworld, quicktime, sound);
+                    cpu.gpr[3] = controller;
+                    PpcImportAction::Return(ppc_i16_result(error))
+                }
                 8 => {
                     // mcActionPlay carries a Fixed playback rate in the params slot.
                     if movie != PPC_QT_MOVIE || quicktime.movie_disposed {
