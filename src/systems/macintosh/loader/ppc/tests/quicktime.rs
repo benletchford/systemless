@@ -719,6 +719,7 @@ fn hle_import_runner_tracks_quicktime_movie_file_box_and_beginning_state() {
     loaded.cpu.gpr[3] = movie_out_ptr;
     loaded.cpu.gpr[4] = PPC_FIRST_FILE_REF_NUM as u16 as u32;
     loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[7] = 1; // newMovieActive
     loaded.cpu.gpr[8] = 0;
 
     let probe = loaded.run_with_hle_imports(64);
@@ -2527,6 +2528,7 @@ fn hle_import_runner_tracks_quicktime_gworld_targets_and_visible_draws() {
     loaded.cpu.pc = loaded.entry_pc;
     loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtStartMovie;
     loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.quicktime.movie_active = true;
 
     let probe = loaded.run_with_hle_imports(64);
 
@@ -2869,6 +2871,7 @@ fn hle_import_runner_quicktime_importer_resolves_unique_archive_suffix_path() {
 #[test]
 fn import_bindings_classify_quicktime_compatibility_imports() {
     for (symbol, operation) in [
+        ("GetMovieActive", PpcQuickTimeCompatibilityOperation::GetMovieActive),
         (
             "GetMovieTimeBase",
             PpcQuickTimeCompatibilityOperation::GetMovieTimeBase,
@@ -2882,6 +2885,7 @@ fn import_bindings_classify_quicktime_compatibility_imports() {
             PpcQuickTimeCompatibilityOperation::NewMovieFromDataFork,
         ),
         ("PrerollMovie", PpcQuickTimeCompatibilityOperation::PrerollMovie),
+        ("SetMovieActive", PpcQuickTimeCompatibilityOperation::SetMovieActive),
         (
             "SetMovieVolume",
             PpcQuickTimeCompatibilityOperation::SetMovieVolume,
@@ -2897,6 +2901,40 @@ fn import_bindings_classify_quicktime_compatibility_imports() {
             PpcImportDispatcherTarget::QuickTimeCompatibility(operation),
         );
     }
+}
+
+#[test]
+fn quicktime_movie_activation_controls_task_progress() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"SetMovieActive");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = 1;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert!(loaded.quicktime.movie_active);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QuickTimeCompatibility(
+        PpcQuickTimeCompatibilityOperation::GetMovieActive,
+    );
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QuickTimeCompatibility(
+        PpcQuickTimeCompatibilityOperation::SetMovieActive,
+    );
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = 0;
+    loaded.run_with_hle_imports(64);
+    assert!(!loaded.quicktime.movie_active);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtMoviesTask;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.quicktime.movie_task_count, 0);
 }
 
 #[test]
