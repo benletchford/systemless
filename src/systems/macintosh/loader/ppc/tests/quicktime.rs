@@ -2928,6 +2928,10 @@ fn import_bindings_classify_quicktime_compatibility_imports() {
             PpcQuickTimeCompatibilityOperation::MCGetControllerBoundsRect,
         ),
         (
+            "MCSetActionFilterWithRefCon",
+            PpcQuickTimeCompatibilityOperation::MCSetActionFilterWithRefCon,
+        ),
+        (
             "GetMovieVolume",
             PpcQuickTimeCompatibilityOperation::GetMovieVolume,
         ),
@@ -3313,6 +3317,8 @@ fn quicktime_mc_set_movie_updates_controller_association() {
         flags: 0,
         window: 0,
         origin: 0,
+        action_filter: 0,
+        action_ref_con: 0,
     });
     loaded.cpu.gpr[3] = controller;
     loaded.cpu.gpr[4] = PPC_QT_MOVIE;
@@ -3355,6 +3361,8 @@ fn quicktime_mc_get_controller_bounds_writes_recorded_rect() {
         flags: 0,
         window: 0,
         origin: 0,
+        action_filter: 0,
+        action_ref_con: 0,
     });
     let out = PPC_DATA_BASE + 0x1b00;
     loaded.memory.add_region(out, vec![0; 8]);
@@ -3375,6 +3383,43 @@ fn quicktime_mc_get_controller_bounds_writes_recorded_rect() {
     loaded.cpu.gpr[4] = 0;
     loaded.run_with_hle_imports(64);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+}
+
+#[test]
+fn quicktime_mc_set_action_filter_records_and_removes_callback() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"MCSetActionFilterWithRefCon");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let controller = PPC_QT_MOVIE + 0x1_0000;
+    loaded.quicktime.movie_controllers.push(PpcQuickTimeControllerRecord {
+        handle: controller,
+        movie: PPC_QT_MOVIE,
+        rect: (0, 0, 100, 100),
+        flags: 0,
+        window: 0,
+        origin: 0,
+        action_filter: 0,
+        action_ref_con: 0,
+    });
+    loaded.cpu.gpr[3] = controller;
+    loaded.cpu.gpr[4] = 0x1234_5678;
+    loaded.cpu.gpr[5] = 0x9abc_def0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.quicktime.movie_controllers[0].action_filter, 0x1234_5678);
+    assert_eq!(loaded.quicktime.movie_controllers[0].action_ref_con, 0x9abc_def0);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = controller;
+    loaded.cpu.gpr[4] = 0;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.quicktime.movie_controllers[0].action_filter, 0);
+    assert_eq!(loaded.quicktime.movie_controllers[0].action_ref_con, 0);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = 0;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_INVALID_COMPONENT_ID));
 }
 
 #[test]
