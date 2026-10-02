@@ -5628,6 +5628,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "GetMovieUserData") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::GetMovieUserData,
         ),
+        ("QuickTimeLib", "GetUserData") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetUserData,
+        ),
         ("QuickTimeLib", "GetMovieVolume") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::GetMovieVolume,
         ),
