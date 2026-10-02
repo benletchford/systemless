@@ -2912,6 +2912,7 @@ fn import_bindings_classify_quicktime_compatibility_imports() {
             PpcQuickTimeCompatibilityOperation::GetMovieUserData,
         ),
         ("GetUserData", PpcQuickTimeCompatibilityOperation::GetUserData),
+        ("GetTrackMedia", PpcQuickTimeCompatibilityOperation::GetTrackMedia),
         (
             "GetMovieVolume",
             PpcQuickTimeCompatibilityOperation::GetMovieVolume,
@@ -3175,6 +3176,31 @@ fn quicktime_get_user_data_reads_indexed_items_into_handle() {
     loaded.cpu.gpr[6] = 1;
     loaded.run_with_hle_imports(64);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-2026));
+}
+
+#[test]
+fn quicktime_get_track_media_returns_stable_media_reference() {
+    let tracks = ppc_qt_movie_tracks(&test_quicktime_tkhd_movie(320, 240));
+    assert!(!tracks.is_empty());
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"GetTrackMedia");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.quicktime.movie_tracks = tracks;
+    loaded.cpu.gpr[3] = loaded.quicktime.movie_tracks[0].handle;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    let media = loaded.cpu.gpr[3];
+    assert_ne!(media, 0);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = loaded.quicktime.movie_tracks[0].handle;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], media);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = 0;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.quicktime.movie_error, -2009);
 }
 
 #[test]
