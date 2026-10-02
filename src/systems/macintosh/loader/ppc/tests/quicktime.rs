@@ -3579,13 +3579,14 @@ fn quicktime_new_movie_from_data_fork_reads_atom_at_requested_offset() {
     let movie = test_quicktime_tkhd_movie(320, 240);
     let movie_offset = movie.windows(4).position(|bytes| bytes == b"moov").unwrap() - 4;
     let mut fork = vec![0xAA; 13];
+    fork[8..12].copy_from_slice(&[0x10, 0x20, 0x30, 0x40]);
     fork.extend_from_slice(&movie[movie_offset..]);
 
     let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"NewMovieFromDataFork");
     let mut loaded = load_pef_application(&pef).unwrap();
     loaded.push_test_vfs_file(PpcVfsFileRecord {
         path: "Data/movie.mhk".to_string(),
-        data: fork.into(),
+        data: fork.clone().into(),
         creator: 0,
         file_type: 0,
         finder_flags: 0,
@@ -3608,6 +3609,13 @@ fn quicktime_new_movie_from_data_fork_reads_atom_at_requested_offset() {
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     assert_eq!(loaded.memory.read_u32_be(movie_out), Some(PPC_QT_MOVIE));
     assert_eq!(loaded.quicktime.movie_file_path, "Data/movie.mhk");
+    let sample_fork = loaded.quicktime.movie_file_sample_fork.as_ref().unwrap();
+    assert_eq!(sample_fork.as_slice(), fork.as_slice());
+    let samples = loaded.quicktime.movie_video_samples.as_ref().unwrap();
+    assert_eq!(
+        ppc_qt_movie_video_sample_bytes(sample_fork.as_slice(), samples, 0),
+        Some(&[0x10, 0x20, 0x30, 0x40][..])
+    );
     assert_eq!(loaded.quicktime.movie_time_scale, 60);
     assert_eq!(loaded.quicktime.movie_tracks.len(), 2);
     assert_eq!(loaded.quicktime.movie_tracks[0].media_type, u32::from_be_bytes(*b"vide"));

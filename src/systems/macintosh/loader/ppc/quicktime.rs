@@ -1,6 +1,7 @@
 //! QuickTime and Movie Media state and tracking records.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use super::{
     format_ppc_fourcc, ppc_decoded_sound_data, ppc_draw_pict_bytes_to_16bpp,
@@ -16,7 +17,7 @@ use super::{
     PPC_QT_GRAPHICS_IMPORTER, PPC_QT_MOVIE, PPC_QT_MOVIE_TASKS_PER_SECOND, PPC_RES_NOT_FOUND_ERR,
 };
 use crate::managers::resource::ResourceFork;
-use crate::process_context::ProcessNativeMemoryManager;
+use crate::process_context::{ProcessForkBytes, ProcessNativeMemoryManager};
 use crate::trap::TrapDispatcher;
 use ppc::PpcMemory;
 
@@ -188,6 +189,7 @@ pub struct PpcQuickTimeState {
     pub movie_file_last_closed_ref_num: i16,
     pub movie_file_path: String,
     pub movie_file_data: Vec<u8>,
+    pub movie_file_sample_fork: Option<Rc<ProcessForkBytes>>,
     pub movie_file_bounds: Option<(i16, i16, i16, i16)>,
     pub movie_file_time_scale: u32,
     pub movie_file_duration: u64,
@@ -248,6 +250,7 @@ impl Default for PpcQuickTimeState {
             movie_file_last_closed_ref_num: 0,
             movie_file_path: String::new(),
             movie_file_data: Vec::new(),
+            movie_file_sample_fork: None,
             movie_file_bounds: None,
             movie_file_time_scale: 0,
             movie_file_duration: 0,
@@ -783,7 +786,7 @@ pub(super) fn dispatch_quicktime_compatibility(
             }
             // Inside Macintosh: QuickTime (1993), pp. 2-109–2-110: fileOffset
             // points to the movie atom in an already open data fork.
-            if let Some((path, data)) = ppc_qt_movie_data_from_open_fork(
+            if let Some((path, data, sample_fork)) = ppc_qt_movie_data_from_open_fork(
                 files,
                 vfs_files,
                 cpu.gpr[4] as u16 as i16,
@@ -791,6 +794,7 @@ pub(super) fn dispatch_quicktime_compatibility(
             ) {
                 quicktime.movie_file_path = path;
                 quicktime.movie_file_data = data;
+                quicktime.movie_file_sample_fork = Some(sample_fork);
                 quicktime.movie_file_ref_num = cpu.gpr[4] as u16 as i16;
                 ppc_qt_refresh_open_movie_metadata(quicktime);
             }
@@ -1696,7 +1700,7 @@ fn ppc_qt_movie_data_from_open_fork(
     vfs_files: &[PpcVfsFileRecord],
     ref_num: i16,
     offset: u32,
-) -> Option<(String, Vec<u8>)> {
+) -> Option<(String, Vec<u8>, Rc<ProcessForkBytes>)> {
     let open_file = files.iter().find(|file| file.ref_num == ref_num)?;
     let file = vfs_files
         .iter()
@@ -1707,7 +1711,11 @@ fn ppc_qt_movie_data_from_open_fork(
     if kind != b"moov" {
         return None;
     }
-    Some((file.path.clone(), bytes.get(offset..atom_end)?.to_vec()))
+    Some((
+        file.path.clone(),
+        bytes.get(offset..atom_end)?.to_vec(),
+        Rc::new(file.data.shared_handle()),
+    ))
 }
 
 fn ppc_qt_track_metadata(data: &[u8], start: usize, end: usize) -> Option<(u32, u32, bool)> {
@@ -3335,6 +3343,7 @@ pub(crate) fn ppc_qt_new_movie_from_file(
             return PPC_RES_NOT_FOUND_ERR;
         };
         quicktime.movie_file_data = selected_data;
+        quicktime.movie_file_sample_fork = None;
         ppc_qt_refresh_open_movie_metadata(quicktime);
         if res_id_ptr != 0
             && memory
@@ -3451,6 +3460,7 @@ pub(crate) fn ppc_qt_open_movie_file(
     quicktime.movie_file_ref_num = PPC_FIRST_FILE_REF_NUM;
     quicktime.movie_file_path = movie_file_path;
     quicktime.movie_file_data = movie_file_data;
+    quicktime.movie_file_sample_fork = None;
     quicktime.movie_file_bounds = movie_file_bounds;
     quicktime.movie_file_time_scale = movie_file_time_scale;
     quicktime.movie_file_duration = movie_file_duration;
@@ -3923,7 +3933,12 @@ fn ppc_qt_stop_movie_audio(sound: &mut PpcSoundState) {
 pub(crate) fn ppc_qt_decode_movie_audio_samples(
     quicktime: &PpcQuickTimeState,
 ) -> Option<PpcDecodedAiffData> {
-    if let Some(decoded) = ppc_qt_movie_audio_samples(&quicktime.movie_file_data) {
+    let sample_data = quicktime
+        .movie_file_sample_fork
+        .as_ref()
+        .map(|fork| fork.as_slice())
+        .unwrap_or(&quicktime.movie_file_data);
+    if let Some(decoded) = ppc_qt_movie_audio_samples(sample_data) {
         return Some(decoded);
     }
 
@@ -3933,14 +3948,11 @@ pub(crate) fn ppc_qt_decode_movie_audio_samples(
     let frames = usize::try_from(sample_count).ok()?;
     let channels = usize::from(track.channel_count);
     let samples = match track.codec {
-        codec if codec == u32::from_be_bytes(*b"ima4") => ppc_qt_decode_ima4_movie_audio_samples(
-            &quicktime.movie_file_data,
-            offset,
-            frames,
-            channels,
-        )?,
+        codec if codec == u32::from_be_bytes(*b"ima4") => {
+            ppc_qt_decode_ima4_movie_audio_samples(sample_data, offset, frames, channels)?
+        }
         _ => ppc_qt_decode_pcm_movie_audio_samples(
-            &quicktime.movie_file_data,
+            sample_data,
             offset,
             frames,
             channels,
@@ -4761,7 +4773,12 @@ pub(crate) fn ppc_qt_decode_current_movie_video_frame(
         return None;
     }
     let sample_index = ppc_qt_movie_timed_sample_index(quicktime, &samples)?;
-    let first_sample = ppc_qt_movie_video_sample_bytes(&quicktime.movie_file_data, &samples, 0)?;
+    let sample_data = quicktime
+        .movie_file_sample_fork
+        .as_ref()
+        .map(|fork| fork.as_slice())
+        .unwrap_or(&quicktime.movie_file_data);
+    let first_sample = ppc_qt_movie_video_sample_bytes(sample_data, &samples, 0)?;
     if first_sample.len() < 10 {
         return None;
     }
@@ -4790,7 +4807,7 @@ pub(crate) fn ppc_qt_decode_current_movie_video_frame(
         PpcQuickTimeCinepakDecoder::new(width, height)?
     };
     for index in start_index..=sample_index {
-        let sample = ppc_qt_movie_video_sample_bytes(&quicktime.movie_file_data, &samples, index)?;
+        let sample = ppc_qt_movie_video_sample_bytes(sample_data, &samples, index)?;
         decoder.decode_sample(sample)?;
     }
     let frame = decoder.decoded_frame();
@@ -4798,7 +4815,7 @@ pub(crate) fn ppc_qt_decode_current_movie_video_frame(
     Some(frame)
 }
 
-fn ppc_qt_movie_video_sample_bytes<'a>(
+pub(crate) fn ppc_qt_movie_video_sample_bytes<'a>(
     data: &'a [u8],
     samples: &PpcQuickTimeVideoSampleTableRecord,
     index: usize,
