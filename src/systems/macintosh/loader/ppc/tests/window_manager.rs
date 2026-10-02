@@ -3266,6 +3266,54 @@ fn paint_behind_nil_draws_the_classic_desktop_inside_the_clobbered_region() {
 }
 
 #[test]
+fn paint_behind_nil_preserves_pixels_covered_by_a_visible_window() {
+    let pef = synthetic_pef_with_import(b"PaintBehind");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut last_mem_error = loaded.last_mem_error();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, bounds_ptr, 20, 0, 100, 100).unwrap();
+    let mut window_cpu = loaded.cpu.clone();
+    window_cpu.gpr[3] = 0;
+    window_cpu.gpr[4] = bounds_ptr;
+    window_cpu.gpr[6] = 1;
+    let window = ppc_new_cwindow(
+        &window_cpu,
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        &mut loaded.gworlds,
+        &mut loaded.window_list,
+        *loaded.current_gdevice,
+    );
+    assert_ne!(window, 0);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    ppc_quickdraw_write_pixel(&mut loaded.memory, front, (50, 30), PPC_RGB_BLACK);
+    let clobbered_rgn = ppc_new_rgn(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+    );
+    ppc_write_rgn_bbox(&mut loaded.memory, clobbered_rgn, 20, 0, 40, 100).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = clobbered_rgn;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (50, 30)),
+        Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK)))
+    );
+}
+
+#[test]
 fn paint_one_erases_exposed_content_and_updates_the_window_region() {
     let pef = synthetic_pef_with_import(b"PaintOne");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -3321,6 +3369,69 @@ fn paint_one_erases_exposed_content_and_updates_the_window_region() {
     assert_eq!(
         ppc_quickdraw_read_pixel(&mut loaded.memory, front, (50, 40)),
         Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)))
+    );
+}
+
+#[test]
+fn paint_one_uses_color_window_content_instead_of_white() {
+    let pef = synthetic_pef_with_import(b"PaintOne");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut last_mem_error = loaded.last_mem_error();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, bounds_ptr, 0, 0, 100, 100).unwrap();
+    let mut window_cpu = loaded.cpu.clone();
+    window_cpu.gpr[3] = 0;
+    window_cpu.gpr[4] = bounds_ptr;
+    window_cpu.gpr[6] = 1;
+    let window = ppc_new_cwindow(
+        &window_cpu,
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        &mut loaded.gworlds,
+        &mut loaded.window_list,
+        *loaded.current_gdevice,
+    );
+    assert_ne!(window, 0);
+    let table = [
+        0, 0, 0, 1, // seed
+        0, 0, // flags
+        0, 0, // one entry
+        0, 0, // wContentColor
+        0, 0, 0, 0, 0, 0, // black
+    ];
+    let table_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &table,
+    );
+    loaded.memory.write_u32_be(window + PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET, table_handle).unwrap();
+    let clobbered_rgn = ppc_new_rgn(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+    );
+    ppc_write_rgn_bbox(&mut loaded.memory, clobbered_rgn, 0, 0, 20, 100).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    ppc_quickdraw_write_pixel(&mut loaded.memory, front, (50, 10), PPC_RGB_WHITE);
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = clobbered_rgn;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (50, 10)),
+        Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK)))
     );
 }
 

@@ -456,6 +456,18 @@ pub(super) fn dispatch_window_import(
                 toolbox_startup.host_menu_bar_hidden,
             );
             if !was_visible {
+                // Macintosh Toolbox Essentials (1992), Window Manager,
+                // PaintOne: newly exposed content uses its window color table.
+                let content_color = memory
+                    .read_u32_be(window.wrapping_add(PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET))
+                    .filter(|handle| *handle != 0)
+                    .and_then(|handle| ppc_window_content_color(memory, handle));
+                if let (Some(rect), Some(color)) = (
+                    ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET)),
+                    content_color,
+                ) {
+                    let _ = ppc_paint_window_background_bounds(memory, gworlds, window, rect, color);
+                }
                 if ppc_front_visible_process_window(memory, window_list) != Some(window) {
                     ppc_draw_existing_window_frame(
                         memory,
@@ -2517,12 +2529,32 @@ pub(super) fn ppc_paint_one(
 
     // Macintosh Toolbox Essentials (1992), p. 4-118: PaintOne erases the
     // exposed content with the window's background before adding it to the
-    // update region. NewCWindow ports use the main screen PixMap, so these
-    // Window Manager region coordinates are also the screen-buffer pixels.
+    // update region. A color window uses its content entry in the WCTab.
+    // These Window Manager coordinates are global screen-buffer pixels.
+    let background = memory
+        .read_u32_be(window.wrapping_add(PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET))
+        .filter(|handle| *handle != 0)
+        .and_then(|handle| ppc_window_content_color(memory, handle))
+        .unwrap_or(PPC_RGB_WHITE);
+    let visible = memory
+        .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|region| ppc_region_storage(memory, region));
+    let (port_top, port_left) = ppc_live_quickdraw_surface(memory, gworlds, window)
+        .map(|surface| (i32::from(surface.top), i32::from(surface.left)))
+        .unwrap_or((0, 0));
     if let Some(front_buffer) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) {
         for v in i32::from(exposed.0)..i32::from(exposed.2) {
             for h in i32::from(exposed.1)..i32::from(exposed.3) {
-                let _ = ppc_quickdraw_write_pixel(memory, front_buffer, (h, v), PPC_RGB_WHITE);
+                if visible.as_deref().is_some_and(|region| {
+                    !ppc_point_in_region_storage(
+                        region,
+                        (h + port_left) as i16,
+                        (v + port_top) as i16,
+                    )
+                }) {
+                    continue;
+                }
+                let _ = ppc_quickdraw_write_pixel(memory, front_buffer, (h, v), background);
             }
         }
     }
@@ -2730,6 +2762,20 @@ pub(super) fn ppc_paint_behind(
     }
 
     if start_window == 0 {
+        // PaintBehind(NIL) reaches the desktop only where visible window
+        // structures do not cover the clobbered region. Preserve pixels in
+        // those windows; their content is repainted by their update events.
+        let covered = gworlds
+            .iter()
+            .filter_map(|record| {
+                if matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
+                    || !ppc_window_is_visible(memory, record.port)
+                {
+                    return None;
+                }
+                ppc_window_global_structure_bounds(memory, gworlds, record.port)
+            })
+            .collect::<Vec<_>>();
         let desktop = if host_menu_bar_hidden {
             (
                 0,
@@ -2755,6 +2801,14 @@ pub(super) fn ppc_paint_behind(
             if let Some(front_buffer) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) {
                 for v in i32::from(paint.0)..i32::from(paint.2) {
                     for h in i32::from(paint.1)..i32::from(paint.3) {
+                        if covered.iter().any(|&(top, left, bottom, right)| {
+                            i32::from(top) <= v
+                                && v < i32::from(bottom)
+                                && i32::from(left) <= h
+                                && h < i32::from(right)
+                        }) {
+                            continue;
+                        }
                         let color = ppc_standard_desktop_color(gworlds, h, v);
                         let _ = ppc_quickdraw_write_pixel(memory, front_buffer, (h, v), color);
                     }

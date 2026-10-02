@@ -1372,6 +1372,36 @@ pub(crate) fn ppc_paint_rect_bounds(
     color: PpcRgbColor,
     explicit_index: Option<u8>,
 ) -> bool {
+    ppc_paint_rect_bounds_with_clip(
+        memory,
+        gworlds,
+        current_gworld,
+        rect,
+        color,
+        explicit_index,
+        true,
+    )
+}
+
+pub(crate) fn ppc_paint_window_background_bounds(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window: u32,
+    rect: (i16, i16, i16, i16),
+    color: PpcRgbColor,
+) -> bool {
+    ppc_paint_rect_bounds_with_clip(memory, gworlds, window, rect, color, None, false)
+}
+
+fn ppc_paint_rect_bounds_with_clip(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect: (i16, i16, i16, i16),
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+    respect_clip: bool,
+) -> bool {
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
         return false;
     };
@@ -1394,15 +1424,19 @@ pub(crate) fn ppc_paint_rect_bounds(
     else {
         return false;
     };
-    let clip_storage = memory
-        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
-        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let clip_storage = respect_clip
+        .then(|| {
+            memory
+                .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+                .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn))
+        })
+        .flatten();
     let vis_storage = memory
         .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
         .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
-    // Imaging With QuickDraw (1994), pp. 2-20--2-21: every destination pixel
-    // is constrained by visRgn ∩ clipRgn. Per-pixel writes also preserve the
-    // neighboring fields of packed 1/2/4-bit PixMaps.
+    // Window Manager exposure painting uses visRgn without the application's
+    // clipRgn; ordinary QuickDraw drawing uses their intersection.
+    // Per-pixel writes preserve neighboring packed 1/2/4-bit PixMap fields.
     if matches!(front_buffer.depth, 8 | 16)
         && [
             top + i32::from(surface.top),
