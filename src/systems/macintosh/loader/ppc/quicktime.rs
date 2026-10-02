@@ -43,6 +43,7 @@ pub enum PpcQuickTimeCompatibilityOperation {
     GetMoviePreferredRate,
     GetMoviePreferredVolume,
     GetMovieIndTrackType,
+    GetMovieUserData,
     GetMovieVolume,
     NewMovieFromDataFork,
     PrerollMovie,
@@ -379,6 +380,21 @@ pub(super) fn dispatch_quicktime_compatibility(
                 .unwrap_or(0);
             let _ = ppc_qt_record_error(quicktime, PPC_NO_ERR);
             PpcImportAction::Return(track)
+        }
+        PpcQuickTimeCompatibilityOperation::GetMovieUserData => {
+            // Inside Macintosh: QuickTime (1993), p. 2-231. The reference is
+            // stable for the lifetime of the movie and nil when no udta exists.
+            if !compatibility_valid_movie(quicktime, cpu.gpr[3]) {
+                let _ = ppc_qt_record_error(quicktime, -2010); // invalidMovie
+                return PpcImportAction::Return(0);
+            }
+            let user_data = if ppc_qt_movie_has_user_data(&quicktime.movie_file_data) {
+                PPC_QT_MOVIE + 0x20
+            } else {
+                0
+            };
+            let _ = ppc_qt_record_error(quicktime, PPC_NO_ERR);
+            PpcImportAction::Return(user_data)
         }
         PpcQuickTimeCompatibilityOperation::GetMovieVolume => {
             PpcImportAction::Return(if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
@@ -1208,6 +1224,31 @@ pub(crate) fn ppc_qt_movie_preferred_rate(data: &[u8]) -> Option<i32> {
 
 pub(crate) fn ppc_qt_movie_preferred_volume(data: &[u8]) -> Option<i16> {
     ppc_qt_scan_movie_header(data, 0, data.len(), 0, ppc_qt_mvhd_preferred_volume)
+}
+
+fn ppc_qt_movie_has_user_data(data: &[u8]) -> bool {
+    let mut offset = 0;
+    while offset + 8 <= data.len() {
+        let Some((kind, content_start, atom_end)) = ppc_qt_atom_range(data, offset, data.len())
+        else {
+            break;
+        };
+        if kind == b"moov" {
+            let mut child = content_start;
+            while child + 8 <= atom_end {
+                let Some((child_kind, _, child_end)) = ppc_qt_atom_range(data, child, atom_end)
+                else {
+                    break;
+                };
+                if child_kind == b"udta" {
+                    return true;
+                }
+                child = child_end;
+            }
+        }
+        offset = atom_end;
+    }
+    false
 }
 
 pub(crate) fn ppc_qt_movie_tracks(data: &[u8]) -> Vec<PpcQuickTimeTrackRecord> {

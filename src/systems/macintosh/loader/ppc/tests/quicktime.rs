@@ -2908,6 +2908,10 @@ fn import_bindings_classify_quicktime_compatibility_imports() {
             PpcQuickTimeCompatibilityOperation::GetMovieIndTrackType,
         ),
         (
+            "GetMovieUserData",
+            PpcQuickTimeCompatibilityOperation::GetMovieUserData,
+        ),
+        (
             "GetMovieVolume",
             PpcQuickTimeCompatibilityOperation::GetMovieVolume,
         ),
@@ -3082,6 +3086,38 @@ fn quicktime_movie_track_type_filters_media_and_enabled_tracks() {
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.gpr[3] = PPC_QT_MOVIE;
     loaded.cpu.gpr[4] = 1;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = 0;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.quicktime.movie_error, -2010);
+}
+
+#[test]
+fn quicktime_get_movie_user_data_reflects_udta_atom() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"GetMovieUserData");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.quicktime.movie_file_data = [
+        0, 0, 0, 16, b'm', b'o', b'o', b'v', 0, 0, 0, 8, b'u', b'd', b't', b'a',
+    ]
+    .to_vec();
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    let reference = loaded.cpu.gpr[3];
+    assert_ne!(reference, 0);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], reference);
+
+    loaded.quicktime.movie_file_data = vec![0, 0, 0, 8, b'm', b'o', b'o', b'v'];
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
     loaded.run_with_hle_imports(64);
     assert_eq!(loaded.cpu.gpr[3], 0);
 
