@@ -8,9 +8,9 @@ use super::{
     ppc_live_quickdraw_surface, ppc_memory_can_write_bytes, ppc_process_alloc_handle_with_bytes,
     ppc_q3_write_software_pixel, ppc_quickdraw_surface_color_pixel, ppc_quickdraw_write_raw_pixel,
     ppc_read_be_u32_from_slice, ppc_read_rect, ppc_write_rect, qt_trace_enabled, PpcCpu,
-    PpcDecodedAiffData, PpcDecodedAiffPlaybackRecord, PpcFrontBuffer, PpcGWorldRecord,
-    PpcHandleRecord, PpcImportAction, PpcQuickDrawSurface, PpcRgbColor, PpcSectionMem,
-    PpcSoundFilePlaybackRecord, PpcSoundState, PpcVfsDirectory, PpcVfsFileRecord,
+    PpcDecodedAiffData, PpcDecodedAiffPlaybackRecord, PpcFileRecord, PpcFrontBuffer,
+    PpcGWorldRecord, PpcHandleRecord, PpcImportAction, PpcQuickDrawSurface, PpcRgbColor,
+    PpcSectionMem, PpcSoundFilePlaybackRecord, PpcSoundState, PpcVfsDirectory, PpcVfsFileRecord,
     PpcVfsResourceFileRecord, PpcVfsResourceRecord, PPC_FIRST_FILE_REF_NUM,
     PPC_INVALID_COMPONENT_ID, PPC_MEM_FULL_ERR, PPC_NO_ERR, PPC_PARAM_ERR,
     PPC_QT_GRAPHICS_IMPORTER, PPC_QT_MOVIE, PPC_QT_MOVIE_TASKS_PER_SECOND, PPC_RES_NOT_FOUND_ERR,
@@ -42,6 +42,7 @@ pub enum PpcQuickTimeCompatibilityOperation {
     GetMovieTimeScale,
     GetMoviePreferredRate,
     GetMoviePreferredVolume,
+    GetMovieIndTrackType,
     GetMovieVolume,
     NewMovieFromDataFork,
     PrerollMovie,
@@ -142,6 +143,14 @@ pub struct PpcQuickTimeAudioTrackRecord {
     pub sample_rate_fixed: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpcQuickTimeTrackRecord {
+    pub handle: u32,
+    pub id: u32,
+    pub media_type: u32,
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcQuickTimeState {
     pub movie_toolbox_enter_count: u32,
@@ -164,6 +173,7 @@ pub struct PpcQuickTimeState {
     pub movie_file_video_track: Option<PpcQuickTimeVideoTrackRecord>,
     pub movie_file_video_samples: Option<PpcQuickTimeVideoSampleTableRecord>,
     pub movie_file_audio_track: Option<PpcQuickTimeAudioTrackRecord>,
+    pub movie_file_tracks: Vec<PpcQuickTimeTrackRecord>,
     pub graphics_importer_gworld: u32,
     pub graphics_importer_gdevice: u32,
     pub graphics_importer_open: bool,
@@ -192,6 +202,7 @@ pub struct PpcQuickTimeState {
     pub movie_video_samples: Option<PpcQuickTimeVideoSampleTableRecord>,
     pub movie_video_decode_cache: Option<PpcQuickTimeVideoDecodeCacheRecord>,
     pub movie_audio_track: Option<PpcQuickTimeAudioTrackRecord>,
+    pub movie_tracks: Vec<PpcQuickTimeTrackRecord>,
     pub movie_disposed: bool,
     pub movie_volume: i16,
     pub movie_time_base_flags: u32,
@@ -220,6 +231,7 @@ impl Default for PpcQuickTimeState {
             movie_file_video_track: None,
             movie_file_video_samples: None,
             movie_file_audio_track: None,
+            movie_file_tracks: Vec::new(),
             graphics_importer_gworld: 0,
             graphics_importer_gdevice: 0,
             graphics_importer_open: false,
@@ -253,6 +265,7 @@ impl Default for PpcQuickTimeState {
             movie_video_samples: None,
             movie_video_decode_cache: None,
             movie_audio_track: None,
+            movie_tracks: Vec::new(),
             movie_disposed: false,
             movie_volume: 0x0100,
             movie_time_base_flags: 0,
@@ -264,12 +277,41 @@ fn compatibility_valid_movie(quicktime: &PpcQuickTimeState, movie: u32) -> bool 
     movie == PPC_QT_MOVIE && !quicktime.movie_disposed
 }
 
+fn ppc_qt_track_matches(track: &PpcQuickTimeTrackRecord, kind: u32, flags: u32) -> bool {
+    if flags & 4 != 0 && !track.enabled {
+        return false;
+    }
+    if flags & 1 != 0 {
+        return track.media_type == kind;
+    }
+    if kind == u32::from_be_bytes(*b"eyes") {
+        matches!(
+            track.media_type.to_be_bytes(),
+            [b'v', b'i', b'd', b'e']
+                | [b't', b'e', b'x', b't']
+                | [b's', b'p', b'r', b't']
+                | [b'M', b'P', b'E', b'G']
+                | [b't', b'm', b'c', b'd']
+                | [b'q', b'd', b'3', b'd']
+        )
+    } else if kind == u32::from_be_bytes(*b"ears") {
+        matches!(
+            track.media_type.to_be_bytes(),
+            [b's', b'o', b'u', b'n'] | [b'm', b'u', b's', b'i'] | [b'M', b'P', b'E', b'G']
+        )
+    } else {
+        false
+    }
+}
+
 pub(super) fn dispatch_quicktime_compatibility(
     operation: PpcQuickTimeCompatibilityOperation,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     quicktime: &mut PpcQuickTimeState,
     sound: &mut PpcSoundState,
+    files: &[PpcFileRecord],
+    vfs_files: &[PpcVfsFileRecord],
 ) -> PpcImportAction {
     const PPC_QT_TIME_BASE: u32 = PPC_QT_MOVIE + 0x10;
     match operation {
@@ -315,6 +357,28 @@ pub(super) fn dispatch_quicktime_compatibility(
                 let _ = ppc_qt_record_error(quicktime, -2010); // invalidMovie
                 PpcImportAction::Return(0)
             }
+        }
+        PpcQuickTimeCompatibilityOperation::GetMovieIndTrackType => {
+            // QuickTime 2.5 Developer's Guide, Movie Toolbox Reference, pp. 1-74–1-75.
+            if !compatibility_valid_movie(quicktime, cpu.gpr[3]) {
+                let _ = ppc_qt_record_error(quicktime, -2010); // invalidMovie
+                return PpcImportAction::Return(0);
+            }
+            let index = cpu.gpr[4];
+            let flags = cpu.gpr[6];
+            if index == 0 || flags & !7 != 0 || (flags & 3).count_ones() != 1 {
+                let _ = ppc_qt_record_error(quicktime, PPC_PARAM_ERR);
+                return PpcImportAction::Return(0);
+            }
+            let track = quicktime
+                .movie_tracks
+                .iter()
+                .filter(|track| ppc_qt_track_matches(track, cpu.gpr[5], flags))
+                .nth((index - 1) as usize)
+                .map(|track| track.handle)
+                .unwrap_or(0);
+            let _ = ppc_qt_record_error(quicktime, PPC_NO_ERR);
+            PpcImportAction::Return(track)
         }
         PpcQuickTimeCompatibilityOperation::GetMovieVolume => {
             PpcImportAction::Return(if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
@@ -379,6 +443,29 @@ pub(super) fn dispatch_quicktime_compatibility(
                     PPC_PARAM_ERR,
                 )));
             }
+            // Inside Macintosh: QuickTime (1993), pp. 2-109–2-110: fileOffset
+            // points to the movie atom in an already open data fork.
+            if let Some((path, data)) = ppc_qt_movie_data_from_open_fork(
+                files,
+                vfs_files,
+                cpu.gpr[4] as u16 as i16,
+                cpu.gpr[5],
+            ) {
+                quicktime.movie_file_path = path;
+                quicktime.movie_file_data = data;
+                quicktime.movie_file_ref_num = cpu.gpr[4] as u16 as i16;
+                ppc_qt_refresh_open_movie_metadata(quicktime);
+            }
+            if qt_trace_enabled() {
+                eprintln!(
+                    "[QT-TRACE] NewMovieFromDataFork ref={} offset={} path='{}' atom_bytes={} tracks={}",
+                    cpu.gpr[4] as u16 as i16,
+                    cpu.gpr[5],
+                    quicktime.movie_file_path,
+                    quicktime.movie_file_data.len(),
+                    quicktime.movie_file_tracks.len(),
+                );
+            }
             if cpu.gpr[4] as u16 as i16 == quicktime.movie_file_ref_num {
                 if let Some(bounds) = quicktime.movie_file_bounds {
                     quicktime.movie_box = bounds;
@@ -387,6 +474,7 @@ pub(super) fn dispatch_quicktime_compatibility(
                 quicktime.movie_video_track = quicktime.movie_file_video_track;
                 quicktime.movie_video_samples = quicktime.movie_file_video_samples.clone();
                 quicktime.movie_audio_track = quicktime.movie_file_audio_track;
+                quicktime.movie_tracks = quicktime.movie_file_tracks.clone();
                 quicktime.movie_time_scale = if quicktime.movie_file_time_scale == 0 {
                     600
                 } else {
@@ -400,6 +488,7 @@ pub(super) fn dispatch_quicktime_compatibility(
                 quicktime.movie_video_track = None;
                 quicktime.movie_video_samples = None;
                 quicktime.movie_audio_track = None;
+                quicktime.movie_tracks.clear();
                 quicktime.movie_time_scale = 600;
                 quicktime.movie_preferred_rate = 0x0001_0000;
                 quicktime.movie_preferred_volume = 0x0100;
@@ -1119,6 +1208,113 @@ pub(crate) fn ppc_qt_movie_preferred_rate(data: &[u8]) -> Option<i32> {
 
 pub(crate) fn ppc_qt_movie_preferred_volume(data: &[u8]) -> Option<i16> {
     ppc_qt_scan_movie_header(data, 0, data.len(), 0, ppc_qt_mvhd_preferred_volume)
+}
+
+pub(crate) fn ppc_qt_movie_tracks(data: &[u8]) -> Vec<PpcQuickTimeTrackRecord> {
+    // Inside Macintosh: QuickTime (1993), pp. 4-13–4-19: each trak owns a
+    // tkhd header and an mdia/hdlr media subtype.
+    let mut offset = 0;
+    while offset + 8 <= data.len() {
+        let Some((kind, content_start, atom_end)) = ppc_qt_atom_range(data, offset, data.len())
+        else {
+            break;
+        };
+        if kind == b"moov" {
+            let mut tracks = Vec::new();
+            let mut track_offset = content_start;
+            while track_offset + 8 <= atom_end && tracks.len() < 1024 {
+                let Some((track_kind, track_start, track_end)) =
+                    ppc_qt_atom_range(data, track_offset, atom_end)
+                else {
+                    break;
+                };
+                if track_kind == b"trak" {
+                    if let Some((id, media_type, enabled)) =
+                        ppc_qt_track_metadata(data, track_start, track_end)
+                    {
+                        let ordinal = tracks.len() as u32 + 1;
+                        tracks.push(PpcQuickTimeTrackRecord {
+                            handle: PPC_QT_MOVIE + 0x100 + ordinal * 0x10,
+                            id,
+                            media_type,
+                            enabled,
+                        });
+                    }
+                }
+                track_offset = track_end;
+            }
+            return tracks;
+        }
+        offset = atom_end;
+    }
+    Vec::new()
+}
+
+fn ppc_qt_movie_data_from_open_fork(
+    files: &[PpcFileRecord],
+    vfs_files: &[PpcVfsFileRecord],
+    ref_num: i16,
+    offset: u32,
+) -> Option<(String, Vec<u8>)> {
+    let open_file = files.iter().find(|file| file.ref_num == ref_num)?;
+    let file = vfs_files
+        .iter()
+        .find(|file| file.path.eq_ignore_ascii_case(&open_file.path))?;
+    let bytes = file.data.as_ref();
+    let offset = usize::try_from(offset).ok()?;
+    let (kind, _, atom_end) = ppc_qt_atom_range(bytes, offset, bytes.len())?;
+    if kind != b"moov" {
+        return None;
+    }
+    Some((file.path.clone(), bytes.get(offset..atom_end)?.to_vec()))
+}
+
+fn ppc_qt_track_metadata(data: &[u8], start: usize, end: usize) -> Option<(u32, u32, bool)> {
+    let mut header = None;
+    let mut media_type = None;
+    let mut offset = start;
+    while offset.checked_add(8)? <= end {
+        let (kind, content_start, atom_end) = ppc_qt_atom_range(data, offset, end)?;
+        if kind == b"tkhd" {
+            let version = *data.get(content_start)?;
+            let id_offset = match version {
+                0 => content_start.checked_add(12)?,
+                1 => content_start.checked_add(20)?,
+                _ => return None,
+            };
+            if id_offset.checked_add(4)? > atom_end {
+                return None;
+            }
+            let id = u32::from_be_bytes(data.get(id_offset..id_offset + 4)?.try_into().ok()?);
+            let flags = u32::from_be_bytes(
+                data.get(content_start..content_start + 4)?
+                    .try_into()
+                    .ok()?,
+            );
+            header = Some((id, flags & 1 != 0));
+        } else if kind == b"mdia" {
+            let mut media_offset = content_start;
+            while media_offset.checked_add(8)? <= atom_end {
+                let (media_kind, handler_start, media_end) =
+                    ppc_qt_atom_range(data, media_offset, atom_end)?;
+                if media_kind == b"hdlr"
+                    && handler_start.checked_add(12)? <= media_end
+                    && data.get(handler_start + 4..handler_start + 8)? == b"mhlr"
+                {
+                    media_type = Some(u32::from_be_bytes(
+                        data.get(handler_start + 8..handler_start + 12)?
+                            .try_into()
+                            .ok()?,
+                    ));
+                    break;
+                }
+                media_offset = media_end;
+            }
+        }
+        offset = atom_end;
+    }
+    let (id, enabled) = header?;
+    Some((id, media_type?, enabled))
 }
 
 pub(crate) fn ppc_qt_movie_first_video_track(data: &[u8]) -> Option<PpcQuickTimeVideoTrackRecord> {
@@ -2713,6 +2909,7 @@ pub(crate) fn ppc_qt_new_movie_from_file(
         quicktime.movie_video_track = quicktime.movie_file_video_track;
         quicktime.movie_video_samples = quicktime.movie_file_video_samples.clone();
         quicktime.movie_audio_track = quicktime.movie_file_audio_track;
+        quicktime.movie_tracks = quicktime.movie_file_tracks.clone();
         quicktime.movie_time_scale = if quicktime.movie_file_time_scale == 0 {
             600
         } else {
@@ -2726,6 +2923,7 @@ pub(crate) fn ppc_qt_new_movie_from_file(
         quicktime.movie_video_track = None;
         quicktime.movie_video_samples = None;
         quicktime.movie_audio_track = None;
+        quicktime.movie_tracks.clear();
         quicktime.movie_time_scale = 600;
         quicktime.movie_preferred_rate = 0x0001_0000;
         quicktime.movie_preferred_volume = 0x0100;
@@ -2771,6 +2969,7 @@ pub(crate) fn ppc_qt_open_movie_file(
     let mut movie_file_video_track = None;
     let mut movie_file_video_samples = None;
     let mut movie_file_audio_track = None;
+    let mut movie_file_tracks = Vec::new();
     if spec_ptr != 0 {
         if let Ok(path) =
             ppc_existing_path_for_fsspec(memory, vfs_directories, vfs_files, &[], spec_ptr)
@@ -2785,6 +2984,7 @@ pub(crate) fn ppc_qt_open_movie_file(
                 movie_file_video_track = ppc_qt_movie_first_video_track(&movie_file_data);
                 movie_file_video_samples = ppc_qt_movie_video_samples(&movie_file_data);
                 movie_file_audio_track = ppc_qt_movie_first_audio_track(&movie_file_data);
+                movie_file_tracks = ppc_qt_movie_tracks(&movie_file_data);
                 movie_file_preferred_rate =
                     ppc_qt_movie_preferred_rate(&movie_file_data).unwrap_or(0x0001_0000);
                 movie_file_preferred_volume =
@@ -2818,6 +3018,7 @@ pub(crate) fn ppc_qt_open_movie_file(
     quicktime.movie_file_video_track = movie_file_video_track;
     quicktime.movie_file_video_samples = movie_file_video_samples;
     quicktime.movie_file_audio_track = movie_file_audio_track;
+    quicktime.movie_file_tracks = movie_file_tracks;
     if qt_trace_enabled() {
         let video = quicktime
             .movie_file_video_samples
@@ -2927,10 +3128,12 @@ fn ppc_qt_refresh_open_movie_metadata(quicktime: &mut PpcQuickTimeState) {
     quicktime.movie_file_video_track = None;
     quicktime.movie_file_video_samples = None;
     quicktime.movie_file_audio_track = None;
+    quicktime.movie_file_tracks.clear();
     quicktime.movie_file_bounds = ppc_qt_movie_bounds(&quicktime.movie_file_data);
     quicktime.movie_file_video_track = ppc_qt_movie_first_video_track(&quicktime.movie_file_data);
     quicktime.movie_file_video_samples = ppc_qt_movie_video_samples(&quicktime.movie_file_data);
     quicktime.movie_file_audio_track = ppc_qt_movie_first_audio_track(&quicktime.movie_file_data);
+    quicktime.movie_file_tracks = ppc_qt_movie_tracks(&quicktime.movie_file_data);
     quicktime.movie_file_preferred_rate =
         ppc_qt_movie_preferred_rate(&quicktime.movie_file_data).unwrap_or(0x0001_0000);
     quicktime.movie_file_preferred_volume =
@@ -3204,6 +3407,7 @@ pub(crate) fn ppc_qt_dispose_movie(
     quicktime.movie_video_samples = None;
     quicktime.movie_video_decode_cache = None;
     quicktime.movie_audio_track = None;
+    quicktime.movie_tracks.clear();
     ppc_qt_stop_movie_audio(sound);
     PPC_NO_ERR
 }

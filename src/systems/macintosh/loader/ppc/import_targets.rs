@@ -5622,6 +5622,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "GetMoviePreferredVolume") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::GetMoviePreferredVolume,
         ),
+        ("QuickTimeLib", "GetMovieIndTrackType") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMovieIndTrackType,
+        ),
         ("QuickTimeLib", "GetMovieVolume") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::GetMovieVolume,
         ),
