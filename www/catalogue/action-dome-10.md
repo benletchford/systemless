@@ -22,10 +22,10 @@ compatibility:
     architecture: 68k
     environment: >-
       The unchanged unregistered Info-Mac package opened in 68K Systemless.
-      Dismissing the registration reminder and selecting Play reached Level 1,
-      with the timer, collectibles, and moving enemies active. Matched runs showed
-      Keypad 6 move Glerp right while idle left him at the start. The release
-      browser reproduced the title menu, Level 1, and rightward movement.
+      Dismissing the registration reminder and selecting Play reached Level 1, with the timer,
+      collectibles, and moving enemies active. Matched runs showed Keypad 6 move Glerp
+      right while idle left him at the start. The release browser reproduced the title
+      menu, Level 1, and rightward movement.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3865
 artifacts:
@@ -33,21 +33,21 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/action-dome-10.hqx
-    expected_sha256: 747c07cc039a71773b1218e8a03f1c39ca2130515605d2c35c312882c797c32f
-    expected_size: 1707279
+    type: sha256
+    sha256: 747c07cc039a71773b1218e8a03f1c39ca2130515605d2c35c312882c797c32f
+    size_bytes: 1707279
   provenance:
     redistribution: permitted
     original: true
     sources:
-    - https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/action-dome-10.hqx
+    - >-
+      https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/action-dome-10.hqx
     rights_holder: Slovis Software
     permission: >-
-      The bundled Read Me permits distribution of the unregistered game when
-      the application, Sprund file, Read Me, and Registration are kept together,
-      and prohibits distribution for profit without Slovis Software's consent.
-      This unchanged original archive contains all four files.
+      The bundled Read Me permits distribution of the unregistered game when the
+      application, Sprund file, Read Me, and Registration are kept together, and prohibits
+      distribution for profit without Slovis Software's consent. This unchanged
+      original archive contains all four files.
     notes: >-
       Original 1,707,279-byte Info-Mac BinHex/StuffIt package; SHA-256
       747c07cc039a71773b1218e8a03f1c39ca2130515605d2c35c312882c797c32f.
@@ -55,8 +55,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/action-dome-10/gameplay.png
+    type: sha256
+    sha256: 938fe5d8db290f539b1102db39f6a56401917d7d650a60c6620d7cbdcae850b0
+    size_bytes: 53105
   provenance:
     redistribution: permitted
     original: true
@@ -70,12 +71,13 @@ artifacts:
       519-by-470 game-content crop at (48,20) from an 800-by-600 Systemless
       framebuffer on Level 1 after Keypad 6 moved Glerp right.
 references:
-- https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/action-dome-10.hqx
+- >-
+  https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/action-dome-10.hqx
 ---
 
 ## Collect the sugar worms
 
-![Alien Action Dome Level 1](incoming/action-dome-10/gameplay.png)
+![Alien Action Dome Level 1](https://assets.systemless.org/catalogue/media/sha256/93/938fe5d8db290f539b1102db39f6a56401917d7d650a60c6620d7cbdcae850b0.png)
 
 Dismiss the registration reminder with **Not Yet**, then select **Play** to
 enter Level 1. Collect the bowls of sugar worms while avoiding the creatures.
