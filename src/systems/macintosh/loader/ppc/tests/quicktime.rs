@@ -1866,6 +1866,75 @@ fn quicktime_movie_frame_draw_uses_cinepak_sample_pixels() {
 }
 
 #[test]
+fn quicktime_attached_controller_bounds_position_movie_pixels() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"StartMovie");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let gworld = 0x0600_3000;
+    let base = PPC_HEAP_BASE + 0x8000;
+    let sample_offset = 12u64;
+    let sample = test_cinepak_v1_frame_sample();
+    let mut movie_file_data = vec![0; sample_offset as usize];
+    movie_file_data.extend_from_slice(&sample);
+    loaded.memory.add_region(base, vec![0xee; 8 * 8 * 2]);
+    loaded.gworlds = vec![PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: gworld,
+        pixmap_handle: 0,
+        pixmap: 0,
+        base_addr: base,
+        gdevice: 0x0600_4000,
+        width: 8,
+        height: 8,
+        depth: 16,
+        row_bytes: 16,
+        pixels_locked: false,
+        pixels_no_purge: false,
+    }];
+    loaded.quicktime = PpcQuickTimeState {
+        movie_file_data,
+        movie_box: (0, 0, 4, 4),
+        movie_video_samples: Some(PpcQuickTimeVideoSampleTableRecord {
+            media_time_scale: 1,
+            media_duration: 1,
+            sample_count: 1,
+            codec: u32::from_be_bytes(*b"cvid"),
+            samples: vec![PpcQuickTimeVideoSampleRecord {
+                offset: sample_offset,
+                size: sample.len() as u32,
+                media_start_time: 0,
+                duration: 1,
+                data_len: sample.len() as u32,
+                checksum: sample.iter().copied().map(u32::from).sum(),
+                preview_len: 0,
+                preview: [0; 16],
+            }],
+        }),
+        movie_controllers: vec![PpcQuickTimeControllerRecord {
+            handle: 0x4000_0010,
+            movie: PPC_QT_MOVIE,
+            rect: (2, 2, 6, 6),
+            flags: 0,
+            window: gworld,
+            origin: 0,
+            action_filter: 0,
+            action_ref_con: 0,
+        }],
+        ..PpcQuickTimeState::default()
+    };
+
+    assert!(ppc_qt_draw_movie_frame(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        gworld,
+        &mut loaded.quicktime,
+        0x21,
+    ));
+    assert_eq!(loaded.memory.read_u16_be(base), Some(0xeeee));
+    assert_eq!(loaded.memory.read_u16_be(base + 2 * 16 + 2 * 2), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(base + 5 * 16 + 5 * 2), Some(0x7fff));
+}
+
+#[test]
 fn quicktime_movie_audio_decoder_iterates_sample_table_chunks() {
     fn push_u16(bytes: &mut Vec<u8>, value: u16) {
         bytes.extend_from_slice(&value.to_be_bytes());
