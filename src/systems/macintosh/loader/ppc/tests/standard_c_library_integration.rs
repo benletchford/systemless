@@ -1,6 +1,68 @@
 use super::*;
 
 #[test]
+fn macromedia_runtime_standard_c_exports_share_stdclib_dispatch() {
+    for name in [
+        "fclose", "fopen", "fread", "fseek", "ftell", "getenv", "memcmp", "memcpy",
+        "memmove", "memset", "qsort", "sprintf", "sscanf", "strcat", "strchr", "strcmp",
+        "strcpy", "strlen", "strncmp", "strncpy", "strpbrk", "time", "vsprintf",
+    ] {
+        let expected = dispatcher_target_for_import("StdCLib", name);
+        assert_ne!(expected, PpcImportDispatcherTarget::Unsupported, "{name}");
+        assert_eq!(
+            dispatcher_target_for_import("MacromediaRuntimeLib", name),
+            expected,
+            "{name}"
+        );
+    }
+    for name in ["qd", "__ctype_map", "localtime"] {
+        assert_eq!(
+            dispatcher_target_for_import("MacromediaRuntimeLib", name),
+            PpcImportDispatcherTarget::Unsupported,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn macromedia_runtime_strlen_uses_the_c_string_abi() {
+    assert_eq!(
+        dispatcher_target_for_import("MacromediaRuntimeLib", "strlen"),
+        PpcImportDispatcherTarget::StdStrlen
+    );
+    let pef = synthetic_pef_with_library_import(b"MacromediaRuntimeLib", b"strlen");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let string = PPC_DATA_BASE + 0x2400;
+    loaded.memory.add_region(string, b"Last Call\0".to_vec());
+    loaded.cpu.gpr[3] = string;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::StdStrlen);
+    assert_eq!(loaded.cpu.gpr[3], 9);
+}
+
+#[test]
+fn macromedia_runtime_memcpy_uses_the_c_memory_abi() {
+    assert_eq!(
+        dispatcher_target_for_import("MacromediaRuntimeLib", "memcpy"),
+        PpcImportDispatcherTarget::StdMemcpy
+    );
+    let pef = synthetic_pef_with_library_import(b"MacromediaRuntimeLib", b"memcpy");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let source = PPC_DATA_BASE + 0x2400;
+    let destination = source + 0x40;
+    loaded.memory.add_region(source, b"call".to_vec());
+    loaded.memory.add_region(destination, vec![0; 4]);
+    loaded.cpu.gpr[3] = destination;
+    loaded.cpu.gpr[4] = source;
+    loaded.cpu.gpr[5] = 4;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::StdMemcpy);
+    assert_eq!(loaded.cpu.gpr[3], destination);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, destination, 4),
+        Some(b"call".to_vec())
+    );
+}
+
+#[test]
 fn stdclib_labs_uses_the_32_bit_long_abi() {
     assert_eq!(
         dispatcher_target_for_import("StdCLib", "labs"),
