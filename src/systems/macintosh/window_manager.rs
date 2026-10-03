@@ -1810,6 +1810,306 @@ pub fn evaluate_get_window_structure_widths(window_ptr: u32) -> (i16, i16, i16, 
     }
 }
 
+/// Canonical Mac OS WindowAttributes bitmask constants (AppearanceLib / CarbonLib).
+#[allow(dead_code)]
+pub const WINDOW_ATTRIBUTES_NONE: u32 = 0;
+#[allow(dead_code)]
+pub const WINDOW_CLOSE_BOX_ATTRIBUTE: u32 = 1 << 0; // 0x0001
+#[allow(dead_code)]
+pub const WINDOW_HORIZONTAL_ZOOM_ATTRIBUTE: u32 = 1 << 1; // 0x0002
+#[allow(dead_code)]
+pub const WINDOW_VERTICAL_ZOOM_ATTRIBUTE: u32 = 1 << 2; // 0x0004
+#[allow(dead_code)]
+pub const WINDOW_FULL_ZOOM_ATTRIBUTE: u32 =
+    WINDOW_HORIZONTAL_ZOOM_ATTRIBUTE | WINDOW_VERTICAL_ZOOM_ATTRIBUTE; // 0x0006
+#[allow(dead_code)]
+pub const WINDOW_COLLAPSE_BOX_ATTRIBUTE: u32 = 1 << 3; // 0x0008
+#[allow(dead_code)]
+pub const WINDOW_RESIZABLE_ATTRIBUTE: u32 = 1 << 4; // 0x0010
+#[allow(dead_code)]
+pub const WINDOW_SIDE_TITLEBAR_ATTRIBUTE: u32 = 1 << 5; // 0x0020
+#[allow(dead_code)]
+pub const WINDOW_TOOLBAR_BUTTON_ATTRIBUTE: u32 = 1 << 6; // 0x0040
+#[allow(dead_code)]
+pub const WINDOW_NO_UPDATES_ATTRIBUTE: u32 = 1 << 16; // 0x0001_0000
+#[allow(dead_code)]
+pub const WINDOW_NO_ACTIVATES_ATTRIBUTE: u32 = 1 << 17; // 0x0002_0000
+#[allow(dead_code)]
+pub const WINDOW_STANDARD_HANDLER_ATTRIBUTE: u32 = 1 << 25; // 0x0200_0000
+#[allow(dead_code)]
+pub const WINDOW_HIDE_ON_FULL_SCREEN_ATTRIBUTE: u32 = 1 << 26; // 0x0400_0000
+#[allow(dead_code)]
+pub const WINDOW_IN_WINDOW_MENU_ATTRIBUTE: u32 = 1 << 27; // 0x0800_0000
+#[allow(dead_code)]
+pub const WINDOW_LIVE_RESIZE_ATTRIBUTE: u32 = 1 << 28; // 0x1000_0000
+#[allow(dead_code)]
+pub const WINDOW_ATTRIBUTES_STANDARD: u32 =
+    WINDOW_CLOSE_BOX_ATTRIBUTE | WINDOW_HORIZONTAL_ZOOM_ATTRIBUTE | WINDOW_VERTICAL_ZOOM_ATTRIBUTE; // 0x0000_0007
+
+/// Architecture-neutral parameter validation for GetWindowAttributes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowAttributesParameters {
+    window_ptr: u32,
+    out_attributes_ptr: u32,
+}
+
+impl GetWindowAttributesParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn out_attributes_ptr(&self) -> u32 {
+        self.out_attributes_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_attributes_parameters(
+    window_ptr: u32,
+    out_attributes_ptr: u32,
+    can_write: bool,
+) -> Result<GetWindowAttributesParameters, i16> {
+    if window_ptr == 0 || out_attributes_ptr == 0 || !can_write {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(GetWindowAttributesParameters {
+        window_ptr,
+        out_attributes_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for ChangeWindowAttributes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChangeWindowAttributesParameters {
+    window_ptr: u32,
+    set_attributes: u32,
+    clear_attributes: u32,
+}
+
+impl ChangeWindowAttributesParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn set_attributes(&self) -> u32 {
+        self.set_attributes
+    }
+
+    pub const fn clear_attributes(&self) -> u32 {
+        self.clear_attributes
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_change_window_attributes_parameters(
+    window_ptr: u32,
+    set_attributes: u32,
+    clear_attributes: u32,
+) -> Result<ChangeWindowAttributesParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(ChangeWindowAttributesParameters {
+        window_ptr,
+        set_attributes,
+        clear_attributes,
+    })
+}
+
+#[allow(dead_code)]
+pub fn evaluate_change_window_attributes(
+    current_attributes: u32,
+    set_attributes: u32,
+    clear_attributes: u32,
+) -> u32 {
+    (current_attributes | set_attributes) & !clear_attributes
+}
+
+/// Architecture-neutral parameter validation for ReshapeCustomWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReshapeCustomWindowParameters {
+    window_ptr: u32,
+}
+
+#[allow(dead_code)]
+impl ReshapeCustomWindowParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_reshape_custom_window_parameters(
+    window_ptr: u32,
+) -> Result<ReshapeCustomWindowParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(ReshapeCustomWindowParameters { window_ptr })
+}
+
+/// Architecture-neutral parameter validation for GetWindowDefaultButton.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowDefaultButtonParameters {
+    window_ptr: u32,
+    out_control_ptr: u32,
+}
+
+impl GetWindowDefaultButtonParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn out_control_ptr(&self) -> u32 {
+        self.out_control_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_default_button_parameters(
+    window_ptr: u32,
+    out_control_ptr: u32,
+    can_write: bool,
+) -> Result<GetWindowDefaultButtonParameters, i16> {
+    if window_ptr == 0 || out_control_ptr == 0 || !can_write {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(GetWindowDefaultButtonParameters {
+        window_ptr,
+        out_control_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for SetWindowDefaultButton.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetWindowDefaultButtonParameters {
+    window_ptr: u32,
+    control: u32,
+}
+
+impl SetWindowDefaultButtonParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn control(&self) -> u32 {
+        self.control
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_set_window_default_button_parameters(
+    window_ptr: u32,
+    control: u32,
+) -> Result<SetWindowDefaultButtonParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(SetWindowDefaultButtonParameters {
+        window_ptr,
+        control,
+    })
+}
+
+/// Architecture-neutral parameter validation for GetWindowCancelButton.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetWindowCancelButtonParameters {
+    window_ptr: u32,
+    out_control_ptr: u32,
+}
+
+impl GetWindowCancelButtonParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn out_control_ptr(&self) -> u32 {
+        self.out_control_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_cancel_button_parameters(
+    window_ptr: u32,
+    out_control_ptr: u32,
+    can_write: bool,
+) -> Result<GetWindowCancelButtonParameters, i16> {
+    if window_ptr == 0 || out_control_ptr == 0 || !can_write {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(GetWindowCancelButtonParameters {
+        window_ptr,
+        out_control_ptr,
+    })
+}
+
+/// Architecture-neutral parameter validation for SetWindowCancelButton.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetWindowCancelButtonParameters {
+    window_ptr: u32,
+    control: u32,
+}
+
+impl SetWindowCancelButtonParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+
+    pub const fn control(&self) -> u32 {
+        self.control
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_set_window_cancel_button_parameters(
+    window_ptr: u32,
+    control: u32,
+) -> Result<SetWindowCancelButtonParameters, i16> {
+    if window_ptr == 0 {
+        return Err(-50); // PPC_PARAM_ERR
+    }
+    Ok(SetWindowCancelButtonParameters {
+        window_ptr,
+        control,
+    })
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_user_focus_window(
+    user_focus_window: u32,
+    front_window: Option<u32>,
+) -> u32 {
+    if user_focus_window != 0 {
+        user_focus_window
+    } else {
+        front_window.unwrap_or(0)
+    }
+}
+
+/// Architecture-neutral parameter validation for SetUserFocusWindow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetUserFocusWindowParameters {
+    window_ptr: u32,
+}
+
+impl SetUserFocusWindowParameters {
+    pub const fn window_ptr(&self) -> u32 {
+        self.window_ptr
+    }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_set_user_focus_window_parameters(
+    window_ptr: u32,
+) -> SetUserFocusWindowParameters {
+    SetUserFocusWindowParameters { window_ptr }
+}
+
+#[allow(dead_code)]
+pub fn evaluate_get_window_from_port(port: u32) -> u32 {
+    port
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -2615,6 +2915,67 @@ mod tests {
             evaluate_get_window_structure_widths(0x1000),
             WINDOW_STRUCTURE_WIDTHS_STANDARD
         );
+    }
+
+    #[test]
+    fn window_attributes_focus_buttons_and_reshape_evaluation() {
+        // Window attributes
+        assert_eq!(evaluate_get_window_attributes_parameters(0, 0x2000, true), Err(-50));
+        assert_eq!(evaluate_get_window_attributes_parameters(0x1000, 0, true), Err(-50));
+        assert_eq!(evaluate_get_window_attributes_parameters(0x1000, 0x2000, false), Err(-50));
+        let get_attrs_params = evaluate_get_window_attributes_parameters(0x1000, 0x2000, true).unwrap();
+        assert_eq!(get_attrs_params.window_ptr(), 0x1000);
+        assert_eq!(get_attrs_params.out_attributes_ptr(), 0x2000);
+
+        assert_eq!(evaluate_change_window_attributes_parameters(0, 0x10, 0x01), Err(-50));
+        let change_params = evaluate_change_window_attributes_parameters(0x1000, 0x10, 0x01).unwrap();
+        assert_eq!(change_params.window_ptr(), 0x1000);
+        assert_eq!(change_params.set_attributes(), 0x10);
+        assert_eq!(change_params.clear_attributes(), 0x01);
+        let updated = evaluate_change_window_attributes(WINDOW_ATTRIBUTES_STANDARD, 0x10, 0x01);
+        assert_eq!(updated, (0x07 | 0x10) & !0x01);
+
+        // Reshape custom window
+        assert_eq!(evaluate_reshape_custom_window_parameters(0), Err(-50));
+        let reshape_params = evaluate_reshape_custom_window_parameters(0x1000).unwrap();
+        assert_eq!(reshape_params.window_ptr(), 0x1000);
+
+        // Default button
+        assert_eq!(evaluate_get_window_default_button_parameters(0, 0x3000, true), Err(-50));
+        assert_eq!(evaluate_get_window_default_button_parameters(0x1000, 0, true), Err(-50));
+        assert_eq!(evaluate_get_window_default_button_parameters(0x1000, 0x3000, false), Err(-50));
+        let get_btn_params = evaluate_get_window_default_button_parameters(0x1000, 0x3000, true).unwrap();
+        assert_eq!(get_btn_params.window_ptr(), 0x1000);
+        assert_eq!(get_btn_params.out_control_ptr(), 0x3000);
+
+        assert_eq!(evaluate_set_window_default_button_parameters(0, 0x4000), Err(-50));
+        let set_btn_params = evaluate_set_window_default_button_parameters(0x1000, 0x4000).unwrap();
+        assert_eq!(set_btn_params.window_ptr(), 0x1000);
+        assert_eq!(set_btn_params.control(), 0x4000);
+
+        // Cancel button
+        assert_eq!(evaluate_get_window_cancel_button_parameters(0, 0x5000, true), Err(-50));
+        assert_eq!(evaluate_get_window_cancel_button_parameters(0x1000, 0, true), Err(-50));
+        assert_eq!(evaluate_get_window_cancel_button_parameters(0x1000, 0x5000, false), Err(-50));
+        let get_cancel_params = evaluate_get_window_cancel_button_parameters(0x1000, 0x5000, true).unwrap();
+        assert_eq!(get_cancel_params.window_ptr(), 0x1000);
+        assert_eq!(get_cancel_params.out_control_ptr(), 0x5000);
+
+        assert_eq!(evaluate_set_window_cancel_button_parameters(0, 0x6000), Err(-50));
+        let set_cancel_params = evaluate_set_window_cancel_button_parameters(0x1000, 0x6000).unwrap();
+        assert_eq!(set_cancel_params.window_ptr(), 0x1000);
+        assert_eq!(set_cancel_params.control(), 0x6000);
+
+        // User focus window
+        assert_eq!(evaluate_get_user_focus_window(0, None), 0);
+        assert_eq!(evaluate_get_user_focus_window(0, Some(0x7000)), 0x7000);
+        assert_eq!(evaluate_get_user_focus_window(0x8000, Some(0x7000)), 0x8000);
+        let set_focus_params = evaluate_set_user_focus_window_parameters(0x8000);
+        assert_eq!(set_focus_params.window_ptr(), 0x8000);
+
+        // Window from port
+        assert_eq!(evaluate_get_window_from_port(0), 0);
+        assert_eq!(evaluate_get_window_from_port(0x9000), 0x9000);
     }
 }
 

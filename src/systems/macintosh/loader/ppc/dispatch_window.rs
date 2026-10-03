@@ -3853,66 +3853,87 @@ pub(super) fn ppc_dispatch_legacy_window(
         PpcLegacyWindowOperation::SetWindowDefaultButton => {
             let window = cpu.gpr[3];
             let control = cpu.gpr[4];
-            let result = if window != 0 {
-                toolbox_startup.set_window_default_button(window, control);
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let result = match crate::window_manager::evaluate_set_window_default_button_parameters(
+                window,
+                control,
+            ) {
+                Ok(params) => {
+                    toolbox_startup.set_window_default_button(params.window_ptr(), params.control());
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::GetWindowDefaultButton => {
             let window = cpu.gpr[3];
             let out_control = cpu.gpr[4];
-            let result = if window != 0 && out_control != 0 {
-                let button = toolbox_startup.window_default_button(window);
-                let _ = memory.write_u32_be(out_control, button);
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let can_write = ppc_memory_can_write_bytes(memory, out_control, 4);
+            let result = match crate::window_manager::evaluate_get_window_default_button_parameters(
+                window,
+                out_control,
+                can_write,
+            ) {
+                Ok(params) => {
+                    let button = toolbox_startup.window_default_button(params.window_ptr());
+                    let _ = memory.write_u32_be(params.out_control_ptr(), button);
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::SetWindowCancelButton => {
             let window = cpu.gpr[3];
             let control = cpu.gpr[4];
-            let result = if window != 0 {
-                toolbox_startup.set_window_cancel_button(window, control);
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let result = match crate::window_manager::evaluate_set_window_cancel_button_parameters(
+                window,
+                control,
+            ) {
+                Ok(params) => {
+                    toolbox_startup.set_window_cancel_button(params.window_ptr(), params.control());
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::GetWindowCancelButton => {
             let window = cpu.gpr[3];
             let out_control = cpu.gpr[4];
-            let result = if window != 0 && out_control != 0 {
-                let button = toolbox_startup.window_cancel_button(window);
-                let _ = memory.write_u32_be(out_control, button);
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let can_write = ppc_memory_can_write_bytes(memory, out_control, 4);
+            let result = match crate::window_manager::evaluate_get_window_cancel_button_parameters(
+                window,
+                out_control,
+                can_write,
+            ) {
+                Ok(params) => {
+                    let button = toolbox_startup.window_cancel_button(params.window_ptr());
+                    let _ = memory.write_u32_be(params.out_control_ptr(), button);
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::SetUserFocusWindow => {
             let window = cpu.gpr[3];
-            toolbox_startup.set_user_focus_window(window);
+            let params = crate::window_manager::evaluate_set_user_focus_window_parameters(window);
+            toolbox_startup.set_user_focus_window(params.window_ptr());
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
         PpcLegacyWindowOperation::GetUserFocusWindow => {
             let focused = toolbox_startup.user_focus_window();
-            let window = if focused != 0 {
-                focused
-            } else {
-                window_list.front_window().unwrap_or(0)
-            };
+            let window = crate::window_manager::evaluate_get_user_focus_window(
+                focused,
+                window_list.front_window(),
+            );
             Some(PpcImportAction::Return(window))
         }
         PpcLegacyWindowOperation::GetWindowFromPort => {
             let port = cpu.gpr[3];
-            Some(PpcImportAction::Return(port))
+            let window = crate::window_manager::evaluate_get_window_from_port(port);
+            Some(PpcImportAction::Return(window))
         }
         PpcLegacyWindowOperation::GetWindowRegion => {
             let window = cpu.gpr[3];
@@ -4338,29 +4359,52 @@ pub(super) fn ppc_dispatch_legacy_window(
         PpcLegacyWindowOperation::GetWindowAttributes => {
             let window = cpu.gpr[3];
             let out_attrs = cpu.gpr[4];
-            let result = if window != 0 && out_attrs != 0 {
-                let _ = memory.write_u32_be(out_attrs, 0x0000_0007);
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let can_write = ppc_memory_can_write_bytes(memory, out_attrs, 4);
+            let result = match crate::window_manager::evaluate_get_window_attributes_parameters(
+                window,
+                out_attrs,
+                can_write,
+            ) {
+                Ok(params) => {
+                    let attrs = toolbox_startup.window_attributes(params.window_ptr());
+                    let _ = memory.write_u32_be(params.out_attributes_ptr(), attrs);
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::ChangeWindowAttributes => {
             let window = cpu.gpr[3];
-            let result = if window != 0 {
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let set_attrs = cpu.gpr[4];
+            let clear_attrs = cpu.gpr[5];
+            let result = match crate::window_manager::evaluate_change_window_attributes_parameters(
+                window,
+                set_attrs,
+                clear_attrs,
+            ) {
+                Ok(params) => {
+                    let current = toolbox_startup.window_attributes(params.window_ptr());
+                    let updated = crate::window_manager::evaluate_change_window_attributes(
+                        current,
+                        params.set_attributes(),
+                        params.clear_attributes(),
+                    );
+                    toolbox_startup.set_window_attributes(params.window_ptr(), updated);
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyWindowOperation::ReshapeCustomWindow => {
             let window = cpu.gpr[3];
-            let result = if window != 0 {
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let result = match crate::window_manager::evaluate_reshape_custom_window_parameters(window) {
+                Ok(params) => {
+                    let _ = params.window_ptr();
+                    PPC_NO_ERR
+                }
+                Err(err) => err,
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
