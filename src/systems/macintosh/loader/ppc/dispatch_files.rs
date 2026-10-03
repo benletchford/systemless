@@ -374,6 +374,39 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_volumes,
             ))))
         }
+        PpcImportDispatcherTarget::OpenWD => {
+            let out = cpu.gpr[6];
+            let result = if out == 0 || !ppc_memory_can_write_bytes(memory, out, 2) {
+                PPC_PARAM_ERR
+            } else {
+                match ppc_open_working_directory(
+                    cpu.gpr[3] as u16 as i16,
+                    cpu.gpr[4],
+                    cpu.gpr[5],
+                    vfs_directories,
+                    vfs_volumes,
+                    default_dir_id,
+                    working_directories,
+                    next_working_directory_ref_num,
+                ) {
+                    Ok((wd_ref_num, _, _)) => {
+                        let _ = memory.write_u16_be(out, wd_ref_num as u16);
+                        PPC_NO_ERR
+                    }
+                    Err(error) => error,
+                }
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::SetVol => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_set_vol(
+                cpu,
+                memory,
+                vfs_volumes,
+                working_directories,
+                application_working_directory_ref_num,
+            ),
+        ))),
         PpcImportDispatcherTarget::HGetVol => {
             Some(PpcImportAction::Return(ppc_i16_result(ppc_hget_vol(
                 cpu,
@@ -813,6 +846,83 @@ pub enum PpcFileCompatibilityOperation {
     PbOpenWdSync,
 }
 
+/// OpenWD (File Manager working-directory call)
+/// Creates or reuses a working directory for the volume, directory and procID.
+/// FUNCTION OpenWD (vRefNum: Integer; dirID: LongInt;
+/// procID: LongInt; VAR wdRefNum: Integer): OSErr;
+/// Inside Macintosh: Files (1992), pp. 2-180--2-181.
+fn ppc_open_working_directory(
+    requested_vref: i16,
+    requested_dir_id: u32,
+    proc_id: u32,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_volumes: &[PpcVfsVolumeRecord],
+    default_dir_id: u32,
+    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
+    next_working_directory_ref_num: &mut i16,
+) -> Result<(i16, i16, u32), i16> {
+    let volume_ref_num = if requested_vref == 0 {
+        PPC_BOOT_VOLUME_REF_NUM
+    } else if let Some(record) = working_directories.get(&requested_vref) {
+        record.volume_ref_num
+    } else if requested_vref == PPC_BOOT_VOLUME_REF_NUM
+        || vfs_volumes
+            .iter()
+            .any(|volume| volume.ref_num == requested_vref)
+    {
+        requested_vref
+    } else {
+        return Err(PPC_NSV_ERR);
+    };
+    let effective_dir_id = if requested_dir_id <= 1 {
+        working_directories
+            .get(&requested_vref)
+            .map(|record| record.dir_id)
+            .unwrap_or_else(|| {
+                ppc_resolve_directory_id(requested_vref, requested_dir_id, default_dir_id)
+            })
+    } else {
+        requested_dir_id
+    };
+    if ppc_directory_path_for_id(vfs_directories, effective_dir_id).is_none() {
+        return Err(PPC_FNF_ERR);
+    }
+    let root_dir_id = if volume_ref_num == PPC_BOOT_VOLUME_REF_NUM {
+        PPC_ROOT_DIR_ID
+    } else {
+        vfs_volumes
+            .iter()
+            .find(|volume| volume.ref_num == volume_ref_num)
+            .map(|volume| volume.root_dir_id)
+            .ok_or(PPC_NSV_ERR)?
+    };
+    let wd_ref_num = if effective_dir_id == root_dir_id {
+        volume_ref_num
+    } else if let Some(existing) = working_directories.values().find(|record| {
+        record.volume_ref_num == volume_ref_num
+            && record.dir_id == effective_dir_id
+            && record.proc_id == proc_id
+    }) {
+        existing.ref_num
+    } else {
+        let ref_num = (*next_working_directory_ref_num..=i16::MAX)
+            .find(|candidate| !working_directories.contains_key(candidate))
+            .ok_or(-121i16)?; // tmwdoErr
+        *next_working_directory_ref_num = ref_num.saturating_add(1);
+        working_directories.insert(
+            ref_num,
+            ProcessWorkingDirectory {
+                ref_num,
+                volume_ref_num,
+                dir_id: effective_dir_id,
+                proc_id,
+            },
+        );
+        ref_num
+    };
+    Ok((wd_ref_num, volume_ref_num, effective_dir_id))
+}
+
 pub(super) fn ppc_dispatch_file_compatibility(
     operation: PpcFileCompatibilityOperation,
     cpu: &mut PpcCpu,
@@ -873,68 +983,23 @@ pub(super) fn ppc_dispatch_file_compatibility(
             let requested_vref = memory.read_u16_be(pb + 22).unwrap_or(0) as i16;
             let requested_dir_id = memory.read_u32_be(pb + 48).unwrap_or(0);
             let proc_id = memory.read_u32_be(pb + 28).unwrap_or(0);
-            let volume_ref_num = working_directories
-                .get(&requested_vref)
-                .map(|record| record.volume_ref_num)
-                .or_else(|| {
-                    (requested_vref == PPC_BOOT_VOLUME_REF_NUM
-                        || vfs_volumes
-                            .iter()
-                            .any(|volume| volume.ref_num == requested_vref))
-                    .then_some(requested_vref)
-                })
-                .unwrap_or(PPC_BOOT_VOLUME_REF_NUM);
-            let effective_dir_id = if requested_dir_id <= 1 {
-                working_directories
-                    .get(&requested_vref)
-                    .map(|record| record.dir_id)
-                    .unwrap_or_else(|| {
-                        ppc_resolve_directory_id(requested_vref, requested_dir_id, default_dir_id)
-                    })
-            } else {
-                requested_dir_id
-            };
-            let result = if ppc_directory_path_for_id(vfs_directories, effective_dir_id).is_none() {
-                PPC_FNF_ERR
-            } else {
-                let root_dir_id = if volume_ref_num == PPC_BOOT_VOLUME_REF_NUM {
-                    PPC_ROOT_DIR_ID
-                } else {
-                    vfs_volumes
-                        .iter()
-                        .find(|volume| volume.ref_num == volume_ref_num)
-                        .map(|volume| volume.root_dir_id)
-                        .unwrap_or(PPC_ROOT_DIR_ID)
-                };
-                let wd_ref_num = if effective_dir_id == root_dir_id {
-                    volume_ref_num
-                } else if let Some(existing) = working_directories.values().find(|record| {
-                    record.volume_ref_num == volume_ref_num
-                        && record.dir_id == effective_dir_id
-                        && record.proc_id == proc_id
-                }) {
-                    existing.ref_num
-                } else {
-                    let mut ref_num = *next_working_directory_ref_num;
-                    while working_directories.contains_key(&ref_num) {
-                        ref_num = ref_num.saturating_add(1);
-                    }
-                    *next_working_directory_ref_num = ref_num.saturating_add(1);
-                    working_directories.insert(
-                        ref_num,
-                        ProcessWorkingDirectory {
-                            ref_num,
-                            volume_ref_num,
-                            dir_id: effective_dir_id,
-                            proc_id,
-                        },
-                    );
-                    ref_num
-                };
-                let _ = memory.write_u16_be(pb + 22, wd_ref_num as u16);
-                let _ = memory.write_u16_be(pb + 32, volume_ref_num as u16);
-                let _ = memory.write_u32_be(pb + 48, effective_dir_id);
-                PPC_NO_ERR
+            let result = match ppc_open_working_directory(
+                requested_vref,
+                requested_dir_id,
+                proc_id,
+                vfs_directories,
+                vfs_volumes,
+                default_dir_id,
+                working_directories,
+                next_working_directory_ref_num,
+            ) {
+                Ok((wd_ref_num, volume_ref_num, effective_dir_id)) => {
+                    let _ = memory.write_u16_be(pb + 22, wd_ref_num as u16);
+                    let _ = memory.write_u16_be(pb + 32, volume_ref_num as u16);
+                    let _ = memory.write_u32_be(pb + 48, effective_dir_id);
+                    PPC_NO_ERR
+                }
+                Err(error) => error,
             };
             PpcImportAction::Return(ppc_i16_result(ppc_complete_pb(memory, pb, result)))
         }
@@ -1194,6 +1259,56 @@ pub(super) fn ppc_hget_vol(
     if dir_id_ptr != 0 {
         let _ = memory.write_u32_be(dir_id_ptr, working_directory.dir_id);
     }
+    PPC_NO_ERR
+}
+
+/// SetVol (File Manager default-volume call)
+/// Selects a volume root or an opened working directory as the process default.
+/// FUNCTION SetVol (volName: StringPtr; vRefNum: Integer): OSErr;
+/// Inside Macintosh: Files (1992), p. 2-135.
+fn ppc_set_vol(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_volumes: &[PpcVfsVolumeRecord],
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
+    application_working_directory_ref_num: &mut i16,
+) -> i16 {
+    let requested_vref = cpu.gpr[4] as u16 as i16;
+    let (target_ref_num, target_dir_id) = if let Some(record) = working_directories.get(&requested_vref)
+    {
+        (record.ref_num, record.dir_id)
+    } else if requested_vref == PPC_BOOT_VOLUME_REF_NUM {
+        (requested_vref, PPC_ROOT_DIR_ID)
+    } else if let Some(volume) = vfs_volumes
+        .iter()
+        .find(|volume| volume.ref_num == requested_vref)
+    {
+        (volume.ref_num, volume.root_dir_id)
+    } else if requested_vref != 0 {
+        return PPC_NSV_ERR;
+    } else {
+        let name_ptr = cpu.gpr[3];
+        if name_ptr == 0 {
+            return PPC_PARAM_ERR;
+        }
+        let Some(name) = ppc_read_pstring_bytes(memory, name_ptr) else {
+            return PPC_BD_NAM_ERR;
+        };
+        let name = decode_mac_roman(&name);
+        let name = name.trim_end_matches(':');
+        if name.eq_ignore_ascii_case(crate::trap::TrapDispatcher::boot_volume_name()) {
+            (PPC_BOOT_VOLUME_REF_NUM, PPC_ROOT_DIR_ID)
+        } else if let Some(volume) = vfs_volumes
+            .iter()
+            .find(|volume| volume.name.eq_ignore_ascii_case(name))
+        {
+            (volume.ref_num, volume.root_dir_id)
+        } else {
+            return PPC_NSV_ERR;
+        }
+    };
+    *application_working_directory_ref_num = target_ref_num;
+    let _ = memory.write_u32_be(crate::memory::globals::addr::CUR_DIR_STORE, target_dir_id);
     PPC_NO_ERR
 }
 

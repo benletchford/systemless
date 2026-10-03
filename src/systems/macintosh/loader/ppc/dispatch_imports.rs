@@ -1632,6 +1632,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::ResError
         | PpcImportDispatcherTarget::GetVol
         | PpcImportDispatcherTarget::GetWDInfo
+        | PpcImportDispatcherTarget::OpenWD
+        | PpcImportDispatcherTarget::SetVol
         | PpcImportDispatcherTarget::HGetVol
         | PpcImportDispatcherTarget::HSetVol
         | PpcImportDispatcherTarget::FlushVol

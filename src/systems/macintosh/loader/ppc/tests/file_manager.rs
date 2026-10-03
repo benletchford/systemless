@@ -3037,6 +3037,145 @@ fn pb_read_async_returns_from_sound_doubleback_before_its_completion() {
     }
 
     #[test]
+    fn hle_import_runner_opens_and_reuses_working_directories() {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "OpenWD"),
+            PpcImportDispatcherTarget::OpenWD
+        );
+        let pef = synthetic_pef_with_import(b"OpenWD");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let out = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(out, vec![0xcc; 2]);
+        let proc_id = 0x1234_5678;
+
+        loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+        loaded.cpu.gpr[4] = PPC_PREFERENCES_DIR_ID;
+        loaded.cpu.gpr[5] = proc_id;
+        loaded.cpu.gpr[6] = out;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        let wd_ref_num = loaded.memory.read_u16_be(out).unwrap() as i16;
+        assert_ne!(wd_ref_num, PPC_BOOT_VOLUME_REF_NUM);
+        assert_eq!(
+            loaded.working_directories.get(&wd_ref_num),
+            Some(&ProcessWorkingDirectory {
+                ref_num: wd_ref_num,
+                volume_ref_num: PPC_BOOT_VOLUME_REF_NUM,
+                dir_id: PPC_PREFERENCES_DIR_ID,
+                proc_id,
+            })
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = loaded.halt_pc;
+        loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u16_be(out), Some(wd_ref_num as u16));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = loaded.halt_pc;
+        loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+        loaded.cpu.gpr[5] = proc_id + 1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_ne!(loaded.memory.read_u16_be(out), Some(wd_ref_num as u16));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = loaded.halt_pc;
+        loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+        loaded.cpu.gpr[4] = PPC_ROOT_DIR_ID;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.memory.read_u16_be(out),
+            Some(PPC_BOOT_VOLUME_REF_NUM as u16)
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = loaded.halt_pc;
+        loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+        loaded.cpu.gpr[4] = u32::MAX;
+        loaded.memory.write_u16_be(out, 0xCCCC).unwrap();
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_FNF_ERR));
+        assert_eq!(loaded.memory.read_u16_be(out), Some(0xCCCC));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = loaded.halt_pc;
+        loaded.cpu.gpr[3] = 0xFFF5;
+        loaded.cpu.gpr[4] = PPC_PREFERENCES_DIR_ID;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NSV_ERR));
+        assert_eq!(loaded.memory.read_u16_be(out), Some(0xCCCC));
+    }
+
+    #[test]
+    fn hle_import_runner_sets_default_working_directory() {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "SetVol"),
+            PpcImportDispatcherTarget::SetVol
+        );
+        let pef = synthetic_pef_with_import(b"SetVol");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let wd_ref_num = 77;
+        loaded.working_directories.with_mut(|directories| {
+            directories.insert(
+                wd_ref_num,
+                ProcessWorkingDirectory {
+                    ref_num: wd_ref_num,
+                    volume_ref_num: PPC_BOOT_VOLUME_REF_NUM,
+                    dir_id: PPC_PREFERENCES_DIR_ID,
+                    proc_id: 0x1234_5678,
+                },
+            );
+        });
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = wd_ref_num as u32;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        loaded
+            .application_working_directory_ref_num
+            .with_mut(|ref_num| assert_eq!(*ref_num, wd_ref_num));
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(crate::memory::globals::addr::CUR_DIR_STORE),
+            Some(PPC_PREFERENCES_DIR_ID)
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = loaded.halt_pc;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(crate::memory::globals::addr::CUR_DIR_STORE),
+            Some(PPC_ROOT_DIR_ID)
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = loaded.halt_pc;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = u16::MAX as u32 - 10;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NSV_ERR));
+    }
+
+    #[test]
     fn hle_import_runner_handles_get_wd_info() {
         let pef = synthetic_pef_with_import(b"GetWDInfo");
         let mut loaded = load_pef_application(&pef).unwrap();
