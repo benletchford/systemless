@@ -21,6 +21,7 @@ pub enum PpcSystemCompatibilityOperation {
     IuDateString,
     InitCrm,
     InitCtbUtilities,
+    IntlScript,
     KeyTranslate,
     LaunchApplication,
     LmGetCurApName,
@@ -327,6 +328,13 @@ pub(crate) fn ppc_dispatch_system_compatibility(
         PpcSystemCompatibilityOperation::FindNextComponent
         | PpcSystemCompatibilityOperation::OpenDefaultComponent => PpcImportAction::Return(0),
         PpcSystemCompatibilityOperation::CtbGetCtbVersion => PpcImportAction::Return(0x0200),
+        PpcSystemCompatibilityOperation::IntlScript => {
+            // Inside Macintosh: Text (1993), pp. 6-22–6-24: IntlScript
+            // returns an enabled script code, defaulting to the system script
+            // when the font script is unavailable. This guest installs only
+            // the Roman script (smRoman = 0).
+            PpcImportAction::Return(0)
+        }
         PpcSystemCompatibilityOperation::GetScriptManagerVariable
         | PpcSystemCompatibilityOperation::GetScriptVariable
         | PpcSystemCompatibilityOperation::GetScript

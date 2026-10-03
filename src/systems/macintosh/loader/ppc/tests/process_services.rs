@@ -1838,6 +1838,7 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ("IUDateString", PpcSystemCompatibilityOperation::IuDateString),
         ("InitCRM", PpcSystemCompatibilityOperation::InitCrm),
         ("InitCTBUtilities", PpcSystemCompatibilityOperation::InitCtbUtilities),
+        ("IntlScript", PpcSystemCompatibilityOperation::IntlScript),
         ("KeyTranslate", PpcSystemCompatibilityOperation::KeyTranslate),
         ("LaunchApplication", PpcSystemCompatibilityOperation::LaunchApplication),
         ("LMGetCurApName", PpcSystemCompatibilityOperation::LmGetCurApName),
