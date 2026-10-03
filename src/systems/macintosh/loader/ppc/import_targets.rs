@@ -470,6 +470,7 @@ pub enum PpcImportDispatcherTarget {
     FlushVol,
     PBFlushVol,
     SndNewChannel,
+    SetupSndHeader,
     SndDisposeChannel,
     SndPlay,
     SndChannelStatus,
@@ -4101,6 +4102,7 @@ pub(crate) fn dispatcher_target_for_import(
         | ("InterfaceLib", "PBFlushVolSync")
         | ("InterfaceLib", "PBFlushVolAsync") => PpcImportDispatcherTarget::PBFlushVol,
         ("InterfaceLib", "SndNewChannel") => PpcImportDispatcherTarget::SndNewChannel,
+        ("InterfaceLib", "SetupSndHeader") => PpcImportDispatcherTarget::SetupSndHeader,
         ("InterfaceLib", "SndDisposeChannel") => PpcImportDispatcherTarget::SndDisposeChannel,
         ("InterfaceLib", "SndPlay") => PpcImportDispatcherTarget::SndPlay,
         ("InterfaceLib", "SndChannelStatus") => PpcImportDispatcherTarget::SndChannelStatus,

@@ -480,6 +480,124 @@ pub(crate) struct PpcParsedSndHeader {
     data_offset: u32,
 }
 
+/// SetupSndHeader (SoundDispatch selector $0D480014)
+/// Constructs a format 1 sound resource with a bufferCmd and sampled header.
+/// FUNCTION SetupSndHeader (sndHandle: Handle; numChannels: Integer;
+/// sampleRate: Fixed; sampleSize: Integer; compressionType: OSType;
+/// baseFrequency: Integer; numBytes: LongInt; VAR headerLen: Integer): OSErr;
+/// Inside Macintosh: Sound (1994), pp. 3-44--3-45.
+pub(crate) fn ppc_setup_snd_header(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+) -> i16 {
+    const NONE: u32 = u32::from_be_bytes(*b"NONE");
+    const MAC3: u32 = u32::from_be_bytes(*b"MAC3");
+    const MAC6: u32 = u32::from_be_bytes(*b"MAC6");
+    const STANDARD_HEADER_LEN: u32 = 42;
+    const EXTENDED_HEADER_LEN: u32 = 84;
+    let handle = cpu.gpr[3];
+    let channels = cpu.gpr[4] as u16;
+    let sample_rate = cpu.gpr[5];
+    let sample_size = cpu.gpr[6] as u16;
+    let compression = cpu.gpr[7];
+    let base_frequency = cpu.gpr[8] as u16;
+    let num_bytes = cpu.gpr[9];
+    let header_len_out = cpu.gpr[10];
+    let standard = compression == NONE && channels == 1 && sample_size == 8;
+    let extended = compression == NONE
+        && matches!(channels, 1 | 2)
+        && matches!(sample_size, 8 | 16)
+        && !standard;
+    let compressed =
+        matches!(compression, MAC3 | MAC6) && matches!(channels, 1 | 2) && sample_size == 8;
+    if !matches!(compression, NONE | MAC3 | MAC6) {
+        return -223; // siInvalidCompression
+    }
+    if (!standard && !extended && !compressed)
+        || !(1..=127).contains(&base_frequency)
+        || header_len_out == 0
+    {
+        return PPC_PARAM_ERR;
+    }
+    let header_len = if standard {
+        STANDARD_HEADER_LEN
+    } else {
+        EXTENDED_HEADER_LEN
+    };
+    let Some(record) = handles.iter().find(|record| record.handle == handle) else {
+        return PPC_PARAM_ERR;
+    };
+    let Some(ptr) = memory.read_u32_be(handle) else {
+        return PPC_PARAM_ERR;
+    };
+    if ptr == 0
+        || ptr != record.ptr
+        || !ppc_memory_can_write_bytes(memory, ptr, header_len)
+        || !ppc_memory_can_write_bytes(memory, header_len_out, 2)
+    {
+        return PPC_PARAM_ERR;
+    }
+    if record.size < header_len {
+        return PPC_MEM_FULL_ERR;
+    }
+    let mut header = [0u8; EXTENDED_HEADER_LEN as usize];
+    header[0..2].copy_from_slice(&1u16.to_be_bytes()); // firstSoundFormat
+    header[2..4].copy_from_slice(&1u16.to_be_bytes()); // one synth
+    header[4..6].copy_from_slice(&5u16.to_be_bytes()); // sampledSynth
+    let channel_init = if channels == 1 { 0x80u32 } else { 0xC0 };
+    let compression_init = match compression {
+        MAC3 => 0x0300,
+        MAC6 => 0x0400,
+        _ => 0,
+    };
+    header[6..10].copy_from_slice(&(channel_init | compression_init).to_be_bytes());
+    header[10..12].copy_from_slice(&1u16.to_be_bytes()); // one command
+    header[12..14].copy_from_slice(&0x8051u16.to_be_bytes()); // bufferCmd + offset flag
+    header[16..20].copy_from_slice(&20u32.to_be_bytes()); // SoundHeader offset
+    if standard {
+        header[24..28].copy_from_slice(&num_bytes.to_be_bytes());
+    } else {
+        let num_frames = match compression {
+            MAC3 => {
+                ((u64::from(num_bytes) * 3 / u64::from(channels)).min(u64::from(u32::MAX))) as u32
+            }
+            MAC6 => {
+                ((u64::from(num_bytes) * 6 / u64::from(channels)).min(u64::from(u32::MAX))) as u32
+            }
+            _ => num_bytes / (u32::from(channels) * u32::from(sample_size / 8)),
+        };
+        header[24..28].copy_from_slice(&u32::from(channels).to_be_bytes());
+        header[40] = if compressed { 0xFE } else { 0xFF }; // cmpSH or extSH
+        header[42..46].copy_from_slice(&num_frames.to_be_bytes());
+        let rate = super::Extended80::from(f64::from(sample_rate) / 65536.0);
+        let exponent = (if rate.sign { 0x8000 } else { 0 }) | rate.exponent;
+        header[46..48].copy_from_slice(&exponent.to_be_bytes());
+        header[48..56].copy_from_slice(&rate.significand.to_be_bytes());
+        if compressed {
+            header[60..64].copy_from_slice(&compression.to_be_bytes());
+            header[76..78].copy_from_slice(&u16::MAX.to_be_bytes()); // fixedCompression
+            header[78..80]
+                .copy_from_slice(&(if compression == MAC3 { 16u16 } else { 8 }).to_be_bytes());
+            header[82..84].copy_from_slice(&sample_size.to_be_bytes());
+        } else {
+            header[68..70].copy_from_slice(&sample_size.to_be_bytes());
+        }
+    }
+    header[28..32].copy_from_slice(&sample_rate.to_be_bytes());
+    header[41] = base_frequency as u8;
+    if memory
+        .write_bytes(ptr, &header[..header_len as usize])
+        .is_none()
+        || memory
+            .write_u16_be(header_len_out, header_len as u16)
+            .is_none()
+    {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
 pub(crate) fn ppc_parse_snd_header(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,

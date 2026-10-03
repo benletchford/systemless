@@ -171,6 +171,9 @@ pub(super) fn dispatch_sound_import(
                 sound,
             ),
         ))),
+        PpcImportDispatcherTarget::SetupSndHeader => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_setup_snd_header(cpu, memory, handles),
+        ))),
         PpcImportDispatcherTarget::SndDisposeChannel => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_snd_dispose_channel(cpu, sound)),
         )),
